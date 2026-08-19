@@ -1,4 +1,4 @@
-// peglib-generator: 0.7.2
+// peglib-generator: 0.7.2 (build:bb4663171d97)
 package org.pragmatica.aether.pg.parser;
 
 import org.pragmatica.peg.cst.CstArray;
@@ -13,233 +13,272 @@ public abstract class PgSqlVisitor<T> {
     protected static final int RULE_DropStatement_KIND = 5;
     protected static final int RULE_DmlStatement_KIND = 6;
     protected static final int RULE_CreateTableStmt_KIND = 7;
-    protected static final int RULE_TableElementList_KIND = 8;
-    protected static final int RULE_TableElement_KIND = 9;
-    protected static final int RULE_ColumnDef_KIND = 10;
-    protected static final int RULE_ColConstraint_KIND = 11;
-    protected static final int RULE_ColConstraintElem_KIND = 12;
-    protected static final int RULE_CheckColConstraint_KIND = 13;
-    protected static final int RULE_DefaultClause_KIND = 14;
-    protected static final int RULE_CollateClause_KIND = 15;
-    protected static final int RULE_ReferencesClause_KIND = 16;
-    protected static final int RULE_GeneratedClause_KIND = 17;
-    protected static final int RULE_IdentityClause_KIND = 18;
-    protected static final int RULE_IdentitySpec_KIND = 19;
-    protected static final int RULE_TableConstraint_KIND = 20;
-    protected static final int RULE_TableConstraintElem_KIND = 21;
-    protected static final int RULE_PrimaryKeyTblConstraint_KIND = 22;
-    protected static final int RULE_UniqueTblConstraint_KIND = 23;
-    protected static final int RULE_CheckTblConstraint_KIND = 24;
-    protected static final int RULE_ForeignKeyTblConstraint_KIND = 25;
-    protected static final int RULE_ExcludeTblConstraint_KIND = 26;
-    protected static final int RULE_ExcludeElementList_KIND = 27;
-    protected static final int RULE_ExcludeElement_KIND = 28;
-    protected static final int RULE_IndexOptions_KIND = 29;
-    protected static final int RULE_IncludeClause_KIND = 30;
-    protected static final int RULE_WithStorageParams_KIND = 31;
-    protected static final int RULE_StorageParamList_KIND = 32;
-    protected static final int RULE_StorageParam_KIND = 33;
-    protected static final int RULE_TableOptions_KIND = 34;
-    protected static final int RULE_PartitionByClause_KIND = 35;
-    protected static final int RULE_PartitionKeyList_KIND = 36;
-    protected static final int RULE_PartitionKey_KIND = 37;
-    protected static final int RULE_InheritsClause_KIND = 38;
-    protected static final int RULE_ColumnList_KIND = 39;
-    protected static final int RULE_QualifiedNameList_KIND = 40;
-    protected static final int RULE_AlterTableStmt_KIND = 41;
-    protected static final int RULE_AlterTableActions_KIND = 42;
-    protected static final int RULE_AlterTableAction_KIND = 43;
-    protected static final int RULE_AddColumnAction_KIND = 44;
-    protected static final int RULE_AlterColumnAction_KIND = 45;
-    protected static final int RULE_AlterColumnCmd_KIND = 46;
-    protected static final int RULE_SetDataTypeCmd_KIND = 47;
-    protected static final int RULE_SetDefaultCmd_KIND = 48;
-    protected static final int RULE_SetStatisticsCmd_KIND = 49;
-    protected static final int RULE_AddIdentityCmd_KIND = 50;
-    protected static final int RULE_AddConstraintAction_KIND = 51;
-    protected static final int RULE_AttachPartition_KIND = 52;
-    protected static final int RULE_DetachPartition_KIND = 53;
-    protected static final int RULE_ForValuesClause_KIND = 54;
-    protected static final int RULE_DropTableStmt_KIND = 55;
-    protected static final int RULE_CreateIndexStmt_KIND = 56;
-    protected static final int RULE_IndexElemList_KIND = 57;
-    protected static final int RULE_IndexElem_KIND = 58;
-    protected static final int RULE_OpClass_KIND = 59;
-    protected static final int RULE_AlterIndexStmt_KIND = 60;
-    protected static final int RULE_DropIndexStmt_KIND = 61;
-    protected static final int RULE_CreateSequenceStmt_KIND = 62;
-    protected static final int RULE_AlterSequenceStmt_KIND = 63;
-    protected static final int RULE_DropSequenceStmt_KIND = 64;
-    protected static final int RULE_SequenceOptions_KIND = 65;
-    protected static final int RULE_SequenceOption_KIND = 66;
-    protected static final int RULE_CreateTypeStmt_KIND = 67;
-    protected static final int RULE_EnumLabelList_KIND = 68;
-    protected static final int RULE_CompositeFieldList_KIND = 69;
-    protected static final int RULE_CompositeField_KIND = 70;
-    protected static final int RULE_RangeOptionList_KIND = 71;
-    protected static final int RULE_RangeOption_KIND = 72;
-    protected static final int RULE_DomainConstraint_KIND = 73;
-    protected static final int RULE_AlterTypeStmt_KIND = 74;
-    protected static final int RULE_DropTypeStmt_KIND = 75;
-    protected static final int RULE_DropSchemaStmt_KIND = 76;
-    protected static final int RULE_CreateViewStmt_KIND = 77;
-    protected static final int RULE_CreateMatViewStmt_KIND = 78;
-    protected static final int RULE_AlterViewStmt_KIND = 79;
-    protected static final int RULE_DropViewStmt_KIND = 80;
-    protected static final int RULE_DropMatViewStmt_KIND = 81;
-    protected static final int RULE_CreateExtensionStmt_KIND = 82;
-    protected static final int RULE_ExtensionOptions_KIND = 83;
-    protected static final int RULE_ExtensionOption_KIND = 84;
-    protected static final int RULE_DropExtensionStmt_KIND = 85;
-    protected static final int RULE_CommentStatement_KIND = 86;
-    protected static final int RULE_CommentTarget_KIND = 87;
-    protected static final int RULE_FuncArgTypes_KIND = 88;
-    protected static final int RULE_FuncArgType_KIND = 89;
-    protected static final int RULE_GrantStatement_KIND = 90;
-    protected static final int RULE_RevokeStatement_KIND = 91;
-    protected static final int RULE_PrivilegeList_KIND = 92;
-    protected static final int RULE_Privilege_KIND = 93;
-    protected static final int RULE_GrantTarget_KIND = 94;
-    protected static final int RULE_GranteeList_KIND = 95;
-    protected static final int RULE_AlterDefaultPrivilegesPassthrough_KIND = 96;
-    protected static final int RULE_CreateFunctionPassthrough_KIND = 97;
-    protected static final int RULE_CreateTriggerPassthrough_KIND = 98;
-    protected static final int RULE_DropFunctionPassthrough_KIND = 99;
-    protected static final int RULE_DropTriggerPassthrough_KIND = 100;
-    protected static final int RULE_SelectStmt_KIND = 101;
-    protected static final int RULE_SelectCore_KIND = 102;
-    protected static final int RULE_SetQuantifier_KIND = 103;
-    protected static final int RULE_TargetList_KIND = 104;
-    protected static final int RULE_TargetElem_KIND = 105;
-    protected static final int RULE_StarExpr_KIND = 106;
-    protected static final int RULE_IntoClause_KIND = 107;
-    protected static final int RULE_FromClause_KIND = 108;
-    protected static final int RULE_FromList_KIND = 109;
-    protected static final int RULE_TableRef_KIND = 110;
-    protected static final int RULE_TableRefBase_KIND = 111;
-    protected static final int RULE_BaseTableRef_KIND = 112;
-    protected static final int RULE_SubqueryRef_KIND = 113;
-    protected static final int RULE_LateralRef_KIND = 114;
-    protected static final int RULE_FuncTableRef_KIND = 115;
-    protected static final int RULE_Alias_KIND = 116;
-    protected static final int RULE_TablesampleClause_KIND = 117;
-    protected static final int RULE_JoinExpr_KIND = 118;
-    protected static final int RULE_JoinClause_KIND = 119;
-    protected static final int RULE_JoinQual_KIND = 120;
-    protected static final int RULE_WhereClause_KIND = 121;
-    protected static final int RULE_GroupByClause_KIND = 122;
-    protected static final int RULE_GroupByList_KIND = 123;
-    protected static final int RULE_GroupByElem_KIND = 124;
-    protected static final int RULE_HavingClause_KIND = 125;
-    protected static final int RULE_WindowClause_KIND = 126;
-    protected static final int RULE_WindowDefList_KIND = 127;
-    protected static final int RULE_WindowDef_KIND = 128;
-    protected static final int RULE_WindowSpec_KIND = 129;
-    protected static final int RULE_PartitionClause_KIND = 130;
-    protected static final int RULE_FrameClause_KIND = 131;
-    protected static final int RULE_FrameExtent_KIND = 132;
-    protected static final int RULE_FrameBound_KIND = 133;
-    protected static final int RULE_WithClause_KIND = 134;
-    protected static final int RULE_CteList_KIND = 135;
-    protected static final int RULE_CteDef_KIND = 136;
-    protected static final int RULE_SetOp_KIND = 137;
-    protected static final int RULE_OrderByClause_KIND = 138;
-    protected static final int RULE_OrderByList_KIND = 139;
-    protected static final int RULE_OrderByItem_KIND = 140;
-    protected static final int RULE_LimitClause_KIND = 141;
-    protected static final int RULE_OffsetClause_KIND = 142;
-    protected static final int RULE_FetchClause_KIND = 143;
-    protected static final int RULE_InsertStmt_KIND = 144;
-    protected static final int RULE_InsertSource_KIND = 145;
-    protected static final int RULE_ValuesClause_KIND = 146;
-    protected static final int RULE_ValueRowList_KIND = 147;
-    protected static final int RULE_ExprOrDefaultList_KIND = 148;
-    protected static final int RULE_ExprOrDefault_KIND = 149;
-    protected static final int RULE_OnConflictClause_KIND = 150;
-    protected static final int RULE_ConflictTarget_KIND = 151;
-    protected static final int RULE_ConflictAction_KIND = 152;
-    protected static final int RULE_ReturningClause_KIND = 153;
-    protected static final int RULE_UpdateStmt_KIND = 154;
-    protected static final int RULE_UpdateSetList_KIND = 155;
-    protected static final int RULE_UpdateSetItem_KIND = 156;
-    protected static final int RULE_DeleteStmt_KIND = 157;
-    protected static final int RULE_UsingClauseDelete_KIND = 158;
-    protected static final int RULE_PassthroughStatement_KIND = 159;
-    protected static final int RULE_TransactionStmt_KIND = 160;
-    protected static final int RULE_SessionStmt_KIND = 161;
-    protected static final int RULE_UtilityStmt_KIND = 162;
-    protected static final int RULE_TruncateStmt_KIND = 163;
-    protected static final int RULE_ExplainStmt_KIND = 164;
-    protected static final int RULE_CopyStmt_KIND = 165;
-    protected static final int RULE_RefreshMatViewStmt_KIND = 166;
-    protected static final int RULE_RestOfStatement_KIND = 167;
-    protected static final int RULE_Expr_KIND = 168;
-    protected static final int RULE_OrExpr_KIND = 169;
-    protected static final int RULE_AndExpr_KIND = 170;
-    protected static final int RULE_NotExpr_KIND = 171;
-    protected static final int RULE_CompareExpr_KIND = 172;
-    protected static final int RULE_IsExpr_KIND = 173;
-    protected static final int RULE_IsClause_KIND = 174;
-    protected static final int RULE_InExpr_KIND = 175;
-    protected static final int RULE_BetweenExpr_KIND = 176;
-    protected static final int RULE_LikeExpr_KIND = 177;
-    protected static final int RULE_SimilarToExpr_KIND = 178;
-    protected static final int RULE_IsDistinctFrom_KIND = 179;
-    protected static final int RULE_AddExpr_KIND = 180;
-    protected static final int RULE_MulExpr_KIND = 181;
-    protected static final int RULE_UnaryExpr_KIND = 182;
-    protected static final int RULE_ExponentExpr_KIND = 183;
-    protected static final int RULE_ConcatExpr_KIND = 184;
-    protected static final int RULE_ArrayExpr_KIND = 185;
-    protected static final int RULE_TypeCastExpr_KIND = 186;
-    protected static final int RULE_PostfixExpr_KIND = 187;
-    protected static final int RULE_PostfixOp_KIND = 188;
-    protected static final int RULE_PrimaryExpr_KIND = 189;
-    protected static final int RULE_ColRef_KIND = 190;
-    protected static final int RULE_ExistsExpr_KIND = 191;
-    protected static final int RULE_SubqueryExpr_KIND = 192;
-    protected static final int RULE_AnyAllExpr_KIND = 193;
-    protected static final int RULE_RowExpr_KIND = 194;
-    protected static final int RULE_ArrayExprConstructor_KIND = 195;
-    protected static final int RULE_CastExpr_KIND = 196;
-    protected static final int RULE_CaseExpr_KIND = 197;
-    protected static final int RULE_WhenClause_KIND = 198;
-    protected static final int RULE_ElseClause_KIND = 199;
-    protected static final int RULE_CoalesceExpr_KIND = 200;
-    protected static final int RULE_NullIfExpr_KIND = 201;
-    protected static final int RULE_GreatestLeastExpr_KIND = 202;
-    protected static final int RULE_ExtractExpr_KIND = 203;
-    protected static final int RULE_PositionExpr_KIND = 204;
-    protected static final int RULE_SubstringExpr_KIND = 205;
-    protected static final int RULE_TrimExpr_KIND = 206;
-    protected static final int RULE_OverlayExpr_KIND = 207;
-    protected static final int RULE_TypedLiteral_KIND = 208;
-    protected static final int RULE_FuncCall_KIND = 209;
-    protected static final int RULE_FuncCallArgs_KIND = 210;
-    protected static final int RULE_FuncName_KIND = 211;
-    protected static final int RULE_FilterClause_KIND = 212;
-    protected static final int RULE_OverClause_KIND = 213;
-    protected static final int RULE_WithinGroupClause_KIND = 214;
-    protected static final int RULE_ExprList_KIND = 215;
-    protected static final int RULE_Operator_KIND = 216;
-    protected static final int RULE_DataType_KIND = 217;
-    protected static final int RULE_ArrayType_KIND = 218;
-    protected static final int RULE_ScalarType_KIND = 219;
-    protected static final int RULE_NumericType_KIND = 220;
-    protected static final int RULE_CharType_KIND = 221;
-    protected static final int RULE_DateTimeType_KIND = 222;
-    protected static final int RULE_TimestampType_KIND = 223;
-    protected static final int RULE_TimeType_KIND = 224;
-    protected static final int RULE_IntervalType_KIND = 225;
-    protected static final int RULE_BitType_KIND = 226;
-    protected static final int RULE_TypeModifiers_KIND = 227;
-    protected static final int RULE_QualifiedTypeName_KIND = 228;
-    protected static final int RULE_QualifiedName_KIND = 229;
-    protected static final int RULE_Literal_KIND = 230;
-    protected static final int RULE_SignedNumericLiteral_KIND = 231;
-    protected static final int RULE_StringLiteral_KIND = 232;
-    protected static final int RULE_DollarString_KIND = 233;
-    protected static final int RULE_ClauseKeyword_KIND = 234;
+    protected static final int RULE_IfNotExists_KIND = 8;
+    protected static final int RULE_IfExists_KIND = 9;
+    protected static final int RULE_TableElementList_KIND = 10;
+    protected static final int RULE_TableElement_KIND = 11;
+    protected static final int RULE_ColumnDef_KIND = 12;
+    protected static final int RULE_ColConstraint_KIND = 13;
+    protected static final int RULE_ColConstraintElem_KIND = 14;
+    protected static final int RULE_NotNullConstraint_KIND = 15;
+    protected static final int RULE_PrimaryKeyColConstraint_KIND = 16;
+    protected static final int RULE_CheckColConstraint_KIND = 17;
+    protected static final int RULE_DefaultClause_KIND = 18;
+    protected static final int RULE_CollateClause_KIND = 19;
+    protected static final int RULE_ReferencesClause_KIND = 20;
+    protected static final int RULE_GeneratedClause_KIND = 21;
+    protected static final int RULE_IdentityClause_KIND = 22;
+    protected static final int RULE_IdentitySpec_KIND = 23;
+    protected static final int RULE_TableConstraint_KIND = 24;
+    protected static final int RULE_ConstraintName_KIND = 25;
+    protected static final int RULE_TableConstraintElem_KIND = 26;
+    protected static final int RULE_PrimaryKeyTblConstraint_KIND = 27;
+    protected static final int RULE_UniqueTblConstraint_KIND = 28;
+    protected static final int RULE_CheckTblConstraint_KIND = 29;
+    protected static final int RULE_NoInheritClause_KIND = 30;
+    protected static final int RULE_ForeignKeyTblConstraint_KIND = 31;
+    protected static final int RULE_FkActions_KIND = 32;
+    protected static final int RULE_FkAction_KIND = 33;
+    protected static final int RULE_FkActionType_KIND = 34;
+    protected static final int RULE_FkDeferrable_KIND = 35;
+    protected static final int RULE_ExcludeTblConstraint_KIND = 36;
+    protected static final int RULE_ExcludeElementList_KIND = 37;
+    protected static final int RULE_ExcludeElement_KIND = 38;
+    protected static final int RULE_NullsDistinct_KIND = 39;
+    protected static final int RULE_IndexOptions_KIND = 40;
+    protected static final int RULE_IncludeClause_KIND = 41;
+    protected static final int RULE_WithStorageParams_KIND = 42;
+    protected static final int RULE_StorageParamList_KIND = 43;
+    protected static final int RULE_StorageParam_KIND = 44;
+    protected static final int RULE_UsingIndexTblspace_KIND = 45;
+    protected static final int RULE_TableOptions_KIND = 46;
+    protected static final int RULE_PartitionByClause_KIND = 47;
+    protected static final int RULE_PartitionKeyList_KIND = 48;
+    protected static final int RULE_PartitionKey_KIND = 49;
+    protected static final int RULE_InheritsClause_KIND = 50;
+    protected static final int RULE_TablespaceClause_KIND = 51;
+    protected static final int RULE_ColumnList_KIND = 52;
+    protected static final int RULE_QualifiedNameList_KIND = 53;
+    protected static final int RULE_AlterTableStmt_KIND = 54;
+    protected static final int RULE_AlterTableActions_KIND = 55;
+    protected static final int RULE_AlterTableAction_KIND = 56;
+    protected static final int RULE_AddColumnAction_KIND = 57;
+    protected static final int RULE_DropColumnAction_KIND = 58;
+    protected static final int RULE_AlterColumnAction_KIND = 59;
+    protected static final int RULE_AlterColumnCmd_KIND = 60;
+    protected static final int RULE_SetDataTypeCmd_KIND = 61;
+    protected static final int RULE_SetDefaultCmd_KIND = 62;
+    protected static final int RULE_DropDefaultCmd_KIND = 63;
+    protected static final int RULE_SetNotNullCmd_KIND = 64;
+    protected static final int RULE_DropNotNullCmd_KIND = 65;
+    protected static final int RULE_SetStatisticsCmd_KIND = 66;
+    protected static final int RULE_SetStorageCmd_KIND = 67;
+    protected static final int RULE_AddIdentityCmd_KIND = 68;
+    protected static final int RULE_DropIdentityCmd_KIND = 69;
+    protected static final int RULE_AddConstraintAction_KIND = 70;
+    protected static final int RULE_DropConstraintAction_KIND = 71;
+    protected static final int RULE_ValidateConstraintAction_KIND = 72;
+    protected static final int RULE_RenameConstraintAction_KIND = 73;
+    protected static final int RULE_NotValidClause_KIND = 74;
+    protected static final int RULE_AlterOwnerAction_KIND = 75;
+    protected static final int RULE_RenameAction_KIND = 76;
+    protected static final int RULE_SetSchemaAction_KIND = 77;
+    protected static final int RULE_SetTablespaceAction_KIND = 78;
+    protected static final int RULE_AttachPartition_KIND = 79;
+    protected static final int RULE_DetachPartition_KIND = 80;
+    protected static final int RULE_ForValuesClause_KIND = 81;
+    protected static final int RULE_DropTableStmt_KIND = 82;
+    protected static final int RULE_CreateIndexStmt_KIND = 83;
+    protected static final int RULE_UsingClause_KIND = 84;
+    protected static final int RULE_IndexElemList_KIND = 85;
+    protected static final int RULE_IndexElem_KIND = 86;
+    protected static final int RULE_OpClass_KIND = 87;
+    protected static final int RULE_NullsOrder_KIND = 88;
+    protected static final int RULE_AlterIndexStmt_KIND = 89;
+    protected static final int RULE_DropIndexStmt_KIND = 90;
+    protected static final int RULE_CreateSequenceStmt_KIND = 91;
+    protected static final int RULE_AlterSequenceStmt_KIND = 92;
+    protected static final int RULE_DropSequenceStmt_KIND = 93;
+    protected static final int RULE_SequenceOptions_KIND = 94;
+    protected static final int RULE_SequenceOption_KIND = 95;
+    protected static final int RULE_CreateTypeStmt_KIND = 96;
+    protected static final int RULE_EnumLabelList_KIND = 97;
+    protected static final int RULE_CompositeFieldList_KIND = 98;
+    protected static final int RULE_CompositeField_KIND = 99;
+    protected static final int RULE_RangeOptionList_KIND = 100;
+    protected static final int RULE_RangeOption_KIND = 101;
+    protected static final int RULE_DomainConstraint_KIND = 102;
+    protected static final int RULE_AlterTypeStmt_KIND = 103;
+    protected static final int RULE_DropTypeStmt_KIND = 104;
+    protected static final int RULE_CreateSchemaStmt_KIND = 105;
+    protected static final int RULE_AlterSchemaStmt_KIND = 106;
+    protected static final int RULE_DropSchemaStmt_KIND = 107;
+    protected static final int RULE_CreateViewStmt_KIND = 108;
+    protected static final int RULE_CheckOptionClause_KIND = 109;
+    protected static final int RULE_CreateMatViewStmt_KIND = 110;
+    protected static final int RULE_AlterViewStmt_KIND = 111;
+    protected static final int RULE_DropViewStmt_KIND = 112;
+    protected static final int RULE_DropMatViewStmt_KIND = 113;
+    protected static final int RULE_CreateExtensionStmt_KIND = 114;
+    protected static final int RULE_ExtensionOptions_KIND = 115;
+    protected static final int RULE_ExtensionOption_KIND = 116;
+    protected static final int RULE_DropExtensionStmt_KIND = 117;
+    protected static final int RULE_CommentStatement_KIND = 118;
+    protected static final int RULE_CommentTarget_KIND = 119;
+    protected static final int RULE_FuncArgTypes_KIND = 120;
+    protected static final int RULE_FuncArgType_KIND = 121;
+    protected static final int RULE_GrantStatement_KIND = 122;
+    protected static final int RULE_RevokeStatement_KIND = 123;
+    protected static final int RULE_PrivilegeList_KIND = 124;
+    protected static final int RULE_Privilege_KIND = 125;
+    protected static final int RULE_GrantTarget_KIND = 126;
+    protected static final int RULE_GranteeList_KIND = 127;
+    protected static final int RULE_Grantee_KIND = 128;
+    protected static final int RULE_AlterDefaultPrivilegesPassthrough_KIND = 129;
+    protected static final int RULE_CreateFunctionPassthrough_KIND = 130;
+    protected static final int RULE_CreateTriggerPassthrough_KIND = 131;
+    protected static final int RULE_DropFunctionPassthrough_KIND = 132;
+    protected static final int RULE_DropTriggerPassthrough_KIND = 133;
+    protected static final int RULE_SelectStmt_KIND = 134;
+    protected static final int RULE_SelectCore_KIND = 135;
+    protected static final int RULE_SetQuantifier_KIND = 136;
+    protected static final int RULE_TargetList_KIND = 137;
+    protected static final int RULE_TargetElem_KIND = 138;
+    protected static final int RULE_StarExpr_KIND = 139;
+    protected static final int RULE_IntoClause_KIND = 140;
+    protected static final int RULE_FromClause_KIND = 141;
+    protected static final int RULE_FromList_KIND = 142;
+    protected static final int RULE_TableRef_KIND = 143;
+    protected static final int RULE_TableRefBase_KIND = 144;
+    protected static final int RULE_BaseTableRef_KIND = 145;
+    protected static final int RULE_SubqueryRef_KIND = 146;
+    protected static final int RULE_LateralRef_KIND = 147;
+    protected static final int RULE_FuncTableRef_KIND = 148;
+    protected static final int RULE_WithOrdinality_KIND = 149;
+    protected static final int RULE_Alias_KIND = 150;
+    protected static final int RULE_TablesampleClause_KIND = 151;
+    protected static final int RULE_JoinExpr_KIND = 152;
+    protected static final int RULE_JoinClause_KIND = 153;
+    protected static final int RULE_JoinType_KIND = 154;
+    protected static final int RULE_JoinQual_KIND = 155;
+    protected static final int RULE_WhereClause_KIND = 156;
+    protected static final int RULE_GroupByClause_KIND = 157;
+    protected static final int RULE_GroupByList_KIND = 158;
+    protected static final int RULE_GroupByElem_KIND = 159;
+    protected static final int RULE_HavingClause_KIND = 160;
+    protected static final int RULE_WindowClause_KIND = 161;
+    protected static final int RULE_WindowDefList_KIND = 162;
+    protected static final int RULE_WindowDef_KIND = 163;
+    protected static final int RULE_WindowSpec_KIND = 164;
+    protected static final int RULE_PartitionClause_KIND = 165;
+    protected static final int RULE_FrameClause_KIND = 166;
+    protected static final int RULE_FrameExtent_KIND = 167;
+    protected static final int RULE_FrameBound_KIND = 168;
+    protected static final int RULE_FrameExclusion_KIND = 169;
+    protected static final int RULE_WithClause_KIND = 170;
+    protected static final int RULE_CteList_KIND = 171;
+    protected static final int RULE_CteDef_KIND = 172;
+    protected static final int RULE_SetOp_KIND = 173;
+    protected static final int RULE_OrderByClause_KIND = 174;
+    protected static final int RULE_OrderByList_KIND = 175;
+    protected static final int RULE_OrderByItem_KIND = 176;
+    protected static final int RULE_LimitClause_KIND = 177;
+    protected static final int RULE_OffsetClause_KIND = 178;
+    protected static final int RULE_FetchClause_KIND = 179;
+    protected static final int RULE_InsertStmt_KIND = 180;
+    protected static final int RULE_InsertSource_KIND = 181;
+    protected static final int RULE_ValuesClause_KIND = 182;
+    protected static final int RULE_ValueRowList_KIND = 183;
+    protected static final int RULE_ExprOrDefaultList_KIND = 184;
+    protected static final int RULE_ExprOrDefault_KIND = 185;
+    protected static final int RULE_OnConflictClause_KIND = 186;
+    protected static final int RULE_ConflictTarget_KIND = 187;
+    protected static final int RULE_ConflictAction_KIND = 188;
+    protected static final int RULE_ReturningClause_KIND = 189;
+    protected static final int RULE_UpdateStmt_KIND = 190;
+    protected static final int RULE_UpdateSetList_KIND = 191;
+    protected static final int RULE_UpdateSetItem_KIND = 192;
+    protected static final int RULE_DeleteStmt_KIND = 193;
+    protected static final int RULE_UsingClauseDelete_KIND = 194;
+    protected static final int RULE_PassthroughStatement_KIND = 195;
+    protected static final int RULE_TransactionStmt_KIND = 196;
+    protected static final int RULE_SessionStmt_KIND = 197;
+    protected static final int RULE_UtilityStmt_KIND = 198;
+    protected static final int RULE_TruncateStmt_KIND = 199;
+    protected static final int RULE_ExplainStmt_KIND = 200;
+    protected static final int RULE_CopyStmt_KIND = 201;
+    protected static final int RULE_RefreshMatViewStmt_KIND = 202;
+    protected static final int RULE_RestOfStatement_KIND = 203;
+    protected static final int RULE_Expr_KIND = 204;
+    protected static final int RULE_OrExpr_KIND = 205;
+    protected static final int RULE_AndExpr_KIND = 206;
+    protected static final int RULE_NotExpr_KIND = 207;
+    protected static final int RULE_CompareExpr_KIND = 208;
+    protected static final int RULE_IsExpr_KIND = 209;
+    protected static final int RULE_IsClause_KIND = 210;
+    protected static final int RULE_InExpr_KIND = 211;
+    protected static final int RULE_BetweenExpr_KIND = 212;
+    protected static final int RULE_LikeExpr_KIND = 213;
+    protected static final int RULE_SimilarToExpr_KIND = 214;
+    protected static final int RULE_IsDistinctFrom_KIND = 215;
+    protected static final int RULE_AddExpr_KIND = 216;
+    protected static final int RULE_MulExpr_KIND = 217;
+    protected static final int RULE_UnaryExpr_KIND = 218;
+    protected static final int RULE_ExponentExpr_KIND = 219;
+    protected static final int RULE_ConcatExpr_KIND = 220;
+    protected static final int RULE_ArrayExpr_KIND = 221;
+    protected static final int RULE_TypeCastExpr_KIND = 222;
+    protected static final int RULE_PostfixExpr_KIND = 223;
+    protected static final int RULE_PostfixOp_KIND = 224;
+    protected static final int RULE_PrimaryExpr_KIND = 225;
+    protected static final int RULE_ColRef_KIND = 226;
+    protected static final int RULE_ExistsExpr_KIND = 227;
+    protected static final int RULE_SubqueryExpr_KIND = 228;
+    protected static final int RULE_AnyAllExpr_KIND = 229;
+    protected static final int RULE_RowExpr_KIND = 230;
+    protected static final int RULE_ArrayExprConstructor_KIND = 231;
+    protected static final int RULE_CastExpr_KIND = 232;
+    protected static final int RULE_CaseExpr_KIND = 233;
+    protected static final int RULE_WhenClause_KIND = 234;
+    protected static final int RULE_ElseClause_KIND = 235;
+    protected static final int RULE_CoalesceExpr_KIND = 236;
+    protected static final int RULE_NullIfExpr_KIND = 237;
+    protected static final int RULE_GreatestLeastExpr_KIND = 238;
+    protected static final int RULE_ExtractExpr_KIND = 239;
+    protected static final int RULE_PositionExpr_KIND = 240;
+    protected static final int RULE_SubstringExpr_KIND = 241;
+    protected static final int RULE_TrimExpr_KIND = 242;
+    protected static final int RULE_OverlayExpr_KIND = 243;
+    protected static final int RULE_TypedLiteral_KIND = 244;
+    protected static final int RULE_SpecialFuncExpr_KIND = 245;
+    protected static final int RULE_FuncCall_KIND = 246;
+    protected static final int RULE_FuncCallArgs_KIND = 247;
+    protected static final int RULE_FuncName_KIND = 248;
+    protected static final int RULE_FilterClause_KIND = 249;
+    protected static final int RULE_OverClause_KIND = 250;
+    protected static final int RULE_WithinGroupClause_KIND = 251;
+    protected static final int RULE_ExprList_KIND = 252;
+    protected static final int RULE_Operator_KIND = 253;
+    protected static final int RULE_DataType_KIND = 254;
+    protected static final int RULE_ArrayType_KIND = 255;
+    protected static final int RULE_ScalarType_KIND = 256;
+    protected static final int RULE_NumericType_KIND = 257;
+    protected static final int RULE_CharType_KIND = 258;
+    protected static final int RULE_DateTimeType_KIND = 259;
+    protected static final int RULE_TimestampType_KIND = 260;
+    protected static final int RULE_TimeType_KIND = 261;
+    protected static final int RULE_IntervalType_KIND = 262;
+    protected static final int RULE_IntervalField_KIND = 263;
+    protected static final int RULE_BitType_KIND = 264;
+    protected static final int RULE_TypeModifiers_KIND = 265;
+    protected static final int RULE_QualifiedTypeName_KIND = 266;
+    protected static final int RULE_ColLabel_KIND = 267;
+    protected static final int RULE_QualifiedName_KIND = 268;
+    protected static final int RULE_Literal_KIND = 269;
+    protected static final int RULE_SignedNumericLiteral_KIND = 270;
+    protected static final int RULE_StringLiteral_KIND = 271;
+    protected static final int RULE_DollarString_KIND = 272;
+    protected static final int RULE_ClauseKeyword_KIND = 273;
 
     public T visit(CstArray cst, int nodeIdx) {
         int kind = cst.kindAt(nodeIdx);
@@ -252,11 +291,15 @@ public abstract class PgSqlVisitor<T> {
             case RULE_DropStatement_KIND -> visitDropStatement(cst, nodeIdx);
             case RULE_DmlStatement_KIND -> visitDmlStatement(cst, nodeIdx);
             case RULE_CreateTableStmt_KIND -> visitCreateTableStmt(cst, nodeIdx);
+            case RULE_IfNotExists_KIND -> visitIfNotExists(cst, nodeIdx);
+            case RULE_IfExists_KIND -> visitIfExists(cst, nodeIdx);
             case RULE_TableElementList_KIND -> visitTableElementList(cst, nodeIdx);
             case RULE_TableElement_KIND -> visitTableElement(cst, nodeIdx);
             case RULE_ColumnDef_KIND -> visitColumnDef(cst, nodeIdx);
             case RULE_ColConstraint_KIND -> visitColConstraint(cst, nodeIdx);
             case RULE_ColConstraintElem_KIND -> visitColConstraintElem(cst, nodeIdx);
+            case RULE_NotNullConstraint_KIND -> visitNotNullConstraint(cst, nodeIdx);
+            case RULE_PrimaryKeyColConstraint_KIND -> visitPrimaryKeyColConstraint(cst, nodeIdx);
             case RULE_CheckColConstraint_KIND -> visitCheckColConstraint(cst, nodeIdx);
             case RULE_DefaultClause_KIND -> visitDefaultClause(cst, nodeIdx);
             case RULE_CollateClause_KIND -> visitCollateClause(cst, nodeIdx);
@@ -265,45 +308,70 @@ public abstract class PgSqlVisitor<T> {
             case RULE_IdentityClause_KIND -> visitIdentityClause(cst, nodeIdx);
             case RULE_IdentitySpec_KIND -> visitIdentitySpec(cst, nodeIdx);
             case RULE_TableConstraint_KIND -> visitTableConstraint(cst, nodeIdx);
+            case RULE_ConstraintName_KIND -> visitConstraintName(cst, nodeIdx);
             case RULE_TableConstraintElem_KIND -> visitTableConstraintElem(cst, nodeIdx);
             case RULE_PrimaryKeyTblConstraint_KIND -> visitPrimaryKeyTblConstraint(cst, nodeIdx);
             case RULE_UniqueTblConstraint_KIND -> visitUniqueTblConstraint(cst, nodeIdx);
             case RULE_CheckTblConstraint_KIND -> visitCheckTblConstraint(cst, nodeIdx);
+            case RULE_NoInheritClause_KIND -> visitNoInheritClause(cst, nodeIdx);
             case RULE_ForeignKeyTblConstraint_KIND -> visitForeignKeyTblConstraint(cst, nodeIdx);
+            case RULE_FkActions_KIND -> visitFkActions(cst, nodeIdx);
+            case RULE_FkAction_KIND -> visitFkAction(cst, nodeIdx);
+            case RULE_FkActionType_KIND -> visitFkActionType(cst, nodeIdx);
+            case RULE_FkDeferrable_KIND -> visitFkDeferrable(cst, nodeIdx);
             case RULE_ExcludeTblConstraint_KIND -> visitExcludeTblConstraint(cst, nodeIdx);
             case RULE_ExcludeElementList_KIND -> visitExcludeElementList(cst, nodeIdx);
             case RULE_ExcludeElement_KIND -> visitExcludeElement(cst, nodeIdx);
+            case RULE_NullsDistinct_KIND -> visitNullsDistinct(cst, nodeIdx);
             case RULE_IndexOptions_KIND -> visitIndexOptions(cst, nodeIdx);
             case RULE_IncludeClause_KIND -> visitIncludeClause(cst, nodeIdx);
             case RULE_WithStorageParams_KIND -> visitWithStorageParams(cst, nodeIdx);
             case RULE_StorageParamList_KIND -> visitStorageParamList(cst, nodeIdx);
             case RULE_StorageParam_KIND -> visitStorageParam(cst, nodeIdx);
+            case RULE_UsingIndexTblspace_KIND -> visitUsingIndexTblspace(cst, nodeIdx);
             case RULE_TableOptions_KIND -> visitTableOptions(cst, nodeIdx);
             case RULE_PartitionByClause_KIND -> visitPartitionByClause(cst, nodeIdx);
             case RULE_PartitionKeyList_KIND -> visitPartitionKeyList(cst, nodeIdx);
             case RULE_PartitionKey_KIND -> visitPartitionKey(cst, nodeIdx);
             case RULE_InheritsClause_KIND -> visitInheritsClause(cst, nodeIdx);
+            case RULE_TablespaceClause_KIND -> visitTablespaceClause(cst, nodeIdx);
             case RULE_ColumnList_KIND -> visitColumnList(cst, nodeIdx);
             case RULE_QualifiedNameList_KIND -> visitQualifiedNameList(cst, nodeIdx);
             case RULE_AlterTableStmt_KIND -> visitAlterTableStmt(cst, nodeIdx);
             case RULE_AlterTableActions_KIND -> visitAlterTableActions(cst, nodeIdx);
             case RULE_AlterTableAction_KIND -> visitAlterTableAction(cst, nodeIdx);
             case RULE_AddColumnAction_KIND -> visitAddColumnAction(cst, nodeIdx);
+            case RULE_DropColumnAction_KIND -> visitDropColumnAction(cst, nodeIdx);
             case RULE_AlterColumnAction_KIND -> visitAlterColumnAction(cst, nodeIdx);
             case RULE_AlterColumnCmd_KIND -> visitAlterColumnCmd(cst, nodeIdx);
             case RULE_SetDataTypeCmd_KIND -> visitSetDataTypeCmd(cst, nodeIdx);
             case RULE_SetDefaultCmd_KIND -> visitSetDefaultCmd(cst, nodeIdx);
+            case RULE_DropDefaultCmd_KIND -> visitDropDefaultCmd(cst, nodeIdx);
+            case RULE_SetNotNullCmd_KIND -> visitSetNotNullCmd(cst, nodeIdx);
+            case RULE_DropNotNullCmd_KIND -> visitDropNotNullCmd(cst, nodeIdx);
             case RULE_SetStatisticsCmd_KIND -> visitSetStatisticsCmd(cst, nodeIdx);
+            case RULE_SetStorageCmd_KIND -> visitSetStorageCmd(cst, nodeIdx);
             case RULE_AddIdentityCmd_KIND -> visitAddIdentityCmd(cst, nodeIdx);
+            case RULE_DropIdentityCmd_KIND -> visitDropIdentityCmd(cst, nodeIdx);
             case RULE_AddConstraintAction_KIND -> visitAddConstraintAction(cst, nodeIdx);
+            case RULE_DropConstraintAction_KIND -> visitDropConstraintAction(cst, nodeIdx);
+            case RULE_ValidateConstraintAction_KIND -> visitValidateConstraintAction(cst, nodeIdx);
+            case RULE_RenameConstraintAction_KIND -> visitRenameConstraintAction(cst, nodeIdx);
+            case RULE_NotValidClause_KIND -> visitNotValidClause(cst, nodeIdx);
+            case RULE_AlterOwnerAction_KIND -> visitAlterOwnerAction(cst, nodeIdx);
+            case RULE_RenameAction_KIND -> visitRenameAction(cst, nodeIdx);
+            case RULE_SetSchemaAction_KIND -> visitSetSchemaAction(cst, nodeIdx);
+            case RULE_SetTablespaceAction_KIND -> visitSetTablespaceAction(cst, nodeIdx);
             case RULE_AttachPartition_KIND -> visitAttachPartition(cst, nodeIdx);
             case RULE_DetachPartition_KIND -> visitDetachPartition(cst, nodeIdx);
             case RULE_ForValuesClause_KIND -> visitForValuesClause(cst, nodeIdx);
             case RULE_DropTableStmt_KIND -> visitDropTableStmt(cst, nodeIdx);
             case RULE_CreateIndexStmt_KIND -> visitCreateIndexStmt(cst, nodeIdx);
+            case RULE_UsingClause_KIND -> visitUsingClause(cst, nodeIdx);
             case RULE_IndexElemList_KIND -> visitIndexElemList(cst, nodeIdx);
             case RULE_IndexElem_KIND -> visitIndexElem(cst, nodeIdx);
             case RULE_OpClass_KIND -> visitOpClass(cst, nodeIdx);
+            case RULE_NullsOrder_KIND -> visitNullsOrder(cst, nodeIdx);
             case RULE_AlterIndexStmt_KIND -> visitAlterIndexStmt(cst, nodeIdx);
             case RULE_DropIndexStmt_KIND -> visitDropIndexStmt(cst, nodeIdx);
             case RULE_CreateSequenceStmt_KIND -> visitCreateSequenceStmt(cst, nodeIdx);
@@ -320,8 +388,11 @@ public abstract class PgSqlVisitor<T> {
             case RULE_DomainConstraint_KIND -> visitDomainConstraint(cst, nodeIdx);
             case RULE_AlterTypeStmt_KIND -> visitAlterTypeStmt(cst, nodeIdx);
             case RULE_DropTypeStmt_KIND -> visitDropTypeStmt(cst, nodeIdx);
+            case RULE_CreateSchemaStmt_KIND -> visitCreateSchemaStmt(cst, nodeIdx);
+            case RULE_AlterSchemaStmt_KIND -> visitAlterSchemaStmt(cst, nodeIdx);
             case RULE_DropSchemaStmt_KIND -> visitDropSchemaStmt(cst, nodeIdx);
             case RULE_CreateViewStmt_KIND -> visitCreateViewStmt(cst, nodeIdx);
+            case RULE_CheckOptionClause_KIND -> visitCheckOptionClause(cst, nodeIdx);
             case RULE_CreateMatViewStmt_KIND -> visitCreateMatViewStmt(cst, nodeIdx);
             case RULE_AlterViewStmt_KIND -> visitAlterViewStmt(cst, nodeIdx);
             case RULE_DropViewStmt_KIND -> visitDropViewStmt(cst, nodeIdx);
@@ -340,6 +411,7 @@ public abstract class PgSqlVisitor<T> {
             case RULE_Privilege_KIND -> visitPrivilege(cst, nodeIdx);
             case RULE_GrantTarget_KIND -> visitGrantTarget(cst, nodeIdx);
             case RULE_GranteeList_KIND -> visitGranteeList(cst, nodeIdx);
+            case RULE_Grantee_KIND -> visitGrantee(cst, nodeIdx);
             case RULE_AlterDefaultPrivilegesPassthrough_KIND -> visitAlterDefaultPrivilegesPassthrough(cst, nodeIdx);
             case RULE_CreateFunctionPassthrough_KIND -> visitCreateFunctionPassthrough(cst, nodeIdx);
             case RULE_CreateTriggerPassthrough_KIND -> visitCreateTriggerPassthrough(cst, nodeIdx);
@@ -360,10 +432,12 @@ public abstract class PgSqlVisitor<T> {
             case RULE_SubqueryRef_KIND -> visitSubqueryRef(cst, nodeIdx);
             case RULE_LateralRef_KIND -> visitLateralRef(cst, nodeIdx);
             case RULE_FuncTableRef_KIND -> visitFuncTableRef(cst, nodeIdx);
+            case RULE_WithOrdinality_KIND -> visitWithOrdinality(cst, nodeIdx);
             case RULE_Alias_KIND -> visitAlias(cst, nodeIdx);
             case RULE_TablesampleClause_KIND -> visitTablesampleClause(cst, nodeIdx);
             case RULE_JoinExpr_KIND -> visitJoinExpr(cst, nodeIdx);
             case RULE_JoinClause_KIND -> visitJoinClause(cst, nodeIdx);
+            case RULE_JoinType_KIND -> visitJoinType(cst, nodeIdx);
             case RULE_JoinQual_KIND -> visitJoinQual(cst, nodeIdx);
             case RULE_WhereClause_KIND -> visitWhereClause(cst, nodeIdx);
             case RULE_GroupByClause_KIND -> visitGroupByClause(cst, nodeIdx);
@@ -378,6 +452,7 @@ public abstract class PgSqlVisitor<T> {
             case RULE_FrameClause_KIND -> visitFrameClause(cst, nodeIdx);
             case RULE_FrameExtent_KIND -> visitFrameExtent(cst, nodeIdx);
             case RULE_FrameBound_KIND -> visitFrameBound(cst, nodeIdx);
+            case RULE_FrameExclusion_KIND -> visitFrameExclusion(cst, nodeIdx);
             case RULE_WithClause_KIND -> visitWithClause(cst, nodeIdx);
             case RULE_CteList_KIND -> visitCteList(cst, nodeIdx);
             case RULE_CteDef_KIND -> visitCteDef(cst, nodeIdx);
@@ -453,6 +528,7 @@ public abstract class PgSqlVisitor<T> {
             case RULE_TrimExpr_KIND -> visitTrimExpr(cst, nodeIdx);
             case RULE_OverlayExpr_KIND -> visitOverlayExpr(cst, nodeIdx);
             case RULE_TypedLiteral_KIND -> visitTypedLiteral(cst, nodeIdx);
+            case RULE_SpecialFuncExpr_KIND -> visitSpecialFuncExpr(cst, nodeIdx);
             case RULE_FuncCall_KIND -> visitFuncCall(cst, nodeIdx);
             case RULE_FuncCallArgs_KIND -> visitFuncCallArgs(cst, nodeIdx);
             case RULE_FuncName_KIND -> visitFuncName(cst, nodeIdx);
@@ -470,9 +546,11 @@ public abstract class PgSqlVisitor<T> {
             case RULE_TimestampType_KIND -> visitTimestampType(cst, nodeIdx);
             case RULE_TimeType_KIND -> visitTimeType(cst, nodeIdx);
             case RULE_IntervalType_KIND -> visitIntervalType(cst, nodeIdx);
+            case RULE_IntervalField_KIND -> visitIntervalField(cst, nodeIdx);
             case RULE_BitType_KIND -> visitBitType(cst, nodeIdx);
             case RULE_TypeModifiers_KIND -> visitTypeModifiers(cst, nodeIdx);
             case RULE_QualifiedTypeName_KIND -> visitQualifiedTypeName(cst, nodeIdx);
+            case RULE_ColLabel_KIND -> visitColLabel(cst, nodeIdx);
             case RULE_QualifiedName_KIND -> visitQualifiedName(cst, nodeIdx);
             case RULE_Literal_KIND -> visitLiteral(cst, nodeIdx);
             case RULE_SignedNumericLiteral_KIND -> visitSignedNumericLiteral(cst, nodeIdx);
@@ -530,6 +608,14 @@ public abstract class PgSqlVisitor<T> {
         return visitChildren(cst, nodeIdx);
     }
 
+    public T visitIfNotExists(CstArray cst, int nodeIdx) {
+        return visitChildren(cst, nodeIdx);
+    }
+
+    public T visitIfExists(CstArray cst, int nodeIdx) {
+        return visitChildren(cst, nodeIdx);
+    }
+
     public T visitTableElementList(CstArray cst, int nodeIdx) {
         return visitChildren(cst, nodeIdx);
     }
@@ -547,6 +633,14 @@ public abstract class PgSqlVisitor<T> {
     }
 
     public T visitColConstraintElem(CstArray cst, int nodeIdx) {
+        return visitChildren(cst, nodeIdx);
+    }
+
+    public T visitNotNullConstraint(CstArray cst, int nodeIdx) {
+        return visitChildren(cst, nodeIdx);
+    }
+
+    public T visitPrimaryKeyColConstraint(CstArray cst, int nodeIdx) {
         return visitChildren(cst, nodeIdx);
     }
 
@@ -582,6 +676,10 @@ public abstract class PgSqlVisitor<T> {
         return visitChildren(cst, nodeIdx);
     }
 
+    public T visitConstraintName(CstArray cst, int nodeIdx) {
+        return visitChildren(cst, nodeIdx);
+    }
+
     public T visitTableConstraintElem(CstArray cst, int nodeIdx) {
         return visitChildren(cst, nodeIdx);
     }
@@ -598,7 +696,27 @@ public abstract class PgSqlVisitor<T> {
         return visitChildren(cst, nodeIdx);
     }
 
+    public T visitNoInheritClause(CstArray cst, int nodeIdx) {
+        return visitChildren(cst, nodeIdx);
+    }
+
     public T visitForeignKeyTblConstraint(CstArray cst, int nodeIdx) {
+        return visitChildren(cst, nodeIdx);
+    }
+
+    public T visitFkActions(CstArray cst, int nodeIdx) {
+        return visitChildren(cst, nodeIdx);
+    }
+
+    public T visitFkAction(CstArray cst, int nodeIdx) {
+        return visitChildren(cst, nodeIdx);
+    }
+
+    public T visitFkActionType(CstArray cst, int nodeIdx) {
+        return visitChildren(cst, nodeIdx);
+    }
+
+    public T visitFkDeferrable(CstArray cst, int nodeIdx) {
         return visitChildren(cst, nodeIdx);
     }
 
@@ -611,6 +729,10 @@ public abstract class PgSqlVisitor<T> {
     }
 
     public T visitExcludeElement(CstArray cst, int nodeIdx) {
+        return visitChildren(cst, nodeIdx);
+    }
+
+    public T visitNullsDistinct(CstArray cst, int nodeIdx) {
         return visitChildren(cst, nodeIdx);
     }
 
@@ -634,6 +756,10 @@ public abstract class PgSqlVisitor<T> {
         return visitChildren(cst, nodeIdx);
     }
 
+    public T visitUsingIndexTblspace(CstArray cst, int nodeIdx) {
+        return visitChildren(cst, nodeIdx);
+    }
+
     public T visitTableOptions(CstArray cst, int nodeIdx) {
         return visitChildren(cst, nodeIdx);
     }
@@ -651,6 +777,10 @@ public abstract class PgSqlVisitor<T> {
     }
 
     public T visitInheritsClause(CstArray cst, int nodeIdx) {
+        return visitChildren(cst, nodeIdx);
+    }
+
+    public T visitTablespaceClause(CstArray cst, int nodeIdx) {
         return visitChildren(cst, nodeIdx);
     }
 
@@ -678,6 +808,10 @@ public abstract class PgSqlVisitor<T> {
         return visitChildren(cst, nodeIdx);
     }
 
+    public T visitDropColumnAction(CstArray cst, int nodeIdx) {
+        return visitChildren(cst, nodeIdx);
+    }
+
     public T visitAlterColumnAction(CstArray cst, int nodeIdx) {
         return visitChildren(cst, nodeIdx);
     }
@@ -694,7 +828,23 @@ public abstract class PgSqlVisitor<T> {
         return visitChildren(cst, nodeIdx);
     }
 
+    public T visitDropDefaultCmd(CstArray cst, int nodeIdx) {
+        return visitChildren(cst, nodeIdx);
+    }
+
+    public T visitSetNotNullCmd(CstArray cst, int nodeIdx) {
+        return visitChildren(cst, nodeIdx);
+    }
+
+    public T visitDropNotNullCmd(CstArray cst, int nodeIdx) {
+        return visitChildren(cst, nodeIdx);
+    }
+
     public T visitSetStatisticsCmd(CstArray cst, int nodeIdx) {
+        return visitChildren(cst, nodeIdx);
+    }
+
+    public T visitSetStorageCmd(CstArray cst, int nodeIdx) {
         return visitChildren(cst, nodeIdx);
     }
 
@@ -702,7 +852,43 @@ public abstract class PgSqlVisitor<T> {
         return visitChildren(cst, nodeIdx);
     }
 
+    public T visitDropIdentityCmd(CstArray cst, int nodeIdx) {
+        return visitChildren(cst, nodeIdx);
+    }
+
     public T visitAddConstraintAction(CstArray cst, int nodeIdx) {
+        return visitChildren(cst, nodeIdx);
+    }
+
+    public T visitDropConstraintAction(CstArray cst, int nodeIdx) {
+        return visitChildren(cst, nodeIdx);
+    }
+
+    public T visitValidateConstraintAction(CstArray cst, int nodeIdx) {
+        return visitChildren(cst, nodeIdx);
+    }
+
+    public T visitRenameConstraintAction(CstArray cst, int nodeIdx) {
+        return visitChildren(cst, nodeIdx);
+    }
+
+    public T visitNotValidClause(CstArray cst, int nodeIdx) {
+        return visitChildren(cst, nodeIdx);
+    }
+
+    public T visitAlterOwnerAction(CstArray cst, int nodeIdx) {
+        return visitChildren(cst, nodeIdx);
+    }
+
+    public T visitRenameAction(CstArray cst, int nodeIdx) {
+        return visitChildren(cst, nodeIdx);
+    }
+
+    public T visitSetSchemaAction(CstArray cst, int nodeIdx) {
+        return visitChildren(cst, nodeIdx);
+    }
+
+    public T visitSetTablespaceAction(CstArray cst, int nodeIdx) {
         return visitChildren(cst, nodeIdx);
     }
 
@@ -726,6 +912,10 @@ public abstract class PgSqlVisitor<T> {
         return visitChildren(cst, nodeIdx);
     }
 
+    public T visitUsingClause(CstArray cst, int nodeIdx) {
+        return visitChildren(cst, nodeIdx);
+    }
+
     public T visitIndexElemList(CstArray cst, int nodeIdx) {
         return visitChildren(cst, nodeIdx);
     }
@@ -735,6 +925,10 @@ public abstract class PgSqlVisitor<T> {
     }
 
     public T visitOpClass(CstArray cst, int nodeIdx) {
+        return visitChildren(cst, nodeIdx);
+    }
+
+    public T visitNullsOrder(CstArray cst, int nodeIdx) {
         return visitChildren(cst, nodeIdx);
     }
 
@@ -802,11 +996,23 @@ public abstract class PgSqlVisitor<T> {
         return visitChildren(cst, nodeIdx);
     }
 
+    public T visitCreateSchemaStmt(CstArray cst, int nodeIdx) {
+        return visitChildren(cst, nodeIdx);
+    }
+
+    public T visitAlterSchemaStmt(CstArray cst, int nodeIdx) {
+        return visitChildren(cst, nodeIdx);
+    }
+
     public T visitDropSchemaStmt(CstArray cst, int nodeIdx) {
         return visitChildren(cst, nodeIdx);
     }
 
     public T visitCreateViewStmt(CstArray cst, int nodeIdx) {
+        return visitChildren(cst, nodeIdx);
+    }
+
+    public T visitCheckOptionClause(CstArray cst, int nodeIdx) {
         return visitChildren(cst, nodeIdx);
     }
 
@@ -879,6 +1085,10 @@ public abstract class PgSqlVisitor<T> {
     }
 
     public T visitGranteeList(CstArray cst, int nodeIdx) {
+        return visitChildren(cst, nodeIdx);
+    }
+
+    public T visitGrantee(CstArray cst, int nodeIdx) {
         return visitChildren(cst, nodeIdx);
     }
 
@@ -962,6 +1172,10 @@ public abstract class PgSqlVisitor<T> {
         return visitChildren(cst, nodeIdx);
     }
 
+    public T visitWithOrdinality(CstArray cst, int nodeIdx) {
+        return visitChildren(cst, nodeIdx);
+    }
+
     public T visitAlias(CstArray cst, int nodeIdx) {
         return visitChildren(cst, nodeIdx);
     }
@@ -975,6 +1189,10 @@ public abstract class PgSqlVisitor<T> {
     }
 
     public T visitJoinClause(CstArray cst, int nodeIdx) {
+        return visitChildren(cst, nodeIdx);
+    }
+
+    public T visitJoinType(CstArray cst, int nodeIdx) {
         return visitChildren(cst, nodeIdx);
     }
 
@@ -1031,6 +1249,10 @@ public abstract class PgSqlVisitor<T> {
     }
 
     public T visitFrameBound(CstArray cst, int nodeIdx) {
+        return visitChildren(cst, nodeIdx);
+    }
+
+    public T visitFrameExclusion(CstArray cst, int nodeIdx) {
         return visitChildren(cst, nodeIdx);
     }
 
@@ -1334,6 +1556,10 @@ public abstract class PgSqlVisitor<T> {
         return visitChildren(cst, nodeIdx);
     }
 
+    public T visitSpecialFuncExpr(CstArray cst, int nodeIdx) {
+        return visitChildren(cst, nodeIdx);
+    }
+
     public T visitFuncCall(CstArray cst, int nodeIdx) {
         return visitChildren(cst, nodeIdx);
     }
@@ -1402,6 +1628,10 @@ public abstract class PgSqlVisitor<T> {
         return visitChildren(cst, nodeIdx);
     }
 
+    public T visitIntervalField(CstArray cst, int nodeIdx) {
+        return visitChildren(cst, nodeIdx);
+    }
+
     public T visitBitType(CstArray cst, int nodeIdx) {
         return visitChildren(cst, nodeIdx);
     }
@@ -1411,6 +1641,10 @@ public abstract class PgSqlVisitor<T> {
     }
 
     public T visitQualifiedTypeName(CstArray cst, int nodeIdx) {
+        return visitChildren(cst, nodeIdx);
+    }
+
+    public T visitColLabel(CstArray cst, int nodeIdx) {
         return visitChildren(cst, nodeIdx);
     }
 

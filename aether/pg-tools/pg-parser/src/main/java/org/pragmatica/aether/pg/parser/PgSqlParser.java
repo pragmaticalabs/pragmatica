@@ -1,4 +1,4 @@
-// peglib-generator: 0.7.2
+// peglib-generator: 0.7.2 (build:bb4663171d97)
 package org.pragmatica.aether.pg.parser;
 
 import java.util.ArrayList;
@@ -13,7 +13,7 @@ import org.pragmatica.peg.diagnostic.Diagnostic;
 
 public final class PgSqlParser {
 
-    private static final String[] RULE_TABLE = {"Input", "Statement", "DdlStatement", "CreateStatement", "AlterStatement", "DropStatement", "DmlStatement", "CreateTableStmt", "TableElementList", "TableElement", "ColumnDef", "ColConstraint", "ColConstraintElem", "CheckColConstraint", "DefaultClause", "CollateClause", "ReferencesClause", "GeneratedClause", "IdentityClause", "IdentitySpec", "TableConstraint", "TableConstraintElem", "PrimaryKeyTblConstraint", "UniqueTblConstraint", "CheckTblConstraint", "ForeignKeyTblConstraint", "ExcludeTblConstraint", "ExcludeElementList", "ExcludeElement", "IndexOptions", "IncludeClause", "WithStorageParams", "StorageParamList", "StorageParam", "TableOptions", "PartitionByClause", "PartitionKeyList", "PartitionKey", "InheritsClause", "ColumnList", "QualifiedNameList", "AlterTableStmt", "AlterTableActions", "AlterTableAction", "AddColumnAction", "AlterColumnAction", "AlterColumnCmd", "SetDataTypeCmd", "SetDefaultCmd", "SetStatisticsCmd", "AddIdentityCmd", "AddConstraintAction", "AttachPartition", "DetachPartition", "ForValuesClause", "DropTableStmt", "CreateIndexStmt", "IndexElemList", "IndexElem", "OpClass", "AlterIndexStmt", "DropIndexStmt", "CreateSequenceStmt", "AlterSequenceStmt", "DropSequenceStmt", "SequenceOptions", "SequenceOption", "CreateTypeStmt", "EnumLabelList", "CompositeFieldList", "CompositeField", "RangeOptionList", "RangeOption", "DomainConstraint", "AlterTypeStmt", "DropTypeStmt", "DropSchemaStmt", "CreateViewStmt", "CreateMatViewStmt", "AlterViewStmt", "DropViewStmt", "DropMatViewStmt", "CreateExtensionStmt", "ExtensionOptions", "ExtensionOption", "DropExtensionStmt", "CommentStatement", "CommentTarget", "FuncArgTypes", "FuncArgType", "GrantStatement", "RevokeStatement", "PrivilegeList", "Privilege", "GrantTarget", "GranteeList", "AlterDefaultPrivilegesPassthrough", "CreateFunctionPassthrough", "CreateTriggerPassthrough", "DropFunctionPassthrough", "DropTriggerPassthrough", "SelectStmt", "SelectCore", "SetQuantifier", "TargetList", "TargetElem", "StarExpr", "IntoClause", "FromClause", "FromList", "TableRef", "TableRefBase", "BaseTableRef", "SubqueryRef", "LateralRef", "FuncTableRef", "Alias", "TablesampleClause", "JoinExpr", "JoinClause", "JoinQual", "WhereClause", "GroupByClause", "GroupByList", "GroupByElem", "HavingClause", "WindowClause", "WindowDefList", "WindowDef", "WindowSpec", "PartitionClause", "FrameClause", "FrameExtent", "FrameBound", "WithClause", "CteList", "CteDef", "SetOp", "OrderByClause", "OrderByList", "OrderByItem", "LimitClause", "OffsetClause", "FetchClause", "InsertStmt", "InsertSource", "ValuesClause", "ValueRowList", "ExprOrDefaultList", "ExprOrDefault", "OnConflictClause", "ConflictTarget", "ConflictAction", "ReturningClause", "UpdateStmt", "UpdateSetList", "UpdateSetItem", "DeleteStmt", "UsingClauseDelete", "PassthroughStatement", "TransactionStmt", "SessionStmt", "UtilityStmt", "TruncateStmt", "ExplainStmt", "CopyStmt", "RefreshMatViewStmt", "RestOfStatement", "Expr", "OrExpr", "AndExpr", "NotExpr", "CompareExpr", "IsExpr", "IsClause", "InExpr", "BetweenExpr", "LikeExpr", "SimilarToExpr", "IsDistinctFrom", "AddExpr", "MulExpr", "UnaryExpr", "ExponentExpr", "ConcatExpr", "ArrayExpr", "TypeCastExpr", "PostfixExpr", "PostfixOp", "PrimaryExpr", "ColRef", "ExistsExpr", "SubqueryExpr", "AnyAllExpr", "RowExpr", "ArrayExprConstructor", "CastExpr", "CaseExpr", "WhenClause", "ElseClause", "CoalesceExpr", "NullIfExpr", "GreatestLeastExpr", "ExtractExpr", "PositionExpr", "SubstringExpr", "TrimExpr", "OverlayExpr", "TypedLiteral", "FuncCall", "FuncCallArgs", "FuncName", "FilterClause", "OverClause", "WithinGroupClause", "ExprList", "Operator", "DataType", "ArrayType", "ScalarType", "NumericType", "CharType", "DateTimeType", "TimestampType", "TimeType", "IntervalType", "BitType", "TypeModifiers", "QualifiedTypeName", "QualifiedName", "Literal", "SignedNumericLiteral", "StringLiteral", "DollarString", "ClauseKeyword", "ERROR", "_ROOT"};
+    private static final String[] RULE_TABLE = {"Input", "Statement", "DdlStatement", "CreateStatement", "AlterStatement", "DropStatement", "DmlStatement", "CreateTableStmt", "IfNotExists", "IfExists", "TableElementList", "TableElement", "ColumnDef", "ColConstraint", "ColConstraintElem", "NotNullConstraint", "PrimaryKeyColConstraint", "CheckColConstraint", "DefaultClause", "CollateClause", "ReferencesClause", "GeneratedClause", "IdentityClause", "IdentitySpec", "TableConstraint", "ConstraintName", "TableConstraintElem", "PrimaryKeyTblConstraint", "UniqueTblConstraint", "CheckTblConstraint", "NoInheritClause", "ForeignKeyTblConstraint", "FkActions", "FkAction", "FkActionType", "FkDeferrable", "ExcludeTblConstraint", "ExcludeElementList", "ExcludeElement", "NullsDistinct", "IndexOptions", "IncludeClause", "WithStorageParams", "StorageParamList", "StorageParam", "UsingIndexTblspace", "TableOptions", "PartitionByClause", "PartitionKeyList", "PartitionKey", "InheritsClause", "TablespaceClause", "ColumnList", "QualifiedNameList", "AlterTableStmt", "AlterTableActions", "AlterTableAction", "AddColumnAction", "DropColumnAction", "AlterColumnAction", "AlterColumnCmd", "SetDataTypeCmd", "SetDefaultCmd", "DropDefaultCmd", "SetNotNullCmd", "DropNotNullCmd", "SetStatisticsCmd", "SetStorageCmd", "AddIdentityCmd", "DropIdentityCmd", "AddConstraintAction", "DropConstraintAction", "ValidateConstraintAction", "RenameConstraintAction", "NotValidClause", "AlterOwnerAction", "RenameAction", "SetSchemaAction", "SetTablespaceAction", "AttachPartition", "DetachPartition", "ForValuesClause", "DropTableStmt", "CreateIndexStmt", "UsingClause", "IndexElemList", "IndexElem", "OpClass", "NullsOrder", "AlterIndexStmt", "DropIndexStmt", "CreateSequenceStmt", "AlterSequenceStmt", "DropSequenceStmt", "SequenceOptions", "SequenceOption", "CreateTypeStmt", "EnumLabelList", "CompositeFieldList", "CompositeField", "RangeOptionList", "RangeOption", "DomainConstraint", "AlterTypeStmt", "DropTypeStmt", "CreateSchemaStmt", "AlterSchemaStmt", "DropSchemaStmt", "CreateViewStmt", "CheckOptionClause", "CreateMatViewStmt", "AlterViewStmt", "DropViewStmt", "DropMatViewStmt", "CreateExtensionStmt", "ExtensionOptions", "ExtensionOption", "DropExtensionStmt", "CommentStatement", "CommentTarget", "FuncArgTypes", "FuncArgType", "GrantStatement", "RevokeStatement", "PrivilegeList", "Privilege", "GrantTarget", "GranteeList", "Grantee", "AlterDefaultPrivilegesPassthrough", "CreateFunctionPassthrough", "CreateTriggerPassthrough", "DropFunctionPassthrough", "DropTriggerPassthrough", "SelectStmt", "SelectCore", "SetQuantifier", "TargetList", "TargetElem", "StarExpr", "IntoClause", "FromClause", "FromList", "TableRef", "TableRefBase", "BaseTableRef", "SubqueryRef", "LateralRef", "FuncTableRef", "WithOrdinality", "Alias", "TablesampleClause", "JoinExpr", "JoinClause", "JoinType", "JoinQual", "WhereClause", "GroupByClause", "GroupByList", "GroupByElem", "HavingClause", "WindowClause", "WindowDefList", "WindowDef", "WindowSpec", "PartitionClause", "FrameClause", "FrameExtent", "FrameBound", "FrameExclusion", "WithClause", "CteList", "CteDef", "SetOp", "OrderByClause", "OrderByList", "OrderByItem", "LimitClause", "OffsetClause", "FetchClause", "InsertStmt", "InsertSource", "ValuesClause", "ValueRowList", "ExprOrDefaultList", "ExprOrDefault", "OnConflictClause", "ConflictTarget", "ConflictAction", "ReturningClause", "UpdateStmt", "UpdateSetList", "UpdateSetItem", "DeleteStmt", "UsingClauseDelete", "PassthroughStatement", "TransactionStmt", "SessionStmt", "UtilityStmt", "TruncateStmt", "ExplainStmt", "CopyStmt", "RefreshMatViewStmt", "RestOfStatement", "Expr", "OrExpr", "AndExpr", "NotExpr", "CompareExpr", "IsExpr", "IsClause", "InExpr", "BetweenExpr", "LikeExpr", "SimilarToExpr", "IsDistinctFrom", "AddExpr", "MulExpr", "UnaryExpr", "ExponentExpr", "ConcatExpr", "ArrayExpr", "TypeCastExpr", "PostfixExpr", "PostfixOp", "PrimaryExpr", "ColRef", "ExistsExpr", "SubqueryExpr", "AnyAllExpr", "RowExpr", "ArrayExprConstructor", "CastExpr", "CaseExpr", "WhenClause", "ElseClause", "CoalesceExpr", "NullIfExpr", "GreatestLeastExpr", "ExtractExpr", "PositionExpr", "SubstringExpr", "TrimExpr", "OverlayExpr", "TypedLiteral", "SpecialFuncExpr", "FuncCall", "FuncCallArgs", "FuncName", "FilterClause", "OverClause", "WithinGroupClause", "ExprList", "Operator", "DataType", "ArrayType", "ScalarType", "NumericType", "CharType", "DateTimeType", "TimestampType", "TimeType", "IntervalType", "IntervalField", "BitType", "TypeModifiers", "QualifiedTypeName", "ColLabel", "QualifiedName", "Literal", "SignedNumericLiteral", "StringLiteral", "DollarString", "ClauseKeyword", "ERROR", "_ROOT"};
 
     private static final int RULE_Input_KIND = 0;
     private static final int RULE_Statement_KIND = 1;
@@ -23,594 +23,631 @@ public final class PgSqlParser {
     private static final int RULE_DropStatement_KIND = 5;
     private static final int RULE_DmlStatement_KIND = 6;
     private static final int RULE_CreateTableStmt_KIND = 7;
-    private static final int RULE_TableElementList_KIND = 8;
-    private static final int RULE_TableElement_KIND = 9;
-    private static final int RULE_ColumnDef_KIND = 10;
-    private static final int RULE_ColConstraint_KIND = 11;
-    private static final int RULE_ColConstraintElem_KIND = 12;
-    private static final int RULE_CheckColConstraint_KIND = 13;
-    private static final int RULE_DefaultClause_KIND = 14;
-    private static final int RULE_CollateClause_KIND = 15;
-    private static final int RULE_ReferencesClause_KIND = 16;
-    private static final int RULE_GeneratedClause_KIND = 17;
-    private static final int RULE_IdentityClause_KIND = 18;
-    private static final int RULE_IdentitySpec_KIND = 19;
-    private static final int RULE_TableConstraint_KIND = 20;
-    private static final int RULE_TableConstraintElem_KIND = 21;
-    private static final int RULE_PrimaryKeyTblConstraint_KIND = 22;
-    private static final int RULE_UniqueTblConstraint_KIND = 23;
-    private static final int RULE_CheckTblConstraint_KIND = 24;
-    private static final int RULE_ForeignKeyTblConstraint_KIND = 25;
-    private static final int RULE_ExcludeTblConstraint_KIND = 26;
-    private static final int RULE_ExcludeElementList_KIND = 27;
-    private static final int RULE_ExcludeElement_KIND = 28;
-    private static final int RULE_IndexOptions_KIND = 29;
-    private static final int RULE_IncludeClause_KIND = 30;
-    private static final int RULE_WithStorageParams_KIND = 31;
-    private static final int RULE_StorageParamList_KIND = 32;
-    private static final int RULE_StorageParam_KIND = 33;
-    private static final int RULE_TableOptions_KIND = 34;
-    private static final int RULE_PartitionByClause_KIND = 35;
-    private static final int RULE_PartitionKeyList_KIND = 36;
-    private static final int RULE_PartitionKey_KIND = 37;
-    private static final int RULE_InheritsClause_KIND = 38;
-    private static final int RULE_ColumnList_KIND = 39;
-    private static final int RULE_QualifiedNameList_KIND = 40;
-    private static final int RULE_AlterTableStmt_KIND = 41;
-    private static final int RULE_AlterTableActions_KIND = 42;
-    private static final int RULE_AlterTableAction_KIND = 43;
-    private static final int RULE_AddColumnAction_KIND = 44;
-    private static final int RULE_AlterColumnAction_KIND = 45;
-    private static final int RULE_AlterColumnCmd_KIND = 46;
-    private static final int RULE_SetDataTypeCmd_KIND = 47;
-    private static final int RULE_SetDefaultCmd_KIND = 48;
-    private static final int RULE_SetStatisticsCmd_KIND = 49;
-    private static final int RULE_AddIdentityCmd_KIND = 50;
-    private static final int RULE_AddConstraintAction_KIND = 51;
-    private static final int RULE_AttachPartition_KIND = 52;
-    private static final int RULE_DetachPartition_KIND = 53;
-    private static final int RULE_ForValuesClause_KIND = 54;
-    private static final int RULE_DropTableStmt_KIND = 55;
-    private static final int RULE_CreateIndexStmt_KIND = 56;
-    private static final int RULE_IndexElemList_KIND = 57;
-    private static final int RULE_IndexElem_KIND = 58;
-    private static final int RULE_OpClass_KIND = 59;
-    private static final int RULE_AlterIndexStmt_KIND = 60;
-    private static final int RULE_DropIndexStmt_KIND = 61;
-    private static final int RULE_CreateSequenceStmt_KIND = 62;
-    private static final int RULE_AlterSequenceStmt_KIND = 63;
-    private static final int RULE_DropSequenceStmt_KIND = 64;
-    private static final int RULE_SequenceOptions_KIND = 65;
-    private static final int RULE_SequenceOption_KIND = 66;
-    private static final int RULE_CreateTypeStmt_KIND = 67;
-    private static final int RULE_EnumLabelList_KIND = 68;
-    private static final int RULE_CompositeFieldList_KIND = 69;
-    private static final int RULE_CompositeField_KIND = 70;
-    private static final int RULE_RangeOptionList_KIND = 71;
-    private static final int RULE_RangeOption_KIND = 72;
-    private static final int RULE_DomainConstraint_KIND = 73;
-    private static final int RULE_AlterTypeStmt_KIND = 74;
-    private static final int RULE_DropTypeStmt_KIND = 75;
-    private static final int RULE_DropSchemaStmt_KIND = 76;
-    private static final int RULE_CreateViewStmt_KIND = 77;
-    private static final int RULE_CreateMatViewStmt_KIND = 78;
-    private static final int RULE_AlterViewStmt_KIND = 79;
-    private static final int RULE_DropViewStmt_KIND = 80;
-    private static final int RULE_DropMatViewStmt_KIND = 81;
-    private static final int RULE_CreateExtensionStmt_KIND = 82;
-    private static final int RULE_ExtensionOptions_KIND = 83;
-    private static final int RULE_ExtensionOption_KIND = 84;
-    private static final int RULE_DropExtensionStmt_KIND = 85;
-    private static final int RULE_CommentStatement_KIND = 86;
-    private static final int RULE_CommentTarget_KIND = 87;
-    private static final int RULE_FuncArgTypes_KIND = 88;
-    private static final int RULE_FuncArgType_KIND = 89;
-    private static final int RULE_GrantStatement_KIND = 90;
-    private static final int RULE_RevokeStatement_KIND = 91;
-    private static final int RULE_PrivilegeList_KIND = 92;
-    private static final int RULE_Privilege_KIND = 93;
-    private static final int RULE_GrantTarget_KIND = 94;
-    private static final int RULE_GranteeList_KIND = 95;
-    private static final int RULE_AlterDefaultPrivilegesPassthrough_KIND = 96;
-    private static final int RULE_CreateFunctionPassthrough_KIND = 97;
-    private static final int RULE_CreateTriggerPassthrough_KIND = 98;
-    private static final int RULE_DropFunctionPassthrough_KIND = 99;
-    private static final int RULE_DropTriggerPassthrough_KIND = 100;
-    private static final int RULE_SelectStmt_KIND = 101;
-    private static final int RULE_SelectCore_KIND = 102;
-    private static final int RULE_SetQuantifier_KIND = 103;
-    private static final int RULE_TargetList_KIND = 104;
-    private static final int RULE_TargetElem_KIND = 105;
-    private static final int RULE_StarExpr_KIND = 106;
-    private static final int RULE_IntoClause_KIND = 107;
-    private static final int RULE_FromClause_KIND = 108;
-    private static final int RULE_FromList_KIND = 109;
-    private static final int RULE_TableRef_KIND = 110;
-    private static final int RULE_TableRefBase_KIND = 111;
-    private static final int RULE_BaseTableRef_KIND = 112;
-    private static final int RULE_SubqueryRef_KIND = 113;
-    private static final int RULE_LateralRef_KIND = 114;
-    private static final int RULE_FuncTableRef_KIND = 115;
-    private static final int RULE_Alias_KIND = 116;
-    private static final int RULE_TablesampleClause_KIND = 117;
-    private static final int RULE_JoinExpr_KIND = 118;
-    private static final int RULE_JoinClause_KIND = 119;
-    private static final int RULE_JoinQual_KIND = 120;
-    private static final int RULE_WhereClause_KIND = 121;
-    private static final int RULE_GroupByClause_KIND = 122;
-    private static final int RULE_GroupByList_KIND = 123;
-    private static final int RULE_GroupByElem_KIND = 124;
-    private static final int RULE_HavingClause_KIND = 125;
-    private static final int RULE_WindowClause_KIND = 126;
-    private static final int RULE_WindowDefList_KIND = 127;
-    private static final int RULE_WindowDef_KIND = 128;
-    private static final int RULE_WindowSpec_KIND = 129;
-    private static final int RULE_PartitionClause_KIND = 130;
-    private static final int RULE_FrameClause_KIND = 131;
-    private static final int RULE_FrameExtent_KIND = 132;
-    private static final int RULE_FrameBound_KIND = 133;
-    private static final int RULE_WithClause_KIND = 134;
-    private static final int RULE_CteList_KIND = 135;
-    private static final int RULE_CteDef_KIND = 136;
-    private static final int RULE_SetOp_KIND = 137;
-    private static final int RULE_OrderByClause_KIND = 138;
-    private static final int RULE_OrderByList_KIND = 139;
-    private static final int RULE_OrderByItem_KIND = 140;
-    private static final int RULE_LimitClause_KIND = 141;
-    private static final int RULE_OffsetClause_KIND = 142;
-    private static final int RULE_FetchClause_KIND = 143;
-    private static final int RULE_InsertStmt_KIND = 144;
-    private static final int RULE_InsertSource_KIND = 145;
-    private static final int RULE_ValuesClause_KIND = 146;
-    private static final int RULE_ValueRowList_KIND = 147;
-    private static final int RULE_ExprOrDefaultList_KIND = 148;
-    private static final int RULE_ExprOrDefault_KIND = 149;
-    private static final int RULE_OnConflictClause_KIND = 150;
-    private static final int RULE_ConflictTarget_KIND = 151;
-    private static final int RULE_ConflictAction_KIND = 152;
-    private static final int RULE_ReturningClause_KIND = 153;
-    private static final int RULE_UpdateStmt_KIND = 154;
-    private static final int RULE_UpdateSetList_KIND = 155;
-    private static final int RULE_UpdateSetItem_KIND = 156;
-    private static final int RULE_DeleteStmt_KIND = 157;
-    private static final int RULE_UsingClauseDelete_KIND = 158;
-    private static final int RULE_PassthroughStatement_KIND = 159;
-    private static final int RULE_TransactionStmt_KIND = 160;
-    private static final int RULE_SessionStmt_KIND = 161;
-    private static final int RULE_UtilityStmt_KIND = 162;
-    private static final int RULE_TruncateStmt_KIND = 163;
-    private static final int RULE_ExplainStmt_KIND = 164;
-    private static final int RULE_CopyStmt_KIND = 165;
-    private static final int RULE_RefreshMatViewStmt_KIND = 166;
-    private static final int RULE_RestOfStatement_KIND = 167;
-    private static final int RULE_Expr_KIND = 168;
-    private static final int RULE_OrExpr_KIND = 169;
-    private static final int RULE_AndExpr_KIND = 170;
-    private static final int RULE_NotExpr_KIND = 171;
-    private static final int RULE_CompareExpr_KIND = 172;
-    private static final int RULE_IsExpr_KIND = 173;
-    private static final int RULE_IsClause_KIND = 174;
-    private static final int RULE_InExpr_KIND = 175;
-    private static final int RULE_BetweenExpr_KIND = 176;
-    private static final int RULE_LikeExpr_KIND = 177;
-    private static final int RULE_SimilarToExpr_KIND = 178;
-    private static final int RULE_IsDistinctFrom_KIND = 179;
-    private static final int RULE_AddExpr_KIND = 180;
-    private static final int RULE_MulExpr_KIND = 181;
-    private static final int RULE_UnaryExpr_KIND = 182;
-    private static final int RULE_ExponentExpr_KIND = 183;
-    private static final int RULE_ConcatExpr_KIND = 184;
-    private static final int RULE_ArrayExpr_KIND = 185;
-    private static final int RULE_TypeCastExpr_KIND = 186;
-    private static final int RULE_PostfixExpr_KIND = 187;
-    private static final int RULE_PostfixOp_KIND = 188;
-    private static final int RULE_PrimaryExpr_KIND = 189;
-    private static final int RULE_ColRef_KIND = 190;
-    private static final int RULE_ExistsExpr_KIND = 191;
-    private static final int RULE_SubqueryExpr_KIND = 192;
-    private static final int RULE_AnyAllExpr_KIND = 193;
-    private static final int RULE_RowExpr_KIND = 194;
-    private static final int RULE_ArrayExprConstructor_KIND = 195;
-    private static final int RULE_CastExpr_KIND = 196;
-    private static final int RULE_CaseExpr_KIND = 197;
-    private static final int RULE_WhenClause_KIND = 198;
-    private static final int RULE_ElseClause_KIND = 199;
-    private static final int RULE_CoalesceExpr_KIND = 200;
-    private static final int RULE_NullIfExpr_KIND = 201;
-    private static final int RULE_GreatestLeastExpr_KIND = 202;
-    private static final int RULE_ExtractExpr_KIND = 203;
-    private static final int RULE_PositionExpr_KIND = 204;
-    private static final int RULE_SubstringExpr_KIND = 205;
-    private static final int RULE_TrimExpr_KIND = 206;
-    private static final int RULE_OverlayExpr_KIND = 207;
-    private static final int RULE_TypedLiteral_KIND = 208;
-    private static final int RULE_FuncCall_KIND = 209;
-    private static final int RULE_FuncCallArgs_KIND = 210;
-    private static final int RULE_FuncName_KIND = 211;
-    private static final int RULE_FilterClause_KIND = 212;
-    private static final int RULE_OverClause_KIND = 213;
-    private static final int RULE_WithinGroupClause_KIND = 214;
-    private static final int RULE_ExprList_KIND = 215;
-    private static final int RULE_Operator_KIND = 216;
-    private static final int RULE_DataType_KIND = 217;
-    private static final int RULE_ArrayType_KIND = 218;
-    private static final int RULE_ScalarType_KIND = 219;
-    private static final int RULE_NumericType_KIND = 220;
-    private static final int RULE_CharType_KIND = 221;
-    private static final int RULE_DateTimeType_KIND = 222;
-    private static final int RULE_TimestampType_KIND = 223;
-    private static final int RULE_TimeType_KIND = 224;
-    private static final int RULE_IntervalType_KIND = 225;
-    private static final int RULE_BitType_KIND = 226;
-    private static final int RULE_TypeModifiers_KIND = 227;
-    private static final int RULE_QualifiedTypeName_KIND = 228;
-    private static final int RULE_QualifiedName_KIND = 229;
-    private static final int RULE_Literal_KIND = 230;
-    private static final int RULE_SignedNumericLiteral_KIND = 231;
-    private static final int RULE_StringLiteral_KIND = 232;
-    private static final int RULE_DollarString_KIND = 233;
-    private static final int RULE_ClauseKeyword_KIND = 234;
-    private static final int RULE_ERROR_KIND = 235;
-    private static final int RULE_ROOT_KIND = 236;
+    private static final int RULE_IfNotExists_KIND = 8;
+    private static final int RULE_IfExists_KIND = 9;
+    private static final int RULE_TableElementList_KIND = 10;
+    private static final int RULE_TableElement_KIND = 11;
+    private static final int RULE_ColumnDef_KIND = 12;
+    private static final int RULE_ColConstraint_KIND = 13;
+    private static final int RULE_ColConstraintElem_KIND = 14;
+    private static final int RULE_NotNullConstraint_KIND = 15;
+    private static final int RULE_PrimaryKeyColConstraint_KIND = 16;
+    private static final int RULE_CheckColConstraint_KIND = 17;
+    private static final int RULE_DefaultClause_KIND = 18;
+    private static final int RULE_CollateClause_KIND = 19;
+    private static final int RULE_ReferencesClause_KIND = 20;
+    private static final int RULE_GeneratedClause_KIND = 21;
+    private static final int RULE_IdentityClause_KIND = 22;
+    private static final int RULE_IdentitySpec_KIND = 23;
+    private static final int RULE_TableConstraint_KIND = 24;
+    private static final int RULE_ConstraintName_KIND = 25;
+    private static final int RULE_TableConstraintElem_KIND = 26;
+    private static final int RULE_PrimaryKeyTblConstraint_KIND = 27;
+    private static final int RULE_UniqueTblConstraint_KIND = 28;
+    private static final int RULE_CheckTblConstraint_KIND = 29;
+    private static final int RULE_NoInheritClause_KIND = 30;
+    private static final int RULE_ForeignKeyTblConstraint_KIND = 31;
+    private static final int RULE_FkActions_KIND = 32;
+    private static final int RULE_FkAction_KIND = 33;
+    private static final int RULE_FkActionType_KIND = 34;
+    private static final int RULE_FkDeferrable_KIND = 35;
+    private static final int RULE_ExcludeTblConstraint_KIND = 36;
+    private static final int RULE_ExcludeElementList_KIND = 37;
+    private static final int RULE_ExcludeElement_KIND = 38;
+    private static final int RULE_NullsDistinct_KIND = 39;
+    private static final int RULE_IndexOptions_KIND = 40;
+    private static final int RULE_IncludeClause_KIND = 41;
+    private static final int RULE_WithStorageParams_KIND = 42;
+    private static final int RULE_StorageParamList_KIND = 43;
+    private static final int RULE_StorageParam_KIND = 44;
+    private static final int RULE_UsingIndexTblspace_KIND = 45;
+    private static final int RULE_TableOptions_KIND = 46;
+    private static final int RULE_PartitionByClause_KIND = 47;
+    private static final int RULE_PartitionKeyList_KIND = 48;
+    private static final int RULE_PartitionKey_KIND = 49;
+    private static final int RULE_InheritsClause_KIND = 50;
+    private static final int RULE_TablespaceClause_KIND = 51;
+    private static final int RULE_ColumnList_KIND = 52;
+    private static final int RULE_QualifiedNameList_KIND = 53;
+    private static final int RULE_AlterTableStmt_KIND = 54;
+    private static final int RULE_AlterTableActions_KIND = 55;
+    private static final int RULE_AlterTableAction_KIND = 56;
+    private static final int RULE_AddColumnAction_KIND = 57;
+    private static final int RULE_DropColumnAction_KIND = 58;
+    private static final int RULE_AlterColumnAction_KIND = 59;
+    private static final int RULE_AlterColumnCmd_KIND = 60;
+    private static final int RULE_SetDataTypeCmd_KIND = 61;
+    private static final int RULE_SetDefaultCmd_KIND = 62;
+    private static final int RULE_DropDefaultCmd_KIND = 63;
+    private static final int RULE_SetNotNullCmd_KIND = 64;
+    private static final int RULE_DropNotNullCmd_KIND = 65;
+    private static final int RULE_SetStatisticsCmd_KIND = 66;
+    private static final int RULE_SetStorageCmd_KIND = 67;
+    private static final int RULE_AddIdentityCmd_KIND = 68;
+    private static final int RULE_DropIdentityCmd_KIND = 69;
+    private static final int RULE_AddConstraintAction_KIND = 70;
+    private static final int RULE_DropConstraintAction_KIND = 71;
+    private static final int RULE_ValidateConstraintAction_KIND = 72;
+    private static final int RULE_RenameConstraintAction_KIND = 73;
+    private static final int RULE_NotValidClause_KIND = 74;
+    private static final int RULE_AlterOwnerAction_KIND = 75;
+    private static final int RULE_RenameAction_KIND = 76;
+    private static final int RULE_SetSchemaAction_KIND = 77;
+    private static final int RULE_SetTablespaceAction_KIND = 78;
+    private static final int RULE_AttachPartition_KIND = 79;
+    private static final int RULE_DetachPartition_KIND = 80;
+    private static final int RULE_ForValuesClause_KIND = 81;
+    private static final int RULE_DropTableStmt_KIND = 82;
+    private static final int RULE_CreateIndexStmt_KIND = 83;
+    private static final int RULE_UsingClause_KIND = 84;
+    private static final int RULE_IndexElemList_KIND = 85;
+    private static final int RULE_IndexElem_KIND = 86;
+    private static final int RULE_OpClass_KIND = 87;
+    private static final int RULE_NullsOrder_KIND = 88;
+    private static final int RULE_AlterIndexStmt_KIND = 89;
+    private static final int RULE_DropIndexStmt_KIND = 90;
+    private static final int RULE_CreateSequenceStmt_KIND = 91;
+    private static final int RULE_AlterSequenceStmt_KIND = 92;
+    private static final int RULE_DropSequenceStmt_KIND = 93;
+    private static final int RULE_SequenceOptions_KIND = 94;
+    private static final int RULE_SequenceOption_KIND = 95;
+    private static final int RULE_CreateTypeStmt_KIND = 96;
+    private static final int RULE_EnumLabelList_KIND = 97;
+    private static final int RULE_CompositeFieldList_KIND = 98;
+    private static final int RULE_CompositeField_KIND = 99;
+    private static final int RULE_RangeOptionList_KIND = 100;
+    private static final int RULE_RangeOption_KIND = 101;
+    private static final int RULE_DomainConstraint_KIND = 102;
+    private static final int RULE_AlterTypeStmt_KIND = 103;
+    private static final int RULE_DropTypeStmt_KIND = 104;
+    private static final int RULE_CreateSchemaStmt_KIND = 105;
+    private static final int RULE_AlterSchemaStmt_KIND = 106;
+    private static final int RULE_DropSchemaStmt_KIND = 107;
+    private static final int RULE_CreateViewStmt_KIND = 108;
+    private static final int RULE_CheckOptionClause_KIND = 109;
+    private static final int RULE_CreateMatViewStmt_KIND = 110;
+    private static final int RULE_AlterViewStmt_KIND = 111;
+    private static final int RULE_DropViewStmt_KIND = 112;
+    private static final int RULE_DropMatViewStmt_KIND = 113;
+    private static final int RULE_CreateExtensionStmt_KIND = 114;
+    private static final int RULE_ExtensionOptions_KIND = 115;
+    private static final int RULE_ExtensionOption_KIND = 116;
+    private static final int RULE_DropExtensionStmt_KIND = 117;
+    private static final int RULE_CommentStatement_KIND = 118;
+    private static final int RULE_CommentTarget_KIND = 119;
+    private static final int RULE_FuncArgTypes_KIND = 120;
+    private static final int RULE_FuncArgType_KIND = 121;
+    private static final int RULE_GrantStatement_KIND = 122;
+    private static final int RULE_RevokeStatement_KIND = 123;
+    private static final int RULE_PrivilegeList_KIND = 124;
+    private static final int RULE_Privilege_KIND = 125;
+    private static final int RULE_GrantTarget_KIND = 126;
+    private static final int RULE_GranteeList_KIND = 127;
+    private static final int RULE_Grantee_KIND = 128;
+    private static final int RULE_AlterDefaultPrivilegesPassthrough_KIND = 129;
+    private static final int RULE_CreateFunctionPassthrough_KIND = 130;
+    private static final int RULE_CreateTriggerPassthrough_KIND = 131;
+    private static final int RULE_DropFunctionPassthrough_KIND = 132;
+    private static final int RULE_DropTriggerPassthrough_KIND = 133;
+    private static final int RULE_SelectStmt_KIND = 134;
+    private static final int RULE_SelectCore_KIND = 135;
+    private static final int RULE_SetQuantifier_KIND = 136;
+    private static final int RULE_TargetList_KIND = 137;
+    private static final int RULE_TargetElem_KIND = 138;
+    private static final int RULE_StarExpr_KIND = 139;
+    private static final int RULE_IntoClause_KIND = 140;
+    private static final int RULE_FromClause_KIND = 141;
+    private static final int RULE_FromList_KIND = 142;
+    private static final int RULE_TableRef_KIND = 143;
+    private static final int RULE_TableRefBase_KIND = 144;
+    private static final int RULE_BaseTableRef_KIND = 145;
+    private static final int RULE_SubqueryRef_KIND = 146;
+    private static final int RULE_LateralRef_KIND = 147;
+    private static final int RULE_FuncTableRef_KIND = 148;
+    private static final int RULE_WithOrdinality_KIND = 149;
+    private static final int RULE_Alias_KIND = 150;
+    private static final int RULE_TablesampleClause_KIND = 151;
+    private static final int RULE_JoinExpr_KIND = 152;
+    private static final int RULE_JoinClause_KIND = 153;
+    private static final int RULE_JoinType_KIND = 154;
+    private static final int RULE_JoinQual_KIND = 155;
+    private static final int RULE_WhereClause_KIND = 156;
+    private static final int RULE_GroupByClause_KIND = 157;
+    private static final int RULE_GroupByList_KIND = 158;
+    private static final int RULE_GroupByElem_KIND = 159;
+    private static final int RULE_HavingClause_KIND = 160;
+    private static final int RULE_WindowClause_KIND = 161;
+    private static final int RULE_WindowDefList_KIND = 162;
+    private static final int RULE_WindowDef_KIND = 163;
+    private static final int RULE_WindowSpec_KIND = 164;
+    private static final int RULE_PartitionClause_KIND = 165;
+    private static final int RULE_FrameClause_KIND = 166;
+    private static final int RULE_FrameExtent_KIND = 167;
+    private static final int RULE_FrameBound_KIND = 168;
+    private static final int RULE_FrameExclusion_KIND = 169;
+    private static final int RULE_WithClause_KIND = 170;
+    private static final int RULE_CteList_KIND = 171;
+    private static final int RULE_CteDef_KIND = 172;
+    private static final int RULE_SetOp_KIND = 173;
+    private static final int RULE_OrderByClause_KIND = 174;
+    private static final int RULE_OrderByList_KIND = 175;
+    private static final int RULE_OrderByItem_KIND = 176;
+    private static final int RULE_LimitClause_KIND = 177;
+    private static final int RULE_OffsetClause_KIND = 178;
+    private static final int RULE_FetchClause_KIND = 179;
+    private static final int RULE_InsertStmt_KIND = 180;
+    private static final int RULE_InsertSource_KIND = 181;
+    private static final int RULE_ValuesClause_KIND = 182;
+    private static final int RULE_ValueRowList_KIND = 183;
+    private static final int RULE_ExprOrDefaultList_KIND = 184;
+    private static final int RULE_ExprOrDefault_KIND = 185;
+    private static final int RULE_OnConflictClause_KIND = 186;
+    private static final int RULE_ConflictTarget_KIND = 187;
+    private static final int RULE_ConflictAction_KIND = 188;
+    private static final int RULE_ReturningClause_KIND = 189;
+    private static final int RULE_UpdateStmt_KIND = 190;
+    private static final int RULE_UpdateSetList_KIND = 191;
+    private static final int RULE_UpdateSetItem_KIND = 192;
+    private static final int RULE_DeleteStmt_KIND = 193;
+    private static final int RULE_UsingClauseDelete_KIND = 194;
+    private static final int RULE_PassthroughStatement_KIND = 195;
+    private static final int RULE_TransactionStmt_KIND = 196;
+    private static final int RULE_SessionStmt_KIND = 197;
+    private static final int RULE_UtilityStmt_KIND = 198;
+    private static final int RULE_TruncateStmt_KIND = 199;
+    private static final int RULE_ExplainStmt_KIND = 200;
+    private static final int RULE_CopyStmt_KIND = 201;
+    private static final int RULE_RefreshMatViewStmt_KIND = 202;
+    private static final int RULE_RestOfStatement_KIND = 203;
+    private static final int RULE_Expr_KIND = 204;
+    private static final int RULE_OrExpr_KIND = 205;
+    private static final int RULE_AndExpr_KIND = 206;
+    private static final int RULE_NotExpr_KIND = 207;
+    private static final int RULE_CompareExpr_KIND = 208;
+    private static final int RULE_IsExpr_KIND = 209;
+    private static final int RULE_IsClause_KIND = 210;
+    private static final int RULE_InExpr_KIND = 211;
+    private static final int RULE_BetweenExpr_KIND = 212;
+    private static final int RULE_LikeExpr_KIND = 213;
+    private static final int RULE_SimilarToExpr_KIND = 214;
+    private static final int RULE_IsDistinctFrom_KIND = 215;
+    private static final int RULE_AddExpr_KIND = 216;
+    private static final int RULE_MulExpr_KIND = 217;
+    private static final int RULE_UnaryExpr_KIND = 218;
+    private static final int RULE_ExponentExpr_KIND = 219;
+    private static final int RULE_ConcatExpr_KIND = 220;
+    private static final int RULE_ArrayExpr_KIND = 221;
+    private static final int RULE_TypeCastExpr_KIND = 222;
+    private static final int RULE_PostfixExpr_KIND = 223;
+    private static final int RULE_PostfixOp_KIND = 224;
+    private static final int RULE_PrimaryExpr_KIND = 225;
+    private static final int RULE_ColRef_KIND = 226;
+    private static final int RULE_ExistsExpr_KIND = 227;
+    private static final int RULE_SubqueryExpr_KIND = 228;
+    private static final int RULE_AnyAllExpr_KIND = 229;
+    private static final int RULE_RowExpr_KIND = 230;
+    private static final int RULE_ArrayExprConstructor_KIND = 231;
+    private static final int RULE_CastExpr_KIND = 232;
+    private static final int RULE_CaseExpr_KIND = 233;
+    private static final int RULE_WhenClause_KIND = 234;
+    private static final int RULE_ElseClause_KIND = 235;
+    private static final int RULE_CoalesceExpr_KIND = 236;
+    private static final int RULE_NullIfExpr_KIND = 237;
+    private static final int RULE_GreatestLeastExpr_KIND = 238;
+    private static final int RULE_ExtractExpr_KIND = 239;
+    private static final int RULE_PositionExpr_KIND = 240;
+    private static final int RULE_SubstringExpr_KIND = 241;
+    private static final int RULE_TrimExpr_KIND = 242;
+    private static final int RULE_OverlayExpr_KIND = 243;
+    private static final int RULE_TypedLiteral_KIND = 244;
+    private static final int RULE_SpecialFuncExpr_KIND = 245;
+    private static final int RULE_FuncCall_KIND = 246;
+    private static final int RULE_FuncCallArgs_KIND = 247;
+    private static final int RULE_FuncName_KIND = 248;
+    private static final int RULE_FilterClause_KIND = 249;
+    private static final int RULE_OverClause_KIND = 250;
+    private static final int RULE_WithinGroupClause_KIND = 251;
+    private static final int RULE_ExprList_KIND = 252;
+    private static final int RULE_Operator_KIND = 253;
+    private static final int RULE_DataType_KIND = 254;
+    private static final int RULE_ArrayType_KIND = 255;
+    private static final int RULE_ScalarType_KIND = 256;
+    private static final int RULE_NumericType_KIND = 257;
+    private static final int RULE_CharType_KIND = 258;
+    private static final int RULE_DateTimeType_KIND = 259;
+    private static final int RULE_TimestampType_KIND = 260;
+    private static final int RULE_TimeType_KIND = 261;
+    private static final int RULE_IntervalType_KIND = 262;
+    private static final int RULE_IntervalField_KIND = 263;
+    private static final int RULE_BitType_KIND = 264;
+    private static final int RULE_TypeModifiers_KIND = 265;
+    private static final int RULE_QualifiedTypeName_KIND = 266;
+    private static final int RULE_ColLabel_KIND = 267;
+    private static final int RULE_QualifiedName_KIND = 268;
+    private static final int RULE_Literal_KIND = 269;
+    private static final int RULE_SignedNumericLiteral_KIND = 270;
+    private static final int RULE_StringLiteral_KIND = 271;
+    private static final int RULE_DollarString_KIND = 272;
+    private static final int RULE_ClauseKeyword_KIND = 273;
+    private static final int RULE_ERROR_KIND = 274;
+    private static final int RULE_ROOT_KIND = 275;
 
-    private static final int KIND_INLINE__SEMI = 394;
-    private static final int KIND_EMPTYSTATEMENT = 5;
-    private static final int KIND_INLINE_CREATE_CI = 456;
-    private static final int KIND_CREATESCHEMASTMT = 43;
-    private static final int KIND_INLINE_ALTER_CI = 503;
-    private static final int KIND_ALTERSCHEMASTMT = 44;
-    private static final int KIND_INLINE_DROP_CI = 504;
-    private static final int KIND_INLINE_TEMP_CI = 599;
-    private static final int KIND_INLINE_UNLOGGED_CI = 612;
-    private static final int KIND_INLINE_TABLE_CI = 492;
-    private static final int KIND_IFNOTEXISTS = 6;
-    private static final int KIND_INLINE__LPAREN = 395;
-    private static final int KIND_INLINE__RPAREN = 396;
-    private static final int KIND_INLINE__COMMA = 397;
-    private static final int KIND_COLID = 67;
-    private static final int KIND_CONSTRAINTNAME = 12;
-    private static final int KIND_NOTNULLCONSTRAINT = 8;
-    private static final int KIND_NULLCONSTRAINT = 9;
-    private static final int KIND_UNIQUECOLCONSTRAINT = 10;
-    private static final int KIND_PRIMARYKEYCOLCONSTRAINT = 11;
-    private static final int KIND_INLINE_CHECK_CI = 452;
-    private static final int KIND_INLINE_DEFAULT_CI = 464;
-    private static final int KIND_INLINE_COLLATE_CI = 453;
-    private static final int KIND_INLINE_REFERENCES_CI = 487;
-    private static final int KIND_FKACTIONS = 14;
-    private static final int KIND_INLINE_GENERATED_CI = 577;
-    private static final int KIND_INLINE_ALWAYS_CI = 578;
-    private static final int KIND_INLINE_AS_CI = 446;
-    private static final int KIND_INLINE_STORED_CI = 580;
-    private static final int KIND_INLINE_BY_CI = 551;
-    private static final int KIND_INLINE_IDENTITY_CI = 579;
-    private static final int KIND_INLINE_PRIMARY_CI = 486;
-    private static final int KIND_INLINE_KEY_CI = 517;
-    private static final int KIND_INLINE_UNIQUE_CI = 497;
-    private static final int KIND_NULLSDISTINCT = 18;
-    private static final int KIND_NOINHERITCLAUSE = 13;
-    private static final int KIND_INLINE_FOREIGN_CI = 472;
-    private static final int KIND_FKDEFERRABLE = 17;
-    private static final int KIND_INLINE_EXCLUDE_CI = 561;
-    private static final int KIND_USINGCLAUSE = 38;
-    private static final int KIND_INLINE_WITH_CI = 502;
-    private static final int KIND_USINGINDEXTBLSPACE = 19;
-    private static final int KIND_INLINE_INCLUDE_CI = 560;
-    private static final int KIND_INLINE__EQ = 398;
-    private static final int KIND_TABLESPACECLAUSE = 21;
-    private static final int KIND_INLINE_PARTITION_CI = 326;
-    private static final int KIND_PARTITIONSTRATEGY = 20;
-    private static final int KIND_INLINE_INHERITS_CI = 558;
-    private static final int KIND_IFEXISTS = 7;
-    private static final int KIND_INLINE_ONLY_CI = 411;
-    private static final int KIND_RENAMEACTION = 34;
-    private static final int KIND_SETSCHEMAACTION = 35;
-    private static final int KIND_DROPCOLUMNACTION = 22;
-    private static final int KIND_DROPCONSTRAINTACTION = 29;
-    private static final int KIND_VALIDATECONSTRAINTACTION = 30;
-    private static final int KIND_RENAMECONSTRAINTACTION = 31;
-    private static final int KIND_ALTEROWNERACTION = 33;
-    private static final int KIND_SETTABLESPACEACTION = 36;
-    private static final int KIND_INLINE_ADD_CI = 518;
-    private static final int KIND_INLINE_COLUMN_CI = 454;
-    private static final int KIND_DROPDEFAULTCMD = 24;
-    private static final int KIND_SETNOTNULLCMD = 25;
-    private static final int KIND_DROPNOTNULLCMD = 26;
-    private static final int KIND_SETSTORAGECMD = 27;
-    private static final int KIND_DROPIDENTITYCMD = 28;
-    private static final int KIND_INLINE_SET_CI = 379;
-    private static final int KIND_INLINE_DATA_CI = 609;
-    private static final int KIND_INLINE_TYPE_CI = 512;
-    private static final int KIND_INLINE_USING_CI = 499;
-    private static final int KIND_INLINE_STATISTICS_CI = 610;
-    private static final int KIND_NOTVALIDCLAUSE = 32;
-    private static final int KIND_INLINE_ATTACH_CI = 555;
-    private static final int KIND_INLINE_DETACH_CI = 556;
-    private static final int KIND_INLINE_CONCURRENTLY_CI = 418;
-    private static final int KIND_INLINE_FINALIZE_CI = 557;
-    private static final int KIND_INLINE_FOR_CI = 471;
-    private static final int KIND_INLINE_VALUES_CI = 346;
-    private static final int KIND_INLINE_IN_CI = 475;
-    private static final int KIND_INLINE_FROM_CI = 473;
-    private static final int KIND_INLINE_TO_CI = 494;
-    private static final int KIND_DROPBEHAVIOR = 23;
-    private static final int KIND_INLINE_INDEX_CI = 508;
-    private static final int KIND_INLINE_ON_CI = 392;
-    private static final int KIND_ORDERSPEC = 40;
-    private static final int KIND_NULLSORDER = 41;
-    private static final int KIND_INLINE_RENAME_CI = 519;
-    private static final int KIND_INLINE_TABLESPACE_CI = 559;
-    private static final int KIND_INLINE_SEQUENCE_CI = 511;
-    private static final int KIND_INLINE_INCREMENT_CI = 568;
-    private static final int KIND_INLINE_MINVALUE_CI = 569;
-    private static final int KIND_INLINE_MAXVALUE_CI = 570;
-    private static final int KIND_INLINE_NO_CI = 524;
-    private static final int KIND_INLINE_CYCLE_CI = 573;
-    private static final int KIND_INLINE_START_CI = 571;
-    private static final int KIND_INLINE_RESTART_CI = 575;
-    private static final int KIND_INLINE_CACHE_CI = 572;
-    private static final int KIND_INLINE_OWNED_CI = 574;
-    private static final int KIND_INLINE_NONE_CI = 576;
-    private static final int KIND_INLINE_ENUM_CI = 562;
-    private static final int KIND_INLINE_RANGE_CI = 361;
-    private static final int KIND_INLINE_VALUE_CI = 565;
-    private static final int KIND_INLINE_BEFORE_CI = 566;
-    private static final int KIND_INLINE_AFTER_CI = 567;
-    private static final int KIND_INLINE_SCHEMA_CI = 510;
-    private static final int KIND_INLINE_ATTRIBUTE_CI = 564;
-    private static final int KIND_INLINE_OR_CI = 484;
-    private static final int KIND_INLINE_REPLACE_CI = 603;
-    private static final int KIND_INLINE_RECURSIVE_CI = 602;
-    private static final int KIND_INLINE_VIEW_CI = 509;
-    private static final int KIND_CHECKOPTIONCLAUSE = 45;
-    private static final int KIND_INLINE_MATERIALIZED_CI = 601;
-    private static final int KIND_INLINE_OWNER_CI = 607;
-    private static final int KIND_INLINE_EXTENSION_CI = 516;
-    private static final int KIND_INLINE_VERSION_CI = 608;
-    private static final int KIND_INLINE_CASCADE_CI = 522;
-    private static final int KIND_INLINE_COMMENT_CI = 586;
-    private static final int KIND_INLINE_IS_CI = 527;
-    private static final int KIND_INLINE_NULL_CI = 483;
-    private static final int KIND_INLINE_CONSTRAINT_CI = 455;
-    private static final int KIND_INLINE_FUNCTION_CI = 513;
-    private static final int KIND_INLINE_OUT_CI = 645;
-    private static final int KIND_INLINE_INOUT_CI = 644;
-    private static final int KIND_INLINE_VARIADIC_CI = 500;
-    private static final int KIND_INLINE_GRANT_CI = 474;
-    private static final int KIND_INLINE_OPTION_CI = 590;
-    private static final int KIND_INLINE_REVOKE_CI = 587;
-    private static final int KIND_INLINE_ALL_CI = 440;
-    private static final int KIND_INLINE_PRIVILEGES_CI = 588;
-    private static final int KIND_INLINE_SELECT_CI = 488;
-    private static final int KIND_INLINE_INSERT_CI = 505;
-    private static final int KIND_INLINE_UPDATE_CI = 506;
-    private static final int KIND_INLINE_DELETE_CI = 507;
-    private static final int KIND_INLINE_TRUNCATE_CI = 600;
-    private static final int KIND_INLINE_TRIGGER_CI = 515;
-    private static final int KIND_INLINE_CONNECT_CI = 597;
-    private static final int KIND_INLINE_TEMPORARY_CI = 598;
-    private static final int KIND_INLINE_EXECUTE_CI = 595;
-    private static final int KIND_INLINE_USAGE_CI = 596;
-    private static final int KIND_INLINE_TABLES_CI = 591;
-    private static final int KIND_INLINE_SEQUENCES_CI = 592;
-    private static final int KIND_INLINE_FUNCTIONS_CI = 593;
-    private static final int KIND_INLINE_SCHEMAS_CI = 594;
-    private static final int KIND_GRANTEE = 46;
-    private static final int KIND_INLINE_PROCEDURE_CI = 514;
-    private static final int KIND_INLINE_AGGREGATE_CI = 646;
-    private static final int KIND_INLINE_DISTINCT_CI = 467;
-    private static final int KIND_COLLABEL = 68;
-    private static final int KIND_INLINE__DOT = 399;
-    private static final int KIND_INLINE__STAR = 400;
-    private static final int KIND_INLINE_INTO_CI = 477;
-    private static final int KIND_INLINE_LATERAL_CI = 478;
-    private static final int KIND_WITHORDINALITY = 47;
-    private static final int KIND_INLINE_TABLESAMPLE_CI = 614;
-    private static final int KIND_INLINE_NATURAL_CI = 335;
-    private static final int KIND_JOINTYPE = 48;
-    private static final int KIND_INLINE_JOIN_CI = 370;
-    private static final int KIND_INLINE_CROSS_CI = 359;
-    private static final int KIND_INLINE_WHERE_CI = 360;
-    private static final int KIND_INLINE_GROUP_CI = 353;
-    private static final int KIND_INLINE_ROLLUP_CI = 615;
-    private static final int KIND_INLINE_CUBE_CI = 616;
-    private static final int KIND_GROUPINGSETSKW = 270;
-    private static final int KIND_INLINE_HAVING_CI = 343;
-    private static final int KIND_INLINE_WINDOW_CI = 347;
-    private static final int KIND_WINDOWNAME = 49;
-    private static final int KIND_FRAMETYPE = 50;
-    private static final int KIND_FRAMEEXCLUSION = 51;
-    private static final int KIND_INLINE_BETWEEN_CI = 531;
-    private static final int KIND_INLINE_AND_CI = 443;
-    private static final int KIND_INLINE_UNBOUNDED_CI = 620;
-    private static final int KIND_INLINE_PRECEDING_CI = 617;
-    private static final int KIND_INLINE_FOLLOWING_CI = 618;
-    private static final int KIND_INLINE_CURRENT_CI = 619;
-    private static final int KIND_INLINE_ROW_CI = 545;
-    private static final int KIND_INLINE_NOT_CI = 482;
-    private static final int KIND_INLINE_UNION_CI = 356;
-    private static final int KIND_INLINE_INTERSECT_CI = 324;
-    private static final int KIND_INLINE_EXCEPT_CI = 345;
-    private static final int KIND_INLINE_ORDER_CI = 352;
-    private static final int KIND_INLINE_LIMIT_CI = 354;
-    private static final int KIND_INLINE_OFFSET_CI = 344;
-    private static final int KIND_INLINE_ROWS_CI = 373;
-    private static final int KIND_INLINE_FETCH_CI = 355;
-    private static final int KIND_INLINE_FIRST_CI = 547;
-    private static final int KIND_INLINE_NEXT_CI = 549;
-    private static final int KIND_NUMERICLITERAL = 74;
-    private static final int KIND_INLINE_TIES_CI = 550;
-    private static final int KIND_INLINE_CONFLICT_CI = 329;
-    private static final int KIND_INLINE_DO_CI = 393;
-    private static final int KIND_INLINE_NOTHING_CI = 553;
-    private static final int KIND_INLINE_RETURNING_CI = 325;
-    private static final int KIND_INLINE_BEGIN_CI = 625;
-    private static final int KIND_INLINE_COMMIT_CI = 626;
-    private static final int KIND_INLINE_ROLLBACK_CI = 627;
-    private static final int KIND_INLINE_END_CI = 469;
-    private static final int KIND_INLINE_SAVEPOINT_CI = 628;
-    private static final int KIND_INLINE_RELEASE_CI = 629;
-    private static final int KIND_INLINE_PREPARE_CI = 630;
-    private static final int KIND_INLINE_SHOW_CI = 631;
-    private static final int KIND_INLINE_RESET_CI = 632;
-    private static final int KIND_INLINE_VACUUM_CI = 633;
-    private static final int KIND_INLINE_ANALYZE_CI = 442;
-    private static final int KIND_INLINE_REINDEX_CI = 636;
-    private static final int KIND_INLINE_CLUSTER_CI = 637;
-    private static final int KIND_INLINE_NOTIFY_CI = 639;
-    private static final int KIND_INLINE_LISTEN_CI = 640;
-    private static final int KIND_INLINE_UNLISTEN_CI = 641;
-    private static final int KIND_INLINE_LOAD_CI = 642;
-    private static final int KIND_SECURITYLABELKW = 301;
-    private static final int KIND_INLINE_DEALLOCATE_CI = 643;
-    private static final int KIND_INLINE_EXPLAIN_CI = 634;
-    private static final int KIND_INLINE_COPY_CI = 635;
-    private static final int KIND_INLINE_REFRESH_CI = 638;
-    private static final int KIND_BASICSTRING = 78;
-    private static final int KIND_ESCAPESTRING = 79;
-    private static final int KIND_COMPAREOP = 52;
-    private static final int KIND_INLINE_TRUE_CI = 496;
-    private static final int KIND_INLINE_FALSE_CI = 470;
-    private static final int KIND_INLINE_UNKNOWN_CI = 541;
-    private static final int KIND_INLINE_ISNULL_CI = 542;
-    private static final int KIND_INLINE_NOTNULL_CI = 543;
-    private static final int KIND_INLINE_SYMMETRIC_CI = 491;
-    private static final int KIND_INLINE_ASYMMETRIC_CI = 448;
-    private static final int KIND_INLINE_LIKE_CI = 528;
-    private static final int KIND_INLINE_ILIKE_CI = 529;
-    private static final int KIND_INLINE_ESCAPE_CI = 544;
-    private static final int KIND_INLINE_SIMILAR_CI = 530;
-    private static final int KIND_INLINE__PLUS = 401;
-    private static final int KIND_INLINE__MINUS_GT = 380;
-    private static final int KIND_INLINE__MINUS = 402;
-    private static final int KIND_INLINE__SLASH = 403;
-    private static final int KIND_INLINE__PERCENT = 404;
-    private static final int KIND_INLINE__CARET = 405;
-    private static final int KIND_INLINE__PIPE_PIPE = 381;
-    private static final int KIND_INLINE__LBRACK = 406;
-    private static final int KIND_INLINE__COLON = 407;
-    private static final int KIND_INLINE__RBRACK = 408;
-    private static final int KIND_INLINE__COLON_COLON = 382;
-    private static final int KIND_INLINE__MINUS_GT_GT = 375;
-    private static final int KIND_INLINE__HASH_GT_GT = 376;
-    private static final int KIND_INLINE__HASH_GT = 383;
-    private static final int KIND_INLINE__AT_GT = 384;
-    private static final int KIND_INLINE__LT_AT = 385;
-    private static final int KIND_INLINE__AMP_AMP = 386;
-    private static final int KIND_PARAMREF = 55;
-    private static final int KIND_INLINE_EXISTS_CI = 521;
-    private static final int KIND_INLINE_ANY_CI = 444;
-    private static final int KIND_INLINE_SOME_CI = 490;
-    private static final int KIND_INLINE_ARRAY_CI = 445;
-    private static final int KIND_INLINE_CAST_CI = 451;
-    private static final int KIND_INLINE_CASE_CI = 450;
-    private static final int KIND_INLINE_WHEN_CI = 501;
-    private static final int KIND_INLINE_THEN_CI = 493;
-    private static final int KIND_INLINE_ELSE_CI = 468;
-    private static final int KIND_INLINE_COALESCE_CI = 532;
-    private static final int KIND_INLINE_NULLIF_CI = 533;
-    private static final int KIND_INLINE_GREATEST_CI = 534;
-    private static final int KIND_INLINE_LEAST_CI = 535;
-    private static final int KIND_INLINE_EXTRACT_CI = 536;
-    private static final int KIND_INLINE_POSITION_CI = 537;
-    private static final int KIND_INLINE_SUBSTRING_CI = 538;
-    private static final int KIND_INLINE_TRIM_CI = 539;
-    private static final int KIND_INLINE_LEADING_CI = 479;
-    private static final int KIND_INLINE_TRAILING_CI = 495;
-    private static final int KIND_INLINE_BOTH_CI = 449;
-    private static final int KIND_INLINE_OVERLAY_CI = 540;
-    private static final int KIND_INLINE_PLACING_CI = 485;
-    private static final int KIND_INLINE_FILTER_CI = 349;
-    private static final int KIND_INLINE_OVER_CI = 374;
-    private static final int KIND_INLINE_WITHIN_CI = 350;
-    private static final int KIND_INLINE__AT_AT = 387;
-    private static final int KIND_INLINE__AT_QMARK = 388;
-    private static final int KIND_INLINE__QMARK = 409;
-    private static final int KIND_INLINE__QMARK_PIPE = 389;
-    private static final int KIND_INLINE__QMARK_AMP = 390;
-    private static final int KIND_INLINE_BOOLEAN_CI = 420;
-    private static final int KIND_INLINE_BOOL_CI = 421;
-    private static final int KIND_INLINE_JSONB_CI = 422;
-    private static final int KIND_INLINE_JSON_CI = 423;
-    private static final int KIND_INLINE_UUID_CI = 424;
-    private static final int KIND_INLINE_BYTEA_CI = 425;
-    private static final int KIND_INLINE_XML_CI = 426;
-    private static final int KIND_INLINE_INET_CI = 434;
-    private static final int KIND_INLINE_CIDR_CI = 435;
-    private static final int KIND_INLINE_MACADDR8_CI = 436;
-    private static final int KIND_INLINE_MACADDR_CI = 437;
-    private static final int KIND_INLINE_MONEY_CI = 427;
-    private static final int KIND_INLINE_BIGSERIAL_CI = 428;
-    private static final int KIND_INLINE_SMALLSERIAL_CI = 429;
-    private static final int KIND_INLINE_SERIAL8_CI = 430;
-    private static final int KIND_INLINE_SERIAL4_CI = 431;
-    private static final int KIND_INLINE_SERIAL2_CI = 432;
-    private static final int KIND_INLINE_SERIAL_CI = 433;
-    private static final int KIND_INLINE_TSVECTOR_CI = 438;
-    private static final int KIND_INLINE_TSQUERY_CI = 439;
-    private static final int KIND_INLINE_DOUBLE_CI = 336;
-    private static final int KIND_INLINE_PRECISION_CI = 321;
-    private static final int KIND_INLINE_SMALLINT_CI = 327;
-    private static final int KIND_INLINE_INTEGER_CI = 330;
-    private static final int KIND_INLINE_BIGINT_CI = 337;
-    private static final int KIND_INLINE_INT8_CI = 362;
-    private static final int KIND_INLINE_INT4_CI = 363;
-    private static final int KIND_INLINE_INT2_CI = 364;
-    private static final int KIND_INLINE_INT_CI = 377;
-    private static final int KIND_INLINE_FLOAT8_CI = 338;
-    private static final int KIND_INLINE_FLOAT4_CI = 339;
-    private static final int KIND_INLINE_FLOAT_CI = 351;
-    private static final int KIND_INLINE_NUMERIC_CI = 331;
-    private static final int KIND_INLINE_DECIMAL_CI = 332;
-    private static final int KIND_INLINE_REAL_CI = 365;
-    private static final int KIND_INLINE_CHARACTER_CI = 322;
-    private static final int KIND_INLINE_VARYING_CI = 333;
-    private static final int KIND_INLINE_VARCHAR_CI = 334;
-    private static final int KIND_INLINE_CHAR_CI = 366;
-    private static final int KIND_INLINE_TEXT_CI = 367;
-    private static final int KIND_INLINE_NAME_CI = 368;
-    private static final int KIND_INLINE_CITEXT_CI = 340;
-    private static final int KIND_INLINE_DATE_CI = 419;
-    private static final int KIND_INLINE_TIMESTAMPTZ_CI = 320;
-    private static final int KIND_INLINE_TIMESTAMP_CI = 323;
-    private static final int KIND_INLINE_TIME_CI = 369;
-    private static final int KIND_INLINE_ZONE_CI = 653;
-    private static final int KIND_INLINE_WITHOUT_CI = 526;
-    private static final int KIND_INLINE_TIMETZ_CI = 341;
-    private static final int KIND_INLINE_INTERVAL_CI = 328;
-    private static final int KIND_INTERVALFIELD = 57;
-    private static final int KIND_INLINE_VARBIT_CI = 342;
-    private static final int KIND_INLINE_BIT_CI = 378;
-    private static final int KIND_BOOLEANLITERAL = 73;
-    private static final int KIND_NULLLITERAL = 72;
-    private static final int KIND_INLINE__DOLLAR_DOLLAR = 391;
-    private static final int KIND_INLINE__DOLLAR = 410;
-    private static final int KIND_INLINE_ANALYSE_CI = 441;
-    private static final int KIND_INLINE_ASC_CI = 447;
-    private static final int KIND_INLINE_CURRENT_CATALOG_CI = 457;
-    private static final int KIND_INLINE_CURRENT_DATE_CI = 458;
-    private static final int KIND_INLINE_CURRENT_ROLE_CI = 459;
-    private static final int KIND_INLINE_CURRENT_SCHEMA_CI = 460;
-    private static final int KIND_INLINE_CURRENT_TIME_CI = 461;
-    private static final int KIND_INLINE_CURRENT_TIMESTAMP_CI = 462;
-    private static final int KIND_INLINE_CURRENT_USER_CI = 463;
-    private static final int KIND_INLINE_DEFERRABLE_CI = 465;
-    private static final int KIND_INLINE_DESC_CI = 466;
-    private static final int KIND_INLINE_INITIALLY_CI = 476;
-    private static final int KIND_INLINE_LOCALTIME_CI = 480;
-    private static final int KIND_INLINE_LOCALTIMESTAMP_CI = 481;
-    private static final int KIND_INLINE_SESSION_USER_CI = 489;
-    private static final int KIND_INLINE_USER_CI = 498;
-    private static final int KIND_INLINE_INNER_CI = 357;
-    private static final int KIND_INLINE_LEFT_CI = 371;
-    private static final int KIND_INLINE_RIGHT_CI = 358;
-    private static final int KIND_INLINE_FULL_CI = 372;
-    private static final int KIND_INLINE_GROUPS_CI = 348;
+    private static final int KIND_INLINE__SEMI = 365;
+    private static final int KIND_CREATEKW = 41;
+    private static final int KIND_ALTERKW = 42;
+    private static final int KIND_DROPKW = 43;
+    private static final int KIND_TEMPKW = 211;
+    private static final int KIND_UNLOGGEDKW = 224;
+    private static final int KIND_TABLEKW = 50;
+    private static final int KIND_INLINE__LPAREN = 366;
+    private static final int KIND_INLINE__RPAREN = 367;
+    private static final int KIND_IFKW = 75;
+    private static final int KIND_NOTKW = 67;
+    private static final int KIND_EXISTSKW = 76;
+    private static final int KIND_INLINE__COMMA = 368;
+    private static final int KIND_COLID = 28;
+    private static final int KIND_CONCURRENTLYKW = 12;
+    private static final int KIND_DATETYPE = 18;
+    private static final int KIND_UUIDTYPE = 21;
+    private static final int KIND_BYTEATYPE = 22;
+    private static final int KIND_XMLTYPE = 23;
+    private static final int KIND_MONEYTYPE = 24;
+    private static final int KIND_INSERTKW = 45;
+    private static final int KIND_UPDATEKW = 46;
+    private static final int KIND_DELETEKW = 47;
+    private static final int KIND_INDEXKW = 51;
+    private static final int KIND_VIEWKW = 52;
+    private static final int KIND_SCHEMAKW = 53;
+    private static final int KIND_SEQUENCEKW = 54;
+    private static final int KIND_TYPEKW = 55;
+    private static final int KIND_FUNCTIONKW = 56;
+    private static final int KIND_PROCEDUREKW = 57;
+    private static final int KIND_TRIGGERKW = 58;
+    private static final int KIND_EXTENSIONKW = 59;
+    private static final int KIND_KEYKW = 61;
+    private static final int KIND_SETKW = 70;
+    private static final int KIND_ADDKW = 71;
+    private static final int KIND_RENAMEKW = 73;
+    private static final int KIND_CASCADEKW = 77;
+    private static final int KIND_RESTRICTKW = 78;
+    private static final int KIND_NOKW = 79;
+    private static final int KIND_ACTIONKW = 80;
+    private static final int KIND_WITHOUTKW = 84;
+    private static final int KIND_ISKW = 89;
+    private static final int KIND_LIKEKW = 90;
+    private static final int KIND_ILIKEKW = 91;
+    private static final int KIND_SIMILARKW = 92;
+    private static final int KIND_BETWEENKW = 93;
+    private static final int KIND_COALESCEKW = 100;
+    private static final int KIND_NULLIFKW = 101;
+    private static final int KIND_GREATESTKW = 102;
+    private static final int KIND_LEASTKW = 103;
+    private static final int KIND_EXTRACTKW = 104;
+    private static final int KIND_POSITIONKW = 105;
+    private static final int KIND_SUBSTRINGKW = 106;
+    private static final int KIND_TRIMKW = 107;
+    private static final int KIND_OVERLAYKW = 108;
+    private static final int KIND_UNKNOWNKW = 112;
+    private static final int KIND_ISNULLKW = 113;
+    private static final int KIND_NOTNULLKW = 114;
+    private static final int KIND_ESCAPEKW = 118;
+    private static final int KIND_ROWKW = 123;
+    private static final int KIND_ROWSKW = 124;
+    private static final int KIND_NULLSKW = 127;
+    private static final int KIND_FIRSTKW = 128;
+    private static final int KIND_LASTKW = 129;
+    private static final int KIND_NEXTKW = 131;
+    private static final int KIND_TIESKW = 132;
+    private static final int KIND_BYKW = 134;
+    private static final int KIND_JOINKW = 143;
+    private static final int KIND_CROSSKW = 144;
+    private static final int KIND_INNERKW = 145;
+    private static final int KIND_LEFTKW = 146;
+    private static final int KIND_RIGHTKW = 147;
+    private static final int KIND_FULLKW = 148;
+    private static final int KIND_OUTERKW = 149;
+    private static final int KIND_NATURALKW = 150;
+    private static final int KIND_VALUESKW = 153;
+    private static final int KIND_NOTHINGKW = 155;
+    private static final int KIND_CONFLICTKW = 156;
+    private static final int KIND_PARTITIONKW = 158;
+    private static final int KIND_RANGEKW = 159;
+    private static final int KIND_LISTKW = 160;
+    private static final int KIND_HASHKW = 161;
+    private static final int KIND_ATTACHKW = 162;
+    private static final int KIND_DETACHKW = 163;
+    private static final int KIND_FINALIZEKW = 164;
+    private static final int KIND_INHERITSKW = 166;
+    private static final int KIND_TABLESPACEKW = 167;
+    private static final int KIND_INCLUDEKW = 168;
+    private static final int KIND_EXCLUDEKW = 169;
+    private static final int KIND_ENUMKW = 170;
+    private static final int KIND_DOMAINKW = 171;
+    private static final int KIND_ATTRIBUTEKW = 172;
+    private static final int KIND_VALUEKW = 173;
+    private static final int KIND_BEFOREKW = 174;
+    private static final int KIND_AFTERKW = 175;
+    private static final int KIND_INCREMENTKW = 176;
+    private static final int KIND_MINVALUEKW = 177;
+    private static final int KIND_MAXVALUEKW = 178;
+    private static final int KIND_STARTKW = 179;
+    private static final int KIND_CACHEKW = 180;
+    private static final int KIND_CYCLEKW = 181;
+    private static final int KIND_OWNEDKW = 182;
+    private static final int KIND_RESTARTKW = 183;
+    private static final int KIND_NONEKW = 184;
+    private static final int KIND_GENERATEDKW = 185;
+    private static final int KIND_ALWAYSKW = 186;
+    private static final int KIND_IDENTITYKW = 187;
+    private static final int KIND_STOREDKW = 188;
+    private static final int KIND_DEFERREDKW = 192;
+    private static final int KIND_IMMEDIATEKW = 193;
+    private static final int KIND_VALIDKW = 194;
+    private static final int KIND_VALIDATEKW = 195;
+    private static final int KIND_INHERITKW = 196;
+    private static final int KIND_COMMENTKW = 197;
+    private static final int KIND_REVOKEKW = 199;
+    private static final int KIND_PRIVILEGESKW = 200;
+    private static final int KIND_PUBLICKW = 201;
+    private static final int KIND_OPTIONKW = 202;
+    private static final int KIND_TABLESKW = 203;
+    private static final int KIND_SEQUENCESKW = 204;
+    private static final int KIND_FUNCTIONSKW = 205;
+    private static final int KIND_SCHEMASKW = 206;
+    private static final int KIND_EXECUTEKW = 207;
+    private static final int KIND_USAGEKW = 208;
+    private static final int KIND_CONNECTKW = 209;
+    private static final int KIND_TEMPORARYKW = 210;
+    private static final int KIND_TRUNCATEKW = 212;
+    private static final int KIND_MATERIALIZEDKW = 213;
+    private static final int KIND_RECURSIVEKW = 214;
+    private static final int KIND_REPLACEKW = 215;
+    private static final int KIND_CASCADEDKW = 216;
+    private static final int KIND_LOCALKW = 217;
+    private static final int KIND_AUTHORIZATIONKW = 218;
+    private static final int KIND_OWNERKW = 219;
+    private static final int KIND_VERSIONKW = 220;
+    private static final int KIND_DATAKW = 221;
+    private static final int KIND_STATISTICSKW = 222;
+    private static final int KIND_STORAGEKW = 223;
+    private static final int KIND_FILTERKW = 225;
+    private static final int KIND_OVERKW = 226;
+    private static final int KIND_WITHINKW = 227;
+    private static final int KIND_ORDINALITYKW = 228;
+    private static final int KIND_TABLESAMPLEKW = 229;
+    private static final int KIND_GROUPINGSETSKW = 230;
+    private static final int KIND_ROLLUPKW = 231;
+    private static final int KIND_CUBEKW = 232;
+    private static final int KIND_PRECEDINGKW = 233;
+    private static final int KIND_FOLLOWINGKW = 234;
+    private static final int KIND_CURRENTKW = 235;
+    private static final int KIND_UNBOUNDEDKW = 236;
+    private static final int KIND_GROUPSKW = 237;
+    private static final int KIND_OTHERSKW = 238;
+    private static final int KIND_SEARCHKW = 239;
+    private static final int KIND_BREADTHKW = 240;
+    private static final int KIND_DEPTHKW = 241;
+    private static final int KIND_BEGINKW = 242;
+    private static final int KIND_COMMITKW = 243;
+    private static final int KIND_ROLLBACKKW = 244;
+    private static final int KIND_SAVEPOINTKW = 245;
+    private static final int KIND_RELEASEKW = 246;
+    private static final int KIND_PREPAREKW = 247;
+    private static final int KIND_SHOWKW = 248;
+    private static final int KIND_RESETKW = 249;
+    private static final int KIND_VACUUMKW = 250;
+    private static final int KIND_EXPLAINKW = 252;
+    private static final int KIND_COPYKW = 253;
+    private static final int KIND_REINDEXKW = 254;
+    private static final int KIND_CLUSTERKW = 255;
+    private static final int KIND_REFRESHKW = 256;
+    private static final int KIND_NOTIFYKW = 257;
+    private static final int KIND_LISTENKW = 258;
+    private static final int KIND_UNLISTENKW = 259;
+    private static final int KIND_LOADKW = 260;
+    private static final int KIND_SECURITYLABELKW = 261;
+    private static final int KIND_DEALLOCATEKW = 262;
+    private static final int KIND_INOUTKW = 263;
+    private static final int KIND_OUTKW = 264;
+    private static final int KIND_AGGREGATEKW = 266;
+    private static final int KIND_YEARKW = 267;
+    private static final int KIND_MONTHKW = 268;
+    private static final int KIND_DAYKW = 269;
+    private static final int KIND_HOURKW = 270;
+    private static final int KIND_MINUTEKW = 271;
+    private static final int KIND_SECONDKW = 272;
+    private static final int KIND_TIMEKW = 273;
+    private static final int KIND_ZONEKW = 274;
+    private static final int KIND_INLINE_TIMESTAMPTZ_CI = 289;
+    private static final int KIND_INLINE_PRECISION_CI = 291;
+    private static final int KIND_INLINE_CHARACTER_CI = 292;
+    private static final int KIND_INLINE_TIMESTAMP_CI = 293;
+    private static final int KIND_INLINE_SMALLINT_CI = 297;
+    private static final int KIND_INLINE_INTERVAL_CI = 298;
+    private static final int KIND_INLINE_INTEGER_CI = 300;
+    private static final int KIND_INLINE_NUMERIC_CI = 301;
+    private static final int KIND_INLINE_DECIMAL_CI = 302;
+    private static final int KIND_INLINE_VARYING_CI = 303;
+    private static final int KIND_INLINE_VARCHAR_CI = 304;
+    private static final int KIND_INLINE_DOUBLE_CI = 306;
+    private static final int KIND_INLINE_BIGINT_CI = 307;
+    private static final int KIND_INLINE_FLOAT8_CI = 308;
+    private static final int KIND_INLINE_FLOAT4_CI = 309;
+    private static final int KIND_INLINE_CITEXT_CI = 310;
+    private static final int KIND_INLINE_TIMETZ_CI = 311;
+    private static final int KIND_INLINE_VARBIT_CI = 312;
+    private static final int KIND_INLINE_FLOAT_CI = 321;
+    private static final int KIND_INLINE_INT8_CI = 333;
+    private static final int KIND_INLINE_INT4_CI = 334;
+    private static final int KIND_INLINE_INT2_CI = 335;
+    private static final int KIND_INLINE_REAL_CI = 336;
+    private static final int KIND_INLINE_CHAR_CI = 337;
+    private static final int KIND_INLINE_TEXT_CI = 338;
+    private static final int KIND_INLINE_NAME_CI = 339;
+    private static final int KIND_INLINE_INT_CI = 348;
+    private static final int KIND_INLINE_BIT_CI = 349;
+    private static final int KIND_INLINE__DOLLAR_DOLLAR = 362;
+    private static final int KIND_INLINE__DOLLAR = 381;
+    private static final int KIND_INLINE_BTREE_CI = 382;
+    private static final int KIND_INLINE_GIN_CI = 383;
+    private static final int KIND_INLINE_GIST_CI = 384;
+    private static final int KIND_INLINE_BRIN_CI = 385;
+    private static final int KIND_INLINE_SPGIST_CI = 386;
+    private static final int KIND_INLINE_BOOLEAN_CI = 393;
+    private static final int KIND_INLINE_BOOL_CI = 394;
+    private static final int KIND_INLINE_JSONB_CI = 395;
+    private static final int KIND_INLINE_JSON_CI = 396;
+    private static final int KIND_INLINE_BIGSERIAL_CI = 397;
+    private static final int KIND_INLINE_SMALLSERIAL_CI = 398;
+    private static final int KIND_INLINE_SERIAL8_CI = 399;
+    private static final int KIND_INLINE_SERIAL4_CI = 400;
+    private static final int KIND_INLINE_SERIAL2_CI = 401;
+    private static final int KIND_INLINE_SERIAL_CI = 402;
+    private static final int KIND_INLINE_INET_CI = 403;
+    private static final int KIND_INLINE_CIDR_CI = 404;
+    private static final int KIND_INLINE_MACADDR8_CI = 405;
+    private static final int KIND_INLINE_MACADDR_CI = 406;
+    private static final int KIND_INLINE_TSVECTOR_CI = 407;
+    private static final int KIND_INLINE_TSQUERY_CI = 408;
+    private static final int KIND_NULLCONSTRAINT = 5;
+    private static final int KIND_UNIQUECOLCONSTRAINT = 6;
+    private static final int KIND_PRIMARYKW = 60;
+    private static final int KIND_CHECKKW = 66;
+    private static final int KIND_DEFAULTKW = 69;
+    private static final int KIND_COLLATEKW = 189;
+    private static final int KIND_REFERENCESKW = 63;
+    private static final int KIND_ASKW = 82;
+    private static final int KIND_CONSTRAINTKW = 64;
+    private static final int KIND_FOREIGNKW = 62;
+    private static final int KIND_ONKW = 81;
+    private static final int KIND_DEFERRABLEKW = 190;
+    private static final int KIND_INITIALLYKW = 191;
+    private static final int KIND_WITHKW = 83;
+    private static final int KIND_DISTINCTKW = 115;
+    private static final int KIND_INLINE__EQ = 369;
+    private static final int KIND_USINGKW = 85;
+    private static final int KIND_ONLYKW = 9;
+    private static final int KIND_COLUMNKW = 72;
+    private static final int KIND_TOKW = 74;
+    private static final int KIND_FORKW = 165;
+    private static final int KIND_INKW = 86;
+    private static final int KIND_FROMKW = 48;
+    private static final int KIND_ASCKW = 125;
+    private static final int KIND_DESCKW = 126;
+    private static final int KIND_ORKW = 88;
+    private static final int KIND_VARIADICKW = 265;
+    private static final int KIND_GRANTKW = 198;
+    private static final int KIND_ALLKW = 119;
+    private static final int KIND_SELECTKW = 44;
+    private static final int KIND_GROUPKW = 135;
+    private static final int KIND_INLINE__DOT = 370;
+    private static final int KIND_INLINE__STAR = 371;
+    private static final int KIND_INTOKW = 152;
+    private static final int KIND_LATERALKW = 151;
+    private static final int KIND_WHEREKW = 49;
+    private static final int KIND_HAVINGKW = 136;
+    private static final int KIND_WINDOWKW = 139;
+    private static final int KIND_ORDERKW = 133;
+    private static final int KIND_ANDKW = 87;
+    private static final int KIND_UNIONKW = 140;
+    private static final int KIND_INTERSECTKW = 141;
+    private static final int KIND_EXCEPTKW = 142;
+    private static final int KIND_LIMITKW = 137;
+    private static final int KIND_OFFSETKW = 138;
+    private static final int KIND_FETCHKW = 130;
+    private static final int KIND_NUMERICLITERAL = 34;
+    private static final int KIND_DOKW = 154;
+    private static final int KIND_RETURNINGKW = 157;
+    private static final int KIND_ENDKW = 98;
+    private static final int KIND_ANALYZEKW = 251;
+    private static final int KIND_BASICSTRING = 38;
+    private static final int KIND_ESCAPESTRING = 39;
+    private static final int KIND_INLINE__LT_EQ = 387;
+    private static final int KIND_INLINE__GT_EQ = 388;
+    private static final int KIND_INLINE__LT_GT = 389;
+    private static final int KIND_INLINE__BANG_EQ = 390;
+    private static final int KIND_INLINE__LT = 391;
+    private static final int KIND_INLINE__GT = 392;
+    private static final int KIND_TRUEKW = 110;
+    private static final int KIND_FALSEKW = 111;
+    private static final int KIND_SYMMETRICKW = 116;
+    private static final int KIND_ASYMMETRICKW = 117;
+    private static final int KIND_INLINE__PLUS = 372;
+    private static final int KIND_INLINE__MINUS_GT = 351;
+    private static final int KIND_INLINE__MINUS = 373;
+    private static final int KIND_INLINE__SLASH = 374;
+    private static final int KIND_INLINE__PERCENT = 375;
+    private static final int KIND_INLINE__CARET = 376;
+    private static final int KIND_INLINE__PIPE_PIPE = 352;
+    private static final int KIND_INLINE__LBRACK = 377;
+    private static final int KIND_INLINE__COLON = 378;
+    private static final int KIND_INLINE__RBRACK = 379;
+    private static final int KIND_INLINE__COLON_COLON = 353;
+    private static final int KIND_INLINE__MINUS_GT_GT = 346;
+    private static final int KIND_INLINE__HASH_GT_GT = 347;
+    private static final int KIND_INLINE__HASH_GT = 354;
+    private static final int KIND_INLINE__AT_GT = 355;
+    private static final int KIND_INLINE__LT_AT = 356;
+    private static final int KIND_INLINE__AMP_AMP = 357;
+    private static final int KIND_PARAMREF = 17;
+    private static final int KIND_ANYKW = 120;
+    private static final int KIND_SOMEKW = 121;
+    private static final int KIND_ARRAYKW = 122;
+    private static final int KIND_CASTKW = 99;
+    private static final int KIND_CASEKW = 94;
+    private static final int KIND_WHENKW = 95;
+    private static final int KIND_THENKW = 96;
+    private static final int KIND_ELSEKW = 97;
+    private static final int KIND_LEADINGKW = 275;
+    private static final int KIND_TRAILINGKW = 276;
+    private static final int KIND_BOTHKW = 277;
+    private static final int KIND_PLACINGKW = 109;
+    private static final int KIND_INLINE_CURRENT_TIMESTAMP_CI = 280;
+    private static final int KIND_INLINE_CURRENT_TIME_CI = 284;
+    private static final int KIND_INLINE_LOCALTIMESTAMP_CI = 282;
+    private static final int KIND_INLINE_LOCALTIME_CI = 290;
+    private static final int KIND_INLINE_CURRENT_CATALOG_CI = 281;
+    private static final int KIND_INLINE_CURRENT_DATE_CI = 285;
+    private static final int KIND_INLINE_CURRENT_ROLE_CI = 286;
+    private static final int KIND_INLINE_CURRENT_SCHEMA_CI = 283;
+    private static final int KIND_INLINE_CURRENT_USER_CI = 287;
+    private static final int KIND_INLINE_SESSION_USER_CI = 288;
+    private static final int KIND_INLINE_USER_CI = 332;
+    private static final int KIND_INLINE__AT_AT = 358;
+    private static final int KIND_INLINE__AT_QMARK = 359;
+    private static final int KIND_INLINE__QMARK = 380;
+    private static final int KIND_INLINE__QMARK_PIPE = 360;
+    private static final int KIND_INLINE__QMARK_AMP = 361;
+    private static final int KIND_INLINE_ANALYSE_CI = 409;
 
-    private static final int[] DEFAULT_SYNC = new int[] {394, 396, 397, 408};
+    private static final int[] DEFAULT_SYNC = new int[] {365, 367, 368, 379};
 
-    private static final int[] ALIAS_SERIALTYPE = new int[] {428, 429, 430, 431, 432, 433};
-    private static final int[] ALIAS_RESERVEDKEYWORD = new int[] {324, 325, 343, 344, 345, 347, 352, 353, 354, 355, 356, 360, 392, 393, 411, 440, 441, 442, 443, 444, 445, 446, 447, 448, 449, 450, 451, 452, 453, 454, 455, 456, 457, 458, 459, 460, 461, 462, 463, 464, 465, 466, 467, 468, 469, 470, 471, 472, 473, 474, 475, 476, 477, 478, 479, 480, 481, 482, 483, 484, 485, 486, 487, 488, 489, 490, 491, 492, 493, 494, 495, 496, 497, 498, 499, 500, 501, 502};
+    private static final int[] ALIAS_INDEXMETHOD = new int[] {161, 382, 383, 384, 385, 386};
+    private static final int[] ALIAS_COMPAREOP = new int[] {369, 387, 388, 389, 390, 391, 392};
+    private static final int[] ALIAS_SERIALTYPE = new int[] {397, 398, 399, 400, 401, 402};
+    private static final int[] ALIAS_RESERVEDKEYWORD = new int[] {5, 6, 9, 41, 44, 48, 49, 50, 60, 62, 63, 64, 66, 67, 69, 72, 74, 81, 82, 83, 85, 86, 87, 88, 94, 95, 96, 97, 98, 99, 109, 110, 111, 115, 116, 117, 119, 120, 121, 122, 125, 126, 130, 133, 135, 136, 137, 138, 139, 140, 141, 142, 151, 152, 154, 157, 165, 189, 190, 191, 198, 251, 265, 275, 276, 277, 280, 281, 282, 283, 284, 285, 286, 287, 288, 290, 332, 409};
+
+    private static final int[] IDFALL_COLID = new int[] {12, 18, 21, 22, 23, 24, 28, 42, 43, 45, 46, 47, 51, 52, 53, 54, 55, 56, 57, 58, 59, 61, 70, 71, 73, 75, 76, 77, 78, 79, 80, 84, 89, 90, 91, 92, 93, 100, 101, 102, 103, 104, 105, 106, 107, 108, 112, 113, 114, 118, 123, 124, 127, 128, 129, 131, 132, 134, 143, 144, 145, 146, 147, 148, 149, 150, 153, 155, 156, 158, 159, 160, 161, 162, 163, 164, 166, 167, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 187, 188, 192, 193, 194, 195, 196, 197, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 223, 224, 225, 226, 227, 228, 229, 230, 231, 232, 233, 234, 235, 236, 237, 238, 239, 240, 241, 242, 243, 244, 245, 246, 247, 248, 249, 250, 252, 253, 254, 255, 256, 257, 258, 259, 260, 261, 262, 263, 264, 266, 267, 268, 269, 270, 271, 272, 273, 274, 289, 291, 292, 293, 297, 298, 300, 301, 302, 303, 304, 306, 307, 308, 309, 310, 311, 312, 321, 333, 334, 335, 336, 337, 338, 339, 348, 349, 362, 381, 382, 383, 384, 385, 386, 393, 394, 395, 396, 397, 398, 399, 400, 401, 402, 403, 404, 405, 406, 407, 408};
 
     private final TokenArray tokens;
     private final CstArrayBuilder cst;
@@ -691,11 +728,15 @@ public final class PgSqlParser {
             case RULE_DropStatement_KIND: return p.parseDropStatement(parent);
             case RULE_DmlStatement_KIND: return p.parseDmlStatement(parent);
             case RULE_CreateTableStmt_KIND: return p.parseCreateTableStmt(parent);
+            case RULE_IfNotExists_KIND: return p.parseIfNotExists(parent);
+            case RULE_IfExists_KIND: return p.parseIfExists(parent);
             case RULE_TableElementList_KIND: return p.parseTableElementList(parent);
             case RULE_TableElement_KIND: return p.parseTableElement(parent);
             case RULE_ColumnDef_KIND: return p.parseColumnDef(parent);
             case RULE_ColConstraint_KIND: return p.parseColConstraint(parent);
             case RULE_ColConstraintElem_KIND: return p.parseColConstraintElem(parent);
+            case RULE_NotNullConstraint_KIND: return p.parseNotNullConstraint(parent);
+            case RULE_PrimaryKeyColConstraint_KIND: return p.parsePrimaryKeyColConstraint(parent);
             case RULE_CheckColConstraint_KIND: return p.parseCheckColConstraint(parent);
             case RULE_DefaultClause_KIND: return p.parseDefaultClause(parent);
             case RULE_CollateClause_KIND: return p.parseCollateClause(parent);
@@ -704,45 +745,70 @@ public final class PgSqlParser {
             case RULE_IdentityClause_KIND: return p.parseIdentityClause(parent);
             case RULE_IdentitySpec_KIND: return p.parseIdentitySpec(parent);
             case RULE_TableConstraint_KIND: return p.parseTableConstraint(parent);
+            case RULE_ConstraintName_KIND: return p.parseConstraintName(parent);
             case RULE_TableConstraintElem_KIND: return p.parseTableConstraintElem(parent);
             case RULE_PrimaryKeyTblConstraint_KIND: return p.parsePrimaryKeyTblConstraint(parent);
             case RULE_UniqueTblConstraint_KIND: return p.parseUniqueTblConstraint(parent);
             case RULE_CheckTblConstraint_KIND: return p.parseCheckTblConstraint(parent);
+            case RULE_NoInheritClause_KIND: return p.parseNoInheritClause(parent);
             case RULE_ForeignKeyTblConstraint_KIND: return p.parseForeignKeyTblConstraint(parent);
+            case RULE_FkActions_KIND: return p.parseFkActions(parent);
+            case RULE_FkAction_KIND: return p.parseFkAction(parent);
+            case RULE_FkActionType_KIND: return p.parseFkActionType(parent);
+            case RULE_FkDeferrable_KIND: return p.parseFkDeferrable(parent);
             case RULE_ExcludeTblConstraint_KIND: return p.parseExcludeTblConstraint(parent);
             case RULE_ExcludeElementList_KIND: return p.parseExcludeElementList(parent);
             case RULE_ExcludeElement_KIND: return p.parseExcludeElement(parent);
+            case RULE_NullsDistinct_KIND: return p.parseNullsDistinct(parent);
             case RULE_IndexOptions_KIND: return p.parseIndexOptions(parent);
             case RULE_IncludeClause_KIND: return p.parseIncludeClause(parent);
             case RULE_WithStorageParams_KIND: return p.parseWithStorageParams(parent);
             case RULE_StorageParamList_KIND: return p.parseStorageParamList(parent);
             case RULE_StorageParam_KIND: return p.parseStorageParam(parent);
+            case RULE_UsingIndexTblspace_KIND: return p.parseUsingIndexTblspace(parent);
             case RULE_TableOptions_KIND: return p.parseTableOptions(parent);
             case RULE_PartitionByClause_KIND: return p.parsePartitionByClause(parent);
             case RULE_PartitionKeyList_KIND: return p.parsePartitionKeyList(parent);
             case RULE_PartitionKey_KIND: return p.parsePartitionKey(parent);
             case RULE_InheritsClause_KIND: return p.parseInheritsClause(parent);
+            case RULE_TablespaceClause_KIND: return p.parseTablespaceClause(parent);
             case RULE_ColumnList_KIND: return p.parseColumnList(parent);
             case RULE_QualifiedNameList_KIND: return p.parseQualifiedNameList(parent);
             case RULE_AlterTableStmt_KIND: return p.parseAlterTableStmt(parent);
             case RULE_AlterTableActions_KIND: return p.parseAlterTableActions(parent);
             case RULE_AlterTableAction_KIND: return p.parseAlterTableAction(parent);
             case RULE_AddColumnAction_KIND: return p.parseAddColumnAction(parent);
+            case RULE_DropColumnAction_KIND: return p.parseDropColumnAction(parent);
             case RULE_AlterColumnAction_KIND: return p.parseAlterColumnAction(parent);
             case RULE_AlterColumnCmd_KIND: return p.parseAlterColumnCmd(parent);
             case RULE_SetDataTypeCmd_KIND: return p.parseSetDataTypeCmd(parent);
             case RULE_SetDefaultCmd_KIND: return p.parseSetDefaultCmd(parent);
+            case RULE_DropDefaultCmd_KIND: return p.parseDropDefaultCmd(parent);
+            case RULE_SetNotNullCmd_KIND: return p.parseSetNotNullCmd(parent);
+            case RULE_DropNotNullCmd_KIND: return p.parseDropNotNullCmd(parent);
             case RULE_SetStatisticsCmd_KIND: return p.parseSetStatisticsCmd(parent);
+            case RULE_SetStorageCmd_KIND: return p.parseSetStorageCmd(parent);
             case RULE_AddIdentityCmd_KIND: return p.parseAddIdentityCmd(parent);
+            case RULE_DropIdentityCmd_KIND: return p.parseDropIdentityCmd(parent);
             case RULE_AddConstraintAction_KIND: return p.parseAddConstraintAction(parent);
+            case RULE_DropConstraintAction_KIND: return p.parseDropConstraintAction(parent);
+            case RULE_ValidateConstraintAction_KIND: return p.parseValidateConstraintAction(parent);
+            case RULE_RenameConstraintAction_KIND: return p.parseRenameConstraintAction(parent);
+            case RULE_NotValidClause_KIND: return p.parseNotValidClause(parent);
+            case RULE_AlterOwnerAction_KIND: return p.parseAlterOwnerAction(parent);
+            case RULE_RenameAction_KIND: return p.parseRenameAction(parent);
+            case RULE_SetSchemaAction_KIND: return p.parseSetSchemaAction(parent);
+            case RULE_SetTablespaceAction_KIND: return p.parseSetTablespaceAction(parent);
             case RULE_AttachPartition_KIND: return p.parseAttachPartition(parent);
             case RULE_DetachPartition_KIND: return p.parseDetachPartition(parent);
             case RULE_ForValuesClause_KIND: return p.parseForValuesClause(parent);
             case RULE_DropTableStmt_KIND: return p.parseDropTableStmt(parent);
             case RULE_CreateIndexStmt_KIND: return p.parseCreateIndexStmt(parent);
+            case RULE_UsingClause_KIND: return p.parseUsingClause(parent);
             case RULE_IndexElemList_KIND: return p.parseIndexElemList(parent);
             case RULE_IndexElem_KIND: return p.parseIndexElem(parent);
             case RULE_OpClass_KIND: return p.parseOpClass(parent);
+            case RULE_NullsOrder_KIND: return p.parseNullsOrder(parent);
             case RULE_AlterIndexStmt_KIND: return p.parseAlterIndexStmt(parent);
             case RULE_DropIndexStmt_KIND: return p.parseDropIndexStmt(parent);
             case RULE_CreateSequenceStmt_KIND: return p.parseCreateSequenceStmt(parent);
@@ -759,8 +825,11 @@ public final class PgSqlParser {
             case RULE_DomainConstraint_KIND: return p.parseDomainConstraint(parent);
             case RULE_AlterTypeStmt_KIND: return p.parseAlterTypeStmt(parent);
             case RULE_DropTypeStmt_KIND: return p.parseDropTypeStmt(parent);
+            case RULE_CreateSchemaStmt_KIND: return p.parseCreateSchemaStmt(parent);
+            case RULE_AlterSchemaStmt_KIND: return p.parseAlterSchemaStmt(parent);
             case RULE_DropSchemaStmt_KIND: return p.parseDropSchemaStmt(parent);
             case RULE_CreateViewStmt_KIND: return p.parseCreateViewStmt(parent);
+            case RULE_CheckOptionClause_KIND: return p.parseCheckOptionClause(parent);
             case RULE_CreateMatViewStmt_KIND: return p.parseCreateMatViewStmt(parent);
             case RULE_AlterViewStmt_KIND: return p.parseAlterViewStmt(parent);
             case RULE_DropViewStmt_KIND: return p.parseDropViewStmt(parent);
@@ -779,6 +848,7 @@ public final class PgSqlParser {
             case RULE_Privilege_KIND: return p.parsePrivilege(parent);
             case RULE_GrantTarget_KIND: return p.parseGrantTarget(parent);
             case RULE_GranteeList_KIND: return p.parseGranteeList(parent);
+            case RULE_Grantee_KIND: return p.parseGrantee(parent);
             case RULE_AlterDefaultPrivilegesPassthrough_KIND: return p.parseAlterDefaultPrivilegesPassthrough(parent);
             case RULE_CreateFunctionPassthrough_KIND: return p.parseCreateFunctionPassthrough(parent);
             case RULE_CreateTriggerPassthrough_KIND: return p.parseCreateTriggerPassthrough(parent);
@@ -799,10 +869,12 @@ public final class PgSqlParser {
             case RULE_SubqueryRef_KIND: return p.parseSubqueryRef(parent);
             case RULE_LateralRef_KIND: return p.parseLateralRef(parent);
             case RULE_FuncTableRef_KIND: return p.parseFuncTableRef(parent);
+            case RULE_WithOrdinality_KIND: return p.parseWithOrdinality(parent);
             case RULE_Alias_KIND: return p.parseAlias(parent);
             case RULE_TablesampleClause_KIND: return p.parseTablesampleClause(parent);
             case RULE_JoinExpr_KIND: return p.parseJoinExpr(parent);
             case RULE_JoinClause_KIND: return p.parseJoinClause(parent);
+            case RULE_JoinType_KIND: return p.parseJoinType(parent);
             case RULE_JoinQual_KIND: return p.parseJoinQual(parent);
             case RULE_WhereClause_KIND: return p.parseWhereClause(parent);
             case RULE_GroupByClause_KIND: return p.parseGroupByClause(parent);
@@ -817,6 +889,7 @@ public final class PgSqlParser {
             case RULE_FrameClause_KIND: return p.parseFrameClause(parent);
             case RULE_FrameExtent_KIND: return p.parseFrameExtent(parent);
             case RULE_FrameBound_KIND: return p.parseFrameBound(parent);
+            case RULE_FrameExclusion_KIND: return p.parseFrameExclusion(parent);
             case RULE_WithClause_KIND: return p.parseWithClause(parent);
             case RULE_CteList_KIND: return p.parseCteList(parent);
             case RULE_CteDef_KIND: return p.parseCteDef(parent);
@@ -892,6 +965,7 @@ public final class PgSqlParser {
             case RULE_TrimExpr_KIND: return p.parseTrimExpr(parent);
             case RULE_OverlayExpr_KIND: return p.parseOverlayExpr(parent);
             case RULE_TypedLiteral_KIND: return p.parseTypedLiteral(parent);
+            case RULE_SpecialFuncExpr_KIND: return p.parseSpecialFuncExpr(parent);
             case RULE_FuncCall_KIND: return p.parseFuncCall(parent);
             case RULE_FuncCallArgs_KIND: return p.parseFuncCallArgs(parent);
             case RULE_FuncName_KIND: return p.parseFuncName(parent);
@@ -909,9 +983,11 @@ public final class PgSqlParser {
             case RULE_TimestampType_KIND: return p.parseTimestampType(parent);
             case RULE_TimeType_KIND: return p.parseTimeType(parent);
             case RULE_IntervalType_KIND: return p.parseIntervalType(parent);
+            case RULE_IntervalField_KIND: return p.parseIntervalField(parent);
             case RULE_BitType_KIND: return p.parseBitType(parent);
             case RULE_TypeModifiers_KIND: return p.parseTypeModifiers(parent);
             case RULE_QualifiedTypeName_KIND: return p.parseQualifiedTypeName(parent);
+            case RULE_ColLabel_KIND: return p.parseColLabel(parent);
             case RULE_QualifiedName_KIND: return p.parseQualifiedName(parent);
             case RULE_Literal_KIND: return p.parseLiteral(parent);
             case RULE_SignedNumericLiteral_KIND: return p.parseSignedNumericLiteral(parent);
@@ -932,11 +1008,15 @@ public final class PgSqlParser {
         m.put("DropStatement", RULE_DropStatement_KIND);
         m.put("DmlStatement", RULE_DmlStatement_KIND);
         m.put("CreateTableStmt", RULE_CreateTableStmt_KIND);
+        m.put("IfNotExists", RULE_IfNotExists_KIND);
+        m.put("IfExists", RULE_IfExists_KIND);
         m.put("TableElementList", RULE_TableElementList_KIND);
         m.put("TableElement", RULE_TableElement_KIND);
         m.put("ColumnDef", RULE_ColumnDef_KIND);
         m.put("ColConstraint", RULE_ColConstraint_KIND);
         m.put("ColConstraintElem", RULE_ColConstraintElem_KIND);
+        m.put("NotNullConstraint", RULE_NotNullConstraint_KIND);
+        m.put("PrimaryKeyColConstraint", RULE_PrimaryKeyColConstraint_KIND);
         m.put("CheckColConstraint", RULE_CheckColConstraint_KIND);
         m.put("DefaultClause", RULE_DefaultClause_KIND);
         m.put("CollateClause", RULE_CollateClause_KIND);
@@ -945,45 +1025,70 @@ public final class PgSqlParser {
         m.put("IdentityClause", RULE_IdentityClause_KIND);
         m.put("IdentitySpec", RULE_IdentitySpec_KIND);
         m.put("TableConstraint", RULE_TableConstraint_KIND);
+        m.put("ConstraintName", RULE_ConstraintName_KIND);
         m.put("TableConstraintElem", RULE_TableConstraintElem_KIND);
         m.put("PrimaryKeyTblConstraint", RULE_PrimaryKeyTblConstraint_KIND);
         m.put("UniqueTblConstraint", RULE_UniqueTblConstraint_KIND);
         m.put("CheckTblConstraint", RULE_CheckTblConstraint_KIND);
+        m.put("NoInheritClause", RULE_NoInheritClause_KIND);
         m.put("ForeignKeyTblConstraint", RULE_ForeignKeyTblConstraint_KIND);
+        m.put("FkActions", RULE_FkActions_KIND);
+        m.put("FkAction", RULE_FkAction_KIND);
+        m.put("FkActionType", RULE_FkActionType_KIND);
+        m.put("FkDeferrable", RULE_FkDeferrable_KIND);
         m.put("ExcludeTblConstraint", RULE_ExcludeTblConstraint_KIND);
         m.put("ExcludeElementList", RULE_ExcludeElementList_KIND);
         m.put("ExcludeElement", RULE_ExcludeElement_KIND);
+        m.put("NullsDistinct", RULE_NullsDistinct_KIND);
         m.put("IndexOptions", RULE_IndexOptions_KIND);
         m.put("IncludeClause", RULE_IncludeClause_KIND);
         m.put("WithStorageParams", RULE_WithStorageParams_KIND);
         m.put("StorageParamList", RULE_StorageParamList_KIND);
         m.put("StorageParam", RULE_StorageParam_KIND);
+        m.put("UsingIndexTblspace", RULE_UsingIndexTblspace_KIND);
         m.put("TableOptions", RULE_TableOptions_KIND);
         m.put("PartitionByClause", RULE_PartitionByClause_KIND);
         m.put("PartitionKeyList", RULE_PartitionKeyList_KIND);
         m.put("PartitionKey", RULE_PartitionKey_KIND);
         m.put("InheritsClause", RULE_InheritsClause_KIND);
+        m.put("TablespaceClause", RULE_TablespaceClause_KIND);
         m.put("ColumnList", RULE_ColumnList_KIND);
         m.put("QualifiedNameList", RULE_QualifiedNameList_KIND);
         m.put("AlterTableStmt", RULE_AlterTableStmt_KIND);
         m.put("AlterTableActions", RULE_AlterTableActions_KIND);
         m.put("AlterTableAction", RULE_AlterTableAction_KIND);
         m.put("AddColumnAction", RULE_AddColumnAction_KIND);
+        m.put("DropColumnAction", RULE_DropColumnAction_KIND);
         m.put("AlterColumnAction", RULE_AlterColumnAction_KIND);
         m.put("AlterColumnCmd", RULE_AlterColumnCmd_KIND);
         m.put("SetDataTypeCmd", RULE_SetDataTypeCmd_KIND);
         m.put("SetDefaultCmd", RULE_SetDefaultCmd_KIND);
+        m.put("DropDefaultCmd", RULE_DropDefaultCmd_KIND);
+        m.put("SetNotNullCmd", RULE_SetNotNullCmd_KIND);
+        m.put("DropNotNullCmd", RULE_DropNotNullCmd_KIND);
         m.put("SetStatisticsCmd", RULE_SetStatisticsCmd_KIND);
+        m.put("SetStorageCmd", RULE_SetStorageCmd_KIND);
         m.put("AddIdentityCmd", RULE_AddIdentityCmd_KIND);
+        m.put("DropIdentityCmd", RULE_DropIdentityCmd_KIND);
         m.put("AddConstraintAction", RULE_AddConstraintAction_KIND);
+        m.put("DropConstraintAction", RULE_DropConstraintAction_KIND);
+        m.put("ValidateConstraintAction", RULE_ValidateConstraintAction_KIND);
+        m.put("RenameConstraintAction", RULE_RenameConstraintAction_KIND);
+        m.put("NotValidClause", RULE_NotValidClause_KIND);
+        m.put("AlterOwnerAction", RULE_AlterOwnerAction_KIND);
+        m.put("RenameAction", RULE_RenameAction_KIND);
+        m.put("SetSchemaAction", RULE_SetSchemaAction_KIND);
+        m.put("SetTablespaceAction", RULE_SetTablespaceAction_KIND);
         m.put("AttachPartition", RULE_AttachPartition_KIND);
         m.put("DetachPartition", RULE_DetachPartition_KIND);
         m.put("ForValuesClause", RULE_ForValuesClause_KIND);
         m.put("DropTableStmt", RULE_DropTableStmt_KIND);
         m.put("CreateIndexStmt", RULE_CreateIndexStmt_KIND);
+        m.put("UsingClause", RULE_UsingClause_KIND);
         m.put("IndexElemList", RULE_IndexElemList_KIND);
         m.put("IndexElem", RULE_IndexElem_KIND);
         m.put("OpClass", RULE_OpClass_KIND);
+        m.put("NullsOrder", RULE_NullsOrder_KIND);
         m.put("AlterIndexStmt", RULE_AlterIndexStmt_KIND);
         m.put("DropIndexStmt", RULE_DropIndexStmt_KIND);
         m.put("CreateSequenceStmt", RULE_CreateSequenceStmt_KIND);
@@ -1000,8 +1105,11 @@ public final class PgSqlParser {
         m.put("DomainConstraint", RULE_DomainConstraint_KIND);
         m.put("AlterTypeStmt", RULE_AlterTypeStmt_KIND);
         m.put("DropTypeStmt", RULE_DropTypeStmt_KIND);
+        m.put("CreateSchemaStmt", RULE_CreateSchemaStmt_KIND);
+        m.put("AlterSchemaStmt", RULE_AlterSchemaStmt_KIND);
         m.put("DropSchemaStmt", RULE_DropSchemaStmt_KIND);
         m.put("CreateViewStmt", RULE_CreateViewStmt_KIND);
+        m.put("CheckOptionClause", RULE_CheckOptionClause_KIND);
         m.put("CreateMatViewStmt", RULE_CreateMatViewStmt_KIND);
         m.put("AlterViewStmt", RULE_AlterViewStmt_KIND);
         m.put("DropViewStmt", RULE_DropViewStmt_KIND);
@@ -1020,6 +1128,7 @@ public final class PgSqlParser {
         m.put("Privilege", RULE_Privilege_KIND);
         m.put("GrantTarget", RULE_GrantTarget_KIND);
         m.put("GranteeList", RULE_GranteeList_KIND);
+        m.put("Grantee", RULE_Grantee_KIND);
         m.put("AlterDefaultPrivilegesPassthrough", RULE_AlterDefaultPrivilegesPassthrough_KIND);
         m.put("CreateFunctionPassthrough", RULE_CreateFunctionPassthrough_KIND);
         m.put("CreateTriggerPassthrough", RULE_CreateTriggerPassthrough_KIND);
@@ -1040,10 +1149,12 @@ public final class PgSqlParser {
         m.put("SubqueryRef", RULE_SubqueryRef_KIND);
         m.put("LateralRef", RULE_LateralRef_KIND);
         m.put("FuncTableRef", RULE_FuncTableRef_KIND);
+        m.put("WithOrdinality", RULE_WithOrdinality_KIND);
         m.put("Alias", RULE_Alias_KIND);
         m.put("TablesampleClause", RULE_TablesampleClause_KIND);
         m.put("JoinExpr", RULE_JoinExpr_KIND);
         m.put("JoinClause", RULE_JoinClause_KIND);
+        m.put("JoinType", RULE_JoinType_KIND);
         m.put("JoinQual", RULE_JoinQual_KIND);
         m.put("WhereClause", RULE_WhereClause_KIND);
         m.put("GroupByClause", RULE_GroupByClause_KIND);
@@ -1058,6 +1169,7 @@ public final class PgSqlParser {
         m.put("FrameClause", RULE_FrameClause_KIND);
         m.put("FrameExtent", RULE_FrameExtent_KIND);
         m.put("FrameBound", RULE_FrameBound_KIND);
+        m.put("FrameExclusion", RULE_FrameExclusion_KIND);
         m.put("WithClause", RULE_WithClause_KIND);
         m.put("CteList", RULE_CteList_KIND);
         m.put("CteDef", RULE_CteDef_KIND);
@@ -1133,6 +1245,7 @@ public final class PgSqlParser {
         m.put("TrimExpr", RULE_TrimExpr_KIND);
         m.put("OverlayExpr", RULE_OverlayExpr_KIND);
         m.put("TypedLiteral", RULE_TypedLiteral_KIND);
+        m.put("SpecialFuncExpr", RULE_SpecialFuncExpr_KIND);
         m.put("FuncCall", RULE_FuncCall_KIND);
         m.put("FuncCallArgs", RULE_FuncCallArgs_KIND);
         m.put("FuncName", RULE_FuncName_KIND);
@@ -1150,9 +1263,11 @@ public final class PgSqlParser {
         m.put("TimestampType", RULE_TimestampType_KIND);
         m.put("TimeType", RULE_TimeType_KIND);
         m.put("IntervalType", RULE_IntervalType_KIND);
+        m.put("IntervalField", RULE_IntervalField_KIND);
         m.put("BitType", RULE_BitType_KIND);
         m.put("TypeModifiers", RULE_TypeModifiers_KIND);
         m.put("QualifiedTypeName", RULE_QualifiedTypeName_KIND);
+        m.put("ColLabel", RULE_ColLabel_KIND);
         m.put("QualifiedName", RULE_QualifiedName_KIND);
         m.put("Literal", RULE_Literal_KIND);
         m.put("SignedNumericLiteral", RULE_SignedNumericLiteral_KIND);
@@ -1374,7 +1489,6 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_Input_KIND, firstTok, parent);
-        if (!parseStatement(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
         // zero-or-more: rep_0
         while (true) {
             int savedPos_rep_0 = pos;
@@ -1383,7 +1497,6 @@ public final class PgSqlParser {
             do {
                 if (peek() != KIND_INLINE__SEMI) { fail("';'", RULE_Input_KIND); break; }
                 advance();
-                if (!parseStatement(self)) { break; }
                 iterOk_rep_0 = true;
             } while (false);
             if (!iterOk_rep_0) {
@@ -1399,14 +1512,65 @@ public final class PgSqlParser {
             int savedNodes_opt_1 = cst.currentNodeCount();
             boolean optOk_opt_1 = false;
             do {
-                if (peek() != KIND_INLINE__SEMI) { fail("';'", RULE_Input_KIND); break; }
-                advance();
+                if (!parseStatement(self)) { break; }
+                // zero-or-more: rep_2
+                while (true) {
+                    int savedPos_rep_2 = pos;
+                    int savedNodes_rep_2 = cst.currentNodeCount();
+                    boolean iterOk_rep_2 = false;
+                    do {
+                        if (peek() != KIND_INLINE__SEMI) { fail("';'", RULE_Input_KIND); break; }
+                        advance();
+                        // zero-or-more: rep_3
+                        while (true) {
+                            int savedPos_rep_3 = pos;
+                            int savedNodes_rep_3 = cst.currentNodeCount();
+                            boolean iterOk_rep_3 = false;
+                            do {
+                                if (peek() != KIND_INLINE__SEMI) { fail("';'", RULE_Input_KIND); break; }
+                                advance();
+                                iterOk_rep_3 = true;
+                            } while (false);
+                            if (!iterOk_rep_3) {
+                                pos = savedPos_rep_3;
+                                cst.truncate(savedNodes_rep_3);
+                                break;
+                            }
+                            if (pos == savedPos_rep_3) break; // guard against infinite loops on zero-width matches
+                        }
+                        if (!parseStatement(self)) { break; }
+                        iterOk_rep_2 = true;
+                    } while (false);
+                    if (!iterOk_rep_2) {
+                        pos = savedPos_rep_2;
+                        cst.truncate(savedNodes_rep_2);
+                        break;
+                    }
+                    if (pos == savedPos_rep_2) break; // guard against infinite loops on zero-width matches
+                }
                 optOk_opt_1 = true;
             } while (false);
             if (!optOk_opt_1) {
                 pos = savedPos_opt_1;
                 cst.truncate(savedNodes_opt_1);
             }
+        }
+        // zero-or-more: rep_4
+        while (true) {
+            int savedPos_rep_4 = pos;
+            int savedNodes_rep_4 = cst.currentNodeCount();
+            boolean iterOk_rep_4 = false;
+            do {
+                if (peek() != KIND_INLINE__SEMI) { fail("';'", RULE_Input_KIND); break; }
+                advance();
+                iterOk_rep_4 = true;
+            } while (false);
+            if (!iterOk_rep_4) {
+                pos = savedPos_rep_4;
+                cst.truncate(savedNodes_rep_4);
+                break;
+            }
+            if (pos == savedPos_rep_4) break; // guard against infinite loops on zero-width matches
         }
         int lastTok = pos > firstTok ? pos - 1 : firstTok;
         if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
@@ -1449,17 +1613,6 @@ public final class PgSqlParser {
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
                     if (!parsePassthroughStatement(self)) { break; }
-                    matched_alt_0 = true;
-                } while (false);
-                if (!matched_alt_0) {
-                    pos = savedPos_alt_0;
-                    cst.truncate(savedNodes_alt_0);
-                }
-            }
-            if (!matched_alt_0 && !cutHit_alt_0) {
-                do {
-                    if (peek() != KIND_EMPTYSTATEMENT) { fail("EmptyStatement", RULE_Statement_KIND); break; }
-                    advance();
                     matched_alt_0 = true;
                 } while (false);
                 if (!matched_alt_0) {
@@ -1561,7 +1714,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_CreateStatement_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_CREATE_CI) { fail("CreateKW", RULE_CreateStatement_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_CREATEKW) { fail("CreateKW", RULE_CreateStatement_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         // choice: alt_0
@@ -1612,8 +1765,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    if (peek() != KIND_CREATESCHEMASTMT) { fail("CreateSchemaStmt", RULE_CreateStatement_KIND); break; }
-                    advance();
+                    if (!parseCreateSchemaStmt(self)) { break; }
                     matched_alt_0 = true;
                 } while (false);
                 if (!matched_alt_0) {
@@ -1685,7 +1837,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_AlterStatement_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_ALTER_CI) { fail("AlterKW", RULE_AlterStatement_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_ALTERKW) { fail("AlterKW", RULE_AlterStatement_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         // choice: alt_0
@@ -1736,8 +1888,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    if (peek() != KIND_ALTERSCHEMASTMT) { fail("AlterSchemaStmt", RULE_AlterStatement_KIND); break; }
-                    advance();
+                    if (!parseAlterSchemaStmt(self)) { break; }
                     matched_alt_0 = true;
                 } while (false);
                 if (!matched_alt_0) {
@@ -1779,7 +1930,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_DropStatement_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_DROP_CI) { fail("DropKW", RULE_DropStatement_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_DROPKW) { fail("DropKW", RULE_DropStatement_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         // choice: alt_0
@@ -1968,7 +2119,7 @@ public final class PgSqlParser {
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                { int __k = peek(); if (__k != KIND_INLINE_TEMP_CI) { fail("TempKW", RULE_CreateTableStmt_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_TEMPKW) { fail("TempKW", RULE_CreateTableStmt_KIND); break; } }
                 advance();
                 optOk_opt_0 = true;
             } while (false);
@@ -1983,7 +2134,7 @@ public final class PgSqlParser {
             int savedNodes_opt_1 = cst.currentNodeCount();
             boolean optOk_opt_1 = false;
             do {
-                { int __k = peek(); if (__k != KIND_INLINE_UNLOGGED_CI) { fail("UnloggedKW", RULE_CreateTableStmt_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_UNLOGGEDKW) { fail("UnloggedKW", RULE_CreateTableStmt_KIND); break; } }
                 advance();
                 optOk_opt_1 = true;
             } while (false);
@@ -1992,7 +2143,7 @@ public final class PgSqlParser {
                 cst.truncate(savedNodes_opt_1);
             }
         }
-        { int __k = peek(); if (__k != KIND_INLINE_TABLE_CI) { fail("TableKW", RULE_CreateTableStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_TABLEKW) { fail("TableKW", RULE_CreateTableStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         // optional: opt_2
@@ -2001,8 +2152,7 @@ public final class PgSqlParser {
             int savedNodes_opt_2 = cst.currentNodeCount();
             boolean optOk_opt_2 = false;
             do {
-                if (peek() != KIND_IFNOTEXISTS) { fail("IfNotExists", RULE_CreateTableStmt_KIND); break; }
-                advance();
+                if (!parseIfNotExists(self)) { break; }
                 optOk_opt_2 = true;
             } while (false);
             if (!optOk_opt_2) {
@@ -2030,6 +2180,40 @@ public final class PgSqlParser {
                 cst.truncate(savedNodes_opt_3);
             }
         }
+        int lastTok = pos > firstTok ? pos - 1 : firstTok;
+        if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
+        if (lastTok < firstTok) lastTok = firstTok;
+        cst.endNode(self, lastTok);
+        return true;
+    }
+
+    private boolean parseIfNotExists(int parent) {
+        int firstTok = pos;
+        int savedPos = pos;
+        int savedNodes = cst.currentNodeCount();
+        int self = cst.beginNode(RULE_IfNotExists_KIND, firstTok, parent);
+        { int __k = peek(); if (__k != KIND_IFKW) { fail("IfKW", RULE_IfNotExists_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        { int __k = peek(); if (__k != KIND_NOTKW) { fail("NotKW", RULE_IfNotExists_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        { int __k = peek(); if (__k != KIND_EXISTSKW) { fail("ExistsKW", RULE_IfNotExists_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        int lastTok = pos > firstTok ? pos - 1 : firstTok;
+        if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
+        if (lastTok < firstTok) lastTok = firstTok;
+        cst.endNode(self, lastTok);
+        return true;
+    }
+
+    private boolean parseIfExists(int parent) {
+        int firstTok = pos;
+        int savedPos = pos;
+        int savedNodes = cst.currentNodeCount();
+        int self = cst.beginNode(RULE_IfExists_KIND, firstTok, parent);
+        { int __k = peek(); if (__k != KIND_IFKW) { fail("IfKW", RULE_IfExists_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        { int __k = peek(); if (__k != KIND_EXISTSKW) { fail("ExistsKW", RULE_IfExists_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
         int lastTok = pos > firstTok ? pos - 1 : firstTok;
         if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
         if (lastTok < firstTok) lastTok = firstTok;
@@ -2113,7 +2297,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_ColumnDef_KIND, firstTok, parent);
-        if (peek() != KIND_COLID) { fail("ColId", RULE_ColumnDef_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+        if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_ColumnDef_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         advance();
         if (!parseDataType(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
         // zero-or-more: rep_0
@@ -2150,8 +2334,7 @@ public final class PgSqlParser {
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                if (peek() != KIND_CONSTRAINTNAME) { fail("ConstraintName", RULE_ColConstraint_KIND); break; }
-                advance();
+                if (!parseConstraintName(self)) { break; }
                 optOk_opt_0 = true;
             } while (false);
             if (!optOk_opt_0) {
@@ -2180,7 +2363,17 @@ public final class PgSqlParser {
             boolean cutHit_alt_0 = false;
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    if (peek() != KIND_NOTNULLCONSTRAINT) { fail("NotNullConstraint", RULE_ColConstraintElem_KIND); break; }
+                    if (!parseNotNullConstraint(self)) { break; }
+                    matched_alt_0 = true;
+                } while (false);
+                if (!matched_alt_0) {
+                    pos = savedPos_alt_0;
+                    cst.truncate(savedNodes_alt_0);
+                }
+            }
+            if (!matched_alt_0 && !cutHit_alt_0) {
+                do {
+                    { int __k = peek(); if (__k != KIND_NULLCONSTRAINT) { fail("NullConstraint", RULE_ColConstraintElem_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -2191,7 +2384,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    if (peek() != KIND_NULLCONSTRAINT) { fail("NullConstraint", RULE_ColConstraintElem_KIND); break; }
+                    { int __k = peek(); if (__k != KIND_UNIQUECOLCONSTRAINT) { fail("UniqueColConstraint", RULE_ColConstraintElem_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -2202,19 +2395,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    if (peek() != KIND_UNIQUECOLCONSTRAINT) { fail("UniqueColConstraint", RULE_ColConstraintElem_KIND); break; }
-                    advance();
-                    matched_alt_0 = true;
-                } while (false);
-                if (!matched_alt_0) {
-                    pos = savedPos_alt_0;
-                    cst.truncate(savedNodes_alt_0);
-                }
-            }
-            if (!matched_alt_0 && !cutHit_alt_0) {
-                do {
-                    if (peek() != KIND_PRIMARYKEYCOLCONSTRAINT) { fail("PrimaryKeyColConstraint", RULE_ColConstraintElem_KIND); break; }
-                    advance();
+                    if (!parsePrimaryKeyColConstraint(self)) { break; }
                     matched_alt_0 = true;
                 } while (false);
                 if (!matched_alt_0) {
@@ -2291,12 +2472,44 @@ public final class PgSqlParser {
         return true;
     }
 
+    private boolean parseNotNullConstraint(int parent) {
+        int firstTok = pos;
+        int savedPos = pos;
+        int savedNodes = cst.currentNodeCount();
+        int self = cst.beginNode(RULE_NotNullConstraint_KIND, firstTok, parent);
+        { int __k = peek(); if (__k != KIND_NOTKW) { fail("NotKW", RULE_NotNullConstraint_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        { int __k = peek(); if (__k != KIND_NULLCONSTRAINT) { fail("NullKW", RULE_NotNullConstraint_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        int lastTok = pos > firstTok ? pos - 1 : firstTok;
+        if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
+        if (lastTok < firstTok) lastTok = firstTok;
+        cst.endNode(self, lastTok);
+        return true;
+    }
+
+    private boolean parsePrimaryKeyColConstraint(int parent) {
+        int firstTok = pos;
+        int savedPos = pos;
+        int savedNodes = cst.currentNodeCount();
+        int self = cst.beginNode(RULE_PrimaryKeyColConstraint_KIND, firstTok, parent);
+        { int __k = peek(); if (__k != KIND_PRIMARYKW) { fail("PrimaryKW", RULE_PrimaryKeyColConstraint_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        { int __k = peek(); if (__k != KIND_KEYKW) { fail("KeyKW", RULE_PrimaryKeyColConstraint_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        int lastTok = pos > firstTok ? pos - 1 : firstTok;
+        if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
+        if (lastTok < firstTok) lastTok = firstTok;
+        cst.endNode(self, lastTok);
+        return true;
+    }
+
     private boolean parseCheckColConstraint(int parent) {
         int firstTok = pos;
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_CheckColConstraint_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_CHECK_CI) { fail("CheckKW", RULE_CheckColConstraint_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_CHECKKW) { fail("CheckKW", RULE_CheckColConstraint_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         if (peek() != KIND_INLINE__LPAREN) { fail("'('", RULE_CheckColConstraint_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
@@ -2316,7 +2529,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_DefaultClause_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_DEFAULT_CI) { fail("DefaultKW", RULE_DefaultClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_DEFAULTKW) { fail("DefaultKW", RULE_DefaultClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         if (!parseExpr(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
@@ -2332,7 +2545,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_CollateClause_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_COLLATE_CI) { fail("CollateKW", RULE_CollateClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_COLLATEKW) { fail("CollateKW", RULE_CollateClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         if (!parseQualifiedName(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
@@ -2348,7 +2561,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_ReferencesClause_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_REFERENCES_CI) { fail("ReferencesKW", RULE_ReferencesClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_REFERENCESKW) { fail("ReferencesKW", RULE_ReferencesClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         if (!parseQualifiedName(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
@@ -2376,8 +2589,7 @@ public final class PgSqlParser {
             int savedNodes_opt_1 = cst.currentNodeCount();
             boolean optOk_opt_1 = false;
             do {
-                if (peek() != KIND_FKACTIONS) { fail("FkActions", RULE_ReferencesClause_KIND); break; }
-                advance();
+                if (!parseFkActions(self)) { break; }
                 optOk_opt_1 = true;
             } while (false);
             if (!optOk_opt_1) {
@@ -2397,11 +2609,11 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_GeneratedClause_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_GENERATED_CI) { fail("GeneratedKW", RULE_GeneratedClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_GENERATEDKW) { fail("GeneratedKW", RULE_GeneratedClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
-        { int __k = peek(); if (__k != KIND_INLINE_ALWAYS_CI) { fail("AlwaysKW", RULE_GeneratedClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_ALWAYSKW) { fail("AlwaysKW", RULE_GeneratedClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
-        { int __k = peek(); if (__k != KIND_INLINE_AS_CI) { fail("AsKW", RULE_GeneratedClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_ASKW) { fail("AsKW", RULE_GeneratedClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         // choice: alt_0
@@ -2417,7 +2629,7 @@ public final class PgSqlParser {
                     if (!parseExpr(self)) { break; }
                     if (peek() != KIND_INLINE__RPAREN) { fail("')'", RULE_GeneratedClause_KIND); break; }
                     advance();
-                    { int __k = peek(); if (__k != KIND_INLINE_STORED_CI) { fail("StoredKW", RULE_GeneratedClause_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_STOREDKW) { fail("StoredKW", RULE_GeneratedClause_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -2450,7 +2662,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_IdentityClause_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_GENERATED_CI) { fail("GeneratedKW", RULE_IdentityClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_GENERATEDKW) { fail("GeneratedKW", RULE_IdentityClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // choice: alt_0
         {
@@ -2460,7 +2672,7 @@ public final class PgSqlParser {
             boolean cutHit_alt_0 = false;
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_ALWAYS_CI) { fail("AlwaysKW", RULE_IdentityClause_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_ALWAYSKW) { fail("AlwaysKW", RULE_IdentityClause_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -2471,9 +2683,9 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_BY_CI) { fail("ByKW", RULE_IdentityClause_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_BYKW) { fail("ByKW", RULE_IdentityClause_KIND); break; } }
                     advance();
-                    { int __k = peek(); if (__k != KIND_INLINE_DEFAULT_CI) { fail("DefaultKW", RULE_IdentityClause_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_DEFAULTKW) { fail("DefaultKW", RULE_IdentityClause_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -2484,9 +2696,9 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0) { fail("<choice>", RULE_IdentityClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         }
-        { int __k = peek(); if (__k != KIND_INLINE_AS_CI) { fail("AsKW", RULE_IdentityClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_ASKW) { fail("AsKW", RULE_IdentityClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
-        { int __k = peek(); if (__k != KIND_INLINE_IDENTITY_CI) { fail("IdentityKW", RULE_IdentityClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_IDENTITYKW) { fail("IdentityKW", RULE_IdentityClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // optional: opt_1
         {
@@ -2514,7 +2726,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_IdentitySpec_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_IDENTITY_CI) { fail("IdentityKW", RULE_IdentitySpec_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_IDENTITYKW) { fail("IdentityKW", RULE_IdentitySpec_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // optional: opt_0
         {
@@ -2548,8 +2760,7 @@ public final class PgSqlParser {
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                if (peek() != KIND_CONSTRAINTNAME) { fail("ConstraintName", RULE_TableConstraint_KIND); break; }
-                advance();
+                if (!parseConstraintName(self)) { break; }
                 optOk_opt_0 = true;
             } while (false);
             if (!optOk_opt_0) {
@@ -2558,6 +2769,23 @@ public final class PgSqlParser {
             }
         }
         if (!parseTableConstraintElem(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
+        int lastTok = pos > firstTok ? pos - 1 : firstTok;
+        if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
+        if (lastTok < firstTok) lastTok = firstTok;
+        cst.endNode(self, lastTok);
+        return true;
+    }
+
+    private boolean parseConstraintName(int parent) {
+        int firstTok = pos;
+        int savedPos = pos;
+        int savedNodes = cst.currentNodeCount();
+        int self = cst.beginNode(RULE_ConstraintName_KIND, firstTok, parent);
+        { int __k = peek(); if (__k != KIND_CONSTRAINTKW) { fail("ConstraintKW", RULE_ConstraintName_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        // cut: no enclosing Choice — no-op
+        if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_ConstraintName_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+        advance();
         int lastTok = pos > firstTok ? pos - 1 : firstTok;
         if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
         if (lastTok < firstTok) lastTok = firstTok;
@@ -2640,9 +2868,9 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_PrimaryKeyTblConstraint_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_PRIMARY_CI) { fail("PrimaryKW", RULE_PrimaryKeyTblConstraint_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_PRIMARYKW) { fail("PrimaryKW", RULE_PrimaryKeyTblConstraint_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
-        { int __k = peek(); if (__k != KIND_INLINE_KEY_CI) { fail("KeyKW", RULE_PrimaryKeyTblConstraint_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_KEYKW) { fail("KeyKW", RULE_PrimaryKeyTblConstraint_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         if (peek() != KIND_INLINE__LPAREN) { fail("'('", RULE_PrimaryKeyTblConstraint_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
@@ -2676,7 +2904,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_UniqueTblConstraint_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_UNIQUE_CI) { fail("UniqueKW", RULE_UniqueTblConstraint_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_UNIQUECOLCONSTRAINT) { fail("UniqueKW", RULE_UniqueTblConstraint_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         // optional: opt_0
@@ -2685,8 +2913,7 @@ public final class PgSqlParser {
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                if (peek() != KIND_NULLSDISTINCT) { fail("NullsDistinct", RULE_UniqueTblConstraint_KIND); break; }
-                advance();
+                if (!parseNullsDistinct(self)) { break; }
                 optOk_opt_0 = true;
             } while (false);
             if (!optOk_opt_0) {
@@ -2725,7 +2952,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_CheckTblConstraint_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_CHECK_CI) { fail("CheckKW", RULE_CheckTblConstraint_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_CHECKKW) { fail("CheckKW", RULE_CheckTblConstraint_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         if (peek() != KIND_INLINE__LPAREN) { fail("'('", RULE_CheckTblConstraint_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
@@ -2739,8 +2966,7 @@ public final class PgSqlParser {
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                if (peek() != KIND_NOINHERITCLAUSE) { fail("NoInheritClause", RULE_CheckTblConstraint_KIND); break; }
-                advance();
+                if (!parseNoInheritClause(self)) { break; }
                 optOk_opt_0 = true;
             } while (false);
             if (!optOk_opt_0) {
@@ -2755,14 +2981,30 @@ public final class PgSqlParser {
         return true;
     }
 
+    private boolean parseNoInheritClause(int parent) {
+        int firstTok = pos;
+        int savedPos = pos;
+        int savedNodes = cst.currentNodeCount();
+        int self = cst.beginNode(RULE_NoInheritClause_KIND, firstTok, parent);
+        { int __k = peek(); if (__k != KIND_NOKW) { fail("NoKW", RULE_NoInheritClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        { int __k = peek(); if (__k != KIND_INHERITKW) { fail("InheritKW", RULE_NoInheritClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        int lastTok = pos > firstTok ? pos - 1 : firstTok;
+        if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
+        if (lastTok < firstTok) lastTok = firstTok;
+        cst.endNode(self, lastTok);
+        return true;
+    }
+
     private boolean parseForeignKeyTblConstraint(int parent) {
         int firstTok = pos;
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_ForeignKeyTblConstraint_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_FOREIGN_CI) { fail("ForeignKW", RULE_ForeignKeyTblConstraint_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_FOREIGNKW) { fail("ForeignKW", RULE_ForeignKeyTblConstraint_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
-        { int __k = peek(); if (__k != KIND_INLINE_KEY_CI) { fail("KeyKW", RULE_ForeignKeyTblConstraint_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_KEYKW) { fail("KeyKW", RULE_ForeignKeyTblConstraint_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         if (peek() != KIND_INLINE__LPAREN) { fail("'('", RULE_ForeignKeyTblConstraint_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
@@ -2770,7 +3012,7 @@ public final class PgSqlParser {
         if (!parseColumnList(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
         if (peek() != KIND_INLINE__RPAREN) { fail("')'", RULE_ForeignKeyTblConstraint_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         advance();
-        { int __k = peek(); if (__k != KIND_INLINE_REFERENCES_CI) { fail("ReferencesKW", RULE_ForeignKeyTblConstraint_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_REFERENCESKW) { fail("ReferencesKW", RULE_ForeignKeyTblConstraint_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (!parseQualifiedName(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
         // optional: opt_0
@@ -2797,8 +3039,7 @@ public final class PgSqlParser {
             int savedNodes_opt_1 = cst.currentNodeCount();
             boolean optOk_opt_1 = false;
             do {
-                if (peek() != KIND_FKACTIONS) { fail("FkActions", RULE_ForeignKeyTblConstraint_KIND); break; }
-                advance();
+                if (!parseFkActions(self)) { break; }
                 optOk_opt_1 = true;
             } while (false);
             if (!optOk_opt_1) {
@@ -2812,8 +3053,7 @@ public final class PgSqlParser {
             int savedNodes_opt_2 = cst.currentNodeCount();
             boolean optOk_opt_2 = false;
             do {
-                if (peek() != KIND_FKDEFERRABLE) { fail("FkDeferrable", RULE_ForeignKeyTblConstraint_KIND); break; }
-                advance();
+                if (!parseFkDeferrable(self)) { break; }
                 optOk_opt_2 = true;
             } while (false);
             if (!optOk_opt_2) {
@@ -2828,12 +3068,241 @@ public final class PgSqlParser {
         return true;
     }
 
+    private boolean parseFkActions(int parent) {
+        int firstTok = pos;
+        int savedPos = pos;
+        int savedNodes = cst.currentNodeCount();
+        int self = cst.beginNode(RULE_FkActions_KIND, firstTok, parent);
+        if (!parseFkAction(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
+        // zero-or-more: rep_0
+        while (true) {
+            int savedPos_rep_0 = pos;
+            int savedNodes_rep_0 = cst.currentNodeCount();
+            boolean iterOk_rep_0 = false;
+            do {
+                if (!parseFkAction(self)) { break; }
+                iterOk_rep_0 = true;
+            } while (false);
+            if (!iterOk_rep_0) {
+                pos = savedPos_rep_0;
+                cst.truncate(savedNodes_rep_0);
+                break;
+            }
+            if (pos == savedPos_rep_0) break; // guard against infinite loops on zero-width matches
+        }
+        int lastTok = pos > firstTok ? pos - 1 : firstTok;
+        if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
+        if (lastTok < firstTok) lastTok = firstTok;
+        cst.endNode(self, lastTok);
+        return true;
+    }
+
+    private boolean parseFkAction(int parent) {
+        int firstTok = pos;
+        int savedPos = pos;
+        int savedNodes = cst.currentNodeCount();
+        int self = cst.beginNode(RULE_FkAction_KIND, firstTok, parent);
+        { int __k = peek(); if (__k != KIND_ONKW) { fail("OnKW", RULE_FkAction_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        // choice: alt_0
+        {
+            int savedPos_alt_0 = pos;
+            int savedNodes_alt_0 = cst.currentNodeCount();
+            boolean matched_alt_0 = false;
+            boolean cutHit_alt_0 = false;
+            if (!matched_alt_0 && !cutHit_alt_0) {
+                do {
+                    { int __k = peek(); if (__k != KIND_UPDATEKW) { fail("UpdateKW", RULE_FkAction_KIND); break; } }
+                    advance();
+                    matched_alt_0 = true;
+                } while (false);
+                if (!matched_alt_0) {
+                    pos = savedPos_alt_0;
+                    cst.truncate(savedNodes_alt_0);
+                }
+            }
+            if (!matched_alt_0 && !cutHit_alt_0) {
+                do {
+                    { int __k = peek(); if (__k != KIND_DELETEKW) { fail("DeleteKW", RULE_FkAction_KIND); break; } }
+                    advance();
+                    matched_alt_0 = true;
+                } while (false);
+                if (!matched_alt_0) {
+                    pos = savedPos_alt_0;
+                    cst.truncate(savedNodes_alt_0);
+                }
+            }
+            if (!matched_alt_0) { fail("<choice>", RULE_FkAction_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+        }
+        if (!parseFkActionType(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
+        int lastTok = pos > firstTok ? pos - 1 : firstTok;
+        if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
+        if (lastTok < firstTok) lastTok = firstTok;
+        cst.endNode(self, lastTok);
+        return true;
+    }
+
+    private boolean parseFkActionType(int parent) {
+        int firstTok = pos;
+        int savedPos = pos;
+        int savedNodes = cst.currentNodeCount();
+        int self = cst.beginNode(RULE_FkActionType_KIND, firstTok, parent);
+        // choice: alt_0
+        {
+            int savedPos_alt_0 = pos;
+            int savedNodes_alt_0 = cst.currentNodeCount();
+            boolean matched_alt_0 = false;
+            boolean cutHit_alt_0 = false;
+            if (!matched_alt_0 && !cutHit_alt_0) {
+                do {
+                    { int __k = peek(); if (__k != KIND_CASCADEKW) { fail("CascadeKW", RULE_FkActionType_KIND); break; } }
+                    advance();
+                    matched_alt_0 = true;
+                } while (false);
+                if (!matched_alt_0) {
+                    pos = savedPos_alt_0;
+                    cst.truncate(savedNodes_alt_0);
+                }
+            }
+            if (!matched_alt_0 && !cutHit_alt_0) {
+                do {
+                    { int __k = peek(); if (__k != KIND_RESTRICTKW) { fail("RestrictKW", RULE_FkActionType_KIND); break; } }
+                    advance();
+                    matched_alt_0 = true;
+                } while (false);
+                if (!matched_alt_0) {
+                    pos = savedPos_alt_0;
+                    cst.truncate(savedNodes_alt_0);
+                }
+            }
+            if (!matched_alt_0 && !cutHit_alt_0) {
+                do {
+                    { int __k = peek(); if (__k != KIND_SETKW) { fail("SetKW", RULE_FkActionType_KIND); break; } }
+                    advance();
+                    { int __k = peek(); if (__k != KIND_NULLCONSTRAINT) { fail("NullKW", RULE_FkActionType_KIND); break; } }
+                    advance();
+                    matched_alt_0 = true;
+                } while (false);
+                if (!matched_alt_0) {
+                    pos = savedPos_alt_0;
+                    cst.truncate(savedNodes_alt_0);
+                }
+            }
+            if (!matched_alt_0 && !cutHit_alt_0) {
+                do {
+                    { int __k = peek(); if (__k != KIND_SETKW) { fail("SetKW", RULE_FkActionType_KIND); break; } }
+                    advance();
+                    { int __k = peek(); if (__k != KIND_DEFAULTKW) { fail("DefaultKW", RULE_FkActionType_KIND); break; } }
+                    advance();
+                    matched_alt_0 = true;
+                } while (false);
+                if (!matched_alt_0) {
+                    pos = savedPos_alt_0;
+                    cst.truncate(savedNodes_alt_0);
+                }
+            }
+            if (!matched_alt_0 && !cutHit_alt_0) {
+                do {
+                    { int __k = peek(); if (__k != KIND_NOKW) { fail("NoKW", RULE_FkActionType_KIND); break; } }
+                    advance();
+                    { int __k = peek(); if (__k != KIND_ACTIONKW) { fail("ActionKW", RULE_FkActionType_KIND); break; } }
+                    advance();
+                    matched_alt_0 = true;
+                } while (false);
+                if (!matched_alt_0) {
+                    pos = savedPos_alt_0;
+                    cst.truncate(savedNodes_alt_0);
+                }
+            }
+            if (!matched_alt_0) { fail("<choice>", RULE_FkActionType_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+        }
+        int lastTok = pos > firstTok ? pos - 1 : firstTok;
+        if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
+        if (lastTok < firstTok) lastTok = firstTok;
+        cst.endNode(self, lastTok);
+        return true;
+    }
+
+    private boolean parseFkDeferrable(int parent) {
+        int firstTok = pos;
+        int savedPos = pos;
+        int savedNodes = cst.currentNodeCount();
+        int self = cst.beginNode(RULE_FkDeferrable_KIND, firstTok, parent);
+        // optional: opt_0
+        {
+            int savedPos_opt_0 = pos;
+            int savedNodes_opt_0 = cst.currentNodeCount();
+            boolean optOk_opt_0 = false;
+            do {
+                { int __k = peek(); if (__k != KIND_NOTKW) { fail("NotKW", RULE_FkDeferrable_KIND); break; } }
+                advance();
+                optOk_opt_0 = true;
+            } while (false);
+            if (!optOk_opt_0) {
+                pos = savedPos_opt_0;
+                cst.truncate(savedNodes_opt_0);
+            }
+        }
+        { int __k = peek(); if (__k != KIND_DEFERRABLEKW) { fail("DeferrableKW", RULE_FkDeferrable_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        // optional: opt_1
+        {
+            int savedPos_opt_1 = pos;
+            int savedNodes_opt_1 = cst.currentNodeCount();
+            boolean optOk_opt_1 = false;
+            do {
+                { int __k = peek(); if (__k != KIND_INITIALLYKW) { fail("InitiallyKW", RULE_FkDeferrable_KIND); break; } }
+                advance();
+                // choice: alt_2
+                {
+                    int savedPos_alt_2 = pos;
+                    int savedNodes_alt_2 = cst.currentNodeCount();
+                    boolean matched_alt_2 = false;
+                    boolean cutHit_alt_2 = false;
+                    if (!matched_alt_2 && !cutHit_alt_2) {
+                        do {
+                            { int __k = peek(); if (__k != KIND_DEFERREDKW) { fail("DeferredKW", RULE_FkDeferrable_KIND); break; } }
+                            advance();
+                            matched_alt_2 = true;
+                        } while (false);
+                        if (!matched_alt_2) {
+                            pos = savedPos_alt_2;
+                            cst.truncate(savedNodes_alt_2);
+                        }
+                    }
+                    if (!matched_alt_2 && !cutHit_alt_2) {
+                        do {
+                            { int __k = peek(); if (__k != KIND_IMMEDIATEKW) { fail("ImmediateKW", RULE_FkDeferrable_KIND); break; } }
+                            advance();
+                            matched_alt_2 = true;
+                        } while (false);
+                        if (!matched_alt_2) {
+                            pos = savedPos_alt_2;
+                            cst.truncate(savedNodes_alt_2);
+                        }
+                    }
+                    if (!matched_alt_2) { fail("<choice>", RULE_FkDeferrable_KIND); break; }
+                }
+                optOk_opt_1 = true;
+            } while (false);
+            if (!optOk_opt_1) {
+                pos = savedPos_opt_1;
+                cst.truncate(savedNodes_opt_1);
+            }
+        }
+        int lastTok = pos > firstTok ? pos - 1 : firstTok;
+        if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
+        if (lastTok < firstTok) lastTok = firstTok;
+        cst.endNode(self, lastTok);
+        return true;
+    }
+
     private boolean parseExcludeTblConstraint(int parent) {
         int firstTok = pos;
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_ExcludeTblConstraint_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_EXCLUDE_CI) { fail("ExcludeKW", RULE_ExcludeTblConstraint_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_EXCLUDEKW) { fail("ExcludeKW", RULE_ExcludeTblConstraint_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         // optional: opt_0
@@ -2842,8 +3311,7 @@ public final class PgSqlParser {
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                if (peek() != KIND_USINGCLAUSE) { fail("UsingClause", RULE_ExcludeTblConstraint_KIND); break; }
-                advance();
+                if (!parseUsingClause(self)) { break; }
                 optOk_opt_0 = true;
             } while (false);
             if (!optOk_opt_0) {
@@ -2914,9 +3382,40 @@ public final class PgSqlParser {
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_ExcludeElement_KIND, firstTok, parent);
         if (!parseIndexElem(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
-        { int __k = peek(); if (__k != KIND_INLINE_WITH_CI) { fail("WithKW", RULE_ExcludeElement_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_WITHKW) { fail("WithKW", RULE_ExcludeElement_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (!parseOperator(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
+        int lastTok = pos > firstTok ? pos - 1 : firstTok;
+        if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
+        if (lastTok < firstTok) lastTok = firstTok;
+        cst.endNode(self, lastTok);
+        return true;
+    }
+
+    private boolean parseNullsDistinct(int parent) {
+        int firstTok = pos;
+        int savedPos = pos;
+        int savedNodes = cst.currentNodeCount();
+        int self = cst.beginNode(RULE_NullsDistinct_KIND, firstTok, parent);
+        { int __k = peek(); if (__k != KIND_NULLSKW) { fail("NullsKW", RULE_NullsDistinct_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        // optional: opt_0
+        {
+            int savedPos_opt_0 = pos;
+            int savedNodes_opt_0 = cst.currentNodeCount();
+            boolean optOk_opt_0 = false;
+            do {
+                { int __k = peek(); if (__k != KIND_NOTKW) { fail("NotKW", RULE_NullsDistinct_KIND); break; } }
+                advance();
+                optOk_opt_0 = true;
+            } while (false);
+            if (!optOk_opt_0) {
+                pos = savedPos_opt_0;
+                cst.truncate(savedNodes_opt_0);
+            }
+        }
+        { int __k = peek(); if (__k != KIND_DISTINCTKW) { fail("DistinctKW", RULE_NullsDistinct_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
         int lastTok = pos > firstTok ? pos - 1 : firstTok;
         if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
         if (lastTok < firstTok) lastTok = firstTok;
@@ -2963,8 +3462,7 @@ public final class PgSqlParser {
             int savedNodes_opt_2 = cst.currentNodeCount();
             boolean optOk_opt_2 = false;
             do {
-                if (peek() != KIND_USINGINDEXTBLSPACE) { fail("UsingIndexTblspace", RULE_IndexOptions_KIND); break; }
-                advance();
+                if (!parseUsingIndexTblspace(self)) { break; }
                 optOk_opt_2 = true;
             } while (false);
             if (!optOk_opt_2) {
@@ -2984,7 +3482,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_IncludeClause_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_INCLUDE_CI) { fail("IncludeKW", RULE_IncludeClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_INCLUDEKW) { fail("IncludeKW", RULE_IncludeClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (peek() != KIND_INLINE__LPAREN) { fail("'('", RULE_IncludeClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         advance();
@@ -3003,7 +3501,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_WithStorageParams_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_WITH_CI) { fail("WithKW", RULE_WithStorageParams_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_WITHKW) { fail("WithKW", RULE_WithStorageParams_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (peek() != KIND_INLINE__LPAREN) { fail("'('", RULE_WithStorageParams_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         advance();
@@ -3053,7 +3551,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_StorageParam_KIND, firstTok, parent);
-        if (peek() != KIND_COLID) { fail("ColId", RULE_StorageParam_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+        if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_StorageParam_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         advance();
         // optional: opt_0
         {
@@ -3071,6 +3569,26 @@ public final class PgSqlParser {
                 cst.truncate(savedNodes_opt_0);
             }
         }
+        int lastTok = pos > firstTok ? pos - 1 : firstTok;
+        if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
+        if (lastTok < firstTok) lastTok = firstTok;
+        cst.endNode(self, lastTok);
+        return true;
+    }
+
+    private boolean parseUsingIndexTblspace(int parent) {
+        int firstTok = pos;
+        int savedPos = pos;
+        int savedNodes = cst.currentNodeCount();
+        int self = cst.beginNode(RULE_UsingIndexTblspace_KIND, firstTok, parent);
+        { int __k = peek(); if (__k != KIND_USINGKW) { fail("UsingKW", RULE_UsingIndexTblspace_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        { int __k = peek(); if (__k != KIND_INDEXKW) { fail("IndexKW", RULE_UsingIndexTblspace_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        { int __k = peek(); if (__k != KIND_TABLESPACEKW) { fail("TablespaceKW", RULE_UsingIndexTblspace_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_UsingIndexTblspace_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+        advance();
         int lastTok = pos > firstTok ? pos - 1 : firstTok;
         if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
         if (lastTok < firstTok) lastTok = firstTok;
@@ -3117,8 +3635,7 @@ public final class PgSqlParser {
             int savedNodes_opt_2 = cst.currentNodeCount();
             boolean optOk_opt_2 = false;
             do {
-                if (peek() != KIND_TABLESPACECLAUSE) { fail("TablespaceClause", RULE_TableOptions_KIND); break; }
-                advance();
+                if (!parseTablespaceClause(self)) { break; }
                 optOk_opt_2 = true;
             } while (false);
             if (!optOk_opt_2) {
@@ -3138,12 +3655,12 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_PartitionByClause_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_PARTITION_CI) { fail("PartitionKW", RULE_PartitionByClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_PARTITIONKW) { fail("PartitionKW", RULE_PartitionByClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
-        { int __k = peek(); if (__k != KIND_INLINE_BY_CI) { fail("ByKW", RULE_PartitionByClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_BYKW) { fail("ByKW", RULE_PartitionByClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
-        if (peek() != KIND_PARTITIONSTRATEGY) { fail("PartitionStrategy", RULE_PartitionByClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+        { int __k = peek(); if (__k != KIND_RANGEKW && __k != KIND_LISTKW && __k != KIND_HASHKW) { fail("PartitionStrategy", RULE_PartitionByClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (peek() != KIND_INLINE__LPAREN) { fail("'('", RULE_PartitionByClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         advance();
@@ -3237,7 +3754,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_InheritsClause_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_INHERITS_CI) { fail("InheritsKW", RULE_InheritsClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_INHERITSKW) { fail("InheritsKW", RULE_InheritsClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (peek() != KIND_INLINE__LPAREN) { fail("'('", RULE_InheritsClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         advance();
@@ -3251,12 +3768,28 @@ public final class PgSqlParser {
         return true;
     }
 
+    private boolean parseTablespaceClause(int parent) {
+        int firstTok = pos;
+        int savedPos = pos;
+        int savedNodes = cst.currentNodeCount();
+        int self = cst.beginNode(RULE_TablespaceClause_KIND, firstTok, parent);
+        { int __k = peek(); if (__k != KIND_TABLESPACEKW) { fail("TablespaceKW", RULE_TablespaceClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_TablespaceClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+        advance();
+        int lastTok = pos > firstTok ? pos - 1 : firstTok;
+        if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
+        if (lastTok < firstTok) lastTok = firstTok;
+        cst.endNode(self, lastTok);
+        return true;
+    }
+
     private boolean parseColumnList(int parent) {
         int firstTok = pos;
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_ColumnList_KIND, firstTok, parent);
-        if (peek() != KIND_COLID) { fail("ColId", RULE_ColumnList_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+        if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_ColumnList_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         advance();
         // zero-or-more: rep_0
         while (true) {
@@ -3266,7 +3799,7 @@ public final class PgSqlParser {
             do {
                 if (peek() != KIND_INLINE__COMMA) { fail("','", RULE_ColumnList_KIND); break; }
                 advance();
-                if (peek() != KIND_COLID) { fail("ColId", RULE_ColumnList_KIND); break; }
+                if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_ColumnList_KIND); break; }
                 advance();
                 iterOk_rep_0 = true;
             } while (false);
@@ -3320,7 +3853,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_AlterTableStmt_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_TABLE_CI) { fail("TableKW", RULE_AlterTableStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_TABLEKW) { fail("TableKW", RULE_AlterTableStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         // optional: opt_0
@@ -3329,8 +3862,7 @@ public final class PgSqlParser {
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                if (peek() != KIND_IFEXISTS) { fail("IfExists", RULE_AlterTableStmt_KIND); break; }
-                advance();
+                if (!parseIfExists(self)) { break; }
                 optOk_opt_0 = true;
             } while (false);
             if (!optOk_opt_0) {
@@ -3344,7 +3876,7 @@ public final class PgSqlParser {
             int savedNodes_opt_1 = cst.currentNodeCount();
             boolean optOk_opt_1 = false;
             do {
-                { int __k = peek(); if (__k != KIND_INLINE_ONLY_CI) { fail("OnlyKW", RULE_AlterTableStmt_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_ONLYKW) { fail("OnlyKW", RULE_AlterTableStmt_KIND); break; } }
                 advance();
                 optOk_opt_1 = true;
             } while (false);
@@ -3372,8 +3904,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_2 && !cutHit_alt_2) {
                 do {
-                    if (peek() != KIND_RENAMEACTION) { fail("RenameAction", RULE_AlterTableStmt_KIND); break; }
-                    advance();
+                    if (!parseRenameAction(self)) { break; }
                     matched_alt_2 = true;
                 } while (false);
                 if (!matched_alt_2) {
@@ -3383,8 +3914,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_2 && !cutHit_alt_2) {
                 do {
-                    if (peek() != KIND_SETSCHEMAACTION) { fail("SetSchemaAction", RULE_AlterTableStmt_KIND); break; }
-                    advance();
+                    if (!parseSetSchemaAction(self)) { break; }
                     matched_alt_2 = true;
                 } while (false);
                 if (!matched_alt_2) {
@@ -3475,8 +4005,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    if (peek() != KIND_DROPCOLUMNACTION) { fail("DropColumnAction", RULE_AlterTableAction_KIND); break; }
-                    advance();
+                    if (!parseDropColumnAction(self)) { break; }
                     matched_alt_0 = true;
                 } while (false);
                 if (!matched_alt_0) {
@@ -3506,8 +4035,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    if (peek() != KIND_DROPCONSTRAINTACTION) { fail("DropConstraintAction", RULE_AlterTableAction_KIND); break; }
-                    advance();
+                    if (!parseDropConstraintAction(self)) { break; }
                     matched_alt_0 = true;
                 } while (false);
                 if (!matched_alt_0) {
@@ -3517,8 +4045,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    if (peek() != KIND_VALIDATECONSTRAINTACTION) { fail("ValidateConstraintAction", RULE_AlterTableAction_KIND); break; }
-                    advance();
+                    if (!parseValidateConstraintAction(self)) { break; }
                     matched_alt_0 = true;
                 } while (false);
                 if (!matched_alt_0) {
@@ -3528,8 +4055,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    if (peek() != KIND_RENAMECONSTRAINTACTION) { fail("RenameConstraintAction", RULE_AlterTableAction_KIND); break; }
-                    advance();
+                    if (!parseRenameConstraintAction(self)) { break; }
                     matched_alt_0 = true;
                 } while (false);
                 if (!matched_alt_0) {
@@ -3539,8 +4065,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    if (peek() != KIND_ALTEROWNERACTION) { fail("AlterOwnerAction", RULE_AlterTableAction_KIND); break; }
-                    advance();
+                    if (!parseAlterOwnerAction(self)) { break; }
                     matched_alt_0 = true;
                 } while (false);
                 if (!matched_alt_0) {
@@ -3550,8 +4075,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    if (peek() != KIND_SETTABLESPACEACTION) { fail("SetTablespaceAction", RULE_AlterTableAction_KIND); break; }
-                    advance();
+                    if (!parseSetTablespaceAction(self)) { break; }
                     matched_alt_0 = true;
                 } while (false);
                 if (!matched_alt_0) {
@@ -3573,7 +4097,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_AddColumnAction_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_ADD_CI) { fail("AddKW", RULE_AddColumnAction_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_ADDKW) { fail("AddKW", RULE_AddColumnAction_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // optional: opt_0
         {
@@ -3581,7 +4105,7 @@ public final class PgSqlParser {
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                { int __k = peek(); if (__k != KIND_INLINE_COLUMN_CI) { fail("ColumnKW", RULE_AddColumnAction_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_COLUMNKW) { fail("ColumnKW", RULE_AddColumnAction_KIND); break; } }
                 advance();
                 optOk_opt_0 = true;
             } while (false);
@@ -3596,8 +4120,7 @@ public final class PgSqlParser {
             int savedNodes_opt_1 = cst.currentNodeCount();
             boolean optOk_opt_1 = false;
             do {
-                if (peek() != KIND_IFNOTEXISTS) { fail("IfNotExists", RULE_AddColumnAction_KIND); break; }
-                advance();
+                if (!parseIfNotExists(self)) { break; }
                 optOk_opt_1 = true;
             } while (false);
             if (!optOk_opt_1) {
@@ -3613,12 +4136,12 @@ public final class PgSqlParser {
         return true;
     }
 
-    private boolean parseAlterColumnAction(int parent) {
+    private boolean parseDropColumnAction(int parent) {
         int firstTok = pos;
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
-        int self = cst.beginNode(RULE_AlterColumnAction_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_ALTER_CI) { fail("AlterKW", RULE_AlterColumnAction_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        int self = cst.beginNode(RULE_DropColumnAction_KIND, firstTok, parent);
+        { int __k = peek(); if (__k != KIND_DROPKW) { fail("DropKW", RULE_DropColumnAction_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // optional: opt_0
         {
@@ -3626,7 +4149,7 @@ public final class PgSqlParser {
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                { int __k = peek(); if (__k != KIND_INLINE_COLUMN_CI) { fail("ColumnKW", RULE_AlterColumnAction_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_COLUMNKW) { fail("ColumnKW", RULE_DropColumnAction_KIND); break; } }
                 advance();
                 optOk_opt_0 = true;
             } while (false);
@@ -3635,7 +4158,67 @@ public final class PgSqlParser {
                 cst.truncate(savedNodes_opt_0);
             }
         }
-        if (peek() != KIND_COLID) { fail("ColId", RULE_AlterColumnAction_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+        // optional: opt_1
+        {
+            int savedPos_opt_1 = pos;
+            int savedNodes_opt_1 = cst.currentNodeCount();
+            boolean optOk_opt_1 = false;
+            do {
+                if (!parseIfExists(self)) { break; }
+                optOk_opt_1 = true;
+            } while (false);
+            if (!optOk_opt_1) {
+                pos = savedPos_opt_1;
+                cst.truncate(savedNodes_opt_1);
+            }
+        }
+        if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_DropColumnAction_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+        advance();
+        // optional: opt_2
+        {
+            int savedPos_opt_2 = pos;
+            int savedNodes_opt_2 = cst.currentNodeCount();
+            boolean optOk_opt_2 = false;
+            do {
+                { int __k = peek(); if (__k != KIND_CASCADEKW && __k != KIND_RESTRICTKW) { fail("DropBehavior", RULE_DropColumnAction_KIND); break; } }
+                advance();
+                optOk_opt_2 = true;
+            } while (false);
+            if (!optOk_opt_2) {
+                pos = savedPos_opt_2;
+                cst.truncate(savedNodes_opt_2);
+            }
+        }
+        int lastTok = pos > firstTok ? pos - 1 : firstTok;
+        if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
+        if (lastTok < firstTok) lastTok = firstTok;
+        cst.endNode(self, lastTok);
+        return true;
+    }
+
+    private boolean parseAlterColumnAction(int parent) {
+        int firstTok = pos;
+        int savedPos = pos;
+        int savedNodes = cst.currentNodeCount();
+        int self = cst.beginNode(RULE_AlterColumnAction_KIND, firstTok, parent);
+        { int __k = peek(); if (__k != KIND_ALTERKW) { fail("AlterKW", RULE_AlterColumnAction_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        // optional: opt_0
+        {
+            int savedPos_opt_0 = pos;
+            int savedNodes_opt_0 = cst.currentNodeCount();
+            boolean optOk_opt_0 = false;
+            do {
+                { int __k = peek(); if (__k != KIND_COLUMNKW) { fail("ColumnKW", RULE_AlterColumnAction_KIND); break; } }
+                advance();
+                optOk_opt_0 = true;
+            } while (false);
+            if (!optOk_opt_0) {
+                pos = savedPos_opt_0;
+                cst.truncate(savedNodes_opt_0);
+            }
+        }
+        if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_AlterColumnAction_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         advance();
         if (!parseAlterColumnCmd(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
         int lastTok = pos > firstTok ? pos - 1 : firstTok;
@@ -3678,8 +4261,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    if (peek() != KIND_DROPDEFAULTCMD) { fail("DropDefaultCmd", RULE_AlterColumnCmd_KIND); break; }
-                    advance();
+                    if (!parseDropDefaultCmd(self)) { break; }
                     matched_alt_0 = true;
                 } while (false);
                 if (!matched_alt_0) {
@@ -3689,8 +4271,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    if (peek() != KIND_SETNOTNULLCMD) { fail("SetNotNullCmd", RULE_AlterColumnCmd_KIND); break; }
-                    advance();
+                    if (!parseSetNotNullCmd(self)) { break; }
                     matched_alt_0 = true;
                 } while (false);
                 if (!matched_alt_0) {
@@ -3700,8 +4281,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    if (peek() != KIND_DROPNOTNULLCMD) { fail("DropNotNullCmd", RULE_AlterColumnCmd_KIND); break; }
-                    advance();
+                    if (!parseDropNotNullCmd(self)) { break; }
                     matched_alt_0 = true;
                 } while (false);
                 if (!matched_alt_0) {
@@ -3721,8 +4301,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    if (peek() != KIND_SETSTORAGECMD) { fail("SetStorageCmd", RULE_AlterColumnCmd_KIND); break; }
-                    advance();
+                    if (!parseSetStorageCmd(self)) { break; }
                     matched_alt_0 = true;
                 } while (false);
                 if (!matched_alt_0) {
@@ -3742,8 +4321,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    if (peek() != KIND_DROPIDENTITYCMD) { fail("DropIdentityCmd", RULE_AlterColumnCmd_KIND); break; }
-                    advance();
+                    if (!parseDropIdentityCmd(self)) { break; }
                     matched_alt_0 = true;
                 } while (false);
                 if (!matched_alt_0) {
@@ -3771,7 +4349,7 @@ public final class PgSqlParser {
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                { int __k = peek(); if (__k != KIND_INLINE_SET_CI) { fail("SetKW", RULE_SetDataTypeCmd_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_SETKW) { fail("SetKW", RULE_SetDataTypeCmd_KIND); break; } }
                 advance();
                 optOk_opt_0 = true;
             } while (false);
@@ -3786,7 +4364,7 @@ public final class PgSqlParser {
             int savedNodes_opt_1 = cst.currentNodeCount();
             boolean optOk_opt_1 = false;
             do {
-                { int __k = peek(); if (__k != KIND_INLINE_DATA_CI) { fail("DataKW", RULE_SetDataTypeCmd_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_DATAKW) { fail("DataKW", RULE_SetDataTypeCmd_KIND); break; } }
                 advance();
                 optOk_opt_1 = true;
             } while (false);
@@ -3795,7 +4373,7 @@ public final class PgSqlParser {
                 cst.truncate(savedNodes_opt_1);
             }
         }
-        { int __k = peek(); if (__k != KIND_INLINE_TYPE_CI) { fail("TypeKW", RULE_SetDataTypeCmd_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_TYPEKW) { fail("TypeKW", RULE_SetDataTypeCmd_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         if (!parseDataType(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
@@ -3805,7 +4383,7 @@ public final class PgSqlParser {
             int savedNodes_opt_2 = cst.currentNodeCount();
             boolean optOk_opt_2 = false;
             do {
-                { int __k = peek(); if (__k != KIND_INLINE_USING_CI) { fail("UsingKW", RULE_SetDataTypeCmd_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_USINGKW) { fail("UsingKW", RULE_SetDataTypeCmd_KIND); break; } }
                 advance();
                 if (!parseExpr(self)) { break; }
                 optOk_opt_2 = true;
@@ -3827,12 +4405,64 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_SetDefaultCmd_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_SET_CI) { fail("SetKW", RULE_SetDefaultCmd_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_SETKW) { fail("SetKW", RULE_SetDefaultCmd_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
-        { int __k = peek(); if (__k != KIND_INLINE_DEFAULT_CI) { fail("DefaultKW", RULE_SetDefaultCmd_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_DEFAULTKW) { fail("DefaultKW", RULE_SetDefaultCmd_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         if (!parseExpr(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
+        int lastTok = pos > firstTok ? pos - 1 : firstTok;
+        if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
+        if (lastTok < firstTok) lastTok = firstTok;
+        cst.endNode(self, lastTok);
+        return true;
+    }
+
+    private boolean parseDropDefaultCmd(int parent) {
+        int firstTok = pos;
+        int savedPos = pos;
+        int savedNodes = cst.currentNodeCount();
+        int self = cst.beginNode(RULE_DropDefaultCmd_KIND, firstTok, parent);
+        { int __k = peek(); if (__k != KIND_DROPKW) { fail("DropKW", RULE_DropDefaultCmd_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        { int __k = peek(); if (__k != KIND_DEFAULTKW) { fail("DefaultKW", RULE_DropDefaultCmd_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        int lastTok = pos > firstTok ? pos - 1 : firstTok;
+        if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
+        if (lastTok < firstTok) lastTok = firstTok;
+        cst.endNode(self, lastTok);
+        return true;
+    }
+
+    private boolean parseSetNotNullCmd(int parent) {
+        int firstTok = pos;
+        int savedPos = pos;
+        int savedNodes = cst.currentNodeCount();
+        int self = cst.beginNode(RULE_SetNotNullCmd_KIND, firstTok, parent);
+        { int __k = peek(); if (__k != KIND_SETKW) { fail("SetKW", RULE_SetNotNullCmd_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        { int __k = peek(); if (__k != KIND_NOTKW) { fail("NotKW", RULE_SetNotNullCmd_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        { int __k = peek(); if (__k != KIND_NULLCONSTRAINT) { fail("NullKW", RULE_SetNotNullCmd_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        int lastTok = pos > firstTok ? pos - 1 : firstTok;
+        if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
+        if (lastTok < firstTok) lastTok = firstTok;
+        cst.endNode(self, lastTok);
+        return true;
+    }
+
+    private boolean parseDropNotNullCmd(int parent) {
+        int firstTok = pos;
+        int savedPos = pos;
+        int savedNodes = cst.currentNodeCount();
+        int self = cst.beginNode(RULE_DropNotNullCmd_KIND, firstTok, parent);
+        { int __k = peek(); if (__k != KIND_DROPKW) { fail("DropKW", RULE_DropNotNullCmd_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        { int __k = peek(); if (__k != KIND_NOTKW) { fail("NotKW", RULE_DropNotNullCmd_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        { int __k = peek(); if (__k != KIND_NULLCONSTRAINT) { fail("NullKW", RULE_DropNotNullCmd_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
         int lastTok = pos > firstTok ? pos - 1 : firstTok;
         if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
         if (lastTok < firstTok) lastTok = firstTok;
@@ -3845,11 +4475,29 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_SetStatisticsCmd_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_SET_CI) { fail("SetKW", RULE_SetStatisticsCmd_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_SETKW) { fail("SetKW", RULE_SetStatisticsCmd_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
-        { int __k = peek(); if (__k != KIND_INLINE_STATISTICS_CI) { fail("StatisticsKW", RULE_SetStatisticsCmd_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_STATISTICSKW) { fail("StatisticsKW", RULE_SetStatisticsCmd_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (!parseSignedNumericLiteral(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
+        int lastTok = pos > firstTok ? pos - 1 : firstTok;
+        if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
+        if (lastTok < firstTok) lastTok = firstTok;
+        cst.endNode(self, lastTok);
+        return true;
+    }
+
+    private boolean parseSetStorageCmd(int parent) {
+        int firstTok = pos;
+        int savedPos = pos;
+        int savedNodes = cst.currentNodeCount();
+        int self = cst.beginNode(RULE_SetStorageCmd_KIND, firstTok, parent);
+        { int __k = peek(); if (__k != KIND_SETKW) { fail("SetKW", RULE_SetStorageCmd_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        { int __k = peek(); if (__k != KIND_STORAGEKW) { fail("StorageKW", RULE_SetStorageCmd_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_SetStorageCmd_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+        advance();
         int lastTok = pos > firstTok ? pos - 1 : firstTok;
         if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
         if (lastTok < firstTok) lastTok = firstTok;
@@ -3862,9 +4510,9 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_AddIdentityCmd_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_ADD_CI) { fail("AddKW", RULE_AddIdentityCmd_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_ADDKW) { fail("AddKW", RULE_AddIdentityCmd_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
-        { int __k = peek(); if (__k != KIND_INLINE_GENERATED_CI) { fail("GeneratedKW", RULE_AddIdentityCmd_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_GENERATEDKW) { fail("GeneratedKW", RULE_AddIdentityCmd_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // choice: alt_0
         {
@@ -3874,7 +4522,7 @@ public final class PgSqlParser {
             boolean cutHit_alt_0 = false;
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_ALWAYS_CI) { fail("AlwaysKW", RULE_AddIdentityCmd_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_ALWAYSKW) { fail("AlwaysKW", RULE_AddIdentityCmd_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -3885,9 +4533,9 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_BY_CI) { fail("ByKW", RULE_AddIdentityCmd_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_BYKW) { fail("ByKW", RULE_AddIdentityCmd_KIND); break; } }
                     advance();
-                    { int __k = peek(); if (__k != KIND_INLINE_DEFAULT_CI) { fail("DefaultKW", RULE_AddIdentityCmd_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_DEFAULTKW) { fail("DefaultKW", RULE_AddIdentityCmd_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -3898,9 +4546,9 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0) { fail("<choice>", RULE_AddIdentityCmd_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         }
-        { int __k = peek(); if (__k != KIND_INLINE_AS_CI) { fail("AsKW", RULE_AddIdentityCmd_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_ASKW) { fail("AsKW", RULE_AddIdentityCmd_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
-        { int __k = peek(); if (__k != KIND_INLINE_IDENTITY_CI) { fail("IdentityKW", RULE_AddIdentityCmd_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_IDENTITYKW) { fail("IdentityKW", RULE_AddIdentityCmd_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // optional: opt_1
         {
@@ -3923,23 +4571,22 @@ public final class PgSqlParser {
         return true;
     }
 
-    private boolean parseAddConstraintAction(int parent) {
+    private boolean parseDropIdentityCmd(int parent) {
         int firstTok = pos;
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
-        int self = cst.beginNode(RULE_AddConstraintAction_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_ADD_CI) { fail("AddKW", RULE_AddConstraintAction_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        int self = cst.beginNode(RULE_DropIdentityCmd_KIND, firstTok, parent);
+        { int __k = peek(); if (__k != KIND_DROPKW) { fail("DropKW", RULE_DropIdentityCmd_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
-        // cut: no enclosing Choice — no-op
-        if (!parseTableConstraint(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
+        { int __k = peek(); if (__k != KIND_IDENTITYKW) { fail("IdentityKW", RULE_DropIdentityCmd_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
         // optional: opt_0
         {
             int savedPos_opt_0 = pos;
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                if (peek() != KIND_NOTVALIDCLAUSE) { fail("NotValidClause", RULE_AddConstraintAction_KIND); break; }
-                advance();
+                if (!parseIfExists(self)) { break; }
                 optOk_opt_0 = true;
             } while (false);
             if (!optOk_opt_0) {
@@ -3954,14 +4601,258 @@ public final class PgSqlParser {
         return true;
     }
 
+    private boolean parseAddConstraintAction(int parent) {
+        int firstTok = pos;
+        int savedPos = pos;
+        int savedNodes = cst.currentNodeCount();
+        int self = cst.beginNode(RULE_AddConstraintAction_KIND, firstTok, parent);
+        { int __k = peek(); if (__k != KIND_ADDKW) { fail("AddKW", RULE_AddConstraintAction_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        // cut: no enclosing Choice — no-op
+        if (!parseTableConstraint(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
+        // optional: opt_0
+        {
+            int savedPos_opt_0 = pos;
+            int savedNodes_opt_0 = cst.currentNodeCount();
+            boolean optOk_opt_0 = false;
+            do {
+                if (!parseNotValidClause(self)) { break; }
+                optOk_opt_0 = true;
+            } while (false);
+            if (!optOk_opt_0) {
+                pos = savedPos_opt_0;
+                cst.truncate(savedNodes_opt_0);
+            }
+        }
+        int lastTok = pos > firstTok ? pos - 1 : firstTok;
+        if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
+        if (lastTok < firstTok) lastTok = firstTok;
+        cst.endNode(self, lastTok);
+        return true;
+    }
+
+    private boolean parseDropConstraintAction(int parent) {
+        int firstTok = pos;
+        int savedPos = pos;
+        int savedNodes = cst.currentNodeCount();
+        int self = cst.beginNode(RULE_DropConstraintAction_KIND, firstTok, parent);
+        { int __k = peek(); if (__k != KIND_DROPKW) { fail("DropKW", RULE_DropConstraintAction_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        { int __k = peek(); if (__k != KIND_CONSTRAINTKW) { fail("ConstraintKW", RULE_DropConstraintAction_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        // cut: no enclosing Choice — no-op
+        // optional: opt_0
+        {
+            int savedPos_opt_0 = pos;
+            int savedNodes_opt_0 = cst.currentNodeCount();
+            boolean optOk_opt_0 = false;
+            do {
+                if (!parseIfExists(self)) { break; }
+                optOk_opt_0 = true;
+            } while (false);
+            if (!optOk_opt_0) {
+                pos = savedPos_opt_0;
+                cst.truncate(savedNodes_opt_0);
+            }
+        }
+        if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_DropConstraintAction_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+        advance();
+        // optional: opt_1
+        {
+            int savedPos_opt_1 = pos;
+            int savedNodes_opt_1 = cst.currentNodeCount();
+            boolean optOk_opt_1 = false;
+            do {
+                { int __k = peek(); if (__k != KIND_CASCADEKW && __k != KIND_RESTRICTKW) { fail("DropBehavior", RULE_DropConstraintAction_KIND); break; } }
+                advance();
+                optOk_opt_1 = true;
+            } while (false);
+            if (!optOk_opt_1) {
+                pos = savedPos_opt_1;
+                cst.truncate(savedNodes_opt_1);
+            }
+        }
+        int lastTok = pos > firstTok ? pos - 1 : firstTok;
+        if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
+        if (lastTok < firstTok) lastTok = firstTok;
+        cst.endNode(self, lastTok);
+        return true;
+    }
+
+    private boolean parseValidateConstraintAction(int parent) {
+        int firstTok = pos;
+        int savedPos = pos;
+        int savedNodes = cst.currentNodeCount();
+        int self = cst.beginNode(RULE_ValidateConstraintAction_KIND, firstTok, parent);
+        { int __k = peek(); if (__k != KIND_VALIDATEKW) { fail("ValidateKW", RULE_ValidateConstraintAction_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        { int __k = peek(); if (__k != KIND_CONSTRAINTKW) { fail("ConstraintKW", RULE_ValidateConstraintAction_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        // cut: no enclosing Choice — no-op
+        if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_ValidateConstraintAction_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+        advance();
+        int lastTok = pos > firstTok ? pos - 1 : firstTok;
+        if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
+        if (lastTok < firstTok) lastTok = firstTok;
+        cst.endNode(self, lastTok);
+        return true;
+    }
+
+    private boolean parseRenameConstraintAction(int parent) {
+        int firstTok = pos;
+        int savedPos = pos;
+        int savedNodes = cst.currentNodeCount();
+        int self = cst.beginNode(RULE_RenameConstraintAction_KIND, firstTok, parent);
+        { int __k = peek(); if (__k != KIND_RENAMEKW) { fail("RenameKW", RULE_RenameConstraintAction_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        { int __k = peek(); if (__k != KIND_CONSTRAINTKW) { fail("ConstraintKW", RULE_RenameConstraintAction_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        // cut: no enclosing Choice — no-op
+        if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_RenameConstraintAction_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+        advance();
+        { int __k = peek(); if (__k != KIND_TOKW) { fail("ToKW", RULE_RenameConstraintAction_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_RenameConstraintAction_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+        advance();
+        int lastTok = pos > firstTok ? pos - 1 : firstTok;
+        if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
+        if (lastTok < firstTok) lastTok = firstTok;
+        cst.endNode(self, lastTok);
+        return true;
+    }
+
+    private boolean parseNotValidClause(int parent) {
+        int firstTok = pos;
+        int savedPos = pos;
+        int savedNodes = cst.currentNodeCount();
+        int self = cst.beginNode(RULE_NotValidClause_KIND, firstTok, parent);
+        { int __k = peek(); if (__k != KIND_NOTKW) { fail("NotKW", RULE_NotValidClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        { int __k = peek(); if (__k != KIND_VALIDKW) { fail("ValidKW", RULE_NotValidClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        int lastTok = pos > firstTok ? pos - 1 : firstTok;
+        if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
+        if (lastTok < firstTok) lastTok = firstTok;
+        cst.endNode(self, lastTok);
+        return true;
+    }
+
+    private boolean parseAlterOwnerAction(int parent) {
+        int firstTok = pos;
+        int savedPos = pos;
+        int savedNodes = cst.currentNodeCount();
+        int self = cst.beginNode(RULE_AlterOwnerAction_KIND, firstTok, parent);
+        { int __k = peek(); if (__k != KIND_OWNERKW) { fail("OwnerKW", RULE_AlterOwnerAction_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        { int __k = peek(); if (__k != KIND_TOKW) { fail("ToKW", RULE_AlterOwnerAction_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_AlterOwnerAction_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+        advance();
+        int lastTok = pos > firstTok ? pos - 1 : firstTok;
+        if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
+        if (lastTok < firstTok) lastTok = firstTok;
+        cst.endNode(self, lastTok);
+        return true;
+    }
+
+    private boolean parseRenameAction(int parent) {
+        int firstTok = pos;
+        int savedPos = pos;
+        int savedNodes = cst.currentNodeCount();
+        int self = cst.beginNode(RULE_RenameAction_KIND, firstTok, parent);
+        { int __k = peek(); if (__k != KIND_RENAMEKW) { fail("RenameKW", RULE_RenameAction_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        // choice: alt_0
+        {
+            int savedPos_alt_0 = pos;
+            int savedNodes_alt_0 = cst.currentNodeCount();
+            boolean matched_alt_0 = false;
+            boolean cutHit_alt_0 = false;
+            if (!matched_alt_0 && !cutHit_alt_0) {
+                do {
+                    { int __k = peek(); if (__k != KIND_COLUMNKW) { fail("ColumnKW", RULE_RenameAction_KIND); break; } }
+                    advance();
+                    if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_RenameAction_KIND); break; }
+                    advance();
+                    { int __k = peek(); if (__k != KIND_TOKW) { fail("ToKW", RULE_RenameAction_KIND); break; } }
+                    advance();
+                    if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_RenameAction_KIND); break; }
+                    advance();
+                    matched_alt_0 = true;
+                } while (false);
+                if (!matched_alt_0) {
+                    pos = savedPos_alt_0;
+                    cst.truncate(savedNodes_alt_0);
+                }
+            }
+            if (!matched_alt_0 && !cutHit_alt_0) {
+                do {
+                    { int __k = peek(); if (__k != KIND_TOKW) { fail("ToKW", RULE_RenameAction_KIND); break; } }
+                    advance();
+                    if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_RenameAction_KIND); break; }
+                    advance();
+                    matched_alt_0 = true;
+                } while (false);
+                if (!matched_alt_0) {
+                    pos = savedPos_alt_0;
+                    cst.truncate(savedNodes_alt_0);
+                }
+            }
+            if (!matched_alt_0) { fail("<choice>", RULE_RenameAction_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+        }
+        int lastTok = pos > firstTok ? pos - 1 : firstTok;
+        if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
+        if (lastTok < firstTok) lastTok = firstTok;
+        cst.endNode(self, lastTok);
+        return true;
+    }
+
+    private boolean parseSetSchemaAction(int parent) {
+        int firstTok = pos;
+        int savedPos = pos;
+        int savedNodes = cst.currentNodeCount();
+        int self = cst.beginNode(RULE_SetSchemaAction_KIND, firstTok, parent);
+        { int __k = peek(); if (__k != KIND_SETKW) { fail("SetKW", RULE_SetSchemaAction_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        { int __k = peek(); if (__k != KIND_SCHEMAKW) { fail("SchemaKW", RULE_SetSchemaAction_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        // cut: no enclosing Choice — no-op
+        if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_SetSchemaAction_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+        advance();
+        int lastTok = pos > firstTok ? pos - 1 : firstTok;
+        if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
+        if (lastTok < firstTok) lastTok = firstTok;
+        cst.endNode(self, lastTok);
+        return true;
+    }
+
+    private boolean parseSetTablespaceAction(int parent) {
+        int firstTok = pos;
+        int savedPos = pos;
+        int savedNodes = cst.currentNodeCount();
+        int self = cst.beginNode(RULE_SetTablespaceAction_KIND, firstTok, parent);
+        { int __k = peek(); if (__k != KIND_SETKW) { fail("SetKW", RULE_SetTablespaceAction_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        { int __k = peek(); if (__k != KIND_TABLESPACEKW) { fail("TablespaceKW", RULE_SetTablespaceAction_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        // cut: no enclosing Choice — no-op
+        if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_SetTablespaceAction_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+        advance();
+        int lastTok = pos > firstTok ? pos - 1 : firstTok;
+        if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
+        if (lastTok < firstTok) lastTok = firstTok;
+        cst.endNode(self, lastTok);
+        return true;
+    }
+
     private boolean parseAttachPartition(int parent) {
         int firstTok = pos;
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_AttachPartition_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_ATTACH_CI) { fail("AttachKW", RULE_AttachPartition_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_ATTACHKW) { fail("AttachKW", RULE_AttachPartition_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
-        { int __k = peek(); if (__k != KIND_INLINE_PARTITION_CI) { fail("PartitionKW", RULE_AttachPartition_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_PARTITIONKW) { fail("PartitionKW", RULE_AttachPartition_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         if (!parseQualifiedName(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
@@ -3978,9 +4869,9 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_DetachPartition_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_DETACH_CI) { fail("DetachKW", RULE_DetachPartition_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_DETACHKW) { fail("DetachKW", RULE_DetachPartition_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
-        { int __k = peek(); if (__k != KIND_INLINE_PARTITION_CI) { fail("PartitionKW", RULE_DetachPartition_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_PARTITIONKW) { fail("PartitionKW", RULE_DetachPartition_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         if (!parseQualifiedName(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
@@ -3998,7 +4889,7 @@ public final class PgSqlParser {
                     boolean cutHit_alt_1 = false;
                     if (!matched_alt_1 && !cutHit_alt_1) {
                         do {
-                            { int __k = peek(); if (__k != KIND_INLINE_CONCURRENTLY_CI) { fail("ConcurrentlyKW", RULE_DetachPartition_KIND); break; } }
+                            { int __k = peek(); if (__k != KIND_CONCURRENTLYKW) { fail("ConcurrentlyKW", RULE_DetachPartition_KIND); break; } }
                             advance();
                             matched_alt_1 = true;
                         } while (false);
@@ -4009,7 +4900,7 @@ public final class PgSqlParser {
                     }
                     if (!matched_alt_1 && !cutHit_alt_1) {
                         do {
-                            { int __k = peek(); if (__k != KIND_INLINE_FINALIZE_CI) { fail("FinalizeKW", RULE_DetachPartition_KIND); break; } }
+                            { int __k = peek(); if (__k != KIND_FINALIZEKW) { fail("FinalizeKW", RULE_DetachPartition_KIND); break; } }
                             advance();
                             matched_alt_1 = true;
                         } while (false);
@@ -4039,9 +4930,9 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_ForValuesClause_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_FOR_CI) { fail("ForKW", RULE_ForValuesClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_FORKW) { fail("ForKW", RULE_ForValuesClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
-        { int __k = peek(); if (__k != KIND_INLINE_VALUES_CI) { fail("ValuesKW", RULE_ForValuesClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_VALUESKW) { fail("ValuesKW", RULE_ForValuesClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // choice: alt_0
         {
@@ -4051,7 +4942,7 @@ public final class PgSqlParser {
             boolean cutHit_alt_0 = false;
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_IN_CI) { fail("InKW", RULE_ForValuesClause_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_INKW) { fail("InKW", RULE_ForValuesClause_KIND); break; } }
                     advance();
                     if (peek() != KIND_INLINE__LPAREN) { fail("'('", RULE_ForValuesClause_KIND); break; }
                     advance();
@@ -4067,30 +4958,14 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_FROM_CI) { fail("FromKW", RULE_ForValuesClause_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_FROMKW) { fail("FromKW", RULE_ForValuesClause_KIND); break; } }
                     advance();
                     if (peek() != KIND_INLINE__LPAREN) { fail("'('", RULE_ForValuesClause_KIND); break; }
                     advance();
                     if (!parseExprList(self)) { break; }
                     if (peek() != KIND_INLINE__RPAREN) { fail("')'", RULE_ForValuesClause_KIND); break; }
                     advance();
-                    { int __k = peek(); if (__k != KIND_INLINE_TO_CI) { fail("ToKW", RULE_ForValuesClause_KIND); break; } }
-                    advance();
-                    if (peek() != KIND_INLINE__LPAREN) { fail("'('", RULE_ForValuesClause_KIND); break; }
-                    advance();
-                    if (!parseExprList(self)) { break; }
-                    if (peek() != KIND_INLINE__RPAREN) { fail("')'", RULE_ForValuesClause_KIND); break; }
-                    advance();
-                    matched_alt_0 = true;
-                } while (false);
-                if (!matched_alt_0) {
-                    pos = savedPos_alt_0;
-                    cst.truncate(savedNodes_alt_0);
-                }
-            }
-            if (!matched_alt_0 && !cutHit_alt_0) {
-                do {
-                    { int __k = peek(); if (__k != KIND_INLINE_WITH_CI) { fail("WithKW", RULE_ForValuesClause_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_TOKW) { fail("ToKW", RULE_ForValuesClause_KIND); break; } }
                     advance();
                     if (peek() != KIND_INLINE__LPAREN) { fail("'('", RULE_ForValuesClause_KIND); break; }
                     advance();
@@ -4106,7 +4981,23 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_DEFAULT_CI) { fail("DefaultKW", RULE_ForValuesClause_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_WITHKW) { fail("WithKW", RULE_ForValuesClause_KIND); break; } }
+                    advance();
+                    if (peek() != KIND_INLINE__LPAREN) { fail("'('", RULE_ForValuesClause_KIND); break; }
+                    advance();
+                    if (!parseExprList(self)) { break; }
+                    if (peek() != KIND_INLINE__RPAREN) { fail("')'", RULE_ForValuesClause_KIND); break; }
+                    advance();
+                    matched_alt_0 = true;
+                } while (false);
+                if (!matched_alt_0) {
+                    pos = savedPos_alt_0;
+                    cst.truncate(savedNodes_alt_0);
+                }
+            }
+            if (!matched_alt_0 && !cutHit_alt_0) {
+                do {
+                    { int __k = peek(); if (__k != KIND_DEFAULTKW) { fail("DefaultKW", RULE_ForValuesClause_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -4129,7 +5020,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_DropTableStmt_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_TABLE_CI) { fail("TableKW", RULE_DropTableStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_TABLEKW) { fail("TableKW", RULE_DropTableStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         // optional: opt_0
@@ -4138,8 +5029,7 @@ public final class PgSqlParser {
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                if (peek() != KIND_IFEXISTS) { fail("IfExists", RULE_DropTableStmt_KIND); break; }
-                advance();
+                if (!parseIfExists(self)) { break; }
                 optOk_opt_0 = true;
             } while (false);
             if (!optOk_opt_0) {
@@ -4154,7 +5044,7 @@ public final class PgSqlParser {
             int savedNodes_opt_1 = cst.currentNodeCount();
             boolean optOk_opt_1 = false;
             do {
-                if (peek() != KIND_DROPBEHAVIOR) { fail("DropBehavior", RULE_DropTableStmt_KIND); break; }
+                { int __k = peek(); if (__k != KIND_CASCADEKW && __k != KIND_RESTRICTKW) { fail("DropBehavior", RULE_DropTableStmt_KIND); break; } }
                 advance();
                 optOk_opt_1 = true;
             } while (false);
@@ -4181,7 +5071,7 @@ public final class PgSqlParser {
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                { int __k = peek(); if (__k != KIND_INLINE_UNIQUE_CI) { fail("UniqueKW", RULE_CreateIndexStmt_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_UNIQUECOLCONSTRAINT) { fail("UniqueKW", RULE_CreateIndexStmt_KIND); break; } }
                 advance();
                 optOk_opt_0 = true;
             } while (false);
@@ -4190,7 +5080,7 @@ public final class PgSqlParser {
                 cst.truncate(savedNodes_opt_0);
             }
         }
-        { int __k = peek(); if (__k != KIND_INLINE_INDEX_CI) { fail("IndexKW", RULE_CreateIndexStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_INDEXKW) { fail("IndexKW", RULE_CreateIndexStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         // optional: opt_1
@@ -4199,7 +5089,7 @@ public final class PgSqlParser {
             int savedNodes_opt_1 = cst.currentNodeCount();
             boolean optOk_opt_1 = false;
             do {
-                { int __k = peek(); if (__k != KIND_INLINE_CONCURRENTLY_CI) { fail("ConcurrentlyKW", RULE_CreateIndexStmt_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_CONCURRENTLYKW) { fail("ConcurrentlyKW", RULE_CreateIndexStmt_KIND); break; } }
                 advance();
                 optOk_opt_1 = true;
             } while (false);
@@ -4214,8 +5104,7 @@ public final class PgSqlParser {
             int savedNodes_opt_2 = cst.currentNodeCount();
             boolean optOk_opt_2 = false;
             do {
-                if (peek() != KIND_IFNOTEXISTS) { fail("IfNotExists", RULE_CreateIndexStmt_KIND); break; }
-                advance();
+                if (!parseIfNotExists(self)) { break; }
                 optOk_opt_2 = true;
             } while (false);
             if (!optOk_opt_2) {
@@ -4231,9 +5120,9 @@ public final class PgSqlParser {
             boolean cutHit_alt_3 = false;
             if (!matched_alt_3 && !cutHit_alt_3) {
                 do {
-                    if (peek() != KIND_COLID) { fail("ColId", RULE_CreateIndexStmt_KIND); break; }
+                    if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_CreateIndexStmt_KIND); break; }
                     advance();
-                    { int __k = peek(); if (__k != KIND_INLINE_ON_CI) { fail("OnKW", RULE_CreateIndexStmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_ONKW) { fail("OnKW", RULE_CreateIndexStmt_KIND); break; } }
                     advance();
                     matched_alt_3 = true;
                 } while (false);
@@ -4244,7 +5133,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_3 && !cutHit_alt_3) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_ON_CI) { fail("OnKW", RULE_CreateIndexStmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_ONKW) { fail("OnKW", RULE_CreateIndexStmt_KIND); break; } }
                     advance();
                     matched_alt_3 = true;
                 } while (false);
@@ -4261,7 +5150,7 @@ public final class PgSqlParser {
             int savedNodes_opt_4 = cst.currentNodeCount();
             boolean optOk_opt_4 = false;
             do {
-                { int __k = peek(); if (__k != KIND_INLINE_ONLY_CI) { fail("OnlyKW", RULE_CreateIndexStmt_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_ONLYKW) { fail("OnlyKW", RULE_CreateIndexStmt_KIND); break; } }
                 advance();
                 optOk_opt_4 = true;
             } while (false);
@@ -4277,8 +5166,7 @@ public final class PgSqlParser {
             int savedNodes_opt_5 = cst.currentNodeCount();
             boolean optOk_opt_5 = false;
             do {
-                if (peek() != KIND_USINGCLAUSE) { fail("UsingClause", RULE_CreateIndexStmt_KIND); break; }
-                advance();
+                if (!parseUsingClause(self)) { break; }
                 optOk_opt_5 = true;
             } while (false);
             if (!optOk_opt_5) {
@@ -4311,8 +5199,7 @@ public final class PgSqlParser {
             int savedNodes_opt_7 = cst.currentNodeCount();
             boolean optOk_opt_7 = false;
             do {
-                if (peek() != KIND_NULLSDISTINCT) { fail("NullsDistinct", RULE_CreateIndexStmt_KIND); break; }
-                advance();
+                if (!parseNullsDistinct(self)) { break; }
                 optOk_opt_7 = true;
             } while (false);
             if (!optOk_opt_7) {
@@ -4340,8 +5227,7 @@ public final class PgSqlParser {
             int savedNodes_opt_9 = cst.currentNodeCount();
             boolean optOk_opt_9 = false;
             do {
-                if (peek() != KIND_TABLESPACECLAUSE) { fail("TablespaceClause", RULE_CreateIndexStmt_KIND); break; }
-                advance();
+                if (!parseTablespaceClause(self)) { break; }
                 optOk_opt_9 = true;
             } while (false);
             if (!optOk_opt_9) {
@@ -4363,6 +5249,23 @@ public final class PgSqlParser {
                 cst.truncate(savedNodes_opt_10);
             }
         }
+        int lastTok = pos > firstTok ? pos - 1 : firstTok;
+        if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
+        if (lastTok < firstTok) lastTok = firstTok;
+        cst.endNode(self, lastTok);
+        return true;
+    }
+
+    private boolean parseUsingClause(int parent) {
+        int firstTok = pos;
+        int savedPos = pos;
+        int savedNodes = cst.currentNodeCount();
+        int self = cst.beginNode(RULE_UsingClause_KIND, firstTok, parent);
+        { int __k = peek(); if (__k != KIND_USINGKW) { fail("UsingKW", RULE_UsingClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        // cut: no enclosing Choice — no-op
+        if (java.util.Arrays.binarySearch(ALIAS_INDEXMETHOD, peek()) < 0) { fail("IndexMethod", RULE_UsingClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+        advance();
         int lastTok = pos > firstTok ? pos - 1 : firstTok;
         if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
         if (lastTok < firstTok) lastTok = firstTok;
@@ -4424,7 +5327,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    if (peek() != KIND_COLID) { fail("ColId", RULE_IndexElem_KIND); break; }
+                    if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_IndexElem_KIND); break; }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -4469,7 +5372,7 @@ public final class PgSqlParser {
             int savedNodes_opt_2 = cst.currentNodeCount();
             boolean optOk_opt_2 = false;
             do {
-                if (peek() != KIND_ORDERSPEC) { fail("OrderSpec", RULE_IndexElem_KIND); break; }
+                { int __k = peek(); if (__k != KIND_ASCKW && __k != KIND_DESCKW) { fail("OrderSpec", RULE_IndexElem_KIND); break; } }
                 advance();
                 optOk_opt_2 = true;
             } while (false);
@@ -4484,8 +5387,7 @@ public final class PgSqlParser {
             int savedNodes_opt_3 = cst.currentNodeCount();
             boolean optOk_opt_3 = false;
             do {
-                if (peek() != KIND_NULLSORDER) { fail("NullsOrder", RULE_IndexElem_KIND); break; }
-                advance();
+                if (!parseNullsOrder(self)) { break; }
                 optOk_opt_3 = true;
             } while (false);
             if (!optOk_opt_3) {
@@ -4505,7 +5407,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_OpClass_KIND, firstTok, parent);
-        if (peek() != KIND_COLID) { fail("ColId", RULE_OpClass_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+        if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_OpClass_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         advance();
         // optional: opt_0
         {
@@ -4532,12 +5434,56 @@ public final class PgSqlParser {
         return true;
     }
 
+    private boolean parseNullsOrder(int parent) {
+        int firstTok = pos;
+        int savedPos = pos;
+        int savedNodes = cst.currentNodeCount();
+        int self = cst.beginNode(RULE_NullsOrder_KIND, firstTok, parent);
+        { int __k = peek(); if (__k != KIND_NULLSKW) { fail("NullsKW", RULE_NullsOrder_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        // choice: alt_0
+        {
+            int savedPos_alt_0 = pos;
+            int savedNodes_alt_0 = cst.currentNodeCount();
+            boolean matched_alt_0 = false;
+            boolean cutHit_alt_0 = false;
+            if (!matched_alt_0 && !cutHit_alt_0) {
+                do {
+                    { int __k = peek(); if (__k != KIND_FIRSTKW) { fail("FirstKW", RULE_NullsOrder_KIND); break; } }
+                    advance();
+                    matched_alt_0 = true;
+                } while (false);
+                if (!matched_alt_0) {
+                    pos = savedPos_alt_0;
+                    cst.truncate(savedNodes_alt_0);
+                }
+            }
+            if (!matched_alt_0 && !cutHit_alt_0) {
+                do {
+                    { int __k = peek(); if (__k != KIND_LASTKW) { fail("LastKW", RULE_NullsOrder_KIND); break; } }
+                    advance();
+                    matched_alt_0 = true;
+                } while (false);
+                if (!matched_alt_0) {
+                    pos = savedPos_alt_0;
+                    cst.truncate(savedNodes_alt_0);
+                }
+            }
+            if (!matched_alt_0) { fail("<choice>", RULE_NullsOrder_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+        }
+        int lastTok = pos > firstTok ? pos - 1 : firstTok;
+        if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
+        if (lastTok < firstTok) lastTok = firstTok;
+        cst.endNode(self, lastTok);
+        return true;
+    }
+
     private boolean parseAlterIndexStmt(int parent) {
         int firstTok = pos;
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_AlterIndexStmt_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_INDEX_CI) { fail("IndexKW", RULE_AlterIndexStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_INDEXKW) { fail("IndexKW", RULE_AlterIndexStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         // optional: opt_0
@@ -4546,8 +5492,7 @@ public final class PgSqlParser {
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                if (peek() != KIND_IFEXISTS) { fail("IfExists", RULE_AlterIndexStmt_KIND); break; }
-                advance();
+                if (!parseIfExists(self)) { break; }
                 optOk_opt_0 = true;
             } while (false);
             if (!optOk_opt_0) {
@@ -4564,11 +5509,11 @@ public final class PgSqlParser {
             boolean cutHit_alt_1 = false;
             if (!matched_alt_1 && !cutHit_alt_1) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_RENAME_CI) { fail("RenameKW", RULE_AlterIndexStmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_RENAMEKW) { fail("RenameKW", RULE_AlterIndexStmt_KIND); break; } }
                     advance();
-                    { int __k = peek(); if (__k != KIND_INLINE_TO_CI) { fail("ToKW", RULE_AlterIndexStmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_TOKW) { fail("ToKW", RULE_AlterIndexStmt_KIND); break; } }
                     advance();
-                    if (peek() != KIND_COLID) { fail("ColId", RULE_AlterIndexStmt_KIND); break; }
+                    if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_AlterIndexStmt_KIND); break; }
                     advance();
                     matched_alt_1 = true;
                 } while (false);
@@ -4579,11 +5524,11 @@ public final class PgSqlParser {
             }
             if (!matched_alt_1 && !cutHit_alt_1) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_SET_CI) { fail("SetKW", RULE_AlterIndexStmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_SETKW) { fail("SetKW", RULE_AlterIndexStmt_KIND); break; } }
                     advance();
-                    { int __k = peek(); if (__k != KIND_INLINE_TABLESPACE_CI) { fail("TablespaceKW", RULE_AlterIndexStmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_TABLESPACEKW) { fail("TablespaceKW", RULE_AlterIndexStmt_KIND); break; } }
                     advance();
-                    if (peek() != KIND_COLID) { fail("ColId", RULE_AlterIndexStmt_KIND); break; }
+                    if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_AlterIndexStmt_KIND); break; }
                     advance();
                     matched_alt_1 = true;
                 } while (false);
@@ -4616,7 +5561,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_DropIndexStmt_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_INDEX_CI) { fail("IndexKW", RULE_DropIndexStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_INDEXKW) { fail("IndexKW", RULE_DropIndexStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         // optional: opt_0
@@ -4625,7 +5570,7 @@ public final class PgSqlParser {
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                { int __k = peek(); if (__k != KIND_INLINE_CONCURRENTLY_CI) { fail("ConcurrentlyKW", RULE_DropIndexStmt_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_CONCURRENTLYKW) { fail("ConcurrentlyKW", RULE_DropIndexStmt_KIND); break; } }
                 advance();
                 optOk_opt_0 = true;
             } while (false);
@@ -4640,8 +5585,7 @@ public final class PgSqlParser {
             int savedNodes_opt_1 = cst.currentNodeCount();
             boolean optOk_opt_1 = false;
             do {
-                if (peek() != KIND_IFEXISTS) { fail("IfExists", RULE_DropIndexStmt_KIND); break; }
-                advance();
+                if (!parseIfExists(self)) { break; }
                 optOk_opt_1 = true;
             } while (false);
             if (!optOk_opt_1) {
@@ -4656,7 +5600,7 @@ public final class PgSqlParser {
             int savedNodes_opt_2 = cst.currentNodeCount();
             boolean optOk_opt_2 = false;
             do {
-                if (peek() != KIND_DROPBEHAVIOR) { fail("DropBehavior", RULE_DropIndexStmt_KIND); break; }
+                { int __k = peek(); if (__k != KIND_CASCADEKW && __k != KIND_RESTRICTKW) { fail("DropBehavior", RULE_DropIndexStmt_KIND); break; } }
                 advance();
                 optOk_opt_2 = true;
             } while (false);
@@ -4677,7 +5621,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_CreateSequenceStmt_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_SEQUENCE_CI) { fail("SequenceKW", RULE_CreateSequenceStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_SEQUENCEKW) { fail("SequenceKW", RULE_CreateSequenceStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         // optional: opt_0
@@ -4686,8 +5630,7 @@ public final class PgSqlParser {
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                if (peek() != KIND_IFNOTEXISTS) { fail("IfNotExists", RULE_CreateSequenceStmt_KIND); break; }
-                advance();
+                if (!parseIfNotExists(self)) { break; }
                 optOk_opt_0 = true;
             } while (false);
             if (!optOk_opt_0) {
@@ -4722,7 +5665,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_AlterSequenceStmt_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_SEQUENCE_CI) { fail("SequenceKW", RULE_AlterSequenceStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_SEQUENCEKW) { fail("SequenceKW", RULE_AlterSequenceStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         // optional: opt_0
@@ -4731,8 +5674,7 @@ public final class PgSqlParser {
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                if (peek() != KIND_IFEXISTS) { fail("IfExists", RULE_AlterSequenceStmt_KIND); break; }
-                advance();
+                if (!parseIfExists(self)) { break; }
                 optOk_opt_0 = true;
             } while (false);
             if (!optOk_opt_0) {
@@ -4754,7 +5696,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_DropSequenceStmt_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_SEQUENCE_CI) { fail("SequenceKW", RULE_DropSequenceStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_SEQUENCEKW) { fail("SequenceKW", RULE_DropSequenceStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         // optional: opt_0
@@ -4763,8 +5705,7 @@ public final class PgSqlParser {
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                if (peek() != KIND_IFEXISTS) { fail("IfExists", RULE_DropSequenceStmt_KIND); break; }
-                advance();
+                if (!parseIfExists(self)) { break; }
                 optOk_opt_0 = true;
             } while (false);
             if (!optOk_opt_0) {
@@ -4779,7 +5720,7 @@ public final class PgSqlParser {
             int savedNodes_opt_1 = cst.currentNodeCount();
             boolean optOk_opt_1 = false;
             do {
-                if (peek() != KIND_DROPBEHAVIOR) { fail("DropBehavior", RULE_DropSequenceStmt_KIND); break; }
+                { int __k = peek(); if (__k != KIND_CASCADEKW && __k != KIND_RESTRICTKW) { fail("DropBehavior", RULE_DropSequenceStmt_KIND); break; } }
                 advance();
                 optOk_opt_1 = true;
             } while (false);
@@ -4837,7 +5778,7 @@ public final class PgSqlParser {
             boolean cutHit_alt_0 = false;
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_AS_CI) { fail("AsKW", RULE_SequenceOption_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_ASKW) { fail("AsKW", RULE_SequenceOption_KIND); break; } }
                     advance();
                     if (!parseDataType(self)) { break; }
                     matched_alt_0 = true;
@@ -4849,7 +5790,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_INCREMENT_CI) { fail("IncrementKW", RULE_SequenceOption_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_INCREMENTKW) { fail("IncrementKW", RULE_SequenceOption_KIND); break; } }
                     advance();
                     // optional: opt_1
                     {
@@ -4857,7 +5798,7 @@ public final class PgSqlParser {
                         int savedNodes_opt_1 = cst.currentNodeCount();
                         boolean optOk_opt_1 = false;
                         do {
-                            { int __k = peek(); if (__k != KIND_INLINE_BY_CI) { fail("ByKW", RULE_SequenceOption_KIND); break; } }
+                            { int __k = peek(); if (__k != KIND_BYKW) { fail("ByKW", RULE_SequenceOption_KIND); break; } }
                             advance();
                             optOk_opt_1 = true;
                         } while (false);
@@ -4884,7 +5825,7 @@ public final class PgSqlParser {
                         boolean cutHit_alt_2 = false;
                         if (!matched_alt_2 && !cutHit_alt_2) {
                             do {
-                                { int __k = peek(); if (__k != KIND_INLINE_MINVALUE_CI) { fail("MinvalueKW", RULE_SequenceOption_KIND); break; } }
+                                { int __k = peek(); if (__k != KIND_MINVALUEKW) { fail("MinvalueKW", RULE_SequenceOption_KIND); break; } }
                                 advance();
                                 matched_alt_2 = true;
                             } while (false);
@@ -4895,7 +5836,7 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_2 && !cutHit_alt_2) {
                             do {
-                                { int __k = peek(); if (__k != KIND_INLINE_MAXVALUE_CI) { fail("MaxvalueKW", RULE_SequenceOption_KIND); break; } }
+                                { int __k = peek(); if (__k != KIND_MAXVALUEKW) { fail("MaxvalueKW", RULE_SequenceOption_KIND); break; } }
                                 advance();
                                 matched_alt_2 = true;
                             } while (false);
@@ -4916,7 +5857,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_NO_CI) { fail("NoKW", RULE_SequenceOption_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_NOKW) { fail("NoKW", RULE_SequenceOption_KIND); break; } }
                     advance();
                     // choice: alt_3
                     {
@@ -4926,7 +5867,7 @@ public final class PgSqlParser {
                         boolean cutHit_alt_3 = false;
                         if (!matched_alt_3 && !cutHit_alt_3) {
                             do {
-                                { int __k = peek(); if (__k != KIND_INLINE_MINVALUE_CI) { fail("MinvalueKW", RULE_SequenceOption_KIND); break; } }
+                                { int __k = peek(); if (__k != KIND_MINVALUEKW) { fail("MinvalueKW", RULE_SequenceOption_KIND); break; } }
                                 advance();
                                 matched_alt_3 = true;
                             } while (false);
@@ -4937,7 +5878,7 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_3 && !cutHit_alt_3) {
                             do {
-                                { int __k = peek(); if (__k != KIND_INLINE_MAXVALUE_CI) { fail("MaxvalueKW", RULE_SequenceOption_KIND); break; } }
+                                { int __k = peek(); if (__k != KIND_MAXVALUEKW) { fail("MaxvalueKW", RULE_SequenceOption_KIND); break; } }
                                 advance();
                                 matched_alt_3 = true;
                             } while (false);
@@ -4948,7 +5889,7 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_3 && !cutHit_alt_3) {
                             do {
-                                { int __k = peek(); if (__k != KIND_INLINE_CYCLE_CI) { fail("CycleKW", RULE_SequenceOption_KIND); break; } }
+                                { int __k = peek(); if (__k != KIND_CYCLEKW) { fail("CycleKW", RULE_SequenceOption_KIND); break; } }
                                 advance();
                                 matched_alt_3 = true;
                             } while (false);
@@ -4968,7 +5909,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_START_CI) { fail("StartKW", RULE_SequenceOption_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_STARTKW) { fail("StartKW", RULE_SequenceOption_KIND); break; } }
                     advance();
                     // optional: opt_4
                     {
@@ -4976,7 +5917,7 @@ public final class PgSqlParser {
                         int savedNodes_opt_4 = cst.currentNodeCount();
                         boolean optOk_opt_4 = false;
                         do {
-                            { int __k = peek(); if (__k != KIND_INLINE_WITH_CI) { fail("WithKW", RULE_SequenceOption_KIND); break; } }
+                            { int __k = peek(); if (__k != KIND_WITHKW) { fail("WithKW", RULE_SequenceOption_KIND); break; } }
                             advance();
                             optOk_opt_4 = true;
                         } while (false);
@@ -4995,7 +5936,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_RESTART_CI) { fail("RestartKW", RULE_SequenceOption_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_RESTARTKW) { fail("RestartKW", RULE_SequenceOption_KIND); break; } }
                     advance();
                     // optional: opt_5
                     {
@@ -5009,7 +5950,7 @@ public final class PgSqlParser {
                                 int savedNodes_opt_6 = cst.currentNodeCount();
                                 boolean optOk_opt_6 = false;
                                 do {
-                                    { int __k = peek(); if (__k != KIND_INLINE_WITH_CI) { fail("WithKW", RULE_SequenceOption_KIND); break; } }
+                                    { int __k = peek(); if (__k != KIND_WITHKW) { fail("WithKW", RULE_SequenceOption_KIND); break; } }
                                     advance();
                                     optOk_opt_6 = true;
                                 } while (false);
@@ -5035,7 +5976,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_CACHE_CI) { fail("CacheKW", RULE_SequenceOption_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_CACHEKW) { fail("CacheKW", RULE_SequenceOption_KIND); break; } }
                     advance();
                     if (!parseSignedNumericLiteral(self)) { break; }
                     matched_alt_0 = true;
@@ -5047,7 +5988,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_CYCLE_CI) { fail("CycleKW", RULE_SequenceOption_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_CYCLEKW) { fail("CycleKW", RULE_SequenceOption_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -5058,9 +5999,9 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_OWNED_CI) { fail("OwnedKW", RULE_SequenceOption_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_OWNEDKW) { fail("OwnedKW", RULE_SequenceOption_KIND); break; } }
                     advance();
-                    { int __k = peek(); if (__k != KIND_INLINE_BY_CI) { fail("ByKW", RULE_SequenceOption_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_BYKW) { fail("ByKW", RULE_SequenceOption_KIND); break; } }
                     advance();
                     // choice: alt_7
                     {
@@ -5080,7 +6021,7 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_7 && !cutHit_alt_7) {
                             do {
-                                { int __k = peek(); if (__k != KIND_INLINE_NONE_CI) { fail("NoneKW", RULE_SequenceOption_KIND); break; } }
+                                { int __k = peek(); if (__k != KIND_NONEKW) { fail("NoneKW", RULE_SequenceOption_KIND); break; } }
                                 advance();
                                 matched_alt_7 = true;
                             } while (false);
@@ -5112,7 +6053,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_CreateTypeStmt_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_TYPE_CI) { fail("TypeKW", RULE_CreateTypeStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_TYPEKW) { fail("TypeKW", RULE_CreateTypeStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         if (!parseQualifiedName(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
@@ -5130,9 +6071,9 @@ public final class PgSqlParser {
                     boolean cutHit_alt_1 = false;
                     if (!matched_alt_1 && !cutHit_alt_1) {
                         do {
-                            { int __k = peek(); if (__k != KIND_INLINE_AS_CI) { fail("AsKW", RULE_CreateTypeStmt_KIND); break; } }
+                            { int __k = peek(); if (__k != KIND_ASKW) { fail("AsKW", RULE_CreateTypeStmt_KIND); break; } }
                             advance();
-                            { int __k = peek(); if (__k != KIND_INLINE_ENUM_CI) { fail("EnumKW", RULE_CreateTypeStmt_KIND); break; } }
+                            { int __k = peek(); if (__k != KIND_ENUMKW) { fail("EnumKW", RULE_CreateTypeStmt_KIND); break; } }
                             advance();
                             if (peek() != KIND_INLINE__LPAREN) { fail("'('", RULE_CreateTypeStmt_KIND); break; }
                             advance();
@@ -5148,7 +6089,7 @@ public final class PgSqlParser {
                     }
                     if (!matched_alt_1 && !cutHit_alt_1) {
                         do {
-                            { int __k = peek(); if (__k != KIND_INLINE_AS_CI) { fail("AsKW", RULE_CreateTypeStmt_KIND); break; } }
+                            { int __k = peek(); if (__k != KIND_ASKW) { fail("AsKW", RULE_CreateTypeStmt_KIND); break; } }
                             advance();
                             if (peek() != KIND_INLINE__LPAREN) { fail("'('", RULE_CreateTypeStmt_KIND); break; }
                             advance();
@@ -5164,9 +6105,9 @@ public final class PgSqlParser {
                     }
                     if (!matched_alt_1 && !cutHit_alt_1) {
                         do {
-                            { int __k = peek(); if (__k != KIND_INLINE_AS_CI) { fail("AsKW", RULE_CreateTypeStmt_KIND); break; } }
+                            { int __k = peek(); if (__k != KIND_ASKW) { fail("AsKW", RULE_CreateTypeStmt_KIND); break; } }
                             advance();
-                            { int __k = peek(); if (__k != KIND_INLINE_RANGE_CI) { fail("RangeKW", RULE_CreateTypeStmt_KIND); break; } }
+                            { int __k = peek(); if (__k != KIND_RANGEKW) { fail("RangeKW", RULE_CreateTypeStmt_KIND); break; } }
                             advance();
                             if (peek() != KIND_INLINE__LPAREN) { fail("'('", RULE_CreateTypeStmt_KIND); break; }
                             advance();
@@ -5182,7 +6123,7 @@ public final class PgSqlParser {
                     }
                     if (!matched_alt_1 && !cutHit_alt_1) {
                         do {
-                            { int __k = peek(); if (__k != KIND_INLINE_AS_CI) { fail("AsKW", RULE_CreateTypeStmt_KIND); break; } }
+                            { int __k = peek(); if (__k != KIND_ASKW) { fail("AsKW", RULE_CreateTypeStmt_KIND); break; } }
                             advance();
                             if (!parseDataType(self)) { break; }
                             // zero-or-more: rep_2
@@ -5291,7 +6232,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_CompositeField_KIND, firstTok, parent);
-        if (peek() != KIND_COLID) { fail("ColId", RULE_CompositeField_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+        if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_CompositeField_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         advance();
         if (!parseDataType(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
         // optional: opt_0
@@ -5351,7 +6292,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_RangeOption_KIND, firstTok, parent);
-        if (peek() != KIND_COLID) { fail("ColId", RULE_RangeOption_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+        if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_RangeOption_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         advance();
         if (peek() != KIND_INLINE__EQ) { fail("'='", RULE_RangeOption_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         advance();
@@ -5363,7 +6304,7 @@ public final class PgSqlParser {
             boolean cutHit_alt_0 = false;
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    if (peek() != KIND_COLID) { fail("ColId", RULE_RangeOption_KIND); break; }
+                    if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_RangeOption_KIND); break; }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -5412,8 +6353,7 @@ public final class PgSqlParser {
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                if (peek() != KIND_CONSTRAINTNAME) { fail("ConstraintName", RULE_DomainConstraint_KIND); break; }
-                advance();
+                if (!parseConstraintName(self)) { break; }
                 optOk_opt_0 = true;
             } while (false);
             if (!optOk_opt_0) {
@@ -5439,8 +6379,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_1 && !cutHit_alt_1) {
                 do {
-                    if (peek() != KIND_NOTNULLCONSTRAINT) { fail("NotNullConstraint", RULE_DomainConstraint_KIND); break; }
-                    advance();
+                    if (!parseNotNullConstraint(self)) { break; }
                     matched_alt_1 = true;
                 } while (false);
                 if (!matched_alt_1) {
@@ -5450,7 +6389,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_1 && !cutHit_alt_1) {
                 do {
-                    if (peek() != KIND_NULLCONSTRAINT) { fail("NullConstraint", RULE_DomainConstraint_KIND); break; }
+                    { int __k = peek(); if (__k != KIND_NULLCONSTRAINT) { fail("NullConstraint", RULE_DomainConstraint_KIND); break; } }
                     advance();
                     matched_alt_1 = true;
                 } while (false);
@@ -5493,7 +6432,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_AlterTypeStmt_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_TYPE_CI) { fail("TypeKW", RULE_AlterTypeStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_TYPEKW) { fail("TypeKW", RULE_AlterTypeStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         if (!parseQualifiedName(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
@@ -5505,9 +6444,9 @@ public final class PgSqlParser {
             boolean cutHit_alt_0 = false;
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_ADD_CI) { fail("AddKW", RULE_AlterTypeStmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_ADDKW) { fail("AddKW", RULE_AlterTypeStmt_KIND); break; } }
                     advance();
-                    { int __k = peek(); if (__k != KIND_INLINE_VALUE_CI) { fail("ValueKW", RULE_AlterTypeStmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_VALUEKW) { fail("ValueKW", RULE_AlterTypeStmt_KIND); break; } }
                     advance();
                     // optional: opt_1
                     {
@@ -5515,8 +6454,7 @@ public final class PgSqlParser {
                         int savedNodes_opt_1 = cst.currentNodeCount();
                         boolean optOk_opt_1 = false;
                         do {
-                            if (peek() != KIND_IFNOTEXISTS) { fail("IfNotExists", RULE_AlterTypeStmt_KIND); break; }
-                            advance();
+                            if (!parseIfNotExists(self)) { break; }
                             optOk_opt_1 = true;
                         } while (false);
                         if (!optOk_opt_1) {
@@ -5539,7 +6477,7 @@ public final class PgSqlParser {
                                 boolean cutHit_alt_3 = false;
                                 if (!matched_alt_3 && !cutHit_alt_3) {
                                     do {
-                                        { int __k = peek(); if (__k != KIND_INLINE_BEFORE_CI) { fail("BeforeKW", RULE_AlterTypeStmt_KIND); break; } }
+                                        { int __k = peek(); if (__k != KIND_BEFOREKW) { fail("BeforeKW", RULE_AlterTypeStmt_KIND); break; } }
                                         advance();
                                         if (!parseStringLiteral(self)) { break; }
                                         matched_alt_3 = true;
@@ -5551,7 +6489,7 @@ public final class PgSqlParser {
                                 }
                                 if (!matched_alt_3 && !cutHit_alt_3) {
                                     do {
-                                        { int __k = peek(); if (__k != KIND_INLINE_AFTER_CI) { fail("AfterKW", RULE_AlterTypeStmt_KIND); break; } }
+                                        { int __k = peek(); if (__k != KIND_AFTERKW) { fail("AfterKW", RULE_AlterTypeStmt_KIND); break; } }
                                         advance();
                                         if (!parseStringLiteral(self)) { break; }
                                         matched_alt_3 = true;
@@ -5579,14 +6517,14 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_RENAME_CI) { fail("RenameKW", RULE_AlterTypeStmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_RENAMEKW) { fail("RenameKW", RULE_AlterTypeStmt_KIND); break; } }
                     advance();
-                    { int __k = peek(); if (__k != KIND_INLINE_VALUE_CI) { fail("ValueKW", RULE_AlterTypeStmt_KIND); break; } }
-                    advance();
-                    if (!parseStringLiteral(self)) { break; }
-                    { int __k = peek(); if (__k != KIND_INLINE_TO_CI) { fail("ToKW", RULE_AlterTypeStmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_VALUEKW) { fail("ValueKW", RULE_AlterTypeStmt_KIND); break; } }
                     advance();
                     if (!parseStringLiteral(self)) { break; }
+                    { int __k = peek(); if (__k != KIND_TOKW) { fail("ToKW", RULE_AlterTypeStmt_KIND); break; } }
+                    advance();
+                    if (!parseStringLiteral(self)) { break; }
                     matched_alt_0 = true;
                 } while (false);
                 if (!matched_alt_0) {
@@ -5596,26 +6534,11 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_RENAME_CI) { fail("RenameKW", RULE_AlterTypeStmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_RENAMEKW) { fail("RenameKW", RULE_AlterTypeStmt_KIND); break; } }
                     advance();
-                    { int __k = peek(); if (__k != KIND_INLINE_TO_CI) { fail("ToKW", RULE_AlterTypeStmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_TOKW) { fail("ToKW", RULE_AlterTypeStmt_KIND); break; } }
                     advance();
-                    if (peek() != KIND_COLID) { fail("ColId", RULE_AlterTypeStmt_KIND); break; }
-                    advance();
-                    matched_alt_0 = true;
-                } while (false);
-                if (!matched_alt_0) {
-                    pos = savedPos_alt_0;
-                    cst.truncate(savedNodes_alt_0);
-                }
-            }
-            if (!matched_alt_0 && !cutHit_alt_0) {
-                do {
-                    { int __k = peek(); if (__k != KIND_INLINE_SET_CI) { fail("SetKW", RULE_AlterTypeStmt_KIND); break; } }
-                    advance();
-                    { int __k = peek(); if (__k != KIND_INLINE_SCHEMA_CI) { fail("SchemaKW", RULE_AlterTypeStmt_KIND); break; } }
-                    advance();
-                    if (peek() != KIND_COLID) { fail("ColId", RULE_AlterTypeStmt_KIND); break; }
+                    if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_AlterTypeStmt_KIND); break; }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -5626,11 +6549,26 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_ADD_CI) { fail("AddKW", RULE_AlterTypeStmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_SETKW) { fail("SetKW", RULE_AlterTypeStmt_KIND); break; } }
                     advance();
-                    { int __k = peek(); if (__k != KIND_INLINE_ATTRIBUTE_CI) { fail("AttributeKW", RULE_AlterTypeStmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_SCHEMAKW) { fail("SchemaKW", RULE_AlterTypeStmt_KIND); break; } }
                     advance();
-                    if (peek() != KIND_COLID) { fail("ColId", RULE_AlterTypeStmt_KIND); break; }
+                    if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_AlterTypeStmt_KIND); break; }
+                    advance();
+                    matched_alt_0 = true;
+                } while (false);
+                if (!matched_alt_0) {
+                    pos = savedPos_alt_0;
+                    cst.truncate(savedNodes_alt_0);
+                }
+            }
+            if (!matched_alt_0 && !cutHit_alt_0) {
+                do {
+                    { int __k = peek(); if (__k != KIND_ADDKW) { fail("AddKW", RULE_AlterTypeStmt_KIND); break; } }
+                    advance();
+                    { int __k = peek(); if (__k != KIND_ATTRIBUTEKW) { fail("AttributeKW", RULE_AlterTypeStmt_KIND); break; } }
+                    advance();
+                    if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_AlterTypeStmt_KIND); break; }
                     advance();
                     if (!parseDataType(self)) { break; }
                     // optional: opt_4
@@ -5653,7 +6591,7 @@ public final class PgSqlParser {
                         int savedNodes_opt_5 = cst.currentNodeCount();
                         boolean optOk_opt_5 = false;
                         do {
-                            if (peek() != KIND_DROPBEHAVIOR) { fail("DropBehavior", RULE_AlterTypeStmt_KIND); break; }
+                            { int __k = peek(); if (__k != KIND_CASCADEKW && __k != KIND_RESTRICTKW) { fail("DropBehavior", RULE_AlterTypeStmt_KIND); break; } }
                             advance();
                             optOk_opt_5 = true;
                         } while (false);
@@ -5671,9 +6609,9 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_DROP_CI) { fail("DropKW", RULE_AlterTypeStmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_DROPKW) { fail("DropKW", RULE_AlterTypeStmt_KIND); break; } }
                     advance();
-                    { int __k = peek(); if (__k != KIND_INLINE_ATTRIBUTE_CI) { fail("AttributeKW", RULE_AlterTypeStmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_ATTRIBUTEKW) { fail("AttributeKW", RULE_AlterTypeStmt_KIND); break; } }
                     advance();
                     // optional: opt_6
                     {
@@ -5681,8 +6619,7 @@ public final class PgSqlParser {
                         int savedNodes_opt_6 = cst.currentNodeCount();
                         boolean optOk_opt_6 = false;
                         do {
-                            if (peek() != KIND_IFEXISTS) { fail("IfExists", RULE_AlterTypeStmt_KIND); break; }
-                            advance();
+                            if (!parseIfExists(self)) { break; }
                             optOk_opt_6 = true;
                         } while (false);
                         if (!optOk_opt_6) {
@@ -5690,7 +6627,7 @@ public final class PgSqlParser {
                             cst.truncate(savedNodes_opt_6);
                         }
                     }
-                    if (peek() != KIND_COLID) { fail("ColId", RULE_AlterTypeStmt_KIND); break; }
+                    if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_AlterTypeStmt_KIND); break; }
                     advance();
                     // optional: opt_7
                     {
@@ -5698,7 +6635,7 @@ public final class PgSqlParser {
                         int savedNodes_opt_7 = cst.currentNodeCount();
                         boolean optOk_opt_7 = false;
                         do {
-                            if (peek() != KIND_DROPBEHAVIOR) { fail("DropBehavior", RULE_AlterTypeStmt_KIND); break; }
+                            { int __k = peek(); if (__k != KIND_CASCADEKW && __k != KIND_RESTRICTKW) { fail("DropBehavior", RULE_AlterTypeStmt_KIND); break; } }
                             advance();
                             optOk_opt_7 = true;
                         } while (false);
@@ -5716,11 +6653,11 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_ALTER_CI) { fail("AlterKW", RULE_AlterTypeStmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_ALTERKW) { fail("AlterKW", RULE_AlterTypeStmt_KIND); break; } }
                     advance();
-                    { int __k = peek(); if (__k != KIND_INLINE_ATTRIBUTE_CI) { fail("AttributeKW", RULE_AlterTypeStmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_ATTRIBUTEKW) { fail("AttributeKW", RULE_AlterTypeStmt_KIND); break; } }
                     advance();
-                    if (peek() != KIND_COLID) { fail("ColId", RULE_AlterTypeStmt_KIND); break; }
+                    if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_AlterTypeStmt_KIND); break; }
                     advance();
                     if (!parseSetDataTypeCmd(self)) { break; }
                     matched_alt_0 = true;
@@ -5744,7 +6681,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_DropTypeStmt_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_TYPE_CI) { fail("TypeKW", RULE_DropTypeStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_TYPEKW) { fail("TypeKW", RULE_DropTypeStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         // optional: opt_0
@@ -5753,8 +6690,7 @@ public final class PgSqlParser {
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                if (peek() != KIND_IFEXISTS) { fail("IfExists", RULE_DropTypeStmt_KIND); break; }
-                advance();
+                if (!parseIfExists(self)) { break; }
                 optOk_opt_0 = true;
             } while (false);
             if (!optOk_opt_0) {
@@ -5769,7 +6705,7 @@ public final class PgSqlParser {
             int savedNodes_opt_1 = cst.currentNodeCount();
             boolean optOk_opt_1 = false;
             do {
-                if (peek() != KIND_DROPBEHAVIOR) { fail("DropBehavior", RULE_DropTypeStmt_KIND); break; }
+                { int __k = peek(); if (__k != KIND_CASCADEKW && __k != KIND_RESTRICTKW) { fail("DropBehavior", RULE_DropTypeStmt_KIND); break; } }
                 advance();
                 optOk_opt_1 = true;
             } while (false);
@@ -5785,12 +6721,12 @@ public final class PgSqlParser {
         return true;
     }
 
-    private boolean parseDropSchemaStmt(int parent) {
+    private boolean parseCreateSchemaStmt(int parent) {
         int firstTok = pos;
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
-        int self = cst.beginNode(RULE_DropSchemaStmt_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_SCHEMA_CI) { fail("SchemaKW", RULE_DropSchemaStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        int self = cst.beginNode(RULE_CreateSchemaStmt_KIND, firstTok, parent);
+        { int __k = peek(); if (__k != KIND_SCHEMAKW) { fail("SchemaKW", RULE_CreateSchemaStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         // optional: opt_0
@@ -5799,8 +6735,7 @@ public final class PgSqlParser {
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                if (peek() != KIND_IFEXISTS) { fail("IfExists", RULE_DropSchemaStmt_KIND); break; }
-                advance();
+                if (!parseIfNotExists(self)) { break; }
                 optOk_opt_0 = true;
             } while (false);
             if (!optOk_opt_0) {
@@ -5808,7 +6743,140 @@ public final class PgSqlParser {
                 cst.truncate(savedNodes_opt_0);
             }
         }
-        if (peek() != KIND_COLID) { fail("ColId", RULE_DropSchemaStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+        // choice: alt_1
+        {
+            int savedPos_alt_1 = pos;
+            int savedNodes_alt_1 = cst.currentNodeCount();
+            boolean matched_alt_1 = false;
+            boolean cutHit_alt_1 = false;
+            if (!matched_alt_1 && !cutHit_alt_1) {
+                do {
+                    { int __k = peek(); if (__k != KIND_AUTHORIZATIONKW) { fail("AuthorizationKW", RULE_CreateSchemaStmt_KIND); break; } }
+                    advance();
+                    if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_CreateSchemaStmt_KIND); break; }
+                    advance();
+                    matched_alt_1 = true;
+                } while (false);
+                if (!matched_alt_1) {
+                    pos = savedPos_alt_1;
+                    cst.truncate(savedNodes_alt_1);
+                }
+            }
+            if (!matched_alt_1 && !cutHit_alt_1) {
+                do {
+                    if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_CreateSchemaStmt_KIND); break; }
+                    advance();
+                    // optional: opt_2
+                    {
+                        int savedPos_opt_2 = pos;
+                        int savedNodes_opt_2 = cst.currentNodeCount();
+                        boolean optOk_opt_2 = false;
+                        do {
+                            { int __k = peek(); if (__k != KIND_AUTHORIZATIONKW) { fail("AuthorizationKW", RULE_CreateSchemaStmt_KIND); break; } }
+                            advance();
+                            if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_CreateSchemaStmt_KIND); break; }
+                            advance();
+                            optOk_opt_2 = true;
+                        } while (false);
+                        if (!optOk_opt_2) {
+                            pos = savedPos_opt_2;
+                            cst.truncate(savedNodes_opt_2);
+                        }
+                    }
+                    matched_alt_1 = true;
+                } while (false);
+                if (!matched_alt_1) {
+                    pos = savedPos_alt_1;
+                    cst.truncate(savedNodes_alt_1);
+                }
+            }
+            if (!matched_alt_1) { fail("<choice>", RULE_CreateSchemaStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+        }
+        int lastTok = pos > firstTok ? pos - 1 : firstTok;
+        if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
+        if (lastTok < firstTok) lastTok = firstTok;
+        cst.endNode(self, lastTok);
+        return true;
+    }
+
+    private boolean parseAlterSchemaStmt(int parent) {
+        int firstTok = pos;
+        int savedPos = pos;
+        int savedNodes = cst.currentNodeCount();
+        int self = cst.beginNode(RULE_AlterSchemaStmt_KIND, firstTok, parent);
+        { int __k = peek(); if (__k != KIND_SCHEMAKW) { fail("SchemaKW", RULE_AlterSchemaStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        // cut: no enclosing Choice — no-op
+        if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_AlterSchemaStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+        advance();
+        // choice: alt_0
+        {
+            int savedPos_alt_0 = pos;
+            int savedNodes_alt_0 = cst.currentNodeCount();
+            boolean matched_alt_0 = false;
+            boolean cutHit_alt_0 = false;
+            if (!matched_alt_0 && !cutHit_alt_0) {
+                do {
+                    { int __k = peek(); if (__k != KIND_RENAMEKW) { fail("RenameKW", RULE_AlterSchemaStmt_KIND); break; } }
+                    advance();
+                    { int __k = peek(); if (__k != KIND_TOKW) { fail("ToKW", RULE_AlterSchemaStmt_KIND); break; } }
+                    advance();
+                    if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_AlterSchemaStmt_KIND); break; }
+                    advance();
+                    matched_alt_0 = true;
+                } while (false);
+                if (!matched_alt_0) {
+                    pos = savedPos_alt_0;
+                    cst.truncate(savedNodes_alt_0);
+                }
+            }
+            if (!matched_alt_0 && !cutHit_alt_0) {
+                do {
+                    { int __k = peek(); if (__k != KIND_OWNERKW) { fail("OwnerKW", RULE_AlterSchemaStmt_KIND); break; } }
+                    advance();
+                    { int __k = peek(); if (__k != KIND_TOKW) { fail("ToKW", RULE_AlterSchemaStmt_KIND); break; } }
+                    advance();
+                    if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_AlterSchemaStmt_KIND); break; }
+                    advance();
+                    matched_alt_0 = true;
+                } while (false);
+                if (!matched_alt_0) {
+                    pos = savedPos_alt_0;
+                    cst.truncate(savedNodes_alt_0);
+                }
+            }
+            if (!matched_alt_0) { fail("<choice>", RULE_AlterSchemaStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+        }
+        int lastTok = pos > firstTok ? pos - 1 : firstTok;
+        if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
+        if (lastTok < firstTok) lastTok = firstTok;
+        cst.endNode(self, lastTok);
+        return true;
+    }
+
+    private boolean parseDropSchemaStmt(int parent) {
+        int firstTok = pos;
+        int savedPos = pos;
+        int savedNodes = cst.currentNodeCount();
+        int self = cst.beginNode(RULE_DropSchemaStmt_KIND, firstTok, parent);
+        { int __k = peek(); if (__k != KIND_SCHEMAKW) { fail("SchemaKW", RULE_DropSchemaStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        // cut: no enclosing Choice — no-op
+        // optional: opt_0
+        {
+            int savedPos_opt_0 = pos;
+            int savedNodes_opt_0 = cst.currentNodeCount();
+            boolean optOk_opt_0 = false;
+            do {
+                if (!parseIfExists(self)) { break; }
+                optOk_opt_0 = true;
+            } while (false);
+            if (!optOk_opt_0) {
+                pos = savedPos_opt_0;
+                cst.truncate(savedNodes_opt_0);
+            }
+        }
+        if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_DropSchemaStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         advance();
         // zero-or-more: rep_1
         while (true) {
@@ -5818,7 +6886,7 @@ public final class PgSqlParser {
             do {
                 if (peek() != KIND_INLINE__COMMA) { fail("','", RULE_DropSchemaStmt_KIND); break; }
                 advance();
-                if (peek() != KIND_COLID) { fail("ColId", RULE_DropSchemaStmt_KIND); break; }
+                if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_DropSchemaStmt_KIND); break; }
                 advance();
                 iterOk_rep_1 = true;
             } while (false);
@@ -5835,7 +6903,7 @@ public final class PgSqlParser {
             int savedNodes_opt_2 = cst.currentNodeCount();
             boolean optOk_opt_2 = false;
             do {
-                if (peek() != KIND_DROPBEHAVIOR) { fail("DropBehavior", RULE_DropSchemaStmt_KIND); break; }
+                { int __k = peek(); if (__k != KIND_CASCADEKW && __k != KIND_RESTRICTKW) { fail("DropBehavior", RULE_DropSchemaStmt_KIND); break; } }
                 advance();
                 optOk_opt_2 = true;
             } while (false);
@@ -5862,9 +6930,9 @@ public final class PgSqlParser {
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                { int __k = peek(); if (__k != KIND_INLINE_OR_CI) { fail("OrKW", RULE_CreateViewStmt_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_ORKW) { fail("OrKW", RULE_CreateViewStmt_KIND); break; } }
                 advance();
-                { int __k = peek(); if (__k != KIND_INLINE_REPLACE_CI) { fail("ReplaceKW", RULE_CreateViewStmt_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_REPLACEKW) { fail("ReplaceKW", RULE_CreateViewStmt_KIND); break; } }
                 advance();
                 optOk_opt_0 = true;
             } while (false);
@@ -5879,7 +6947,7 @@ public final class PgSqlParser {
             int savedNodes_opt_1 = cst.currentNodeCount();
             boolean optOk_opt_1 = false;
             do {
-                { int __k = peek(); if (__k != KIND_INLINE_TEMP_CI) { fail("TempKW", RULE_CreateViewStmt_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_TEMPKW) { fail("TempKW", RULE_CreateViewStmt_KIND); break; } }
                 advance();
                 optOk_opt_1 = true;
             } while (false);
@@ -5894,7 +6962,7 @@ public final class PgSqlParser {
             int savedNodes_opt_2 = cst.currentNodeCount();
             boolean optOk_opt_2 = false;
             do {
-                { int __k = peek(); if (__k != KIND_INLINE_RECURSIVE_CI) { fail("RecursiveKW", RULE_CreateViewStmt_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_RECURSIVEKW) { fail("RecursiveKW", RULE_CreateViewStmt_KIND); break; } }
                 advance();
                 optOk_opt_2 = true;
             } while (false);
@@ -5903,7 +6971,7 @@ public final class PgSqlParser {
                 cst.truncate(savedNodes_opt_2);
             }
         }
-        { int __k = peek(); if (__k != KIND_INLINE_VIEW_CI) { fail("ViewKW", RULE_CreateViewStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_VIEWKW) { fail("ViewKW", RULE_CreateViewStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         if (!parseQualifiedName(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
@@ -5925,7 +6993,7 @@ public final class PgSqlParser {
                 cst.truncate(savedNodes_opt_3);
             }
         }
-        { int __k = peek(); if (__k != KIND_INLINE_AS_CI) { fail("AsKW", RULE_CreateViewStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_ASKW) { fail("AsKW", RULE_CreateViewStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (!parseSelectStmt(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
         // optional: opt_4
@@ -5934,8 +7002,7 @@ public final class PgSqlParser {
             int savedNodes_opt_4 = cst.currentNodeCount();
             boolean optOk_opt_4 = false;
             do {
-                if (peek() != KIND_CHECKOPTIONCLAUSE) { fail("CheckOptionClause", RULE_CreateViewStmt_KIND); break; }
-                advance();
+                if (!parseCheckOptionClause(self)) { break; }
                 optOk_opt_4 = true;
             } while (false);
             if (!optOk_opt_4) {
@@ -5950,14 +7017,75 @@ public final class PgSqlParser {
         return true;
     }
 
+    private boolean parseCheckOptionClause(int parent) {
+        int firstTok = pos;
+        int savedPos = pos;
+        int savedNodes = cst.currentNodeCount();
+        int self = cst.beginNode(RULE_CheckOptionClause_KIND, firstTok, parent);
+        { int __k = peek(); if (__k != KIND_WITHKW) { fail("WithKW", RULE_CheckOptionClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        // optional: opt_0
+        {
+            int savedPos_opt_0 = pos;
+            int savedNodes_opt_0 = cst.currentNodeCount();
+            boolean optOk_opt_0 = false;
+            do {
+                // choice: alt_1
+                {
+                    int savedPos_alt_1 = pos;
+                    int savedNodes_alt_1 = cst.currentNodeCount();
+                    boolean matched_alt_1 = false;
+                    boolean cutHit_alt_1 = false;
+                    if (!matched_alt_1 && !cutHit_alt_1) {
+                        do {
+                            { int __k = peek(); if (__k != KIND_CASCADEDKW) { fail("CascadedKW", RULE_CheckOptionClause_KIND); break; } }
+                            advance();
+                            matched_alt_1 = true;
+                        } while (false);
+                        if (!matched_alt_1) {
+                            pos = savedPos_alt_1;
+                            cst.truncate(savedNodes_alt_1);
+                        }
+                    }
+                    if (!matched_alt_1 && !cutHit_alt_1) {
+                        do {
+                            { int __k = peek(); if (__k != KIND_LOCALKW) { fail("LocalKW", RULE_CheckOptionClause_KIND); break; } }
+                            advance();
+                            matched_alt_1 = true;
+                        } while (false);
+                        if (!matched_alt_1) {
+                            pos = savedPos_alt_1;
+                            cst.truncate(savedNodes_alt_1);
+                        }
+                    }
+                    if (!matched_alt_1) { fail("<choice>", RULE_CheckOptionClause_KIND); break; }
+                }
+                optOk_opt_0 = true;
+            } while (false);
+            if (!optOk_opt_0) {
+                pos = savedPos_opt_0;
+                cst.truncate(savedNodes_opt_0);
+            }
+        }
+        { int __k = peek(); if (__k != KIND_CHECKKW) { fail("CheckKW", RULE_CheckOptionClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        { int __k = peek(); if (__k != KIND_OPTIONKW) { fail("OptionKW", RULE_CheckOptionClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        int lastTok = pos > firstTok ? pos - 1 : firstTok;
+        if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
+        if (lastTok < firstTok) lastTok = firstTok;
+        cst.endNode(self, lastTok);
+        return true;
+    }
+
     private boolean parseCreateMatViewStmt(int parent) {
         int firstTok = pos;
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_CreateMatViewStmt_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_MATERIALIZED_CI) { fail("MaterializedKW", RULE_CreateMatViewStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_MATERIALIZEDKW) { fail("MaterializedKW", RULE_CreateMatViewStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
-        { int __k = peek(); if (__k != KIND_INLINE_VIEW_CI) { fail("ViewKW", RULE_CreateMatViewStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_VIEWKW) { fail("ViewKW", RULE_CreateMatViewStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         // optional: opt_0
@@ -5966,8 +7094,7 @@ public final class PgSqlParser {
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                if (peek() != KIND_IFNOTEXISTS) { fail("IfNotExists", RULE_CreateMatViewStmt_KIND); break; }
-                advance();
+                if (!parseIfNotExists(self)) { break; }
                 optOk_opt_0 = true;
             } while (false);
             if (!optOk_opt_0) {
@@ -5994,7 +7121,7 @@ public final class PgSqlParser {
                 cst.truncate(savedNodes_opt_1);
             }
         }
-        { int __k = peek(); if (__k != KIND_INLINE_AS_CI) { fail("AsKW", RULE_CreateMatViewStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_ASKW) { fail("AsKW", RULE_CreateMatViewStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (!parseSelectStmt(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
         // optional: opt_2
@@ -6003,7 +7130,7 @@ public final class PgSqlParser {
             int savedNodes_opt_2 = cst.currentNodeCount();
             boolean optOk_opt_2 = false;
             do {
-                { int __k = peek(); if (__k != KIND_INLINE_WITH_CI) { fail("WithKW", RULE_CreateMatViewStmt_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_WITHKW) { fail("WithKW", RULE_CreateMatViewStmt_KIND); break; } }
                 advance();
                 // optional: opt_3
                 {
@@ -6011,7 +7138,7 @@ public final class PgSqlParser {
                     int savedNodes_opt_3 = cst.currentNodeCount();
                     boolean optOk_opt_3 = false;
                     do {
-                        { int __k = peek(); if (__k != KIND_INLINE_NO_CI) { fail("NoKW", RULE_CreateMatViewStmt_KIND); break; } }
+                        { int __k = peek(); if (__k != KIND_NOKW) { fail("NoKW", RULE_CreateMatViewStmt_KIND); break; } }
                         advance();
                         optOk_opt_3 = true;
                     } while (false);
@@ -6020,7 +7147,7 @@ public final class PgSqlParser {
                         cst.truncate(savedNodes_opt_3);
                     }
                 }
-                { int __k = peek(); if (__k != KIND_INLINE_DATA_CI) { fail("DataKW", RULE_CreateMatViewStmt_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_DATAKW) { fail("DataKW", RULE_CreateMatViewStmt_KIND); break; } }
                 advance();
                 optOk_opt_2 = true;
             } while (false);
@@ -6047,7 +7174,7 @@ public final class PgSqlParser {
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                { int __k = peek(); if (__k != KIND_INLINE_MATERIALIZED_CI) { fail("MaterializedKW", RULE_AlterViewStmt_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_MATERIALIZEDKW) { fail("MaterializedKW", RULE_AlterViewStmt_KIND); break; } }
                 advance();
                 optOk_opt_0 = true;
             } while (false);
@@ -6056,7 +7183,7 @@ public final class PgSqlParser {
                 cst.truncate(savedNodes_opt_0);
             }
         }
-        { int __k = peek(); if (__k != KIND_INLINE_VIEW_CI) { fail("ViewKW", RULE_AlterViewStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_VIEWKW) { fail("ViewKW", RULE_AlterViewStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         // optional: opt_1
@@ -6065,8 +7192,7 @@ public final class PgSqlParser {
             int savedNodes_opt_1 = cst.currentNodeCount();
             boolean optOk_opt_1 = false;
             do {
-                if (peek() != KIND_IFEXISTS) { fail("IfExists", RULE_AlterViewStmt_KIND); break; }
-                advance();
+                if (!parseIfExists(self)) { break; }
                 optOk_opt_1 = true;
             } while (false);
             if (!optOk_opt_1) {
@@ -6083,26 +7209,11 @@ public final class PgSqlParser {
             boolean cutHit_alt_2 = false;
             if (!matched_alt_2 && !cutHit_alt_2) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_RENAME_CI) { fail("RenameKW", RULE_AlterViewStmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_RENAMEKW) { fail("RenameKW", RULE_AlterViewStmt_KIND); break; } }
                     advance();
-                    { int __k = peek(); if (__k != KIND_INLINE_TO_CI) { fail("ToKW", RULE_AlterViewStmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_TOKW) { fail("ToKW", RULE_AlterViewStmt_KIND); break; } }
                     advance();
-                    if (peek() != KIND_COLID) { fail("ColId", RULE_AlterViewStmt_KIND); break; }
-                    advance();
-                    matched_alt_2 = true;
-                } while (false);
-                if (!matched_alt_2) {
-                    pos = savedPos_alt_2;
-                    cst.truncate(savedNodes_alt_2);
-                }
-            }
-            if (!matched_alt_2 && !cutHit_alt_2) {
-                do {
-                    { int __k = peek(); if (__k != KIND_INLINE_SET_CI) { fail("SetKW", RULE_AlterViewStmt_KIND); break; } }
-                    advance();
-                    { int __k = peek(); if (__k != KIND_INLINE_SCHEMA_CI) { fail("SchemaKW", RULE_AlterViewStmt_KIND); break; } }
-                    advance();
-                    if (peek() != KIND_COLID) { fail("ColId", RULE_AlterViewStmt_KIND); break; }
+                    if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_AlterViewStmt_KIND); break; }
                     advance();
                     matched_alt_2 = true;
                 } while (false);
@@ -6113,11 +7224,26 @@ public final class PgSqlParser {
             }
             if (!matched_alt_2 && !cutHit_alt_2) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_OWNER_CI) { fail("OwnerKW", RULE_AlterViewStmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_SETKW) { fail("SetKW", RULE_AlterViewStmt_KIND); break; } }
                     advance();
-                    { int __k = peek(); if (__k != KIND_INLINE_TO_CI) { fail("ToKW", RULE_AlterViewStmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_SCHEMAKW) { fail("SchemaKW", RULE_AlterViewStmt_KIND); break; } }
                     advance();
-                    if (peek() != KIND_COLID) { fail("ColId", RULE_AlterViewStmt_KIND); break; }
+                    if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_AlterViewStmt_KIND); break; }
+                    advance();
+                    matched_alt_2 = true;
+                } while (false);
+                if (!matched_alt_2) {
+                    pos = savedPos_alt_2;
+                    cst.truncate(savedNodes_alt_2);
+                }
+            }
+            if (!matched_alt_2 && !cutHit_alt_2) {
+                do {
+                    { int __k = peek(); if (__k != KIND_OWNERKW) { fail("OwnerKW", RULE_AlterViewStmt_KIND); break; } }
+                    advance();
+                    { int __k = peek(); if (__k != KIND_TOKW) { fail("ToKW", RULE_AlterViewStmt_KIND); break; } }
+                    advance();
+                    if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_AlterViewStmt_KIND); break; }
                     advance();
                     matched_alt_2 = true;
                 } while (false);
@@ -6140,7 +7266,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_DropViewStmt_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_VIEW_CI) { fail("ViewKW", RULE_DropViewStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_VIEWKW) { fail("ViewKW", RULE_DropViewStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         // optional: opt_0
@@ -6149,8 +7275,7 @@ public final class PgSqlParser {
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                if (peek() != KIND_IFEXISTS) { fail("IfExists", RULE_DropViewStmt_KIND); break; }
-                advance();
+                if (!parseIfExists(self)) { break; }
                 optOk_opt_0 = true;
             } while (false);
             if (!optOk_opt_0) {
@@ -6165,7 +7290,7 @@ public final class PgSqlParser {
             int savedNodes_opt_1 = cst.currentNodeCount();
             boolean optOk_opt_1 = false;
             do {
-                if (peek() != KIND_DROPBEHAVIOR) { fail("DropBehavior", RULE_DropViewStmt_KIND); break; }
+                { int __k = peek(); if (__k != KIND_CASCADEKW && __k != KIND_RESTRICTKW) { fail("DropBehavior", RULE_DropViewStmt_KIND); break; } }
                 advance();
                 optOk_opt_1 = true;
             } while (false);
@@ -6186,9 +7311,9 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_DropMatViewStmt_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_MATERIALIZED_CI) { fail("MaterializedKW", RULE_DropMatViewStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_MATERIALIZEDKW) { fail("MaterializedKW", RULE_DropMatViewStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
-        { int __k = peek(); if (__k != KIND_INLINE_VIEW_CI) { fail("ViewKW", RULE_DropMatViewStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_VIEWKW) { fail("ViewKW", RULE_DropMatViewStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         // optional: opt_0
@@ -6197,8 +7322,7 @@ public final class PgSqlParser {
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                if (peek() != KIND_IFEXISTS) { fail("IfExists", RULE_DropMatViewStmt_KIND); break; }
-                advance();
+                if (!parseIfExists(self)) { break; }
                 optOk_opt_0 = true;
             } while (false);
             if (!optOk_opt_0) {
@@ -6213,7 +7337,7 @@ public final class PgSqlParser {
             int savedNodes_opt_1 = cst.currentNodeCount();
             boolean optOk_opt_1 = false;
             do {
-                if (peek() != KIND_DROPBEHAVIOR) { fail("DropBehavior", RULE_DropMatViewStmt_KIND); break; }
+                { int __k = peek(); if (__k != KIND_CASCADEKW && __k != KIND_RESTRICTKW) { fail("DropBehavior", RULE_DropMatViewStmt_KIND); break; } }
                 advance();
                 optOk_opt_1 = true;
             } while (false);
@@ -6234,7 +7358,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_CreateExtensionStmt_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_EXTENSION_CI) { fail("ExtensionKW", RULE_CreateExtensionStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_EXTENSIONKW) { fail("ExtensionKW", RULE_CreateExtensionStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         // optional: opt_0
@@ -6243,8 +7367,7 @@ public final class PgSqlParser {
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                if (peek() != KIND_IFNOTEXISTS) { fail("IfNotExists", RULE_CreateExtensionStmt_KIND); break; }
-                advance();
+                if (!parseIfNotExists(self)) { break; }
                 optOk_opt_0 = true;
             } while (false);
             if (!optOk_opt_0) {
@@ -6252,7 +7375,7 @@ public final class PgSqlParser {
                 cst.truncate(savedNodes_opt_0);
             }
         }
-        if (peek() != KIND_COLID) { fail("ColId", RULE_CreateExtensionStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+        if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_CreateExtensionStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         advance();
         // optional: opt_1
         {
@@ -6315,7 +7438,7 @@ public final class PgSqlParser {
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                { int __k = peek(); if (__k != KIND_INLINE_WITH_CI) { fail("WithKW", RULE_ExtensionOption_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_WITHKW) { fail("WithKW", RULE_ExtensionOption_KIND); break; } }
                 advance();
                 optOk_opt_0 = true;
             } while (false);
@@ -6332,9 +7455,9 @@ public final class PgSqlParser {
             boolean cutHit_alt_1 = false;
             if (!matched_alt_1 && !cutHit_alt_1) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_SCHEMA_CI) { fail("SchemaKW", RULE_ExtensionOption_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_SCHEMAKW) { fail("SchemaKW", RULE_ExtensionOption_KIND); break; } }
                     advance();
-                    if (peek() != KIND_COLID) { fail("ColId", RULE_ExtensionOption_KIND); break; }
+                    if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_ExtensionOption_KIND); break; }
                     advance();
                     matched_alt_1 = true;
                 } while (false);
@@ -6345,7 +7468,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_1 && !cutHit_alt_1) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_VERSION_CI) { fail("VersionKW", RULE_ExtensionOption_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_VERSIONKW) { fail("VersionKW", RULE_ExtensionOption_KIND); break; } }
                     advance();
                     // choice: alt_2
                     {
@@ -6365,7 +7488,7 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_2 && !cutHit_alt_2) {
                             do {
-                                if (peek() != KIND_COLID) { fail("ColId", RULE_ExtensionOption_KIND); break; }
+                                if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_ExtensionOption_KIND); break; }
                                 advance();
                                 matched_alt_2 = true;
                             } while (false);
@@ -6385,7 +7508,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_1 && !cutHit_alt_1) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_FROM_CI) { fail("FromKW", RULE_ExtensionOption_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_FROMKW) { fail("FromKW", RULE_ExtensionOption_KIND); break; } }
                     advance();
                     // choice: alt_3
                     {
@@ -6405,7 +7528,7 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_3 && !cutHit_alt_3) {
                             do {
-                                if (peek() != KIND_COLID) { fail("ColId", RULE_ExtensionOption_KIND); break; }
+                                if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_ExtensionOption_KIND); break; }
                                 advance();
                                 matched_alt_3 = true;
                             } while (false);
@@ -6425,7 +7548,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_1 && !cutHit_alt_1) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_CASCADE_CI) { fail("CascadeKW", RULE_ExtensionOption_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_CASCADEKW) { fail("CascadeKW", RULE_ExtensionOption_KIND); break; } }
                     advance();
                     matched_alt_1 = true;
                 } while (false);
@@ -6448,7 +7571,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_DropExtensionStmt_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_EXTENSION_CI) { fail("ExtensionKW", RULE_DropExtensionStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_EXTENSIONKW) { fail("ExtensionKW", RULE_DropExtensionStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         // optional: opt_0
@@ -6457,8 +7580,7 @@ public final class PgSqlParser {
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                if (peek() != KIND_IFEXISTS) { fail("IfExists", RULE_DropExtensionStmt_KIND); break; }
-                advance();
+                if (!parseIfExists(self)) { break; }
                 optOk_opt_0 = true;
             } while (false);
             if (!optOk_opt_0) {
@@ -6466,7 +7588,7 @@ public final class PgSqlParser {
                 cst.truncate(savedNodes_opt_0);
             }
         }
-        if (peek() != KIND_COLID) { fail("ColId", RULE_DropExtensionStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+        if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_DropExtensionStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         advance();
         // zero-or-more: rep_1
         while (true) {
@@ -6476,7 +7598,7 @@ public final class PgSqlParser {
             do {
                 if (peek() != KIND_INLINE__COMMA) { fail("','", RULE_DropExtensionStmt_KIND); break; }
                 advance();
-                if (peek() != KIND_COLID) { fail("ColId", RULE_DropExtensionStmt_KIND); break; }
+                if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_DropExtensionStmt_KIND); break; }
                 advance();
                 iterOk_rep_1 = true;
             } while (false);
@@ -6493,7 +7615,7 @@ public final class PgSqlParser {
             int savedNodes_opt_2 = cst.currentNodeCount();
             boolean optOk_opt_2 = false;
             do {
-                if (peek() != KIND_DROPBEHAVIOR) { fail("DropBehavior", RULE_DropExtensionStmt_KIND); break; }
+                { int __k = peek(); if (__k != KIND_CASCADEKW && __k != KIND_RESTRICTKW) { fail("DropBehavior", RULE_DropExtensionStmt_KIND); break; } }
                 advance();
                 optOk_opt_2 = true;
             } while (false);
@@ -6514,13 +7636,13 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_CommentStatement_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_COMMENT_CI) { fail("CommentKW", RULE_CommentStatement_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_COMMENTKW) { fail("CommentKW", RULE_CommentStatement_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
-        { int __k = peek(); if (__k != KIND_INLINE_ON_CI) { fail("OnKW", RULE_CommentStatement_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_ONKW) { fail("OnKW", RULE_CommentStatement_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         if (!parseCommentTarget(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
-        { int __k = peek(); if (__k != KIND_INLINE_IS_CI) { fail("IsKW", RULE_CommentStatement_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_ISKW) { fail("IsKW", RULE_CommentStatement_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // choice: alt_0
         {
@@ -6540,7 +7662,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_NULL_CI) { fail("NullKW", RULE_CommentStatement_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_NULLCONSTRAINT) { fail("NullKW", RULE_CommentStatement_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -6571,7 +7693,7 @@ public final class PgSqlParser {
             boolean cutHit_alt_0 = false;
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_TABLE_CI) { fail("TableKW", RULE_CommentTarget_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_TABLEKW) { fail("TableKW", RULE_CommentTarget_KIND); break; } }
                     advance();
                     if (!parseQualifiedName(self)) { break; }
                     matched_alt_0 = true;
@@ -6583,7 +7705,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_COLUMN_CI) { fail("ColumnKW", RULE_CommentTarget_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_COLUMNKW) { fail("ColumnKW", RULE_CommentTarget_KIND); break; } }
                     advance();
                     if (!parseQualifiedName(self)) { break; }
                     matched_alt_0 = true;
@@ -6595,7 +7717,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_INDEX_CI) { fail("IndexKW", RULE_CommentTarget_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_INDEXKW) { fail("IndexKW", RULE_CommentTarget_KIND); break; } }
                     advance();
                     if (!parseQualifiedName(self)) { break; }
                     matched_alt_0 = true;
@@ -6607,9 +7729,9 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_SCHEMA_CI) { fail("SchemaKW", RULE_CommentTarget_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_SCHEMAKW) { fail("SchemaKW", RULE_CommentTarget_KIND); break; } }
                     advance();
-                    if (peek() != KIND_COLID) { fail("ColId", RULE_CommentTarget_KIND); break; }
+                    if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_CommentTarget_KIND); break; }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -6620,7 +7742,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_TYPE_CI) { fail("TypeKW", RULE_CommentTarget_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_TYPEKW) { fail("TypeKW", RULE_CommentTarget_KIND); break; } }
                     advance();
                     if (!parseQualifiedName(self)) { break; }
                     matched_alt_0 = true;
@@ -6632,9 +7754,9 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_EXTENSION_CI) { fail("ExtensionKW", RULE_CommentTarget_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_EXTENSIONKW) { fail("ExtensionKW", RULE_CommentTarget_KIND); break; } }
                     advance();
-                    if (peek() != KIND_COLID) { fail("ColId", RULE_CommentTarget_KIND); break; }
+                    if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_CommentTarget_KIND); break; }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -6645,7 +7767,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_SEQUENCE_CI) { fail("SequenceKW", RULE_CommentTarget_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_SEQUENCEKW) { fail("SequenceKW", RULE_CommentTarget_KIND); break; } }
                     advance();
                     if (!parseQualifiedName(self)) { break; }
                     matched_alt_0 = true;
@@ -6657,7 +7779,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_VIEW_CI) { fail("ViewKW", RULE_CommentTarget_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_VIEWKW) { fail("ViewKW", RULE_CommentTarget_KIND); break; } }
                     advance();
                     if (!parseQualifiedName(self)) { break; }
                     matched_alt_0 = true;
@@ -6669,25 +7791,9 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_MATERIALIZED_CI) { fail("MaterializedKW", RULE_CommentTarget_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_MATERIALIZEDKW) { fail("MaterializedKW", RULE_CommentTarget_KIND); break; } }
                     advance();
-                    { int __k = peek(); if (__k != KIND_INLINE_VIEW_CI) { fail("ViewKW", RULE_CommentTarget_KIND); break; } }
-                    advance();
-                    if (!parseQualifiedName(self)) { break; }
-                    matched_alt_0 = true;
-                } while (false);
-                if (!matched_alt_0) {
-                    pos = savedPos_alt_0;
-                    cst.truncate(savedNodes_alt_0);
-                }
-            }
-            if (!matched_alt_0 && !cutHit_alt_0) {
-                do {
-                    { int __k = peek(); if (__k != KIND_INLINE_CONSTRAINT_CI) { fail("ConstraintKW", RULE_CommentTarget_KIND); break; } }
-                    advance();
-                    if (peek() != KIND_COLID) { fail("ColId", RULE_CommentTarget_KIND); break; }
-                    advance();
-                    { int __k = peek(); if (__k != KIND_INLINE_ON_CI) { fail("OnKW", RULE_CommentTarget_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_VIEWKW) { fail("ViewKW", RULE_CommentTarget_KIND); break; } }
                     advance();
                     if (!parseQualifiedName(self)) { break; }
                     matched_alt_0 = true;
@@ -6699,7 +7805,23 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_FUNCTION_CI) { fail("FunctionKW", RULE_CommentTarget_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_CONSTRAINTKW) { fail("ConstraintKW", RULE_CommentTarget_KIND); break; } }
+                    advance();
+                    if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_CommentTarget_KIND); break; }
+                    advance();
+                    { int __k = peek(); if (__k != KIND_ONKW) { fail("OnKW", RULE_CommentTarget_KIND); break; } }
+                    advance();
+                    if (!parseQualifiedName(self)) { break; }
+                    matched_alt_0 = true;
+                } while (false);
+                if (!matched_alt_0) {
+                    pos = savedPos_alt_0;
+                    cst.truncate(savedNodes_alt_0);
+                }
+            }
+            if (!matched_alt_0 && !cutHit_alt_0) {
+                do {
+                    { int __k = peek(); if (__k != KIND_FUNCTIONKW) { fail("FunctionKW", RULE_CommentTarget_KIND); break; } }
                     advance();
                     if (!parseQualifiedName(self)) { break; }
                     if (peek() != KIND_INLINE__LPAREN) { fail("'('", RULE_CommentTarget_KIND); break; }
@@ -6786,7 +7908,7 @@ public final class PgSqlParser {
                     boolean cutHit_alt_1 = false;
                     if (!matched_alt_1 && !cutHit_alt_1) {
                         do {
-                            { int __k = peek(); if (__k != KIND_INLINE_IN_CI) { fail("InKW", RULE_FuncArgType_KIND); break; } }
+                            { int __k = peek(); if (__k != KIND_INKW) { fail("InKW", RULE_FuncArgType_KIND); break; } }
                             advance();
                             matched_alt_1 = true;
                         } while (false);
@@ -6797,7 +7919,7 @@ public final class PgSqlParser {
                     }
                     if (!matched_alt_1 && !cutHit_alt_1) {
                         do {
-                            { int __k = peek(); if (__k != KIND_INLINE_OUT_CI) { fail("OutKW", RULE_FuncArgType_KIND); break; } }
+                            { int __k = peek(); if (__k != KIND_OUTKW) { fail("OutKW", RULE_FuncArgType_KIND); break; } }
                             advance();
                             matched_alt_1 = true;
                         } while (false);
@@ -6808,7 +7930,7 @@ public final class PgSqlParser {
                     }
                     if (!matched_alt_1 && !cutHit_alt_1) {
                         do {
-                            { int __k = peek(); if (__k != KIND_INLINE_INOUT_CI) { fail("InoutKW", RULE_FuncArgType_KIND); break; } }
+                            { int __k = peek(); if (__k != KIND_INOUTKW) { fail("InoutKW", RULE_FuncArgType_KIND); break; } }
                             advance();
                             matched_alt_1 = true;
                         } while (false);
@@ -6819,7 +7941,7 @@ public final class PgSqlParser {
                     }
                     if (!matched_alt_1 && !cutHit_alt_1) {
                         do {
-                            { int __k = peek(); if (__k != KIND_INLINE_VARIADIC_CI) { fail("VariadicKW", RULE_FuncArgType_KIND); break; } }
+                            { int __k = peek(); if (__k != KIND_VARIADICKW) { fail("VariadicKW", RULE_FuncArgType_KIND); break; } }
                             advance();
                             matched_alt_1 = true;
                         } while (false);
@@ -6850,14 +7972,14 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_GrantStatement_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_GRANT_CI) { fail("GrantKW", RULE_GrantStatement_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_GRANTKW) { fail("GrantKW", RULE_GrantStatement_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         if (!parsePrivilegeList(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
-        { int __k = peek(); if (__k != KIND_INLINE_ON_CI) { fail("OnKW", RULE_GrantStatement_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_ONKW) { fail("OnKW", RULE_GrantStatement_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (!parseGrantTarget(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
-        { int __k = peek(); if (__k != KIND_INLINE_TO_CI) { fail("ToKW", RULE_GrantStatement_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_TOKW) { fail("ToKW", RULE_GrantStatement_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (!parseGranteeList(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
         // optional: opt_0
@@ -6866,11 +7988,11 @@ public final class PgSqlParser {
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                { int __k = peek(); if (__k != KIND_INLINE_WITH_CI) { fail("WithKW", RULE_GrantStatement_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_WITHKW) { fail("WithKW", RULE_GrantStatement_KIND); break; } }
                 advance();
-                { int __k = peek(); if (__k != KIND_INLINE_GRANT_CI) { fail("GrantKW", RULE_GrantStatement_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_GRANTKW) { fail("GrantKW", RULE_GrantStatement_KIND); break; } }
                 advance();
-                { int __k = peek(); if (__k != KIND_INLINE_OPTION_CI) { fail("OptionKW", RULE_GrantStatement_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_OPTIONKW) { fail("OptionKW", RULE_GrantStatement_KIND); break; } }
                 advance();
                 optOk_opt_0 = true;
             } while (false);
@@ -6891,7 +8013,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_RevokeStatement_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_REVOKE_CI) { fail("RevokeKW", RULE_RevokeStatement_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_REVOKEKW) { fail("RevokeKW", RULE_RevokeStatement_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         // optional: opt_0
@@ -6900,11 +8022,11 @@ public final class PgSqlParser {
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                { int __k = peek(); if (__k != KIND_INLINE_GRANT_CI) { fail("GrantKW", RULE_RevokeStatement_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_GRANTKW) { fail("GrantKW", RULE_RevokeStatement_KIND); break; } }
                 advance();
-                { int __k = peek(); if (__k != KIND_INLINE_OPTION_CI) { fail("OptionKW", RULE_RevokeStatement_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_OPTIONKW) { fail("OptionKW", RULE_RevokeStatement_KIND); break; } }
                 advance();
-                { int __k = peek(); if (__k != KIND_INLINE_FOR_CI) { fail("ForKW", RULE_RevokeStatement_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_FORKW) { fail("ForKW", RULE_RevokeStatement_KIND); break; } }
                 advance();
                 optOk_opt_0 = true;
             } while (false);
@@ -6914,10 +8036,10 @@ public final class PgSqlParser {
             }
         }
         if (!parsePrivilegeList(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
-        { int __k = peek(); if (__k != KIND_INLINE_ON_CI) { fail("OnKW", RULE_RevokeStatement_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_ONKW) { fail("OnKW", RULE_RevokeStatement_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (!parseGrantTarget(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
-        { int __k = peek(); if (__k != KIND_INLINE_FROM_CI) { fail("FromKW", RULE_RevokeStatement_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_FROMKW) { fail("FromKW", RULE_RevokeStatement_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (!parseGranteeList(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
         // optional: opt_1
@@ -6926,7 +8048,7 @@ public final class PgSqlParser {
             int savedNodes_opt_1 = cst.currentNodeCount();
             boolean optOk_opt_1 = false;
             do {
-                if (peek() != KIND_DROPBEHAVIOR) { fail("DropBehavior", RULE_RevokeStatement_KIND); break; }
+                { int __k = peek(); if (__k != KIND_CASCADEKW && __k != KIND_RESTRICTKW) { fail("DropBehavior", RULE_RevokeStatement_KIND); break; } }
                 advance();
                 optOk_opt_1 = true;
             } while (false);
@@ -6955,7 +8077,7 @@ public final class PgSqlParser {
             boolean cutHit_alt_0 = false;
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_ALL_CI) { fail("AllKW", RULE_PrivilegeList_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_ALLKW) { fail("AllKW", RULE_PrivilegeList_KIND); break; } }
                     advance();
                     // optional: opt_1
                     {
@@ -6963,7 +8085,7 @@ public final class PgSqlParser {
                         int savedNodes_opt_1 = cst.currentNodeCount();
                         boolean optOk_opt_1 = false;
                         do {
-                            { int __k = peek(); if (__k != KIND_INLINE_PRIVILEGES_CI) { fail("PrivilegesKW", RULE_PrivilegeList_KIND); break; } }
+                            { int __k = peek(); if (__k != KIND_PRIVILEGESKW) { fail("PrivilegesKW", RULE_PrivilegeList_KIND); break; } }
                             advance();
                             optOk_opt_1 = true;
                         } while (false);
@@ -7029,7 +8151,7 @@ public final class PgSqlParser {
             boolean cutHit_alt_0 = false;
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_SELECT_CI) { fail("SelectKW", RULE_Privilege_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_SELECTKW) { fail("SelectKW", RULE_Privilege_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -7040,7 +8162,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_INSERT_CI) { fail("InsertKW", RULE_Privilege_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_INSERTKW) { fail("InsertKW", RULE_Privilege_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -7051,7 +8173,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_UPDATE_CI) { fail("UpdateKW", RULE_Privilege_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_UPDATEKW) { fail("UpdateKW", RULE_Privilege_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -7062,7 +8184,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_DELETE_CI) { fail("DeleteKW", RULE_Privilege_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_DELETEKW) { fail("DeleteKW", RULE_Privilege_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -7073,7 +8195,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_TRUNCATE_CI) { fail("TruncateKW", RULE_Privilege_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_TRUNCATEKW) { fail("TruncateKW", RULE_Privilege_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -7084,7 +8206,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_REFERENCES_CI) { fail("ReferencesKW", RULE_Privilege_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_REFERENCESKW) { fail("ReferencesKW", RULE_Privilege_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -7095,7 +8217,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_TRIGGER_CI) { fail("TriggerKW", RULE_Privilege_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_TRIGGERKW) { fail("TriggerKW", RULE_Privilege_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -7106,7 +8228,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_CREATE_CI) { fail("CreateKW", RULE_Privilege_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_CREATEKW) { fail("CreateKW", RULE_Privilege_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -7117,7 +8239,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_CONNECT_CI) { fail("ConnectKW", RULE_Privilege_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_CONNECTKW) { fail("ConnectKW", RULE_Privilege_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -7128,7 +8250,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_TEMPORARY_CI) { fail("TemporaryKW", RULE_Privilege_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_TEMPORARYKW) { fail("TemporaryKW", RULE_Privilege_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -7139,7 +8261,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_EXECUTE_CI) { fail("ExecuteKW", RULE_Privilege_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_EXECUTEKW) { fail("ExecuteKW", RULE_Privilege_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -7150,7 +8272,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_USAGE_CI) { fail("UsageKW", RULE_Privilege_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_USAGEKW) { fail("UsageKW", RULE_Privilege_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -7199,7 +8321,7 @@ public final class PgSqlParser {
             boolean cutHit_alt_0 = false;
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_ALL_CI) { fail("AllKW", RULE_GrantTarget_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_ALLKW) { fail("AllKW", RULE_GrantTarget_KIND); break; } }
                     advance();
                     // choice: alt_1
                     {
@@ -7209,7 +8331,7 @@ public final class PgSqlParser {
                         boolean cutHit_alt_1 = false;
                         if (!matched_alt_1 && !cutHit_alt_1) {
                             do {
-                                { int __k = peek(); if (__k != KIND_INLINE_TABLES_CI) { fail("TablesKW", RULE_GrantTarget_KIND); break; } }
+                                { int __k = peek(); if (__k != KIND_TABLESKW) { fail("TablesKW", RULE_GrantTarget_KIND); break; } }
                                 advance();
                                 matched_alt_1 = true;
                             } while (false);
@@ -7220,7 +8342,7 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_1 && !cutHit_alt_1) {
                             do {
-                                { int __k = peek(); if (__k != KIND_INLINE_SEQUENCES_CI) { fail("SequencesKW", RULE_GrantTarget_KIND); break; } }
+                                { int __k = peek(); if (__k != KIND_SEQUENCESKW) { fail("SequencesKW", RULE_GrantTarget_KIND); break; } }
                                 advance();
                                 matched_alt_1 = true;
                             } while (false);
@@ -7231,7 +8353,7 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_1 && !cutHit_alt_1) {
                             do {
-                                { int __k = peek(); if (__k != KIND_INLINE_FUNCTIONS_CI) { fail("FunctionsKW", RULE_GrantTarget_KIND); break; } }
+                                { int __k = peek(); if (__k != KIND_FUNCTIONSKW) { fail("FunctionsKW", RULE_GrantTarget_KIND); break; } }
                                 advance();
                                 matched_alt_1 = true;
                             } while (false);
@@ -7242,7 +8364,7 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_1 && !cutHit_alt_1) {
                             do {
-                                { int __k = peek(); if (__k != KIND_INLINE_SCHEMAS_CI) { fail("SchemasKW", RULE_GrantTarget_KIND); break; } }
+                                { int __k = peek(); if (__k != KIND_SCHEMASKW) { fail("SchemasKW", RULE_GrantTarget_KIND); break; } }
                                 advance();
                                 matched_alt_1 = true;
                             } while (false);
@@ -7253,11 +8375,11 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_1) { fail("<choice>", RULE_GrantTarget_KIND); break; }
                     }
-                    { int __k = peek(); if (__k != KIND_INLINE_IN_CI) { fail("InKW", RULE_GrantTarget_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_INKW) { fail("InKW", RULE_GrantTarget_KIND); break; } }
                     advance();
-                    { int __k = peek(); if (__k != KIND_INLINE_SCHEMA_CI) { fail("SchemaKW", RULE_GrantTarget_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_SCHEMAKW) { fail("SchemaKW", RULE_GrantTarget_KIND); break; } }
                     advance();
-                    if (peek() != KIND_COLID) { fail("ColId", RULE_GrantTarget_KIND); break; }
+                    if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_GrantTarget_KIND); break; }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -7268,9 +8390,9 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_SCHEMA_CI) { fail("SchemaKW", RULE_GrantTarget_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_SCHEMAKW) { fail("SchemaKW", RULE_GrantTarget_KIND); break; } }
                     advance();
-                    if (peek() != KIND_COLID) { fail("ColId", RULE_GrantTarget_KIND); break; }
+                    if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_GrantTarget_KIND); break; }
                     advance();
                     // zero-or-more: rep_2
                     while (true) {
@@ -7280,7 +8402,7 @@ public final class PgSqlParser {
                         do {
                             if (peek() != KIND_INLINE__COMMA) { fail("','", RULE_GrantTarget_KIND); break; }
                             advance();
-                            if (peek() != KIND_COLID) { fail("ColId", RULE_GrantTarget_KIND); break; }
+                            if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_GrantTarget_KIND); break; }
                             advance();
                             iterOk_rep_2 = true;
                         } while (false);
@@ -7300,7 +8422,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_SEQUENCE_CI) { fail("SequenceKW", RULE_GrantTarget_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_SEQUENCEKW) { fail("SequenceKW", RULE_GrantTarget_KIND); break; } }
                     advance();
                     if (!parseQualifiedNameList(self)) { break; }
                     matched_alt_0 = true;
@@ -7312,7 +8434,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_TYPE_CI) { fail("TypeKW", RULE_GrantTarget_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_TYPEKW) { fail("TypeKW", RULE_GrantTarget_KIND); break; } }
                     advance();
                     if (!parseQualifiedNameList(self)) { break; }
                     matched_alt_0 = true;
@@ -7330,7 +8452,7 @@ public final class PgSqlParser {
                         int savedNodes_opt_3 = cst.currentNodeCount();
                         boolean optOk_opt_3 = false;
                         do {
-                            { int __k = peek(); if (__k != KIND_INLINE_TABLE_CI) { fail("TableKW", RULE_GrantTarget_KIND); break; } }
+                            { int __k = peek(); if (__k != KIND_TABLEKW) { fail("TableKW", RULE_GrantTarget_KIND); break; } }
                             advance();
                             optOk_opt_3 = true;
                         } while (false);
@@ -7361,8 +8483,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_GranteeList_KIND, firstTok, parent);
-        if (peek() != KIND_GRANTEE) { fail("Grantee", RULE_GranteeList_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
-        advance();
+        if (!parseGrantee(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
         // zero-or-more: rep_0
         while (true) {
             int savedPos_rep_0 = pos;
@@ -7371,8 +8492,7 @@ public final class PgSqlParser {
             do {
                 if (peek() != KIND_INLINE__COMMA) { fail("','", RULE_GranteeList_KIND); break; }
                 advance();
-                if (peek() != KIND_GRANTEE) { fail("Grantee", RULE_GranteeList_KIND); break; }
-                advance();
+                if (!parseGrantee(self)) { break; }
                 iterOk_rep_0 = true;
             } while (false);
             if (!iterOk_rep_0) {
@@ -7389,14 +8509,71 @@ public final class PgSqlParser {
         return true;
     }
 
+    private boolean parseGrantee(int parent) {
+        int firstTok = pos;
+        int savedPos = pos;
+        int savedNodes = cst.currentNodeCount();
+        int self = cst.beginNode(RULE_Grantee_KIND, firstTok, parent);
+        // choice: alt_0
+        {
+            int savedPos_alt_0 = pos;
+            int savedNodes_alt_0 = cst.currentNodeCount();
+            boolean matched_alt_0 = false;
+            boolean cutHit_alt_0 = false;
+            if (!matched_alt_0 && !cutHit_alt_0) {
+                do {
+                    { int __k = peek(); if (__k != KIND_PUBLICKW) { fail("PublicKW", RULE_Grantee_KIND); break; } }
+                    advance();
+                    matched_alt_0 = true;
+                } while (false);
+                if (!matched_alt_0) {
+                    pos = savedPos_alt_0;
+                    cst.truncate(savedNodes_alt_0);
+                }
+            }
+            if (!matched_alt_0 && !cutHit_alt_0) {
+                do {
+                    // optional: opt_1
+                    {
+                        int savedPos_opt_1 = pos;
+                        int savedNodes_opt_1 = cst.currentNodeCount();
+                        boolean optOk_opt_1 = false;
+                        do {
+                            { int __k = peek(); if (__k != KIND_GROUPKW) { fail("GroupKW", RULE_Grantee_KIND); break; } }
+                            advance();
+                            optOk_opt_1 = true;
+                        } while (false);
+                        if (!optOk_opt_1) {
+                            pos = savedPos_opt_1;
+                            cst.truncate(savedNodes_opt_1);
+                        }
+                    }
+                    if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_Grantee_KIND); break; }
+                    advance();
+                    matched_alt_0 = true;
+                } while (false);
+                if (!matched_alt_0) {
+                    pos = savedPos_alt_0;
+                    cst.truncate(savedNodes_alt_0);
+                }
+            }
+            if (!matched_alt_0) { fail("<choice>", RULE_Grantee_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+        }
+        int lastTok = pos > firstTok ? pos - 1 : firstTok;
+        if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
+        if (lastTok < firstTok) lastTok = firstTok;
+        cst.endNode(self, lastTok);
+        return true;
+    }
+
     private boolean parseAlterDefaultPrivilegesPassthrough(int parent) {
         int firstTok = pos;
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_AlterDefaultPrivilegesPassthrough_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_DEFAULT_CI) { fail("DefaultKW", RULE_AlterDefaultPrivilegesPassthrough_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_DEFAULTKW) { fail("DefaultKW", RULE_AlterDefaultPrivilegesPassthrough_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
-        { int __k = peek(); if (__k != KIND_INLINE_PRIVILEGES_CI) { fail("PrivilegesKW", RULE_AlterDefaultPrivilegesPassthrough_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_PRIVILEGESKW) { fail("PrivilegesKW", RULE_AlterDefaultPrivilegesPassthrough_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (!parseRestOfStatement(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
         int lastTok = pos > firstTok ? pos - 1 : firstTok;
@@ -7417,9 +8594,9 @@ public final class PgSqlParser {
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                { int __k = peek(); if (__k != KIND_INLINE_OR_CI) { fail("OrKW", RULE_CreateFunctionPassthrough_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_ORKW) { fail("OrKW", RULE_CreateFunctionPassthrough_KIND); break; } }
                 advance();
-                { int __k = peek(); if (__k != KIND_INLINE_REPLACE_CI) { fail("ReplaceKW", RULE_CreateFunctionPassthrough_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_REPLACEKW) { fail("ReplaceKW", RULE_CreateFunctionPassthrough_KIND); break; } }
                 advance();
                 optOk_opt_0 = true;
             } while (false);
@@ -7436,7 +8613,7 @@ public final class PgSqlParser {
             boolean cutHit_alt_1 = false;
             if (!matched_alt_1 && !cutHit_alt_1) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_FUNCTION_CI) { fail("FunctionKW", RULE_CreateFunctionPassthrough_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_FUNCTIONKW) { fail("FunctionKW", RULE_CreateFunctionPassthrough_KIND); break; } }
                     advance();
                     matched_alt_1 = true;
                 } while (false);
@@ -7447,7 +8624,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_1 && !cutHit_alt_1) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_PROCEDURE_CI) { fail("ProcedureKW", RULE_CreateFunctionPassthrough_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_PROCEDUREKW) { fail("ProcedureKW", RULE_CreateFunctionPassthrough_KIND); break; } }
                     advance();
                     matched_alt_1 = true;
                 } while (false);
@@ -7477,7 +8654,7 @@ public final class PgSqlParser {
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                { int __k = peek(); if (__k != KIND_INLINE_CONSTRAINT_CI) { fail("ConstraintKW", RULE_CreateTriggerPassthrough_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_CONSTRAINTKW) { fail("ConstraintKW", RULE_CreateTriggerPassthrough_KIND); break; } }
                 advance();
                 optOk_opt_0 = true;
             } while (false);
@@ -7486,7 +8663,7 @@ public final class PgSqlParser {
                 cst.truncate(savedNodes_opt_0);
             }
         }
-        { int __k = peek(); if (__k != KIND_INLINE_TRIGGER_CI) { fail("TriggerKW", RULE_CreateTriggerPassthrough_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_TRIGGERKW) { fail("TriggerKW", RULE_CreateTriggerPassthrough_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (!parseRestOfStatement(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
         int lastTok = pos > firstTok ? pos - 1 : firstTok;
@@ -7509,7 +8686,7 @@ public final class PgSqlParser {
             boolean cutHit_alt_0 = false;
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_FUNCTION_CI) { fail("FunctionKW", RULE_DropFunctionPassthrough_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_FUNCTIONKW) { fail("FunctionKW", RULE_DropFunctionPassthrough_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -7520,7 +8697,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_PROCEDURE_CI) { fail("ProcedureKW", RULE_DropFunctionPassthrough_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_PROCEDUREKW) { fail("ProcedureKW", RULE_DropFunctionPassthrough_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -7531,7 +8708,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_AGGREGATE_CI) { fail("AggregateKW", RULE_DropFunctionPassthrough_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_AGGREGATEKW) { fail("AggregateKW", RULE_DropFunctionPassthrough_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -7555,7 +8732,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_DropTriggerPassthrough_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_TRIGGER_CI) { fail("TriggerKW", RULE_DropTriggerPassthrough_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_TRIGGERKW) { fail("TriggerKW", RULE_DropTriggerPassthrough_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (!parseRestOfStatement(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
         int lastTok = pos > firstTok ? pos - 1 : firstTok;
@@ -7708,7 +8885,7 @@ public final class PgSqlParser {
             boolean cutHit_alt_0 = false;
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_SELECT_CI) { fail("SelectKW", RULE_SelectCore_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_SELECTKW) { fail("SelectKW", RULE_SelectCore_KIND); break; } }
                     advance();
                     cutHit_alt_0 = true;
                     // optional: opt_1
@@ -7849,7 +9026,7 @@ public final class PgSqlParser {
             boolean cutHit_alt_0 = false;
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_ALL_CI) { fail("AllKW", RULE_SetQuantifier_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_ALLKW) { fail("AllKW", RULE_SetQuantifier_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -7860,7 +9037,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_DISTINCT_CI) { fail("DistinctKW", RULE_SetQuantifier_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_DISTINCTKW) { fail("DistinctKW", RULE_SetQuantifier_KIND); break; } }
                     advance();
                     // optional: opt_1
                     {
@@ -7868,7 +9045,7 @@ public final class PgSqlParser {
                         int savedNodes_opt_1 = cst.currentNodeCount();
                         boolean optOk_opt_1 = false;
                         do {
-                            { int __k = peek(); if (__k != KIND_INLINE_ON_CI) { fail("OnKW", RULE_SetQuantifier_KIND); break; } }
+                            { int __k = peek(); if (__k != KIND_ONKW) { fail("OnKW", RULE_SetQuantifier_KIND); break; } }
                             advance();
                             if (peek() != KIND_INLINE__LPAREN) { fail("'('", RULE_SetQuantifier_KIND); break; }
                             advance();
@@ -7967,10 +9144,9 @@ public final class PgSqlParser {
                                 boolean cutHit_alt_2 = false;
                                 if (!matched_alt_2 && !cutHit_alt_2) {
                                     do {
-                                        { int __k = peek(); if (__k != KIND_INLINE_AS_CI) { fail("AsKW", RULE_TargetElem_KIND); break; } }
+                                        { int __k = peek(); if (__k != KIND_ASKW) { fail("AsKW", RULE_TargetElem_KIND); break; } }
                                         advance();
-                                        if (peek() != KIND_COLLABEL) { fail("ColLabel", RULE_TargetElem_KIND); break; }
-                                        advance();
+                                        if (!parseColLabel(self)) { break; }
                                         matched_alt_2 = true;
                                     } while (false);
                                     if (!matched_alt_2) {
@@ -7993,8 +9169,7 @@ public final class PgSqlParser {
                                             cst.truncate(savedNodes_not_3);
                                             if (notMatched_not_3) { fail("!<predicate>", RULE_TargetElem_KIND); break; }
                                         }
-                                        if (peek() != KIND_COLLABEL) { fail("ColLabel", RULE_TargetElem_KIND); break; }
-                                        advance();
+                                        if (!parseColLabel(self)) { break; }
                                         matched_alt_2 = true;
                                     } while (false);
                                     if (!matched_alt_2) {
@@ -8077,7 +9252,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_IntoClause_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_INTO_CI) { fail("IntoKW", RULE_IntoClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_INTOKW) { fail("IntoKW", RULE_IntoClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // optional: opt_0
         {
@@ -8093,7 +9268,7 @@ public final class PgSqlParser {
                     boolean cutHit_alt_1 = false;
                     if (!matched_alt_1 && !cutHit_alt_1) {
                         do {
-                            { int __k = peek(); if (__k != KIND_INLINE_TEMP_CI) { fail("TempKW", RULE_IntoClause_KIND); break; } }
+                            { int __k = peek(); if (__k != KIND_TEMPKW) { fail("TempKW", RULE_IntoClause_KIND); break; } }
                             advance();
                             matched_alt_1 = true;
                         } while (false);
@@ -8104,7 +9279,7 @@ public final class PgSqlParser {
                     }
                     if (!matched_alt_1 && !cutHit_alt_1) {
                         do {
-                            { int __k = peek(); if (__k != KIND_INLINE_TEMPORARY_CI) { fail("TemporaryKW", RULE_IntoClause_KIND); break; } }
+                            { int __k = peek(); if (__k != KIND_TEMPORARYKW) { fail("TemporaryKW", RULE_IntoClause_KIND); break; } }
                             advance();
                             matched_alt_1 = true;
                         } while (false);
@@ -8115,7 +9290,7 @@ public final class PgSqlParser {
                     }
                     if (!matched_alt_1 && !cutHit_alt_1) {
                         do {
-                            { int __k = peek(); if (__k != KIND_INLINE_UNLOGGED_CI) { fail("UnloggedKW", RULE_IntoClause_KIND); break; } }
+                            { int __k = peek(); if (__k != KIND_UNLOGGEDKW) { fail("UnloggedKW", RULE_IntoClause_KIND); break; } }
                             advance();
                             matched_alt_1 = true;
                         } while (false);
@@ -8139,7 +9314,7 @@ public final class PgSqlParser {
             int savedNodes_opt_2 = cst.currentNodeCount();
             boolean optOk_opt_2 = false;
             do {
-                { int __k = peek(); if (__k != KIND_INLINE_TABLE_CI) { fail("TableKW", RULE_IntoClause_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_TABLEKW) { fail("TableKW", RULE_IntoClause_KIND); break; } }
                 advance();
                 optOk_opt_2 = true;
             } while (false);
@@ -8161,7 +9336,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_FromClause_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_FROM_CI) { fail("FromKW", RULE_FromClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_FROMKW) { fail("FromKW", RULE_FromClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         if (!parseFromList(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
@@ -8373,7 +9548,7 @@ public final class PgSqlParser {
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                { int __k = peek(); if (__k != KIND_INLINE_LATERAL_CI) { fail("LateralKW", RULE_SubqueryRef_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_LATERALKW) { fail("LateralKW", RULE_SubqueryRef_KIND); break; } }
                 advance();
                 optOk_opt_0 = true;
             } while (false);
@@ -8400,7 +9575,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_LateralRef_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_LATERAL_CI) { fail("LateralKW", RULE_LateralRef_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_LATERALKW) { fail("LateralKW", RULE_LateralRef_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // choice: alt_0
         {
@@ -8467,8 +9642,7 @@ public final class PgSqlParser {
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                if (peek() != KIND_WITHORDINALITY) { fail("WithOrdinality", RULE_FuncTableRef_KIND); break; }
-                advance();
+                if (!parseWithOrdinality(self)) { break; }
                 optOk_opt_0 = true;
             } while (false);
             if (!optOk_opt_0) {
@@ -8497,6 +9671,22 @@ public final class PgSqlParser {
         return true;
     }
 
+    private boolean parseWithOrdinality(int parent) {
+        int firstTok = pos;
+        int savedPos = pos;
+        int savedNodes = cst.currentNodeCount();
+        int self = cst.beginNode(RULE_WithOrdinality_KIND, firstTok, parent);
+        { int __k = peek(); if (__k != KIND_WITHKW) { fail("WithKW", RULE_WithOrdinality_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        { int __k = peek(); if (__k != KIND_ORDINALITYKW) { fail("OrdinalityKW", RULE_WithOrdinality_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        int lastTok = pos > firstTok ? pos - 1 : firstTok;
+        if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
+        if (lastTok < firstTok) lastTok = firstTok;
+        cst.endNode(self, lastTok);
+        return true;
+    }
+
     private boolean parseAlias(int parent) {
         int firstTok = pos;
         int savedPos = pos;
@@ -8510,9 +9700,9 @@ public final class PgSqlParser {
             boolean cutHit_alt_0 = false;
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_AS_CI) { fail("AsKW", RULE_Alias_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_ASKW) { fail("AsKW", RULE_Alias_KIND); break; } }
                     advance();
-                    if (peek() != KIND_COLID) { fail("ColId", RULE_Alias_KIND); break; }
+                    if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_Alias_KIND); break; }
                     advance();
                     // optional: opt_1
                     {
@@ -8554,7 +9744,7 @@ public final class PgSqlParser {
                         cst.truncate(savedNodes_not_2);
                         if (notMatched_not_2) { fail("!<predicate>", RULE_Alias_KIND); break; }
                     }
-                    if (peek() != KIND_COLID) { fail("ColId", RULE_Alias_KIND); break; }
+                    if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_Alias_KIND); break; }
                     advance();
                     // optional: opt_3
                     {
@@ -8595,7 +9785,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_TablesampleClause_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_TABLESAMPLE_CI) { fail("TablesampleKW", RULE_TablesampleClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_TABLESAMPLEKW) { fail("TablesampleKW", RULE_TablesampleClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (!parseFuncCall(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
         int lastTok = pos > firstTok ? pos - 1 : firstTok;
@@ -8654,7 +9844,7 @@ public final class PgSqlParser {
                         int savedNodes_opt_1 = cst.currentNodeCount();
                         boolean optOk_opt_1 = false;
                         do {
-                            { int __k = peek(); if (__k != KIND_INLINE_NATURAL_CI) { fail("NaturalKW", RULE_JoinClause_KIND); break; } }
+                            { int __k = peek(); if (__k != KIND_NATURALKW) { fail("NaturalKW", RULE_JoinClause_KIND); break; } }
                             advance();
                             optOk_opt_1 = true;
                         } while (false);
@@ -8669,8 +9859,7 @@ public final class PgSqlParser {
                         int savedNodes_opt_2 = cst.currentNodeCount();
                         boolean optOk_opt_2 = false;
                         do {
-                            if (peek() != KIND_JOINTYPE) { fail("JoinType", RULE_JoinClause_KIND); break; }
-                            advance();
+                            if (!parseJoinType(self)) { break; }
                             optOk_opt_2 = true;
                         } while (false);
                         if (!optOk_opt_2) {
@@ -8678,7 +9867,7 @@ public final class PgSqlParser {
                             cst.truncate(savedNodes_opt_2);
                         }
                     }
-                    { int __k = peek(); if (__k != KIND_INLINE_JOIN_CI) { fail("JoinKW", RULE_JoinClause_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_JOINKW) { fail("JoinKW", RULE_JoinClause_KIND); break; } }
                     advance();
                     cutHit_alt_0 = true;
                     if (!parseTableRefBase(self)) { break; }
@@ -8705,9 +9894,9 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_CROSS_CI) { fail("CrossKW", RULE_JoinClause_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_CROSSKW) { fail("CrossKW", RULE_JoinClause_KIND); break; } }
                     advance();
-                    { int __k = peek(); if (__k != KIND_INLINE_JOIN_CI) { fail("JoinKW", RULE_JoinClause_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_JOINKW) { fail("JoinKW", RULE_JoinClause_KIND); break; } }
                     advance();
                     cutHit_alt_0 = true;
                     if (!parseTableRefBase(self)) { break; }
@@ -8720,7 +9909,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_NATURAL_CI) { fail("NaturalKW", RULE_JoinClause_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_NATURALKW) { fail("NaturalKW", RULE_JoinClause_KIND); break; } }
                     advance();
                     // optional: opt_4
                     {
@@ -8728,8 +9917,7 @@ public final class PgSqlParser {
                         int savedNodes_opt_4 = cst.currentNodeCount();
                         boolean optOk_opt_4 = false;
                         do {
-                            if (peek() != KIND_JOINTYPE) { fail("JoinType", RULE_JoinClause_KIND); break; }
-                            advance();
+                            if (!parseJoinType(self)) { break; }
                             optOk_opt_4 = true;
                         } while (false);
                         if (!optOk_opt_4) {
@@ -8737,7 +9925,7 @@ public final class PgSqlParser {
                             cst.truncate(savedNodes_opt_4);
                         }
                     }
-                    { int __k = peek(); if (__k != KIND_INLINE_JOIN_CI) { fail("JoinKW", RULE_JoinClause_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_JOINKW) { fail("JoinKW", RULE_JoinClause_KIND); break; } }
                     advance();
                     cutHit_alt_0 = true;
                     if (!parseTableRefBase(self)) { break; }
@@ -8749,6 +9937,102 @@ public final class PgSqlParser {
                 }
             }
             if (!matched_alt_0) { fail("<choice>", RULE_JoinClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+        }
+        int lastTok = pos > firstTok ? pos - 1 : firstTok;
+        if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
+        if (lastTok < firstTok) lastTok = firstTok;
+        cst.endNode(self, lastTok);
+        return true;
+    }
+
+    private boolean parseJoinType(int parent) {
+        int firstTok = pos;
+        int savedPos = pos;
+        int savedNodes = cst.currentNodeCount();
+        int self = cst.beginNode(RULE_JoinType_KIND, firstTok, parent);
+        // choice: alt_0
+        {
+            int savedPos_alt_0 = pos;
+            int savedNodes_alt_0 = cst.currentNodeCount();
+            boolean matched_alt_0 = false;
+            boolean cutHit_alt_0 = false;
+            if (!matched_alt_0 && !cutHit_alt_0) {
+                do {
+                    // choice: alt_1
+                    {
+                        int savedPos_alt_1 = pos;
+                        int savedNodes_alt_1 = cst.currentNodeCount();
+                        boolean matched_alt_1 = false;
+                        boolean cutHit_alt_1 = false;
+                        if (!matched_alt_1 && !cutHit_alt_1) {
+                            do {
+                                { int __k = peek(); if (__k != KIND_LEFTKW) { fail("LeftKW", RULE_JoinType_KIND); break; } }
+                                advance();
+                                matched_alt_1 = true;
+                            } while (false);
+                            if (!matched_alt_1) {
+                                pos = savedPos_alt_1;
+                                cst.truncate(savedNodes_alt_1);
+                            }
+                        }
+                        if (!matched_alt_1 && !cutHit_alt_1) {
+                            do {
+                                { int __k = peek(); if (__k != KIND_RIGHTKW) { fail("RightKW", RULE_JoinType_KIND); break; } }
+                                advance();
+                                matched_alt_1 = true;
+                            } while (false);
+                            if (!matched_alt_1) {
+                                pos = savedPos_alt_1;
+                                cst.truncate(savedNodes_alt_1);
+                            }
+                        }
+                        if (!matched_alt_1 && !cutHit_alt_1) {
+                            do {
+                                { int __k = peek(); if (__k != KIND_FULLKW) { fail("FullKW", RULE_JoinType_KIND); break; } }
+                                advance();
+                                matched_alt_1 = true;
+                            } while (false);
+                            if (!matched_alt_1) {
+                                pos = savedPos_alt_1;
+                                cst.truncate(savedNodes_alt_1);
+                            }
+                        }
+                        if (!matched_alt_1) { fail("<choice>", RULE_JoinType_KIND); break; }
+                    }
+                    // optional: opt_2
+                    {
+                        int savedPos_opt_2 = pos;
+                        int savedNodes_opt_2 = cst.currentNodeCount();
+                        boolean optOk_opt_2 = false;
+                        do {
+                            { int __k = peek(); if (__k != KIND_OUTERKW) { fail("OuterKW", RULE_JoinType_KIND); break; } }
+                            advance();
+                            optOk_opt_2 = true;
+                        } while (false);
+                        if (!optOk_opt_2) {
+                            pos = savedPos_opt_2;
+                            cst.truncate(savedNodes_opt_2);
+                        }
+                    }
+                    matched_alt_0 = true;
+                } while (false);
+                if (!matched_alt_0) {
+                    pos = savedPos_alt_0;
+                    cst.truncate(savedNodes_alt_0);
+                }
+            }
+            if (!matched_alt_0 && !cutHit_alt_0) {
+                do {
+                    { int __k = peek(); if (__k != KIND_INNERKW) { fail("InnerKW", RULE_JoinType_KIND); break; } }
+                    advance();
+                    matched_alt_0 = true;
+                } while (false);
+                if (!matched_alt_0) {
+                    pos = savedPos_alt_0;
+                    cst.truncate(savedNodes_alt_0);
+                }
+            }
+            if (!matched_alt_0) { fail("<choice>", RULE_JoinType_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         }
         int lastTok = pos > firstTok ? pos - 1 : firstTok;
         if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
@@ -8770,7 +10054,7 @@ public final class PgSqlParser {
             boolean cutHit_alt_0 = false;
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_ON_CI) { fail("OnKW", RULE_JoinQual_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_ONKW) { fail("OnKW", RULE_JoinQual_KIND); break; } }
                     advance();
                     if (!parseExpr(self)) { break; }
                     matched_alt_0 = true;
@@ -8782,7 +10066,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_USING_CI) { fail("UsingKW", RULE_JoinQual_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_USINGKW) { fail("UsingKW", RULE_JoinQual_KIND); break; } }
                     advance();
                     if (peek() != KIND_INLINE__LPAREN) { fail("'('", RULE_JoinQual_KIND); break; }
                     advance();
@@ -8810,7 +10094,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_WhereClause_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_WHERE_CI) { fail("WhereKW", RULE_WhereClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_WHEREKW) { fail("WhereKW", RULE_WhereClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         if (!parseExpr(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
@@ -8826,9 +10110,9 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_GroupByClause_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_GROUP_CI) { fail("GroupKW", RULE_GroupByClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_GROUPKW) { fail("GroupKW", RULE_GroupByClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
-        { int __k = peek(); if (__k != KIND_INLINE_BY_CI) { fail("ByKW", RULE_GroupByClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_BYKW) { fail("ByKW", RULE_GroupByClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         // choice: alt_0
@@ -8839,7 +10123,7 @@ public final class PgSqlParser {
             boolean cutHit_alt_0 = false;
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_ALL_CI) { fail("AllKW", RULE_GroupByClause_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_ALLKW) { fail("AllKW", RULE_GroupByClause_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -8911,7 +10195,7 @@ public final class PgSqlParser {
             boolean cutHit_alt_0 = false;
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_ROLLUP_CI) { fail("RollupKW", RULE_GroupByElem_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_ROLLUPKW) { fail("RollupKW", RULE_GroupByElem_KIND); break; } }
                     advance();
                     if (peek() != KIND_INLINE__LPAREN) { fail("'('", RULE_GroupByElem_KIND); break; }
                     advance();
@@ -8927,7 +10211,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_CUBE_CI) { fail("CubeKW", RULE_GroupByElem_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_CUBEKW) { fail("CubeKW", RULE_GroupByElem_KIND); break; } }
                     advance();
                     if (peek() != KIND_INLINE__LPAREN) { fail("'('", RULE_GroupByElem_KIND); break; }
                     advance();
@@ -8994,7 +10278,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_HavingClause_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_HAVING_CI) { fail("HavingKW", RULE_HavingClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_HAVINGKW) { fail("HavingKW", RULE_HavingClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         if (!parseExpr(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
@@ -9010,7 +10294,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_WindowClause_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_WINDOW_CI) { fail("WindowKW", RULE_WindowClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_WINDOWKW) { fail("WindowKW", RULE_WindowClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         if (!parseWindowDefList(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
@@ -9057,9 +10341,9 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_WindowDef_KIND, firstTok, parent);
-        if (peek() != KIND_COLID) { fail("ColId", RULE_WindowDef_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+        if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_WindowDef_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         advance();
-        { int __k = peek(); if (__k != KIND_INLINE_AS_CI) { fail("AsKW", RULE_WindowDef_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_ASKW) { fail("AsKW", RULE_WindowDef_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (peek() != KIND_INLINE__LPAREN) { fail("'('", RULE_WindowDef_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         advance();
@@ -9084,7 +10368,77 @@ public final class PgSqlParser {
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                if (peek() != KIND_WINDOWNAME) { fail("WindowName", RULE_WindowSpec_KIND); break; }
+                // not-predicate: not_1
+                {
+                    int savedPos_not_1 = pos;
+                    int savedNodes_not_1 = cst.currentNodeCount();
+                    boolean notMatched_not_1 = false;
+                    do {
+                        { int __k = peek(); if (__k != KIND_PARTITIONKW) { fail("PartitionKW", RULE_WindowSpec_KIND); break; } }
+                        advance();
+                        notMatched_not_1 = true;
+                    } while (false);
+                    pos = savedPos_not_1;
+                    cst.truncate(savedNodes_not_1);
+                    if (notMatched_not_1) { fail("!<predicate>", RULE_WindowSpec_KIND); break; }
+                }
+                // not-predicate: not_2
+                {
+                    int savedPos_not_2 = pos;
+                    int savedNodes_not_2 = cst.currentNodeCount();
+                    boolean notMatched_not_2 = false;
+                    do {
+                        { int __k = peek(); if (__k != KIND_ORDERKW) { fail("OrderKW", RULE_WindowSpec_KIND); break; } }
+                        advance();
+                        notMatched_not_2 = true;
+                    } while (false);
+                    pos = savedPos_not_2;
+                    cst.truncate(savedNodes_not_2);
+                    if (notMatched_not_2) { fail("!<predicate>", RULE_WindowSpec_KIND); break; }
+                }
+                // not-predicate: not_3
+                {
+                    int savedPos_not_3 = pos;
+                    int savedNodes_not_3 = cst.currentNodeCount();
+                    boolean notMatched_not_3 = false;
+                    do {
+                        { int __k = peek(); if (__k != KIND_ROWSKW) { fail("RowsKW", RULE_WindowSpec_KIND); break; } }
+                        advance();
+                        notMatched_not_3 = true;
+                    } while (false);
+                    pos = savedPos_not_3;
+                    cst.truncate(savedNodes_not_3);
+                    if (notMatched_not_3) { fail("!<predicate>", RULE_WindowSpec_KIND); break; }
+                }
+                // not-predicate: not_4
+                {
+                    int savedPos_not_4 = pos;
+                    int savedNodes_not_4 = cst.currentNodeCount();
+                    boolean notMatched_not_4 = false;
+                    do {
+                        { int __k = peek(); if (__k != KIND_RANGEKW) { fail("RangeKW", RULE_WindowSpec_KIND); break; } }
+                        advance();
+                        notMatched_not_4 = true;
+                    } while (false);
+                    pos = savedPos_not_4;
+                    cst.truncate(savedNodes_not_4);
+                    if (notMatched_not_4) { fail("!<predicate>", RULE_WindowSpec_KIND); break; }
+                }
+                // not-predicate: not_5
+                {
+                    int savedPos_not_5 = pos;
+                    int savedNodes_not_5 = cst.currentNodeCount();
+                    boolean notMatched_not_5 = false;
+                    do {
+                        { int __k = peek(); if (__k != KIND_GROUPSKW) { fail("GroupsKW", RULE_WindowSpec_KIND); break; } }
+                        advance();
+                        notMatched_not_5 = true;
+                    } while (false);
+                    pos = savedPos_not_5;
+                    cst.truncate(savedNodes_not_5);
+                    if (notMatched_not_5) { fail("!<predicate>", RULE_WindowSpec_KIND); break; }
+                }
+                if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_WindowSpec_KIND); break; }
                 advance();
                 optOk_opt_0 = true;
             } while (false);
@@ -9093,46 +10447,46 @@ public final class PgSqlParser {
                 cst.truncate(savedNodes_opt_0);
             }
         }
-        // optional: opt_1
+        // optional: opt_6
         {
-            int savedPos_opt_1 = pos;
-            int savedNodes_opt_1 = cst.currentNodeCount();
-            boolean optOk_opt_1 = false;
+            int savedPos_opt_6 = pos;
+            int savedNodes_opt_6 = cst.currentNodeCount();
+            boolean optOk_opt_6 = false;
             do {
                 if (!parsePartitionClause(self)) { break; }
-                optOk_opt_1 = true;
+                optOk_opt_6 = true;
             } while (false);
-            if (!optOk_opt_1) {
-                pos = savedPos_opt_1;
-                cst.truncate(savedNodes_opt_1);
+            if (!optOk_opt_6) {
+                pos = savedPos_opt_6;
+                cst.truncate(savedNodes_opt_6);
             }
         }
-        // optional: opt_2
+        // optional: opt_7
         {
-            int savedPos_opt_2 = pos;
-            int savedNodes_opt_2 = cst.currentNodeCount();
-            boolean optOk_opt_2 = false;
+            int savedPos_opt_7 = pos;
+            int savedNodes_opt_7 = cst.currentNodeCount();
+            boolean optOk_opt_7 = false;
             do {
                 if (!parseOrderByClause(self)) { break; }
-                optOk_opt_2 = true;
+                optOk_opt_7 = true;
             } while (false);
-            if (!optOk_opt_2) {
-                pos = savedPos_opt_2;
-                cst.truncate(savedNodes_opt_2);
+            if (!optOk_opt_7) {
+                pos = savedPos_opt_7;
+                cst.truncate(savedNodes_opt_7);
             }
         }
-        // optional: opt_3
+        // optional: opt_8
         {
-            int savedPos_opt_3 = pos;
-            int savedNodes_opt_3 = cst.currentNodeCount();
-            boolean optOk_opt_3 = false;
+            int savedPos_opt_8 = pos;
+            int savedNodes_opt_8 = cst.currentNodeCount();
+            boolean optOk_opt_8 = false;
             do {
                 if (!parseFrameClause(self)) { break; }
-                optOk_opt_3 = true;
+                optOk_opt_8 = true;
             } while (false);
-            if (!optOk_opt_3) {
-                pos = savedPos_opt_3;
-                cst.truncate(savedNodes_opt_3);
+            if (!optOk_opt_8) {
+                pos = savedPos_opt_8;
+                cst.truncate(savedNodes_opt_8);
             }
         }
         int lastTok = pos > firstTok ? pos - 1 : firstTok;
@@ -9147,9 +10501,9 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_PartitionClause_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_PARTITION_CI) { fail("PartitionKW", RULE_PartitionClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_PARTITIONKW) { fail("PartitionKW", RULE_PartitionClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
-        { int __k = peek(); if (__k != KIND_INLINE_BY_CI) { fail("ByKW", RULE_PartitionClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_BYKW) { fail("ByKW", RULE_PartitionClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         if (!parseExprList(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
@@ -9165,7 +10519,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_FrameClause_KIND, firstTok, parent);
-        if (peek() != KIND_FRAMETYPE) { fail("FrameType", RULE_FrameClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+        { int __k = peek(); if (__k != KIND_ROWSKW && __k != KIND_RANGEKW && __k != KIND_GROUPSKW) { fail("FrameType", RULE_FrameClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (!parseFrameExtent(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
         // optional: opt_0
@@ -9174,8 +10528,7 @@ public final class PgSqlParser {
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                if (peek() != KIND_FRAMEEXCLUSION) { fail("FrameExclusion", RULE_FrameClause_KIND); break; }
-                advance();
+                if (!parseFrameExclusion(self)) { break; }
                 optOk_opt_0 = true;
             } while (false);
             if (!optOk_opt_0) {
@@ -9203,10 +10556,10 @@ public final class PgSqlParser {
             boolean cutHit_alt_0 = false;
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_BETWEEN_CI) { fail("BetweenKW", RULE_FrameExtent_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_BETWEENKW) { fail("BetweenKW", RULE_FrameExtent_KIND); break; } }
                     advance();
                     if (!parseFrameBound(self)) { break; }
-                    { int __k = peek(); if (__k != KIND_INLINE_AND_CI) { fail("AndKW", RULE_FrameExtent_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_ANDKW) { fail("AndKW", RULE_FrameExtent_KIND); break; } }
                     advance();
                     if (!parseFrameBound(self)) { break; }
                     matched_alt_0 = true;
@@ -9248,7 +10601,7 @@ public final class PgSqlParser {
             boolean cutHit_alt_0 = false;
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_UNBOUNDED_CI) { fail("UnboundedKW", RULE_FrameBound_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_UNBOUNDEDKW) { fail("UnboundedKW", RULE_FrameBound_KIND); break; } }
                     advance();
                     // choice: alt_1
                     {
@@ -9258,7 +10611,7 @@ public final class PgSqlParser {
                         boolean cutHit_alt_1 = false;
                         if (!matched_alt_1 && !cutHit_alt_1) {
                             do {
-                                { int __k = peek(); if (__k != KIND_INLINE_PRECEDING_CI) { fail("PrecedingKW", RULE_FrameBound_KIND); break; } }
+                                { int __k = peek(); if (__k != KIND_PRECEDINGKW) { fail("PrecedingKW", RULE_FrameBound_KIND); break; } }
                                 advance();
                                 matched_alt_1 = true;
                             } while (false);
@@ -9269,7 +10622,7 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_1 && !cutHit_alt_1) {
                             do {
-                                { int __k = peek(); if (__k != KIND_INLINE_FOLLOWING_CI) { fail("FollowingKW", RULE_FrameBound_KIND); break; } }
+                                { int __k = peek(); if (__k != KIND_FOLLOWINGKW) { fail("FollowingKW", RULE_FrameBound_KIND); break; } }
                                 advance();
                                 matched_alt_1 = true;
                             } while (false);
@@ -9289,9 +10642,9 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_CURRENT_CI) { fail("CurrentKW", RULE_FrameBound_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_CURRENTKW) { fail("CurrentKW", RULE_FrameBound_KIND); break; } }
                     advance();
-                    { int __k = peek(); if (__k != KIND_INLINE_ROW_CI) { fail("RowKW", RULE_FrameBound_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_ROWKW) { fail("RowKW", RULE_FrameBound_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -9311,7 +10664,7 @@ public final class PgSqlParser {
                         boolean cutHit_alt_2 = false;
                         if (!matched_alt_2 && !cutHit_alt_2) {
                             do {
-                                { int __k = peek(); if (__k != KIND_INLINE_PRECEDING_CI) { fail("PrecedingKW", RULE_FrameBound_KIND); break; } }
+                                { int __k = peek(); if (__k != KIND_PRECEDINGKW) { fail("PrecedingKW", RULE_FrameBound_KIND); break; } }
                                 advance();
                                 matched_alt_2 = true;
                             } while (false);
@@ -9322,7 +10675,7 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_2 && !cutHit_alt_2) {
                             do {
-                                { int __k = peek(); if (__k != KIND_INLINE_FOLLOWING_CI) { fail("FollowingKW", RULE_FrameBound_KIND); break; } }
+                                { int __k = peek(); if (__k != KIND_FOLLOWINGKW) { fail("FollowingKW", RULE_FrameBound_KIND); break; } }
                                 advance();
                                 matched_alt_2 = true;
                             } while (false);
@@ -9349,12 +10702,82 @@ public final class PgSqlParser {
         return true;
     }
 
+    private boolean parseFrameExclusion(int parent) {
+        int firstTok = pos;
+        int savedPos = pos;
+        int savedNodes = cst.currentNodeCount();
+        int self = cst.beginNode(RULE_FrameExclusion_KIND, firstTok, parent);
+        { int __k = peek(); if (__k != KIND_EXCLUDEKW) { fail("ExcludeKW", RULE_FrameExclusion_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        advance();
+        // choice: alt_0
+        {
+            int savedPos_alt_0 = pos;
+            int savedNodes_alt_0 = cst.currentNodeCount();
+            boolean matched_alt_0 = false;
+            boolean cutHit_alt_0 = false;
+            if (!matched_alt_0 && !cutHit_alt_0) {
+                do {
+                    { int __k = peek(); if (__k != KIND_CURRENTKW) { fail("CurrentKW", RULE_FrameExclusion_KIND); break; } }
+                    advance();
+                    { int __k = peek(); if (__k != KIND_ROWKW) { fail("RowKW", RULE_FrameExclusion_KIND); break; } }
+                    advance();
+                    matched_alt_0 = true;
+                } while (false);
+                if (!matched_alt_0) {
+                    pos = savedPos_alt_0;
+                    cst.truncate(savedNodes_alt_0);
+                }
+            }
+            if (!matched_alt_0 && !cutHit_alt_0) {
+                do {
+                    { int __k = peek(); if (__k != KIND_GROUPKW) { fail("GroupKW", RULE_FrameExclusion_KIND); break; } }
+                    advance();
+                    matched_alt_0 = true;
+                } while (false);
+                if (!matched_alt_0) {
+                    pos = savedPos_alt_0;
+                    cst.truncate(savedNodes_alt_0);
+                }
+            }
+            if (!matched_alt_0 && !cutHit_alt_0) {
+                do {
+                    { int __k = peek(); if (__k != KIND_TIESKW) { fail("TiesKW", RULE_FrameExclusion_KIND); break; } }
+                    advance();
+                    matched_alt_0 = true;
+                } while (false);
+                if (!matched_alt_0) {
+                    pos = savedPos_alt_0;
+                    cst.truncate(savedNodes_alt_0);
+                }
+            }
+            if (!matched_alt_0 && !cutHit_alt_0) {
+                do {
+                    { int __k = peek(); if (__k != KIND_NOKW) { fail("NoKW", RULE_FrameExclusion_KIND); break; } }
+                    advance();
+                    { int __k = peek(); if (__k != KIND_OTHERSKW) { fail("OthersKW", RULE_FrameExclusion_KIND); break; } }
+                    advance();
+                    matched_alt_0 = true;
+                } while (false);
+                if (!matched_alt_0) {
+                    pos = savedPos_alt_0;
+                    cst.truncate(savedNodes_alt_0);
+                }
+            }
+            if (!matched_alt_0) { fail("<choice>", RULE_FrameExclusion_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+        }
+        int lastTok = pos > firstTok ? pos - 1 : firstTok;
+        if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
+        if (lastTok < firstTok) lastTok = firstTok;
+        cst.endNode(self, lastTok);
+        return true;
+    }
+
     private boolean parseWithClause(int parent) {
         int firstTok = pos;
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_WithClause_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_WITH_CI) { fail("WithKW", RULE_WithClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_WITHKW) { fail("WithKW", RULE_WithClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         // optional: opt_0
@@ -9363,7 +10786,7 @@ public final class PgSqlParser {
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                { int __k = peek(); if (__k != KIND_INLINE_RECURSIVE_CI) { fail("RecursiveKW", RULE_WithClause_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_RECURSIVEKW) { fail("RecursiveKW", RULE_WithClause_KIND); break; } }
                 advance();
                 optOk_opt_0 = true;
             } while (false);
@@ -9416,7 +10839,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_CteDef_KIND, firstTok, parent);
-        if (peek() != KIND_COLID) { fail("ColId", RULE_CteDef_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+        if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_CteDef_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         advance();
         // optional: opt_0
         {
@@ -9436,7 +10859,7 @@ public final class PgSqlParser {
                 cst.truncate(savedNodes_opt_0);
             }
         }
-        { int __k = peek(); if (__k != KIND_INLINE_AS_CI) { fail("AsKW", RULE_CteDef_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_ASKW) { fail("AsKW", RULE_CteDef_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // optional: opt_1
         {
@@ -9450,7 +10873,7 @@ public final class PgSqlParser {
                     int savedNodes_opt_2 = cst.currentNodeCount();
                     boolean optOk_opt_2 = false;
                     do {
-                        { int __k = peek(); if (__k != KIND_INLINE_NOT_CI) { fail("NotKW", RULE_CteDef_KIND); break; } }
+                        { int __k = peek(); if (__k != KIND_NOTKW) { fail("NotKW", RULE_CteDef_KIND); break; } }
                         advance();
                         optOk_opt_2 = true;
                     } while (false);
@@ -9459,7 +10882,7 @@ public final class PgSqlParser {
                         cst.truncate(savedNodes_opt_2);
                     }
                 }
-                { int __k = peek(); if (__k != KIND_INLINE_MATERIALIZED_CI) { fail("MaterializedKW", RULE_CteDef_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_MATERIALIZEDKW) { fail("MaterializedKW", RULE_CteDef_KIND); break; } }
                 advance();
                 optOk_opt_1 = true;
             } while (false);
@@ -9493,7 +10916,7 @@ public final class PgSqlParser {
             boolean cutHit_alt_0 = false;
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_UNION_CI) { fail("UnionKW", RULE_SetOp_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_UNIONKW) { fail("UnionKW", RULE_SetOp_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -9504,7 +10927,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_INTERSECT_CI) { fail("IntersectKW", RULE_SetOp_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_INTERSECTKW) { fail("IntersectKW", RULE_SetOp_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -9515,7 +10938,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_EXCEPT_CI) { fail("ExceptKW", RULE_SetOp_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_EXCEPTKW) { fail("ExceptKW", RULE_SetOp_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -9540,7 +10963,7 @@ public final class PgSqlParser {
                     boolean cutHit_alt_2 = false;
                     if (!matched_alt_2 && !cutHit_alt_2) {
                         do {
-                            { int __k = peek(); if (__k != KIND_INLINE_ALL_CI) { fail("AllKW", RULE_SetOp_KIND); break; } }
+                            { int __k = peek(); if (__k != KIND_ALLKW) { fail("AllKW", RULE_SetOp_KIND); break; } }
                             advance();
                             matched_alt_2 = true;
                         } while (false);
@@ -9551,7 +10974,7 @@ public final class PgSqlParser {
                     }
                     if (!matched_alt_2 && !cutHit_alt_2) {
                         do {
-                            { int __k = peek(); if (__k != KIND_INLINE_DISTINCT_CI) { fail("DistinctKW", RULE_SetOp_KIND); break; } }
+                            { int __k = peek(); if (__k != KIND_DISTINCTKW) { fail("DistinctKW", RULE_SetOp_KIND); break; } }
                             advance();
                             matched_alt_2 = true;
                         } while (false);
@@ -9582,9 +11005,9 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_OrderByClause_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_ORDER_CI) { fail("OrderKW", RULE_OrderByClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_ORDERKW) { fail("OrderKW", RULE_OrderByClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
-        { int __k = peek(); if (__k != KIND_INLINE_BY_CI) { fail("ByKW", RULE_OrderByClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_BYKW) { fail("ByKW", RULE_OrderByClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         if (!parseOrderByList(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
@@ -9638,7 +11061,7 @@ public final class PgSqlParser {
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                if (peek() != KIND_ORDERSPEC) { fail("OrderSpec", RULE_OrderByItem_KIND); break; }
+                { int __k = peek(); if (__k != KIND_ASCKW && __k != KIND_DESCKW) { fail("OrderSpec", RULE_OrderByItem_KIND); break; } }
                 advance();
                 optOk_opt_0 = true;
             } while (false);
@@ -9653,8 +11076,7 @@ public final class PgSqlParser {
             int savedNodes_opt_1 = cst.currentNodeCount();
             boolean optOk_opt_1 = false;
             do {
-                if (peek() != KIND_NULLSORDER) { fail("NullsOrder", RULE_OrderByItem_KIND); break; }
-                advance();
+                if (!parseNullsOrder(self)) { break; }
                 optOk_opt_1 = true;
             } while (false);
             if (!optOk_opt_1) {
@@ -9674,7 +11096,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_LimitClause_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_LIMIT_CI) { fail("LimitKW", RULE_LimitClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_LIMITKW) { fail("LimitKW", RULE_LimitClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         // choice: alt_0
@@ -9685,7 +11107,7 @@ public final class PgSqlParser {
             boolean cutHit_alt_0 = false;
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_ALL_CI) { fail("AllKW", RULE_LimitClause_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_ALLKW) { fail("AllKW", RULE_LimitClause_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -9718,7 +11140,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_OffsetClause_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_OFFSET_CI) { fail("OffsetKW", RULE_OffsetClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_OFFSETKW) { fail("OffsetKW", RULE_OffsetClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         if (!parseExpr(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
@@ -9736,7 +11158,7 @@ public final class PgSqlParser {
                     boolean cutHit_alt_1 = false;
                     if (!matched_alt_1 && !cutHit_alt_1) {
                         do {
-                            { int __k = peek(); if (__k != KIND_INLINE_ROW_CI) { fail("RowKW", RULE_OffsetClause_KIND); break; } }
+                            { int __k = peek(); if (__k != KIND_ROWKW) { fail("RowKW", RULE_OffsetClause_KIND); break; } }
                             advance();
                             matched_alt_1 = true;
                         } while (false);
@@ -9747,7 +11169,7 @@ public final class PgSqlParser {
                     }
                     if (!matched_alt_1 && !cutHit_alt_1) {
                         do {
-                            { int __k = peek(); if (__k != KIND_INLINE_ROWS_CI) { fail("RowsKW", RULE_OffsetClause_KIND); break; } }
+                            { int __k = peek(); if (__k != KIND_ROWSKW) { fail("RowsKW", RULE_OffsetClause_KIND); break; } }
                             advance();
                             matched_alt_1 = true;
                         } while (false);
@@ -9777,7 +11199,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_FetchClause_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_FETCH_CI) { fail("FetchKW", RULE_FetchClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_FETCHKW) { fail("FetchKW", RULE_FetchClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // choice: alt_0
         {
@@ -9787,7 +11209,7 @@ public final class PgSqlParser {
             boolean cutHit_alt_0 = false;
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_FIRST_CI) { fail("FirstKW", RULE_FetchClause_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_FIRSTKW) { fail("FirstKW", RULE_FetchClause_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -9798,7 +11220,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_NEXT_CI) { fail("NextKW", RULE_FetchClause_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_NEXTKW) { fail("NextKW", RULE_FetchClause_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -9859,7 +11281,7 @@ public final class PgSqlParser {
             boolean cutHit_alt_3 = false;
             if (!matched_alt_3 && !cutHit_alt_3) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_ROW_CI) { fail("RowKW", RULE_FetchClause_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_ROWKW) { fail("RowKW", RULE_FetchClause_KIND); break; } }
                     advance();
                     matched_alt_3 = true;
                 } while (false);
@@ -9870,7 +11292,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_3 && !cutHit_alt_3) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_ROWS_CI) { fail("RowsKW", RULE_FetchClause_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_ROWSKW) { fail("RowsKW", RULE_FetchClause_KIND); break; } }
                     advance();
                     matched_alt_3 = true;
                 } while (false);
@@ -9889,7 +11311,7 @@ public final class PgSqlParser {
             boolean cutHit_alt_4 = false;
             if (!matched_alt_4 && !cutHit_alt_4) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_ONLY_CI) { fail("OnlyKW", RULE_FetchClause_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_ONLYKW) { fail("OnlyKW", RULE_FetchClause_KIND); break; } }
                     advance();
                     matched_alt_4 = true;
                 } while (false);
@@ -9900,9 +11322,9 @@ public final class PgSqlParser {
             }
             if (!matched_alt_4 && !cutHit_alt_4) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_WITH_CI) { fail("WithKW", RULE_FetchClause_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_WITHKW) { fail("WithKW", RULE_FetchClause_KIND); break; } }
                     advance();
-                    { int __k = peek(); if (__k != KIND_INLINE_TIES_CI) { fail("TiesKW", RULE_FetchClause_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_TIESKW) { fail("TiesKW", RULE_FetchClause_KIND); break; } }
                     advance();
                     matched_alt_4 = true;
                 } while (false);
@@ -9939,9 +11361,9 @@ public final class PgSqlParser {
                 cst.truncate(savedNodes_opt_0);
             }
         }
-        { int __k = peek(); if (__k != KIND_INLINE_INSERT_CI) { fail("InsertKW", RULE_InsertStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_INSERTKW) { fail("InsertKW", RULE_InsertStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
-        { int __k = peek(); if (__k != KIND_INLINE_INTO_CI) { fail("IntoKW", RULE_InsertStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_INTOKW) { fail("IntoKW", RULE_InsertStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         if (!parseQualifiedName(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
@@ -10026,9 +11448,9 @@ public final class PgSqlParser {
             boolean cutHit_alt_0 = false;
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_DEFAULT_CI) { fail("DefaultKW", RULE_InsertSource_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_DEFAULTKW) { fail("DefaultKW", RULE_InsertSource_KIND); break; } }
                     advance();
-                    { int __k = peek(); if (__k != KIND_INLINE_VALUES_CI) { fail("ValuesKW", RULE_InsertSource_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_VALUESKW) { fail("ValuesKW", RULE_InsertSource_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -10071,7 +11493,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_ValuesClause_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_VALUES_CI) { fail("ValuesKW", RULE_ValuesClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_VALUESKW) { fail("ValuesKW", RULE_ValuesClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         if (!parseValueRowList(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
@@ -10166,7 +11588,7 @@ public final class PgSqlParser {
             boolean cutHit_alt_0 = false;
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_DEFAULT_CI) { fail("DefaultKW", RULE_ExprOrDefault_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_DEFAULTKW) { fail("DefaultKW", RULE_ExprOrDefault_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -10199,9 +11621,9 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_OnConflictClause_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_ON_CI) { fail("OnKW", RULE_OnConflictClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_ONKW) { fail("OnKW", RULE_OnConflictClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
-        { int __k = peek(); if (__k != KIND_INLINE_CONFLICT_CI) { fail("ConflictKW", RULE_OnConflictClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_CONFLICTKW) { fail("ConflictKW", RULE_OnConflictClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         // optional: opt_0
@@ -10267,11 +11689,11 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_ON_CI) { fail("OnKW", RULE_ConflictTarget_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_ONKW) { fail("OnKW", RULE_ConflictTarget_KIND); break; } }
                     advance();
-                    { int __k = peek(); if (__k != KIND_INLINE_CONSTRAINT_CI) { fail("ConstraintKW", RULE_ConflictTarget_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_CONSTRAINTKW) { fail("ConstraintKW", RULE_ConflictTarget_KIND); break; } }
                     advance();
-                    if (peek() != KIND_COLID) { fail("ColId", RULE_ConflictTarget_KIND); break; }
+                    if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_ConflictTarget_KIND); break; }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -10302,9 +11724,9 @@ public final class PgSqlParser {
             boolean cutHit_alt_0 = false;
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_DO_CI) { fail("DoKW", RULE_ConflictAction_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_DOKW) { fail("DoKW", RULE_ConflictAction_KIND); break; } }
                     advance();
-                    { int __k = peek(); if (__k != KIND_INLINE_NOTHING_CI) { fail("NothingKW", RULE_ConflictAction_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_NOTHINGKW) { fail("NothingKW", RULE_ConflictAction_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -10315,11 +11737,11 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_DO_CI) { fail("DoKW", RULE_ConflictAction_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_DOKW) { fail("DoKW", RULE_ConflictAction_KIND); break; } }
                     advance();
-                    { int __k = peek(); if (__k != KIND_INLINE_UPDATE_CI) { fail("UpdateKW", RULE_ConflictAction_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_UPDATEKW) { fail("UpdateKW", RULE_ConflictAction_KIND); break; } }
                     advance();
-                    { int __k = peek(); if (__k != KIND_INLINE_SET_CI) { fail("SetKW", RULE_ConflictAction_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_SETKW) { fail("SetKW", RULE_ConflictAction_KIND); break; } }
                     advance();
                     if (!parseUpdateSetList(self)) { break; }
                     // optional: opt_1
@@ -10357,7 +11779,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_ReturningClause_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_RETURNING_CI) { fail("ReturningKW", RULE_ReturningClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_RETURNINGKW) { fail("ReturningKW", RULE_ReturningClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         if (!parseTargetList(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
@@ -10387,7 +11809,7 @@ public final class PgSqlParser {
                 cst.truncate(savedNodes_opt_0);
             }
         }
-        { int __k = peek(); if (__k != KIND_INLINE_UPDATE_CI) { fail("UpdateKW", RULE_UpdateStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_UPDATEKW) { fail("UpdateKW", RULE_UpdateStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         // optional: opt_1
@@ -10396,7 +11818,7 @@ public final class PgSqlParser {
             int savedNodes_opt_1 = cst.currentNodeCount();
             boolean optOk_opt_1 = false;
             do {
-                { int __k = peek(); if (__k != KIND_INLINE_ONLY_CI) { fail("OnlyKW", RULE_UpdateStmt_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_ONLYKW) { fail("OnlyKW", RULE_UpdateStmt_KIND); break; } }
                 advance();
                 optOk_opt_1 = true;
             } while (false);
@@ -10435,7 +11857,7 @@ public final class PgSqlParser {
                 cst.truncate(savedNodes_opt_3);
             }
         }
-        { int __k = peek(); if (__k != KIND_INLINE_SET_CI) { fail("SetKW", RULE_UpdateStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_SETKW) { fail("SetKW", RULE_UpdateStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (!parseUpdateSetList(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
         // optional: opt_4
@@ -10531,7 +11953,7 @@ public final class PgSqlParser {
             boolean cutHit_alt_0 = false;
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    if (peek() != KIND_COLID) { fail("ColId", RULE_UpdateSetItem_KIND); break; }
+                    if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_UpdateSetItem_KIND); break; }
                     advance();
                     if (peek() != KIND_INLINE__EQ) { fail("'='", RULE_UpdateSetItem_KIND); break; }
                     advance();
@@ -10623,9 +12045,9 @@ public final class PgSqlParser {
                 cst.truncate(savedNodes_opt_0);
             }
         }
-        { int __k = peek(); if (__k != KIND_INLINE_DELETE_CI) { fail("DeleteKW", RULE_DeleteStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_DELETEKW) { fail("DeleteKW", RULE_DeleteStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
-        { int __k = peek(); if (__k != KIND_INLINE_FROM_CI) { fail("FromKW", RULE_DeleteStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_FROMKW) { fail("FromKW", RULE_DeleteStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         // optional: opt_1
@@ -10634,7 +12056,7 @@ public final class PgSqlParser {
             int savedNodes_opt_1 = cst.currentNodeCount();
             boolean optOk_opt_1 = false;
             do {
-                { int __k = peek(); if (__k != KIND_INLINE_ONLY_CI) { fail("OnlyKW", RULE_DeleteStmt_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_ONLYKW) { fail("OnlyKW", RULE_DeleteStmt_KIND); break; } }
                 advance();
                 optOk_opt_1 = true;
             } while (false);
@@ -10727,7 +12149,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_UsingClauseDelete_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_USING_CI) { fail("UsingKW", RULE_UsingClauseDelete_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_USINGKW) { fail("UsingKW", RULE_UsingClauseDelete_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         if (!parseFromList(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
@@ -10841,7 +12263,7 @@ public final class PgSqlParser {
             boolean cutHit_alt_0 = false;
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_BEGIN_CI) { fail("BeginKW", RULE_TransactionStmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_BEGINKW) { fail("BeginKW", RULE_TransactionStmt_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -10852,7 +12274,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_COMMIT_CI) { fail("CommitKW", RULE_TransactionStmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_COMMITKW) { fail("CommitKW", RULE_TransactionStmt_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -10863,7 +12285,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_ROLLBACK_CI) { fail("RollbackKW", RULE_TransactionStmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_ROLLBACKKW) { fail("RollbackKW", RULE_TransactionStmt_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -10874,7 +12296,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_END_CI) { fail("EndKW", RULE_TransactionStmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_ENDKW) { fail("EndKW", RULE_TransactionStmt_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -10885,7 +12307,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_SAVEPOINT_CI) { fail("SavepointKW", RULE_TransactionStmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_SAVEPOINTKW) { fail("SavepointKW", RULE_TransactionStmt_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -10896,7 +12318,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_RELEASE_CI) { fail("ReleaseKW", RULE_TransactionStmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_RELEASEKW) { fail("ReleaseKW", RULE_TransactionStmt_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -10907,7 +12329,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_PREPARE_CI) { fail("PrepareKW", RULE_TransactionStmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_PREPAREKW) { fail("PrepareKW", RULE_TransactionStmt_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -10939,7 +12361,7 @@ public final class PgSqlParser {
             boolean cutHit_alt_0 = false;
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_SET_CI) { fail("SetKW", RULE_SessionStmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_SETKW) { fail("SetKW", RULE_SessionStmt_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -10950,7 +12372,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_SHOW_CI) { fail("ShowKW", RULE_SessionStmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_SHOWKW) { fail("ShowKW", RULE_SessionStmt_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -10961,7 +12383,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_RESET_CI) { fail("ResetKW", RULE_SessionStmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_RESETKW) { fail("ResetKW", RULE_SessionStmt_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -10993,7 +12415,7 @@ public final class PgSqlParser {
             boolean cutHit_alt_0 = false;
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_VACUUM_CI) { fail("VacuumKW", RULE_UtilityStmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_VACUUMKW) { fail("VacuumKW", RULE_UtilityStmt_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -11004,7 +12426,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_ANALYZE_CI) { fail("AnalyzeKW", RULE_UtilityStmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_ANALYZEKW) { fail("AnalyzeKW", RULE_UtilityStmt_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -11015,7 +12437,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_REINDEX_CI) { fail("ReindexKW", RULE_UtilityStmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_REINDEXKW) { fail("ReindexKW", RULE_UtilityStmt_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -11026,7 +12448,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_CLUSTER_CI) { fail("ClusterKW", RULE_UtilityStmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_CLUSTERKW) { fail("ClusterKW", RULE_UtilityStmt_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -11037,7 +12459,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_NOTIFY_CI) { fail("NotifyKW", RULE_UtilityStmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_NOTIFYKW) { fail("NotifyKW", RULE_UtilityStmt_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -11048,7 +12470,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_LISTEN_CI) { fail("ListenKW", RULE_UtilityStmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_LISTENKW) { fail("ListenKW", RULE_UtilityStmt_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -11059,7 +12481,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_UNLISTEN_CI) { fail("UnlistenKW", RULE_UtilityStmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_UNLISTENKW) { fail("UnlistenKW", RULE_UtilityStmt_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -11070,7 +12492,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_LOAD_CI) { fail("LoadKW", RULE_UtilityStmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_LOADKW) { fail("LoadKW", RULE_UtilityStmt_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -11092,7 +12514,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_DEALLOCATE_CI) { fail("DeallocateKW", RULE_UtilityStmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_DEALLOCATEKW) { fail("DeallocateKW", RULE_UtilityStmt_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -11116,7 +12538,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_TruncateStmt_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_TRUNCATE_CI) { fail("TruncateKW", RULE_TruncateStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_TRUNCATEKW) { fail("TruncateKW", RULE_TruncateStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (!parseRestOfStatement(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
         int lastTok = pos > firstTok ? pos - 1 : firstTok;
@@ -11131,7 +12553,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_ExplainStmt_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_EXPLAIN_CI) { fail("ExplainKW", RULE_ExplainStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_EXPLAINKW) { fail("ExplainKW", RULE_ExplainStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (!parseRestOfStatement(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
         int lastTok = pos > firstTok ? pos - 1 : firstTok;
@@ -11146,7 +12568,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_CopyStmt_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_COPY_CI) { fail("CopyKW", RULE_CopyStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_COPYKW) { fail("CopyKW", RULE_CopyStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (!parseRestOfStatement(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
         int lastTok = pos > firstTok ? pos - 1 : firstTok;
@@ -11161,11 +12583,11 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_RefreshMatViewStmt_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_REFRESH_CI) { fail("RefreshKW", RULE_RefreshMatViewStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_REFRESHKW) { fail("RefreshKW", RULE_RefreshMatViewStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
-        { int __k = peek(); if (__k != KIND_INLINE_MATERIALIZED_CI) { fail("MaterializedKW", RULE_RefreshMatViewStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_MATERIALIZEDKW) { fail("MaterializedKW", RULE_RefreshMatViewStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
-        { int __k = peek(); if (__k != KIND_INLINE_VIEW_CI) { fail("ViewKW", RULE_RefreshMatViewStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_VIEWKW) { fail("ViewKW", RULE_RefreshMatViewStmt_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (!parseRestOfStatement(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
         int lastTok = pos > firstTok ? pos - 1 : firstTok;
@@ -11292,7 +12714,7 @@ public final class PgSqlParser {
             int savedNodes_rep_0 = cst.currentNodeCount();
             boolean iterOk_rep_0 = false;
             do {
-                { int __k = peek(); if (__k != KIND_INLINE_OR_CI) { fail("OrKW", RULE_OrExpr_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_ORKW) { fail("OrKW", RULE_OrExpr_KIND); break; } }
                 advance();
                 if (!parseAndExpr(self)) { break; }
                 iterOk_rep_0 = true;
@@ -11323,7 +12745,7 @@ public final class PgSqlParser {
             int savedNodes_rep_0 = cst.currentNodeCount();
             boolean iterOk_rep_0 = false;
             do {
-                { int __k = peek(); if (__k != KIND_INLINE_AND_CI) { fail("AndKW", RULE_AndExpr_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_ANDKW) { fail("AndKW", RULE_AndExpr_KIND); break; } }
                 advance();
                 if (!parseNotExpr(self)) { break; }
                 iterOk_rep_0 = true;
@@ -11355,7 +12777,7 @@ public final class PgSqlParser {
             boolean cutHit_alt_0 = false;
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_NOT_CI) { fail("NotKW", RULE_NotExpr_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_NOTKW) { fail("NotKW", RULE_NotExpr_KIND); break; } }
                     advance();
                     if (!parseNotExpr(self)) { break; }
                     matched_alt_0 = true;
@@ -11404,7 +12826,7 @@ public final class PgSqlParser {
                     boolean cutHit_alt_1 = false;
                     if (!matched_alt_1 && !cutHit_alt_1) {
                         do {
-                            if (peek() != KIND_COMPAREOP) { fail("CompareOp", RULE_CompareExpr_KIND); break; }
+                            if (java.util.Arrays.binarySearch(ALIAS_COMPAREOP, peek()) < 0) { fail("CompareOp", RULE_CompareExpr_KIND); break; }
                             advance();
                             if (!parseIsExpr(self)) { break; }
                             matched_alt_1 = true;
@@ -11422,7 +12844,7 @@ public final class PgSqlParser {
                                 int savedNodes_opt_2 = cst.currentNodeCount();
                                 boolean optOk_opt_2 = false;
                                 do {
-                                    { int __k = peek(); if (__k != KIND_INLINE_NOT_CI) { fail("NotKW", RULE_CompareExpr_KIND); break; } }
+                                    { int __k = peek(); if (__k != KIND_NOTKW) { fail("NotKW", RULE_CompareExpr_KIND); break; } }
                                     advance();
                                     optOk_opt_2 = true;
                                 } while (false);
@@ -11447,7 +12869,7 @@ public final class PgSqlParser {
                                 int savedNodes_opt_3 = cst.currentNodeCount();
                                 boolean optOk_opt_3 = false;
                                 do {
-                                    { int __k = peek(); if (__k != KIND_INLINE_NOT_CI) { fail("NotKW", RULE_CompareExpr_KIND); break; } }
+                                    { int __k = peek(); if (__k != KIND_NOTKW) { fail("NotKW", RULE_CompareExpr_KIND); break; } }
                                     advance();
                                     optOk_opt_3 = true;
                                 } while (false);
@@ -11472,7 +12894,7 @@ public final class PgSqlParser {
                                 int savedNodes_opt_4 = cst.currentNodeCount();
                                 boolean optOk_opt_4 = false;
                                 do {
-                                    { int __k = peek(); if (__k != KIND_INLINE_NOT_CI) { fail("NotKW", RULE_CompareExpr_KIND); break; } }
+                                    { int __k = peek(); if (__k != KIND_NOTKW) { fail("NotKW", RULE_CompareExpr_KIND); break; } }
                                     advance();
                                     optOk_opt_4 = true;
                                 } while (false);
@@ -11497,7 +12919,7 @@ public final class PgSqlParser {
                                 int savedNodes_opt_5 = cst.currentNodeCount();
                                 boolean optOk_opt_5 = false;
                                 do {
-                                    { int __k = peek(); if (__k != KIND_INLINE_NOT_CI) { fail("NotKW", RULE_CompareExpr_KIND); break; } }
+                                    { int __k = peek(); if (__k != KIND_NOTKW) { fail("NotKW", RULE_CompareExpr_KIND); break; } }
                                     advance();
                                     optOk_opt_5 = true;
                                 } while (false);
@@ -11580,7 +13002,7 @@ public final class PgSqlParser {
             boolean cutHit_alt_0 = false;
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_IS_CI) { fail("IsKW", RULE_IsClause_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_ISKW) { fail("IsKW", RULE_IsClause_KIND); break; } }
                     advance();
                     // optional: opt_1
                     {
@@ -11588,7 +13010,7 @@ public final class PgSqlParser {
                         int savedNodes_opt_1 = cst.currentNodeCount();
                         boolean optOk_opt_1 = false;
                         do {
-                            { int __k = peek(); if (__k != KIND_INLINE_NOT_CI) { fail("NotKW", RULE_IsClause_KIND); break; } }
+                            { int __k = peek(); if (__k != KIND_NOTKW) { fail("NotKW", RULE_IsClause_KIND); break; } }
                             advance();
                             optOk_opt_1 = true;
                         } while (false);
@@ -11605,7 +13027,7 @@ public final class PgSqlParser {
                         boolean cutHit_alt_2 = false;
                         if (!matched_alt_2 && !cutHit_alt_2) {
                             do {
-                                { int __k = peek(); if (__k != KIND_INLINE_NULL_CI) { fail("NullKW", RULE_IsClause_KIND); break; } }
+                                { int __k = peek(); if (__k != KIND_NULLCONSTRAINT) { fail("NullKW", RULE_IsClause_KIND); break; } }
                                 advance();
                                 matched_alt_2 = true;
                             } while (false);
@@ -11616,7 +13038,7 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_2 && !cutHit_alt_2) {
                             do {
-                                { int __k = peek(); if (__k != KIND_INLINE_TRUE_CI) { fail("TrueKW", RULE_IsClause_KIND); break; } }
+                                { int __k = peek(); if (__k != KIND_TRUEKW) { fail("TrueKW", RULE_IsClause_KIND); break; } }
                                 advance();
                                 matched_alt_2 = true;
                             } while (false);
@@ -11627,7 +13049,7 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_2 && !cutHit_alt_2) {
                             do {
-                                { int __k = peek(); if (__k != KIND_INLINE_FALSE_CI) { fail("FalseKW", RULE_IsClause_KIND); break; } }
+                                { int __k = peek(); if (__k != KIND_FALSEKW) { fail("FalseKW", RULE_IsClause_KIND); break; } }
                                 advance();
                                 matched_alt_2 = true;
                             } while (false);
@@ -11638,7 +13060,7 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_2 && !cutHit_alt_2) {
                             do {
-                                { int __k = peek(); if (__k != KIND_INLINE_UNKNOWN_CI) { fail("UnknownKW", RULE_IsClause_KIND); break; } }
+                                { int __k = peek(); if (__k != KIND_UNKNOWNKW) { fail("UnknownKW", RULE_IsClause_KIND); break; } }
                                 advance();
                                 matched_alt_2 = true;
                             } while (false);
@@ -11649,9 +13071,9 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_2 && !cutHit_alt_2) {
                             do {
-                                { int __k = peek(); if (__k != KIND_INLINE_DISTINCT_CI) { fail("DistinctKW", RULE_IsClause_KIND); break; } }
+                                { int __k = peek(); if (__k != KIND_DISTINCTKW) { fail("DistinctKW", RULE_IsClause_KIND); break; } }
                                 advance();
-                                { int __k = peek(); if (__k != KIND_INLINE_FROM_CI) { fail("FromKW", RULE_IsClause_KIND); break; } }
+                                { int __k = peek(); if (__k != KIND_FROMKW) { fail("FromKW", RULE_IsClause_KIND); break; } }
                                 advance();
                                 if (!parseAddExpr(self)) { break; }
                                 matched_alt_2 = true;
@@ -11672,7 +13094,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_ISNULL_CI) { fail("IsnullKW", RULE_IsClause_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_ISNULLKW) { fail("IsnullKW", RULE_IsClause_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -11683,20 +13105,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_NOTNULL_CI) { fail("NotnullKW", RULE_IsClause_KIND); break; } }
-                    advance();
-                    matched_alt_0 = true;
-                } while (false);
-                if (!matched_alt_0) {
-                    pos = savedPos_alt_0;
-                    cst.truncate(savedNodes_alt_0);
-                }
-            }
-            if (!matched_alt_0 && !cutHit_alt_0) {
-                do {
-                    { int __k = peek(); if (__k != KIND_INLINE_NOT_CI) { fail("NotKW", RULE_IsClause_KIND); break; } }
-                    advance();
-                    { int __k = peek(); if (__k != KIND_INLINE_NULL_CI) { fail("NullKW", RULE_IsClause_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_NOTNULLKW) { fail("NotnullKW", RULE_IsClause_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -11719,7 +13128,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_InExpr_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_IN_CI) { fail("InKW", RULE_InExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_INKW) { fail("InKW", RULE_InExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (peek() != KIND_INLINE__LPAREN) { fail("'('", RULE_InExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         advance();
@@ -11765,7 +13174,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_BetweenExpr_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_BETWEEN_CI) { fail("BetweenKW", RULE_BetweenExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_BETWEENKW) { fail("BetweenKW", RULE_BetweenExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // optional: opt_0
         {
@@ -11781,7 +13190,7 @@ public final class PgSqlParser {
                     boolean cutHit_alt_1 = false;
                     if (!matched_alt_1 && !cutHit_alt_1) {
                         do {
-                            { int __k = peek(); if (__k != KIND_INLINE_SYMMETRIC_CI) { fail("SymmetricKW", RULE_BetweenExpr_KIND); break; } }
+                            { int __k = peek(); if (__k != KIND_SYMMETRICKW) { fail("SymmetricKW", RULE_BetweenExpr_KIND); break; } }
                             advance();
                             matched_alt_1 = true;
                         } while (false);
@@ -11792,7 +13201,7 @@ public final class PgSqlParser {
                     }
                     if (!matched_alt_1 && !cutHit_alt_1) {
                         do {
-                            { int __k = peek(); if (__k != KIND_INLINE_ASYMMETRIC_CI) { fail("AsymmetricKW", RULE_BetweenExpr_KIND); break; } }
+                            { int __k = peek(); if (__k != KIND_ASYMMETRICKW) { fail("AsymmetricKW", RULE_BetweenExpr_KIND); break; } }
                             advance();
                             matched_alt_1 = true;
                         } while (false);
@@ -11811,7 +13220,7 @@ public final class PgSqlParser {
             }
         }
         if (!parseAddExpr(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
-        { int __k = peek(); if (__k != KIND_INLINE_AND_CI) { fail("AndKW", RULE_BetweenExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_ANDKW) { fail("AndKW", RULE_BetweenExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (!parseAddExpr(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
         int lastTok = pos > firstTok ? pos - 1 : firstTok;
@@ -11834,7 +13243,7 @@ public final class PgSqlParser {
             boolean cutHit_alt_0 = false;
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_LIKE_CI) { fail("LikeKW", RULE_LikeExpr_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_LIKEKW) { fail("LikeKW", RULE_LikeExpr_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -11845,7 +13254,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_ILIKE_CI) { fail("IlikeKW", RULE_LikeExpr_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_ILIKEKW) { fail("IlikeKW", RULE_LikeExpr_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -11863,7 +13272,7 @@ public final class PgSqlParser {
             int savedNodes_opt_1 = cst.currentNodeCount();
             boolean optOk_opt_1 = false;
             do {
-                { int __k = peek(); if (__k != KIND_INLINE_ESCAPE_CI) { fail("EscapeKW", RULE_LikeExpr_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_ESCAPEKW) { fail("EscapeKW", RULE_LikeExpr_KIND); break; } }
                 advance();
                 if (!parseAddExpr(self)) { break; }
                 optOk_opt_1 = true;
@@ -11885,9 +13294,9 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_SimilarToExpr_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_SIMILAR_CI) { fail("SimilarKW", RULE_SimilarToExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_SIMILARKW) { fail("SimilarKW", RULE_SimilarToExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
-        { int __k = peek(); if (__k != KIND_INLINE_TO_CI) { fail("ToKW", RULE_SimilarToExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_TOKW) { fail("ToKW", RULE_SimilarToExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (!parseAddExpr(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
         // optional: opt_0
@@ -11896,7 +13305,7 @@ public final class PgSqlParser {
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                { int __k = peek(); if (__k != KIND_INLINE_ESCAPE_CI) { fail("EscapeKW", RULE_SimilarToExpr_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_ESCAPEKW) { fail("EscapeKW", RULE_SimilarToExpr_KIND); break; } }
                 advance();
                 if (!parseAddExpr(self)) { break; }
                 optOk_opt_0 = true;
@@ -11918,7 +13327,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_IsDistinctFrom_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_IS_CI) { fail("IsKW", RULE_IsDistinctFrom_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_ISKW) { fail("IsKW", RULE_IsDistinctFrom_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // optional: opt_0
         {
@@ -11926,7 +13335,7 @@ public final class PgSqlParser {
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                { int __k = peek(); if (__k != KIND_INLINE_NOT_CI) { fail("NotKW", RULE_IsDistinctFrom_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_NOTKW) { fail("NotKW", RULE_IsDistinctFrom_KIND); break; } }
                 advance();
                 optOk_opt_0 = true;
             } while (false);
@@ -11935,9 +13344,9 @@ public final class PgSqlParser {
                 cst.truncate(savedNodes_opt_0);
             }
         }
-        { int __k = peek(); if (__k != KIND_INLINE_DISTINCT_CI) { fail("DistinctKW", RULE_IsDistinctFrom_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_DISTINCTKW) { fail("DistinctKW", RULE_IsDistinctFrom_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
-        { int __k = peek(); if (__k != KIND_INLINE_FROM_CI) { fail("FromKW", RULE_IsDistinctFrom_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_FROMKW) { fail("FromKW", RULE_IsDistinctFrom_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (!parseIsExpr(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
         int lastTok = pos > firstTok ? pos - 1 : firstTok;
@@ -12371,8 +13780,7 @@ public final class PgSqlParser {
                 do {
                     if (peek() != KIND_INLINE__DOT) { fail("'.'", RULE_PostfixOp_KIND); break; }
                     advance();
-                    if (peek() != KIND_COLLABEL) { fail("ColLabel", RULE_PostfixOp_KIND); break; }
-                    advance();
+                    if (!parseColLabel(self)) { break; }
                     matched_alt_0 = true;
                 } while (false);
                 if (!matched_alt_0) {
@@ -12586,6 +13994,16 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
+                    if (!parseSpecialFuncExpr(self)) { break; }
+                    matched_alt_0 = true;
+                } while (false);
+                if (!matched_alt_0) {
+                    pos = savedPos_alt_0;
+                    cst.truncate(savedNodes_alt_0);
+                }
+            }
+            if (!matched_alt_0 && !cutHit_alt_0) {
+                do {
                     if (!parseFuncCall(self)) { break; }
                     matched_alt_0 = true;
                 } while (false);
@@ -12666,7 +14084,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_ExistsExpr_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_EXISTS_CI) { fail("ExistsKW", RULE_ExistsExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_EXISTSKW) { fail("ExistsKW", RULE_ExistsExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (peek() != KIND_INLINE__LPAREN) { fail("'('", RULE_ExistsExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         advance();
@@ -12711,7 +14129,7 @@ public final class PgSqlParser {
             boolean cutHit_alt_0 = false;
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_ANY_CI) { fail("AnyKW", RULE_AnyAllExpr_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_ANYKW) { fail("AnyKW", RULE_AnyAllExpr_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -12722,7 +14140,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_ALL_CI) { fail("AllKW", RULE_AnyAllExpr_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_ALLKW) { fail("AllKW", RULE_AnyAllExpr_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -12733,7 +14151,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_SOME_CI) { fail("SomeKW", RULE_AnyAllExpr_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_SOMEKW) { fail("SomeKW", RULE_AnyAllExpr_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -12788,7 +14206,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_RowExpr_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_ROW_CI) { fail("RowKW", RULE_RowExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_ROWKW) { fail("RowKW", RULE_RowExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (peek() != KIND_INLINE__LPAREN) { fail("'('", RULE_RowExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         advance();
@@ -12807,7 +14225,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_ArrayExprConstructor_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_ARRAY_CI) { fail("ArrayKW", RULE_ArrayExprConstructor_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_ARRAYKW) { fail("ArrayKW", RULE_ArrayExprConstructor_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // choice: alt_0
         {
@@ -12870,12 +14288,12 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_CastExpr_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_CAST_CI) { fail("CastKW", RULE_CastExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_CASTKW) { fail("CastKW", RULE_CastExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (peek() != KIND_INLINE__LPAREN) { fail("'('", RULE_CastExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         advance();
         if (!parseExpr(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
-        { int __k = peek(); if (__k != KIND_INLINE_AS_CI) { fail("AsKW", RULE_CastExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_ASKW) { fail("AsKW", RULE_CastExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (!parseDataType(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
         if (peek() != KIND_INLINE__RPAREN) { fail("')'", RULE_CastExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
@@ -12892,7 +14310,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_CaseExpr_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_CASE_CI) { fail("CaseKW", RULE_CaseExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_CASEKW) { fail("CaseKW", RULE_CaseExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         // optional: opt_0
@@ -12940,7 +14358,7 @@ public final class PgSqlParser {
                 cst.truncate(savedNodes_opt_2);
             }
         }
-        { int __k = peek(); if (__k != KIND_INLINE_END_CI) { fail("EndKW", RULE_CaseExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_ENDKW) { fail("EndKW", RULE_CaseExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         int lastTok = pos > firstTok ? pos - 1 : firstTok;
         if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
@@ -12954,10 +14372,10 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_WhenClause_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_WHEN_CI) { fail("WhenKW", RULE_WhenClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_WHENKW) { fail("WhenKW", RULE_WhenClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (!parseExpr(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
-        { int __k = peek(); if (__k != KIND_INLINE_THEN_CI) { fail("ThenKW", RULE_WhenClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_THENKW) { fail("ThenKW", RULE_WhenClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (!parseExpr(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
         int lastTok = pos > firstTok ? pos - 1 : firstTok;
@@ -12972,7 +14390,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_ElseClause_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_ELSE_CI) { fail("ElseKW", RULE_ElseClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_ELSEKW) { fail("ElseKW", RULE_ElseClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (!parseExpr(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
         int lastTok = pos > firstTok ? pos - 1 : firstTok;
@@ -12987,7 +14405,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_CoalesceExpr_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_COALESCE_CI) { fail("CoalesceKW", RULE_CoalesceExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_COALESCEKW) { fail("CoalesceKW", RULE_CoalesceExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (peek() != KIND_INLINE__LPAREN) { fail("'('", RULE_CoalesceExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         advance();
@@ -13006,7 +14424,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_NullIfExpr_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_NULLIF_CI) { fail("NullIfKW", RULE_NullIfExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_NULLIFKW) { fail("NullIfKW", RULE_NullIfExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (peek() != KIND_INLINE__LPAREN) { fail("'('", RULE_NullIfExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         advance();
@@ -13036,7 +14454,7 @@ public final class PgSqlParser {
             boolean cutHit_alt_0 = false;
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_GREATEST_CI) { fail("GreatestKW", RULE_GreatestLeastExpr_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_GREATESTKW) { fail("GreatestKW", RULE_GreatestLeastExpr_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -13047,7 +14465,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_LEAST_CI) { fail("LeastKW", RULE_GreatestLeastExpr_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_LEASTKW) { fail("LeastKW", RULE_GreatestLeastExpr_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -13075,13 +14493,13 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_ExtractExpr_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_EXTRACT_CI) { fail("ExtractKW", RULE_ExtractExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_EXTRACTKW) { fail("ExtractKW", RULE_ExtractExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (peek() != KIND_INLINE__LPAREN) { fail("'('", RULE_ExtractExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         advance();
-        if (peek() != KIND_COLID) { fail("ColId", RULE_ExtractExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+        if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_ExtractExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         advance();
-        { int __k = peek(); if (__k != KIND_INLINE_FROM_CI) { fail("FromKW", RULE_ExtractExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_FROMKW) { fail("FromKW", RULE_ExtractExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (!parseExpr(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
         if (peek() != KIND_INLINE__RPAREN) { fail("')'", RULE_ExtractExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
@@ -13098,12 +14516,12 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_PositionExpr_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_POSITION_CI) { fail("PositionKW", RULE_PositionExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_POSITIONKW) { fail("PositionKW", RULE_PositionExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (peek() != KIND_INLINE__LPAREN) { fail("'('", RULE_PositionExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         advance();
         if (!parseExpr(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
-        { int __k = peek(); if (__k != KIND_INLINE_IN_CI) { fail("InKW", RULE_PositionExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_INKW) { fail("InKW", RULE_PositionExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (!parseExpr(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
         if (peek() != KIND_INLINE__RPAREN) { fail("')'", RULE_PositionExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
@@ -13120,7 +14538,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_SubstringExpr_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_SUBSTRING_CI) { fail("SubstringKW", RULE_SubstringExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_SUBSTRINGKW) { fail("SubstringKW", RULE_SubstringExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (peek() != KIND_INLINE__LPAREN) { fail("'('", RULE_SubstringExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         advance();
@@ -13131,7 +14549,7 @@ public final class PgSqlParser {
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                { int __k = peek(); if (__k != KIND_INLINE_FROM_CI) { fail("FromKW", RULE_SubstringExpr_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_FROMKW) { fail("FromKW", RULE_SubstringExpr_KIND); break; } }
                 advance();
                 if (!parseExpr(self)) { break; }
                 optOk_opt_0 = true;
@@ -13147,7 +14565,7 @@ public final class PgSqlParser {
             int savedNodes_opt_1 = cst.currentNodeCount();
             boolean optOk_opt_1 = false;
             do {
-                { int __k = peek(); if (__k != KIND_INLINE_FOR_CI) { fail("ForKW", RULE_SubstringExpr_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_FORKW) { fail("ForKW", RULE_SubstringExpr_KIND); break; } }
                 advance();
                 if (!parseExpr(self)) { break; }
                 optOk_opt_1 = true;
@@ -13171,7 +14589,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_TrimExpr_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_TRIM_CI) { fail("TrimKW", RULE_TrimExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_TRIMKW) { fail("TrimKW", RULE_TrimExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (peek() != KIND_INLINE__LPAREN) { fail("'('", RULE_TrimExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         advance();
@@ -13189,7 +14607,7 @@ public final class PgSqlParser {
                     boolean cutHit_alt_1 = false;
                     if (!matched_alt_1 && !cutHit_alt_1) {
                         do {
-                            { int __k = peek(); if (__k != KIND_INLINE_LEADING_CI) { fail("LeadingKW", RULE_TrimExpr_KIND); break; } }
+                            { int __k = peek(); if (__k != KIND_LEADINGKW) { fail("LeadingKW", RULE_TrimExpr_KIND); break; } }
                             advance();
                             matched_alt_1 = true;
                         } while (false);
@@ -13200,7 +14618,7 @@ public final class PgSqlParser {
                     }
                     if (!matched_alt_1 && !cutHit_alt_1) {
                         do {
-                            { int __k = peek(); if (__k != KIND_INLINE_TRAILING_CI) { fail("TrailingKW", RULE_TrimExpr_KIND); break; } }
+                            { int __k = peek(); if (__k != KIND_TRAILINGKW) { fail("TrailingKW", RULE_TrimExpr_KIND); break; } }
                             advance();
                             matched_alt_1 = true;
                         } while (false);
@@ -13211,7 +14629,7 @@ public final class PgSqlParser {
                     }
                     if (!matched_alt_1 && !cutHit_alt_1) {
                         do {
-                            { int __k = peek(); if (__k != KIND_INLINE_BOTH_CI) { fail("BothKW", RULE_TrimExpr_KIND); break; } }
+                            { int __k = peek(); if (__k != KIND_BOTHKW) { fail("BothKW", RULE_TrimExpr_KIND); break; } }
                             advance();
                             matched_alt_1 = true;
                         } while (false);
@@ -13243,7 +14661,7 @@ public final class PgSqlParser {
                 cst.truncate(savedNodes_opt_2);
             }
         }
-        { int __k = peek(); if (__k != KIND_INLINE_FROM_CI) { fail("FromKW", RULE_TrimExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_FROMKW) { fail("FromKW", RULE_TrimExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (!parseExpr(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
         if (peek() != KIND_INLINE__RPAREN) { fail("')'", RULE_TrimExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
@@ -13260,15 +14678,15 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_OverlayExpr_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_OVERLAY_CI) { fail("OverlayKW", RULE_OverlayExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_OVERLAYKW) { fail("OverlayKW", RULE_OverlayExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (peek() != KIND_INLINE__LPAREN) { fail("'('", RULE_OverlayExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         advance();
         if (!parseExpr(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
-        { int __k = peek(); if (__k != KIND_INLINE_PLACING_CI) { fail("PlacingKW", RULE_OverlayExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_PLACINGKW) { fail("PlacingKW", RULE_OverlayExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (!parseExpr(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
-        { int __k = peek(); if (__k != KIND_INLINE_FROM_CI) { fail("FromKW", RULE_OverlayExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_FROMKW) { fail("FromKW", RULE_OverlayExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (!parseExpr(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
         // optional: opt_0
@@ -13277,7 +14695,7 @@ public final class PgSqlParser {
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                { int __k = peek(); if (__k != KIND_INLINE_FOR_CI) { fail("ForKW", RULE_OverlayExpr_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_FORKW) { fail("ForKW", RULE_OverlayExpr_KIND); break; } }
                 advance();
                 if (!parseExpr(self)) { break; }
                 optOk_opt_0 = true;
@@ -13303,6 +14721,202 @@ public final class PgSqlParser {
         int self = cst.beginNode(RULE_TypedLiteral_KIND, firstTok, parent);
         if (!parseDataType(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
         if (!parseStringLiteral(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
+        int lastTok = pos > firstTok ? pos - 1 : firstTok;
+        if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
+        if (lastTok < firstTok) lastTok = firstTok;
+        cst.endNode(self, lastTok);
+        return true;
+    }
+
+    private boolean parseSpecialFuncExpr(int parent) {
+        int firstTok = pos;
+        int savedPos = pos;
+        int savedNodes = cst.currentNodeCount();
+        int self = cst.beginNode(RULE_SpecialFuncExpr_KIND, firstTok, parent);
+        // choice: alt_0
+        {
+            int savedPos_alt_0 = pos;
+            int savedNodes_alt_0 = cst.currentNodeCount();
+            boolean matched_alt_0 = false;
+            boolean cutHit_alt_0 = false;
+            if (!matched_alt_0 && !cutHit_alt_0) {
+                do {
+                    // choice: alt_1
+                    {
+                        int savedPos_alt_1 = pos;
+                        int savedNodes_alt_1 = cst.currentNodeCount();
+                        boolean matched_alt_1 = false;
+                        boolean cutHit_alt_1 = false;
+                        if (!matched_alt_1 && !cutHit_alt_1) {
+                            do {
+                                if (peek() != KIND_INLINE_CURRENT_TIMESTAMP_CI) { fail("'CURRENT_TIMESTAMP'", RULE_SpecialFuncExpr_KIND); break; }
+                                advance();
+                                matched_alt_1 = true;
+                            } while (false);
+                            if (!matched_alt_1) {
+                                pos = savedPos_alt_1;
+                                cst.truncate(savedNodes_alt_1);
+                            }
+                        }
+                        if (!matched_alt_1 && !cutHit_alt_1) {
+                            do {
+                                if (peek() != KIND_INLINE_CURRENT_TIME_CI) { fail("'CURRENT_TIME'", RULE_SpecialFuncExpr_KIND); break; }
+                                advance();
+                                matched_alt_1 = true;
+                            } while (false);
+                            if (!matched_alt_1) {
+                                pos = savedPos_alt_1;
+                                cst.truncate(savedNodes_alt_1);
+                            }
+                        }
+                        if (!matched_alt_1 && !cutHit_alt_1) {
+                            do {
+                                if (peek() != KIND_INLINE_LOCALTIMESTAMP_CI) { fail("'LOCALTIMESTAMP'", RULE_SpecialFuncExpr_KIND); break; }
+                                advance();
+                                matched_alt_1 = true;
+                            } while (false);
+                            if (!matched_alt_1) {
+                                pos = savedPos_alt_1;
+                                cst.truncate(savedNodes_alt_1);
+                            }
+                        }
+                        if (!matched_alt_1 && !cutHit_alt_1) {
+                            do {
+                                if (peek() != KIND_INLINE_LOCALTIME_CI) { fail("'LOCALTIME'", RULE_SpecialFuncExpr_KIND); break; }
+                                advance();
+                                matched_alt_1 = true;
+                            } while (false);
+                            if (!matched_alt_1) {
+                                pos = savedPos_alt_1;
+                                cst.truncate(savedNodes_alt_1);
+                            }
+                        }
+                        if (!matched_alt_1) { fail("<choice>", RULE_SpecialFuncExpr_KIND); break; }
+                    }
+                    // no-op: not-predicate over char-level expression — handled by lexer
+                    // optional: opt_2
+                    {
+                        int savedPos_opt_2 = pos;
+                        int savedNodes_opt_2 = cst.currentNodeCount();
+                        boolean optOk_opt_2 = false;
+                        do {
+                            if (peek() != KIND_INLINE__LPAREN) { fail("'('", RULE_SpecialFuncExpr_KIND); break; }
+                            advance();
+                            if (peek() != KIND_NUMERICLITERAL) { fail("NumericLiteral", RULE_SpecialFuncExpr_KIND); break; }
+                            advance();
+                            if (peek() != KIND_INLINE__RPAREN) { fail("')'", RULE_SpecialFuncExpr_KIND); break; }
+                            advance();
+                            optOk_opt_2 = true;
+                        } while (false);
+                        if (!optOk_opt_2) {
+                            pos = savedPos_opt_2;
+                            cst.truncate(savedNodes_opt_2);
+                        }
+                    }
+                    matched_alt_0 = true;
+                } while (false);
+                if (!matched_alt_0) {
+                    pos = savedPos_alt_0;
+                    cst.truncate(savedNodes_alt_0);
+                }
+            }
+            if (!matched_alt_0 && !cutHit_alt_0) {
+                do {
+                    // choice: alt_3
+                    {
+                        int savedPos_alt_3 = pos;
+                        int savedNodes_alt_3 = cst.currentNodeCount();
+                        boolean matched_alt_3 = false;
+                        boolean cutHit_alt_3 = false;
+                        if (!matched_alt_3 && !cutHit_alt_3) {
+                            do {
+                                if (peek() != KIND_INLINE_CURRENT_CATALOG_CI) { fail("'CURRENT_CATALOG'", RULE_SpecialFuncExpr_KIND); break; }
+                                advance();
+                                matched_alt_3 = true;
+                            } while (false);
+                            if (!matched_alt_3) {
+                                pos = savedPos_alt_3;
+                                cst.truncate(savedNodes_alt_3);
+                            }
+                        }
+                        if (!matched_alt_3 && !cutHit_alt_3) {
+                            do {
+                                if (peek() != KIND_INLINE_CURRENT_DATE_CI) { fail("'CURRENT_DATE'", RULE_SpecialFuncExpr_KIND); break; }
+                                advance();
+                                matched_alt_3 = true;
+                            } while (false);
+                            if (!matched_alt_3) {
+                                pos = savedPos_alt_3;
+                                cst.truncate(savedNodes_alt_3);
+                            }
+                        }
+                        if (!matched_alt_3 && !cutHit_alt_3) {
+                            do {
+                                if (peek() != KIND_INLINE_CURRENT_ROLE_CI) { fail("'CURRENT_ROLE'", RULE_SpecialFuncExpr_KIND); break; }
+                                advance();
+                                matched_alt_3 = true;
+                            } while (false);
+                            if (!matched_alt_3) {
+                                pos = savedPos_alt_3;
+                                cst.truncate(savedNodes_alt_3);
+                            }
+                        }
+                        if (!matched_alt_3 && !cutHit_alt_3) {
+                            do {
+                                if (peek() != KIND_INLINE_CURRENT_SCHEMA_CI) { fail("'CURRENT_SCHEMA'", RULE_SpecialFuncExpr_KIND); break; }
+                                advance();
+                                matched_alt_3 = true;
+                            } while (false);
+                            if (!matched_alt_3) {
+                                pos = savedPos_alt_3;
+                                cst.truncate(savedNodes_alt_3);
+                            }
+                        }
+                        if (!matched_alt_3 && !cutHit_alt_3) {
+                            do {
+                                if (peek() != KIND_INLINE_CURRENT_USER_CI) { fail("'CURRENT_USER'", RULE_SpecialFuncExpr_KIND); break; }
+                                advance();
+                                matched_alt_3 = true;
+                            } while (false);
+                            if (!matched_alt_3) {
+                                pos = savedPos_alt_3;
+                                cst.truncate(savedNodes_alt_3);
+                            }
+                        }
+                        if (!matched_alt_3 && !cutHit_alt_3) {
+                            do {
+                                if (peek() != KIND_INLINE_SESSION_USER_CI) { fail("'SESSION_USER'", RULE_SpecialFuncExpr_KIND); break; }
+                                advance();
+                                matched_alt_3 = true;
+                            } while (false);
+                            if (!matched_alt_3) {
+                                pos = savedPos_alt_3;
+                                cst.truncate(savedNodes_alt_3);
+                            }
+                        }
+                        if (!matched_alt_3 && !cutHit_alt_3) {
+                            do {
+                                if (peek() != KIND_INLINE_USER_CI) { fail("'USER'", RULE_SpecialFuncExpr_KIND); break; }
+                                advance();
+                                matched_alt_3 = true;
+                            } while (false);
+                            if (!matched_alt_3) {
+                                pos = savedPos_alt_3;
+                                cst.truncate(savedNodes_alt_3);
+                            }
+                        }
+                        if (!matched_alt_3) { fail("<choice>", RULE_SpecialFuncExpr_KIND); break; }
+                    }
+                    // no-op: not-predicate over char-level expression — handled by lexer
+                    matched_alt_0 = true;
+                } while (false);
+                if (!matched_alt_0) {
+                    pos = savedPos_alt_0;
+                    cst.truncate(savedNodes_alt_0);
+                }
+            }
+            if (!matched_alt_0) { fail("<choice>", RULE_SpecialFuncExpr_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+        }
         int lastTok = pos > firstTok ? pos - 1 : firstTok;
         if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
         if (lastTok < firstTok) lastTok = firstTok;
@@ -13492,7 +15106,7 @@ public final class PgSqlParser {
                     boolean cutHit_alt_1 = false;
                     if (!matched_alt_1 && !cutHit_alt_1) {
                         do {
-                            { int __k = peek(); if (__k != KIND_INLINE_ALL_CI) { fail("AllKW", RULE_FuncCallArgs_KIND); break; } }
+                            { int __k = peek(); if (__k != KIND_ALLKW) { fail("AllKW", RULE_FuncCallArgs_KIND); break; } }
                             advance();
                             matched_alt_1 = true;
                         } while (false);
@@ -13503,7 +15117,7 @@ public final class PgSqlParser {
                     }
                     if (!matched_alt_1 && !cutHit_alt_1) {
                         do {
-                            { int __k = peek(); if (__k != KIND_INLINE_DISTINCT_CI) { fail("DistinctKW", RULE_FuncCallArgs_KIND); break; } }
+                            { int __k = peek(); if (__k != KIND_DISTINCTKW) { fail("DistinctKW", RULE_FuncCallArgs_KIND); break; } }
                             advance();
                             matched_alt_1 = true;
                         } while (false);
@@ -13561,7 +15175,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_FilterClause_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_FILTER_CI) { fail("FilterKW", RULE_FilterClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_FILTERKW) { fail("FilterKW", RULE_FilterClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (peek() != KIND_INLINE__LPAREN) { fail("'('", RULE_FilterClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         advance();
@@ -13580,7 +15194,7 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_OverClause_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_OVER_CI) { fail("OverKW", RULE_OverClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_OVERKW) { fail("OverKW", RULE_OverClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // choice: alt_0
         {
@@ -13590,7 +15204,7 @@ public final class PgSqlParser {
             boolean cutHit_alt_0 = false;
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    if (peek() != KIND_COLID) { fail("ColId", RULE_OverClause_KIND); break; }
+                    if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_OverClause_KIND); break; }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -13627,9 +15241,9 @@ public final class PgSqlParser {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_WithinGroupClause_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_WITHIN_CI) { fail("WithinKW", RULE_WithinGroupClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_WITHINKW) { fail("WithinKW", RULE_WithinGroupClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
-        { int __k = peek(); if (__k != KIND_INLINE_GROUP_CI) { fail("GroupKW", RULE_WithinGroupClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_GROUPKW) { fail("GroupKW", RULE_WithinGroupClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (peek() != KIND_INLINE__LPAREN) { fail("'('", RULE_WithinGroupClause_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         advance();
@@ -13687,7 +15301,7 @@ public final class PgSqlParser {
             boolean cutHit_alt_0 = false;
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    if (peek() != KIND_COMPAREOP) { fail("CompareOp", RULE_Operator_KIND); break; }
+                    if (java.util.Arrays.binarySearch(ALIAS_COMPAREOP, peek()) < 0) { fail("CompareOp", RULE_Operator_KIND); break; }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -14009,7 +15623,7 @@ public final class PgSqlParser {
                     }
                     if (!matched_alt_1 && !cutHit_alt_1) {
                         do {
-                            { int __k = peek(); if (__k != KIND_INLINE_ARRAY_CI) { fail("ArrayKW", RULE_ArrayType_KIND); break; } }
+                            { int __k = peek(); if (__k != KIND_ARRAYKW) { fail("ArrayKW", RULE_ArrayType_KIND); break; } }
                             advance();
                             // optional: opt_5
                             {
@@ -14118,7 +15732,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_UUID_CI) { fail("UuidType", RULE_ScalarType_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_UUIDTYPE) { fail("UuidType", RULE_ScalarType_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -14129,7 +15743,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_BYTEA_CI) { fail("ByteaType", RULE_ScalarType_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_BYTEATYPE) { fail("ByteaType", RULE_ScalarType_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -14140,7 +15754,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_XML_CI) { fail("XmlType", RULE_ScalarType_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_XMLTYPE) { fail("XmlType", RULE_ScalarType_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -14172,7 +15786,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_MONEY_CI) { fail("MoneyType", RULE_ScalarType_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_MONEYTYPE) { fail("MoneyType", RULE_ScalarType_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -14624,7 +16238,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_DATE_CI) { fail("DateType", RULE_DateTimeType_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_DATETYPE) { fail("DateType", RULE_DateTimeType_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -14722,11 +16336,11 @@ public final class PgSqlParser {
                                 boolean cutHit_alt_4 = false;
                                 if (!matched_alt_4 && !cutHit_alt_4) {
                                     do {
-                                        { int __k = peek(); if (__k != KIND_INLINE_WITH_CI) { fail("WithKW", RULE_TimestampType_KIND); break; } }
+                                        { int __k = peek(); if (__k != KIND_WITHKW) { fail("WithKW", RULE_TimestampType_KIND); break; } }
                                         advance();
-                                        { int __k = peek(); if (__k != KIND_INLINE_TIME_CI) { fail("TimeKW", RULE_TimestampType_KIND); break; } }
+                                        { int __k = peek(); if (__k != KIND_TIMEKW) { fail("TimeKW", RULE_TimestampType_KIND); break; } }
                                         advance();
-                                        { int __k = peek(); if (__k != KIND_INLINE_ZONE_CI) { fail("ZoneKW", RULE_TimestampType_KIND); break; } }
+                                        { int __k = peek(); if (__k != KIND_ZONEKW) { fail("ZoneKW", RULE_TimestampType_KIND); break; } }
                                         advance();
                                         matched_alt_4 = true;
                                     } while (false);
@@ -14737,11 +16351,11 @@ public final class PgSqlParser {
                                 }
                                 if (!matched_alt_4 && !cutHit_alt_4) {
                                     do {
-                                        { int __k = peek(); if (__k != KIND_INLINE_WITHOUT_CI) { fail("WithoutKW", RULE_TimestampType_KIND); break; } }
+                                        { int __k = peek(); if (__k != KIND_WITHOUTKW) { fail("WithoutKW", RULE_TimestampType_KIND); break; } }
                                         advance();
-                                        { int __k = peek(); if (__k != KIND_INLINE_TIME_CI) { fail("TimeKW", RULE_TimestampType_KIND); break; } }
+                                        { int __k = peek(); if (__k != KIND_TIMEKW) { fail("TimeKW", RULE_TimestampType_KIND); break; } }
                                         advance();
-                                        { int __k = peek(); if (__k != KIND_INLINE_ZONE_CI) { fail("ZoneKW", RULE_TimestampType_KIND); break; } }
+                                        { int __k = peek(); if (__k != KIND_ZONEKW) { fail("ZoneKW", RULE_TimestampType_KIND); break; } }
                                         advance();
                                         matched_alt_4 = true;
                                     } while (false);
@@ -14814,7 +16428,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    if (peek() != KIND_INLINE_TIME_CI) { fail("'time'", RULE_TimeType_KIND); break; }
+                    if (peek() != KIND_TIMEKW) { fail("'time'", RULE_TimeType_KIND); break; }
                     advance();
                     // no-op: not-predicate over char-level expression — handled by lexer
                     // optional: opt_2
@@ -14845,11 +16459,11 @@ public final class PgSqlParser {
                                 boolean cutHit_alt_4 = false;
                                 if (!matched_alt_4 && !cutHit_alt_4) {
                                     do {
-                                        { int __k = peek(); if (__k != KIND_INLINE_WITH_CI) { fail("WithKW", RULE_TimeType_KIND); break; } }
+                                        { int __k = peek(); if (__k != KIND_WITHKW) { fail("WithKW", RULE_TimeType_KIND); break; } }
                                         advance();
-                                        { int __k = peek(); if (__k != KIND_INLINE_TIME_CI) { fail("TimeKW", RULE_TimeType_KIND); break; } }
+                                        { int __k = peek(); if (__k != KIND_TIMEKW) { fail("TimeKW", RULE_TimeType_KIND); break; } }
                                         advance();
-                                        { int __k = peek(); if (__k != KIND_INLINE_ZONE_CI) { fail("ZoneKW", RULE_TimeType_KIND); break; } }
+                                        { int __k = peek(); if (__k != KIND_ZONEKW) { fail("ZoneKW", RULE_TimeType_KIND); break; } }
                                         advance();
                                         matched_alt_4 = true;
                                     } while (false);
@@ -14860,11 +16474,11 @@ public final class PgSqlParser {
                                 }
                                 if (!matched_alt_4 && !cutHit_alt_4) {
                                     do {
-                                        { int __k = peek(); if (__k != KIND_INLINE_WITHOUT_CI) { fail("WithoutKW", RULE_TimeType_KIND); break; } }
+                                        { int __k = peek(); if (__k != KIND_WITHOUTKW) { fail("WithoutKW", RULE_TimeType_KIND); break; } }
                                         advance();
-                                        { int __k = peek(); if (__k != KIND_INLINE_TIME_CI) { fail("TimeKW", RULE_TimeType_KIND); break; } }
+                                        { int __k = peek(); if (__k != KIND_TIMEKW) { fail("TimeKW", RULE_TimeType_KIND); break; } }
                                         advance();
-                                        { int __k = peek(); if (__k != KIND_INLINE_ZONE_CI) { fail("ZoneKW", RULE_TimeType_KIND); break; } }
+                                        { int __k = peek(); if (__k != KIND_ZONEKW) { fail("ZoneKW", RULE_TimeType_KIND); break; } }
                                         advance();
                                         matched_alt_4 = true;
                                     } while (false);
@@ -14912,8 +16526,7 @@ public final class PgSqlParser {
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                if (peek() != KIND_INTERVALFIELD) { fail("IntervalField", RULE_IntervalType_KIND); break; }
-                advance();
+                if (!parseIntervalField(self)) { break; }
                 optOk_opt_0 = true;
             } while (false);
             if (!optOk_opt_0) {
@@ -14934,6 +16547,227 @@ public final class PgSqlParser {
                 pos = savedPos_opt_1;
                 cst.truncate(savedNodes_opt_1);
             }
+        }
+        int lastTok = pos > firstTok ? pos - 1 : firstTok;
+        if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
+        if (lastTok < firstTok) lastTok = firstTok;
+        cst.endNode(self, lastTok);
+        return true;
+    }
+
+    private boolean parseIntervalField(int parent) {
+        int firstTok = pos;
+        int savedPos = pos;
+        int savedNodes = cst.currentNodeCount();
+        int self = cst.beginNode(RULE_IntervalField_KIND, firstTok, parent);
+        // choice: alt_0
+        {
+            int savedPos_alt_0 = pos;
+            int savedNodes_alt_0 = cst.currentNodeCount();
+            boolean matched_alt_0 = false;
+            boolean cutHit_alt_0 = false;
+            if (!matched_alt_0 && !cutHit_alt_0) {
+                do {
+                    { int __k = peek(); if (__k != KIND_YEARKW) { fail("YearKW", RULE_IntervalField_KIND); break; } }
+                    advance();
+                    // optional: opt_1
+                    {
+                        int savedPos_opt_1 = pos;
+                        int savedNodes_opt_1 = cst.currentNodeCount();
+                        boolean optOk_opt_1 = false;
+                        do {
+                            { int __k = peek(); if (__k != KIND_TOKW) { fail("ToKW", RULE_IntervalField_KIND); break; } }
+                            advance();
+                            { int __k = peek(); if (__k != KIND_MONTHKW) { fail("MonthKW", RULE_IntervalField_KIND); break; } }
+                            advance();
+                            optOk_opt_1 = true;
+                        } while (false);
+                        if (!optOk_opt_1) {
+                            pos = savedPos_opt_1;
+                            cst.truncate(savedNodes_opt_1);
+                        }
+                    }
+                    matched_alt_0 = true;
+                } while (false);
+                if (!matched_alt_0) {
+                    pos = savedPos_alt_0;
+                    cst.truncate(savedNodes_alt_0);
+                }
+            }
+            if (!matched_alt_0 && !cutHit_alt_0) {
+                do {
+                    { int __k = peek(); if (__k != KIND_MONTHKW) { fail("MonthKW", RULE_IntervalField_KIND); break; } }
+                    advance();
+                    matched_alt_0 = true;
+                } while (false);
+                if (!matched_alt_0) {
+                    pos = savedPos_alt_0;
+                    cst.truncate(savedNodes_alt_0);
+                }
+            }
+            if (!matched_alt_0 && !cutHit_alt_0) {
+                do {
+                    { int __k = peek(); if (__k != KIND_DAYKW) { fail("DayKW", RULE_IntervalField_KIND); break; } }
+                    advance();
+                    // optional: opt_2
+                    {
+                        int savedPos_opt_2 = pos;
+                        int savedNodes_opt_2 = cst.currentNodeCount();
+                        boolean optOk_opt_2 = false;
+                        do {
+                            { int __k = peek(); if (__k != KIND_TOKW) { fail("ToKW", RULE_IntervalField_KIND); break; } }
+                            advance();
+                            // choice: alt_3
+                            {
+                                int savedPos_alt_3 = pos;
+                                int savedNodes_alt_3 = cst.currentNodeCount();
+                                boolean matched_alt_3 = false;
+                                boolean cutHit_alt_3 = false;
+                                if (!matched_alt_3 && !cutHit_alt_3) {
+                                    do {
+                                        { int __k = peek(); if (__k != KIND_HOURKW) { fail("HourKW", RULE_IntervalField_KIND); break; } }
+                                        advance();
+                                        matched_alt_3 = true;
+                                    } while (false);
+                                    if (!matched_alt_3) {
+                                        pos = savedPos_alt_3;
+                                        cst.truncate(savedNodes_alt_3);
+                                    }
+                                }
+                                if (!matched_alt_3 && !cutHit_alt_3) {
+                                    do {
+                                        { int __k = peek(); if (__k != KIND_MINUTEKW) { fail("MinuteKW", RULE_IntervalField_KIND); break; } }
+                                        advance();
+                                        matched_alt_3 = true;
+                                    } while (false);
+                                    if (!matched_alt_3) {
+                                        pos = savedPos_alt_3;
+                                        cst.truncate(savedNodes_alt_3);
+                                    }
+                                }
+                                if (!matched_alt_3 && !cutHit_alt_3) {
+                                    do {
+                                        { int __k = peek(); if (__k != KIND_SECONDKW) { fail("SecondKW", RULE_IntervalField_KIND); break; } }
+                                        advance();
+                                        matched_alt_3 = true;
+                                    } while (false);
+                                    if (!matched_alt_3) {
+                                        pos = savedPos_alt_3;
+                                        cst.truncate(savedNodes_alt_3);
+                                    }
+                                }
+                                if (!matched_alt_3) { fail("<choice>", RULE_IntervalField_KIND); break; }
+                            }
+                            optOk_opt_2 = true;
+                        } while (false);
+                        if (!optOk_opt_2) {
+                            pos = savedPos_opt_2;
+                            cst.truncate(savedNodes_opt_2);
+                        }
+                    }
+                    matched_alt_0 = true;
+                } while (false);
+                if (!matched_alt_0) {
+                    pos = savedPos_alt_0;
+                    cst.truncate(savedNodes_alt_0);
+                }
+            }
+            if (!matched_alt_0 && !cutHit_alt_0) {
+                do {
+                    { int __k = peek(); if (__k != KIND_HOURKW) { fail("HourKW", RULE_IntervalField_KIND); break; } }
+                    advance();
+                    // optional: opt_4
+                    {
+                        int savedPos_opt_4 = pos;
+                        int savedNodes_opt_4 = cst.currentNodeCount();
+                        boolean optOk_opt_4 = false;
+                        do {
+                            { int __k = peek(); if (__k != KIND_TOKW) { fail("ToKW", RULE_IntervalField_KIND); break; } }
+                            advance();
+                            // choice: alt_5
+                            {
+                                int savedPos_alt_5 = pos;
+                                int savedNodes_alt_5 = cst.currentNodeCount();
+                                boolean matched_alt_5 = false;
+                                boolean cutHit_alt_5 = false;
+                                if (!matched_alt_5 && !cutHit_alt_5) {
+                                    do {
+                                        { int __k = peek(); if (__k != KIND_MINUTEKW) { fail("MinuteKW", RULE_IntervalField_KIND); break; } }
+                                        advance();
+                                        matched_alt_5 = true;
+                                    } while (false);
+                                    if (!matched_alt_5) {
+                                        pos = savedPos_alt_5;
+                                        cst.truncate(savedNodes_alt_5);
+                                    }
+                                }
+                                if (!matched_alt_5 && !cutHit_alt_5) {
+                                    do {
+                                        { int __k = peek(); if (__k != KIND_SECONDKW) { fail("SecondKW", RULE_IntervalField_KIND); break; } }
+                                        advance();
+                                        matched_alt_5 = true;
+                                    } while (false);
+                                    if (!matched_alt_5) {
+                                        pos = savedPos_alt_5;
+                                        cst.truncate(savedNodes_alt_5);
+                                    }
+                                }
+                                if (!matched_alt_5) { fail("<choice>", RULE_IntervalField_KIND); break; }
+                            }
+                            optOk_opt_4 = true;
+                        } while (false);
+                        if (!optOk_opt_4) {
+                            pos = savedPos_opt_4;
+                            cst.truncate(savedNodes_opt_4);
+                        }
+                    }
+                    matched_alt_0 = true;
+                } while (false);
+                if (!matched_alt_0) {
+                    pos = savedPos_alt_0;
+                    cst.truncate(savedNodes_alt_0);
+                }
+            }
+            if (!matched_alt_0 && !cutHit_alt_0) {
+                do {
+                    { int __k = peek(); if (__k != KIND_MINUTEKW) { fail("MinuteKW", RULE_IntervalField_KIND); break; } }
+                    advance();
+                    // optional: opt_6
+                    {
+                        int savedPos_opt_6 = pos;
+                        int savedNodes_opt_6 = cst.currentNodeCount();
+                        boolean optOk_opt_6 = false;
+                        do {
+                            { int __k = peek(); if (__k != KIND_TOKW) { fail("ToKW", RULE_IntervalField_KIND); break; } }
+                            advance();
+                            { int __k = peek(); if (__k != KIND_SECONDKW) { fail("SecondKW", RULE_IntervalField_KIND); break; } }
+                            advance();
+                            optOk_opt_6 = true;
+                        } while (false);
+                        if (!optOk_opt_6) {
+                            pos = savedPos_opt_6;
+                            cst.truncate(savedNodes_opt_6);
+                        }
+                    }
+                    matched_alt_0 = true;
+                } while (false);
+                if (!matched_alt_0) {
+                    pos = savedPos_alt_0;
+                    cst.truncate(savedNodes_alt_0);
+                }
+            }
+            if (!matched_alt_0 && !cutHit_alt_0) {
+                do {
+                    { int __k = peek(); if (__k != KIND_SECONDKW) { fail("SecondKW", RULE_IntervalField_KIND); break; } }
+                    advance();
+                    matched_alt_0 = true;
+                } while (false);
+                if (!matched_alt_0) {
+                    pos = savedPos_alt_0;
+                    cst.truncate(savedNodes_alt_0);
+                }
+            }
+            if (!matched_alt_0) { fail("<choice>", RULE_IntervalField_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         }
         int lastTok = pos > firstTok ? pos - 1 : firstTok;
         if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
@@ -15086,12 +16920,54 @@ public final class PgSqlParser {
         return true;
     }
 
+    private boolean parseColLabel(int parent) {
+        int firstTok = pos;
+        int savedPos = pos;
+        int savedNodes = cst.currentNodeCount();
+        int self = cst.beginNode(RULE_ColLabel_KIND, firstTok, parent);
+        // choice: alt_0
+        {
+            int savedPos_alt_0 = pos;
+            int savedNodes_alt_0 = cst.currentNodeCount();
+            boolean matched_alt_0 = false;
+            boolean cutHit_alt_0 = false;
+            if (!matched_alt_0 && !cutHit_alt_0) {
+                do {
+                    if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_ColLabel_KIND); break; }
+                    advance();
+                    matched_alt_0 = true;
+                } while (false);
+                if (!matched_alt_0) {
+                    pos = savedPos_alt_0;
+                    cst.truncate(savedNodes_alt_0);
+                }
+            }
+            if (!matched_alt_0 && !cutHit_alt_0) {
+                do {
+                    if (java.util.Arrays.binarySearch(ALIAS_RESERVEDKEYWORD, peek()) < 0) { fail("ReservedKeyword", RULE_ColLabel_KIND); break; }
+                    advance();
+                    matched_alt_0 = true;
+                } while (false);
+                if (!matched_alt_0) {
+                    pos = savedPos_alt_0;
+                    cst.truncate(savedNodes_alt_0);
+                }
+            }
+            if (!matched_alt_0) { fail("<choice>", RULE_ColLabel_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+        }
+        int lastTok = pos > firstTok ? pos - 1 : firstTok;
+        if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
+        if (lastTok < firstTok) lastTok = firstTok;
+        cst.endNode(self, lastTok);
+        return true;
+    }
+
     private boolean parseQualifiedName(int parent) {
         int firstTok = pos;
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_QualifiedName_KIND, firstTok, parent);
-        if (peek() != KIND_COLID) { fail("ColId", RULE_QualifiedName_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+        if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_QualifiedName_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         advance();
         // zero-or-more: rep_0
         while (true) {
@@ -15109,7 +16985,7 @@ public final class PgSqlParser {
                     boolean cutHit_alt_1 = false;
                     if (!matched_alt_1 && !cutHit_alt_1) {
                         do {
-                            if (peek() != KIND_COLID) { fail("ColId", RULE_QualifiedName_KIND); break; }
+                            if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_QualifiedName_KIND); break; }
                             advance();
                             matched_alt_1 = true;
                         } while (false);
@@ -15160,7 +17036,7 @@ public final class PgSqlParser {
             boolean cutHit_alt_0 = false;
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    if (peek() != KIND_BOOLEANLITERAL) { fail("BooleanLiteral", RULE_Literal_KIND); break; }
+                    { int __k = peek(); if (__k != KIND_TRUEKW && __k != KIND_FALSEKW) { fail("BooleanLiteral", RULE_Literal_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -15171,7 +17047,7 @@ public final class PgSqlParser {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    if (peek() != KIND_NULLLITERAL) { fail("NullLiteral", RULE_Literal_KIND); break; }
+                    { int __k = peek(); if (__k != KIND_NULLCONSTRAINT) { fail("NullLiteral", RULE_Literal_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -15295,7 +17171,6 @@ public final class PgSqlParser {
     }
 
     private boolean parseDollarString(int parent) {
-        if (peek() != KIND_INLINE__DOLLAR_DOLLAR && peek() != KIND_INLINE__DOLLAR) { fail("DollarString", RULE_DollarString_KIND); return false; }
         int firstTok = pos;
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
@@ -15357,14 +17232,54 @@ public final class PgSqlParser {
                     // capture: $tag
                     int capStartTok_cap_3 = pos;
                     int capStartByte_cap_3 = pos < tokens.count() ? tokens.startAt(pos) : tokens.input().length();
-                    // no-op: char-class a-zA-Z_ inside parser rule — handled by lexer (Phase B.3 no-op)
+                    if (java.util.Arrays.binarySearch(IDFALL_COLID, peek()) < 0) { fail("ColId", RULE_DollarString_KIND); break; }
+                    advance();
+                    int capEndByte_cap_3 = pos > capStartTok_cap_3 ? tokens.endAt(pos - 1) : capStartByte_cap_3;
+                    captures.put("tag", new long[]{capStartByte_cap_3, capEndByte_cap_3});
+                    if (peek() != KIND_INLINE__DOLLAR) { fail("'$'", RULE_DollarString_KIND); break; }
+                    advance();
                     // zero-or-more: rep_4
                     while (true) {
                         int savedPos_rep_4 = pos;
                         int savedNodes_rep_4 = cst.currentNodeCount();
                         boolean iterOk_rep_4 = false;
                         do {
-                            // no-op: char-class a-zA-Z0-9_ inside parser rule — handled by lexer (Phase B.3 no-op)
+                            // not-predicate: not_5
+                            {
+                                int savedPos_not_5 = pos;
+                                int savedNodes_not_5 = cst.currentNodeCount();
+                                boolean notMatched_not_5 = false;
+                                do {
+                                    if (peek() != KIND_INLINE__DOLLAR) { fail("'$'", RULE_DollarString_KIND); break; }
+                                    advance();
+                                    // back-reference: $tag
+                                    {
+                                        long[] cap_bref_6 = captures.get("tag");
+                                        if (cap_bref_6 == null) { fail("back-reference $tag not captured", RULE_DollarString_KIND); break; }
+                                        int capLen_bref_6 = (int)(cap_bref_6[1] - cap_bref_6[0]);
+                                        int posByte_bref_6 = pos < tokens.count() ? tokens.startAt(pos) : tokens.input().length();
+                                        String inputStr_bref_6 = tokens.input();
+                                        if (posByte_bref_6 + capLen_bref_6 > inputStr_bref_6.length()) { fail("back-reference $tag", RULE_DollarString_KIND); break; }
+                                        boolean eq_bref_6 = true;
+                                        for (int i = 0; i < capLen_bref_6; i++) {
+                                            if (inputStr_bref_6.charAt(posByte_bref_6 + i) != inputStr_bref_6.charAt((int)cap_bref_6[0] + i)) { eq_bref_6 = false; break; }
+                                        }
+                                        if (!eq_bref_6) { fail("back-reference $tag", RULE_DollarString_KIND); break; }
+                                        if (capLen_bref_6 > 0) {
+                                            int targetByte_bref_6 = posByte_bref_6 + capLen_bref_6;
+                                            while (pos < tokens.count() && tokens.startAt(pos) < targetByte_bref_6) pos++;
+                                        }
+                                    }
+                                    if (peek() != KIND_INLINE__DOLLAR) { fail("'$'", RULE_DollarString_KIND); break; }
+                                    advance();
+                                    notMatched_not_5 = true;
+                                } while (false);
+                                pos = savedPos_not_5;
+                                cst.truncate(savedNodes_not_5);
+                                if (notMatched_not_5) { fail("!<predicate>", RULE_DollarString_KIND); break; }
+                            }
+                            if (peek() < 0) { fail("<any token>", RULE_DollarString_KIND); break; }
+                            advance();
                             iterOk_rep_4 = true;
                         } while (false);
                         if (!iterOk_rep_4) {
@@ -15374,79 +17289,24 @@ public final class PgSqlParser {
                         }
                         if (pos == savedPos_rep_4) break; // guard against infinite loops on zero-width matches
                     }
-                    int capEndByte_cap_3 = pos > capStartTok_cap_3 ? tokens.endAt(pos - 1) : capStartByte_cap_3;
-                    captures.put("tag", new long[]{capStartByte_cap_3, capEndByte_cap_3});
-                    if (peek() != KIND_INLINE__DOLLAR) { fail("'$'", RULE_DollarString_KIND); break; }
-                    advance();
-                    // zero-or-more: rep_5
-                    while (true) {
-                        int savedPos_rep_5 = pos;
-                        int savedNodes_rep_5 = cst.currentNodeCount();
-                        boolean iterOk_rep_5 = false;
-                        do {
-                            // not-predicate: not_6
-                            {
-                                int savedPos_not_6 = pos;
-                                int savedNodes_not_6 = cst.currentNodeCount();
-                                boolean notMatched_not_6 = false;
-                                do {
-                                    if (peek() != KIND_INLINE__DOLLAR) { fail("'$'", RULE_DollarString_KIND); break; }
-                                    advance();
-                                    // back-reference: $tag
-                                    {
-                                        long[] cap_bref_7 = captures.get("tag");
-                                        if (cap_bref_7 == null) { fail("back-reference $tag not captured", RULE_DollarString_KIND); break; }
-                                        int capLen_bref_7 = (int)(cap_bref_7[1] - cap_bref_7[0]);
-                                        int posByte_bref_7 = pos < tokens.count() ? tokens.startAt(pos) : tokens.input().length();
-                                        String inputStr_bref_7 = tokens.input();
-                                        if (posByte_bref_7 + capLen_bref_7 > inputStr_bref_7.length()) { fail("back-reference $tag", RULE_DollarString_KIND); break; }
-                                        boolean eq_bref_7 = true;
-                                        for (int i = 0; i < capLen_bref_7; i++) {
-                                            if (inputStr_bref_7.charAt(posByte_bref_7 + i) != inputStr_bref_7.charAt((int)cap_bref_7[0] + i)) { eq_bref_7 = false; break; }
-                                        }
-                                        if (!eq_bref_7) { fail("back-reference $tag", RULE_DollarString_KIND); break; }
-                                        if (capLen_bref_7 > 0) {
-                                            int targetByte_bref_7 = posByte_bref_7 + capLen_bref_7;
-                                            while (pos < tokens.count() && tokens.startAt(pos) < targetByte_bref_7) pos++;
-                                        }
-                                    }
-                                    if (peek() != KIND_INLINE__DOLLAR) { fail("'$'", RULE_DollarString_KIND); break; }
-                                    advance();
-                                    notMatched_not_6 = true;
-                                } while (false);
-                                pos = savedPos_not_6;
-                                cst.truncate(savedNodes_not_6);
-                                if (notMatched_not_6) { fail("!<predicate>", RULE_DollarString_KIND); break; }
-                            }
-                            if (peek() < 0) { fail("<any token>", RULE_DollarString_KIND); break; }
-                            advance();
-                            iterOk_rep_5 = true;
-                        } while (false);
-                        if (!iterOk_rep_5) {
-                            pos = savedPos_rep_5;
-                            cst.truncate(savedNodes_rep_5);
-                            break;
-                        }
-                        if (pos == savedPos_rep_5) break; // guard against infinite loops on zero-width matches
-                    }
                     if (peek() != KIND_INLINE__DOLLAR) { fail("'$'", RULE_DollarString_KIND); break; }
                     advance();
                     // back-reference: $tag
                     {
-                        long[] cap_bref_8 = captures.get("tag");
-                        if (cap_bref_8 == null) { fail("back-reference $tag not captured", RULE_DollarString_KIND); break; }
-                        int capLen_bref_8 = (int)(cap_bref_8[1] - cap_bref_8[0]);
-                        int posByte_bref_8 = pos < tokens.count() ? tokens.startAt(pos) : tokens.input().length();
-                        String inputStr_bref_8 = tokens.input();
-                        if (posByte_bref_8 + capLen_bref_8 > inputStr_bref_8.length()) { fail("back-reference $tag", RULE_DollarString_KIND); break; }
-                        boolean eq_bref_8 = true;
-                        for (int i = 0; i < capLen_bref_8; i++) {
-                            if (inputStr_bref_8.charAt(posByte_bref_8 + i) != inputStr_bref_8.charAt((int)cap_bref_8[0] + i)) { eq_bref_8 = false; break; }
+                        long[] cap_bref_7 = captures.get("tag");
+                        if (cap_bref_7 == null) { fail("back-reference $tag not captured", RULE_DollarString_KIND); break; }
+                        int capLen_bref_7 = (int)(cap_bref_7[1] - cap_bref_7[0]);
+                        int posByte_bref_7 = pos < tokens.count() ? tokens.startAt(pos) : tokens.input().length();
+                        String inputStr_bref_7 = tokens.input();
+                        if (posByte_bref_7 + capLen_bref_7 > inputStr_bref_7.length()) { fail("back-reference $tag", RULE_DollarString_KIND); break; }
+                        boolean eq_bref_7 = true;
+                        for (int i = 0; i < capLen_bref_7; i++) {
+                            if (inputStr_bref_7.charAt(posByte_bref_7 + i) != inputStr_bref_7.charAt((int)cap_bref_7[0] + i)) { eq_bref_7 = false; break; }
                         }
-                        if (!eq_bref_8) { fail("back-reference $tag", RULE_DollarString_KIND); break; }
-                        if (capLen_bref_8 > 0) {
-                            int targetByte_bref_8 = posByte_bref_8 + capLen_bref_8;
-                            while (pos < tokens.count() && tokens.startAt(pos) < targetByte_bref_8) pos++;
+                        if (!eq_bref_7) { fail("back-reference $tag", RULE_DollarString_KIND); break; }
+                        if (capLen_bref_7 > 0) {
+                            int targetByte_bref_7 = posByte_bref_7 + capLen_bref_7;
+                            while (pos < tokens.count() && tokens.startAt(pos) < targetByte_bref_7) pos++;
                         }
                     }
                     if (peek() != KIND_INLINE__DOLLAR) { fail("'$'", RULE_DollarString_KIND); break; }
@@ -15499,7 +17359,7 @@ public final class PgSqlParser {
                         boolean cutHit_alt_1 = false;
                         if (!matched_alt_1 && !cutHit_alt_1) {
                             do {
-                                if (peek() != KIND_INLINE_SET_CI) { fail("'SET'", RULE_ClauseKeyword_KIND); break; }
+                                if (peek() != KIND_SETKW) { fail("'SET'", RULE_ClauseKeyword_KIND); break; }
                                 advance();
                                 matched_alt_1 = true;
                             } while (false);
@@ -15510,7 +17370,7 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_1 && !cutHit_alt_1) {
                             do {
-                                if (peek() != KIND_INLINE_ORDER_CI) { fail("'ORDER'", RULE_ClauseKeyword_KIND); break; }
+                                if (peek() != KIND_ORDERKW) { fail("'ORDER'", RULE_ClauseKeyword_KIND); break; }
                                 advance();
                                 matched_alt_1 = true;
                             } while (false);
@@ -15521,7 +17381,7 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_1 && !cutHit_alt_1) {
                             do {
-                                if (peek() != KIND_INLINE_GROUP_CI) { fail("'GROUP'", RULE_ClauseKeyword_KIND); break; }
+                                if (peek() != KIND_GROUPKW) { fail("'GROUP'", RULE_ClauseKeyword_KIND); break; }
                                 advance();
                                 matched_alt_1 = true;
                             } while (false);
@@ -15532,7 +17392,7 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_1 && !cutHit_alt_1) {
                             do {
-                                if (peek() != KIND_INLINE_HAVING_CI) { fail("'HAVING'", RULE_ClauseKeyword_KIND); break; }
+                                if (peek() != KIND_HAVINGKW) { fail("'HAVING'", RULE_ClauseKeyword_KIND); break; }
                                 advance();
                                 matched_alt_1 = true;
                             } while (false);
@@ -15543,7 +17403,7 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_1 && !cutHit_alt_1) {
                             do {
-                                if (peek() != KIND_INLINE_LIMIT_CI) { fail("'LIMIT'", RULE_ClauseKeyword_KIND); break; }
+                                if (peek() != KIND_LIMITKW) { fail("'LIMIT'", RULE_ClauseKeyword_KIND); break; }
                                 advance();
                                 matched_alt_1 = true;
                             } while (false);
@@ -15554,7 +17414,7 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_1 && !cutHit_alt_1) {
                             do {
-                                if (peek() != KIND_INLINE_OFFSET_CI) { fail("'OFFSET'", RULE_ClauseKeyword_KIND); break; }
+                                if (peek() != KIND_OFFSETKW) { fail("'OFFSET'", RULE_ClauseKeyword_KIND); break; }
                                 advance();
                                 matched_alt_1 = true;
                             } while (false);
@@ -15565,7 +17425,7 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_1 && !cutHit_alt_1) {
                             do {
-                                if (peek() != KIND_INLINE_FETCH_CI) { fail("'FETCH'", RULE_ClauseKeyword_KIND); break; }
+                                if (peek() != KIND_FETCHKW) { fail("'FETCH'", RULE_ClauseKeyword_KIND); break; }
                                 advance();
                                 matched_alt_1 = true;
                             } while (false);
@@ -15576,7 +17436,7 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_1 && !cutHit_alt_1) {
                             do {
-                                if (peek() != KIND_INLINE_UNION_CI) { fail("'UNION'", RULE_ClauseKeyword_KIND); break; }
+                                if (peek() != KIND_UNIONKW) { fail("'UNION'", RULE_ClauseKeyword_KIND); break; }
                                 advance();
                                 matched_alt_1 = true;
                             } while (false);
@@ -15587,7 +17447,7 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_1 && !cutHit_alt_1) {
                             do {
-                                if (peek() != KIND_INLINE_INTERSECT_CI) { fail("'INTERSECT'", RULE_ClauseKeyword_KIND); break; }
+                                if (peek() != KIND_INTERSECTKW) { fail("'INTERSECT'", RULE_ClauseKeyword_KIND); break; }
                                 advance();
                                 matched_alt_1 = true;
                             } while (false);
@@ -15598,7 +17458,7 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_1 && !cutHit_alt_1) {
                             do {
-                                if (peek() != KIND_INLINE_EXCEPT_CI) { fail("'EXCEPT'", RULE_ClauseKeyword_KIND); break; }
+                                if (peek() != KIND_EXCEPTKW) { fail("'EXCEPT'", RULE_ClauseKeyword_KIND); break; }
                                 advance();
                                 matched_alt_1 = true;
                             } while (false);
@@ -15609,7 +17469,7 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_1 && !cutHit_alt_1) {
                             do {
-                                if (peek() != KIND_INLINE_JOIN_CI) { fail("'JOIN'", RULE_ClauseKeyword_KIND); break; }
+                                if (peek() != KIND_JOINKW) { fail("'JOIN'", RULE_ClauseKeyword_KIND); break; }
                                 advance();
                                 matched_alt_1 = true;
                             } while (false);
@@ -15620,7 +17480,7 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_1 && !cutHit_alt_1) {
                             do {
-                                if (peek() != KIND_INLINE_INNER_CI) { fail("'INNER'", RULE_ClauseKeyword_KIND); break; }
+                                if (peek() != KIND_INNERKW) { fail("'INNER'", RULE_ClauseKeyword_KIND); break; }
                                 advance();
                                 matched_alt_1 = true;
                             } while (false);
@@ -15631,7 +17491,7 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_1 && !cutHit_alt_1) {
                             do {
-                                if (peek() != KIND_INLINE_LEFT_CI) { fail("'LEFT'", RULE_ClauseKeyword_KIND); break; }
+                                if (peek() != KIND_LEFTKW) { fail("'LEFT'", RULE_ClauseKeyword_KIND); break; }
                                 advance();
                                 matched_alt_1 = true;
                             } while (false);
@@ -15642,7 +17502,7 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_1 && !cutHit_alt_1) {
                             do {
-                                if (peek() != KIND_INLINE_RIGHT_CI) { fail("'RIGHT'", RULE_ClauseKeyword_KIND); break; }
+                                if (peek() != KIND_RIGHTKW) { fail("'RIGHT'", RULE_ClauseKeyword_KIND); break; }
                                 advance();
                                 matched_alt_1 = true;
                             } while (false);
@@ -15653,7 +17513,7 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_1 && !cutHit_alt_1) {
                             do {
-                                if (peek() != KIND_INLINE_FULL_CI) { fail("'FULL'", RULE_ClauseKeyword_KIND); break; }
+                                if (peek() != KIND_FULLKW) { fail("'FULL'", RULE_ClauseKeyword_KIND); break; }
                                 advance();
                                 matched_alt_1 = true;
                             } while (false);
@@ -15664,7 +17524,7 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_1 && !cutHit_alt_1) {
                             do {
-                                if (peek() != KIND_INLINE_CROSS_CI) { fail("'CROSS'", RULE_ClauseKeyword_KIND); break; }
+                                if (peek() != KIND_CROSSKW) { fail("'CROSS'", RULE_ClauseKeyword_KIND); break; }
                                 advance();
                                 matched_alt_1 = true;
                             } while (false);
@@ -15675,7 +17535,7 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_1 && !cutHit_alt_1) {
                             do {
-                                if (peek() != KIND_INLINE_NATURAL_CI) { fail("'NATURAL'", RULE_ClauseKeyword_KIND); break; }
+                                if (peek() != KIND_NATURALKW) { fail("'NATURAL'", RULE_ClauseKeyword_KIND); break; }
                                 advance();
                                 matched_alt_1 = true;
                             } while (false);
@@ -15686,7 +17546,7 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_1 && !cutHit_alt_1) {
                             do {
-                                if (peek() != KIND_INLINE_RETURNING_CI) { fail("'RETURNING'", RULE_ClauseKeyword_KIND); break; }
+                                if (peek() != KIND_RETURNINGKW) { fail("'RETURNING'", RULE_ClauseKeyword_KIND); break; }
                                 advance();
                                 matched_alt_1 = true;
                             } while (false);
@@ -15697,7 +17557,7 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_1 && !cutHit_alt_1) {
                             do {
-                                if (peek() != KIND_INLINE_VALUES_CI) { fail("'VALUES'", RULE_ClauseKeyword_KIND); break; }
+                                if (peek() != KIND_VALUESKW) { fail("'VALUES'", RULE_ClauseKeyword_KIND); break; }
                                 advance();
                                 matched_alt_1 = true;
                             } while (false);
@@ -15708,7 +17568,7 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_1 && !cutHit_alt_1) {
                             do {
-                                if (peek() != KIND_INLINE_WHERE_CI) { fail("'WHERE'", RULE_ClauseKeyword_KIND); break; }
+                                if (peek() != KIND_WHEREKW) { fail("'WHERE'", RULE_ClauseKeyword_KIND); break; }
                                 advance();
                                 matched_alt_1 = true;
                             } while (false);
@@ -15719,7 +17579,7 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_1 && !cutHit_alt_1) {
                             do {
-                                if (peek() != KIND_INLINE_ON_CI) { fail("'ON'", RULE_ClauseKeyword_KIND); break; }
+                                if (peek() != KIND_ONKW) { fail("'ON'", RULE_ClauseKeyword_KIND); break; }
                                 advance();
                                 matched_alt_1 = true;
                             } while (false);
@@ -15730,7 +17590,7 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_1 && !cutHit_alt_1) {
                             do {
-                                if (peek() != KIND_INLINE_WINDOW_CI) { fail("'WINDOW'", RULE_ClauseKeyword_KIND); break; }
+                                if (peek() != KIND_WINDOWKW) { fail("'WINDOW'", RULE_ClauseKeyword_KIND); break; }
                                 advance();
                                 matched_alt_1 = true;
                             } while (false);
@@ -15741,7 +17601,7 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_1 && !cutHit_alt_1) {
                             do {
-                                if (peek() != KIND_INLINE_PARTITION_CI) { fail("'PARTITION'", RULE_ClauseKeyword_KIND); break; }
+                                if (peek() != KIND_PARTITIONKW) { fail("'PARTITION'", RULE_ClauseKeyword_KIND); break; }
                                 advance();
                                 matched_alt_1 = true;
                             } while (false);
@@ -15752,7 +17612,7 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_1 && !cutHit_alt_1) {
                             do {
-                                if (peek() != KIND_INLINE_ROWS_CI) { fail("'ROWS'", RULE_ClauseKeyword_KIND); break; }
+                                if (peek() != KIND_ROWSKW) { fail("'ROWS'", RULE_ClauseKeyword_KIND); break; }
                                 advance();
                                 matched_alt_1 = true;
                             } while (false);
@@ -15763,7 +17623,7 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_1 && !cutHit_alt_1) {
                             do {
-                                if (peek() != KIND_INLINE_RANGE_CI) { fail("'RANGE'", RULE_ClauseKeyword_KIND); break; }
+                                if (peek() != KIND_RANGEKW) { fail("'RANGE'", RULE_ClauseKeyword_KIND); break; }
                                 advance();
                                 matched_alt_1 = true;
                             } while (false);
@@ -15774,7 +17634,7 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_1 && !cutHit_alt_1) {
                             do {
-                                if (peek() != KIND_INLINE_GROUPS_CI) { fail("'GROUPS'", RULE_ClauseKeyword_KIND); break; }
+                                if (peek() != KIND_GROUPSKW) { fail("'GROUPS'", RULE_ClauseKeyword_KIND); break; }
                                 advance();
                                 matched_alt_1 = true;
                             } while (false);
@@ -15785,7 +17645,7 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_1 && !cutHit_alt_1) {
                             do {
-                                if (peek() != KIND_INLINE_DO_CI) { fail("'DO'", RULE_ClauseKeyword_KIND); break; }
+                                if (peek() != KIND_DOKW) { fail("'DO'", RULE_ClauseKeyword_KIND); break; }
                                 advance();
                                 matched_alt_1 = true;
                             } while (false);
@@ -15796,7 +17656,7 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_1 && !cutHit_alt_1) {
                             do {
-                                if (peek() != KIND_INLINE_CONFLICT_CI) { fail("'CONFLICT'", RULE_ClauseKeyword_KIND); break; }
+                                if (peek() != KIND_CONFLICTKW) { fail("'CONFLICT'", RULE_ClauseKeyword_KIND); break; }
                                 advance();
                                 matched_alt_1 = true;
                             } while (false);
@@ -15807,7 +17667,7 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_1 && !cutHit_alt_1) {
                             do {
-                                if (peek() != KIND_INLINE_OVER_CI) { fail("'OVER'", RULE_ClauseKeyword_KIND); break; }
+                                if (peek() != KIND_OVERKW) { fail("'OVER'", RULE_ClauseKeyword_KIND); break; }
                                 advance();
                                 matched_alt_1 = true;
                             } while (false);
@@ -15818,7 +17678,7 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_1 && !cutHit_alt_1) {
                             do {
-                                if (peek() != KIND_INLINE_FILTER_CI) { fail("'FILTER'", RULE_ClauseKeyword_KIND); break; }
+                                if (peek() != KIND_FILTERKW) { fail("'FILTER'", RULE_ClauseKeyword_KIND); break; }
                                 advance();
                                 matched_alt_1 = true;
                             } while (false);
@@ -15829,7 +17689,7 @@ public final class PgSqlParser {
                         }
                         if (!matched_alt_1 && !cutHit_alt_1) {
                             do {
-                                if (peek() != KIND_INLINE_WITHIN_CI) { fail("'WITHIN'", RULE_ClauseKeyword_KIND); break; }
+                                if (peek() != KIND_WITHINKW) { fail("'WITHIN'", RULE_ClauseKeyword_KIND); break; }
                                 advance();
                                 matched_alt_1 = true;
                             } while (false);
