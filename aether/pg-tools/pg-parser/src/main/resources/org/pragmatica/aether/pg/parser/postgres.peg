@@ -763,6 +763,11 @@ BothKW    <- < 'BOTH'i ![a-zA-Z0-9_$] >
 # ============================================================
 %whitespace <- ([ \t\r\n]+ / LineComment / BlockComment)*
 LineComment <- '--' [^\n]*
+# KNOWN GAP: PostgreSQL nests block comments per the SQL standard -- `/* outer /* inner */ still */`
+# -- and this rule stops at the FIRST '*/'. Nested comments are not a regular language, so a rule
+# compiled into peglib's DFA lexer cannot express them (same class as the DollarString
+# back-reference). Needs a counting scanner upstream; not fixable here. Found by harvesting real
+# SQL from the codebase -- no hand-written fixture had exercised it.
 BlockComment <- '/*' (!'*/' .)* '*/'
 
 %parser ColLabel

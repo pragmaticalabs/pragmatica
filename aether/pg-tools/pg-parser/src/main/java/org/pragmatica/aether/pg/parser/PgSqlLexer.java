@@ -1,4 +1,4 @@
-// peglib-generator: 0.7.2 (build:bb4663171d97)
+// peglib-generator: 0.7.2 (build:e39d07114e64)
 package org.pragmatica.aether.pg.parser;
 
 import org.pragmatica.peg.token.TokenArray;
@@ -90,38 +90,6 @@ public final class PgSqlLexer {
     private static final java.util.HashMap<String, Integer>[] RESOLVERS = new java.util.HashMap[489];
     static {
         java.util.HashMap<String, Integer> r0 = new java.util.HashMap<>();
-        r0.put("ON", 462);
-        r0.put("CASE", 420);
-        r0.put("TO", 476);
-        r0.put("CURRENT_SCHEMA", 430);
-        r0.put("OR", 464);
-        r0.put("GRANT", 447);
-        r0.put("CONSTRAINT", 425);
-        r0.put("TRAILING", 477);
-        r0.put("CAST", 421);
-        r0.put("ASYMMETRIC", 418);
-        r0.put("CURRENT_CATALOG", 427);
-        r0.put("ASC", 417);
-        r0.put("AND", 413);
-        r0.put("INTO", 453);
-        r0.put("LOCALTIMESTAMP", 458);
-        r0.put("ARRAY", 415);
-        r0.put("SESSION_USER", 471);
-        r0.put("FOR", 444);
-        r0.put("AS", 416);
-        r0.put("CURRENT_DATE", 428);
-        r0.put("DISTINCT", 437);
-        r0.put("FETCH", 443);
-        r0.put("FALSE", 442);
-        r0.put("ANY", 414);
-        r0.put("SYMMETRIC", 473);
-        r0.put("PRIMARY", 467);
-        r0.put("ANALYZE", 412);
-        r0.put("INITIALLY", 451);
-        r0.put("LEADING", 455);
-        r0.put("LIMIT", 456);
-        r0.put("USING", 482);
-        r0.put("INTERSECT", 452);
         r0.put("TABLE", 474);
         r0.put("REFERENCES", 468);
         r0.put("CURRENT_TIMESTAMP", 432);
@@ -168,6 +136,38 @@ public final class PgSqlLexer {
         r0.put("ANALYSE", 411);
         r0.put("LOCALTIME", 457);
         r0.put("CREATE", 426);
+        r0.put("ON", 462);
+        r0.put("CASE", 420);
+        r0.put("TO", 476);
+        r0.put("CURRENT_SCHEMA", 430);
+        r0.put("OR", 464);
+        r0.put("GRANT", 447);
+        r0.put("CONSTRAINT", 425);
+        r0.put("TRAILING", 477);
+        r0.put("CAST", 421);
+        r0.put("ASYMMETRIC", 418);
+        r0.put("CURRENT_CATALOG", 427);
+        r0.put("ASC", 417);
+        r0.put("AND", 413);
+        r0.put("INTO", 453);
+        r0.put("LOCALTIMESTAMP", 458);
+        r0.put("ARRAY", 415);
+        r0.put("SESSION_USER", 471);
+        r0.put("FOR", 444);
+        r0.put("AS", 416);
+        r0.put("CURRENT_DATE", 428);
+        r0.put("DISTINCT", 437);
+        r0.put("FETCH", 443);
+        r0.put("FALSE", 442);
+        r0.put("ANY", 414);
+        r0.put("SYMMETRIC", 473);
+        r0.put("PRIMARY", 467);
+        r0.put("ANALYZE", 412);
+        r0.put("INITIALLY", 451);
+        r0.put("LEADING", 455);
+        r0.put("LIMIT", 456);
+        r0.put("USING", 482);
+        r0.put("INTERSECT", 452);
         RESOLVERS[28] = r0;
     }
 
