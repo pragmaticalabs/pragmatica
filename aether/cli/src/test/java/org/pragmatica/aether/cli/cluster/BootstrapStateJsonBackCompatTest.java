@@ -86,4 +86,35 @@ class BootstrapStateJsonBackCompatTest {
         assertTrue(state.sources().isEmpty(),
                    "Explicit null sources field must parse as empty (no NPE)");
     }
+
+    /// T1 — backward compatibility. `firewallId` was a `long` before this widening, so every
+    /// existing `bootstrap-state.json` on disk has an UNQUOTED numeric value here (`"firewallId": 12345`).
+    /// The reader must still parse it — `JsonNode.asText()` on a numeric node yields its decimal string —
+    /// so an existing cluster's firewall is not stranded by the upgrade.
+    private static final String LEGACY_JSON_WITH_UNQUOTED_FIREWALL_ID = """
+        {
+          "clusterName": "legacy-firewall-cluster",
+          "configHash": "legacy-hash",
+          "startedAt": "2026-04-01T00:00:00Z",
+          "phases": {},
+          "createdResources": [
+            {"type": "CloudFirewall", "provider": "hetzner", "firewallId": 12345, "sourceName": "eu-1", "name": "aether-eu-1"}
+          ],
+          "provisionedNodeIds": [],
+          "collectedAddresses": [],
+          "clusterSecret": ""
+        }
+        """;
+
+    @Test
+    void fromJson_legacyUnquotedNumericFirewallId_parsesAsString() {
+        var state = BootstrapState.fromJson(LEGACY_JSON_WITH_UNQUOTED_FIREWALL_ID)
+                                   .onFailure(cause -> fail("Legacy unquoted firewallId must still parse: " + cause.message()))
+                                   .unwrap();
+
+        assertEquals(1, state.createdResources().size());
+        var firewall = (CreatedResource.CloudFirewall) state.createdResources().get(0);
+        assertEquals("12345", firewall.firewallId(),
+                     "An unquoted legacy numeric firewallId must parse to the string \"12345\"");
+    }
 }

@@ -167,7 +167,7 @@ public sealed interface BootstrapPhaseFirewall {
                                                     SourceProfile source,
                                                     ComputeProvider compute,
                                                     List<FirewallRule> rules) {
-        var firewallIds = new LinkedHashSet<Long>();
+        var firewallIds = new LinkedHashSet<String>();
         var nextCtx = ctx;
 
         for (var rule : rules) {
@@ -184,16 +184,12 @@ public sealed interface BootstrapPhaseFirewall {
                     return opened.map(_ -> currentCtx);
                 }
 
-                var id = parseFirewallId(opened.unwrap().providerResourceId());
-
-                if (id.isFailure()) {
-                    return id.map(_ -> currentCtx);
-                }
+                var id = opened.unwrap().providerResourceId();
                 // Every rule of a source lands on ONE firewall, so the record is added once — the
                 // set collapses the repeats a multi-rule (or "tcp+udp") source produces. Recording
                 // per-rule would make destroy issue N deletes for one resource.
-                if (firewallIds.add(id.unwrap())) {
-                    nextCtx = recordFirewall(nextCtx, source, id.unwrap());
+                if (firewallIds.add(id)) {
+                    nextCtx = recordFirewall(nextCtx, source, id);
                 }
             }
         }
@@ -201,8 +197,8 @@ public sealed interface BootstrapPhaseFirewall {
         return success(nextCtx.withFirewallIds(source.name(), List.copyOf(firewallIds)));
     }
 
-    private static BootstrapContext recordFirewall(BootstrapContext ctx, SourceProfile source, long firewallId) {
-        System.out.printf("  Ingress firewall %d in force for source '%s'%n", firewallId, source.name());
+    private static BootstrapContext recordFirewall(BootstrapContext ctx, SourceProfile source, String firewallId) {
+        System.out.printf("  Ingress firewall %s in force for source '%s'%n", firewallId, source.name());
         var resource = CreatedResource.CloudFirewall.cloudFirewall(HETZNER_PROVIDER,
                                                                    firewallId,
                                                                    source.name(),
@@ -210,18 +206,6 @@ public sealed interface BootstrapPhaseFirewall {
                                                                   + "-" + source.name());
 
         return ctx.withState(ctx.state().withResource(resource));
-    }
-
-    private static Result<Long> parseFirewallId(String raw) {
-        return Result.lift(() -> Long.parseLong(raw)).mapError(_ -> new UnparseableFirewallId(raw));
-    }
-
-    record UnparseableFirewallId(String raw) implements Cause {
-        @Override
-        public String message() {
-            return "Provider returned a firewall id that is not numeric: '" + raw
-                 + "'. The id must be recorded so destroy can reclaim the firewall.";
-        }
     }
 
     /// REQ-5.1.8.1 — a `"tcp+udp"` entry expands to TWO provider-level rules, one per protocol.

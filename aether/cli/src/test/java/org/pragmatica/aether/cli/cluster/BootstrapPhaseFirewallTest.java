@@ -144,7 +144,7 @@ class BootstrapPhaseFirewallTest {
         assertTrue(result.isSuccess(), () -> "phase should succeed: " + result);
         assertEquals(List.of("tcp", "udp"), compute.opened.stream().map(OpenCall::protocol).toList(),
                      "tcp+udp must expand to exactly two provider rules");
-        assertEquals(List.of(100L), result.unwrap().firewallIdsFor("eu-1"),
+        assertEquals(List.of("100"), result.unwrap().firewallIdsFor("eu-1"),
                      "Both rules land on ONE firewall, so exactly one id is threaded to provision");
     }
 
@@ -157,7 +157,7 @@ class BootstrapPhaseFirewallTest {
 
         var result = run(contextWith(hetznerSource("eu-1", LoadBalancerMode.NONE, rules)), compute);
 
-        assertEquals(List.of(100L), result.unwrap().firewallIdsFor("eu-1"));
+        assertEquals(List.of("100"), result.unwrap().firewallIdsFor("eu-1"));
     }
 
     /// One firewall = one CreatedResource, so destroy issues exactly one delete rather than N.

@@ -240,6 +240,10 @@ class BootstrapCleanupTest {
     }
 
     private static BootstrapState stateWithFirewall(long firewallId) {
+        return stateWithFirewall(Long.toString(firewallId));
+    }
+
+    private static BootstrapState stateWithFirewall(String firewallId) {
         var phases = new EnumMap<BootstrapPhase, PhaseStatus>(BootstrapPhase.class);
         for (var phase : BootstrapPhase.values()) {phases.put(phase, PhaseStatus.COMPLETED);}
         var resources = List.<CreatedResource>of(CreatedResource.CloudFirewall.cloudFirewall("hetzner",
@@ -293,6 +297,28 @@ class BootstrapCleanupTest {
                      "two in-use refusals then success = three attempts");
     }
 
+
+    /// T3 — Hetzner cleanup must REFUSE a non-numeric recorded id rather than guess one. A recorded
+    /// `hetzner` firewall id is expected to be Hetzner's own numeric id; a non-numeric value here means
+    /// the state file was written by something else, and deleting a guessed numeric id would destroy
+    /// someone else's firewall. The delete call must never even reach the client.
+    @Test
+    void cleanup_refusesNonNumericHetznerFirewallId_neverCallsDelete() {
+        var firewallDeletes = new ArrayList<Long>();
+        var state = stateWithFirewall("sg-0abc123def");
+
+        var result = BootstrapCleanup.cleanup(state,
+                                              providerName -> new TestCause("unused").result(),
+                                              providerName -> Result.success(new FirewallRecordingHetznerClient(firewallDeletes)));
+
+        assertTrue(result.isFailure(), "a non-numeric hetzner firewall id must not be treated as deletable");
+        result.onFailure(cause -> assertTrue(cause.message().contains("non-numeric")
+                                             && cause.message().contains("sg-0abc123def")
+                                             && cause.message().contains("Refusing to guess"),
+                                             () -> "failure must surface UnparseableHetznerFirewallId's refusal, was: " + cause.message()));
+        assertTrue(firewallDeletes.isEmpty(),
+                   "deleteFirewall must NOT be called for a non-numeric id — guessing an id could destroy someone else's firewall");
+    }
 
     @Test
     void cleanup_surfacesFailure_whenFirewallDeleteFails() {

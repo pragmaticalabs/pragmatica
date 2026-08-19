@@ -190,7 +190,7 @@ sealed interface BootstrapStateJson {
                                                                                 node.path("sourceName").asText(),
                                                                                 node.path("role").asText());
             case "CloudFirewall" -> CreatedResource.CloudFirewall.cloudFirewall(node.path("provider").asText(),
-                                                                                node.path("firewallId").asLong(),
+                                                                                node.path("firewallId").asText(),
                                                                                 node.path("sourceName").asText(),
                                                                                 node.path("name").asText());
             case "FloatingIpAssignment" -> CreatedResource.FloatingIpAssignment.floatingIpAssignment(node.path("provider").asText(),
@@ -299,9 +299,9 @@ sealed interface BootstrapStateJson {
     private static void appendCloudFirewall(StringBuilder sb, CreatedResource.CloudFirewall firewall) {
         sb.append("{\"type\": \"CloudFirewall\", \"provider\": \"")
           .append(escapeJson(firewall.provider()))
-          .append("\", \"firewallId\": ")
-          .append(firewall.firewallId())
-          .append(", \"sourceName\": \"")
+          .append("\", \"firewallId\": \"")
+          .append(escapeJson(firewall.firewallId()))
+          .append("\", \"sourceName\": \"")
           .append(escapeJson(firewall.sourceName()))
           .append("\", \"name\": \"")
           .append(escapeJson(firewall.name()))

@@ -24,14 +24,27 @@ public sealed interface CreatedResource {
     /// (cluster-bootstrap-spec §6.2). ONE resource per source carrying ALL of that source's rules —
     /// a `"tcp+udp"` entry is two rules on this one firewall, not two firewalls — so destroy issues
     /// exactly one delete.
-    record CloudFirewall(String provider, long firewallId, String sourceName, String name) implements CreatedResource {
-        static CloudFirewall cloudFirewall(String provider, long firewallId, String sourceName, String name) {
+    /// `firewallId` is the PROVIDER'S OWN id, kept as an opaque String. It was a `long`, which is a
+    /// Hetzner-shaped assumption: an AWS security group is `sg-0abc…`, an Azure NSG is an ARM resource
+    /// path, and a GCP rule is addressed by name. Numeric ids are a special case of string ids, so
+    /// widening loses nothing and lets every provider record what it actually created. Providers whose
+    /// API needs a number parse it back at their own edge — [BootstrapCleanup] does exactly that for
+    /// Hetzner, and REFUSES rather than guessing if the recorded id is not numeric.
+    ///
+    /// **Stored-format note.** `bootstrap-state.json` is written by hand in [BootstrapStateJson], not by
+    /// Jackson databind. Reading uses `JsonNode.asText()`, which yields `"12345"` for a legacy unquoted
+    /// number and the value itself for a new quoted string — so existing state files load unchanged.
+    /// Writing now emits a QUOTED value, which a pre-widening binary would read as `0` via `asLong()`.
+    /// The widening is therefore forward-compatible but not backward-compatible: downgrading the CLI
+    /// after a bootstrap would strand the firewall rather than delete it.
+    record CloudFirewall(String provider, String firewallId, String sourceName, String name) implements CreatedResource {
+        static CloudFirewall cloudFirewall(String provider, String firewallId, String sourceName, String name) {
             return new CloudFirewall(provider, firewallId, sourceName, name);
         }
 
         @Override
         public String resourceId() {
-            return Long.toString(firewallId);
+            return firewallId;
         }
 
         @Override

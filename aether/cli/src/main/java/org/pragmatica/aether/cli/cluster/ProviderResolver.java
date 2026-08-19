@@ -55,7 +55,7 @@ public final class ProviderResolver {
                                                               List<Long> sshKeyIds,
                                                               String userData,
                                                               String clusterName,
-                                                              List<Long> firewallIds) {
+                                                              List<String> firewallIds) {
         return source.provider()
                      .toResult(NO_PROVIDER)
                      .flatMap(provider -> lookupAndCreateCloud(provider.value(),
@@ -155,7 +155,7 @@ public final class ProviderResolver {
                                                                        List<Long> sshKeyIds,
                                                                        String userData,
                                                                        String clusterName,
-                                                                       List<Long> firewallIds) {
+                                                                       List<String> firewallIds) {
         return lookupFactory(providerName).flatMap(factory -> factory.create(buildCloudConfig(providerName,
                                                                                               source,
                                                                                               sshKeyIds,
@@ -210,7 +210,7 @@ public final class ProviderResolver {
                                         List<Long> sshKeyIds,
                                         String userData,
                                         String clusterName,
-                                        List<Long> firewallIds) {
+                                        List<String> firewallIds) {
         var credentials = new HashMap<String, String>();
 
         source.credentials()
@@ -233,7 +233,7 @@ public final class ProviderResolver {
         }
 
         if (!firewallIds.isEmpty()) {
-            compute.put("firewall_ids", joinLongs(firewallIds));
+            compute.put("firewall_ids", String.join(",", firewallIds));
         }
 
         var discovery = clusterName.isEmpty()

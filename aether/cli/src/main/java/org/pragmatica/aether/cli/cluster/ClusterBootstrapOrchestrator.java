@@ -391,7 +391,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                             Option<String> apiKey,
                             List<SshPublicKey> sshPublicKeys,
                             Map<String, List<Long>> sshKeyIdsByProvider,
-                            Map<String, List<Long>> firewallIdsBySource,
+                            Map<String, List<String>> firewallIdsBySource,
                             String clusterSecret,
                             String rawTomlContent) {
         static BootstrapContext bootstrapContext(ClusterBootstrapConfig config,
@@ -522,8 +522,8 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
             return sshKeyIdsByProvider.getOrDefault(provider, List.of());
         }
 
-        BootstrapContext withFirewallIds(String sourceName, List<Long> ids) {
-            var merged = new HashMap<String, List<Long>>(firewallIdsBySource);
+        BootstrapContext withFirewallIds(String sourceName, List<String> ids) {
+            var merged = new HashMap<String, List<String>>(firewallIdsBySource);
 
             merged.put(sourceName, List.copyOf(ids));
 
@@ -542,7 +542,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
         /// Ingress-firewall ids created for `sourceName` by [BootstrapPhaseFirewall], threaded into
         /// server-create so the rules are in force BEFORE the instance exists (§6.2). Keyed by SOURCE,
         /// not provider (unlike ssh keys): firewall rules are declared per source.
-        List<Long> firewallIdsFor(String sourceName) {
+        List<String> firewallIdsFor(String sourceName) {
             return firewallIdsBySource.getOrDefault(sourceName, List.of());
         }
     }

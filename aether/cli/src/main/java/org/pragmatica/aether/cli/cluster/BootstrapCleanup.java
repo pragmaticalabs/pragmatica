@@ -20,6 +20,7 @@ import org.pragmatica.cloud.hetzner.HetznerError;
 import org.pragmatica.cloud.hetzner.api.Server;
 import org.pragmatica.cloud.hetzner.api.SshKey;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -544,14 +545,15 @@ sealed interface BootstrapCleanup {
     private static Result<Unit> deleteCloudFirewall(BootstrapState state,
                                                     CreatedResource.CloudFirewall firewall,
                                                     CleanupResolvers resolvers) {
-        System.out.printf("  Deleting firewall %s (id=%d)...%n", firewall.name(), firewall.firewallId());
+        System.out.printf("  Deleting firewall %s (id=%s)...%n", firewall.name(), firewall.firewallId());
         if (!HETZNER_PROVIDER.equals(firewall.provider())) {
             return new UnsupportedFirewallProvider(firewall.provider()).result();
         }
 
-        return resolveHetznerClientFor(state, firewall.provider(), resolvers).flatMap(client -> deleteFirewallWithRetry(client,
-                                                                                                                        firewall,
-                                                                                                                        resolvers));
+        return hetznerFirewallId(firewall).flatMap(id -> resolveHetznerClientFor(state, firewall.provider(), resolvers).flatMap(client -> deleteFirewallWithRetry(client,
+                                                                                                                                                                  id,
+                                                                                                                                                                  firewall,
+                                                                                                                                                                  resolvers)));
     }
 
     /// Attempts bounded by [#FIREWALL_DELETE_ATTEMPTS]; the LAST failure is what surfaces, so a
@@ -559,20 +561,41 @@ sealed interface BootstrapCleanup {
     int FIREWALL_DELETE_ATTEMPTS = 6;
     long FIREWALL_DELETE_RETRY_MILLIS = 5_000L;
 
+    /// The recorded id is provider-opaque (a String) so every provider can record what it created;
+    /// Hetzner's own API takes a number, so it is converted back HERE, at the provider edge, rather
+    /// than constraining the shared bookkeeping. A non-numeric id under the `hetzner` provider means
+    /// the state file was written by something that is not this provider — refuse rather than guess,
+    /// because a wrong id here deletes someone else's firewall.
+    private static Result<Long> hetznerFirewallId(CreatedResource.CloudFirewall firewall) {
+        return Number.parseLong(firewall.firewallId()).mapError(_ -> new UnparseableHetznerFirewallId(firewall.firewallId(),
+                                                                                                      firewall.name()));
+    }
+
+    record UnparseableHetznerFirewallId(String raw, String name) implements Cause {
+        @Override
+        public String message() {
+            return "Firewall '" + name
+                 + "' is recorded under provider 'hetzner' with a non-numeric id '" + raw
+                 + "'. Refusing to guess an id to delete — reclaim it manually and remove the entry "
+                 + "from bootstrap-state.json.";
+        }
+    }
+
     @SuppressWarnings("JBCT-PAT-01")
     private static Result<Unit> deleteFirewallWithRetry(HetznerClient client,
+                                                        long firewallId,
                                                         CreatedResource.CloudFirewall firewall,
                                                         CleanupResolvers resolvers) {
         var attempt = 1;
 
         while (true) {
-            var result = client.deleteFirewall(firewall.firewallId()).await();
+            var result = client.deleteFirewall(firewallId).await();
 
             if (result.isSuccess() || attempt >= FIREWALL_DELETE_ATTEMPTS) {
                 return result;
             }
 
-            System.out.printf("  Firewall %d still attached (attempt %d/%d) — servers are still detaching; retrying...%n",
+            System.out.printf("  Firewall %s still attached (attempt %d/%d) — servers are still detaching; retrying...%n",
                               firewall.firewallId(),
                               attempt,
                               FIREWALL_DELETE_ATTEMPTS);
