@@ -8,6 +8,7 @@ package org.pragmatica.aether.stream.segment;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.StorageInstance;
 
@@ -126,6 +127,12 @@ class RetentionEnforcerTest {
         }
     }
 
+    /// #601-class regression: `SegmentIndex.rebuildFromRefs` never recovers `maxTimestamp` (a ref name
+    /// carries only offsets), so every segment surviving a restart comes back with `maxTimestamp = 0` — an
+    /// UNKNOWN age, not a zero age. `isSegmentExpired` used to `return false` outright on that, which
+    /// disabled count- and size-based eviction too (the check sat before the policy call), so disk grew
+    /// without bound across restarts. The fix passes age `0` into the policy instead of short-circuiting,
+    /// so under `RetentionMode.ANY` the age term alone is neutralized while count/bytes still fire.
     @Nested
     class SkipsZeroTimestamp {
 
@@ -140,9 +147,38 @@ class RetentionEnforcerTest {
             var enforcer = retentionEnforcer(storage, index, ONE_HOUR_MS);
             enforcer.enforce();
 
-            // Zero-timestamp segment (from rebuild) is preserved
+            // Zero-timestamp segment (from rebuild) is preserved — age-only limit, unknown age never fires it.
             assertThat(index.listSegments(STREAM, PARTITION)).hasSize(1);
             assertThat(index.listSegments(STREAM, PARTITION).getFirst().startOffset()).isEqualTo(0);
+        }
+
+        /// THE bug this fix closes: a rebuilt (post-restart) segment must still be reclaimable once the
+        /// stream holds more segments than `maxCount` allows — an unknown age must withhold only the AGE
+        /// term, not the whole policy. `maxAgeMs = Long.MAX_VALUE` isolates this to the count term alone.
+        @Test
+        void enforce_evictsZeroTimestampSegment_whenCountLimitExceeded() {
+            index.addSegment(STREAM, PARTITION, 0, 9);
+
+            var enforcer = retentionEnforcer(storage,
+                                             index,
+                                             RetentionPolicy.retentionPolicy(0, Long.MAX_VALUE, Long.MAX_VALUE));
+            enforcer.enforce();
+
+            assertThat(index.listSegments(STREAM, PARTITION)).isEmpty();
+        }
+
+        /// Same bug, isolated to the size term: `maxCount = Long.MAX_VALUE` and `maxAgeMs = Long.MAX_VALUE`
+        /// leave only `maxBytes` able to fire, and the zero-timestamp segment must still be evicted.
+        @Test
+        void enforce_evictsZeroTimestampSegment_whenSizeLimitExceeded() {
+            index.addSegment(STREAM, PARTITION, 0, 9, 0L, 0, false, 1024);
+
+            var enforcer = retentionEnforcer(storage,
+                                             index,
+                                             RetentionPolicy.retentionPolicy(Long.MAX_VALUE, 100, Long.MAX_VALUE));
+            enforcer.enforce();
+
+            assertThat(index.listSegments(STREAM, PARTITION)).isEmpty();
         }
     }
 
