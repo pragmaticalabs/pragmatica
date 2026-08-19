@@ -202,11 +202,9 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
         if (!ctx.role().isEmpty()) {
             labels.put("aether-role", ctx.role());
         }
-
-        if (!ctx.sourceName().isEmpty()) {
-            labels.put("aether-source", ctx.sourceName());
-        }
-
+        // Unconditional: SourceName cannot be blank, so the historical emptiness guard here was dead.
+        labels.put("aether-source",
+                   ctx.sourceName().value());
         labels.put(NODE_ID_LABEL, ctx.resolveNodeId());
         labels.putAll(ctx.extraTags());
 

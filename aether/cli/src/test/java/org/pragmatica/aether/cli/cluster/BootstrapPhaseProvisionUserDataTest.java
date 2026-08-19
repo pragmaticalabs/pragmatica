@@ -26,6 +26,7 @@ import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.ProvisionRequest;
 import org.pragmatica.aether.environment.ProvisionSpec;
+import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -39,11 +40,12 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 
 class BootstrapPhaseProvisionUserDataTest {
 
     private static SourceProfile cloudHetznerSource(int coreCount) {
-        return SourceProfile.sourceProfile("eu-1",
+        return SourceProfile.sourceProfile(sourceNameOrDefault("eu-1"),
                                            SourceType.CLOUD,
                                            Option.some(CloudProviderName.HETZNER),
                                            Option.some("dummy-token"),
@@ -69,7 +71,7 @@ class BootstrapPhaseProvisionUserDataTest {
     /// own `image`, so the seed spec's tier-1 imageId can be asserted per role (worker → its image,
     /// core → absent, no cross-role fallback).
     private static SourceProfile cloudSourceWithPerRoleImages() {
-        return SourceProfile.sourceProfile("eu-1",
+        return SourceProfile.sourceProfile(sourceNameOrDefault("eu-1"),
                                            SourceType.CLOUD,
                                            Option.some(CloudProviderName.HETZNER),
                                            Option.some("dummy-token"),
@@ -228,7 +230,7 @@ class BootstrapPhaseProvisionUserDataTest {
 
         assertEquals("prod", spec.context().clusterName(),
                      "Context must include cluster name so reaper can label-match orphans");
-        assertEquals("eu-1", spec.context().sourceName());
+        assertEquals("eu-1", spec.context().sourceName().value());
         assertEquals("core", spec.context().role());
     }
 
@@ -357,7 +359,7 @@ class BootstrapPhaseProvisionUserDataTest {
         try {
             var method = BootstrapPhaseProvision.class.getDeclaredMethod("buildCloudProvisionSpec",
                                                                           BootstrapContext.class,
-                                                                          String.class,
+                                                                          SourceName.class,
                                                                           SourceProfile.class,
                                                                           NodeRole.class,
                                                                           String.class,
@@ -367,7 +369,7 @@ class BootstrapPhaseProvisionUserDataTest {
             @SuppressWarnings("unchecked")
             var result = (org.pragmatica.lang.Result<ProvisionSpec>) method.invoke(null,
                                                                                     ctx,
-                                                                                    "eu-1",
+                                                                                    sourceNameOrDefault("eu-1"),
                                                                                     source,
                                                                                     role,
                                                                                     nodeId,

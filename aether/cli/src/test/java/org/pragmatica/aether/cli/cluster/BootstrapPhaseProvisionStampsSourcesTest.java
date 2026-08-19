@@ -26,6 +26,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 
 class BootstrapPhaseProvisionStampsSourcesTest {
 
@@ -75,7 +76,7 @@ class BootstrapPhaseProvisionStampsSourcesTest {
     }
 
     private static SourceProfile cloudHetznerSource() {
-        return SourceProfile.sourceProfile("hetzner-eu",
+        return SourceProfile.sourceProfile(sourceNameOrDefault("hetzner-eu"),
                                            SourceType.CLOUD,
                                            Option.some(CloudProviderName.HETZNER),
                                            Option.some("resolved-token-value"),
@@ -104,7 +105,7 @@ class BootstrapPhaseProvisionStampsSourcesTest {
 
         var stamped = BootstrapPhaseProvision.stampSourceHandle(initial,
                                                                  RAW_TOML,
-                                                                 "hetzner-eu",
+                                                                 sourceNameOrDefault("hetzner-eu"),
                                                                  source,
                                                                  "hetzner");
 
@@ -128,7 +129,7 @@ class BootstrapPhaseProvisionStampsSourcesTest {
         var initial = BootstrapState.initialState("prod", "h", "now");
         var source = cloudHetznerSource();
 
-        var stamped = BootstrapPhaseProvision.stampSourceHandle(initial, RAW_TOML, "hetzner-eu", source, "hetzner");
+        var stamped = BootstrapPhaseProvision.stampSourceHandle(initial, RAW_TOML, sourceNameOrDefault("hetzner-eu"), source, "hetzner");
         var envVars = stamped.sources().get("hetzner-eu").credentialEnvVars();
 
         assertEquals("HCLOUD_TOKEN_PROD", envVars.get("api_token"));
@@ -143,7 +144,7 @@ class BootstrapPhaseProvisionStampsSourcesTest {
         var initial = BootstrapState.initialState("prod", "h", "now");
         var source = cloudHetznerSource();
 
-        var stamped = BootstrapPhaseProvision.stampSourceHandle(initial, RAW_TOML, "hetzner-eu", source, "hetzner");
+        var stamped = BootstrapPhaseProvision.stampSourceHandle(initial, RAW_TOML, sourceNameOrDefault("hetzner-eu"), source, "hetzner");
         var envVars = stamped.sources().get("hetzner-eu").credentialEnvVars();
 
         for (var value : envVars.values()) {
@@ -158,7 +159,7 @@ class BootstrapPhaseProvisionStampsSourcesTest {
     void stampSourceHandle_skipsNonCloudSources() {
         // Docker / SSH / Forge sources have no env-var credentials worth recording for
         // cleanup; the legacy fallback path handles them.
-        var docker = SourceProfile.sourceProfile("local",
+        var docker = SourceProfile.sourceProfile(sourceNameOrDefault("local"),
                                                   SourceType.DOCKER,
                                                   Option.empty(),
                                                   Option.empty(),
@@ -176,7 +177,7 @@ class BootstrapPhaseProvisionStampsSourcesTest {
 
         var stamped = BootstrapPhaseProvision.stampSourceHandle(BootstrapState.initialState("p", "h", "n"),
                                                                  RAW_TOML,
-                                                                 "local",
+                                                                 sourceNameOrDefault("local"),
                                                                  docker,
                                                                  "docker");
 
@@ -246,7 +247,7 @@ class BootstrapPhaseProvisionStampsSourcesTest {
     void stampSourceHandle_recordsNonEmptyCredentialMapping_forRealRepoClusterConfig() throws Exception {
         var stamped = BootstrapPhaseProvision.stampSourceHandle(BootstrapState.initialState("gs-dryrun", "h", "now"),
                                                                  realClusterConfig(),
-                                                                 SOURCE_NAME,
+                                                                 sourceNameOrDefault(SOURCE_NAME),
                                                                  cloudHetznerSource(),
                                                                  "hetzner");
 
@@ -295,7 +296,7 @@ class BootstrapPhaseProvisionStampsSourcesTest {
         // `aether cluster destroy` process reads the state file back off disk.
         var stamped = BootstrapPhaseProvision.stampSourceHandle(BootstrapState.initialState("gs-dryrun", "h", "now"),
                                                                  realClusterConfig(),
-                                                                 SOURCE_NAME,
+                                                                 sourceNameOrDefault(SOURCE_NAME),
                                                                  cloudHetznerSource(),
                                                                  "hetzner");
 

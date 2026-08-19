@@ -20,6 +20,7 @@ import org.pragmatica.aether.environment.ProviderDefaults;
 import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.ProvisionRequest;
 import org.pragmatica.aether.environment.ProvisionSpec;
+import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.aether.environment.ReadinessPolicy;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -47,7 +48,7 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
     public Promise<InstanceInfo> provision(InstanceType instanceType) {
         var ctx = ProvisionContext.provisionContext("default",
                                                     "core",
-                                                    "default",
+                                                    SourceName.DEFAULT,
                                                     ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
 
         return provision(ProvisionSpec.provisionSpec(instanceType, "docker", "default", ctx).unwrap());

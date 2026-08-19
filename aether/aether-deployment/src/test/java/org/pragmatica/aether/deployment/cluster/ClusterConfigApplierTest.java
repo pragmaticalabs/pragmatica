@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.cluster.DiffAction;
 import org.pragmatica.aether.config.cluster.NodeRole;
+import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -29,6 +30,7 @@ import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
@@ -52,21 +54,21 @@ class ClusterConfigApplierTest {
     class CoreScale {
         @Test
         void apply_coreScaleUp_appliesDesiredSize() {
-            var result = applier.apply(List.of(new DiffAction.ScaleUp("default", NodeRole.CORE, 5, 7))).await();
+            var result = applier.apply(List.of(new DiffAction.ScaleUp(sourceNameOrDefault("default"), NodeRole.CORE, 5, 7))).await();
 
             assertThat(result.isSuccess()).isTrue();
             assertThat(topologyManager.setDesiredCountCalls())
                     .as("the source and role must survive the applier — the scalar surface discarded them")
-                    .containsExactly(new RecordingTopologyManager.ScaleCall("default", NodeRole.CORE, 7));
+                    .containsExactly(new RecordingTopologyManager.ScaleCall(sourceNameOrDefault("default"), NodeRole.CORE, 7));
         }
 
         @Test
         void apply_coreScaleDown_appliesDesiredSize() {
-            var result = applier.apply(List.of(new DiffAction.ScaleDown("default", NodeRole.CORE, 7, 5))).await();
+            var result = applier.apply(List.of(new DiffAction.ScaleDown(sourceNameOrDefault("default"), NodeRole.CORE, 7, 5))).await();
 
             assertThat(result.isSuccess()).isTrue();
             assertThat(topologyManager.setDesiredCountCalls())
-                    .containsExactly(new RecordingTopologyManager.ScaleCall("default", NodeRole.CORE, 5));
+                    .containsExactly(new RecordingTopologyManager.ScaleCall(sourceNameOrDefault("default"), NodeRole.CORE, 5));
         }
     }
 
@@ -74,52 +76,52 @@ class ClusterConfigApplierTest {
     class NonCoreScaleRoutes {
         @Test
         void apply_workerScaleUp_writesTheWorkerDesiredCount() {
-            var result = applier.apply(List.of(new DiffAction.ScaleUp("default", NodeRole.WORKER, 0, 3))).await();
+            var result = applier.apply(List.of(new DiffAction.ScaleUp(sourceNameOrDefault("default"), NodeRole.WORKER, 0, 3))).await();
 
             assertThat(result.isSuccess()).isTrue();
             assertThat(topologyManager.setDesiredCountCalls())
                     .as("a WORKER scale writes the WORKER pair — the typed topology makes this safe")
-                    .containsExactly(new RecordingTopologyManager.ScaleCall("default", NodeRole.WORKER, 3));
+                    .containsExactly(new RecordingTopologyManager.ScaleCall(sourceNameOrDefault("default"), NodeRole.WORKER, 3));
         }
 
         @Test
         void apply_workerScaleDown_writesTheWorkerDesiredCount() {
-            var result = applier.apply(List.of(new DiffAction.ScaleDown("default", NodeRole.WORKER, 3, 1))).await();
+            var result = applier.apply(List.of(new DiffAction.ScaleDown(sourceNameOrDefault("default"), NodeRole.WORKER, 3, 1))).await();
 
             assertThat(result.isSuccess()).isTrue();
             assertThat(topologyManager.setDesiredCountCalls())
-                    .containsExactly(new RecordingTopologyManager.ScaleCall("default", NodeRole.WORKER, 1));
+                    .containsExactly(new RecordingTopologyManager.ScaleCall(sourceNameOrDefault("default"), NodeRole.WORKER, 1));
         }
 
         @Test
         void apply_spotScaleUp_writesTheSpotDesiredCount() {
-            var result = applier.apply(List.of(new DiffAction.ScaleUp("default", NodeRole.SPOT, 0, 2))).await();
+            var result = applier.apply(List.of(new DiffAction.ScaleUp(sourceNameOrDefault("default"), NodeRole.SPOT, 0, 2))).await();
 
             assertThat(result.isSuccess()).isTrue();
             assertThat(topologyManager.setDesiredCountCalls())
-                    .containsExactly(new RecordingTopologyManager.ScaleCall("default", NodeRole.SPOT, 2));
+                    .containsExactly(new RecordingTopologyManager.ScaleCall(sourceNameOrDefault("default"), NodeRole.SPOT, 2));
         }
 
         /// A mixed diff applies BOTH actions in order — each role's count lands on its own
         /// (source, role) pair, and neither touches the other's.
         @Test
         void apply_mixedCoreThenWorker_appliesBothToTheirOwnPairs() {
-            var actions = List.<DiffAction> of(new DiffAction.ScaleUp("default", NodeRole.CORE, 5, 6),
-                                               new DiffAction.ScaleUp("default", NodeRole.WORKER, 0, 3));
+            var actions = List.<DiffAction> of(new DiffAction.ScaleUp(sourceNameOrDefault("default"), NodeRole.CORE, 5, 6),
+                                               new DiffAction.ScaleUp(sourceNameOrDefault("default"), NodeRole.WORKER, 0, 3));
 
             var result = applier.apply(actions).await();
 
             assertThat(result.isSuccess()).isTrue();
             assertThat(topologyManager.setDesiredCountCalls())
-                    .containsExactly(new RecordingTopologyManager.ScaleCall("default", NodeRole.CORE, 6),
-                                     new RecordingTopologyManager.ScaleCall("default", NodeRole.WORKER, 3));
+                    .containsExactly(new RecordingTopologyManager.ScaleCall(sourceNameOrDefault("default"), NodeRole.CORE, 6),
+                                     new RecordingTopologyManager.ScaleCall(sourceNameOrDefault("default"), NodeRole.WORKER, 3));
         }
     }
 
     /// Recording `ClusterTopologyManager` stub — only `setDesiredCount` matters for the applier;
     /// the rest is inert surface (same shape as `LeaderReconcilerTest.RecordingCtm`).
     private static final class RecordingTopologyManager implements ClusterTopologyManager {
-        record ScaleCall(String sourceName, NodeRole role, int count) {}
+        record ScaleCall(SourceName sourceName, NodeRole role, int count) {}
 
         private final List<ScaleCall> setDesiredCountCalls = new CopyOnWriteArrayList<>();
 
@@ -128,7 +130,7 @@ class ClusterConfigApplierTest {
         }
 
         @Override
-        public Promise<Unit> setDesiredCount(String sourceName, NodeRole role, int count) {
+        public Promise<Unit> setDesiredCount(SourceName sourceName, NodeRole role, int count) {
             setDesiredCountCalls.add(new ScaleCall(sourceName, role, count));
             return Promise.success(unit());
         }

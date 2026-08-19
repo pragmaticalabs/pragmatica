@@ -10,9 +10,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
+import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.lang.Option;
 
 import static org.pragmatica.aether.config.cluster.DiffPlan.diffPlan;
+import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 
 
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"})
@@ -74,11 +76,14 @@ public final class ClusterBootstrapConfigDiff {
             var stored = Option.option(storedSources.get(key));
             var desired = Option.option(desiredSources.get(key));
 
-            classifySourceDiff(key, stored, desired, additions, modifications, removals);
+            classifySourceDiff(sourceNameOrDefault(key), stored, desired, additions, modifications, removals);
         }
     }
 
-    private static void classifySourceDiff(String key,
+    /// `key` is a map key of an already-parsed config on BOTH sides (stored comes from KV, desired from
+    /// the TOML parser), and [ClusterBootstrapConfigParser] rejects a blank source name — so the total
+    /// [SourceName#sourceNameOrDefault] conversion cannot reach its default here.
+    private static void classifySourceDiff(SourceName key,
                                            Option<SourceProfile> stored,
                                            Option<SourceProfile> desired,
                                            List<DiffAction> additions,
@@ -98,14 +103,14 @@ public final class ClusterBootstrapConfigDiff {
         }
     }
 
-    private static void addNewSource(String sourceName, SourceProfile source, List<DiffAction> additions) {
+    private static void addNewSource(SourceName sourceName, SourceProfile source, List<DiffAction> additions) {
         additions.add(new DiffAction.AddSource(sourceName));
         for (var entry : source.roles().entrySet()) {
             additions.add(new DiffAction.AddRole(sourceName, entry.getKey(), roleSize(entry.getValue())));
         }
     }
 
-    private static void diffExistingSource(String sourceName,
+    private static void diffExistingSource(SourceName sourceName,
                                            SourceProfile stored,
                                            SourceProfile desired,
                                            List<DiffAction> additions,
@@ -115,7 +120,7 @@ public final class ClusterBootstrapConfigDiff {
         diffRoles(sourceName, stored.roles(), desired.roles(), additions, modifications, removals);
     }
 
-    private static void diffSourceFields(String sourceName,
+    private static void diffSourceFields(SourceName sourceName,
                                          SourceProfile stored,
                                          SourceProfile desired,
                                          List<DiffAction> modifications) {
@@ -138,7 +143,7 @@ public final class ClusterBootstrapConfigDiff {
         checkSourceField(sourceName, "firewallRules", stored.firewallRules(), desired.firewallRules(), modifications);
     }
 
-    private static void checkSourceField(String sourceName,
+    private static void checkSourceField(SourceName sourceName,
                                          String field,
                                          Object storedValue,
                                          Object desiredValue,
@@ -148,7 +153,7 @@ public final class ClusterBootstrapConfigDiff {
         }
     }
 
-    private static void diffRoles(String sourceName,
+    private static void diffRoles(SourceName sourceName,
                                   Map<NodeRole, RoleSubTable> storedRoles,
                                   Map<NodeRole, RoleSubTable> desiredRoles,
                                   List<DiffAction> additions,
@@ -166,7 +171,7 @@ public final class ClusterBootstrapConfigDiff {
         }
     }
 
-    private static void classifyRoleDiff(String sourceName,
+    private static void classifyRoleDiff(SourceName sourceName,
                                          NodeRole role,
                                          Option<RoleSubTable> stored,
                                          Option<RoleSubTable> desired,
@@ -188,7 +193,7 @@ public final class ClusterBootstrapConfigDiff {
         }
     }
 
-    private static void diffExistingRole(String sourceName,
+    private static void diffExistingRole(SourceName sourceName,
                                          NodeRole role,
                                          RoleSubTable stored,
                                          RoleSubTable desired,

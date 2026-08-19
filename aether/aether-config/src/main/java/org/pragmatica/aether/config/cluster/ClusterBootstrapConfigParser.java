@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.IntStream;
 
+import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.lang.Cause;
@@ -208,10 +209,21 @@ public final class ClusterBootstrapConfigParser {
         return names.keySet();
     }
 
+    /// The parse boundary for a source's NAME. A section key is raw input — `[source.]` yields a blank
+    /// one — and a blank name makes the `aether-source` label selector match everything or nothing, so
+    /// it is rejected here rather than carried as a `String` to the provider edge.
     private static Result<SourceProfile> parseOneSource(TomlDocument doc, String name) {
         var parentSection = SOURCE_PREFIX + name;
 
-        return parseSourceType(doc, parentSection).flatMap(type -> buildSourceProfile(doc, name, parentSection, type));
+        return Result.all(parseSourceName(name, parentSection), parseSourceType(doc, parentSection)).flatMap((sourceName, type) -> buildSourceProfile(doc,
+                                                                                                                                                      sourceName,
+                                                                                                                                                      parentSection,
+                                                                                                                                                      type));
+    }
+
+    private static Result<SourceName> parseSourceName(String name, String section) {
+        return SourceName.sourceName(name).mapError(cause -> parseFailed("Invalid source name in [" + section
+                                                                        + "]: " + cause.message()));
     }
 
     private static Result<SourceType> parseSourceType(TomlDocument doc, String section) {
@@ -222,7 +234,7 @@ public final class ClusterBootstrapConfigParser {
     }
 
     private static Result<SourceProfile> buildSourceProfile(TomlDocument doc,
-                                                            String name,
+                                                            SourceName name,
                                                             String section,
                                                             SourceType type) {
         return parseProvider(doc, section).map(provider -> assembleSourceProfile(doc, name, section, type, provider));
@@ -249,7 +261,7 @@ public final class ClusterBootstrapConfigParser {
     }
 
     private static SourceProfile assembleSourceProfile(TomlDocument doc,
-                                                       String name,
+                                                       SourceName name,
                                                        String section,
                                                        SourceType type,
                                                        Option<CloudProviderName> provider) {
@@ -264,9 +276,9 @@ public final class ClusterBootstrapConfigParser {
         var loadBalancerIps = doc.getStringList(section, "load_balancer_ips").or(List.of());
         var loadBalancerEndpoint = doc.getString(section, "load_balancer_endpoint");
         var databases = parseDatabases(doc, section);
-        var roles = parseRoles(doc, name, type);
-        var firewallRules = parseFirewallRules(doc, name);
-        var nodeConfig = parseNodeConfig(doc, name);
+        var roles = parseRoles(doc, name.value(), type);
+        var firewallRules = parseFirewallRules(doc, name.value());
+        var nodeConfig = parseNodeConfig(doc, name.value());
 
         return SourceProfile.sourceProfile(name,
                                            type,

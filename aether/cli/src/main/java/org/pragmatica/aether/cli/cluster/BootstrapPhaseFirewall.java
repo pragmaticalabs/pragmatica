@@ -173,7 +173,7 @@ public sealed interface BootstrapPhaseFirewall {
         for (var rule : rules) {
             for (var protocol : expandProtocols(rule.protocol())) {
                 var currentCtx = nextCtx;
-                var opened = compute.openIngress(source.name(),
+                var opened = compute.openIngress(source.name().value(),
                                                  rule.port(),
                                                  protocol,
                                                  rule.sourceCidr(),
@@ -201,9 +201,9 @@ public sealed interface BootstrapPhaseFirewall {
         System.out.printf("  Ingress firewall %s in force for source '%s'%n", firewallId, source.name());
         var resource = CreatedResource.CloudFirewall.cloudFirewall(HETZNER_PROVIDER,
                                                                    firewallId,
-                                                                   source.name(),
+                                                                   source.name().value(),
                                                                    "aether-" + ctx.config().cluster().name()
-                                                                  + "-" + source.name());
+                                                                  + "-" + source.name().value());
 
         return ctx.withState(ctx.state().withResource(resource));
     }

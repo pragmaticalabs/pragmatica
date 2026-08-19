@@ -196,11 +196,9 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
         if (!ctx.role().isEmpty()) {
             tags.put("aether-role", ctx.role());
         }
-
-        if (!ctx.sourceName().isEmpty()) {
-            tags.put("aether-source", ctx.sourceName());
-        }
-
+        // Unconditional: SourceName cannot be blank, so the historical emptiness guard here was dead.
+        tags.put("aether-source",
+                 ctx.sourceName().value());
         tags.put(NODE_ID_TAG, ctx.resolveNodeId());
         tags.putAll(ctx.extraTags());
 

@@ -29,11 +29,12 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 
 class ClusterSecretGenerationTest {
 
     private static SourceProfile threeCoreCloudSource() {
-        return SourceProfile.sourceProfile("eu-1",
+        return SourceProfile.sourceProfile(sourceNameOrDefault("eu-1"),
                                            SourceType.CLOUD,
                                            Option.some(CloudProviderName.HETZNER),
                                            Option.some("dummy-token"),

@@ -26,6 +26,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 import static org.pragmatica.cloud.aws.AwsConfig.awsConfig;
 
 class AwsComputeProviderTest {
@@ -146,7 +147,7 @@ class AwsComputeProviderTest {
                 TestAwsClient.describeResponseWith(List.of(runningInstance("i-spot"))));
             var request = new ProvisionRequest(InstanceType.SPOT, "c5.large", "ami-1", "",
                                                Option.empty(), MarketOptions.spot(),
-                                               ProvisionContext.forBootstrap("c", "spot", "s", "n0"));
+                                               ProvisionContext.forBootstrap("c", "spot", sourceNameOrDefault("s"), "n0"));
 
             provider.createFrom(request).await().onFailure(cause -> assertThat(cause).isNull());
 
@@ -180,7 +181,7 @@ class AwsComputeProviderTest {
         private ProvisionRequest onDemandRequest(String image, String instanceSize) {
             return new ProvisionRequest(InstanceType.ON_DEMAND, instanceSize, image, "",
                                         Option.empty(), MarketOptions.ON_DEMAND,
-                                        ProvisionContext.forBootstrap("c", "core", "s", "n0"));
+                                        ProvisionContext.forBootstrap("c", "core", sourceNameOrDefault("s"), "n0"));
         }
     }
 

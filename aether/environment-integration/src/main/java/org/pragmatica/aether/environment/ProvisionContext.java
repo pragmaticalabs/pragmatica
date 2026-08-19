@@ -46,14 +46,17 @@ import org.pragmatica.utility.IdGenerator;
 ///    filter values that don't match their key/value regex.
 public record ProvisionContext(String clusterName,
                                String role,
-                               String sourceName,
+                               SourceName sourceName,
                                Option<String> nodeId,
                                Option<String> peers,
                                int coreMax,
                                String provisionedBy,
                                Map<String, String> extraTags) {
     public static final int DEFAULT_CORE_MAX = 3;
-    public static final String DEFAULT_SOURCE_NAME = "default";
+    /// Delegates to [SourceName#DEFAULT] — the one definition of the fallback source name. Retained as
+    /// a [ProvisionContext] constant because the provisioning-side callers and error messages that name
+    /// the fallback read at this layer.
+    public static final SourceName DEFAULT_SOURCE_NAME = SourceName.DEFAULT;
     public static final String PROVISIONED_BY_BOOTSTRAP = "bootstrap";
     public static final String PROVISIONED_BY_CTM = "ctm";
 
@@ -85,7 +88,7 @@ public record ProvisionContext(String clusterName,
 
     public static ProvisionContext provisionContext(String clusterName,
                                                     String role,
-                                                    String sourceName,
+                                                    SourceName sourceName,
                                                     Option<String> nodeId,
                                                     Option<String> peers,
                                                     int coreMax,
@@ -96,7 +99,7 @@ public record ProvisionContext(String clusterName,
 
     public static ProvisionContext provisionContext(String clusterName,
                                                     String role,
-                                                    String sourceName,
+                                                    SourceName sourceName,
                                                     String provisionedBy) {
         return new ProvisionContext(clusterName,
                                     role,
@@ -113,7 +116,7 @@ public record ProvisionContext(String clusterName,
     /// source profile name and the pre-allocated node id; [#provisionedBy] is fixed to
     /// [#PROVISIONED_BY_BOOTSTRAP]. Shared with the CTM auto-heal path
     /// ([#forReplacement]) so both intents are minted through one preparation path.
-    public static ProvisionContext forBootstrap(String clusterName, String role, String sourceName, String nodeId) {
+    public static ProvisionContext forBootstrap(String clusterName, String role, SourceName sourceName, String nodeId) {
         return new ProvisionContext(clusterName,
                                     role,
                                     sourceName,
@@ -140,7 +143,7 @@ public record ProvisionContext(String clusterName,
     /// see a scale-down victim.
     public static ProvisionContext forReplacement(String clusterName,
                                                   String role,
-                                                  String sourceName,
+                                                  SourceName sourceName,
                                                   String nodeId,
                                                   String peers,
                                                   int coreMax) {

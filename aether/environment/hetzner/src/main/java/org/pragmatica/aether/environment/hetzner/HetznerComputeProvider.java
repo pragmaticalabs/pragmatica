@@ -23,6 +23,7 @@ import org.pragmatica.aether.environment.ProviderDefaults;
 import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.ProvisionRequest;
 import org.pragmatica.aether.environment.ReadinessPolicy;
+import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.cloud.hetzner.HetznerClient;
 import org.pragmatica.cloud.hetzner.HetznerError;
 import org.pragmatica.cloud.hetzner.api.Firewall;
@@ -408,12 +409,13 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
         var cluster = clusterNameOrDefault(ctx);
         var source = ctx.sourceName();
 
-        return client.listFirewalls(firewallSelector(cluster, source))
+        return client.listFirewalls(firewallSelector(cluster,
+                                                     source.value()))
                      .mapError(cause -> FirewallLookupFailed.firewallLookupFailed(cluster, source, cause))
                      .flatMap(found -> resolvedOrAbsent(found, cluster, source));
     }
 
-    private Promise<List<Long>> resolvedOrAbsent(List<Firewall> found, String cluster, String source) {
+    private Promise<List<Long>> resolvedOrAbsent(List<Firewall> found, String cluster, SourceName source) {
         if (found.isEmpty()) {
             return noFirewallForSource(cluster, source);
         }
@@ -444,13 +446,15 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     /// A cluster-scoped list separates them: firewalls exist for this cluster but none for this
     /// source ⇒ the selector missed one, so FAIL. Nothing cluster-wide ⇒ ingress is unmanaged here,
     /// so proceed and say so loudly. The extra call is paid only on the empty path.
-    private Promise<List<Long>> noFirewallForSource(String cluster, String source) {
+    private Promise<List<Long>> noFirewallForSource(String cluster, SourceName source) {
         return client.listFirewalls(CLUSTER_LABEL + "=" + sanitizeLabelValue(cluster))
                      .mapError(cause -> FirewallLookupFailed.firewallLookupFailed(cluster, source, cause))
                      .flatMap(clusterWide -> unmanagedOrMissed(clusterWide, cluster, source));
     }
 
-    private static Promise<List<Long>> unmanagedOrMissed(List<Firewall> clusterWide, String cluster, String source) {
+    private static Promise<List<Long>> unmanagedOrMissed(List<Firewall> clusterWide,
+                                                         String cluster,
+                                                         SourceName source) {
         if (clusterWide.isEmpty()) {
             return ingressUnmanaged(cluster, source);
         }
@@ -461,7 +465,7 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
                                      .promise();
     }
 
-    private static Promise<List<Long>> ingressUnmanaged(String cluster, String source) {
+    private static Promise<List<Long>> ingressUnmanaged(String cluster, SourceName source) {
         log.warn("Hetzner provision: no Aether-managed firewall exists for cluster '{}' (source '{}') — the server is "
                 + "created with NO firewall association and therefore accepts ALL inbound traffic. This matches how the "
                 + "bootstrap nodes of this source were created (no `allow_ingress` declared, not an elected LB), so it "
@@ -483,8 +487,10 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     /// The component is `sourceName`, NOT `source`: [Cause] already declares `source()` returning
     /// `Option<Cause>` for cause chaining, and a record component named `source` would generate a
     /// clashing `String source()`.
-    record FirewallSelectorMissed(String cluster, String sourceName, int clusterWideCount) implements Cause {
-        static FirewallSelectorMissed firewallSelectorMissed(String cluster, String sourceName, int clusterWideCount) {
+    record FirewallSelectorMissed(String cluster, SourceName sourceName, int clusterWideCount) implements Cause {
+        static FirewallSelectorMissed firewallSelectorMissed(String cluster,
+                                                             SourceName sourceName,
+                                                             int clusterWideCount) {
             return new FirewallSelectorMissed(cluster, sourceName, clusterWideCount);
         }
 
@@ -499,7 +505,7 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
                    declare the firewall for this source.""".formatted(cluster,
                                                                       clusterWideCount,
                                                                       SOURCE_LABEL,
-                                                                      sanitizeLabelValue(sourceName),
+                                                                      sanitizeLabelValue(sourceName.value()),
                                                                       ProvisionContext.DEFAULT_SOURCE_NAME);
         }
     }
@@ -507,8 +513,8 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     /// Unknown firewall state is not evidence of a safe one. Note the refusal itself is structural —
     /// the failed lookup propagates through the create chain, so no server is built either way; this
     /// cause only makes the operator-facing reason say WHY.
-    record FirewallLookupFailed(String cluster, String sourceName, Cause lookupCause) implements Cause {
-        static FirewallLookupFailed firewallLookupFailed(String cluster, String sourceName, Cause lookupCause) {
+    record FirewallLookupFailed(String cluster, SourceName sourceName, Cause lookupCause) implements Cause {
+        static FirewallLookupFailed firewallLookupFailed(String cluster, SourceName sourceName, Cause lookupCause) {
             return new FirewallLookupFailed(cluster, sourceName, lookupCause);
         }
 
@@ -579,14 +585,13 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
                      .or(UNKNOWN_CLUSTER);
     }
 
-    private static Map<String, String> buildLabels(String clusterLabel, String role, String sourceName) {
+    private static Map<String, String> buildLabels(String clusterLabel, String role, SourceName sourceName) {
         var labels = new HashMap<String, String>();
 
         labels.put(CLUSTER_LABEL, sanitizeLabelValue(clusterLabel));
         labels.put("aether-role", sanitizeLabelValue(role));
-        if (!sourceName.isEmpty()) {
-            labels.put(SOURCE_LABEL, sanitizeLabelValue(sourceName));
-        }
+        // Unconditional: SourceName cannot be blank, so the historical emptiness guard here was dead.
+        labels.put(SOURCE_LABEL, sanitizeLabelValue(sourceName.value()));
 
         return labels;
     }

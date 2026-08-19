@@ -39,6 +39,7 @@ import java.util.function.Supplier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 
 /// #574 — `[source.X.firewall] allow_ingress` was parsed, validated, diffed and scaffolded into user
 /// configs by `aether cluster init`, with ZERO consumers on any provisioning path. Every layer the
@@ -92,7 +93,7 @@ class BootstrapPhaseFirewallTest {
     private static SourceProfile hetznerSource(String name,
                                                LoadBalancerMode lbMode,
                                                List<FirewallRule> rules) {
-        return SourceProfile.sourceProfile(name,
+        return SourceProfile.sourceProfile(sourceNameOrDefault(name),
                                             SourceType.CLOUD,
                                             Option.some(CloudProviderName.HETZNER),
                                             Option.some("token"),
@@ -118,7 +119,7 @@ class BootstrapPhaseFirewallTest {
         var config = ClusterBootstrapConfig.clusterBootstrapConfig("1.0.0",
                                                                     ClusterIdentity.clusterIdentity("test", "1.0.0").unwrap(),
                                                                     CoreTopology.defaultCoreTopology(),
-                                                                    Map.of(source.name(), source),
+                                                                    Map.of(source.name().value(), source),
                                                                     Map.of(),
                                                                     InfrastructureConfig.infrastructureConfig(NetworkingType.MANUAL),
                                                                     OperationsConfig.defaultOperationsConfig());
@@ -144,7 +145,7 @@ class BootstrapPhaseFirewallTest {
         assertTrue(result.isSuccess(), () -> "phase should succeed: " + result);
         assertEquals(List.of("tcp", "udp"), compute.opened.stream().map(OpenCall::protocol).toList(),
                      "tcp+udp must expand to exactly two provider rules");
-        assertEquals(List.of("100"), result.unwrap().firewallIdsFor("eu-1"),
+        assertEquals(List.of("100"), result.unwrap().firewallIdsFor(sourceNameOrDefault("eu-1")),
                      "Both rules land on ONE firewall, so exactly one id is threaded to provision");
     }
 
@@ -157,7 +158,7 @@ class BootstrapPhaseFirewallTest {
 
         var result = run(contextWith(hetznerSource("eu-1", LoadBalancerMode.NONE, rules)), compute);
 
-        assertEquals(List.of("100"), result.unwrap().firewallIdsFor("eu-1"));
+        assertEquals(List.of("100"), result.unwrap().firewallIdsFor(sourceNameOrDefault("eu-1")));
     }
 
     /// One firewall = one CreatedResource, so destroy issues exactly one delete rather than N.
@@ -301,7 +302,7 @@ class BootstrapPhaseFirewallTest {
                                              CloudProviderName provider,
                                              LoadBalancerMode lbMode,
                                              List<FirewallRule> rules) {
-        return SourceProfile.sourceProfile(name,
+        return SourceProfile.sourceProfile(sourceNameOrDefault(name),
                                             SourceType.CLOUD,
                                             Option.some(provider),
                                             Option.some("token"),

@@ -95,14 +95,20 @@ public interface ComputeProvider {
     /// provider's defaults, routed through the [#provision(ProvisionSpec)] boundary. A provider that
     /// needs a provider-specific seed (e.g. Docker's `default` cluster) overrides this; the rest
     /// inherit the generic core seed. The seed context carries no cluster name — production
-    /// provisioning flows through `buildCloudProvisionSpec`, which stamps the real cluster.
+    /// provisioning flows through `buildCloudProvisionSpec`, which stamps the real cluster — and
+    /// [SourceName#DEFAULT] as its source, which no source-scoped selector resolves. The seed used to
+    /// carry a blank source and therefore no `aether-source` label at all; a cloud provider reached
+    /// through here is refused at its cluster-label precondition either way.
     default Promise<InstanceInfo> provision(InstanceType instanceType) {
         return seedSpec(instanceType).async()
                        .flatMap(this::provision);
     }
 
     private static Result<ProvisionSpec> seedSpec(InstanceType instanceType) {
-        var context = ProvisionContext.provisionContext("", "core", "", ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
+        var context = ProvisionContext.provisionContext("",
+                                                        "core",
+                                                        SourceName.DEFAULT,
+                                                        ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
 
         return ProvisionSpec.provisionSpec(instanceType, "", "core", context);
     }

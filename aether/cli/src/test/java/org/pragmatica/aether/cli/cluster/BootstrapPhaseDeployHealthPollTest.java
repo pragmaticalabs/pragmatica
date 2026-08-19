@@ -38,11 +38,12 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 
 class BootstrapPhaseDeployHealthPollTest {
 
     private static SourceProfile cloudSource() {
-        return SourceProfile.sourceProfile("eu-1",
+        return SourceProfile.sourceProfile(sourceNameOrDefault("eu-1"),
                                            SourceType.CLOUD,
                                            Option.some(CloudProviderName.HETZNER),
                                            Option.empty(),
@@ -69,7 +70,7 @@ class BootstrapPhaseDeployHealthPollTest {
     /// single-cloud-core-source shape — the wizard's only output — through label-based formation
     /// observation instead; that path is pinned by `BootstrapPhaseDeployFormationLabelsTest`).
     private static SourceProfile sshCoreSource() {
-        return SourceProfile.sourceProfile("dc-1",
+        return SourceProfile.sourceProfile(sourceNameOrDefault("dc-1"),
                                            SourceType.SSH,
                                            Option.empty(),
                                            Option.empty(),
@@ -128,7 +129,7 @@ class BootstrapPhaseDeployHealthPollTest {
         var ctx = contextWithThreeCloudNodes();
         Fn1<Result<String>, String> alwaysHealthy = url -> Result.success("OK");
 
-        var result = BootstrapPhaseDeploy.deployCloudSource(ctx, ctx.config().sources().get("eu-1"), "eu-1", alwaysHealthy);
+        var result = BootstrapPhaseDeploy.deployCloudSource(ctx, ctx.config().sources().get("eu-1"), sourceNameOrDefault("eu-1"), alwaysHealthy);
 
         assertTrue(result.isSuccess(), () -> "All-healthy poll should succeed; got: " + result);
     }
@@ -141,7 +142,7 @@ class BootstrapPhaseDeployHealthPollTest {
                                                   ? new TestError("connection refused").result()
                                                   : Result.success("OK");
 
-        var result = BootstrapPhaseDeploy.deployCloudSource(ctx, ctx.config().sources().get("eu-1"), "eu-1", stub);
+        var result = BootstrapPhaseDeploy.deployCloudSource(ctx, ctx.config().sources().get("eu-1"), sourceNameOrDefault("eu-1"), stub);
 
         assertTrue(result.isFailure(),
                    "Phase must fail when at least one node fails to come up before timeout");
@@ -165,7 +166,7 @@ class BootstrapPhaseDeployHealthPollTest {
                                                   ? new TestError("connection refused").result()
                                                   : Result.success("OK");
 
-        var result = BootstrapPhaseDeploy.deployCloudSource(ctx, ctx.config().sources().get("eu-1"), "eu-1", stub);
+        var result = BootstrapPhaseDeploy.deployCloudSource(ctx, ctx.config().sources().get("eu-1"), sourceNameOrDefault("eu-1"), stub);
 
         var msg = extractFailureMessage(result);
         assertFalse(msg.contains("203.0.113.10"), "Healthy node 10 must not appear in unreachable list");
@@ -186,7 +187,7 @@ class BootstrapPhaseDeployHealthPollTest {
             return Result.success("OK");
         };
 
-        var _ = BootstrapPhaseDeploy.deployCloudSource(ctx, ctx.config().sources().get("eu-1"), "eu-1", stub);
+        var _ = BootstrapPhaseDeploy.deployCloudSource(ctx, ctx.config().sources().get("eu-1"), sourceNameOrDefault("eu-1"), stub);
 
         // Each node's /health/live URL must have been called at least once
         assertTrue(seen.stream().anyMatch(u -> u.contains("203.0.113.10") && u.endsWith("/health/live")),
@@ -208,7 +209,7 @@ class BootstrapPhaseDeployHealthPollTest {
             return Result.success("OK");
         };
 
-        var result = BootstrapPhaseDeploy.deployCloudSource(ctx, ctx.config().sources().get("eu-1"), "eu-1", stub);
+        var result = BootstrapPhaseDeploy.deployCloudSource(ctx, ctx.config().sources().get("eu-1"), sourceNameOrDefault("eu-1"), stub);
 
         assertTrue(result.isSuccess(), () -> "All-healthy poll must succeed: " + result);
         for (var counter : pollCounts.values()) {
@@ -229,7 +230,7 @@ class BootstrapPhaseDeployHealthPollTest {
             return Result.success("OK");
         };
 
-        var result = BootstrapPhaseDeploy.deployCloudSource(emptyCtx, emptyCtx.config().sources().get("eu-1"), "eu-1", stub);
+        var result = BootstrapPhaseDeploy.deployCloudSource(emptyCtx, emptyCtx.config().sources().get("eu-1"), sourceNameOrDefault("eu-1"), stub);
 
         assertTrue(result.isSuccess(), "Empty node list must be a no-op success, not a timeout");
         assertEquals(0, probe.get(),

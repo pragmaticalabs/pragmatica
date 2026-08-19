@@ -14,6 +14,7 @@ import org.pragmatica.aether.deployment.cluster.NodeReconcilerState;
 import org.pragmatica.aether.deployment.cluster.ProvisionDisposition;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.environment.ProvisionContext;
+import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -2246,7 +2247,7 @@ class LeaderReconcilerTest {
         }
 
         @Override
-        public Promise<Unit> setDesiredCount(String sourceName, NodeRole role, int count) {
+        public Promise<Unit> setDesiredCount(SourceName sourceName, NodeRole role, int count) {
             return Promise.success(unit());
         }
 

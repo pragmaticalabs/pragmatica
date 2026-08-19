@@ -17,13 +17,14 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 import static org.pragmatica.lang.Option.empty;
 import static org.pragmatica.lang.Option.some;
 
 class BootstrapPhaseProvisionTest {
 
     private static SourceProfile cloudSource(String name, Option<CloudProviderName> provider) {
-        return SourceProfile.sourceProfile(name,
+        return SourceProfile.sourceProfile(sourceNameOrDefault(name),
                                            SourceType.CLOUD,
                                            provider,
                                            empty(),
@@ -84,7 +85,7 @@ class BootstrapPhaseProvisionTest {
         @Test
         void resolveProviderName_fallsBackToSourceType_whenProviderAbsent() {
             // Docker / SSH / Forge sources have no separate `provider` attribute — type IS the provider.
-            var dockerSource = SourceProfile.sourceProfile("docker-source",
+            var dockerSource = SourceProfile.sourceProfile(sourceNameOrDefault("docker-source"),
                                                            SourceType.DOCKER,
                                                            empty(),
                                                            empty(),

@@ -10,6 +10,7 @@ import org.pragmatica.aether.config.cluster.DiffAction;
 import org.pragmatica.aether.config.cluster.DiffAction.ScaleDown;
 import org.pragmatica.aether.config.cluster.DiffAction.ScaleUp;
 import org.pragmatica.aether.config.cluster.NodeRole;
+import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
@@ -58,7 +59,7 @@ record ClusterConfigApplierRecord(ClusterTopologyManager topologyManager) implem
     /// #241's worker-provisioning gap; the wider community-topology epic stays open). The typed topology (stage 2) made non-core counts expressible, the successor fence
     /// (stage 3) made the write safe, and the worker reconciler acts on the committed value via the
     /// `ClusterConfigKey` fan-out — this applier never provisions directly, for any role.
-    private Promise<Unit> applyScale(String sourceName, NodeRole role, int target, String description) {
+    private Promise<Unit> applyScale(SourceName sourceName, NodeRole role, int target, String description) {
         return topologyManager.setDesiredCount(sourceName, role, target)
                               .onSuccess(_ -> ClusterConfigApplier.log.info("Applied scale: {}", description))
                               .mapToUnit();

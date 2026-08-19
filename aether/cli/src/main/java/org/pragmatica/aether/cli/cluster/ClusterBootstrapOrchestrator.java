@@ -18,6 +18,7 @@ import java.util.function.Function;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.environment.NodeAddress;
 import org.pragmatica.aether.environment.ProvisionedNode;
+import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -391,7 +392,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                             Option<String> apiKey,
                             List<SshPublicKey> sshPublicKeys,
                             Map<String, List<Long>> sshKeyIdsByProvider,
-                            Map<String, List<String>> firewallIdsBySource,
+                            Map<SourceName, List<String>> firewallIdsBySource,
                             String clusterSecret,
                             String rawTomlContent) {
         static BootstrapContext bootstrapContext(ClusterBootstrapConfig config,
@@ -522,8 +523,8 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
             return sshKeyIdsByProvider.getOrDefault(provider, List.of());
         }
 
-        BootstrapContext withFirewallIds(String sourceName, List<String> ids) {
-            var merged = new HashMap<String, List<String>>(firewallIdsBySource);
+        BootstrapContext withFirewallIds(SourceName sourceName, List<String> ids) {
+            var merged = new HashMap<SourceName, List<String>>(firewallIdsBySource);
 
             merged.put(sourceName, List.copyOf(ids));
 
@@ -542,7 +543,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
         /// Ingress-firewall ids created for `sourceName` by [BootstrapPhaseFirewall], threaded into
         /// server-create so the rules are in force BEFORE the instance exists (§6.2). Keyed by SOURCE,
         /// not provider (unlike ssh keys): firewall rules are declared per source.
-        List<String> firewallIdsFor(String sourceName) {
+        List<String> firewallIdsFor(SourceName sourceName) {
             return firewallIdsBySource.getOrDefault(sourceName, List.of());
         }
     }

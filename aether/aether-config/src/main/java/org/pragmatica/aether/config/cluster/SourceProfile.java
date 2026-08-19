@@ -7,11 +7,12 @@ package org.pragmatica.aether.config.cluster;
 import java.util.List;
 import java.util.Map;
 
+import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.lang.Option;
 
 
-public record SourceProfile(String name,
+public record SourceProfile(SourceName name,
                             SourceType type,
                             Option<CloudProviderName> provider,
                             Option<String> credentials,
@@ -50,7 +51,7 @@ public record SourceProfile(String name,
                    .or(List.of());
     }
 
-    public static SourceProfile sourceProfile(String name,
+    public static SourceProfile sourceProfile(SourceName name,
                                               SourceType type,
                                               Option<CloudProviderName> provider,
                                               Option<String> credentials,
@@ -86,7 +87,7 @@ public record SourceProfile(String name,
                                  nodeConfig);
     }
 
-    public static SourceProfile sourceProfile(String name,
+    public static SourceProfile sourceProfile(SourceName name,
                                               SourceType type,
                                               Option<CloudProviderName> provider,
                                               Option<String> credentials,
@@ -121,7 +122,7 @@ public record SourceProfile(String name,
                              nodeConfig);
     }
 
-    public static SourceProfile sourceProfile(String name,
+    public static SourceProfile sourceProfile(SourceName name,
                                               SourceType type,
                                               Option<CloudProviderName> provider,
                                               Option<String> credentials,

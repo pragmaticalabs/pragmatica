@@ -29,6 +29,7 @@ import java.util.Queue;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 
 class DockerComputeProviderTest {
 
@@ -55,7 +56,7 @@ class DockerComputeProviderTest {
         @Test
         void createFrom_spotRequest_rejectedLoudBeforeDockerRun() {
             // Docker has no spot concept; a SPOT request must fail loud, never issue a docker run.
-            var context = ProvisionContext.forBootstrap("c", "spot", "s", "n0");
+            var context = ProvisionContext.forBootstrap("c", "spot", sourceNameOrDefault("s"), "n0");
             var request = new ProvisionRequest(InstanceType.SPOT, "docker", "", "",
                                                Option.empty(), MarketOptions.spot(), context);
 
@@ -186,7 +187,7 @@ class DockerComputeProviderTest {
         void provision_withSpec_passesTagsToCommand() {
             testRunner.queuedResponses.add(Promise.success("container-id-1"));
             testRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
-            var ctx = ProvisionContext.provisionContext("test-cluster", "worker", "default",
+            var ctx = ProvisionContext.provisionContext("test-cluster", "worker", sourceNameOrDefault("default"),
                                                          ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
             var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "docker", "staging", ctx).unwrap();
 
@@ -245,7 +246,7 @@ class DockerComputeProviderTest {
             var rollbackCmd = testRunner.allCommands.get(1);
             assertThat(rollbackCmd.subList(0, 3)).containsExactly("docker", "rm", "-f");
             // The 4th arg is the KSUID-minted container name. provision(InstanceType)
-            // uses ProvisionContext.provisionContext("default", "core", "default", ...),
+            // uses ProvisionContext.provisionContext("default", "core", sourceNameOrDefault("default"), ...),
             // so the name is `aether-default-node-<ksuid>`.
             assertThat(rollbackCmd.get(3)).startsWith("aether-default-node-");
         }
@@ -288,7 +289,7 @@ class DockerComputeProviderTest {
         void buildContainerName_mintsKsuidNameForCluster() {
             testRunner.queuedResponses.add(Promise.success("id-0"));
             testRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
-            var ctx = ProvisionContext.provisionContext("test-cluster", "core", "default",
+            var ctx = ProvisionContext.provisionContext("test-cluster", "core", sourceNameOrDefault("default"),
                                                          ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
             var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "docker", "worker-pool", ctx).unwrap();
 
@@ -306,7 +307,7 @@ class DockerComputeProviderTest {
         void buildContainerName_honorsCallerSuppliedNodeId() {
             testRunner.queuedResponses.add(Promise.success("id-0"));
             testRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
-            var ctx = ProvisionContext.provisionContext("test-cluster", "core", "default",
+            var ctx = ProvisionContext.provisionContext("test-cluster", "core", sourceNameOrDefault("default"),
                                                          ProvisionContext.PROVISIONED_BY_BOOTSTRAP)
                                       .withNodeId("aether-test-cluster-node-1");
             var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "docker", "worker-pool", ctx).unwrap();
@@ -359,7 +360,7 @@ class DockerComputeProviderTest {
             // so it equals the label regardless of host env, and is emitted exactly once (dedupe).
             testRunner.queuedResponses.add(Promise.success("id-0"));
             testRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
-            var ctx = ProvisionContext.provisionContext("integration-test", "core", "default",
+            var ctx = ProvisionContext.provisionContext("integration-test", "core", sourceNameOrDefault("default"),
                                                          ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
             var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "docker", "worker-pool", ctx).unwrap();
 
@@ -382,7 +383,7 @@ class DockerComputeProviderTest {
             // own AETHER_ROLE can never leak onto a node it mints.
             testRunner.queuedResponses.add(Promise.success("id-0"));
             testRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
-            var ctx = ProvisionContext.provisionContext("test-cluster", "worker", "default",
+            var ctx = ProvisionContext.provisionContext("test-cluster", "worker", sourceNameOrDefault("default"),
                                                          ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
             var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "docker", "worker-pool", ctx).unwrap();
 
@@ -405,7 +406,7 @@ class DockerComputeProviderTest {
             // dash) rather than the malformed "aether--node-" (empty segment between dashes).
             testRunner.queuedResponses.add(Promise.success("id-0"));
             testRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
-            var ctx = ProvisionContext.provisionContext("", "core", "default",
+            var ctx = ProvisionContext.provisionContext("", "core", sourceNameOrDefault("default"),
                                                          ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
             var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "docker", "default", ctx).unwrap();
 

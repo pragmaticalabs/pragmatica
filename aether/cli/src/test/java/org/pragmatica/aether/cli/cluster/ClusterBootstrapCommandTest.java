@@ -36,6 +36,7 @@ import static org.pragmatica.aether.config.cluster.OperationsConfig.defaultOpera
 import static org.pragmatica.aether.config.cluster.RoleSubTable.roleSubTable;
 import static org.pragmatica.aether.config.cluster.RuntimeProfile.runtimeProfile;
 import static org.pragmatica.aether.config.cluster.SourceProfile.sourceProfile;
+import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 
@@ -44,7 +45,7 @@ class ClusterBootstrapCommandTest {
     private static final String RUNTIME_REF = "default";
 
     private static SourceProfile forgeSource(int coreCount) {
-        return sourceProfile("forge",
+        return sourceProfile(sourceNameOrDefault("forge"),
                              SourceType.FORGE,
                              none(),
                              none(),

@@ -15,6 +15,7 @@ import org.pragmatica.lang.Option;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 
 
 /// Drift guard coupling [ProvisionRequest#resolve]'s private `SPOT_ROLE` literal to
@@ -28,7 +29,7 @@ class SpotRoleConstantDriftTest {
     void resolve_roleFromNodeRoleSpotValue_mapsToSpotMarket() {
         var context = ProvisionContext.provisionContext("cluster",
                                                         NodeRole.SPOT.value(),
-                                                        "src",
+                                                        sourceNameOrDefault("src"),
                                                         ProvisionContext.PROVISIONED_BY_CTM);
         var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "cx22", NodeRole.SPOT.value(), context).unwrap();
 

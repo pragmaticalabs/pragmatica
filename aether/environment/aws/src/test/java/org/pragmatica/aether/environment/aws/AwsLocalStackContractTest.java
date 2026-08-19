@@ -39,6 +39,7 @@ import org.pragmatica.lang.io.TimeSpan;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
+import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 import static org.pragmatica.cloud.aws.AwsConfig.awsConfig;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
@@ -316,7 +317,7 @@ class AwsLocalStackContractTest {
                                     "",
                                     Option.some("aether-contract"),
                                     MarketOptions.ON_DEMAND,
-                                    ProvisionContext.forBootstrap(cluster, role, "contract-src", "node-" + role));
+                                    ProvisionContext.forBootstrap(cluster, role, sourceNameOrDefault("contract-src"), "node-" + role));
     }
 
     private static InstanceInfo provisionCore(String cluster) {

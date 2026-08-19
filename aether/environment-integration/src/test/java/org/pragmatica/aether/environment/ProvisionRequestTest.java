@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 
 
 /// Unit coverage for the single, non-overridable [ProvisionRequest#resolve] choke (RFC-0016 §2).
@@ -174,7 +175,7 @@ class ProvisionRequestTest {
     class ProducerPathsReachResolve {
         @Test
         void resolve_bootstrapSeedContext_producesOnDemandRequest() {
-            var context = ProvisionContext.forBootstrap("prod", "core", "eu-1", "eu-1-core-0");
+            var context = ProvisionContext.forBootstrap("prod", "core", sourceNameOrDefault("eu-1"), "eu-1-core-0");
             var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "cx22", "core", context).unwrap();
             var request = ProvisionRequest.resolve(spec, defaults()).unwrap();
 
@@ -199,20 +200,20 @@ class ProvisionRequestTest {
         void resolve_cloudSupportContext_producesResolvedRequest() {
             var context = ProvisionContext.provisionContext("prod",
                                                             "core",
-                                                            "eu-1",
+                                                            sourceNameOrDefault("eu-1"),
                                                             ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
             var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "cx32", "core", context).unwrap();
             var request = ProvisionRequest.resolve(spec, defaults()).unwrap();
 
             assertThat(request.instanceSize()).isEqualTo("cx32");
-            assertThat(request.context().sourceName()).isEqualTo("eu-1");
+            assertThat(request.context().sourceName().value()).isEqualTo("eu-1");
         }
     }
 
     private static ProvisionSpec spec(String instanceSize, String role) {
         var context = ProvisionContext.provisionContext("cluster-x",
                                                         role,
-                                                        "eu-1",
+                                                        sourceNameOrDefault("eu-1"),
                                                         ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
 
         return ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, instanceSize, role, context).unwrap();

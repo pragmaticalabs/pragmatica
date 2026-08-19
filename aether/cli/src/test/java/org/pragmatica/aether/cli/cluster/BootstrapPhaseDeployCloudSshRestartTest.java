@@ -43,6 +43,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 
 class BootstrapPhaseDeployCloudSshRestartTest {
 
@@ -53,7 +54,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
     private static final String CLUSTER_SECRET = "super-secret-token";
 
     private static SourceProfile cloudSource() {
-        return SourceProfile.sourceProfile("eu-1",
+        return SourceProfile.sourceProfile(sourceNameOrDefault("eu-1"),
                                            SourceType.CLOUD,
                                            Option.some(CloudProviderName.HETZNER),
                                            Option.empty(),
@@ -76,7 +77,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
     }
 
     private static SourceProfile cloudSourceWithKey(String keyPath) {
-        return SourceProfile.sourceProfile("eu-1",
+        return SourceProfile.sourceProfile(sourceNameOrDefault("eu-1"),
                                            SourceType.CLOUD,
                                            Option.some(CloudProviderName.HETZNER),
                                            Option.empty(),
@@ -99,7 +100,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
     }
 
     private static SourceProfile cloudSourceWithUser(String user) {
-        return SourceProfile.sourceProfile("eu-1",
+        return SourceProfile.sourceProfile(sourceNameOrDefault("eu-1"),
                                            SourceType.CLOUD,
                                            Option.some(CloudProviderName.HETZNER),
                                            Option.empty(),
@@ -129,7 +130,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
     /// LEGACY SSH-push path (RFC-0017 stage 4 routes the single-cloud-core-source shape through
     /// label-based formation observation with no SSH push at all).
     private static SourceProfile legacyGateSshSource() {
-        return SourceProfile.sourceProfile("dc-1",
+        return SourceProfile.sourceProfile(sourceNameOrDefault("dc-1"),
                                            SourceType.SSH,
                                            Option.empty(),
                                            Option.empty(),
@@ -255,7 +256,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
 
         var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
                                                             ctx.config().sources().get("eu-1"),
-                                                            "eu-1",
+                                                            sourceNameOrDefault("eu-1"),
                                                             alwaysHealthy(),
                                                             sshExec,
                                                             envWithKey("/home/op/.ssh/aether_id_ed25519"));
@@ -280,7 +281,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
 
         var _ = BootstrapPhaseDeploy.deployCloudSource(ctx,
                                                       ctx.config().sources().get("eu-1"),
-                                                      "eu-1",
+                                                      sourceNameOrDefault("eu-1"),
                                                       alwaysHealthy(),
                                                       sshExec,
                                                       envWithKey("/home/op/.ssh/aether_id_ed25519"));
@@ -312,7 +313,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
 
         var _ = BootstrapPhaseDeploy.deployCloudSource(ctx,
                                                       ctx.config().sources().get("eu-1"),
-                                                      "eu-1",
+                                                      sourceNameOrDefault("eu-1"),
                                                       alwaysHealthy(),
                                                       sshExec,
                                                       envWithKey("/home/op/.ssh/aether_id_ed25519"));
@@ -342,7 +343,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
 
         var _ = BootstrapPhaseDeploy.deployCloudSource(ctx,
                                                       ctx.config().sources().get("eu-1"),
-                                                      "eu-1",
+                                                      sourceNameOrDefault("eu-1"),
                                                       alwaysHealthy(),
                                                       sshExec,
                                                       envWithKey("/home/op/.ssh/aether_id_ed25519"));
@@ -379,7 +380,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
 
         var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
                                                             ctx.config().sources().get("eu-1"),
-                                                            "eu-1",
+                                                            sourceNameOrDefault("eu-1"),
                                                             alwaysHealthy(),
                                                             sshExec,
                                                             envWithKey("/home/op/.ssh/aether_id_ed25519"),
@@ -408,7 +409,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
 
         var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
                                                             ctx.config().sources().get("eu-1"),
-                                                            "eu-1",
+                                                            sourceNameOrDefault("eu-1"),
                                                             healthCheck,
                                                             sshExec,
                                                             envWithKey("/home/op/.ssh/aether_id_ed25519"),
@@ -428,7 +429,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
 
         var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
                                                             ctx.config().sources().get("eu-1"),
-                                                            "eu-1",
+                                                            sourceNameOrDefault("eu-1"),
                                                             alwaysHealthy(),
                                                             sshExec,
                                                             emptyEnv());
@@ -452,7 +453,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
 
         var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
                                                             ctx.config().sources().get("eu-1"),
-                                                            "eu-1",
+                                                            sourceNameOrDefault("eu-1"),
                                                             alwaysHealthy(),
                                                             sshExec,
                                                             emptyEnv());
@@ -476,7 +477,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
 
         var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
                                                             ctx.config().sources().get("eu-1"),
-                                                            "eu-1",
+                                                            sourceNameOrDefault("eu-1"),
                                                             alwaysHealthy(),
                                                             sshExec,
                                                             envWithKey(envKey));
@@ -506,7 +507,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
 
         var result = BootstrapPhaseDeploy.deployCloudSource(emptyCtx,
                                                             emptyCtx.config().sources().get("eu-1"),
-                                                            "eu-1",
+                                                            sourceNameOrDefault("eu-1"),
                                                             healthCheck,
                                                             sshExec,
                                                             envWithKey("/some/key"));
@@ -688,7 +689,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
 
         var _ = BootstrapPhaseDeploy.deployCloudSource(ctx,
                                                       ctx.config().sources().get("eu-1"),
-                                                      "eu-1",
+                                                      sourceNameOrDefault("eu-1"),
                                                       healthCheck,
                                                       sshExec,
                                                       envWithKey("/home/op/.ssh/aether_id_ed25519"));
@@ -719,7 +720,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
 
         var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
                                                             ctx.config().sources().get("eu-1"),
-                                                            "eu-1",
+                                                            sourceNameOrDefault("eu-1"),
                                                             alwaysHealthy(),
                                                             sshExec,
                                                             envWithKey("/home/op/.ssh/aether_id_ed25519"));
@@ -744,7 +745,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
 
         var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
                                                             ctx.config().sources().get("eu-1"),
-                                                            "eu-1",
+                                                            sourceNameOrDefault("eu-1"),
                                                             alwaysHealthy(),
                                                             sshExec,
                                                             envWithKey("/home/op/.ssh/aether_id_ed25519"));
@@ -771,7 +772,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
 
         var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
                                                             ctx.config().sources().get("eu-1"),
-                                                            "eu-1",
+                                                            sourceNameOrDefault("eu-1"),
                                                             alwaysHealthy(),
                                                             sshExec,
                                                             envWithKey("/home/op/.ssh/aether_id_ed25519"));
@@ -799,7 +800,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
 
         var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
                                                             ctx.config().sources().get("eu-1"),
-                                                            "eu-1",
+                                                            sourceNameOrDefault("eu-1"),
                                                             alwaysHealthy(),
                                                             sshExec,
                                                             envWithKey("/home/op/.ssh/aether_id_ed25519"));
@@ -850,7 +851,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
 
         var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
                                                             ctx.config().sources().get("eu-1"),
-                                                            "eu-1",
+                                                            sourceNameOrDefault("eu-1"),
                                                             alwaysHealthy(),
                                                             sshExec,
                                                             envWithKey("/home/op/.ssh/aether_id_ed25519"),
@@ -884,7 +885,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
 
         var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
                                                             ctx.config().sources().get("eu-1"),
-                                                            "eu-1",
+                                                            sourceNameOrDefault("eu-1"),
                                                             healthCheck,
                                                             sshExec,
                                                             envWithKey("/home/op/.ssh/aether_id_ed25519"),
@@ -914,7 +915,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
 
         var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
                                                             ctx.config().sources().get("eu-1"),
-                                                            "eu-1",
+                                                            sourceNameOrDefault("eu-1"),
                                                             alwaysHealthy(),
                                                             sshExec,
                                                             envWithKey("/home/op/.ssh/aether_id_ed25519"));
@@ -949,7 +950,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
 
         var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
                                                             ctx.config().sources().get("eu-1"),
-                                                            "eu-1",
+                                                            sourceNameOrDefault("eu-1"),
                                                             alwaysHealthy(),
                                                             sshExec,
                                                             envWithKey("/home/op/.ssh/aether_id_ed25519"));
@@ -1007,7 +1008,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
 
         var _ = BootstrapPhaseDeploy.deployCloudSource(ctx,
                                                       ctx.config().sources().get("eu-1"),
-                                                      "eu-1",
+                                                      sourceNameOrDefault("eu-1"),
                                                       alwaysHealthy(),
                                                       sshExec,
                                                       envWithKey("/home/op/.ssh/aether_id_ed25519"));
@@ -1039,7 +1040,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
 
         var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
                                                             ctx.config().sources().get("eu-1"),
-                                                            "eu-1",
+                                                            sourceNameOrDefault("eu-1"),
                                                             healthCheck,
                                                             sshExec,
                                                             envWithKey("/home/op/.ssh/aether_id_ed25519"));
@@ -1071,7 +1072,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
 
         var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
                                                             ctx.config().sources().get("eu-1"),
-                                                            "eu-1",
+                                                            sourceNameOrDefault("eu-1"),
                                                             alwaysHealthy(),
                                                             sshExec,
                                                             envWithKey("/home/op/.ssh/aether_id_ed25519"),
@@ -1143,7 +1144,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
 
         var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
                                                             ctx.config().sources().get("eu-1"),
-                                                            "eu-1",
+                                                            sourceNameOrDefault("eu-1"),
                                                             alwaysHealthy(),
                                                             sshExec,
                                                             envWithKey("/home/op/.ssh/aether_id_ed25519"));

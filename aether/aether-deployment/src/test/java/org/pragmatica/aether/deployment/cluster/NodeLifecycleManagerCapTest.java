@@ -25,6 +25,7 @@ import org.pragmatica.lang.Unit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
+import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 
 /// #298 — the fleet cap at the single provisioning chokepoint.
 ///
@@ -137,7 +138,7 @@ class NodeLifecycleManagerCapTest {
         return ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND,
                                            "cx23",
                                            "core",
-                                           ProvisionContext.forBootstrap(CLUSTER, "core", "default", "node-1"))
+                                           ProvisionContext.forBootstrap(CLUSTER, "core", sourceNameOrDefault("default"), "node-1"))
                             .unwrap();
     }
 

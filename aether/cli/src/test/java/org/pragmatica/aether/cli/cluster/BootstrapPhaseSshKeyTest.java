@@ -41,6 +41,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 
 class BootstrapPhaseSshKeyTest {
 
@@ -66,7 +67,7 @@ class BootstrapPhaseSshKeyTest {
     }
 
     private static SourceProfile cloudHetznerSource() {
-        return SourceProfile.sourceProfile("eu-1",
+        return SourceProfile.sourceProfile(sourceNameOrDefault("eu-1"),
                                             SourceType.CLOUD,
                                             Option.some(CloudProviderName.HETZNER),
                                             Option.some("dummy-token"),

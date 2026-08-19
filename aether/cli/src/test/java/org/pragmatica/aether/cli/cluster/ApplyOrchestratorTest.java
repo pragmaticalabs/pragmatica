@@ -31,6 +31,7 @@ import static org.pragmatica.aether.config.cluster.OperationsConfig.defaultOpera
 import static org.pragmatica.aether.config.cluster.RoleSubTable.roleSubTable;
 import static org.pragmatica.aether.config.cluster.RuntimeProfile.runtimeProfile;
 import static org.pragmatica.aether.config.cluster.SourceProfile.sourceProfile;
+import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 
@@ -40,7 +41,7 @@ class ApplyOrchestratorTest {
 
     private static SourceProfile forgeSource(String name, int coreCount) {
         return sourceProfile(
-            name, SourceType.FORGE, none(), none(), none(), none(),
+            sourceNameOrDefault(name), SourceType.FORGE, none(), none(), none(), none(),
             none(), none(), none(), LoadBalancerMode.NONE, List.of(), none(),
             Map.of(),
             Map.of(NodeRole.CORE, roleSubTable(NodeRole.CORE, some(coreCount), none(), none(), RUNTIME_REF)),
@@ -50,7 +51,7 @@ class ApplyOrchestratorTest {
 
     private static SourceProfile sourceWithRole(String name, NodeRole role, int count) {
         return sourceProfile(
-            name, SourceType.FORGE, none(), none(), none(), none(),
+            sourceNameOrDefault(name), SourceType.FORGE, none(), none(), none(), none(),
             none(), none(), none(), LoadBalancerMode.NONE, List.of(), none(),
             Map.of(),
             Map.of(role, roleSubTable(role, some(count), none(), none(), RUNTIME_REF)),

@@ -14,6 +14,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 
 
 class CloudProviderSupportTest {
@@ -24,7 +25,7 @@ class CloudProviderSupportTest {
         @Test
         void buildProvisionSpec_passesClusterLabelsToProvisionSpec() {
             var labels = Map.of("aether-cluster", "test-a", "aether-source", "hetzner-eu", "aether-role", "core");
-            var group = NodeGroupConfig.nodeGroupConfig("hetzner-eu", "core", 3, "cx22", "fsn1", labels);
+            var group = NodeGroupConfig.nodeGroupConfig(sourceNameOrDefault("hetzner-eu"), "core", 3, "cx22", "fsn1", labels);
 
             CloudProviderSupport.buildProvisionSpec(group)
                                 .onFailure(cause -> assertThat(cause).isNull())
@@ -34,7 +35,7 @@ class CloudProviderSupportTest {
         @Test
         void buildProvisionSpec_passesInstanceSizeAndPool() {
             var labels = Map.<String, String>of();
-            var group = NodeGroupConfig.nodeGroupConfig("hetzner-eu", "worker", 2, "cx32", "fsn1", labels);
+            var group = NodeGroupConfig.nodeGroupConfig(sourceNameOrDefault("hetzner-eu"), "worker", 2, "cx32", "fsn1", labels);
 
             CloudProviderSupport.buildProvisionSpec(group)
                                 .onFailure(cause -> assertThat(cause).isNull())
@@ -43,7 +44,7 @@ class CloudProviderSupportTest {
 
         @Test
         void buildProvisionSpec_zoneDefault_omitsPlacement() {
-            var group = NodeGroupConfig.nodeGroupConfig("src", "core", 1, "default", "default", Map.of());
+            var group = NodeGroupConfig.nodeGroupConfig(sourceNameOrDefault("src"), "core", 1, "default", "default", Map.of());
 
             CloudProviderSupport.buildProvisionSpec(group)
                                 .onFailure(cause -> assertThat(cause).isNull())
@@ -52,7 +53,7 @@ class CloudProviderSupportTest {
 
         @Test
         void buildProvisionSpec_zoneSpecified_addsZonePlacement() {
-            var group = NodeGroupConfig.nodeGroupConfig("src", "core", 1, "default", "fsn1", Map.of());
+            var group = NodeGroupConfig.nodeGroupConfig(sourceNameOrDefault("src"), "core", 1, "default", "fsn1", Map.of());
 
             CloudProviderSupport.buildProvisionSpec(group)
                                 .onFailure(cause -> assertThat(cause).isNull())
@@ -68,7 +69,7 @@ class CloudProviderSupportTest {
             var captured = new AtomicReference<ProvisionSpec>();
             var stub = new RecordingComputeProvider(captured);
             var labels = Map.of("aether-cluster", "test-a", "aether-source", "hetzner-eu", "aether-role", "core");
-            var group = NodeGroupConfig.nodeGroupConfig("hetzner-eu", "core", 1, "cx22", "fsn1", labels);
+            var group = NodeGroupConfig.nodeGroupConfig(sourceNameOrDefault("hetzner-eu"), "core", 1, "cx22", "fsn1", labels);
 
             CloudProviderSupport.provisionVia(stub, group)
                                 .await()
@@ -83,7 +84,7 @@ class CloudProviderSupportTest {
     private static void assertHasClusterLabels(ProvisionSpec spec) {
         var ctx = spec.context();
         assertThat(ctx.clusterName()).isEqualTo("test-a");
-        assertThat(ctx.sourceName()).isEqualTo("hetzner-eu");
+        assertThat(ctx.sourceName().value()).isEqualTo("hetzner-eu");
         assertThat(ctx.role()).isEqualTo("core");
     }
 

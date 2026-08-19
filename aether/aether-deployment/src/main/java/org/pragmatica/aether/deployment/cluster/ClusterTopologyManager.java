@@ -13,6 +13,7 @@ import java.util.function.Supplier;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.environment.AutoHealConfig;
+import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
@@ -37,7 +38,7 @@ public interface ClusterTopologyManager extends TopologyManager {
     /// Replaces `setDesiredSize(int)`, which took a bare cluster-wide core count and so could not
     /// say which source a change applied to. The caller always knows both (`DiffAction.ScaleUp`
     /// carries `sourceName` and `role`), so the information existed and was being discarded.
-    Promise<Unit> setDesiredCount(String sourceName, NodeRole role, int count);
+    Promise<Unit> setDesiredCount(SourceName sourceName, NodeRole role, int count);
     int desiredSize();
     int configuredSize();
     void onNodeReady(NodeId nodeId);
