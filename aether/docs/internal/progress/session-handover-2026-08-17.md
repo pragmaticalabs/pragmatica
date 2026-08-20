@@ -184,6 +184,10 @@ the status route, `LeaderReconciler` never consults it. **FILED as #603.** And #
 **Owner-decided ordering (2026-08-17): §11 first, then §12.** Both are DESIGN-SETTLED — implement as
 specified, do not re-open the choice. Then #596; #590 and #509 need cluster runs, not code.
 
+> **SUPERSEDED 2026-08-20** — §11 and §12 both LANDED; see `session-handover-2026-08-20.md` for their
+> outcomes and for what came after. This file remains the authority on the §4 frozen-value defect class
+> and on the design rulings recorded in §11/§12.
+
 **§11 is LANDED** (see its AMENDED note — the fail policy needed one owner-approved refinement, and the
 reason it needed one is worth reading before touching that code). **§12 is LANDED** (see its own LANDED
 note — three things the spec did not anticipate, including a mutation-found hole in its first test pass).
