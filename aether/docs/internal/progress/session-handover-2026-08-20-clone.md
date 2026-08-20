@@ -101,21 +101,27 @@ is nothing left to lose. Recover from git history if a design note goes missing.
 
 ---
 
-## §2 Build invariants — two traps that each cost a wasted cycle
+## §2 Build invariants
 
-- **Regeneration lives behind the `generate-parser` profile.** Without `-Pgenerate-parser` the peglib
-  plugin **silently never runs** and you measure a stale parser. No "skipped" message.
-- **Always put pg-parser in the reactor with pg-schema.** `-pl aether/pg-tools/pg-schema` alone
-  resolves pg-parser from `~/.m2` — a stale artifact. Two of my measurements were void this way.
+**The `-Pgenerate-parser` trap is RETIRED.** Immediately after #618 merged, the main stream landed
+`03d547e26` — the parser is now generated into `target/` on every build instead of being committed
+into `src/main/java`, and the opt-in profile is gone. This removes the worst trap of the migration:
+previously, without `-Pgenerate-parser` the peglib plugin **silently never ran** (no "skipped"
+message) and you measured a stale parser. Verified after pulling: `mvn -f aether/pg-tools/pom.xml
+test` with NO profile gives 813 tests, 0 failures. Do not add the flag back; older notes mentioning
+it are obsolete.
+
+**Still live: always put pg-parser in the reactor with pg-schema.** `-pl aether/pg-tools/pg-schema`
+alone resolves pg-parser from `~/.m2` — a stale artifact. Two measurements were void this way.
 
 ```bash
-mvn -Pgenerate-parser -f aether/pg-tools/pom.xml test          # full pg-tools
-mvn -Pgenerate-parser -pl aether/pg-tools/pg-parser,aether/pg-tools/pg-schema test
-mvn -f jbct/pom.xml test -Djbct.skip=true                       # jbct reactor
+mvn -f aether/pg-tools/pom.xml test                                  # full pg-tools
+mvn -pl aether/pg-tools/pg-parser,aether/pg-tools/pg-schema test     # both, never pg-schema alone
+mvn -f jbct/pom.xml test -Djbct.skip=true                            # jbct reactor
 ```
 
-**`jooq-xml-showcase` is outside both reactors** and is the only consumer exercising the
-schema→XML export path. It is what caught bug (4) above. CI runs it; local module runs do not.
+**`jooq-xml-showcase` is outside both reactors** and is the only consumer exercising the schema→XML
+export path. It is what caught bug (4) above. CI runs it; local module runs do not.
 
 ---
 
