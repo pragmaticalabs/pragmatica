@@ -4,6 +4,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 import org.pragmatica.lang.Option;
@@ -29,6 +31,24 @@ public final class CstNodes {
                    .input()
                    .substring(node.spanStart(),
                               node.spanEnd());
+    }
+
+    /// The node's non-trivia tokens, concatenated — its text with comments and whitespace
+    /// removed.
+    ///
+    /// A node's SPAN can reach past its last real token into trailing trivia, so [#text] on a
+    /// bare annotation followed by a line comment returns `"Contract  // reason"` rather than
+    /// `"Contract"`. Any comparison of a node's text against a NAME must go through this:
+    /// matching on [#text] silently fails the moment someone writes a comment on that line,
+    /// which reads as the annotation having no effect at all.
+    public static String tokenText(Cursor node) {
+        var tokens = node.cst()
+                         .tokens();
+
+        return IntStream.rangeClosed(node.firstTokenIdx(), node.lastTokenIdx())
+                        .filter(t -> !tokens.isTrivia(t))
+                        .mapToObj(tokens::textAt)
+                        .collect(Collectors.joining());
     }
 
     // ===== Rule predicates =====

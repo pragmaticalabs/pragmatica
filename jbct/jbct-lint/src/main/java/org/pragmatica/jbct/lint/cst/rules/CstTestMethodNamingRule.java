@@ -60,7 +60,7 @@ public class CstTestMethodNamingRule implements CstLintRule {
     }
 
     private boolean isTestAnnotation(Cursor annotation) {
-        return "Test".equals(simpleName(findFirst(annotation, RuleKind.QUALIFIED_NAME).map(CstNodes::text)
+        return "Test".equals(simpleName(findFirst(annotation, RuleKind.QUALIFIED_NAME).map(CstNodes::tokenText)
                                                  .map(String::trim)
                                                  .or("")));
     }
