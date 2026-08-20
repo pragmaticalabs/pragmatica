@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.environment.aws;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -21,8 +22,10 @@ import org.pragmatica.aether.environment.ProviderDefaults;
 import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.ProvisionRequest;
 import org.pragmatica.aether.environment.ReadinessPolicy;
+import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.cloud.aws.AwsClient;
 import org.pragmatica.cloud.aws.AwsError;
+import org.pragmatica.cloud.aws.api.SecurityGroup;
 import org.pragmatica.cloud.aws.api.DescribeInstancesResponse;
 import org.pragmatica.cloud.aws.api.Instance;
 import org.pragmatica.cloud.aws.api.RunInstancesRequest;
@@ -45,6 +48,12 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
     private static final String MANAGED_TAG_KEY = "aether-managed";
     private static final String MANAGED_TAG_VALUE = "true";
     private static final String NODE_ID_TAG = "aether-node-id";
+    /// The `(cluster, source)` pair is BOTH the stamp put on every provisioned instance and the
+    /// selector that finds a source's security group again. One constant per key so the two can
+    /// never drift apart — a stamp that does not round-trip with its selector is the silent failure
+    /// [SourceName] exists to prevent.
+    static final String CLUSTER_TAG = "aether-cluster";
+    static final String SOURCE_TAG = "aether-source";
 
     public static Result<AwsComputeProvider> awsComputeProvider(AwsClient client, AwsEnvironmentConfig config) {
         return success(new AwsComputeProvider(client, config));
@@ -69,11 +78,12 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
     public Promise<InstanceInfo> createFrom(ProvisionRequest request) {
         var tags = tagsFor(request.context());
 
-        return client.runInstances(buildRunRequest(request))
-                     .flatMap(response -> tagAndMapFirstInstance(response, tags))
-                     .flatMap(info -> confirmRunning(info,
-                                                     ReadinessPolicy.cloudDefault()))
-                     .mapError(AwsComputeProvider::toProvisionError);
+        return resolveSecurityGroupIds(request.context()).flatMap(groupIds -> client.runInstances(buildRunRequest(request,
+                                                                                                                  groupIds)))
+                                      .flatMap(response -> tagAndMapFirstInstance(response, tags))
+                                      .flatMap(info -> confirmRunning(info,
+                                                                      ReadinessPolicy.cloudDefault()))
+                                      .mapError(AwsComputeProvider::toProvisionError);
     }
 
     @Override
@@ -159,12 +169,12 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
         var tags = new java.util.HashMap<String, String>();
 
         tags.put(MANAGED_TAG_KEY, MANAGED_TAG_VALUE);
-        resolveClusterName(ctx).onPresent(name -> tags.put("aether-cluster", name.value()));
+        resolveClusterName(ctx).onPresent(name -> tags.put(CLUSTER_TAG, name.value()));
         if (!ctx.role().isEmpty()) {
             tags.put("aether-role", ctx.role());
         }
         // Unconditional: SourceName cannot be blank, so the historical emptiness guard here was dead.
-        tags.put("aether-source",
+        tags.put(SOURCE_TAG,
                  ctx.sourceName().value());
         tags.put(NODE_ID_TAG, ctx.resolveNodeId());
         tags.putAll(ctx.extraTags());
@@ -188,13 +198,128 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
                      .mapError(AwsComputeProvider::toListInstancesError);
     }
 
-    private RunInstancesRequest buildRunRequest(ProvisionRequest request) {
+    /// The security-group association for an instance being CREATED — the AWS counterpart of
+    /// `HetznerComputeProvider.resolveFirewallIds`, and it exists for the same reason: a CTM
+    /// auto-heal replacement is built from a `SourceProfile`, which persists ingress RULES but never
+    /// the created group's id, so `config.securityGroupIds()` is empty on that path and the
+    /// replacement would launch with none of the ingress its bootstrap peers have.
+    ///
+    /// Resolution is BY TAG, reusing the one-group-per-(cluster, source) selector [#openIngress]
+    /// owns — deliberately not by persisting ids (they go stale the moment a group is recreated out
+    /// of band) and not by re-creating from `SourceProfile.firewallRules` (that turns rule drift
+    /// into a silent reconciliation).
+    private Promise<List<String>> resolveSecurityGroupIds(ProvisionContext ctx) {
+        var configured = config.securityGroupIds();
+
+        if (!configured.isEmpty()) {
+            return Promise.success(configured);
+        }
+
+        return resolveClusterName(ctx).fold(() -> securityGroupScopeUnresolved(ctx.sourceName()),
+                                            cluster -> securityGroupsFor(cluster, ctx.sourceName()));
+    }
+
+    private Promise<List<String>> securityGroupsFor(ClusterName cluster, SourceName source) {
+        return client.describeSecurityGroups(securityGroupSelector(cluster, source))
+                     .map(AwsComputeProvider::idsOf)
+                     .recover(cause -> securityGroupLookupUnavailable(cluster, source, cause))
+                     .map(ids -> warnWhenNothingResolved(ids, cluster, source));
+    }
+
+    /// Selects the ONE security group belonging to this `(cluster, source)`. Both tags are required:
+    /// scoping by cluster alone would match another source's group, and scoping by source alone would
+    /// match another cluster's — either way `openIngress` would patch, and `cluster destroy` would
+    /// delete, a group Aether did not create for this pair. The Hetzner analogue is `firewallSelector`,
+    /// and the 2026-08-03 test-pg incident (#572) is what unscoped selection costs.
+    ///
+    /// Ordered so the emitted `Filter.N` numbering is reproducible; EC2 ANDs the filters and does not
+    /// care about their order, but a stable order keeps request assertions legible.
+    private static Map<String, String> securityGroupSelector(ClusterName cluster, SourceName source) {
+        var filters = new LinkedHashMap<String, String>();
+
+        filters.put(CLUSTER_TAG, cluster.value());
+        filters.put(SOURCE_TAG, source.value());
+
+        return filters;
+    }
+
+    private static List<String> idsOf(List<SecurityGroup> groups) {
+        return groups.stream()
+                     .map(SecurityGroup::groupId)
+                     .toList();
+    }
+
+    /// ## The AWS fail policy is the INVERSE of Hetzner's, deliberately — do not harmonise them
+    ///
+    /// `HetznerComputeProvider` REFUSES to provision when no firewall resolves, because a Hetzner
+    /// server with no firewall association accepts ALL inbound traffic (§6.2): there, an unresolved
+    /// firewall means a publicly reachable node.
+    ///
+    /// EC2 security groups default-DENY. An instance launched with no Aether group attached is
+    /// unreachable, not exposed — the failure is a node that cannot join, which is visible and
+    /// self-correcting, rather than a silent security hole. Refusing here would therefore kill
+    /// auto-heal permanently to prevent an exposure that cannot occur on this provider. So: WARN
+    /// loudly, naming the cluster, the source and what was not attached, and proceed.
+    ///
+    /// The same reasoning covers a FAILED lookup (see [#securityGroupLookupUnavailable]), which is
+    /// the second place the two providers diverge: unknown state is not evidence of a safe one on
+    /// Hetzner, but on AWS there is no unsafe state for it to hide.
+    private static List<String> warnWhenNothingResolved(List<String> ids, ClusterName cluster, SourceName source) {
+        if (ids.isEmpty()) {
+            log.warn("AWS provision: no Aether-managed security group is tagged {}={},{}={} — the instance is created "
+                    + "with NO Aether ingress attached and will be UNREACHABLE on every port those rules would have "
+                    + "opened (EC2 security groups default-deny, so this is an availability failure, not an exposure). "
+                    + "Declare `[source.{}.firewall] allow_ingress` so bootstrap creates the group, or set "
+                    + "`[cloud.compute] security_group_ids`.",
+                     CLUSTER_TAG,
+                     cluster,
+                     SOURCE_TAG,
+                     source,
+                     source);
+        }
+
+        return ids;
+    }
+
+    /// FER — degrade-and-continue. The lookup failure is absorbed rather than propagated, and the
+    /// guarantee that earns is exactly the one above: the instance is created UNREACHABLE instead of
+    /// not at all, so auto-heal keeps making progress. Mechanism: a single attempt, no retry — a
+    /// transient DescribeSecurityGroups failure yields one instance with no Aether ingress, which
+    /// the next reconciler pass replaces once the lookup works again.
+    private static List<String> securityGroupLookupUnavailable(ClusterName cluster, SourceName source, Cause cause) {
+        log.warn("AWS provision: security-group lookup for {}={},{}={} FAILED ({}); the instance is created with NO "
+                + "Aether ingress attached and will be UNREACHABLE. Proceeding rather than refusing — an EC2 instance "
+                + "without a group is denied inbound, so unlike Hetzner there is no exposure to guard against.",
+                 CLUSTER_TAG,
+                 cluster,
+                 SOURCE_TAG,
+                 source,
+                 cause.message());
+
+        return List.of();
+    }
+
+    /// A group lookup is `(cluster, source)`-scoped, so with no cluster name there is no selector to
+    /// run. AWS does not refuse the create for this (see [#warnWhenNothingResolved]); it warns and
+    /// launches with whatever EC2 defaults to, which is the account's default security group.
+    private static Promise<List<String>> securityGroupScopeUnresolved(SourceName source) {
+        log.warn("AWS provision: cluster name unresolved (absent from the provisioning context and from "
+                + "AETHER_CLUSTER_NAME), so no {}/{} selector exists for source '{}' — the instance is created with NO "
+                + "Aether ingress attached and will be UNREACHABLE.",
+                 CLUSTER_TAG,
+                 SOURCE_TAG,
+                 source);
+
+        return Promise.success(List.of());
+    }
+
+    private RunInstancesRequest buildRunRequest(ProvisionRequest request, List<String> securityGroupIds) {
         var base = RunInstancesRequest.runInstancesRequest(request.image(),
                                                            request.instanceSize(),
                                                            1,
                                                            1,
                                                            config.keyName(),
-                                                           config.securityGroupIds(),
+                                                           securityGroupIds,
                                                            Option.some(config.subnetId()),
                                                            Option.some(request.userData().or("")),
                                                            zoneOption(request.zone()));
