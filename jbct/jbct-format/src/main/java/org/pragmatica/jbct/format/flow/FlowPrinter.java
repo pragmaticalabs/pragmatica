@@ -426,6 +426,10 @@ final class FlowPrinter {
                     }
 
                     newline();
+                    // In-span own-line comments: for an annotation with no arguments (`@Override`)
+                    // the parser puts a following comment INSIDE the annotation's leaf span, where
+                    // no walk visits it at all.
+                    flushInSpanOwnLineComments(kid);
                     printIndent();
                 } else if (spaceAfterAnnotation && kid.kindIs(RuleKind.ANNOTATION)) {
                     emit(" ");
@@ -2696,6 +2700,75 @@ final class FlowPrinter {
     }
 
     // ===== Comment emission (inline, but never affects layout decisions) =====
+    /// Emit unclaimed own-line comments lying INSIDE `node`'s token span.
+    ///
+    /// For an annotation with no argument list (`@Override`) the parser attaches a following comment
+    /// inside the annotation's own leaf span, so neither the token walk (which jumps over a child's
+    /// span wholesale) nor the leading-comment machinery ever visits it, and it was deleted. The
+    /// same-line case is handled by [#flushInSpanTrailingComment]; this covers the own-line one.
+    private void flushInSpanOwnLineComments(Cursor node) {
+        if (measuringMode) {
+            return;
+        }
+
+        var tokens = node.cst().tokens();
+
+        for (int idx = node.firstTokenIdx(); idx <= node.lastTokenIdx(); idx++) {
+            int kind = tokens.kindAt(idx);
+
+            if (kind >= 1 && kind <= 4 && !emittedTriviaTokens.contains(idx)) {
+                emitOwnLineComment(tokens, idx);
+            }
+        }
+    }
+
+    /// Emit one comment token on its own line at the current indent, then a newline. Mirrors the
+    /// per-token emission in [#emitLeadingComments] for comments that are not any node's leading
+    /// trivia.
+    private void emitOwnLineComment(TokenArray tokens, int tokIdx) {
+        int kind = tokens.kindAt(tokIdx);
+        boolean isLine = kind == 1 || kind == 3;
+        boolean isBlock = kind == 2 || kind == 4;
+
+        if (!isLine && !isBlock) {
+            return;
+        }
+
+        if (currentColumn > 0) {
+            newline();
+        }
+
+        if (isLine) {
+            printIndent();
+
+            var text = tokens.textAt(tokIdx).toString().stripTrailing();
+
+            output.append(text);
+            currentColumn += text.length();
+        } else {
+            var lines = tokens.textAt(tokIdx).toString().split("\n", -1);
+
+            for (int i = 0; i < lines.length; i++) {
+                if (i == 0) {
+                    printIndent();
+                }
+
+                var line = lines[i].stripTrailing();
+
+                output.append(line);
+                currentColumn += line.length();
+                if (i < lines.length - 1) {
+                    output.append("\n");
+                    currentColumn = 0;
+                    currentLine++;
+                }
+            }
+        }
+
+        newline();
+        emittedTriviaTokens.add(tokIdx);
+    }
+
     private void emitLeadingComments(Cursor node) {
         boolean emittedAny = false;
         // Iterate by token index so we can dedupe (under v6, leading trivia is sometimes
