@@ -16,11 +16,13 @@
  */
 package org.pragmatica.cloud.aws.api;
 
+import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 
+import tools.jackson.dataformat.xml.annotation.JacksonXmlElementWrapper;
 import tools.jackson.dataformat.xml.annotation.JacksonXmlProperty;
 
 
@@ -33,7 +35,44 @@ import tools.jackson.dataformat.xml.annotation.JacksonXmlProperty;
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record SecurityGroup(@JacksonXmlProperty(localName = "groupId") String groupId,
                             @JacksonXmlProperty(localName = "groupName") String groupName,
-                            @JacksonXmlProperty(localName = "tagSet") Instance.TagSet tagSet) {
+                            @JacksonXmlProperty(localName = "tagSet") Instance.TagSet tagSet,
+                            @JacksonXmlProperty(localName = "ipPermissions") IpPermissionSet ipPermissions) {
+    /// Inbound permissions. Bound because `closeIngress` has to know whether the rule it just revoked
+    /// was the LAST one: the [org.pragmatica.aether.environment.ComputeProvider#closeIngress] contract
+    /// disposes the provider resource when its final rule goes, and on EC2 the revoke call reports
+    /// nothing about what remains. Outbound (`ipPermissionsEgress`) is deliberately NOT bound — Aether
+    /// never manages egress, and binding it would invite code that does.
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record IpPermissionSet(@JacksonXmlElementWrapper(useWrapping = false)
+                                  @JacksonXmlProperty(localName = "item") List<IpPermission> items) {}
+
+    /// One inbound permission. `fromPort`/`toPort` are boxed because EC2 omits them entirely for
+    /// protocols that have no ports (`-1`/`icmp`), and a primitive would silently read that as port 0.
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record IpPermission(@JacksonXmlProperty(localName = "ipProtocol") String ipProtocol,
+                               @JacksonXmlProperty(localName = "fromPort") Integer fromPort,
+                               @JacksonXmlProperty(localName = "toPort") Integer toPort,
+                               @JacksonXmlElementWrapper(useWrapping = false)
+                               @JacksonXmlProperty(localName = "ipRanges") IpRangeSet ipRanges) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record IpRangeSet(@JacksonXmlElementWrapper(useWrapping = false)
+                             @JacksonXmlProperty(localName = "item") List<IpRange> items) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record IpRange(@JacksonXmlProperty(localName = "cidrIp") String cidrIp) {}
+
+    /// How many inbound permissions this group carries. Absent/empty deserializes to zero rather than
+    /// failing: a group with no rules is an ordinary state — it is exactly what the last revoke leaves
+    /// behind, and the value this method exists to report.
+    public int inboundRuleCount() {
+        if (ipPermissions == null || ipPermissions.items() == null) {
+            return 0;
+        }
+
+        return ipPermissions.items().size();
+    }
+
     /// Tags as a key/value map, tolerating an absent tag set (`<tagSet />` deserializes with a null
     /// item list — an untagged group, not a malformed response).
     public Map<String, String> tags() {

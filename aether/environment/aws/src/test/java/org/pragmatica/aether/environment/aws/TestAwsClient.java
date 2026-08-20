@@ -39,8 +39,10 @@ final class TestAwsClient implements AwsClient {
     Promise<Unit> authorizeIngressResponse = Promise.success(Unit.unit());
     Promise<Unit> revokeIngressResponse = Promise.success(Unit.unit());
     Promise<Unit> deleteSecurityGroupResponse = Promise.success(Unit.unit());
+    Promise<Option<String>> vpcOfSubnetResponse = Promise.success(Option.none());
     Queue<Promise<String>> secretResponses;
 
+    String lastVpcLookupSubnetId;
     List<String> lastTerminatedIds;
     List<String> lastRebootedIds;
     List<String> lastTagResourceIds;
@@ -154,6 +156,12 @@ final class TestAwsClient implements AwsClient {
     public Promise<Unit> deleteSecurityGroup(String groupId) {
         lastDeletedGroupId = groupId;
         return deleteSecurityGroupResponse;
+    }
+
+    @Override
+    public Promise<Option<String>> vpcOfSubnet(String subnetId) {
+        lastVpcLookupSubnetId = subnetId;
+        return vpcOfSubnetResponse;
     }
 
     @Override

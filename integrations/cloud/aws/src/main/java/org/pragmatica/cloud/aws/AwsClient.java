@@ -29,6 +29,7 @@ import java.util.stream.IntStream;
 import org.pragmatica.cloud.aws.api.CreateSecurityGroupResponse;
 import org.pragmatica.cloud.aws.api.DescribeInstancesResponse;
 import org.pragmatica.cloud.aws.api.DescribeSecurityGroupsResponse;
+import org.pragmatica.cloud.aws.api.DescribeSubnetsResponse;
 import org.pragmatica.cloud.aws.api.DescribeTargetHealthResponse;
 import org.pragmatica.cloud.aws.api.RunInstancesRequest;
 import org.pragmatica.cloud.aws.api.RunInstancesResponse;
@@ -94,6 +95,10 @@ public interface AwsClient {
     /// Deletes a security group. An already-deleted group (`InvalidGroup.NotFound`) resolves as
     /// success, so repeated teardown is idempotent.
     Promise<Unit> deleteSecurityGroup(String groupId);
+    /// The VPC a subnet belongs to, or empty when the subnet is unknown. Used to place a new security
+    /// group in the same VPC as the instances that will carry it — a group in the wrong VPC cannot be
+    /// attached, and `RunInstances` rejects the pair.
+    Promise<Option<String>> vpcOfSubnet(String subnetId);
     // --- ELBv2 operations ---
     /// Registers instances with a target group.
     Promise<Unit> registerTargets(String targetGroupArn, List<String> instanceIds);
@@ -530,6 +535,19 @@ record AwsClientRecord(AwsConfig config, HttpOperations http, JsonMapper jsonMap
              + "&IpPermissions.1.FromPort=" + port
              + "&IpPermissions.1.ToPort=" + port
              + "&IpPermissions.1.IpRanges.1.CidrIp=" + AwsSigV4Signer.urlEncode(cidr);
+    }
+
+    @Override
+    public Promise<Option<String>> vpcOfSubnet(String subnetId) {
+        return postQuery(EC2_SERVICE,
+                         config.ec2Url(),
+                         buildDescribeSubnetsForm(subnetId),
+                         DescribeSubnetsResponse.class).map(DescribeSubnetsResponse::vpcId);
+    }
+
+    private static String buildDescribeSubnetsForm(String subnetId) {
+        return "Action=DescribeSubnets&Version=" + EC2_API_VERSION
+             + "&SubnetId.1=" + AwsSigV4Signer.urlEncode(subnetId);
     }
 
     private static String buildDeleteSecurityGroupForm(String groupId) {

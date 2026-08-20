@@ -13,6 +13,8 @@ import java.util.stream.Stream;
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentError;
+import org.pragmatica.aether.environment.FirewallName;
+import org.pragmatica.aether.environment.IngressHandle;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.InstanceStatus;
@@ -208,6 +210,146 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
     /// owns — deliberately not by persisting ids (they go stale the moment a group is recreated out
     /// of band) and not by re-creating from `SourceProfile.firewallRules` (that turns rule drift
     /// into a silent reconciliation).
+    /// Ingress (REQ-5.1.8.4), create-or-find. ONE security group per `(cluster, source)`, carrying every
+    /// rule that source declares, selected by the `aether-cluster` + `aether-source` tags. Repeated calls
+    /// for the same source return the SAME handle, so a `"tcp+udp"` entry becomes two permissions on one
+    /// group rather than two groups.
+    ///
+    /// The returned id is fed back into instance-create (`securityGroupIds`), which is why the group has
+    /// to exist BEFORE the instance does — see [#resolveSecurityGroupIds].
+    ///
+    /// **Simpler than the Hetzner analogue on purpose.** `AuthorizeSecurityGroupIngress` is additive and
+    /// per-permission, so "rules the caller did not name are left untouched" (REQ-5.1.8.1) holds without
+    /// the read-modify-write union `HetznerComputeProvider.openOrPatch` needs, and a duplicate authorize
+    /// is tolerated as success by the client rather than having to be filtered here.
+    @Override
+    public Promise<IngressHandle> openIngress(SourceName source,
+                                              int port,
+                                              String protocol,
+                                              String sourceCidr,
+                                              String description) {
+        return ingressCluster().async()
+                             .flatMap(cluster -> openIngressFor(cluster, source, port, protocol, sourceCidr, description));
+    }
+
+    @Override
+    public Promise<Unit> closeIngress(SourceName source, int port, String protocol, String sourceCidr) {
+        return ingressCluster().async()
+                             .flatMap(cluster -> client.describeSecurityGroups(securityGroupSelector(cluster, source)))
+                             .flatMap(found -> withdrawFrom(found, port, protocol, sourceCidr));
+    }
+
+    /// A managed security group MUST carry `aether-cluster` — every scoped cleanup path enumerates by
+    /// that tag, so an untagged group is invisible to `cluster destroy` and to the out-of-band reaper,
+    /// and leaks as a paid resource. Refusing loudly beats creating one nothing can later find; the
+    /// bootstrap caller always supplies the cluster. Mirrors `HetznerComputeProvider.firewallCluster`.
+    private Result<ClusterName> ingressCluster() {
+        return config.clusterName()
+                     .toResult(EnvironmentError.operationNotSupported(NO_CLUSTER_FOR_INGRESS));
+    }
+
+    private static final String NO_CLUSTER_FOR_INGRESS = "openIngress/closeIngress (no cluster name resolved for this provider — a security group without "
+                                                       + "the aether-cluster tag cannot be reclaimed by cleanup and would leak)";
+
+    private Promise<IngressHandle> openIngressFor(ClusterName cluster,
+                                                  SourceName source,
+                                                  int port,
+                                                  String protocol,
+                                                  String sourceCidr,
+                                                  String description) {
+        return client.describeSecurityGroups(securityGroupSelector(cluster, source))
+                     .flatMap(found -> groupIdFor(found, cluster, source))
+                     .flatMap(groupId -> authorizeOn(groupId, port, protocol, sourceCidr, description));
+    }
+
+    /// Find the group for this `(cluster, source)`, or create and TAG one. The tagging is a separate
+    /// `CreateTags` call because EC2's `CreateSecurityGroup` takes no tag payload in this API version —
+    /// so there is a window in which the group exists untagged. It is closed immediately and on the same
+    /// promise chain; a failure to tag surfaces as a failed openIngress rather than leaving an
+    /// unreclaimable group behind silently.
+    private Promise<String> groupIdFor(List<SecurityGroup> found, ClusterName cluster, SourceName source) {
+        if (!found.isEmpty()) {
+            return Promise.success(found.getFirst().groupId());
+        }
+
+        var name = FirewallName.forSource(cluster, source);
+
+        return vpcForNewGroup().flatMap(vpc -> client.createSecurityGroup(name.value(),
+                                                                          ingressDescription(cluster, source),
+                                                                          vpc))
+                             .flatMap(groupId -> tagGroup(groupId, cluster, source));
+    }
+
+    /// The VPC to create the group in, DERIVED from the configured subnet rather than configured
+    /// separately.
+    ///
+    /// A security group must live in the same VPC as the instances that will carry it: one created in
+    /// the account's default VPC cannot be attached to an instance launched into a subnet of another,
+    /// and `RunInstances` rejects the pair. Since `[cloud.compute] subnet_id` already pins where
+    /// instances land, the VPC follows from it — a separate `vpc_id` knob could be set inconsistently
+    /// with the subnet, and this cannot be.
+    ///
+    /// No subnet configured means nothing constrains placement, so the group goes to the default VPC,
+    /// which is then the correct answer rather than a fallback. A subnet that cannot be resolved yields
+    /// the same, and the create either succeeds (default VPC really was right) or fails loudly at EC2 —
+    /// preferable to guessing a VPC id.
+    private Promise<Option<String>> vpcForNewGroup() {
+        var subnetId = config.subnetId();
+
+        if (subnetId == null || subnetId.isBlank()) {
+            return Promise.success(Option.none());
+        }
+
+        return client.vpcOfSubnet(subnetId);
+    }
+
+    private Promise<String> tagGroup(String groupId, ClusterName cluster, SourceName source) {
+        return client.createTags(List.of(groupId),
+                                 securityGroupSelector(cluster, source))
+                     .map(_ -> groupId);
+    }
+
+    private static String ingressDescription(ClusterName cluster, SourceName source) {
+        return "Aether ingress for cluster " + cluster.value() + ", source " + source.value();
+    }
+
+    private Promise<IngressHandle> authorizeOn(String groupId,
+                                               int port,
+                                               String protocol,
+                                               String sourceCidr,
+                                               String description) {
+        return client.authorizeSecurityGroupIngress(groupId, protocol, port, sourceCidr, description)
+                     .map(_ -> IngressHandle.ingressHandle(groupId));
+    }
+
+    /// Withdraw ONE rule, and dispose the group once its last rule goes — the
+    /// [ComputeProvider#closeIngress] contract. EC2's revoke reports nothing about what remains, so the
+    /// group is re-read afterwards and deleted only when the re-read shows no inbound permissions left.
+    ///
+    /// Both "no such group" and "no such rule" are already tolerated as success by the client, so a
+    /// repeated close is a no-op rather than an error.
+    private Promise<Unit> withdrawFrom(List<SecurityGroup> found, int port, String protocol, String sourceCidr) {
+        if (found.isEmpty()) {
+            return Promise.success(Unit.unit());
+        }
+
+        var groupId = found.getFirst().groupId();
+
+        return client.revokeSecurityGroupIngress(groupId, protocol, port, sourceCidr)
+                     .flatMap(_ -> client.describeSecurityGroups(Map.of()))
+                     .flatMap(groups -> deleteWhenEmptied(groups, groupId));
+    }
+
+    private Promise<Unit> deleteWhenEmptied(List<SecurityGroup> groups, String groupId) {
+        var remaining = groups.stream().filter(group -> groupId.equals(group.groupId())).findFirst();
+
+        if (remaining.isEmpty() || remaining.get().inboundRuleCount() > 0) {
+            return Promise.success(Unit.unit());
+        }
+
+        return client.deleteSecurityGroup(groupId);
+    }
+
     private Promise<List<String>> resolveSecurityGroupIds(ProvisionContext ctx) {
         var configured = config.securityGroupIds();
 
