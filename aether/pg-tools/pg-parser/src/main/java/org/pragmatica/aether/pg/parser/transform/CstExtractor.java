@@ -42,7 +42,8 @@ public final class CstExtractor {
             return Identifier.unquoted(nav.span(), unquoted.unwrap());
         }
 
-        return classifyRawIdentifier(nav.span(), nav.firstTokenText().or("???"));
+        return classifyRawIdentifier(nav.span(),
+                                     nav.firstTokenText().or("???"));
     }
 
     /// peglib 0.7.x lexes an identifier as ONE token — `ColId`, or the kind of whatever keyword rule
@@ -52,11 +53,14 @@ public final class CstExtractor {
     /// delimiters stripped here rather than by the grammar.
     private static Identifier classifyRawIdentifier(SourceSpan span, String raw) {
         if (raw.length() > 3 && (raw.startsWith("U&\"") || raw.startsWith("u&\"")) && raw.endsWith("\"")) {
-            return new Identifier(span, unescapeDoubled(raw.substring(3, raw.length() - 1)), Identifier.QuoteStyle.UNICODE_QUOTED);
+            return new Identifier(span,
+                                  unescapeDoubled(raw.substring(3, raw.length() - 1)),
+                                  Identifier.QuoteStyle.UNICODE_QUOTED);
         }
 
         if (raw.length() > 1 && raw.startsWith("\"") && raw.endsWith("\"")) {
-            return Identifier.quoted(span, unescapeDoubled(raw.substring(1, raw.length() - 1)));
+            return Identifier.quoted(span,
+                                     unescapeDoubled(raw.substring(1, raw.length() - 1)));
         }
 
         return Identifier.unquoted(span, raw);
@@ -123,11 +127,10 @@ public final class CstExtractor {
             var leaf = switch (child) {
                 case CstNode.Token tok -> Option.present(classifyRawIdentifier(tok.span(), tok.text()));
                 case CstNode.Terminal term -> Option.present(classifyRawIdentifier(term.span(), term.text()));
-                default -> Option.<Identifier>empty();
+                default -> Option.<Identifier> empty();
             };
 
-            leaf.filter(id -> !keywords.contains(id.value().toLowerCase()))
-                .onPresent(result::add);
+            leaf.filter(id -> !keywords.contains(id.value().toLowerCase())).onPresent(result::add);
         }
 
         return result;
@@ -142,11 +145,15 @@ public final class CstExtractor {
 
     private static String unquoteSqlString(String raw) {
         if (raw.length() > 2 && (raw.startsWith("E'") || raw.startsWith("e'")) && raw.endsWith("'")) {
-            return raw.substring(2, raw.length() - 1).replace("''", "'");
+            return raw.substring(2,
+                                 raw.length() - 1)
+                      .replace("''", "'");
         }
 
         if (raw.length() > 1 && raw.startsWith("'") && raw.endsWith("'")) {
-            return raw.substring(1, raw.length() - 1).replace("''", "'");
+            return raw.substring(1,
+                                 raw.length() - 1)
+                      .replace("''", "'");
         }
 
         return raw;
@@ -173,7 +180,6 @@ public final class CstExtractor {
 
     public static QualifiedName extractQualifiedName(CstNavigator nav) {
         var parts = new ArrayList<Identifier>();
-
         // `QualifiedName <- ColId ('.' (ColId / '*'))*`, so every direct TOKEN child is a name part
         // and the dots arrive as Terminals. Selecting by position rather than by the name "ColId" is
         // required under identifier fallback: a part that happens to spell a keyword is lexed under
@@ -184,8 +190,8 @@ public final class CstExtractor {
                 case CstNode.Token tok -> parts.add(classifyRawIdentifier(tok.span(), tok.text()));
                 // A part colliding with an inline literal arrives as an anonymous Terminal; the '.'
                 // and '*' separators arrive the same way, so they are the only things to skip.
-                case CstNode.Terminal term when !term.text().equals(".") && !term.text().equals("*") ->
-                        parts.add(classifyRawIdentifier(term.span(), term.text()));
+                case CstNode.Terminal term when!term.text().equals(".") && !term.text().equals("*") -> parts.add(classifyRawIdentifier(term.span(),
+                                                                                                                                       term.text()));
                 default -> {}
             }
         }
@@ -198,8 +204,7 @@ public final class CstExtractor {
                 return extractQualifiedName(nested.unwrap());
             }
 
-            nav.findAll("ColId")
-               .forEach(colId -> parts.add(extractIdentifier(colId)));
+            nav.findAll("ColId").forEach(colId -> parts.add(extractIdentifier(colId)));
         }
 
         return new QualifiedName(nav.span(), parts);

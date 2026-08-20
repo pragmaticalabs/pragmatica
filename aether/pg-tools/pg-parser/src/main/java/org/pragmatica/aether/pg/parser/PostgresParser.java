@@ -128,7 +128,9 @@ public final class PostgresParser {
             var span = spanOf(cst.spanStart(nodeIdx), cst.spanEnd(nodeIdx));
 
             if (cst.isError(nodeIdx)) {
-                return new CstNode.Error(span, cst.textAt(nodeIdx).toString(), "");
+                return new CstNode.Error(span,
+                                         cst.textAt(nodeIdx).toString(),
+                                         "");
             }
 
             return new CstNode.NonTerminal(span, cst.kindNameAt(nodeIdx), childrenOf(nodeIdx));
@@ -222,7 +224,8 @@ public final class PostgresParser {
     /// rule; 0.6.0 handed back `Input` directly. Without unwrapping, every script reports exactly
     /// one statement — the `Input` node itself — instead of the statements inside it.
     private static CstNode unwrapRoot(CstNode node) {
-        return node instanceof CstNode.NonTerminal nt && nt.ruleName().equals("_ROOT")
+        return node instanceof CstNode.NonTerminal nt && nt.ruleName()
+                                                           .equals("_ROOT")
                ? nt.children()
                    .stream()
                    .filter(CstNode.NonTerminal.class::isInstance)

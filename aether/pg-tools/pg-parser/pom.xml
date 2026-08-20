@@ -37,35 +37,75 @@
         </dependency>
     </dependencies>
 
-    <profiles>
-        <profile>
-            <id>generate-parser</id>
-            <build>
-                <plugins>
-                    <plugin>
-                        <groupId>org.pragmatica-lite</groupId>
-                        <artifactId>peglib-maven-plugin</artifactId>
-                        <version>${peglib.version}</version>
-                        <executions>
-                            <execution>
-                                <id>generate-pg-parser</id>
-                                <phase>generate-sources</phase>
-                                <goals>
-                                    <goal>generate</goal>
-                                </goals>
-                                <configuration>
-                                    <grammarFile>${project.basedir}/src/main/resources/org/pragmatica/aether/pg/parser/postgres.peg</grammarFile>
-                                    <outputDirectory>${project.basedir}/src/main/java</outputDirectory>
-                                    <packageName>org.pragmatica.aether.pg.parser</packageName>
-                                    <lexerClassName>PgSqlLexer</lexerClassName>
-                                    <parserClassName>PgSqlParser</parserClassName>
-                                    <visitorClassName>PgSqlVisitor</visitorClassName>
-                                </configuration>
-                            </execution>
-                        </executions>
-                    </plugin>
-                </plugins>
-            </build>
-        </profile>
-    </profiles>
+    <!--
+      The PostgreSQL lexer/parser/visitor are GENERATED from `postgres.peg` on every build, into
+      `target/generated-sources/peglib`, and are NOT committed.
+
+      They used to be generated into `src/main/java` under an opt-in `generate-parser` profile and
+      checked in. That put machine-written code where the jbct toolchain treats it as hand-written,
+      with two consequences: `jbct:check` failed the build on generator output it cannot change
+      (`PgSqlVisitor.defaultResult()` returns null, which is ordinary visitor codegen but violates
+      JBCT-RET-03), and `jbct:format` rewrote hundreds of lines of generated source on every run,
+      leaving a permanently dirty tree for churn that regeneration discards.
+
+      Generating into `target/` fixes both at the root: the toolchain never sees the files, and the
+      grammar becomes the single source of truth rather than the grammar plus a snapshot of its output
+      that a stale regeneration could silently contradict.
+    -->
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>peglib-maven-plugin</artifactId>
+                <version>${peglib.version}</version>
+                <executions>
+                    <execution>
+                        <id>generate-pg-parser</id>
+                        <phase>generate-sources</phase>
+                        <goals>
+                            <goal>generate</goal>
+                        </goals>
+                        <configuration>
+                            <grammarFile>${project.basedir}/src/main/resources/org/pragmatica/aether/pg/parser/postgres.peg</grammarFile>
+                            <outputDirectory>${project.build.directory}/generated-sources/peglib</outputDirectory>
+                            <packageName>org.pragmatica.aether.pg.parser</packageName>
+                            <lexerClassName>PgSqlLexer</lexerClassName>
+                            <parserClassName>PgSqlParser</parserClassName>
+                            <visitorClassName>PgSqlVisitor</visitorClassName>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!--
+              peglib:generate has no parameter that registers its output as a compile source root
+              (`grammarFile`, `importDirectory`, `outputDirectory`, `packageName`, the three class
+              names, `smokeInput`, `failOnWarning` — that is the whole surface), and Maven only
+              compiles `target/generated-sources/annotations` implicitly. Without this the generated
+              lexer/parser/visitor are written and then ignored, and the hand-written code that calls
+              them fails to compile.
+
+              Build-scope only: it contributes nothing to the artifact and no runtime dependency.
+            -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>build-helper-maven-plugin</artifactId>
+                <version>3.6.0</version>
+                <executions>
+                    <execution>
+                        <id>add-generated-parser-source</id>
+                        <phase>generate-sources</phase>
+                        <goals>
+                            <goal>add-source</goal>
+                        </goals>
+                        <configuration>
+                            <sources>
+                                <source>${project.build.directory}/generated-sources/peglib</source>
+                            </sources>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
 </project>
