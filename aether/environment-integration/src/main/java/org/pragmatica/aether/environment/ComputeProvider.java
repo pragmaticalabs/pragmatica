@@ -69,6 +69,26 @@ public interface ComputeProvider {
         return EnvironmentError.operationNotSupported("closeIngress").promise();
     }
 
+    /// Destroy the ingress resource with this id outright, whatever rules it still holds — the teardown
+    /// counterpart of [#openIngress], used by `aether cluster destroy` against the ids recorded in
+    /// `bootstrap-state.json`.
+    ///
+    /// Distinct from [#closeIngress], which withdraws ONE rule and disposes the resource only when its
+    /// last rule goes. Teardown knows the resource must go regardless, and must not have to enumerate
+    /// and withdraw rules one at a time to get there.
+    ///
+    /// Exists as an SPI method rather than a provider branch in the cleanup code because a resource
+    /// created through this interface has to be reclaimable through it too. The alternative — cleanup
+    /// resolving a provider-specific client per provider — is how the teardown path stayed Hetzner-only
+    /// while other providers gained the ability to CREATE firewalls, which leaks paid resources that no
+    /// scoped sweep can find.
+    ///
+    /// Idempotent by contract: an already-absent resource is the outcome asked for, so it MUST resolve
+    /// as success, not as a failure a retry loop then hammers.
+    default Promise<Unit> disposeIngress(FirewallId ingressId) {
+        return EnvironmentError.operationNotSupported("disposeIngress").promise();
+    }
+
     default Promise<List<InstanceInfo>> listInstances(Map<String, String> tagFilter) {
         return listInstances().map(instances -> filterByTags(instances, tagFilter));
     }

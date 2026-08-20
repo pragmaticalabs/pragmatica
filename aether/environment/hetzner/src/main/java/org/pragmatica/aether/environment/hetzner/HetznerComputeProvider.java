@@ -15,6 +15,7 @@ import java.util.stream.Stream;
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentError;
+import org.pragmatica.aether.environment.FirewallId;
 import org.pragmatica.aether.environment.FirewallName;
 import org.pragmatica.aether.environment.IngressHandle;
 import org.pragmatica.aether.environment.InstanceId;
@@ -720,6 +721,16 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
                                        Stream.concat(current.stream(),
                                                      Stream.of(rule)).toList())
                      .map(_ -> handle);
+    }
+
+    /// Hetzner's API takes a numeric firewall id, so the provider-opaque [FirewallId] is converted at
+    /// this edge — and REFUSES rather than guessing when it is not numeric, because an invented id
+    /// deletes whatever resource happens to hold it.
+    @Override
+    public Promise<Unit> disposeIngress(FirewallId ingressId) {
+        return ingressId.asNumeric()
+                        .async()
+                        .flatMap(client::deleteFirewall);
     }
 
     private Promise<Unit> withdrawFrom(List<Firewall> found, int port, String protocol, String sourceCidr) {

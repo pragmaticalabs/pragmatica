@@ -253,15 +253,32 @@ class BootstrapPhaseFirewallTest {
     /// mentioned: a clean-looking bootstrap and an LB that serves nothing.
     @Test
     void execute_electedLbOnProviderWithoutIngress_warnsThatPortWasNotOpened() {
-        var ctx = contextWith(cloudSource("us-1", CloudProviderName.AWS, LoadBalancerMode.ELECTED, List.of()));
+        // GCP, not AWS: AWS gained `openIngress` (#463), so it is no longer a provider "without ingress"
+        // and correctly stops warning. The warning is for providers that still cannot open the port —
+        // pinning it against a provider that CAN would make this test pass for the wrong reason.
+        var ctx = contextWith(cloudSource("gcp-1", CloudProviderName.GCP, LoadBalancerMode.ELECTED, List.of()));
 
         var output = captureStdoutOf(() -> BootstrapPhaseFirewall.execute(ctx,
                                                                            (_, _, _, _) -> Result.success(new RefusingCompute()))).output();
 
         assertTrue(output.contains("WARN"), "the operator must be told, not left with a silent no-op: " + output);
-        assertTrue(output.contains("us-1"), "the warning must name the source: " + output);
-        assertTrue(output.contains("aws"), "the warning must name the provider: " + output);
+        assertTrue(output.contains("gcp-1"), "the warning must name the source: " + output);
+        assertTrue(output.contains("gcp"), "the warning must name the provider: " + output);
         assertTrue(output.contains("NOT opened"), "the warning must say the port was not opened: " + output);
+    }
+
+    /// The other half of #615, and the reason this pair exists: a provider that DOES manage ingress must
+    /// stop warning, or the warning becomes noise that operators learn to ignore. AWS moved from the
+    /// first test to this one when its `openIngress` landed.
+    @Test
+    void execute_electedLbOnAws_doesNotWarn_sinceAwsNowManagesIngress() {
+        var ctx = contextWith(cloudSource("us-1", CloudProviderName.AWS, LoadBalancerMode.ELECTED, List.of()));
+
+        var output = captureStdoutOf(() -> BootstrapPhaseFirewall.execute(ctx,
+                                                                           (_, _, _, _) -> Result.success(new RecordingCompute()))).output();
+
+        assertTrue(!output.contains("NOT opened"),
+                   "AWS opens the port now, so it must not claim otherwise: " + output);
     }
 
     /// The regression that matters: such a cluster has ZERO manageable sources, so it takes the

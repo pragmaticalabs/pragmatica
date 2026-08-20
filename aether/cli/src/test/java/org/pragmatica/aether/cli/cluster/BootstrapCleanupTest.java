@@ -222,6 +222,50 @@ class BootstrapCleanupTest {
         }
     }
 
+    /// Records what `cleanup` asks to be disposed. Firewall teardown now goes through the
+    /// [ComputeProvider#disposeIngress] SPI rather than a Hetzner-specific client, so the fake is a
+    /// provider — which is the point of the change: any provider that can create an ingress resource
+    /// can reclaim it, instead of teardown knowing about one vendor.
+    ///
+    /// `failuresBeforeSuccess` scripts the "server still detaching" case the live 2026-08-05 run hit.
+    static final class IngressRecordingComputeProvider implements ComputeProvider {
+        private final List<String> disposed;
+        private int failuresBeforeSuccess;
+
+        IngressRecordingComputeProvider(List<String> disposed, int failuresBeforeSuccess) {
+            this.disposed = disposed;
+            this.failuresBeforeSuccess = failuresBeforeSuccess;
+        }
+
+        @Override public Promise<Unit> disposeIngress(FirewallId ingressId) {
+            disposed.add(ingressId.value());
+
+            if (failuresBeforeSuccess > 0) {
+                failuresBeforeSuccess--;
+
+                return new TestCause("resource_in_use: still attached").promise();
+            }
+
+            return Promise.success(Unit.unit());
+        }
+
+        @Override public Promise<InstanceInfo> createFrom(ProvisionRequest request) {
+            return new TestCause("provision not used").promise();
+        }
+
+        @Override public Promise<Unit> terminate(InstanceId instanceId) {
+            return Promise.success(Unit.unit());
+        }
+
+        @Override public Promise<List<InstanceInfo>> listInstances() {
+            return Promise.success(List.of());
+        }
+
+        @Override public Promise<InstanceInfo> instanceStatus(InstanceId instanceId) {
+            return new TestCause("instanceStatus not used").promise();
+        }
+    }
+
     record TestCause(String message) implements Cause {}
 
     private static BootstrapState stateWithSshKey(long sshKeyId) {
@@ -270,16 +314,15 @@ class BootstrapCleanupTest {
     /// Asserting success is therefore NOT enough — the delete call itself has to be observed.
     @Test
     void cleanup_deletesFirewall_whenCloudFirewallResourcePresent() {
-        var firewallDeletes = new ArrayList<Long>();
+        var disposed = new ArrayList<String>();
         var state = stateWithFirewall(77L);
 
         var result = BootstrapCleanup.cleanup(state,
-                                              providerName -> new TestCause("unused").result(),
-                                              providerName -> Result.success(new FirewallRecordingHetznerClient(firewallDeletes)));
+                                              providerName -> Result.success(new IngressRecordingComputeProvider(disposed, 0)));
 
         assertTrue(result.isSuccess(), () -> "cleanup must succeed: " + result);
-        assertEquals(List.of(77L), firewallDeletes,
-                     "Hetzner deleteFirewall must be called with the recorded firewall id");
+        assertEquals(List.of("77"), disposed,
+                     "disposeIngress must be called with the recorded firewall id");
     }
 
     /// The live 2026-08-05 run failed here: `deleteServer` returns before Hetzner finishes detaching
@@ -288,18 +331,17 @@ class BootstrapCleanupTest {
     /// single attempt is what shipped.
     @Test
     void cleanup_retriesFirewallDelete_whenStillAttachedFromAsyncServerDeletion() {
-        var firewallDeletes = new ArrayList<Long>();
+        var disposed = new ArrayList<String>();
         var state = stateWithFirewall(77L);
-        var client = new FirewallRecordingHetznerClient(firewallDeletes, 2);
+        var compute = new IngressRecordingComputeProvider(disposed, 2);
 
         var result = BootstrapCleanup.cleanupWith(state,
                                                   BootstrapCleanup.CleanupResolvers.cleanupResolvers()
-                                                          .withCloudComputeFallback(_ -> new TestCause("unused").result())
-                                                          .withHetznerClientFallback(_ -> Result.success(client))
+                                                          .withCloudComputeFallback(_ -> Result.success(compute))
                                                           .withSleeper(_ -> {}));
 
         assertTrue(result.isSuccess(), () -> "delete must succeed once the servers finish detaching: " + result);
-        assertEquals(List.of(77L, 77L, 77L), firewallDeletes,
+        assertEquals(List.of("77", "77", "77"), disposed,
                      "two in-use refusals then success = three attempts");
     }
 
@@ -309,21 +351,42 @@ class BootstrapCleanupTest {
     /// the state file was written by something else, and deleting a guessed numeric id would destroy
     /// someone else's firewall. The delete call must never even reach the client.
     @Test
-    void cleanup_refusesNonNumericHetznerFirewallId_neverCallsDelete() {
-        var firewallDeletes = new ArrayList<Long>();
+    void cleanup_failsLoudly_whenTheProviderRefusesToDisposeIngress() {
+        // The refusal itself now lives in the provider — HetznerComputeProvider.disposeIngress converts
+        // the opaque FirewallId and declines a non-numeric one rather than guessing (pinned in
+        // HetznerComputeProviderTest). What cleanup owes is to SURFACE that refusal instead of reporting
+        // a successful teardown over a firewall that is still live and still billing.
         var state = stateWithFirewall("sg-0abc123def");
 
         var result = BootstrapCleanup.cleanup(state,
-                                              providerName -> new TestCause("unused").result(),
-                                              providerName -> Result.success(new FirewallRecordingHetznerClient(firewallDeletes)));
+                                              providerName -> Result.success(new RefusingIngressComputeProvider()));
 
-        assertTrue(result.isFailure(), "a non-numeric hetzner firewall id must not be treated as deletable");
-        result.onFailure(cause -> assertTrue(cause.message().contains("not numeric")
-                                             && cause.message().contains("sg-0abc123def")
-                                             && cause.message().contains("Refusing to guess"),
-                                             () -> "failure must surface FirewallId.NotNumeric's refusal, was: " + cause.message()));
-        assertTrue(firewallDeletes.isEmpty(),
-                   "deleteFirewall must NOT be called for a non-numeric id — guessing an id could destroy someone else's firewall");
+        assertTrue(result.isFailure(), "a provider that refuses disposal must fail the cleanup");
+        result.onFailure(cause -> assertTrue(cause.message().contains("Refusing to guess"),
+                                             () -> "the provider's refusal must reach the operator, was: " + cause.message()));
+    }
+
+    /// Stands in for `HetznerComputeProvider.disposeIngress` meeting a non-numeric id.
+    record RefusingIngressComputeProvider() implements ComputeProvider {
+        @Override public Promise<Unit> disposeIngress(FirewallId ingressId) {
+            return new FirewallId.NotNumeric(ingressId.value()).promise();
+        }
+
+        @Override public Promise<InstanceInfo> createFrom(ProvisionRequest request) {
+            return new TestCause("provision not used").promise();
+        }
+
+        @Override public Promise<Unit> terminate(InstanceId instanceId) {
+            return Promise.success(Unit.unit());
+        }
+
+        @Override public Promise<List<InstanceInfo>> listInstances() {
+            return Promise.success(List.of());
+        }
+
+        @Override public Promise<InstanceInfo> instanceStatus(InstanceId instanceId) {
+            return new TestCause("instanceStatus not used").promise();
+        }
     }
 
     @Test

@@ -541,18 +541,10 @@ sealed interface BootstrapCleanup {
                                                     CreatedResource.CloudFirewall firewall,
                                                     CleanupResolvers resolvers) {
         System.out.printf("  Deleting firewall %s (id=%s)...%n", firewall.name(), firewall.firewallId());
-        if (!HETZNER_PROVIDER.equals(firewall.provider())) {
-            return new UnsupportedFirewallProvider(firewall.provider()).result();
-        }
 
-        return firewall.firewallId()
-                       .asNumeric()
-                       .flatMap(id -> resolveHetznerClientFor(state,
-                                                              firewall.provider(),
-                                                              resolvers).flatMap(client -> deleteFirewallWithRetry(client,
-                                                                                                                   id,
-                                                                                                                   firewall,
-                                                                                                                   resolvers)));
+        return resolveComputeFor(state, firewall, resolvers).flatMap(compute -> disposeWithRetry(compute,
+                                                                                                 firewall,
+                                                                                                 resolvers));
     }
 
     /// Attempts bounded by [#FIREWALL_DELETE_ATTEMPTS]; the LAST failure is what surfaces, so a
@@ -560,15 +552,18 @@ sealed interface BootstrapCleanup {
     int FIREWALL_DELETE_ATTEMPTS = 6;
     long FIREWALL_DELETE_RETRY_MILLIS = 5_000L;
 
+    /// Provider-agnostic: the id is destroyed through [ComputeProvider#disposeIngress], so a provider
+    /// that can CREATE an ingress resource can always reclaim it. This used to branch on `hetzner` and
+    /// refuse everything else, which is how the teardown path would have silently stranded every AWS
+    /// security group as a billable orphan the moment AWS gained `openIngress`.
     @SuppressWarnings("JBCT-PAT-01")
-    private static Result<Unit> deleteFirewallWithRetry(HetznerClient client,
-                                                        long firewallId,
-                                                        CreatedResource.CloudFirewall firewall,
-                                                        CleanupResolvers resolvers) {
+    private static Result<Unit> disposeWithRetry(ComputeProvider compute,
+                                                 CreatedResource.CloudFirewall firewall,
+                                                 CleanupResolvers resolvers) {
         var attempt = 1;
 
         while (true) {
-            var result = client.deleteFirewall(firewallId).await();
+            var result = compute.disposeIngress(firewall.firewallId()).await();
 
             if (result.isSuccess() || attempt >= FIREWALL_DELETE_ATTEMPTS) {
                 return result;
@@ -706,6 +701,31 @@ sealed interface BootstrapCleanup {
 
         if (handle.credentialEnvVars().isEmpty()) {
             return fallbackCompute(vm, UNMAPPED_HANDLE_REASON, resolvers);
+        }
+
+        return resolvers.handleComputeResolver()
+                        .apply(handle);
+    }
+
+    /// The compute provider that can reclaim this firewall, resolved the same way the VM path resolves
+    /// its own: the persisted per-source cleanup handle when there is one, else the raw provider-env
+    /// fallback. Keeping the two paths identical matters because a firewall and the VMs it protected
+    /// belong to the SAME source — if one resolves credentials and the other does not, teardown reclaims
+    /// half the source and strands the rest.
+    private static Result<ComputeProvider> resolveComputeFor(BootstrapState state,
+                                                             CreatedResource.CloudFirewall firewall,
+                                                             CleanupResolvers resolvers) {
+        var handle = state.sources().get(firewall.sourceName().value());
+
+        if (handle == null || handle.credentialEnvVars().isEmpty()) {
+            System.err.println("  WARN: no usable persisted cleanup handle for source '" + firewall.sourceName().value()
+                              + "'; falling back to raw " + firewall.provider()
+                              + " env credentials to reclaim firewall " + firewall.name()
+                              + ". A token that provisioned SHOULD be able to reap, so reaping proceeds rather"
+                              + " than stranding a paid resource.");
+
+            return resolvers.cloudComputeFallback()
+                            .apply(firewall.provider());
         }
 
         return resolvers.handleComputeResolver()

@@ -324,9 +324,11 @@ public final class ClusterBootstrapConfigValidator {
     /// fail OPEN. On AWS/GCP/Azure the default security groups deny inbound, so the same gap fails
     /// closed — unreachable, not exposed — and operators are directed to their own security groups.
     /// Remove a provider's entry when its `openIngress` lands (#463).
-    private static final Map<CloudProviderName, String> INGRESS_UNSUPPORTED_REASONS = Map.of(CloudProviderName.AWS,
-                                                                                             "Provider 'aws' ingress management (security groups) is not yet implemented on this client",
-                                                                                             CloudProviderName.GCP,
+    /// AWS is absent because its `openIngress` LANDED (#463): security groups are created, tagged
+    /// `(aether-cluster, aether-source)`, attached at instance-create and reclaimed by `cluster destroy`.
+    /// GCP and Azure remain — remove each entry when its provider's `openIngress` lands, not before, or
+    /// pre-flight will accept `allow_ingress` that nothing enforces.
+    private static final Map<CloudProviderName, String> INGRESS_UNSUPPORTED_REASONS = Map.of(CloudProviderName.GCP,
                                                                                              "Provider 'gcp' ingress management (firewall rules) is not yet implemented on this client",
                                                                                              CloudProviderName.AZURE,
                                                                                              "Provider 'azure' ingress management (network security groups) is not yet implemented on this client");

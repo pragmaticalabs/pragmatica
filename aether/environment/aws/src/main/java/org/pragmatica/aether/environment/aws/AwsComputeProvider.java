@@ -13,6 +13,7 @@ import java.util.stream.Stream;
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentError;
+import org.pragmatica.aether.environment.FirewallId;
 import org.pragmatica.aether.environment.FirewallName;
 import org.pragmatica.aether.environment.IngressHandle;
 import org.pragmatica.aether.environment.InstanceId;
@@ -328,6 +329,13 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
     ///
     /// Both "no such group" and "no such rule" are already tolerated as success by the client, so a
     /// repeated close is a no-op rather than an error.
+    /// EC2 security-group ids are strings (`sg-…`), so no conversion is needed. The client already
+    /// tolerates `InvalidGroup.NotFound` as success, which satisfies the idempotence the SPI requires.
+    @Override
+    public Promise<Unit> disposeIngress(FirewallId ingressId) {
+        return client.deleteSecurityGroup(ingressId.value());
+    }
+
     private Promise<Unit> withdrawFrom(List<SecurityGroup> found, int port, String protocol, String sourceCidr) {
         if (found.isEmpty()) {
             return Promise.success(Unit.unit());

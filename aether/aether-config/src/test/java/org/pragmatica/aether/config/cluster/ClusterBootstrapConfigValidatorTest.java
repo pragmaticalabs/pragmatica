@@ -320,16 +320,19 @@ class ClusterBootstrapConfigValidatorTest {
         }
 
         /// #574 — `allow_ingress` on a provider with no ingress arm used to parse, validate and diff
-        /// cleanly while never being applied. On AWS/GCP/Azure that fails CLOSED (default security
-        /// groups deny inbound), so rejecting is about honesty rather than exposure; Hetzner, where
-        /// the same gap fails OPEN, is the one provider that actually applies them.
+        /// cleanly while never being applied. On GCP/Azure that fails CLOSED (their default rules deny
+        /// inbound), so rejecting is about honesty rather than exposure; Hetzner, where the same gap
+        /// fails OPEN, is why the rejection exists at all.
+        ///
+        /// **AWS is no longer in that set** (#463): its `openIngress` landed, so `allow_ingress` on an
+        /// AWS source is now honoured — security groups are created, tagged `(aether-cluster,
+        /// aether-source)`, attached at instance-create and reclaimed by `cluster destroy`. Rejecting it
+        /// would refuse a configuration the runtime now implements.
         @Test
-        void validate_allowIngressOnAwsSource_returnsPf19() {
+        void validate_allowIngressOnAwsSource_isAccepted_sinceAwsManagesIngress() {
             validate(cloudConfigWithFirewall(CloudProviderName.AWS))
-                .onSuccess(v -> Assertions.fail("Expected failure"))
-                .onFailure(cause -> assertThat(cause.message()).contains("PF-23")
-                                                              .contains("aws")
-                                                              .contains("security groups"));
+                .onFailure(cause -> Assertions.fail("AWS ingress is implemented; PF-23 must not reject it: "
+                                                    + cause.message()));
         }
 
         @Test

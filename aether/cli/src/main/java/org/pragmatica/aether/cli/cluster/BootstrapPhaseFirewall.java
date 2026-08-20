@@ -6,6 +6,7 @@ package org.pragmatica.aether.cli.cluster;
 
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
 import org.pragmatica.aether.config.cluster.CloudProviderName;
@@ -46,6 +47,7 @@ public sealed interface BootstrapPhaseFirewall {
     /// never be opened here, consistent with `[infrastructure.networking] type = "manual"`.
     /// Only `app_http` is ever auto-opened, and only under REQ-5.1.8.2.
     String HETZNER_PROVIDER = "hetzner";
+    String AWS_PROVIDER = "aws";
 
     static Result<BootstrapContext> execute(BootstrapContext ctx) {
         return execute(ctx, ProviderResolver::resolveCloudCompute);
@@ -100,8 +102,13 @@ public sealed interface BootstrapPhaseFirewall {
                           appHttpPort);
     }
 
+    /// Providers whose `openIngress` is implemented. Adding one here is what makes the CREATE_FIREWALL
+    /// phase actually run for it — and what silences the #615 "no ingress was opened" warning, since that
+    /// warning exists precisely for providers NOT in this set.
+    Set<String> MANAGES_INGRESS = Set.of(HETZNER_PROVIDER, AWS_PROVIDER);
+
     private static boolean manages(SourceProfile source) {
-        return HETZNER_PROVIDER.equals(providerName(source));
+        return MANAGES_INGRESS.contains(providerName(source));
     }
 
     private static String providerName(SourceProfile source) {

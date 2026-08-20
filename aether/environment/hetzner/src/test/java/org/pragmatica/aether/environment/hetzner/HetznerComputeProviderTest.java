@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.environment.CloudProviderSupport;
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.EnvironmentError;
+import org.pragmatica.aether.environment.FirewallId;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
@@ -1166,6 +1167,40 @@ class HetznerComputeProviderTest {
     /// firewall exists but this source name did not select it" (refuse — its peers ARE firewalled)
     /// are indistinguishable from the source-scoped lookup alone, and are separated by a
     /// cluster-scoped second look.
+    /// `disposeIngress` is the teardown counterpart of `openIngress`: `cluster destroy` hands back the
+    /// id recorded in `bootstrap-state.json` and expects the resource gone. The id is provider-opaque by
+    /// design (AWS uses `sg-…`, Azure an ARM path), and Hetzner's API takes a number — so the conversion
+    /// happens HERE, at the provider edge, and refuses rather than guessing.
+    @Nested
+    class DisposeIngressTests {
+
+        @Test
+        void disposeIngress_numericId_deletesThatFirewall() {
+            provider.disposeIngress(FirewallId.firewallId("77").unwrap())
+                    .await()
+                    .onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.lastDeletedFirewallId).isEqualTo(77L);
+        }
+
+        @Test
+        void disposeIngress_nonNumericId_refusesAndDeletesNothing() {
+            // An `sg-…` id under the hetzner provider means the ledger was written by something that is
+            // not this provider. Substituting a guessed number would delete whatever resource happens to
+            // hold it — on a shared account, somebody else's firewall.
+            provider.disposeIngress(FirewallId.firewallId("sg-0abc123def").unwrap())
+                    .await()
+                    .onSuccess(unit -> assertThat(unit).isNull())
+                    .onFailure(cause -> assertThat(cause.message()).contains("not numeric")
+                                                                   .contains("sg-0abc123def")
+                                                                   .contains("Refusing to guess"));
+
+            assertThat(testClient.deleteFirewallCalls)
+                .as("no delete may be attempted for an id this provider cannot interpret")
+                .isZero();
+        }
+    }
+
     @Nested
     class FirewallAssociationTests {
         private static final ClusterName CLUSTER = clusterName("prod-eu").unwrap();
