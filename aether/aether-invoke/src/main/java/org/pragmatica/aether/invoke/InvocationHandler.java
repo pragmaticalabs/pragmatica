@@ -198,7 +198,6 @@ class InvocationHandlerImpl implements InvocationHandler {
     }
 
     @Override
-
     // JBCT-RET-08: absent invocation context — no principal/origin-node on this InvokeRequest path
     @SuppressWarnings({"JBCT-RET-01", "JBCT-RET-08"})
     public void onInvokeRequest(InvokeRequest request) {

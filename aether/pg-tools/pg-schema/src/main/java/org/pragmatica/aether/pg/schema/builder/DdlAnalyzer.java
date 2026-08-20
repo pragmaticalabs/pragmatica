@@ -113,7 +113,6 @@ public final class DdlAnalyzer {
         var columns = new ArrayList<Column>();
         var constraints = new ArrayList<Constraint>();
         var tableElements = stmt.findAll("TableElement");
-
         // 0.7.x interposes the concrete element rule: `TableElement -> ColumnDef -> ColId DataType`,
         // where 0.6.0 inlined it as `TableElement -> ColId DataType`. Testing has("ColId") on the
         // TableElement therefore matched nothing and NO column was ever extracted — which is why
@@ -170,7 +169,6 @@ public final class DdlAnalyzer {
         Option<String> generatedExpr = Option.empty();
         Option<Column.IdentitySpec> identity = Option.empty();
         var colConstraints = elem.findAll("ColConstraint");
-
         // Dispatch on the constraint rules the grammar declares rather than on keyword presence:
         // under peglib 0.7.x kind unification a literal is named after whichever rule claims it, so
         // the NULL of `NOT NULL` arrives as `NullConstraint` and findAll("NullKW") sees nothing.
@@ -258,7 +256,6 @@ public final class DdlAnalyzer {
                                           .flatMap(CstExtractor::identifierBeforeNested)
                                           .map(id -> id.normalized());
         var e = constraintBody(tblConstraint.child("TableConstraintElem").or(tblConstraint));
-
         // Dispatch on the constraint rule name returned by constraintBody rather than on keyword
         // presence, for the same reason as everywhere else: a keyword's kind depends on which rule
         // claimed its literal.
@@ -331,7 +328,6 @@ public final class DdlAnalyzer {
 
         var tableName = qname.unwrap().normalized();
         var span = stmt.span();
-
         var renameAction = findFirst(stmt, "RenameAction");
 
         if (renameAction.isPresent()) {
@@ -346,7 +342,9 @@ public final class DdlAnalyzer {
                                                          names.get(0).normalized(),
                                                          names.get(1).normalized()));
             } else if (names.size() == 1) {
-                events.add(new SchemaEvent.TableRenamed(span, tableName, names.getFirst().normalized()));
+                events.add(new SchemaEvent.TableRenamed(span,
+                                                        tableName,
+                                                        names.getFirst().normalized()));
             }
 
             return;
@@ -383,16 +381,16 @@ public final class DdlAnalyzer {
 
         if (action.has("AddKW") && (action.has("ColumnKW") || !action.findAll("DataType").isEmpty())) {
             var dataTypes = action.findAll("DataType");
-
             // No findAll("ColId") gate: the added column's name may be an anonymous Terminal, and
             // extractColumn resolves it positionally anyway.
             if (!dataTypes.isEmpty()) {
                 var columns = new ArrayList<Column>();
                 var constraints = new ArrayList<Constraint>();
-
                 // Hand extractColumn the ColumnDef, not the action: the action's first leaf is
                 // the ADD keyword, and extractColumn now reads the name positionally.
-                extractColumn(action.child("ColumnDef").or(action), columns, constraints);
+                extractColumn(action.child("ColumnDef").or(action),
+                              columns,
+                              constraints);
                 for (var col : columns) events.add(new SchemaEvent.ColumnAdded(span, tableName, col));
 
                 for (var c : constraints) events.add(new SchemaEvent.ConstraintAdded(span, tableName, c));
@@ -448,7 +446,11 @@ public final class DdlAnalyzer {
             var colName = CstExtractor.identifierBeforeNested(action);
 
             if (colName.isPresent()) {
-                analyzeAlterColumnCmd(action, tableName, colName.unwrap().normalized(), span, events);
+                analyzeAlterColumnCmd(action,
+                                      tableName,
+                                      colName.unwrap().normalized(),
+                                      span,
+                                      events);
             }
         }
     }
@@ -602,8 +604,7 @@ public final class DdlAnalyzer {
         if (!enumLabels.isEmpty()) {
             var stringLiterals = enumLabels.getFirst().findAll("StringLiteral");
             var values = stringLiterals.stream()
-                                       .map(sl -> CstExtractor.stringLiteralText(sl)
-                                                    .or(""))
+                                       .map(sl -> CstExtractor.stringLiteralText(sl).or(""))
                                        .filter(s -> !s.isEmpty())
                                        .toList();
 
