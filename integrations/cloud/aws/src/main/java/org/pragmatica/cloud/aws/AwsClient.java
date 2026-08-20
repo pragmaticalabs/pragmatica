@@ -69,6 +69,11 @@ public interface AwsClient {
     // --- EC2 security group operations ---
     /// Creates a security group and returns its native id. An absent `vpcId` targets the account's
     /// default VPC, matching EC2's own default for the omitted parameter.
+    ///
+    /// Unlike its inverse [#deleteSecurityGroup] this call is **not** idempotent, and deliberately
+    /// so: a duplicate name fails with `InvalidGroup.Duplicate`, whose body carries no group id, so
+    /// there is no id to resolve the Promise with. Callers wanting create-or-reuse read
+    /// [#describeSecurityGroups] first and create only on an empty result.
     Promise<String> createSecurityGroup(String name, String description, Option<String> vpcId);
     /// Describes security groups matching every supplied `tag:{key}` = value filter (`Filter.N`,
     /// numbered from 1). A group that no longer exists yields an empty list rather than a failure,
