@@ -11,6 +11,7 @@ import java.util.function.BiFunction;
 import java.util.function.Function;
 import java.util.regex.Pattern;
 
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.cli.ExitCode;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
@@ -33,10 +34,9 @@ import static org.pragmatica.aether.management.route.ManagementRoute.NODE_SHUTDO
 class ClusterDestroyCommand implements Callable<Integer> {
     private static final int DRAIN_POLL_INTERVAL_MS = 2000;
     private static final int DRAIN_TIMEOUT_SECONDS = 120;
-    private static final Pattern CLUSTER_NAME_PATTERN = Pattern.compile("^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$");
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
 
-    static Function<String, org.pragmatica.lang.Option<BootstrapState>> stateLoader = BootstrapStatePersistence::load;
+    static Function<ClusterName, org.pragmatica.lang.Option<BootstrapState>> stateLoader = BootstrapStatePersistence::load;
 
     static Function<BootstrapState, Result<Unit>> resourceCleaner = BootstrapCleanup::cleanup;
 
@@ -44,17 +44,17 @@ class ClusterDestroyCommand implements Callable<Integer> {
     /// already deleted are tolerated. Deletes account keys named `aether-bootstrap-<cluster>-*` (the
     /// delimiter boundary) that `resourceCleaner` misses (reused / unrecorded keys). Injectable like
     /// `resourceCleaner`/`stateLoader` so tests exercise it without a real cloud call.
-    static BiFunction<BootstrapState, String, Result<Unit>> sshKeySweeper = BootstrapCleanup::sweepClusterSshKeys;
+    static BiFunction<BootstrapState, ClusterName, Result<Unit>> sshKeySweeper = BootstrapCleanup::sweepClusterSshKeys;
 
     /// RFC-0017 stage 6 / C3 — cluster-scoped VM sweep seam. Reaps the cluster-labelled VMs the
     /// bootstrap state never recorded (stage-5 cluster-provisioned workers, auto-heal
     /// replacements); selector is built from the cluster name, never a bare filter.
-    static BiFunction<BootstrapState, String, Result<Unit>> vmSweeper = BootstrapCleanup::sweepClusterVms;
+    static BiFunction<BootstrapState, ClusterName, Result<Unit>> vmSweeper = BootstrapCleanup::sweepClusterVms;
 
     /// #521 — registry-removal seam, injectable like `resourceCleaner`/`stateLoader` so a test can assert
     /// that a FAILED cloud cleanup leaves the entry in place (the operator's only remaining handle on VMs
     /// that are still billing) without writing to the real `~/.aether/clusters.toml`.
-    static BiFunction<ClusterRegistry, String, Result<ClusterRegistry>> registryRemover = ClusterDestroyCommand::removeRegistryEntry;
+    static BiFunction<ClusterRegistry, ClusterName, Result<ClusterRegistry>> registryRemover = ClusterDestroyCommand::removeRegistryEntry;
 
     @Option(names = "--yes", description = "Skip interactive confirmation")
     private boolean skipConfirmation;
@@ -62,6 +62,9 @@ class ClusterDestroyCommand implements Callable<Integer> {
     @Option(names = "--keep-resources", description = "Skip cloud resource termination (registry only)")
     private boolean keepResources;
 
+    /// Raw picocli-bound text, deliberately NOT a [ClusterName]: picocli assigns it before any Aether
+    /// code runs, so the parse happens in [#isOverrideAcceptable] / [#destroyCluster] where a rejection
+    /// can be reported as a usage error.
     @Option(names = "--cluster", description = "Override active cluster — destroy named cluster instead (CLI > active-context)")
     private String clusterNameOverride;
 
@@ -94,7 +97,7 @@ class ClusterDestroyCommand implements Callable<Integer> {
             return true;
         }
 
-        return CLUSTER_NAME_PATTERN.matcher(clusterNameOverride).matches();
+        return ClusterName.PATTERN.matcher(clusterNameOverride).matches();
     }
 
     private Result<Integer> executeDestroy(ClusterRegistry registry) {
@@ -121,8 +124,19 @@ class ClusterDestroyCommand implements Callable<Integer> {
                                                                          org.pragmatica.lang.Option.none()));
     }
 
+    /// The registry entry's name is the LAST place a raw `String` cluster name survives on this path —
+    /// `ClusterRegistry` is a persisted TOML index whose section keys are the names, and it stays
+    /// `String`-typed. It is parsed HERE, immediately before it becomes a destroy selector, because
+    /// everything downstream (`aether-cluster=<name>` VM sweep, `aether-bootstrap-<name>-` key sweep,
+    /// the state-file path) is a scoping decision that must not run on an unparseable name.
     private Result<Integer> destroyCluster(ClusterRegistry registry, ClusterRegistry.ClusterEntry entry) {
-        if (!skipConfirmation && !confirmDestruction(entry.name())) {
+        return ClusterName.clusterName(entry.name()).flatMap(clusterName -> destroyNamed(registry, entry, clusterName));
+    }
+
+    private Result<Integer> destroyNamed(ClusterRegistry registry,
+                                         ClusterRegistry.ClusterEntry entry,
+                                         ClusterName clusterName) {
+        if (!skipConfirmation && !confirmDestruction(clusterName)) {
             System.out.println("Aborted.");
 
             return Result.success(ExitCode.ERROR);
@@ -130,7 +144,7 @@ class ClusterDestroyCommand implements Callable<Integer> {
 
         applyEndpointOverride(entry);
 
-        return performDestruction(registry, entry);
+        return performDestruction(registry, clusterName);
     }
 
     private static void applyEndpointOverride(ClusterRegistry.ClusterEntry entry) {
@@ -141,13 +155,13 @@ class ClusterDestroyCommand implements Callable<Integer> {
         ClusterHttpClient.setEndpointOverride(entry.endpoint());
     }
 
-    private Result<Integer> performDestruction(ClusterRegistry registry, ClusterRegistry.ClusterEntry entry) {
+    private Result<Integer> performDestruction(ClusterRegistry registry, ClusterName clusterName) {
         var nodeIds = fetchNodeIds();
         var drainResults = drainAllNodes(nodeIds);
         var shutdownResults = shutdownAllNodes(nodeIds);
-        var cleanupOk = cleanupCloudResources(entry.name());
+        var cleanupOk = cleanupCloudResources(clusterName);
 
-        return finalizeDestruction(registry, entry.name(), cleanupOk, nodeIds, drainResults, shutdownResults);
+        return finalizeDestruction(registry, clusterName, cleanupOk, nodeIds, drainResults, shutdownResults);
     }
 
     /// #521 — registry honesty. The registry entry is the operator's only handle on a cluster whose VMs may
@@ -156,7 +170,7 @@ class ClusterDestroyCommand implements Callable<Integer> {
     /// true by design — skipping termination is the explicitly acknowledged path there, and removing the
     /// entry is correct.
     static Result<Integer> finalizeDestruction(ClusterRegistry registry,
-                                               String clusterName,
+                                               ClusterName clusterName,
                                                boolean cleanupOk,
                                                List<String> nodeIds,
                                                List<NodeResult> drainResults,
@@ -169,7 +183,7 @@ class ClusterDestroyCommand implements Callable<Integer> {
                               .map(_ -> printSummary(clusterName, nodeIds, drainResults, shutdownResults, true, true));
     }
 
-    boolean cleanupCloudResources(String clusterName) {
+    boolean cleanupCloudResources(ClusterName clusterName) {
         if (keepResources) {
             System.out.println("--keep-resources: skipping cloud resource termination.");
 
@@ -181,7 +195,7 @@ class ClusterDestroyCommand implements Callable<Integer> {
                                 this::runCleanup);
     }
 
-    private static boolean warnNoState(String clusterName) {
+    private static boolean warnNoState(ClusterName clusterName) {
         System.out.printf("No bootstrap state for cluster '%s' — skipping resource cleanup.%n", clusterName);
 
         return true;
@@ -233,11 +247,12 @@ class ClusterDestroyCommand implements Callable<Integer> {
                             .isSuccess();
     }
 
-    private static boolean confirmDestruction(String clusterName) {
+    private static boolean confirmDestruction(ClusterName clusterName) {
         System.out.printf("This will destroy cluster '%s' and shut down all nodes.%n", clusterName);
         var input = new org.pragmatica.aether.cli.Prompt().prompt("Type the cluster name to confirm", "");
 
-        return clusterName.equals(input);
+        return clusterName.value()
+                          .equals(input);
     }
 
     private List<String> fetchNodeIds() {
@@ -337,12 +352,12 @@ class ClusterDestroyCommand implements Callable<Integer> {
         return List.copyOf(results);
     }
 
-    private static Result<ClusterRegistry> removeRegistryEntry(ClusterRegistry registry, String name) {
-        if (!registryContains(registry, name)) {
+    private static Result<ClusterRegistry> removeRegistryEntry(ClusterRegistry registry, ClusterName name) {
+        if (!registryContains(registry, name.value())) {
             return Result.success(registry);
         }
 
-        return registry.remove(name)
+        return registry.remove(name.value())
                        .flatMap(updated -> updated.save()
                                                   .map(_ -> updated));
     }
@@ -354,7 +369,7 @@ class ClusterDestroyCommand implements Callable<Integer> {
                                        .equals(name));
     }
 
-    private static int printSummary(String clusterName,
+    private static int printSummary(ClusterName clusterName,
                                     List<String> nodeIds,
                                     List<NodeResult> drainResults,
                                     List<NodeResult> shutdownResults,

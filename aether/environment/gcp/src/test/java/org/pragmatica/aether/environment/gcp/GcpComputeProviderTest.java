@@ -25,6 +25,7 @@ import org.pragmatica.lang.Unit;
 import java.util.List;
 import java.util.Map;
 
+import static org.pragmatica.aether.environment.ClusterName.clusterName;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 import static org.pragmatica.cloud.gcp.GcpConfig.gcpConfig;
@@ -79,7 +80,7 @@ class GcpComputeProviderTest {
             // and image (boot-disk source image) verbatim — both were previously dropped for the
             // config defaults. This is the #442/#459 fix: GCP now honors the resolved fields.
             testClient.insertInstanceResponse = Promise.success(runningInstance("aether-test"));
-            var context = ProvisionContext.forBootstrap("c", "core", sourceNameOrDefault("s"), "n0");
+            var context = ProvisionContext.forBootstrap(clusterName("c").unwrap(), "core", sourceNameOrDefault("s"), "n0");
             var request = new ProvisionRequest(InstanceType.ON_DEMAND,
                                                "n2-standard-8",
                                                "projects/x/global/images/aether-img",
@@ -102,7 +103,7 @@ class GcpComputeProviderTest {
         void createFrom_spotRequest_rejectedLoud() {
             // GCP's InsertInstanceRequest has no provisioningModel/SPOT field, so a SPOT request must
             // fail loud rather than silently downgrade to on-demand — no insertInstance call issued.
-            var context = ProvisionContext.forBootstrap("c", "spot", sourceNameOrDefault("s"), "n0");
+            var context = ProvisionContext.forBootstrap(clusterName("c").unwrap(), "spot", sourceNameOrDefault("s"), "n0");
             var request = new ProvisionRequest(InstanceType.SPOT,
                                                "n2-standard-8",
                                                "img",
@@ -347,7 +348,7 @@ class GcpComputeProviderTest {
 
         @Test
         void discovery_presentWhenClusterNameSet() {
-            var configWithDiscovery = CONFIG.withDiscovery("my-cluster");
+            var configWithDiscovery = CONFIG.withDiscovery(clusterName("my-cluster").unwrap());
             var integration = GcpEnvironmentIntegration.gcpEnvironmentIntegration(testClient, configWithDiscovery).unwrap();
 
             assertThat(integration.discovery().isPresent()).isTrue();

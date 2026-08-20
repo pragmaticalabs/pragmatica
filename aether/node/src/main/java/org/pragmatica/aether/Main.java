@@ -19,6 +19,7 @@ import java.util.stream.IntStream;
 
 import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.config.ClusterConfig;
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.BackupConfig;
@@ -160,10 +161,6 @@ public record Main(String[] args) {
                                                                                                           }));
     }
 
-    /// Cluster-name format: same shape as the CLI's `InputValidators.CLUSTER_NAME_PATTERN`
-    /// (lowercase DNS-label). Inlined here because the `node` module does not depend on `cli`.
-    private static final Pattern CLUSTER_NAME_PATTERN = Pattern.compile("^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$");
-
     private static final Cause MISSING_CLUSTER_NAME = Causes.cause("AETHER_CLUSTER_NAME is not set. A running node must know its cluster name. "
                                                                   + "Set the AETHER_CLUSTER_NAME environment variable (or bootstrap-seed it) before start.");
 
@@ -200,13 +197,16 @@ public record Main(String[] args) {
         verifyClusterNamePresent(System.getenv("AETHER_CLUSTER_NAME")).onFailure(this::abortBoot);
     }
 
-    /// #298 — the cluster name for runtime config, read from the same env var the boot gate keys on.
-    /// Reached only after [#enforceClusterNamePresent] has passed, so the value is present and
-    /// matches [#CLUSTER_NAME_PATTERN]; the `.or("")` is a total-function fallback, not a real case.
-    private static String resolveClusterName() {
+    /// #298 — the cluster name for runtime config, read from the same env var the boot gate keys on
+    /// and parsed with the SAME grammar ([ClusterName#PATTERN], which [#verifyClusterNamePresent]
+    /// now also uses). Reached only after [#enforceClusterNamePresent] has passed, so the empty case
+    /// is a total-function fallback rather than a real one — but it is [Option#empty] now, not the
+    /// empty string, so a runtime component that receives it declines to scope rather than scoping on
+    /// a name that matches nothing.
+    private static Option<ClusterName> resolveClusterName() {
         return Option.option(System.getenv("AETHER_CLUSTER_NAME"))
-                     .filter(name -> !name.isBlank())
-                     .or("");
+                     .map(String::trim)
+                     .flatMap(ClusterName::maybeClusterName);
     }
 
     /// Pure, unit-testable guard: present + format-valid cluster name → success; missing,
@@ -217,7 +217,7 @@ public record Main(String[] args) {
                      .filter(s -> !s.isEmpty())
                      .toResult(MISSING_CLUSTER_NAME)
                      .filter(MALFORMED_CLUSTER_NAME,
-                             name -> CLUSTER_NAME_PATTERN.matcher(name).matches())
+                             name -> ClusterName.PATTERN.matcher(name).matches())
                      .mapToUnit();
     }
 

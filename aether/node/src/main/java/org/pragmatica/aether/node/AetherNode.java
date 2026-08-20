@@ -284,6 +284,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.FileOps;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.DiscoveryProvider;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
@@ -2477,7 +2478,7 @@ public interface AetherNode extends ManageableNode {
                                    // outbound ANNOUNCEs below, so both sides of the comparison come
                                    // from here. Absent (in-process harnesses that never pass through
                                    // Main) leaves it inert exactly as before.
-                                   .withClusterName(config.clusterName().or(""));
+                                   .withClusterName(config.clusterName().map(ClusterName::value).or(""));
         // Phase-aware SWIM cold-boot suppression (D.3, 2026-05-11). SWIM suppresses
         // FAULTY-for-never-HEALTHY peers ONLY while the cluster is in `COLD_BOOT`
         // (initial formation, never reached quorum). In `NORMAL` and `RECOVERING`,
@@ -2616,9 +2617,9 @@ public interface AetherNode extends ManageableNode {
         var quorumLossDetector = QuorumLossDetector.quorumLossDetector(membershipConfig, configuredCoreCountSupplier);
 
         quorumLossDetectorRef.set(quorumLossDetector);
-        Supplier<String> clusterNameSupplier = () -> clusterConfigReader.get()
-                                                                        .map(AetherValue.ClusterConfigValue::clusterName)
-                                                                        .or("");
+        Supplier<Option<ClusterName>> clusterNameSupplier = () -> clusterConfigReader.get()
+                                                                                     .map(AetherValue.ClusterConfigValue::clusterName)
+                                                                                     .flatMap(ClusterName::maybeClusterName);
         // Membership v2 Phase 2 LIVE — the per-member MembershipFsm is the authoritative membership-
         // death decision-maker. It is ALWAYS-ON per node (no leader gate): every node drives its own
         // per-member FSMs from its tapped SWIM/liveness edges. Wave 7 (cluster-topology-overhaul):

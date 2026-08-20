@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.InstanceId;
@@ -193,12 +194,7 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
         var labels = new java.util.HashMap<String, String>();
 
         labels.put(MANAGED_LABEL_KEY, MANAGED_LABEL_VALUE);
-        var clusterName = resolveClusterName(ctx);
-
-        if (!clusterName.isEmpty()) {
-            labels.put("aether-cluster", clusterName);
-        }
-
+        resolveClusterName(ctx).onPresent(name -> labels.put("aether-cluster", name.value()));
         if (!ctx.role().isEmpty()) {
             labels.put("aether-role", ctx.role());
         }
@@ -211,16 +207,14 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
         return Map.copyOf(labels);
     }
 
-    private static String resolveClusterName(ProvisionContext ctx) {
-        if (!ctx.clusterName().isEmpty()) {
-            return ctx.clusterName();
-        }
-
-        var fromEnv = System.getenv("AETHER_CLUSTER_NAME");
-
-        return fromEnv != null && !fromEnv.isEmpty()
-               ? fromEnv
-               : "";
+    /// Resolution chain: the provisioning context, then `AETHER_CLUSTER_NAME` (the pre-bootstrap
+    /// window). Ends [Option#empty] rather than at a placeholder — an unresolved cluster leaves the
+    /// `aether-cluster` tag OFF, exactly as the historical empty string did, and never stamps a name
+    /// a scoped cleanup sweep would then have to guess at. A value outside the RFC-1035 grammar in
+    /// the env var reads as absent here rather than as a name no selector can match.
+    private static Option<ClusterName> resolveClusterName(ProvisionContext ctx) {
+        return ctx.clusterName()
+                  .orElse(() -> ClusterName.maybeClusterName(System.getenv("AETHER_CLUSTER_NAME")));
     }
 
     private Disk buildBootDisk(String image) {

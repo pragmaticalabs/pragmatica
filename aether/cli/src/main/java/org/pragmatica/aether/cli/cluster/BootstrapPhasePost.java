@@ -90,7 +90,7 @@ sealed interface BootstrapPhasePost {
                        : scheme + "://" + ctx.addresses().getFirst().publicIp();
 
         ClusterRegistry.load()
-                       .map(registry -> registry.add(clusterName,
+                       .map(registry -> registry.add(clusterName.value(),
                                                      endpoint,
                                                      Option.some(apiKeyEnvName)))
                        .flatMap(ClusterRegistry::save)

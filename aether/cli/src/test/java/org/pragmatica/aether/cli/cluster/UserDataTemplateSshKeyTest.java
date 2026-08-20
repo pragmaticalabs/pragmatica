@@ -11,6 +11,7 @@ import org.pragmatica.config.toml.TomlDocument;
 
 import java.util.List;
 
+import static org.pragmatica.aether.environment.ClusterName.clusterName;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -46,7 +47,7 @@ class UserDataTemplateSshKeyTest {
                                        "node-1",
                                        0,
                                        "secret",
-                                       "prod-cluster",
+                                       clusterName("prod-cluster").unwrap(),
                                        TomlDocument.EMPTY,
                                        keys);
     }

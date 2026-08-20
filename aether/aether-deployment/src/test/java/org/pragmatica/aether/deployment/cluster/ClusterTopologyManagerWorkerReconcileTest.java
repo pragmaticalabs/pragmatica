@@ -19,6 +19,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.environment.AutoHealConfig;
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.InstanceStatus;
@@ -419,7 +420,7 @@ class ClusterTopologyManagerWorkerReconcileTest {
         }
 
         private static InstanceInfo instanceFor(ProvisionContext context) {
-            return instance(context.clusterName(),
+            return instance(context.clusterName().map(ClusterName::value).or(""),
                             context.sourceName().value(),
                             context.role(),
                             context.nodeId().or("unknown"));

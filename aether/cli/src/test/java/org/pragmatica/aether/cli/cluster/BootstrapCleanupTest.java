@@ -6,6 +6,7 @@
 package org.pragmatica.aether.cli.cluster;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.cli.cluster.BootstrapState.PhaseStatus;
 import org.pragmatica.aether.cli.cluster.CreatedResource.ProvisionedVm;
 import org.pragmatica.aether.cli.cluster.CreatedResource.SshKeyResource;
@@ -35,13 +36,15 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import static org.pragmatica.aether.environment.ClusterName.clusterName;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 class BootstrapCleanupTest {
 
-    private static final String CLUSTER_NAME = "test-cleanup-cluster";
+    private static final ClusterName CLUSTER_NAME = clusterName("test-cleanup-cluster").unwrap();
 
     private static BootstrapState stateWithVm(String provider, String vmId) {
         var phases = new EnumMap<BootstrapPhase, PhaseStatus>(BootstrapPhase.class);
@@ -588,7 +591,7 @@ class BootstrapCleanupTest {
         var env = Map.of(NON_DEFAULT_TOKEN_ENV, PROD_TOKEN_VALUE);
 
         var result = BootstrapCleanup.sweepClusterSshKeys(state,
-                                                          "prod",
+                                                          clusterName("prod").unwrap(),
                                                           recordingGetenv(env, envReads),
                                                           sweepingClientFactory(client, factoryTokens));
 
@@ -612,7 +615,7 @@ class BootstrapCleanupTest {
         var env = Map.of(NON_DEFAULT_TOKEN_ENV, PROD_TOKEN_VALUE);
 
         var result = BootstrapCleanup.sweepClusterSshKeys(state,
-                                                          "prod",
+                                                          clusterName("prod").unwrap(),
                                                           recordingGetenv(env, new ArrayList<>()),
                                                           sweepingClientFactory(client, new ArrayList<>()));
 
@@ -642,7 +645,7 @@ class BootstrapCleanupTest {
         var env = Map.of(NON_DEFAULT_TOKEN_ENV, PROD_TOKEN_VALUE);
 
         var result = BootstrapCleanup.sweepClusterVms(state,
-                                                      "prod",
+                                                      clusterName("prod").unwrap(),
                                                       recordingGetenv(env, envReads),
                                                       sweepingClientFactory(client, factoryTokens));
 
@@ -667,7 +670,7 @@ class BootstrapCleanupTest {
         var env = Map.of(NON_DEFAULT_TOKEN_ENV, PROD_TOKEN_VALUE);
 
         var result = BootstrapCleanup.sweepClusterVms(state,
-                                                      "test-pg",
+                                                      clusterName("test-pg").unwrap(),
                                                       recordingGetenv(env, new ArrayList<>()),
                                                       sweepingClientFactory(client, factoryTokens));
 
@@ -689,7 +692,7 @@ class BootstrapCleanupTest {
         var env = Map.of(NON_DEFAULT_TOKEN_ENV, PROD_TOKEN_VALUE);
 
         var result = BootstrapCleanup.sweepClusterVms(state,
-                                                      "prod",
+                                                      clusterName("prod").unwrap(),
                                                       recordingGetenv(env, new ArrayList<>()),
                                                       sweepingClientFactory(client, new ArrayList<>()));
 
@@ -697,21 +700,15 @@ class BootstrapCleanupTest {
         assertEquals(List.of(101L, 102L), deleteCalls, "both deletes must still be attempted");
     }
 
-    /// A blank cluster name cannot scope a selector — the sweep SKIPS (success, nothing touched)
-    /// rather than issuing anything broader.
+    /// Supersedes `destroy_vmSweep_blankClusterName_skipsWithoutProviderCalls`. A blank cluster name
+    /// cannot scope a selector, so the sweep used to check for one and skip. `ClusterName` removes the
+    /// input instead: the sweep's parameter cannot hold a blank, so the unscoped call it guarded
+    /// against is now a compile error and the guard is gone. What remains worth pinning is the
+    /// rejection itself — without it the removal would be a downgrade, not an upgrade.
     @Test
-    void destroy_vmSweep_blankClusterName_skipsWithoutProviderCalls() {
-        var factoryTokens = new ArrayList<String>();
-        var client = new VmSweepingHetznerClient(List.of(), new ArrayList<>(), Set.of(), new ArrayList<>());
-        var state = stateWithHetznerHandle();
-
-        var result = BootstrapCleanup.sweepClusterVms(state,
-                                                      "",
-                                                      recordingGetenv(Map.of(), new ArrayList<>()),
-                                                      sweepingClientFactory(client, factoryTokens));
-
-        assertTrue(result.isSuccess());
-        assertTrue(factoryTokens.isEmpty(), "a blank name must not reach the provider");
+    void vmSweep_cannotBeCalledWithABlankClusterName_becauseNoSuchNameParses() {
+        clusterName("").onSuccess(name -> fail("a blank cluster name must not parse, produced " + name));
+        clusterName(" ").onSuccess(name -> fail("a whitespace cluster name must not parse, produced " + name));
     }
 
     // --- #521: a persisted handle that names NO credential env var ---
@@ -826,7 +823,7 @@ class BootstrapCleanupTest {
         var sweepingClient = new SweepingHetznerClient(keys, deleteCalls, Set.of());
 
         var result = BootstrapCleanup.sweepClusterSshKeys(state,
-                                                          "prod",
+                                                          clusterName("prod").unwrap(),
                                                           BootstrapCleanup.CleanupResolvers.cleanupResolvers()
                                                                                            .withHetznerClientFallback(provider -> recordSweepFallback(provider,
                                                                                                                                                        fallbackProviders,

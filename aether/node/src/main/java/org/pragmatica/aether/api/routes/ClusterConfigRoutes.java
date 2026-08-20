@@ -484,8 +484,10 @@ public final class ClusterConfigRoutes implements RouteSource {
         var coreMax = desired.coreTopology().max().or(coreCount);
         var sourceType = desired.sources().values().stream().map(s -> s.type()
                                                                        .value()).findFirst().orElse("unknown");
+        // KV boundary: `ClusterConfigValue` keeps a `String` cluster name (the `aether/slice` module
+        // deliberately does not depend on this layer), so the parsed name is rendered here.
         var configValue = new ClusterConfigValue(tomlContent,
-                                                 cluster.name(),
+                                                 cluster.name().value(),
                                                  cluster.version(),
                                                  topologyOf(desired),
                                                  coreMin,
@@ -496,7 +498,8 @@ public final class ClusterConfigRoutes implements RouteSource {
 
         return storeFencedConfig(configValue,
                                  fresh -> tomlContent.equals(fresh.tomlContent())).map(fresh -> (Object) new ApplyConfigResponse(fresh.configVersion(),
-                                                                                                                                 cluster.name(),
+                                                                                                                                 cluster.name()
+                                                                                                                                        .value(),
                                                                                                                                  coreCount,
                                                                                                                                  configValue.updatedAt()));
     }

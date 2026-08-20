@@ -124,14 +124,14 @@ class ClusterBootstrapConfigValidatorTest {
         void validate_validForgeConfig_succeeds() {
             validate(validForgeConfig())
                 .onFailure(cause -> Assertions.fail(cause.message()))
-                .onSuccess(config -> assertThat(config.cluster().name()).isEqualTo("dev-local"));
+                .onSuccess(config -> assertThat(config.cluster().name().value()).isEqualTo("dev-local"));
         }
 
         @Test
         void validate_validCloudConfig_succeeds() {
             validate(validCloudConfig())
                 .onFailure(cause -> Assertions.fail(cause.message()))
-                .onSuccess(config -> assertThat(config.cluster().name()).isEqualTo("production"));
+                .onSuccess(config -> assertThat(config.cluster().name().value()).isEqualTo("production"));
         }
     }
 
@@ -289,7 +289,7 @@ class ClusterBootstrapConfigValidatorTest {
             // [source.aws.spot] sub-table is the one provider allowed to carry spot today.
             validate(cloudConfigWithSpot(CloudProviderName.AWS))
                 .onFailure(cause -> Assertions.fail(cause.message()))
-                .onSuccess(config -> assertThat(config.cluster().name()).isEqualTo("production"));
+                .onSuccess(config -> assertThat(config.cluster().name().value()).isEqualTo("production"));
         }
 
         @Test
@@ -432,7 +432,7 @@ class ClusterBootstrapConfigValidatorTest {
         void validate_allowIngressOnHetznerSource_succeeds() {
             validate(cloudConfigWithFirewall(CloudProviderName.HETZNER))
                 .onFailure(cause -> Assertions.fail(cause.message()))
-                .onSuccess(config -> assertThat(config.cluster().name()).isEqualTo("production"));
+                .onSuccess(config -> assertThat(config.cluster().name().value()).isEqualTo("production"));
         }
 
         @Test

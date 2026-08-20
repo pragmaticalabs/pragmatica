@@ -152,14 +152,14 @@ public sealed interface EnvironmentError extends Cause {
     /// Operator recovery: raise `max_nodes` for the source, or terminate instances until the
     /// cluster is back under the cap. Provisioning resumes on the next reconcile pass with no
     /// further action.
-    record NodeCapExceeded(String clusterName, int cap, int observed) implements EnvironmentError {
-        public static Result<NodeCapExceeded> nodeCapExceeded(String clusterName, int cap, int observed) {
+    record NodeCapExceeded(ClusterName clusterName, int cap, int observed) implements EnvironmentError {
+        public static Result<NodeCapExceeded> nodeCapExceeded(ClusterName clusterName, int cap, int observed) {
             return success(new NodeCapExceeded(clusterName, cap, observed));
         }
 
         @Override
         public String message() {
-            return "Provisioning refused for cluster '" + clusterName
+            return "Provisioning refused for cluster '" + clusterName.value()
                  + "': node cap " + cap
                  + " reached (" + observed
                  + " already provisioned). Raise max_nodes for the source "
@@ -216,7 +216,7 @@ public sealed interface EnvironmentError extends Cause {
         return OperationNotSupported.operationNotSupported(operation).unwrap();
     }
 
-    static EnvironmentError nodeCapExceeded(String clusterName, int cap, int observed) {
+    static EnvironmentError nodeCapExceeded(ClusterName clusterName, int cap, int observed) {
         return NodeCapExceeded.nodeCapExceeded(clusterName, cap, observed).unwrap();
     }
 }

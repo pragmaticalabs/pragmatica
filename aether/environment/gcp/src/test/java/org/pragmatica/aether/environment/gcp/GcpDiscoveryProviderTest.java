@@ -17,6 +17,7 @@ import org.pragmatica.lang.Promise;
 import java.util.List;
 import java.util.Map;
 
+import static org.pragmatica.aether.environment.ClusterName.clusterName;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.cloud.gcp.GcpConfig.gcpConfig;
 
@@ -33,7 +34,7 @@ class GcpDiscoveryProviderTest {
     @BeforeEach
     void setUp() {
         testClient = new TestGcpClient();
-        var config = BASE_CONFIG.withDiscovery("test-cluster").withSelfInstanceName("self-instance");
+        var config = BASE_CONFIG.withDiscovery(clusterName("test-cluster").unwrap()).withSelfInstanceName("self-instance");
         provider = GcpDiscoveryProvider.gcpDiscoveryProvider(testClient, config);
     }
 
@@ -120,7 +121,7 @@ class GcpDiscoveryProviderTest {
 
         @Test
         void registerSelf_failsWhenNoSelfInstanceName() {
-            var configNoSelf = BASE_CONFIG.withDiscovery("test-cluster");
+            var configNoSelf = BASE_CONFIG.withDiscovery(clusterName("test-cluster").unwrap());
             var providerNoSelf = GcpDiscoveryProvider.gcpDiscoveryProvider(testClient, configNoSelf);
             var self = new PeerInfo("10.0.0.1", 9100, Map.of());
 
@@ -147,7 +148,7 @@ class GcpDiscoveryProviderTest {
 
         @Test
         void deregisterSelf_failsWhenNoSelfInstanceName() {
-            var configNoSelf = BASE_CONFIG.withDiscovery("test-cluster");
+            var configNoSelf = BASE_CONFIG.withDiscovery(clusterName("test-cluster").unwrap());
             var providerNoSelf = GcpDiscoveryProvider.gcpDiscoveryProvider(testClient, configNoSelf);
 
             providerNoSelf.deregisterSelf()

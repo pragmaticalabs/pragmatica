@@ -14,6 +14,7 @@ import org.pragmatica.lang.Option;
 
 import org.junit.jupiter.api.Test;
 
+import static org.pragmatica.aether.environment.ClusterName.maybeClusterName;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 
@@ -27,7 +28,7 @@ import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 class SpotRoleConstantDriftTest {
     @Test
     void resolve_roleFromNodeRoleSpotValue_mapsToSpotMarket() {
-        var context = ProvisionContext.provisionContext("cluster",
+        var context = ProvisionContext.provisionContext(maybeClusterName("cluster"),
                                                         NodeRole.SPOT.value(),
                                                         sourceNameOrDefault("src"),
                                                         ProvisionContext.PROVISIONED_BY_CTM);

@@ -11,6 +11,8 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.aether.environment.ClusterName.clusterName;
+import static org.pragmatica.aether.environment.ClusterName.maybeClusterName;
 import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 
 
@@ -175,7 +177,7 @@ class ProvisionRequestTest {
     class ProducerPathsReachResolve {
         @Test
         void resolve_bootstrapSeedContext_producesOnDemandRequest() {
-            var context = ProvisionContext.forBootstrap("prod", "core", sourceNameOrDefault("eu-1"), "eu-1-core-0");
+            var context = ProvisionContext.forBootstrap(clusterName("prod").unwrap(), "core", sourceNameOrDefault("eu-1"), "eu-1-core-0");
             var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "cx22", "core", context).unwrap();
             var request = ProvisionRequest.resolve(spec, defaults()).unwrap();
 
@@ -188,7 +190,7 @@ class ProvisionRequestTest {
             // The CTM auto-heal producer hardcodes InstanceType.ON_DEMAND and pool "core"
             // (ClusterTopologyManagerRecord:528); resolve() derives the market from the context ROLE,
             // so a spot replacement maps to SPOT — the downgrade the pre-boundary design missed.
-            var context = ProvisionContext.forReplacement("prod", "spot", "node-abc", "peers", 5);
+            var context = ProvisionContext.forReplacement(maybeClusterName("prod"), "spot", "node-abc", "peers", 5);
             var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "default", "core", context).unwrap();
             var request = ProvisionRequest.resolve(spec, defaults()).unwrap();
 
@@ -198,7 +200,7 @@ class ProvisionRequestTest {
 
         @Test
         void resolve_cloudSupportContext_producesResolvedRequest() {
-            var context = ProvisionContext.provisionContext("prod",
+            var context = ProvisionContext.provisionContext(maybeClusterName("prod"),
                                                             "core",
                                                             sourceNameOrDefault("eu-1"),
                                                             ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
@@ -211,7 +213,7 @@ class ProvisionRequestTest {
     }
 
     private static ProvisionSpec spec(String instanceSize, String role) {
-        var context = ProvisionContext.provisionContext("cluster-x",
+        var context = ProvisionContext.provisionContext(maybeClusterName("cluster-x"),
                                                         role,
                                                         sourceNameOrDefault("eu-1"),
                                                         ProvisionContext.PROVISIONED_BY_BOOTSTRAP);

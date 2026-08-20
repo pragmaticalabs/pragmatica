@@ -32,6 +32,8 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 
+import static org.pragmatica.aether.environment.ClusterName.clusterName;
+import static org.pragmatica.aether.environment.ClusterName.maybeClusterName;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 import static org.pragmatica.cloud.azure.AzureConfig.azureConfig;
@@ -93,7 +95,7 @@ class AzureComputeProviderTest {
         @Test
         void provision_specUserDataOverridesConfig_customDataIsBase64OfSpec() {
             testClient.createVmResponse = Promise.success(runningVm("aether-test"));
-            var ctx = ProvisionContext.provisionContext("c1", "core", sourceNameOrDefault("default"),
+            var ctx = ProvisionContext.provisionContext(maybeClusterName("c1"), "core", sourceNameOrDefault("default"),
                                                          ProvisionContext.PROVISIONED_BY_CTM);
             var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "azure", "default", ctx)
                                     .unwrap()
@@ -121,7 +123,7 @@ class AzureComputeProviderTest {
                                                "",
                                                Option.empty(),
                                                MarketOptions.ON_DEMAND,
-                                               ProvisionContext.forBootstrap("c", "core", sourceNameOrDefault("s"), "n0"));
+                                               ProvisionContext.forBootstrap(clusterName("c").unwrap(), "core", sourceNameOrDefault("s"), "n0"));
 
             provider.createFrom(request)
                     .await()
@@ -141,7 +143,7 @@ class AzureComputeProviderTest {
                                                "",
                                                Option.empty(),
                                                MarketOptions.spot(),
-                                               ProvisionContext.forBootstrap("c", "core", sourceNameOrDefault("s"), "n0"));
+                                               ProvisionContext.forBootstrap(clusterName("c").unwrap(), "core", sourceNameOrDefault("s"), "n0"));
 
             provider.createFrom(request)
                     .await()
@@ -376,7 +378,7 @@ class AzureComputeProviderTest {
 
         @Test
         void discovery_presentWhenClusterNameSet() {
-            var configWithDiscovery = CONFIG.withDiscovery("my-cluster");
+            var configWithDiscovery = CONFIG.withDiscovery(clusterName("my-cluster").unwrap());
             var integration = AzureEnvironmentIntegration.azureEnvironmentIntegration(testClient, configWithDiscovery).unwrap();
             assertThat(integration.discovery().isPresent()).isTrue();
         }

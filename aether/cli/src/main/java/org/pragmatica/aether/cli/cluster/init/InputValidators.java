@@ -6,6 +6,7 @@ package org.pragmatica.aether.cli.cluster.init;
 
 import java.util.regex.Pattern;
 
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.lang.Result;
 
 
@@ -17,7 +18,6 @@ public sealed interface InputValidators {
     Pattern HOSTNAME_PATTERN = Pattern.compile("^[a-zA-Z0-9]([-a-zA-Z0-9.]*[a-zA-Z0-9])?$");
     Pattern IPV4_PATTERN = Pattern.compile("^(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})$");
     Pattern ENV_VAR_PATTERN = Pattern.compile("^[A-Z_][A-Z0-9_]*$");
-    Pattern CLUSTER_NAME_PATTERN = Pattern.compile("^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$");
 
     static Result<String> validateCidr(String raw) {
         var value = raw == null
@@ -97,7 +97,7 @@ public sealed interface InputValidators {
                     ? ""
                     : raw.trim();
 
-        if (!CLUSTER_NAME_PATTERN.matcher(value).matches()) {
+        if (!ClusterName.PATTERN.matcher(value).matches()) {
             return new ClusterInitError.InvalidValue("cluster name",
                                                      value,
                                                      "must match [a-z]([a-z0-9-]{0,61}[a-z0-9])? (1-63 chars, e.g. a or prod-eu)").result();

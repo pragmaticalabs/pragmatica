@@ -20,6 +20,7 @@ import org.pragmatica.aether.config.cluster.RuntimeType;
 import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.config.cluster.SourceType;
 import org.pragmatica.aether.config.cluster.SshConfig;
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ProvisionedNode;
 import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.config.toml.TomlDocument;
@@ -243,11 +244,11 @@ sealed interface BootstrapPhaseDeploy {
     @SuppressWarnings("JBCT-EX-01")
     static Result<Unit> pollFormedLabels(Fn1<Result<Integer>, Map<String, String>> formedCounter,
                                          int expected,
-                                         String clusterName,
+                                         ClusterName clusterName,
                                          SourceName sourceName,
                                          long timeoutMs,
                                          long pollMs) {
-        var filter = Map.of("aether-cluster", clusterName, "aether-formed", "true");
+        var filter = Map.of("aether-cluster", clusterName.value(), "aether-formed", "true");
         var deadline = System.currentTimeMillis() + timeoutMs;
         var formed = 0;
 
@@ -434,7 +435,7 @@ sealed interface BootstrapPhaseDeploy {
     }
 
     static String buildRestartCommand(String image,
-                                      String clusterName,
+                                      ClusterName clusterName,
                                       String nodeId,
                                       int clusterPort,
                                       int managementPort,
@@ -458,7 +459,7 @@ sealed interface BootstrapPhaseDeploy {
     /// emitted explicitly from the finalized `clusterSecret` param and EXCLUDED from the allow-list
     /// pass (`none()` ref) so it never appears twice. `envLookup` is injectable for unit testing.
     static String buildRestartCommand(String image,
-                                      String clusterName,
+                                      ClusterName clusterName,
                                       String nodeId,
                                       int clusterPort,
                                       int managementPort,
@@ -467,7 +468,7 @@ sealed interface BootstrapPhaseDeploy {
                                       Fn1<String, String> envLookup) {
         return "docker rm -f aether-node 2>/dev/null || true"
              + " && docker run -d --name aether-node --restart no --network host"
-             + " -l aether-cluster=" + clusterName
+             + " -l aether-cluster=" + clusterName.value()
              + " -l aether-node-id=" + nodeId
              + " -l aether-role=core"
              + " -v /opt/aether/config/aether.toml:/app/aether.toml:ro"
@@ -488,7 +489,7 @@ sealed interface BootstrapPhaseDeploy {
     /// AETHER_CLUSTER_SECRET, emitted explicitly by the caller). Mirrors the cloud-init start's
     /// emission so the re-launch keeps full env parity. Empty when no allow-list var is present
     /// (prod-safe: unset host env → nothing emitted).
-    private static String identityEnvFlags(String clusterName, Fn1<String, String> envLookup) {
+    private static String identityEnvFlags(ClusterName clusterName, Fn1<String, String> envLookup) {
         var sb = new StringBuilder();
 
         UserDataTemplate.emitIdentityEnv((name, value) -> appendRestartEnvFlag(sb, name, value),
@@ -514,8 +515,15 @@ sealed interface BootstrapPhaseDeploy {
                                          int clusterPort,
                                          int managementPort,
                                          String peers,
-                                         String clusterSecret) {
-        return buildJvmRestartCommand(nodeId, clusterPort, managementPort, peers, clusterSecret, "", System::getenv);
+                                         String clusterSecret,
+                                         ClusterName clusterName) {
+        return buildJvmRestartCommand(nodeId,
+                                      clusterPort,
+                                      managementPort,
+                                      peers,
+                                      clusterSecret,
+                                      clusterName,
+                                      System::getenv);
     }
 
     /// JVM re-launch with finalized PEERS. Same env-parity requirement as the container path
@@ -528,7 +536,7 @@ sealed interface BootstrapPhaseDeploy {
                                          int managementPort,
                                          String peers,
                                          String clusterSecret,
-                                         String clusterName,
+                                         ClusterName clusterName,
                                          Fn1<String, String> envLookup) {
         return "pkill -f '" + JVM_PKILL_PATTERN
              + "' 2>/dev/null || true"
@@ -555,7 +563,7 @@ sealed interface BootstrapPhaseDeploy {
     /// Inline `VAR="value"` assignments (space-prefixed) for the cluster-identity allow-list
     /// (minus AETHER_CLUSTER_SECRET, inlined explicitly by the caller), suitable for prefixing a
     /// `nohup java` invocation on a single SSH command line.
-    private static String identityEnvAssignments(String clusterName, Fn1<String, String> envLookup) {
+    private static String identityEnvAssignments(ClusterName clusterName, Fn1<String, String> envLookup) {
         var sb = new StringBuilder();
 
         UserDataTemplate.emitIdentityEnv((name, value) -> appendJvmEnvAssignment(sb, name, value),
@@ -749,7 +757,7 @@ sealed interface BootstrapPhaseDeploy {
     private static Result<Unit> deploySshNode(ProvisionedNode node,
                                               String nodeConfig,
                                               SshConfig sshConfig,
-                                              String clusterName,
+                                              ClusterName clusterName,
                                               String nodeId,
                                               int clusterPort,
                                               int managementPort,
@@ -791,7 +799,7 @@ sealed interface BootstrapPhaseDeploy {
 
     private static Result<Unit> startRuntimeViaSsh(String host,
                                                    SshConfig sshConfig,
-                                                   String clusterName,
+                                                   ClusterName clusterName,
                                                    String nodeId,
                                                    int clusterPort,
                                                    int managementPort,
@@ -803,7 +811,7 @@ sealed interface BootstrapPhaseDeploy {
         var startCommand = "mkdir -p /opt/aether/config"
                          + " && docker pull ghcr.io/pragmaticalabs/aether-node:latest"
                          + " && docker run -d --name aether-node --restart no --network host"
-                         + " -l aether-cluster=" + clusterName
+                         + " -l aether-cluster=" + clusterName.value()
                          + " -e NODE_ID=\"" + nodeId
                          + "\""
                          + " -e CLUSTER_PORT=\"" + clusterPort

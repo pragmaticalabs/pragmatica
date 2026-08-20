@@ -18,6 +18,7 @@ import org.pragmatica.lang.Promise;
 import java.util.List;
 import java.util.Map;
 
+import static org.pragmatica.aether.environment.ClusterName.clusterName;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.cloud.hetzner.HetznerConfig.hetznerConfig;
 
@@ -34,7 +35,7 @@ class HetznerDiscoveryProviderTest {
     @BeforeEach
     void setUp() {
         testClient = new HetznerComputeProviderTest.TestHetznerClient();
-        var config = BASE_CONFIG.withDiscovery("test-cluster").withSelfServerId(100L);
+        var config = BASE_CONFIG.withDiscovery(clusterName("test-cluster").unwrap()).withSelfServerId(100L);
         provider = HetznerDiscoveryProvider.hetznerDiscoveryProvider(testClient, config);
     }
 
@@ -155,7 +156,7 @@ class HetznerDiscoveryProviderTest {
 
         @Test
         void registerSelf_failsWhenNoSelfServerId() {
-            var configNoSelf = BASE_CONFIG.withDiscovery("test-cluster");
+            var configNoSelf = BASE_CONFIG.withDiscovery(clusterName("test-cluster").unwrap());
             var providerNoSelf = HetznerDiscoveryProvider.hetznerDiscoveryProvider(testClient, configNoSelf);
             var self = new PeerInfo("10.0.0.1", 9100, Map.of());
 
@@ -182,7 +183,7 @@ class HetznerDiscoveryProviderTest {
 
         @Test
         void deregisterSelf_failsWhenNoSelfServerId() {
-            var configNoSelf = BASE_CONFIG.withDiscovery("test-cluster");
+            var configNoSelf = BASE_CONFIG.withDiscovery(clusterName("test-cluster").unwrap());
             var providerNoSelf = HetznerDiscoveryProvider.hetznerDiscoveryProvider(testClient, configNoSelf);
 
             providerNoSelf.deregisterSelf()

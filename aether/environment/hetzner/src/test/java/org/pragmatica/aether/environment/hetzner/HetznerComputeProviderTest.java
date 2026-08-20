@@ -9,6 +9,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.environment.CloudProviderSupport;
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceStatus;
@@ -40,6 +41,9 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.pragmatica.aether.environment.ClusterName.clusterName;
+import static org.pragmatica.aether.environment.ClusterName.maybeClusterName;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 import static org.pragmatica.cloud.hetzner.HetznerConfig.hetznerConfig;
@@ -76,7 +80,7 @@ class HetznerComputeProviderTest {
     /// Tests exercising provisioning mechanics (image, instance info) use this; the refusal itself
     /// is covered by ClusterLabelPreconditionTests.
     private HetznerComputeProvider seededProvider() {
-        return HetznerComputeProvider.hetznerComputeProvider(testClient, CONFIG.withDiscovery("test-cluster"))
+        return HetznerComputeProvider.hetznerComputeProvider(testClient, CONFIG.withDiscovery(clusterName("test-cluster").unwrap()))
                                      .unwrap();
     }
 
@@ -116,7 +120,7 @@ class HetznerComputeProviderTest {
             // carrying the attempted zone so the bootstrap can rotate to the next zone.
             testClient.createServerResponse =
                 new HetznerError.ApiError(412, "resource_unavailable", "error during placement").promise();
-            var context = ProvisionContext.provisionContext("cluster-x",
+            var context = ProvisionContext.provisionContext(maybeClusterName("cluster-x"),
                                                              "core",
                                                              sourceNameOrDefault("eu-1"),
                                                              ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
@@ -146,7 +150,7 @@ class HetznerComputeProviderTest {
         @Test
         void provision_contextWithNodeId_setsAetherNodeIdLabelOnServer() {
             testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
-            var context = ProvisionContext.provisionContext("cluster-x",
+            var context = ProvisionContext.provisionContext(maybeClusterName("cluster-x"),
                                                               "core",
                                                               sourceNameOrDefault("eu-1"),
                                                               ProvisionContext.PROVISIONED_BY_CTM)
@@ -293,7 +297,7 @@ class HetznerComputeProviderTest {
             testClient.listSshKeysResponse = Promise.success(List.of(
                 new SshKey(7, "aether-bootstrap-prod-op", "aa:bb", "ssh-ed25519 AAAA"),
                 new SshKey(8, "aether-bootstrap-production-op", "ee:ff", "ssh-ed25519 CCCC")));
-            var context = ProvisionContext.provisionContext("prod", "core", sourceNameOrDefault("eu-1"), ProvisionContext.PROVISIONED_BY_CTM)
+            var context = ProvisionContext.provisionContext(maybeClusterName("prod"), "core", sourceNameOrDefault("eu-1"), ProvisionContext.PROVISIONED_BY_CTM)
                                           .withNodeId("aether-core-node-prod");
             var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "cx22", "core", context).unwrap();
 
@@ -360,7 +364,7 @@ class HetznerComputeProviderTest {
         }
 
         private ProvisionSpec ctmSpec(String instanceSize) {
-            var context = ProvisionContext.provisionContext("cluster-x",
+            var context = ProvisionContext.provisionContext(maybeClusterName("cluster-x"),
                                                             "core",
                                                             sourceNameOrDefault("eu-1"),
                                                             ProvisionContext.PROVISIONED_BY_CTM)
@@ -378,7 +382,7 @@ class HetznerComputeProviderTest {
             // The resolved ProvisionRequest is total: createFrom consumes instanceSize/image/zone/
             // userData verbatim (no provider-side re-derivation) and stamps the context labels.
             testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
-            var context = ProvisionContext.forBootstrap("prod-cluster", "core", sourceNameOrDefault("eu-1"), "eu-1-core-0");
+            var context = ProvisionContext.forBootstrap(clusterName("prod-cluster").unwrap(), "core", sourceNameOrDefault("eu-1"), "eu-1-core-0");
             var request = new ProvisionRequest(InstanceType.ON_DEMAND,
                                                "ccx23",
                                                "snapshot-42",
@@ -403,7 +407,7 @@ class HetznerComputeProviderTest {
         @Test
         void createFrom_absentUserData_sentAsEmptyString() {
             testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
-            var context = ProvisionContext.forBootstrap("prod", "core", sourceNameOrDefault("eu-1"), "n0");
+            var context = ProvisionContext.forBootstrap(clusterName("prod").unwrap(), "core", sourceNameOrDefault("eu-1"), "n0");
             var request = new ProvisionRequest(InstanceType.ON_DEMAND, "cx22", "ubuntu-24.04", "fsn1",
                                                Option.empty(), MarketOptions.ON_DEMAND, context);
 
@@ -416,7 +420,7 @@ class HetznerComputeProviderTest {
         void createFrom_spotRequest_rejectedLoudBeforeCreate() {
             // Hetzner has no spot product; a SPOT request (unreachable behind PF-16) must fail loud
             // rather than silently provision an on-demand server — no createServer call is issued.
-            var context = ProvisionContext.forBootstrap("prod", "spot", sourceNameOrDefault("eu-1"), "n0");
+            var context = ProvisionContext.forBootstrap(clusterName("prod").unwrap(), "spot", sourceNameOrDefault("eu-1"), "n0");
             var request = new ProvisionRequest(InstanceType.SPOT, "cx22", "ubuntu-24.04", "fsn1",
                                                Option.empty(), MarketOptions.spot(), context);
 
@@ -437,7 +441,7 @@ class HetznerComputeProviderTest {
         @Test
         void bootstrapContext_stampsRealClusterAndRole() {
             testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
-            var context = ProvisionContext.forBootstrap("prod-cluster", "core", sourceNameOrDefault("eu-1"), "eu-1-core-0");
+            var context = ProvisionContext.forBootstrap(clusterName("prod-cluster").unwrap(), "core", sourceNameOrDefault("eu-1"), "eu-1-core-0");
             var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "cx22", "core", context).unwrap();
 
             provider.provision(spec).await().onFailure(cause -> assertThat(cause).isNull());
@@ -451,7 +455,7 @@ class HetznerComputeProviderTest {
         @Test
         void replacementContext_stampsRealClusterAndRole() {
             testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
-            var context = ProvisionContext.forReplacement("prod-cluster", "core", "node-abc", "peers", 5);
+            var context = ProvisionContext.forReplacement(maybeClusterName("prod-cluster"), "core", "node-abc", "peers", 5);
             var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "cx22", "core", context).unwrap();
 
             provider.provision(spec).await().onFailure(cause -> assertThat(cause).isNull());
@@ -485,7 +489,7 @@ class HetznerComputeProviderTest {
             // cluster_name), so even an empty-tag context resolves a real name rather than "unknown".
             // This is why the wave gap is latent in production and surfaces only when the config name
             // is also absent (e.g. an older jar) — the label is never left blank.
-            var configWithName = CONFIG.withDiscovery("prod-cluster");
+            var configWithName = CONFIG.withDiscovery(clusterName("prod-cluster").unwrap());
             var providerWithName = HetznerComputeProvider.hetznerComputeProvider(testClient, configWithName).unwrap();
             testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
             var group = NodeGroupConfig.nodeGroupConfig(sourceNameOrDefault("eu-1"), "core", 1, "cx22", "fsn1", Map.of());
@@ -497,13 +501,17 @@ class HetznerComputeProviderTest {
                     .isNotEqualTo("unknown");
         }
 
+        /// Supersedes the former `invalidClusterName_sanitizedToHetznerConstraints`. That test drove a
+        /// context built from `"my cluster!"` and asserted the label sanitizer coerced it to
+        /// `my-cluster` — a name that no longer round-trips with the `aether-cluster=<name>` selector
+        /// destroy sweeps use. `ClusterName` removes the input: an out-of-alphabet name cannot reach a
+        /// context at all, so the label is stamped BYTE-EXACT and the coercion is unreachable. Both
+        /// halves are asserted here, because the guarantee is only worth as much as the rejection.
         @Test
-        void invalidClusterName_sanitizedToHetznerConstraints() {
-            // A cluster name with characters outside Hetzner's label-value alphabet must be coerced
-            // deterministically (prefix-preserved) rather than sent raw — a raw invalid value makes
-            // Hetzner reject the whole create.
+        void clusterNameOutsideHetznerAlphabet_isUnrepresentable_soTheLabelIsStampedByteExact() {
+            clusterName("my cluster!").onSuccess(name -> fail("'my cluster!' must not parse: " + name));
             testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
-            var context = ProvisionContext.forBootstrap("my cluster!", "core", sourceNameOrDefault("eu-1"), "eu-1-core-0");
+            var context = ProvisionContext.forBootstrap(clusterName("my-cluster").unwrap(), "core", sourceNameOrDefault("eu-1"), "eu-1-core-0");
             var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "cx22", "core", context).unwrap();
 
             provider.provision(spec).await().onFailure(cause -> assertThat(cause).isNull());
@@ -808,7 +816,7 @@ class HetznerComputeProviderTest {
 
         @Test
         void discovery_presentWhenClusterNameSet() {
-            var configWithDiscovery = CONFIG.withDiscovery("my-cluster");
+            var configWithDiscovery = CONFIG.withDiscovery(clusterName("my-cluster").unwrap());
             var integration = HetznerEnvironmentIntegration.hetznerEnvironmentIntegration(testClient, configWithDiscovery).unwrap();
 
             assertThat(integration.discovery().isPresent()).isTrue();
@@ -1121,13 +1129,13 @@ class HetznerComputeProviderTest {
 
         @Test
         void createFrom_whenNoClusterNameResolves_refusesToCreateServer() {
-            var context = ProvisionContext.provisionContext("", "core", SourceName.DEFAULT, ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
+            var context = ProvisionContext.provisionContext(maybeClusterName(""), "core", SourceName.DEFAULT, ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
             var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "cx22", "core", context).unwrap();
 
             provider.provision(spec)
                     .await()
                     .onSuccess(info -> assertThat(info).isNull())
-                    .onFailure(cause -> assertThat(cause.message()).contains("aether-cluster=unknown")
+                    .onFailure(cause -> assertThat(cause.message()).contains("no aether-cluster label")
                                                                   .contains("Refusing to provision"));
 
             assertThat(testClient.lastCreateServerRequest)
@@ -1137,7 +1145,7 @@ class HetznerComputeProviderTest {
 
         @Test
         void createFrom_whenClusterNamePresent_stampsItAndCreates() {
-            var context = ProvisionContext.provisionContext("prod-eu", "core", SourceName.DEFAULT, ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
+            var context = ProvisionContext.provisionContext(maybeClusterName("prod-eu"), "core", SourceName.DEFAULT, ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
             var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "cx22", "core", context).unwrap();
 
             provider.provision(spec)
@@ -1160,7 +1168,7 @@ class HetznerComputeProviderTest {
     /// cluster-scoped second look.
     @Nested
     class FirewallAssociationTests {
-        private static final String CLUSTER = "prod-eu";
+        private static final ClusterName CLUSTER = clusterName("prod-eu").unwrap();
         private static final SourceName SOURCE = sourceNameOrDefault("hetzner-eu");
         private static final String SOURCE_SELECTOR = "aether-cluster=prod-eu,aether-source=hetzner-eu";
         private static final String CLUSTER_SELECTOR = "aether-cluster=prod-eu";
@@ -1187,7 +1195,7 @@ class HetznerComputeProviderTest {
                                         "fsn1",
                                         Option.empty(),
                                         MarketOptions.ON_DEMAND,
-                                        ProvisionContext.forReplacement(CLUSTER,
+                                        ProvisionContext.forReplacement(Option.some(CLUSTER),
                                                                         "core",
                                                                         sourceName,
                                                                         "node-01",
@@ -1281,7 +1289,7 @@ class HetznerComputeProviderTest {
 
     @Nested
     class OpenIngressTests {
-        private static final String CLUSTER = "prod-eu";
+        private static final ClusterName CLUSTER = clusterName("prod-eu").unwrap();
         private static final String SOURCE = "hetzner-eu";
 
         private HetznerComputeProvider ingressProvider;
@@ -1310,7 +1318,7 @@ class HetznerComputeProviderTest {
 
             assertThat(testClient.createFirewallCalls).isEqualTo(1);
             // Without BOTH labels the firewall is invisible to tools/cloud-reaper.sh and leaks.
-            assertThat(testClient.lastCreateFirewallRequest.labels()).containsEntry("aether-cluster", CLUSTER)
+            assertThat(testClient.lastCreateFirewallRequest.labels()).containsEntry("aether-cluster", CLUSTER.value())
                                                                      .containsEntry("aether-source", SOURCE);
             assertThat(testClient.lastCreateFirewallRequest.rules()).singleElement()
                                                                      .satisfies(created -> {

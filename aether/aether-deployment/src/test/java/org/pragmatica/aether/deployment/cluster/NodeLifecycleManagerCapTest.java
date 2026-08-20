@@ -23,6 +23,8 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
+import static org.pragmatica.aether.environment.ClusterName.clusterName;
+import static org.pragmatica.aether.environment.ClusterName.maybeClusterName;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
@@ -41,7 +43,7 @@ class NodeLifecycleManagerCapTest {
     void provisionNode_refuses_whenObservedCountReachedCap() {
         var provider = fakeProvider(existing(3, CLUSTER));
         var manager = NodeLifecycleManager.nodeLifecycleManager(Option.some(provider),
-                                                                Option.some(CLUSTER),
+                                                                maybeClusterName(CLUSTER),
                                                                 Option.some(3));
 
         manager.provisionNode(spec())
@@ -57,7 +59,7 @@ class NodeLifecycleManagerCapTest {
     void provisionNode_proceeds_whenBelowCap() {
         var provider = fakeProvider(existing(2, CLUSTER));
         var manager = NodeLifecycleManager.nodeLifecycleManager(Option.some(provider),
-                                                                Option.some(CLUSTER),
+                                                                maybeClusterName(CLUSTER),
                                                                 Option.some(3));
 
         manager.provisionNode(spec())
@@ -78,7 +80,7 @@ class NodeLifecycleManagerCapTest {
 
         var provider = fakeProvider(instances);
         var manager = NodeLifecycleManager.nodeLifecycleManager(Option.some(provider),
-                                                                Option.some(CLUSTER),
+                                                                maybeClusterName(CLUSTER),
                                                                 Option.some(3));
 
         manager.provisionNode(spec())
@@ -92,7 +94,7 @@ class NodeLifecycleManagerCapTest {
     void provisionNode_proceedsUnbounded_whenNoCapConfigured() {
         var provider = fakeProvider(existing(99, CLUSTER));
         var manager = NodeLifecycleManager.nodeLifecycleManager(Option.some(provider),
-                                                                Option.some(CLUSTER),
+                                                                maybeClusterName(CLUSTER),
                                                                 Option.empty());
 
         manager.provisionNode(spec())
@@ -108,7 +110,7 @@ class NodeLifecycleManagerCapTest {
     void provisionNode_refuses_whenInstanceCountCannotBeRead() {
         var provider = failingListProvider();
         var manager = NodeLifecycleManager.nodeLifecycleManager(Option.some(provider),
-                                                                Option.some(CLUSTER),
+                                                                maybeClusterName(CLUSTER),
                                                                 Option.some(3));
 
         manager.provisionNode(spec())
@@ -138,7 +140,7 @@ class NodeLifecycleManagerCapTest {
         return ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND,
                                            "cx23",
                                            "core",
-                                           ProvisionContext.forBootstrap(CLUSTER, "core", sourceNameOrDefault("default"), "node-1"))
+                                           ProvisionContext.forBootstrap(clusterName(CLUSTER).unwrap(), "core", sourceNameOrDefault("default"), "node-1"))
                             .unwrap();
     }
 

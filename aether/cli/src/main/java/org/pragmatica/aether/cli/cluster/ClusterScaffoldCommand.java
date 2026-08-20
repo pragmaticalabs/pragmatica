@@ -6,6 +6,7 @@ package org.pragmatica.aether.cli.cluster;
 
 import java.util.concurrent.Callable;
 
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.cli.ExitCode;
 import org.pragmatica.aether.config.cluster.ClusterIdentity;
 import org.pragmatica.lang.Cause;
@@ -52,13 +53,16 @@ class ClusterScaffoldCommand implements Callable<Integer> {
 
     @Override
     public Integer call() {
-        return validateName().flatMap(_ -> validateFormat())
-                           .flatMap(this::render)
+        return validateName().flatMap(this::renderValidated)
                            .fold(ClusterScaffoldCommand::onFailure, ClusterScaffoldCommand::onSuccess);
     }
 
-    private Result<String> validateName() {
+    private Result<ClusterName> validateName() {
         return ClusterIdentity.clusterIdentity(name, "1.0.0").map(ClusterIdentity::name);
+    }
+
+    private Result<String> renderValidated(ClusterName clusterName) {
+        return validateFormat().flatMap(_ -> render(clusterName));
     }
 
     private Result<String> validateFormat() {
@@ -68,12 +72,17 @@ class ClusterScaffoldCommand implements Callable<Integer> {
         };
     }
 
-    private Result<String> render(String _format) {
+    private Result<String> render(ClusterName clusterName) {
         if (nodes < 3) {
             return new ScaffoldError.InvalidNodeCount(nodes).result();
         }
 
-        return Result.success(DockerComposeTemplate.render(name, nodes, image, mgmtPortBase, appPortBase, clusterPort));
+        return Result.success(DockerComposeTemplate.render(clusterName,
+                                                           nodes,
+                                                           image,
+                                                           mgmtPortBase,
+                                                           appPortBase,
+                                                           clusterPort));
     }
 
     private static int onSuccess(String rendered) {

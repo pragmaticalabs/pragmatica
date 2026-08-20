@@ -9,6 +9,7 @@ import java.util.Map;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -94,7 +95,8 @@ public interface ComputeProvider {
     /// Convenience seed entry (bootstrap primitive / tests): provision a core-role node from the
     /// provider's defaults, routed through the [#provision(ProvisionSpec)] boundary. A provider that
     /// needs a provider-specific seed (e.g. Docker's `default` cluster) overrides this; the rest
-    /// inherit the generic core seed. The seed context carries no cluster name — production
+    /// inherit the generic core seed. The seed context carries NO cluster name — [Option#empty],
+    /// not a placeholder that a label sweep could later fail to distinguish — and production
     /// provisioning flows through `buildCloudProvisionSpec`, which stamps the real cluster — and
     /// [SourceName#DEFAULT] as its source, which no source-scoped selector resolves. The seed used to
     /// carry a blank source and therefore no `aether-source` label at all; a cloud provider reached
@@ -105,7 +107,7 @@ public interface ComputeProvider {
     }
 
     private static Result<ProvisionSpec> seedSpec(InstanceType instanceType) {
-        var context = ProvisionContext.provisionContext("",
+        var context = ProvisionContext.provisionContext(Option.<ClusterName> empty(),
                                                         "core",
                                                         SourceName.DEFAULT,
                                                         ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
@@ -118,7 +120,7 @@ public interface ComputeProvider {
     }
 
     @Contract
-    default void resetProvisionerState(String clusterName) {}
+    default void resetProvisionerState(Option<ClusterName> clusterName) {}
 
     /// Confirm INFRASTRUCTURE readiness of a freshly-created instance: poll
     /// [#instanceStatus] (this provider's OWN primitive) until it reports

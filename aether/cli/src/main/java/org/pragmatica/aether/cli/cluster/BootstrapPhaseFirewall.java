@@ -13,6 +13,7 @@ import org.pragmatica.aether.config.cluster.FirewallRule;
 import org.pragmatica.aether.config.cluster.LoadBalancerMode;
 import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.config.cluster.SourceType;
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -112,7 +113,7 @@ public sealed interface BootstrapPhaseFirewall {
         Result<ComputeProvider> resolve(SourceProfile source,
                                         List<Long> sshKeyIds,
                                         String userData,
-                                        String clusterName);
+                                        ClusterName clusterName);
     }
 
     @SuppressWarnings("JBCT-PAT-01")

@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.function.LongConsumer;
 
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.InstanceId;
@@ -171,7 +172,7 @@ sealed interface BootstrapCleanup {
     /// prefix `aether-bootstrap-<cluster>-` — the SAME boundary `HetznerComputeProvider.isBootstrapKey` uses
     /// (post-#444), so a `prod` destroy never touches `production`'s keys. Runs AFTER the state-based cleanup,
     /// so an already-recorded-and-deleted key surfaces as a tolerated 404/`not_found`.
-    static Result<Unit> sweepClusterSshKeys(BootstrapState state, String clusterName) {
+    static Result<Unit> sweepClusterSshKeys(BootstrapState state, ClusterName clusterName) {
         return sweepClusterSshKeys(state, clusterName, CleanupResolvers.cleanupResolvers());
     }
 
@@ -179,7 +180,7 @@ sealed interface BootstrapCleanup {
     /// factory so the sweep is observable without a real cloud call. The Hetzner client is still resolved
     /// handle-first (from the persisted hetzner `SourceCleanupHandle`), never raw `HCLOUD_TOKEN`.
     static Result<Unit> sweepClusterSshKeys(BootstrapState state,
-                                            String clusterName,
+                                            ClusterName clusterName,
                                             Fn1<String, String> getenv,
                                             Fn1<HetznerClient, String> hetznerClientFactory) {
         return sweepClusterSshKeys(state,
@@ -189,16 +190,10 @@ sealed interface BootstrapCleanup {
                                                    .withHetznerClientFactory(hetznerClientFactory));
     }
 
-    // RET-06: `clusterName` may be absent/blank when the bootstrap state never captured it;
-    // the guarded skip is defensive scoping, not a business optional.
-    @SuppressWarnings({"JBCT-PAT-01", "JBCT-RET-06"})
-    static Result<Unit> sweepClusterSshKeys(BootstrapState state, String clusterName, CleanupResolvers resolvers) {
-        if (clusterName == null || clusterName.isBlank()) {
-            System.out.println("  Skipping SSH-key sweep: cluster name is blank (cannot scope the sweep).");
-
-            return Result.unitResult();
-        }
-
+    // The blank-name skip that used to open this method is gone: `clusterName` is a `ClusterName`,
+    // so an unscopeable sweep is unrepresentable here rather than guarded against.
+    @SuppressWarnings("JBCT-PAT-01")
+    static Result<Unit> sweepClusterSshKeys(BootstrapState state, ClusterName clusterName, CleanupResolvers resolvers) {
         var handle = state.sources()
                           .values()
                           .stream()
@@ -313,7 +308,7 @@ sealed interface BootstrapCleanup {
     /// which kills the leader's worker reconciler — and nothing re-provisions the workers this
     /// sweep reaps. Run before core death, a live leader would see a worker deficit and replace
     /// them mid-destroy.
-    static Result<Unit> sweepClusterVms(BootstrapState state, String clusterName) {
+    static Result<Unit> sweepClusterVms(BootstrapState state, ClusterName clusterName) {
         return sweepClusterVms(state, clusterName, CleanupResolvers.cleanupResolvers());
     }
 
@@ -321,7 +316,7 @@ sealed interface BootstrapCleanup {
     /// mirroring the #481 SSH-key sweep seams. Handle-first credential resolution — never raw
     /// `HCLOUD_TOKEN`.
     static Result<Unit> sweepClusterVms(BootstrapState state,
-                                        String clusterName,
+                                        ClusterName clusterName,
                                         Fn1<String, String> getenv,
                                         Fn1<HetznerClient, String> hetznerClientFactory) {
         return sweepClusterVms(state,
@@ -331,17 +326,12 @@ sealed interface BootstrapCleanup {
                                                .withHetznerClientFactory(hetznerClientFactory));
     }
 
-    // RET-06: `clusterName` may be absent/blank when the bootstrap state never captured it;
-    // the guarded skip is defensive scoping, not a business optional.
-    @SuppressWarnings({"JBCT-PAT-01", "JBCT-RET-06"})
-    static Result<Unit> sweepClusterVms(BootstrapState state, String clusterName, CleanupResolvers resolvers) {
-        if (clusterName == null || clusterName.isBlank()) {
-            System.out.println("  Skipping VM sweep: cluster name is blank (cannot scope the sweep).");
-
-            return Result.unitResult();
-        }
-
-        if (PROTECTED_CLUSTERS.contains(clusterName)) {
+    // The blank-name skip that used to open this method is gone: `clusterName` is a `ClusterName`,
+    // so an unscopeable sweep — the one that would have swept the whole account — is unrepresentable
+    // here rather than guarded against.
+    @SuppressWarnings("JBCT-PAT-01")
+    static Result<Unit> sweepClusterVms(BootstrapState state, ClusterName clusterName, CleanupResolvers resolvers) {
+        if (PROTECTED_CLUSTERS.contains(clusterName.value())) {
             return Causes.cause("Refusing to sweep VMs of protected cluster '" + clusterName
                                + "' — it hosts long-lived shared infrastructure (see tools/cloud-reaper.sh"
                                + " PROTECTED_CLUSTERS and incident #572). Remove its resources manually if you"

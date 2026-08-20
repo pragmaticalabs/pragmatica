@@ -6,6 +6,7 @@
 package org.pragmatica.aether.cli.cluster;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
 import org.pragmatica.aether.config.cluster.AutoHealSpec;
 import org.pragmatica.aether.config.cluster.CloudProviderName;
@@ -40,6 +41,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import static org.pragmatica.aether.environment.ClusterName.clusterName;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -47,7 +49,7 @@ import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 
 class BootstrapPhaseDeployCloudSshRestartTest {
 
-    private static final String CLUSTER_NAME = "prod";
+    private static final ClusterName CLUSTER_NAME = clusterName("prod").unwrap();
 
     private static final String CLUSTER_VERSION = "1.0.0";
 
@@ -161,7 +163,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                                     timeouts,
                                                     ports);
         return ClusterBootstrapConfig.clusterBootstrapConfig(CLUSTER_VERSION,
-                                                             ClusterIdentity.clusterIdentity(CLUSTER_NAME, CLUSTER_VERSION).unwrap(),
+                                                             ClusterIdentity.clusterIdentity(CLUSTER_NAME.value(), CLUSTER_VERSION).unwrap(),
                                                              CoreTopology.defaultCoreTopology(),
                                                              Map.of("eu-1", source, "dc-1", legacyGateSshSource()),
                                                              runtimes,
@@ -1094,7 +1096,8 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                                               8090,
                                                               8091,
                                                               "eu-1-core-0:1.2.3.4:8090,eu-1-core-1:1.2.3.5:8090",
-                                                              CLUSTER_SECRET);
+                                                              CLUSTER_SECRET,
+                                                              CLUSTER_NAME);
         // Bug 20a: pkill pattern is anchored '^java -jar <JAR>' (single-quoted, leading '^') so
         // only processes whose cmdline STARTS WITH "java -jar <JAR>" match — i.e. the JVM, NOT
         // the SSH bash session whose argv embeds the same string later in argv[2].

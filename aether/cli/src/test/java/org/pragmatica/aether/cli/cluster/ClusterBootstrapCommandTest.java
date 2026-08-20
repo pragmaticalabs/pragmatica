@@ -80,7 +80,7 @@ class ClusterBootstrapCommandTest {
             var config = configWithName("from-toml");
             var overridden = config.withClusterName("cli-name").unwrap();
 
-            assertEquals("cli-name", overridden.cluster().name());
+            assertEquals("cli-name", overridden.cluster().name().value());
             assertEquals(config.cluster().version(), overridden.cluster().version());
             assertEquals(config.configVersion(), overridden.configVersion());
             assertEquals(config.coreTopology(), overridden.coreTopology());
@@ -95,7 +95,7 @@ class ClusterBootstrapCommandTest {
             var identity = clusterIdentity("from-toml", "2.5.0").unwrap();
             var renamed = identity.withName("cli-name").unwrap();
 
-            assertEquals("cli-name", renamed.name());
+            assertEquals("cli-name", renamed.name().value());
             assertEquals("2.5.0", renamed.version());
         }
     }

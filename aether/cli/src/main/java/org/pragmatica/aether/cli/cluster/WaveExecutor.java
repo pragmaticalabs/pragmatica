@@ -16,6 +16,7 @@ import org.pragmatica.aether.config.cluster.RoleSubTable;
 import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.config.cluster.SourceType;
 import org.pragmatica.aether.config.cluster.SshConfig;
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.CloudProviderSupport;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.NodeGroupConfig;
@@ -131,7 +132,7 @@ public final class WaveExecutor {
                                                                    SourceProfile source,
                                                                    NodeRole role,
                                                                    int count,
-                                                                   String clusterName) {
+                                                                   ClusterName clusterName) {
         return switch (source.type()) {
             case CLOUD -> resolveCloudAndProvision(sourceName, source, role, count, clusterName);
             case DOCKER -> resolveDockerAndProvision(sourceName, role, count, source, clusterName);
@@ -144,7 +145,7 @@ public final class WaveExecutor {
                                                                           SourceProfile source,
                                                                           NodeRole role,
                                                                           int count,
-                                                                          String clusterName) {
+                                                                          ClusterName clusterName) {
         return ProviderResolver.resolveCloudCompute(source).flatMap(compute -> provisionViaCompute(compute,
                                                                                                    sourceName,
                                                                                                    role,
@@ -157,7 +158,7 @@ public final class WaveExecutor {
                                                                            NodeRole role,
                                                                            int count,
                                                                            SourceProfile source,
-                                                                           String clusterName) {
+                                                                           ClusterName clusterName) {
         return ProviderResolver.resolveDockerCompute().flatMap(compute -> provisionViaCompute(compute,
                                                                                               sourceName,
                                                                                               role,
@@ -172,7 +173,7 @@ public final class WaveExecutor {
                                                                      NodeRole role,
                                                                      int count,
                                                                      SourceProfile source,
-                                                                     String clusterName) {
+                                                                     ClusterName clusterName) {
         var instanceType = option(source.roles().get(role)).flatMap(rt -> rt.instanceType()).or("default");
         var zone = source.zone().or("default");
         // #442 v2b — carry the real cluster name in the group tags so `CloudProviderSupport.toContext`
@@ -194,8 +195,13 @@ public final class WaveExecutor {
     /// cloud enumeration can find and reap it. `aether-cluster` is the load-bearing one: it seeds
     /// `ProvisionContext.clusterName()` via `CloudProviderSupport.toContext`, which the provider
     /// stamps onto the VM. Package-private so the wiring test asserts it directly.
-    static Map<String, String> provisionTags(String clusterName, SourceName sourceName, NodeRole role) {
-        return Map.of("aether-cluster", clusterName, "aether-source", sourceName.value(), "aether-role", role.value());
+    static Map<String, String> provisionTags(ClusterName clusterName, SourceName sourceName, NodeRole role) {
+        return Map.of("aether-cluster",
+                      clusterName.value(),
+                      "aether-source",
+                      sourceName.value(),
+                      "aether-role",
+                      role.value());
     }
 
     private static Result<List<ProvisionedNode>> forgeProvisionPlaceholder(SourceName sourceName,

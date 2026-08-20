@@ -11,6 +11,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.DiscoveryProvider;
 import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.PeerInfo;
@@ -57,7 +58,7 @@ public final class AzureDiscoveryProvider implements DiscoveryProvider {
 
     public static AzureDiscoveryProvider azureDiscoveryProvider(AzureClient client, AzureEnvironmentConfig config) {
         return new AzureDiscoveryProvider(client,
-                                          config.clusterName().or("default"),
+                                          config.clusterName().map(ClusterName::value).or("default"),
                                           config.selfVmName(),
                                           config.discoveryPollIntervalMs());
     }

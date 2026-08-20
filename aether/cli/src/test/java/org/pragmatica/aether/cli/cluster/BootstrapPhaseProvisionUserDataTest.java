@@ -19,6 +19,7 @@ import org.pragmatica.aether.config.cluster.OperationsConfig;
 import org.pragmatica.aether.config.cluster.RoleSubTable;
 import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.config.cluster.SourceType;
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
@@ -36,6 +37,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
+import static org.pragmatica.aether.environment.ClusterName.clusterName;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -111,7 +113,7 @@ class BootstrapPhaseProvisionUserDataTest {
     }
 
     private static BootstrapContext baseContext(ClusterBootstrapConfig config) {
-        var state = BootstrapState.initialState("prod", "h", "now").withClusterSecret("test-secret-xyz");
+        var state = BootstrapState.initialState(clusterName("prod").unwrap(), "h", "now").withClusterSecret("test-secret-xyz");
         return BootstrapContext.bootstrapContext(config, state, List.of(), List.of())
                                .withClusterSecret("test-secret-xyz");
     }
@@ -228,7 +230,8 @@ class BootstrapPhaseProvisionUserDataTest {
 
         var spec = invokeBuildCloudProvisionSpec(ctx, source, "eu-1-core-0", 0);
 
-        assertEquals("prod", spec.context().clusterName(),
+        assertEquals("prod",
+                     spec.context().clusterName().map(ClusterName::value).or(""),
                      "Context must include cluster name so reaper can label-match orphans");
         assertEquals("eu-1", spec.context().sourceName().value());
         assertEquals("core", spec.context().role());
@@ -364,7 +367,7 @@ class BootstrapPhaseProvisionUserDataTest {
                                                                           NodeRole.class,
                                                                           String.class,
                                                                           int.class,
-                                                                          String.class);
+                                                                          ClusterName.class);
             method.setAccessible(true);
             @SuppressWarnings("unchecked")
             var result = (org.pragmatica.lang.Result<ProvisionSpec>) method.invoke(null,
@@ -374,7 +377,7 @@ class BootstrapPhaseProvisionUserDataTest {
                                                                                     role,
                                                                                     nodeId,
                                                                                     nodeIndex,
-                                                                                    "prod");
+                                                                                    clusterName("prod").unwrap());
             return result.unwrap();
         } catch (ReflectiveOperationException e) {
             throw new AssertionError("Failed to invoke buildCloudProvisionSpec", e);

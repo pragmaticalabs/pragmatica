@@ -11,6 +11,7 @@ import org.pragmatica.lang.Option;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
+import static org.pragmatica.aether.environment.ClusterName.clusterName;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -18,7 +19,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 class BootstrapStateJsonRoundTripTest {
 
     private static BootstrapState baseState() {
-        return BootstrapState.initialState("eu-prod", "hash-1", "2026-05-01T00:00:00Z");
+        return BootstrapState.initialState(clusterName("eu-prod").unwrap(), "hash-1", "2026-05-01T00:00:00Z");
     }
 
     @Test

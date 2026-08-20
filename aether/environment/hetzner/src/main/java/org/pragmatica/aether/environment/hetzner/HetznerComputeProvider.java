@@ -12,6 +12,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.IngressHandle;
@@ -82,7 +83,7 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
                                                           clusterName -> createLabelled(request, clusterName));
     }
 
-    private Promise<InstanceInfo> createLabelled(ProvisionRequest request, String clusterName) {
+    private Promise<InstanceInfo> createLabelled(ProvisionRequest request, ClusterName clusterName) {
         return createAndConfirm(request, labelsFor(request.context(), clusterName)).mapError(cause -> toProvisionError(request.zone(),
                                                                                                                        cause));
     }
@@ -96,19 +97,20 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     /// reap would catch, and account-wide reaps are what destroyed the standing `test-pg` VM (#572).
     ///
     /// Failing here costs one loud provisioning error at the only moment the problem is cheap to
-    /// fix. [#clusterNameOrDefault]'s `AETHER_CLUSTER_NAME` fallback is retained — it covers the
+    /// fix. [#resolveClusterName]'s `AETHER_CLUSTER_NAME` fallback is retained — it covers the
     /// genuine pre-bootstrap window — so this fires only when context, env AND provider config are
     /// all silent, which means nothing downstream could have attributed the server either.
-    private Result<String> requireClusterName(ProvisionContext ctx) {
-        var resolved = clusterNameOrDefault(ctx);
-
-        return UNKNOWN_CLUSTER.equals(resolved)
-               ? CLUSTER_NAME_UNRESOLVED.result()
-               : success(resolved);
+    ///
+    /// The refusal is now the EMPTY case of [#resolveClusterName], not a comparison against a magic
+    /// `"unknown"` string. That string is itself a valid cluster name under the grammar, so the old
+    /// gate could not tell an unresolved cluster from one an operator had actually named `unknown` —
+    /// and it refused the second, correctly-attributed one.
+    private Result<ClusterName> requireClusterName(ProvisionContext ctx) {
+        return resolveClusterName(ctx).toResult(CLUSTER_NAME_UNRESOLVED);
     }
 
     private static final Cause CLUSTER_NAME_UNRESOLVED = EnvironmentError.provisionFailed(new RuntimeException("Refusing to provision: no cluster name resolved from the provisioning context, AETHER_CLUSTER_NAME, "
-                                                                                                              + "or the provider config. The server would be labelled aether-cluster=unknown, which no scoped "
+                                                                                                              + "or the provider config. The server would carry no aether-cluster label, which no scoped "
                                                                                                               + "cleanup can find — it would leak as a billable orphan. Set the cluster name on the provisioning "
                                                                                                               + "context (bootstrap/CTM) or export AETHER_CLUSTER_NAME."));
 
@@ -255,10 +257,6 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     /// `BootstrapPhaseSshKey.HETZNER_KEY_NAME_PREFIX` — the `aether-cli` constant cannot be imported
     /// from this provider module.
     static final String BOOTSTRAP_KEY_NAME_PREFIX = "aether-bootstrap";
-    /// Sentinel returned by [#clusterNameOrDefault] when no cluster name resolves. Used to gate the
-    /// ssh-key prefix scope: an unresolved (blank/`unknown`) cluster produces NO cluster-scoped
-    /// prefix, so the resolver falls to the loud keyless branch instead of guessing account-wide.
-    private static final String UNKNOWN_CLUSTER = "unknown";
     /// #459 — Hetzner's stock boot image, supplied to [ProvisionRequest#resolve] as the provider
     /// [ProviderDefaults#fallbackImage] for the LOUD final image fallback: applied only when neither
     /// the source's role `image` nor the node's `[cloud.compute] image` resolves. Unlike the server
@@ -267,7 +265,7 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     /// operator who intended a prepared snapshot sees the stock image was used instead.
     private static final String DEFAULT_IMAGE = "ubuntu-22.04";
 
-    private Promise<List<Long>> resolveSshKeyIds(String clusterName) {
+    private Promise<List<Long>> resolveSshKeyIds(Option<ClusterName> clusterName) {
         if (!config.sshKeyIds().isEmpty()) {
             log.info("Hetzner provision: SSH key ids resolved from node config (branch=config, count={}) — replacement inherits the cluster's keys",
                      config.sshKeyIds().size());
@@ -287,16 +285,14 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     }
 
     /// Cluster-scoped ssh-key name prefix `aether-bootstrap-<cluster>` (RFC-0016 W3 §3.2–3.3), or
-    /// empty when the cluster is unresolved (blank/[#UNKNOWN_CLUSTER]) — the empty case gates the
-    /// resolver to the loud keyless branch rather than account-wide guessing. Blank-defensive in the
-    /// same shape as `BootstrapPhaseSshKey.hetznerKeyPrefix`, so the provider's filter and the CLI's
-    /// upload name derive the identical scoped prefix.
-    private static Option<String> bootstrapKeyPrefix(String clusterName) {
-        return Option.option(clusterName)
-                     .map(String::trim)
-                     .filter(name -> !name.isEmpty())
-                     .filter(name -> !UNKNOWN_CLUSTER.equals(name))
-                     .map(name -> BOOTSTRAP_KEY_NAME_PREFIX + "-" + name);
+    /// empty when the cluster is unresolved — the empty case gates the resolver to the loud keyless
+    /// branch rather than account-wide guessing. The absence now arrives as [Option#empty] from
+    /// [#resolveClusterName] instead of being recovered from a blank/`unknown` string, so the two
+    /// former unresolved spellings collapse into the one the type expresses. Derives the identical
+    /// scoped prefix as `BootstrapPhaseSshKey.hetznerKeyPrefix`, so the provider's filter and the
+    /// CLI's upload name agree.
+    private static Option<String> bootstrapKeyPrefix(Option<ClusterName> clusterName) {
+        return clusterName.map(name -> BOOTSTRAP_KEY_NAME_PREFIX + "-" + name.value());
     }
 
     private static List<Long> bootstrapKeyIds(List<SshKey> keys, String prefix) {
@@ -362,7 +358,7 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     /// Both provider-side lookups (cluster-scoped SSH keys, label-resolved firewall) are independent
     /// account queries, so they run concurrently and the create request is assembled from the pair.
     private Promise<CreateServerRequest> buildCreateRequest(ProvisionRequest request, Map<String, String> labels) {
-        return Promise.all(resolveSshKeyIds(clusterNameOrDefault(request.context())),
+        return Promise.all(resolveSshKeyIds(resolveClusterName(request.context())),
                            resolveFirewallIds(request.context()))
                       .map((sshKeyIds, firewallIds) -> createServerRequestFor(request, sshKeyIds, firewallIds, labels));
     }
@@ -406,16 +402,26 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
             return Promise.success(configured);
         }
 
-        var cluster = clusterNameOrDefault(ctx);
-        var source = ctx.sourceName();
+        return resolveClusterName(ctx).fold(HetznerComputeProvider::firewallScopeUnresolved,
+                                            cluster -> firewallsFor(cluster, ctx.sourceName()));
+    }
 
+    /// A firewall lookup is `(cluster, source)`-scoped, so with no cluster there is no selector to
+    /// run — and the create that would follow is refused for the same reason by
+    /// [#requireClusterName], which runs FIRST on every production create path. Reaching here means
+    /// this method was called outside that path; refusing keeps the two gates from disagreeing.
+    private static Promise<List<Long>> firewallScopeUnresolved() {
+        return CLUSTER_NAME_UNRESOLVED.promise();
+    }
+
+    private Promise<List<Long>> firewallsFor(ClusterName cluster, SourceName source) {
         return client.listFirewalls(firewallSelector(cluster,
                                                      source.value()))
                      .mapError(cause -> FirewallLookupFailed.firewallLookupFailed(cluster, source, cause))
                      .flatMap(found -> resolvedOrAbsent(found, cluster, source));
     }
 
-    private Promise<List<Long>> resolvedOrAbsent(List<Firewall> found, String cluster, SourceName source) {
+    private Promise<List<Long>> resolvedOrAbsent(List<Firewall> found, ClusterName cluster, SourceName source) {
         if (found.isEmpty()) {
             return noFirewallForSource(cluster, source);
         }
@@ -446,14 +452,14 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     /// A cluster-scoped list separates them: firewalls exist for this cluster but none for this
     /// source ⇒ the selector missed one, so FAIL. Nothing cluster-wide ⇒ ingress is unmanaged here,
     /// so proceed and say so loudly. The extra call is paid only on the empty path.
-    private Promise<List<Long>> noFirewallForSource(String cluster, SourceName source) {
-        return client.listFirewalls(CLUSTER_LABEL + "=" + sanitizeLabelValue(cluster))
+    private Promise<List<Long>> noFirewallForSource(ClusterName cluster, SourceName source) {
+        return client.listFirewalls(CLUSTER_LABEL + "=" + sanitizeLabelValue(cluster.value()))
                      .mapError(cause -> FirewallLookupFailed.firewallLookupFailed(cluster, source, cause))
                      .flatMap(clusterWide -> unmanagedOrMissed(clusterWide, cluster, source));
     }
 
     private static Promise<List<Long>> unmanagedOrMissed(List<Firewall> clusterWide,
-                                                         String cluster,
+                                                         ClusterName cluster,
                                                          SourceName source) {
         if (clusterWide.isEmpty()) {
             return ingressUnmanaged(cluster, source);
@@ -465,7 +471,7 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
                                      .promise();
     }
 
-    private static Promise<List<Long>> ingressUnmanaged(String cluster, SourceName source) {
+    private static Promise<List<Long>> ingressUnmanaged(ClusterName cluster, SourceName source) {
         log.warn("Hetzner provision: no Aether-managed firewall exists for cluster '{}' (source '{}') — the server is "
                 + "created with NO firewall association and therefore accepts ALL inbound traffic. This matches how the "
                 + "bootstrap nodes of this source were created (no `allow_ingress` declared, not an elected LB), so it "
@@ -487,8 +493,8 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     /// The component is `sourceName`, NOT `source`: [Cause] already declares `source()` returning
     /// `Option<Cause>` for cause chaining, and a record component named `source` would generate a
     /// clashing `String source()`.
-    record FirewallSelectorMissed(String cluster, SourceName sourceName, int clusterWideCount) implements Cause {
-        static FirewallSelectorMissed firewallSelectorMissed(String cluster,
+    record FirewallSelectorMissed(ClusterName cluster, SourceName sourceName, int clusterWideCount) implements Cause {
+        static FirewallSelectorMissed firewallSelectorMissed(ClusterName cluster,
                                                              SourceName sourceName,
                                                              int clusterWideCount) {
             return new FirewallSelectorMissed(cluster, sourceName, clusterWideCount);
@@ -513,8 +519,10 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     /// Unknown firewall state is not evidence of a safe one. Note the refusal itself is structural —
     /// the failed lookup propagates through the create chain, so no server is built either way; this
     /// cause only makes the operator-facing reason say WHY.
-    record FirewallLookupFailed(String cluster, SourceName sourceName, Cause lookupCause) implements Cause {
-        static FirewallLookupFailed firewallLookupFailed(String cluster, SourceName sourceName, Cause lookupCause) {
+    record FirewallLookupFailed(ClusterName cluster, SourceName sourceName, Cause lookupCause) implements Cause {
+        static FirewallLookupFailed firewallLookupFailed(ClusterName cluster,
+                                                         SourceName sourceName,
+                                                         Cause lookupCause) {
             return new FirewallLookupFailed(cluster, sourceName, lookupCause);
         }
 
@@ -527,7 +535,7 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
         }
     }
 
-    private Map<String, String> labelsFor(ProvisionContext ctx, String clusterLabel) {
+    private Map<String, String> labelsFor(ProvisionContext ctx, ClusterName clusterLabel) {
         var role = ctx.role().isEmpty()
                    ? "core"
                    : ctx.role();
@@ -567,28 +575,28 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
         return translated;
     }
 
-    private String clusterNameOrDefault(ProvisionContext ctx) {
-        if (!ctx.clusterName().isEmpty()) {
-            return ctx.clusterName();
-        }
-        // Fallback: when ClusterConfigValue isn't yet seeded in KV-Store (pre-bootstrap
-        // path), source the cluster name from AETHER_CLUSTER_NAME env var so
-        // CTM-provisioned Hetzner servers carry a matching `aether-cluster` label.
-        // Mirrors `DockerComputeProvider.clusterOrDefault` — closes spec caveat-c.
-        var fromEnv = System.getenv("AETHER_CLUSTER_NAME");
-
-        if (fromEnv != null && !fromEnv.isEmpty()) {
-            return fromEnv;
-        }
-
-        return config.clusterName()
-                     .or(UNKNOWN_CLUSTER);
+    /// Resolution chain, in precedence order: the provisioning context, then `AETHER_CLUSTER_NAME`
+    /// (the pre-bootstrap window where `ClusterConfigValue` is not yet seeded in the KV-Store, so a
+    /// CTM-provisioned server would otherwise carry no matching `aether-cluster` label — mirrors
+    /// `DockerComputeProvider.clusterOrDefault`), then the provider config.
+    ///
+    /// Every step is an [Option] and the chain ends EMPTY, never at a placeholder: "no cluster
+    /// resolved" is not a name, and encoding it as one made a genuinely-named `unknown` cluster
+    /// indistinguishable from an unattributable server. An env var holding something outside the
+    /// grammar reads as absent here rather than as a name that would be mangled into a label no
+    /// selector finds.
+    private Option<ClusterName> resolveClusterName(ProvisionContext ctx) {
+        return ctx.clusterName()
+                  .orElse(() -> ClusterName.maybeClusterName(System.getenv("AETHER_CLUSTER_NAME")))
+                  .orElse(config::clusterName);
     }
 
-    private static Map<String, String> buildLabels(String clusterLabel, String role, SourceName sourceName) {
+    private static Map<String, String> buildLabels(ClusterName clusterLabel, String role, SourceName sourceName) {
         var labels = new HashMap<String, String>();
-
-        labels.put(CLUSTER_LABEL, sanitizeLabelValue(clusterLabel));
+        // Unconditional and un-mangled: ClusterName is already inside the Hetzner label charset, so
+        // the sanitizer is a no-op here and is kept only so every label in this map goes through the
+        // one coercion path.
+        labels.put(CLUSTER_LABEL, sanitizeLabelValue(clusterLabel.value()));
         labels.put("aether-role", sanitizeLabelValue(role));
         // Unconditional: SourceName cannot be blank, so the historical emptiness guard here was dead.
         labels.put(SOURCE_LABEL, sanitizeLabelValue(sourceName.value()));
@@ -634,18 +642,15 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     /// (`tools/cloud-reaper.sh`) enumerates by that label, so an unlabelled firewall is invisible to
     /// every cleanup path and leaks as a paid resource. Refusing loudly beats creating one we cannot
     /// later find; the bootstrap caller always supplies the cluster.
-    private Result<String> firewallCluster() {
-        var cluster = config.clusterName().or("");
-
-        return cluster.isEmpty()
-               ? EnvironmentError.operationNotSupported(NO_CLUSTER_FOR_INGRESS).result()
-               : success(cluster);
+    private Result<ClusterName> firewallCluster() {
+        return config.clusterName()
+                     .toResult(EnvironmentError.operationNotSupported(NO_CLUSTER_FOR_INGRESS));
     }
 
     private static final String NO_CLUSTER_FOR_INGRESS = "openIngress/closeIngress (no cluster name resolved for this provider — an ingress firewall "
                                                        + "without the aether-cluster label cannot be reclaimed by cleanup and would leak)";
 
-    private Promise<IngressHandle> openIngressFor(String cluster,
+    private Promise<IngressHandle> openIngressFor(ClusterName cluster,
                                                   String sourceId,
                                                   int port,
                                                   String protocol,
@@ -657,7 +662,7 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
                      .flatMap(found -> openOrPatch(cluster, sourceId, rule, port, protocol, sourceCidr, found));
     }
 
-    private Promise<IngressHandle> openOrPatch(String cluster,
+    private Promise<IngressHandle> openOrPatch(ClusterName cluster,
                                                String sourceId,
                                                Firewall.Rule rule,
                                                int port,
@@ -671,8 +676,11 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
         return patchIngressFirewall(found.getFirst(), rule, port, protocol, sourceCidr);
     }
 
-    private Promise<IngressHandle> createIngressFirewall(String cluster, String sourceId, Firewall.Rule rule) {
-        var labels = Map.of(CLUSTER_LABEL, sanitizeLabelValue(cluster), SOURCE_LABEL, sanitizeLabelValue(sourceId));
+    private Promise<IngressHandle> createIngressFirewall(ClusterName cluster, String sourceId, Firewall.Rule rule) {
+        var labels = Map.of(CLUSTER_LABEL,
+                            sanitizeLabelValue(cluster.value()),
+                            SOURCE_LABEL,
+                            sanitizeLabelValue(sourceId));
         var request = CreateFirewallRequest.createFirewallRequest(firewallName(cluster, sourceId), List.of(rule), labels);
 
         return client.createFirewall(request)
@@ -742,15 +750,15 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     /// Selects the ONE firewall belonging to this (cluster, source). Scoping by both labels is what
     /// keeps create-or-patch and withdraw from ever touching a firewall Aether did not create —
     /// the 2026-08-03 test-pg incident (#572) is what unscoped cleanup costs.
-    private static String firewallSelector(String cluster, String sourceId) {
+    private static String firewallSelector(ClusterName cluster, String sourceId) {
         return CLUSTER_LABEL
-             + "=" + sanitizeLabelValue(cluster)
+             + "=" + sanitizeLabelValue(cluster.value())
              + "," + SOURCE_LABEL
              + "=" + sanitizeLabelValue(sourceId);
     }
 
-    private static String firewallName(String cluster, String sourceId) {
-        return sanitizeLabelValue("aether-" + cluster + "-" + sourceId);
+    private static String firewallName(ClusterName cluster, String sourceId) {
+        return sanitizeLabelValue("aether-" + cluster.value() + "-" + sourceId);
     }
 
     private static final Pattern LABEL_VALUE_DISALLOWED = Pattern.compile("[^a-zA-Z0-9._-]");

@@ -31,6 +31,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
+import static org.pragmatica.aether.environment.ClusterName.clusterName;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 
@@ -112,7 +113,7 @@ class BootstrapPhaseDeployFormationLabelsTest {
                                                                                     ? 1
                                                                                     : 3),
                                                            3,
-                                                           "prod",
+                                                           clusterName("prod").unwrap(),
                                                            sourceNameOrDefault("eu"),
                                                            5_000,
                                                            10);
@@ -129,7 +130,7 @@ class BootstrapPhaseDeployFormationLabelsTest {
             seen.add(filter);
 
             return Result.success(3);
-        }, 3, "prod", sourceNameOrDefault("eu"), 5_000, 10);
+        }, 3, clusterName("prod").unwrap(), sourceNameOrDefault("eu"), 5_000, 10);
 
         assertThat(seen.getFirst())
                 .containsEntry("aether-cluster", "prod")
@@ -139,7 +140,7 @@ class BootstrapPhaseDeployFormationLabelsTest {
     /// Silence is not success: at the deadline the failure names the counts and where to look.
     @Test
     void pollFormedLabels_timesOut_namingTheShortfall() {
-        var result = BootstrapPhaseDeploy.pollFormedLabels(filter -> Result.success(1), 3, "prod", sourceNameOrDefault("eu"), 60, 10);
+        var result = BootstrapPhaseDeploy.pollFormedLabels(filter -> Result.success(1), 3, clusterName("prod").unwrap(), sourceNameOrDefault("eu"), 60, 10);
 
         assertThat(result.isFailure()).isTrue();
         result.onFailure(cause -> assertThat(cause.message()).contains("1 of 3", "aether-formed", "cloud-init"));
@@ -154,7 +155,7 @@ class BootstrapPhaseDeployFormationLabelsTest {
                                                                      ? Causes.cause("api hiccup").result()
                                                                      : Result.success(3),
                                                            3,
-                                                           "prod",
+                                                           clusterName("prod").unwrap(),
                                                            sourceNameOrDefault("eu"),
                                                            5_000,
                                                            10);

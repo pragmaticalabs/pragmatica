@@ -83,7 +83,7 @@ class CloudProviderSupportTest {
 
     private static void assertHasClusterLabels(ProvisionSpec spec) {
         var ctx = spec.context();
-        assertThat(ctx.clusterName()).isEqualTo("test-a");
+        assertThat(ctx.clusterName().map(ClusterName::value).or("")).isEqualTo("test-a");
         assertThat(ctx.sourceName().value()).isEqualTo("hetzner-eu");
         assertThat(ctx.role()).isEqualTo("core");
     }

@@ -21,6 +21,7 @@ import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.localstack.LocalStackContainer;
 import org.testcontainers.utility.DockerImageName;
 
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.InstanceStatus;
@@ -37,6 +38,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
 
+import static org.pragmatica.aether.environment.ClusterName.clusterName;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
@@ -236,7 +238,7 @@ class AwsLocalStackContractTest {
         void discoverPeers_byClusterTag_listsTaggedInstance() {
             var id = provisionCore("discovery-present").id().value();
             var discovery = AwsDiscoveryProvider.awsDiscoveryProvider(client,
-                                                                      computeConfig().withDiscovery("discovery-present"));
+                                                                      computeConfig().withDiscovery(clusterName("discovery-present").unwrap()));
 
             var peers = awaitSuccess(discovery.discoverPeers());
             var peer = peers.stream()
@@ -256,7 +258,7 @@ class AwsLocalStackContractTest {
         void discoverPeers_differentCluster_excludesInstance() {
             var id = provisionCore("discovery-scoped").id().value();
             var discovery = AwsDiscoveryProvider.awsDiscoveryProvider(client,
-                                                                      computeConfig().withDiscovery("discovery-absent"));
+                                                                      computeConfig().withDiscovery(clusterName("discovery-absent").unwrap()));
 
             var peers = awaitSuccess(discovery.discoverPeers());
 
@@ -310,7 +312,7 @@ class AwsLocalStackContractTest {
         return AwsComputeProvider.awsComputeProvider(client, computeConfig()).unwrap();
     }
 
-    private static ProvisionRequest onDemandRequest(String cluster, String role) {
+    private static ProvisionRequest onDemandRequest(ClusterName cluster, String role) {
         return new ProvisionRequest(InstanceType.ON_DEMAND,
                                     INSTANCE_SIZE,
                                     contractAmi,
@@ -321,7 +323,7 @@ class AwsLocalStackContractTest {
     }
 
     private static InstanceInfo provisionCore(String cluster) {
-        return awaitSuccess(computeProvider().createFrom(onDemandRequest(cluster, "core")));
+        return awaitSuccess(computeProvider().createFrom(onDemandRequest(clusterName(cluster).unwrap(), "core")));
     }
 
     private static void terminateQuietly(String instanceId) {

@@ -13,6 +13,7 @@ import java.util.stream.Collectors;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.RoleSubTable;
 import org.pragmatica.aether.config.cluster.SourceProfile;
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.CloudConfig;
 import org.pragmatica.aether.environment.CloudCredentials;
 import org.pragmatica.aether.environment.ComputeProvider;
@@ -45,7 +46,7 @@ public final class ProviderResolver {
     public static Result<ComputeProvider> resolveCloudCompute(SourceProfile source,
                                                               List<Long> sshKeyIds,
                                                               String userData) {
-        return resolveCloudCompute(source, sshKeyIds, userData, "", List.of());
+        return resolveCloudCompute(source, sshKeyIds, userData, Option.<ClusterName> empty(), List.of());
     }
 
     /// Cluster-aware resolution. `clusterName` is REQUIRED for ingress management (the provider
@@ -54,8 +55,20 @@ public final class ProviderResolver {
     public static Result<ComputeProvider> resolveCloudCompute(SourceProfile source,
                                                               List<Long> sshKeyIds,
                                                               String userData,
-                                                              String clusterName,
+                                                              ClusterName clusterName,
                                                               List<String> firewallIds) {
+        return resolveCloudCompute(source, sshKeyIds, userData, Option.some(clusterName), firewallIds);
+    }
+
+    /// The absence-tolerant form behind the two convenience overloads above, which resolve a provider
+    /// for operations that never touch ingress. An empty cluster emits NO `cluster_name` discovery key
+    /// at all, which is what makes `HetznerComputeProvider.openIngress` refuse rather than create an
+    /// unlabelled firewall no cleanup sweep can reclaim.
+    private static Result<ComputeProvider> resolveCloudCompute(SourceProfile source,
+                                                               List<Long> sshKeyIds,
+                                                               String userData,
+                                                               Option<ClusterName> clusterName,
+                                                               List<String> firewallIds) {
         return source.provider()
                      .toResult(NO_PROVIDER)
                      .flatMap(provider -> lookupAndCreateCloud(provider.value(),
@@ -72,7 +85,7 @@ public final class ProviderResolver {
     static Result<ComputeProvider> resolveCloudCompute(SourceProfile source,
                                                        List<Long> sshKeyIds,
                                                        String userData,
-                                                       String clusterName) {
+                                                       ClusterName clusterName) {
         return resolveCloudCompute(source, sshKeyIds, userData, clusterName, List.of());
     }
 
@@ -147,14 +160,14 @@ public final class ProviderResolver {
     }
 
     private static Result<EnvironmentIntegration> lookupAndCreateCloud(String providerName, SourceProfile source) {
-        return lookupAndCreateCloud(providerName, source, List.of(), "", "", List.of());
+        return lookupAndCreateCloud(providerName, source, List.of(), "", Option.empty(), List.of());
     }
 
     private static Result<EnvironmentIntegration> lookupAndCreateCloud(String providerName,
                                                                        SourceProfile source,
                                                                        List<Long> sshKeyIds,
                                                                        String userData,
-                                                                       String clusterName,
+                                                                       Option<ClusterName> clusterName,
                                                                        List<String> firewallIds) {
         return lookupFactory(providerName).flatMap(factory -> factory.create(buildCloudConfig(providerName,
                                                                                               source,
@@ -193,7 +206,7 @@ public final class ProviderResolver {
                                         SourceProfile source,
                                         List<Long> sshKeyIds,
                                         String userData) {
-        return buildCloudConfig(providerName, source, sshKeyIds, userData, "", List.of());
+        return buildCloudConfig(providerName, source, sshKeyIds, userData, Option.empty(), List.of());
     }
 
     /// `clusterName` lands in the `discovery` map (the key `HetznerEnvironmentIntegrationFactory`
@@ -209,7 +222,7 @@ public final class ProviderResolver {
                                         SourceProfile source,
                                         List<Long> sshKeyIds,
                                         String userData,
-                                        String clusterName,
+                                        Option<ClusterName> clusterName,
                                         List<String> firewallIds) {
         var credentials = new HashMap<String, String>();
 
@@ -236,9 +249,7 @@ public final class ProviderResolver {
             compute.put("firewall_ids", String.join(",", firewallIds));
         }
 
-        var discovery = clusterName.isEmpty()
-                        ? Map.<String, String> of()
-                        : Map.of("cluster_name", clusterName);
+        var discovery = clusterName.map(ProviderResolver::discoveryFor).or(Map.<String, String> of());
 
         return new CloudConfig(providerName,
                                Map.copyOf(credentials),
@@ -247,6 +258,10 @@ public final class ProviderResolver {
                                discovery,
                                Map.of(),
                                Map.of());
+    }
+
+    private static Map<String, String> discoveryFor(ClusterName clusterName) {
+        return Map.of("cluster_name", clusterName.value());
     }
 
     private static String joinLongs(List<Long> ids) {

@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.environment.azure;
 
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.cloud.azure.AzureConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -20,7 +21,7 @@ public record AzureEnvironmentConfig(AzureConfig azureConfig,
                                      String vnetSubnetId,
                                      String userData,
                                      Option<AzureLbConfig> loadBalancer,
-                                     Option<String> clusterName,
+                                     Option<ClusterName> clusterName,
                                      Option<String> selfVmName,
                                      long discoveryPollIntervalMs,
                                      Option<String> certificateSecretPrefix) {
@@ -77,7 +78,7 @@ public record AzureEnvironmentConfig(AzureConfig azureConfig,
                                                   Option.empty()));
     }
 
-    public AzureEnvironmentConfig withDiscovery(String clusterLabel) {
+    public AzureEnvironmentConfig withDiscovery(ClusterName clusterLabel) {
         return new AzureEnvironmentConfig(azureConfig,
                                           vmSize,
                                           image,

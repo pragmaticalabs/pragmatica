@@ -50,7 +50,7 @@ class ClusterBootstrapOrchestratorTest {
             ClusterBootstrapConfigValidator.validate(config)
                 .onFailure(cause -> fail("Expected validation success but got: " + cause.message()))
                 .onSuccess(validated -> {
-                    assertEquals("test-forge", validated.cluster().name());
+                    assertEquals("test-forge", validated.cluster().name().value());
                     assertFalse(validated.sources().isEmpty());
                 });
         }

@@ -92,7 +92,7 @@ public final class CloudProviderSupport {
 
     private static ProvisionContext toContext(NodeGroupConfig group) {
         var tags = group.tags();
-        var clusterName = option(tags.get("aether-cluster")).or("");
+        var clusterName = ClusterName.maybeClusterName(tags.get("aether-cluster"));
 
         return ProvisionContext.provisionContext(clusterName,
                                                  group.role(),

@@ -37,6 +37,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
 
+import static org.pragmatica.aether.environment.ClusterName.clusterName;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
@@ -125,7 +126,7 @@ class BootstrapPhaseFirewallTest {
                                                                     OperationsConfig.defaultOperationsConfig());
 
         return BootstrapContext.bootstrapContext(config,
-                                                  BootstrapState.initialState("test", "h", "now"),
+                                                  BootstrapState.initialState(clusterName("test").unwrap(), "h", "now"),
                                                   List.of(),
                                                   List.of());
     }

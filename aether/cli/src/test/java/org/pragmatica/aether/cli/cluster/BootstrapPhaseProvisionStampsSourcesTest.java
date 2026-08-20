@@ -20,6 +20,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 
+import static org.pragmatica.aether.environment.ClusterName.clusterName;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -100,7 +101,7 @@ class BootstrapPhaseProvisionStampsSourcesTest {
 
     @Test
     void stampSourceHandle_recordsProviderRegionAndApiTokenEnvVarName() {
-        var initial = BootstrapState.initialState("prod", "h", "now");
+        var initial = BootstrapState.initialState(clusterName("prod").unwrap(), "h", "now");
         var source = cloudHetznerSource();
 
         var stamped = BootstrapPhaseProvision.stampSourceHandle(initial,
@@ -126,7 +127,7 @@ class BootstrapPhaseProvisionStampsSourcesTest {
         // `ProviderResolver.buildCloudConfig` echoes the credential value under
         // api_token / access_key / credentials_file because the per-provider factory
         // picks the alias it expects. The stamped handle must do the same.
-        var initial = BootstrapState.initialState("prod", "h", "now");
+        var initial = BootstrapState.initialState(clusterName("prod").unwrap(), "h", "now");
         var source = cloudHetznerSource();
 
         var stamped = BootstrapPhaseProvision.stampSourceHandle(initial, RAW_TOML, sourceNameOrDefault("hetzner-eu"), source, "hetzner");
@@ -141,7 +142,7 @@ class BootstrapPhaseProvisionStampsSourcesTest {
     void stampSourceHandle_doesNotPersistResolvedSecret() {
         // The persisted handle's credentialEnvVars values must look like env-var names,
         // never the secret value. This is the load-bearing safety contract.
-        var initial = BootstrapState.initialState("prod", "h", "now");
+        var initial = BootstrapState.initialState(clusterName("prod").unwrap(), "h", "now");
         var source = cloudHetznerSource();
 
         var stamped = BootstrapPhaseProvision.stampSourceHandle(initial, RAW_TOML, sourceNameOrDefault("hetzner-eu"), source, "hetzner");
@@ -175,7 +176,7 @@ class BootstrapPhaseProvisionStampsSourcesTest {
                                                   Map.of(),
                                                   List.of());
 
-        var stamped = BootstrapPhaseProvision.stampSourceHandle(BootstrapState.initialState("p", "h", "n"),
+        var stamped = BootstrapPhaseProvision.stampSourceHandle(BootstrapState.initialState(clusterName("p").unwrap(), "h", "n"),
                                                                  RAW_TOML,
                                                                  sourceNameOrDefault("local"),
                                                                  docker,
@@ -245,7 +246,7 @@ class BootstrapPhaseProvisionStampsSourcesTest {
 
     @Test
     void stampSourceHandle_recordsNonEmptyCredentialMapping_forRealRepoClusterConfig() throws Exception {
-        var stamped = BootstrapPhaseProvision.stampSourceHandle(BootstrapState.initialState("gs-dryrun", "h", "now"),
+        var stamped = BootstrapPhaseProvision.stampSourceHandle(BootstrapState.initialState(clusterName("gs-dryrun").unwrap(), "h", "now"),
                                                                  realClusterConfig(),
                                                                  sourceNameOrDefault(SOURCE_NAME),
                                                                  cloudHetznerSource(),
@@ -294,7 +295,7 @@ class BootstrapPhaseProvisionStampsSourcesTest {
     void stampSourceHandle_credentialMappingSurvivesPersistAndLoad() throws Exception {
         // The acceptance shape of #521: what bootstrap stamps must still be there when a LATER
         // `aether cluster destroy` process reads the state file back off disk.
-        var stamped = BootstrapPhaseProvision.stampSourceHandle(BootstrapState.initialState("gs-dryrun", "h", "now"),
+        var stamped = BootstrapPhaseProvision.stampSourceHandle(BootstrapState.initialState(clusterName("gs-dryrun").unwrap(), "h", "now"),
                                                                  realClusterConfig(),
                                                                  sourceNameOrDefault(SOURCE_NAME),
                                                                  cloudHetznerSource(),

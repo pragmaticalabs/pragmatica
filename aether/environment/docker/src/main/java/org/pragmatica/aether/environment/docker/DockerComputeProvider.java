@@ -9,6 +9,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ClusterIdentityEnv;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentError;
@@ -46,7 +47,7 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
 
     @Override
     public Promise<InstanceInfo> provision(InstanceType instanceType) {
-        var ctx = ProvisionContext.provisionContext("default",
+        var ctx = ProvisionContext.provisionContext(ClusterName.maybeClusterName("default"),
                                                     "core",
                                                     SourceName.DEFAULT,
                                                     ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
@@ -85,12 +86,12 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
     /// Resolve the node identity used as both container name and NodeId. Honors a
     /// caller-supplied `ctx.nodeId()` when present (bootstrap supplies it), otherwise
     /// mints `aether-<cluster>-node-<ulid>` via [IdGenerator]. The cluster segment is
-    /// sourced from [#clusterOrDefault] (ProvisionContext.clusterName with an
+    /// sourced from [#resolveClusterName] (ProvisionContext.clusterName with an
     /// AETHER_CLUSTER_NAME env fallback) so CTM replacements carry the same
     /// `aether-<cluster>-` prefix as their compose-fixed siblings — the orphan sweeper
     /// and `docker kill` prefix-matching keep working.
     private String resolveIdentity(ProvisionRequest request) {
-        var cluster = clusterOrDefault(request.context());
+        var cluster = resolveClusterName(request.context());
 
         return request.context()
                       .nodeId()
@@ -159,29 +160,34 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
     }
 
     @Override
-    public void resetProvisionerState(String clusterName) {
-        if (!clusterName.isEmpty()) {
-            runner.execute(buildCtmPruneCommand(clusterName))
-                  .onFailure(cause -> log.warn("CTM sweep failed for cluster {}: {}",
-                                               clusterName,
-                                               cause.message()))
-                  .onSuccess(out -> {
-                                 if (!out.isBlank()) {
-                                 log.info("CTM sweep for cluster {}: {}",
-                                          clusterName,
-                                          out.strip());
-                             }
-                             });
+    public void resetProvisionerState(Option<ClusterName> clusterName) {
+        clusterName.onPresent(this::pruneCtmContainers);
+    }
+
+    /// Absent cluster ⇒ no sweep, exactly as the historical blank-string guard did. A prune filtered
+    /// on `label=aether.cluster=` with no value matches every CTM container in the daemon regardless
+    /// of cluster, so there is no safe unscoped form of this command.
+    private void pruneCtmContainers(ClusterName clusterName) {
+        runner.execute(buildCtmPruneCommand(clusterName))
+              .onFailure(cause -> log.warn("CTM sweep failed for cluster {}: {}",
+                                           clusterName,
+                                           cause.message()))
+              .onSuccess(out -> logSweepOutput(clusterName, out));
+    }
+
+    private static void logSweepOutput(ClusterName clusterName, String out) {
+        if (!out.isBlank()) {
+            log.info("CTM sweep for cluster {}: {}", clusterName, out.strip());
         }
     }
 
-    private static List<String> buildCtmPruneCommand(String clusterName) {
+    private static List<String> buildCtmPruneCommand(ClusterName clusterName) {
         return List.of("docker",
                        "container",
                        "prune",
                        "--force",
                        "--filter",
-                       "label=aether.cluster=" + clusterName,
+                       "label=aether.cluster=" + clusterName.value(),
                        "--filter",
                        "label=aether.provisioned-by=ctm");
     }
@@ -245,7 +251,7 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
     private List<String> buildRunCommand(ProvisionRequest request, String containerName) {
         var ctx = request.context();
         var role = roleOrDefault(ctx);
-        var cluster = clusterOrDefault(ctx);
+        var cluster = clusterLabelValue(ctx);
         // NodeId == container name (the resolved identity: caller-supplied ctx.nodeId()
         // or a freshly-minted ULID id). Keeping them equal means `docker kill <nodeId>`
         // resolves to this exact container — no nodeId→container map needed.
@@ -287,7 +293,7 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
                                               "-e",
 
         // Authoritative cluster name: emitted from the SAME source as the
-        // `aether.cluster` label above (clusterOrDefault(ctx) →
+        // `aether.cluster` label above (clusterLabelValue(ctx) →
         // ProvisionContext.clusterName, the KV-bootstrapped name) — NOT
         // forwarded verbatim from the leader's process env. The leader's
         // AETHER_CLUSTER_NAME can legitimately differ from the bootstrapped
@@ -326,7 +332,7 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
         // has no compose env, so without this its identity goes dark one generation deep
         // (--group-add sees an unresolved ${env:DOCKER_GID}; the next replacement it mints
         // loses identity vars). Dedupe (alreadyEmitted) against vars already emitted above:
-        // AETHER_CLUSTER_NAME (from clusterOrDefault(ctx) — authoritative, equals the label),
+        // AETHER_CLUSTER_NAME (from clusterLabelValue(ctx) — authoritative, equals the label),
         // AETHER_PROVISIONED_BY (from ctx.provisionedBy()), AETHER_API_KEY (from config.apiKey()).
         // AETHER_CLUSTER_SECRET still rides the loop verbatim (a cluster-wide constant with no
         // per-provision authoritative source, unlike the name).
@@ -484,7 +490,7 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
     private static Map<String, String> buildInstanceTags(ProvisionRequest request, String containerName) {
         var ctx = request.context();
         var role = roleOrDefault(ctx);
-        var cluster = clusterOrDefault(ctx);
+        var cluster = clusterLabelValue(ctx);
         // NodeId == container name (see buildRunCommand). Tags expose this to the
         // CTM bookkeeping layer so observed/desired reconciliation aligns with the
         // identity the container actually boots with.
@@ -498,25 +504,24 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
                : ctx.role();
     }
 
-    private static String clusterOrDefault(ProvisionContext ctx) {
-        if (!ctx.clusterName().isEmpty()) {
-            return ctx.clusterName();
-        }
-        // Fallback: when ClusterConfigValue isn't yet seeded in KV-Store (e.g., compose-only
-        // deployments that never ran `aether cluster bootstrap`), source the cluster name
-        // from the AETHER_CLUSTER_NAME env var so CTM-provisioned replacements still get a
-        // matching `aether.cluster=<name>` label. The integration test compose YAMLs set
-        // this env to `a` / `b` so cluster A/B's CTM replacements carry the same label as
-        // their compose-fixed siblings — closes the spec's caveat-c gap.
-        var fromEnv = System.getenv("AETHER_CLUSTER_NAME");
+    /// Resolution chain: the provisioning context, then AETHER_CLUSTER_NAME — the fallback covers
+    /// compose-only deployments that never ran `aether cluster bootstrap`, so a CTM-provisioned
+    /// replacement still gets a matching `aether.cluster=<name>` label (the integration-test compose
+    /// files set the env to `a` / `b` so cluster A/B replacements carry their siblings' label).
+    /// Ends [Option#empty] with no cluster anywhere, mirroring the cloud providers rather than
+    /// silently mislabeling the node `default`.
+    private static Option<ClusterName> resolveClusterName(ProvisionContext ctx) {
+        return ctx.clusterName()
+                  .orElse(() -> ClusterName.maybeClusterName(System.getenv("AETHER_CLUSTER_NAME")));
+    }
 
-        if (fromEnv != null && !fromEnv.isEmpty()) {
-            return fromEnv;
-        }
-        // No cluster name anywhere: mirror the cloud providers' empty fall-through rather
-        // than silently mislabeling the node "default". An empty name now reaches the
-        // node-side boot gate (Main.verifyClusterNamePresent), which fails loud.
-        return "";
+    /// The label/env rendering of [#resolveClusterName]. An unresolved cluster renders as the EMPTY
+    /// string — byte-identical to the historical fall-through, so `aether.cluster=` and
+    /// `AETHER_CLUSTER_NAME=` are emitted empty and the node-side boot gate
+    /// (`Main.verifyClusterNamePresent`) still fails loud on them.
+    private static String clusterLabelValue(ProvisionContext ctx) {
+        return resolveClusterName(ctx).map(ClusterName::value)
+                                 .or("");
     }
 
     static List<InstanceInfo> parseContainerList(String output) {

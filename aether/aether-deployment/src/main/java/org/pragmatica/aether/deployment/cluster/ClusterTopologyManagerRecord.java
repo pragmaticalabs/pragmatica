@@ -33,6 +33,7 @@ import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.config.cluster.SourceType;
 import org.pragmatica.aether.config.cluster.SshDeploymentConfig;
 import org.pragmatica.aether.deployment.DeploymentMap;
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.InstanceInfo;
@@ -457,9 +458,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         var prev = consecutiveProvisioningFailures.getAndSet(0);
 
         nextProvisioningAllowedMs.set(0L);
-        var clusterName = clusterConfigReader.get().map(ClusterConfigValue::clusterName).or("");
-
-        lifecycleManager.resetProvisionerState(clusterName);
+        lifecycleManager.resetProvisionerState(resolveClusterName());
         if (prev > 0) {
             log.info("CTM: provisioning circuit breaker reset ({}); cleared {} prior failure(s)", reason, prev);
         }
@@ -816,15 +815,20 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         var pass = Promise.unitPromise();
 
         for (var entry : entries) {
-            pass = pass.flatMap(_ -> reconcileWorkerEntry(config.clusterName(), entry));
+            pass = pass.flatMap(_ -> reconcileWorkerEntry(ClusterName.maybeClusterName(config.clusterName()),
+                                                          entry));
         }
 
         return pass;
     }
 
-    private Promise<Unit> reconcileWorkerEntry(String clusterName, AetherValue.TopologyEntry entry) {
+    private Promise<Unit> reconcileWorkerEntry(Option<ClusterName> clusterName, AetherValue.TopologyEntry entry) {
+        // Renders an unresolvable persisted name as the EMPTY selector value, byte-identical to the
+        // historical `.or("")` — the KV `ClusterConfigValue.clusterName` is a `String` written by the
+        // bootstrap parser (which validated it), so the empty case is unreachable in practice and is
+        // kept only so this pass cannot change which instances it counts.
         var filter = Map.of("aether-cluster",
-                            clusterName,
+                            clusterName.map(ClusterName::value).or(""),
                             "aether-source",
                             entry.sourceName(),
                             "aether-role",
@@ -1359,6 +1363,17 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         inFlightProvisions.clear();
     }
 
+    /// The cluster this CTM heals, parsed from the KV `ClusterConfigValue`. The KV record keeps a
+    /// `String` (the `aether/slice` module deliberately does not depend on these layers), so the
+    /// conversion happens HERE, once, and both consumers — the provisioner-state reset sweep and the
+    /// replacement provisioning context — read the same [Option]. Empty means the cluster config is
+    /// not yet seeded; a provider then declines to stamp or sweep rather than guessing a scope.
+    private Option<ClusterName> resolveClusterName() {
+        return clusterConfigReader.get()
+                                  .map(ClusterConfigValue::clusterName)
+                                  .flatMap(ClusterName::maybeClusterName);
+    }
+
     private ProvisionContext buildProvisionContext(NodeId newNodeId, NodeRole intendedRole, SourceName sourceName) {
         // Always include self as a fallback bootstrap target — the CTM runs on the leader, which
         // is alive by definition. Without this fallback, transient "no healthy remote peers"
@@ -1376,7 +1391,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     .map(ClusterTopologyManagerRecord::formatPeerEntry)
                                     .filter(entry -> !entry.equals(selfEntry));
         var peers = Stream.concat(Stream.of(selfEntry), remoteEntries).collect(Collectors.joining(","));
-        var clusterName = clusterConfigReader.get().map(ClusterConfigValue::clusterName).or("");
+        var clusterName = resolveClusterName();
         // Thread the leader-minted identity through so the provisioned node boots under exactly
         // this id (provider injects it as AETHER_NODE_ID / Docker container name; the node adopts
         // it as `self`). NodeId.id() is `node-<lowercase-ULID>` — alphanumeric + hyphen, a valid

@@ -25,6 +25,7 @@ import org.pragmatica.lang.Option;
 import java.util.List;
 import java.util.Map;
 
+import static org.pragmatica.aether.environment.ClusterName.clusterName;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -105,7 +106,7 @@ class ClusterSecretGenerationTest {
 
     @Test
     void bootstrapState_roundTrips_clusterSecretThroughJson() {
-        var initial = BootstrapState.initialState("prod", "h", "now").withClusterSecret("expected-secret-payload");
+        var initial = BootstrapState.initialState(clusterName("prod").unwrap(), "h", "now").withClusterSecret("expected-secret-payload");
 
         var json = initial.toJson();
         var parsed = BootstrapState.fromJson(json).unwrap();

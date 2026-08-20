@@ -10,6 +10,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.cli.cluster.BootstrapState.PhaseStatus;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
@@ -32,7 +33,9 @@ sealed interface BootstrapStateJson {
         var sb = new StringBuilder(512);
 
         sb.append("{\n");
-        appendStringField(sb, "clusterName", state.clusterName());
+        appendStringField(sb,
+                          "clusterName",
+                          state.clusterName().value());
         sb.append(",\n");
         appendStringField(sb, "configHash", state.configHash());
         sb.append(",\n");
@@ -58,13 +61,20 @@ sealed interface BootstrapStateJson {
         return MAPPER.readTree(json).flatMap(BootstrapStateJson::parseTree);
     }
 
+    /// The cluster name is parsed OUT of the lifted block: a state file naming a cluster outside the
+    /// grammar is a corrupt file, and reporting it as such beats letting an unusable name through to
+    /// the cleanup sweeps, whose `aether-cluster=<name>` selector would then match nothing.
     private static Result<BootstrapState> parseTree(JsonNode root) {
-        return Result.lift(ParseError::new, () -> doParse(root));
+        return ClusterName.clusterName(root.path("clusterName").asText()).flatMap(clusterName -> liftedParse(root,
+                                                                                                             clusterName));
+    }
+
+    private static Result<BootstrapState> liftedParse(JsonNode root, ClusterName clusterName) {
+        return Result.lift(ParseError::new, () -> doParse(root, clusterName));
     }
 
     @SuppressWarnings("JBCT-EX-01")
-    private static BootstrapState doParse(JsonNode root) {
-        var clusterName = root.path("clusterName").asText();
+    private static BootstrapState doParse(JsonNode root, ClusterName clusterName) {
         var configHash = root.path("configHash").asText();
         var startedAt = root.path("startedAt").asText();
         var phases = parsePhases(root.path("phases"));

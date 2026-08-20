@@ -35,6 +35,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import static org.pragmatica.aether.environment.ClusterName.clusterName;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -119,7 +120,7 @@ class BootstrapPhaseDeployHealthPollTest {
             NodeAddress.nodeAddress("eu-1-core-0", "203.0.113.10", Option.empty()),
             NodeAddress.nodeAddress("eu-1-core-1", "203.0.113.11", Option.empty()),
             NodeAddress.nodeAddress("eu-1-core-2", "203.0.113.12", Option.empty()));
-        var state = BootstrapState.initialState("prod", "h", "now").withClusterSecret("s");
+        var state = BootstrapState.initialState(clusterName("prod").unwrap(), "h", "now").withClusterSecret("s");
         return BootstrapContext.bootstrapContext(config, state, nodes, addresses)
                                .withClusterSecret("s");
     }
@@ -221,7 +222,7 @@ class BootstrapPhaseDeployHealthPollTest {
     @Test
     void deployCloudSource_skipsPolling_whenNoNodesProvisioned() {
         var emptyCtx = BootstrapContext.bootstrapContext(configWithShortTimeout(),
-                                                         BootstrapState.initialState("prod", "h", "now"),
+                                                         BootstrapState.initialState(clusterName("prod").unwrap(), "h", "now"),
                                                          List.of(),
                                                          List.of()).withClusterSecret("s");
         var probe = new AtomicInteger();

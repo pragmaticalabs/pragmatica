@@ -58,7 +58,7 @@ class BootstrapStateJsonBackCompatTest {
         var state = BootstrapState.fromJson(LEGACY_JSON).onFailure(cause -> fail(cause.message()))
                                           .unwrap();
 
-        assertEquals("legacy-cluster", state.clusterName());
+        assertEquals("legacy-cluster", state.clusterName().value());
         assertEquals("legacy-secret", state.clusterSecret());
         assertEquals(1, state.createdResources().size());
         assertEquals("eu-1-core-0", state.provisionedNodeIds().get(0));

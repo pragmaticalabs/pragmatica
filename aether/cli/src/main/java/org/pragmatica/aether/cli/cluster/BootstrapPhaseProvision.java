@@ -17,6 +17,7 @@ import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.RoleSubTable;
 import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.config.cluster.SourceType;
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.CloudProviderSupport;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentError;
@@ -212,7 +213,7 @@ sealed interface BootstrapPhaseProvision {
                                                                  SourceName sourceName,
                                                                  SourceProfile source,
                                                                  int managementPort,
-                                                                 String clusterName) {
+                                                                 ClusterName clusterName) {
         return switch (source.type()) {
             case CLOUD -> provisionCloudSource(ctx, sourceName, source, clusterName);
             case DOCKER -> provisionDockerSource(sourceName, source, clusterName);
@@ -225,7 +226,7 @@ sealed interface BootstrapPhaseProvision {
     private static Result<List<ProvisionedNode>> provisionCloudSource(BootstrapContext ctx,
                                                                       SourceName sourceName,
                                                                       SourceProfile source,
-                                                                      String clusterName) {
+                                                                      ClusterName clusterName) {
         var providerName = resolveProviderName(source);
         var sshKeyIds = ctx.sshKeyIdsFor(providerName);
         // Ids from BootstrapPhaseFirewall, applied AT create so the node is never up-and-unfirewalled
@@ -242,7 +243,7 @@ sealed interface BootstrapPhaseProvision {
     @SuppressWarnings("JBCT-PAT-01")
     private static Result<List<ProvisionedNode>> provisionDockerSource(SourceName sourceName,
                                                                        SourceProfile source,
-                                                                       String clusterName) {
+                                                                       ClusterName clusterName) {
         return ProviderResolver.resolveDockerCompute().flatMap(compute -> provisionWithCompute(compute,
                                                                                                sourceName,
                                                                                                source,
@@ -253,7 +254,7 @@ sealed interface BootstrapPhaseProvision {
     private static Result<List<ProvisionedNode>> provisionWithCompute(ComputeProvider compute,
                                                                       SourceName sourceName,
                                                                       SourceProfile source,
-                                                                      String clusterName) {
+                                                                      ClusterName clusterName) {
         var allNodes = new ArrayList<ProvisionedNode>();
         var roleOrder = List.of(NodeRole.CORE, NodeRole.WORKER, NodeRole.SPOT);
 
@@ -292,7 +293,7 @@ sealed interface BootstrapPhaseProvision {
                                                                            BootstrapContext ctx,
                                                                            SourceName sourceName,
                                                                            SourceProfile source,
-                                                                           String clusterName) {
+                                                                           ClusterName clusterName) {
         var allNodes = new ArrayList<ProvisionedNode>();
         var nodeIndex = 0;
 
@@ -324,14 +325,14 @@ sealed interface BootstrapPhaseProvision {
                                                                     NodeRole role,
                                                                     int count,
                                                                     SourceProfile source,
-                                                                    String clusterName) {
+                                                                    ClusterName clusterName) {
         logProvisionRole(sourceName, source.type(), role, Option.some(count));
         var instanceType = source.roles().containsKey(role)
                            ? source.roles().get(role).instanceType().or("default")
                            : "default";
         var zone = source.zone().or("default");
         var labels = Map.of("aether-cluster",
-                            clusterName,
+                            clusterName.value(),
                             "aether-source",
                             sourceName.value(),
                             "aether-role",
@@ -348,7 +349,7 @@ sealed interface BootstrapPhaseProvision {
                                                                          NodeRole role,
                                                                          int count,
                                                                          SourceProfile source,
-                                                                         String clusterName,
+                                                                         ClusterName clusterName,
                                                                          int nodeIndexBase) {
         logProvisionRole(sourceName, source.type(), role, Option.some(count));
         ZoneProvisioner seam = (nodeId, globalIndex, zone) -> provisionOneInZone(compute,
@@ -373,7 +374,7 @@ sealed interface BootstrapPhaseProvision {
                                                               SourceName sourceName,
                                                               SourceProfile source,
                                                               NodeRole role,
-                                                              String clusterName,
+                                                              ClusterName clusterName,
                                                               String nodeId,
                                                               int globalIndex,
                                                               String zone) {
@@ -485,7 +486,7 @@ sealed interface BootstrapPhaseProvision {
                                                                  NodeRole role,
                                                                  String nodeId,
                                                                  int nodeIndex,
-                                                                 String clusterName) {
+                                                                 ClusterName clusterName) {
         var instanceType = source.roles().containsKey(role)
                            ? source.roles().get(role).instanceType().or("default")
                            : "default";
@@ -532,7 +533,7 @@ sealed interface BootstrapPhaseProvision {
                                          NodeRole role,
                                          String nodeId,
                                          int nodeIndex,
-                                         String clusterName,
+                                         ClusterName clusterName,
                                          TomlDocument composedConfig) {
         return UserDataTemplate.render(ctx.config(),
                                        source,

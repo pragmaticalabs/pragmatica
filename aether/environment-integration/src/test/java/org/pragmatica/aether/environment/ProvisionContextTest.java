@@ -13,6 +13,8 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.pragmatica.aether.environment.ClusterName.clusterName;
+import static org.pragmatica.aether.environment.ClusterName.maybeClusterName;
 import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 
 
@@ -23,10 +25,10 @@ class ProvisionContextTest {
 
         @Test
         void provisionContext_short_setsDefaults() {
-            var ctx = ProvisionContext.provisionContext("prod", "core", sourceNameOrDefault("eu-1"),
+            var ctx = ProvisionContext.provisionContext(maybeClusterName("prod"), "core", sourceNameOrDefault("eu-1"),
                                                          ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
 
-            assertThat(ctx.clusterName()).isEqualTo("prod");
+            assertThat(ctx.clusterName().map(ClusterName::value).or("")).isEqualTo("prod");
             assertThat(ctx.role()).isEqualTo("core");
             assertThat(ctx.sourceName().value()).isEqualTo("eu-1");
             assertThat(ctx.provisionedBy()).isEqualTo("bootstrap");
@@ -38,7 +40,7 @@ class ProvisionContextTest {
 
         @Test
         void provisionContext_full_storesAllFields() {
-            var ctx = ProvisionContext.provisionContext("prod", "worker", sourceNameOrDefault("ctm-default"),
+            var ctx = ProvisionContext.provisionContext(maybeClusterName("prod"), "worker", sourceNameOrDefault("ctm-default"),
                                                          Option.some("eu-1-core-0"),
                                                          Option.some("n1:h1:6000,n2:h2:6000"),
                                                          5,
@@ -57,9 +59,9 @@ class ProvisionContextTest {
 
         @Test
         void forBootstrap_validInputs_emptyPeersAndDefaultCoreMax() {
-            var ctx = ProvisionContext.forBootstrap("prod", "worker", sourceNameOrDefault("eu-1"), "eu-1-worker-0");
+            var ctx = ProvisionContext.forBootstrap(clusterName("prod").unwrap(), "worker", sourceNameOrDefault("eu-1"), "eu-1-worker-0");
 
-            assertThat(ctx.clusterName()).isEqualTo("prod");
+            assertThat(ctx.clusterName().map(ClusterName::value).or("")).isEqualTo("prod");
             assertThat(ctx.role()).isEqualTo("worker");
             assertThat(ctx.sourceName().value()).isEqualTo("eu-1");
             assertThat(ctx.nodeId().or("")).isEqualTo("eu-1-worker-0");
@@ -71,9 +73,9 @@ class ProvisionContextTest {
 
         @Test
         void forReplacement_validInputs_givenPeersAndGivenCoreMax() {
-            var ctx = ProvisionContext.forReplacement("prod", "core", "node-abc", "n1:h1:6000,n2:h2:6000", 5);
+            var ctx = ProvisionContext.forReplacement(maybeClusterName("prod"), "core", "node-abc", "n1:h1:6000,n2:h2:6000", 5);
 
-            assertThat(ctx.clusterName()).isEqualTo("prod");
+            assertThat(ctx.clusterName().map(ClusterName::value).or("")).isEqualTo("prod");
             assertThat(ctx.role()).isEqualTo("core");
             assertThat(ctx.sourceName().value()).isEqualTo("default");
             assertThat(ctx.nodeId().or("")).isEqualTo("node-abc");
@@ -91,7 +93,7 @@ class ProvisionContextTest {
         void extraTags_defensiveCopy_protectsAgainstCallerMutation() {
             var mutable = new HashMap<String, String>();
             mutable.put("key", "before");
-            var ctx = ProvisionContext.provisionContext("c", "core", sourceNameOrDefault("s"), Option.empty(), Option.empty(), 3,
+            var ctx = ProvisionContext.provisionContext(maybeClusterName("c"), "core", sourceNameOrDefault("s"), Option.empty(), Option.empty(), 3,
                                                          ProvisionContext.PROVISIONED_BY_BOOTSTRAP, mutable);
 
             mutable.put("key", "after");
@@ -101,7 +103,7 @@ class ProvisionContextTest {
 
         @Test
         void extraTags_returnedMapIsImmutable() {
-            var ctx = ProvisionContext.provisionContext("c", "core", sourceNameOrDefault("s"), Option.empty(), Option.empty(), 3,
+            var ctx = ProvisionContext.provisionContext(maybeClusterName("c"), "core", sourceNameOrDefault("s"), Option.empty(), Option.empty(), 3,
                                                          ProvisionContext.PROVISIONED_BY_BOOTSTRAP,
                                                          Map.of("k", "v"));
 
@@ -115,19 +117,19 @@ class ProvisionContextTest {
 
         @Test
         void withNodeId_returnsContextWithNewNodeId_othersUnchanged() {
-            var base = ProvisionContext.provisionContext("prod", "core", sourceNameOrDefault("eu-1"),
+            var base = ProvisionContext.provisionContext(maybeClusterName("prod"), "core", sourceNameOrDefault("eu-1"),
                                                           ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
 
             var updated = base.withNodeId("eu-1-core-0");
 
             assertThat(updated.nodeId().or("")).isEqualTo("eu-1-core-0");
-            assertThat(updated.clusterName()).isEqualTo("prod");
+            assertThat(updated.clusterName().map(ClusterName::value).or("")).isEqualTo("prod");
             assertThat(updated.role()).isEqualTo("core");
         }
 
         @Test
         void withPeers_setsPeersValue() {
-            var base = ProvisionContext.provisionContext("prod", "core", sourceNameOrDefault("eu-1"),
+            var base = ProvisionContext.provisionContext(maybeClusterName("prod"), "core", sourceNameOrDefault("eu-1"),
                                                           ProvisionContext.PROVISIONED_BY_CTM);
 
             var updated = base.withPeers("n1:h1:6000");
@@ -137,7 +139,7 @@ class ProvisionContextTest {
 
         @Test
         void withCoreMax_overridesDefault() {
-            var base = ProvisionContext.provisionContext("prod", "core", sourceNameOrDefault("eu-1"),
+            var base = ProvisionContext.provisionContext(maybeClusterName("prod"), "core", sourceNameOrDefault("eu-1"),
                                                           ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
 
             var updated = base.withCoreMax(7);
@@ -151,8 +153,8 @@ class ProvisionContextTest {
 
         @Test
         void equals_sameFields_returnsTrue() {
-            var a = ProvisionContext.provisionContext("c", "core", sourceNameOrDefault("s"), ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
-            var b = ProvisionContext.provisionContext("c", "core", sourceNameOrDefault("s"), ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
+            var a = ProvisionContext.provisionContext(maybeClusterName("c"), "core", sourceNameOrDefault("s"), ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
+            var b = ProvisionContext.provisionContext(maybeClusterName("c"), "core", sourceNameOrDefault("s"), ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
 
             assertThat(a).isEqualTo(b);
             assertThat(a.hashCode()).isEqualTo(b.hashCode());
@@ -160,8 +162,8 @@ class ProvisionContextTest {
 
         @Test
         void equals_differentClusterName_returnsFalse() {
-            var a = ProvisionContext.provisionContext("c1", "core", sourceNameOrDefault("s"), ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
-            var b = ProvisionContext.provisionContext("c2", "core", sourceNameOrDefault("s"), ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
+            var a = ProvisionContext.provisionContext(maybeClusterName("c1"), "core", sourceNameOrDefault("s"), ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
+            var b = ProvisionContext.provisionContext(maybeClusterName("c2"), "core", sourceNameOrDefault("s"), ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
 
             assertThat(a).isNotEqualTo(b);
         }

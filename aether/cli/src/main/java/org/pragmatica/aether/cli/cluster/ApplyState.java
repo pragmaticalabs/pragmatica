@@ -9,6 +9,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
@@ -23,7 +24,7 @@ import static org.pragmatica.lang.Result.success;
 
 
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"})
-public record ApplyState(String clusterName,
+public record ApplyState(ClusterName clusterName,
                          String configHash,
                          String startedAt,
                          int currentWaveIndex,
@@ -36,7 +37,7 @@ public record ApplyState(String clusterName,
         destroyedNodeIds = List.copyOf(destroyedNodeIds);
     }
 
-    public static ApplyState applyState(String clusterName,
+    public static ApplyState applyState(ClusterName clusterName,
                                         String configHash,
                                         String startedAt,
                                         int currentWaveIndex,
@@ -52,7 +53,7 @@ public record ApplyState(String clusterName,
                               destroyedNodeIds);
     }
 
-    public static ApplyState initialState(String clusterName, String configHash, String startedAt) {
+    public static ApplyState initialState(ClusterName clusterName, String configHash, String startedAt) {
         var waves = List.of(WaveStatus.PENDING, WaveStatus.PENDING, WaveStatus.PENDING);
 
         return applyState(clusterName, configHash, startedAt, 0, waves, List.of(), List.of());
@@ -96,7 +97,7 @@ public record ApplyState(String clusterName,
         return Result.lift(PersistenceError::new, () -> doSave(state));
     }
 
-    static Option<ApplyState> load(String clusterName) {
+    static Option<ApplyState> load(ClusterName clusterName) {
         var path = stateFilePath(clusterName);
 
         if (!Files.exists(path)) {
@@ -110,13 +111,13 @@ public record ApplyState(String clusterName,
                      .option();
     }
 
-    static Result<Unit> delete(String clusterName) {
+    static Result<Unit> delete(ClusterName clusterName) {
         return Result.lift(PersistenceError::new, () -> doDelete(clusterName));
     }
 
     @SuppressWarnings("JBCT-EX-01")
     private static Unit doSave(ApplyState state) throws Exception {
-        var dir = AETHER_DIR.resolve(state.clusterName());
+        var dir = AETHER_DIR.resolve(state.clusterName().value());
 
         Files.createDirectories(dir);
         Files.writeString(dir.resolve(STATE_FILE_NAME), toJson(state));
@@ -125,7 +126,7 @@ public record ApplyState(String clusterName,
     }
 
     @SuppressWarnings("JBCT-EX-01")
-    private static Unit doDelete(String clusterName) throws Exception {
+    private static Unit doDelete(ClusterName clusterName) throws Exception {
         var path = stateFilePath(clusterName);
 
         Files.deleteIfExists(path);
@@ -133,8 +134,8 @@ public record ApplyState(String clusterName,
         return Unit.unit();
     }
 
-    private static Path stateFilePath(String clusterName) {
-        return AETHER_DIR.resolve(clusterName).resolve(STATE_FILE_NAME);
+    private static Path stateFilePath(ClusterName clusterName) {
+        return AETHER_DIR.resolve(clusterName.value()).resolve(STATE_FILE_NAME);
     }
 
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
@@ -143,7 +144,9 @@ public record ApplyState(String clusterName,
         var sb = new StringBuilder(512);
 
         sb.append("{\n");
-        appendStringField(sb, "clusterName", state.clusterName());
+        appendStringField(sb,
+                          "clusterName",
+                          state.clusterName().value());
         sb.append(",\n");
         appendStringField(sb, "configHash", state.configHash());
         sb.append(",\n");
@@ -165,13 +168,20 @@ public record ApplyState(String clusterName,
         return MAPPER.readTree(json).flatMap(ApplyState::parseTree);
     }
 
-    @SuppressWarnings("JBCT-EX-01")
+    /// The cluster name is parsed OUT of the lifted block: a state file naming a cluster outside the
+    /// grammar is a corrupt file, and reporting it as such beats letting an unusable name through to
+    /// the path resolver and the label selectors that would then match nothing.
     private static Result<ApplyState> parseTree(JsonNode root) {
-        return Result.lift(ParseError::new, () -> doParse(root));
+        return ClusterName.clusterName(root.path("clusterName").asText()).flatMap(clusterName -> liftedParse(root,
+                                                                                                             clusterName));
     }
 
-    private static ApplyState doParse(JsonNode root) {
-        var clusterName = root.path("clusterName").asText();
+    @SuppressWarnings("JBCT-EX-01")
+    private static Result<ApplyState> liftedParse(JsonNode root, ClusterName clusterName) {
+        return Result.lift(ParseError::new, () -> doParse(root, clusterName));
+    }
+
+    private static ApplyState doParse(JsonNode root, ClusterName clusterName) {
         var configHash = root.path("configHash").asText();
         var startedAt = root.path("startedAt").asText();
         var waveIndex = root.path("currentWaveIndex").asInt(0);
