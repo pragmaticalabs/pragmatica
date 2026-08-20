@@ -15,6 +15,8 @@ import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.config.cluster.SourceType;
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ComputeProvider;
+import org.pragmatica.aether.environment.FirewallId;
+import org.pragmatica.aether.environment.FirewallName;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -168,13 +170,13 @@ public sealed interface BootstrapPhaseFirewall {
                                                     SourceProfile source,
                                                     ComputeProvider compute,
                                                     List<FirewallRule> rules) {
-        var firewallIds = new LinkedHashSet<String>();
+        var firewallIds = new LinkedHashSet<FirewallId>();
         var nextCtx = ctx;
 
         for (var rule : rules) {
             for (var protocol : expandProtocols(rule.protocol())) {
                 var currentCtx = nextCtx;
-                var opened = compute.openIngress(source.name().value(),
+                var opened = compute.openIngress(source.name(),
                                                  rule.port(),
                                                  protocol,
                                                  rule.sourceCidr(),
@@ -184,13 +186,20 @@ public sealed interface BootstrapPhaseFirewall {
                 if (opened.isFailure()) {
                     return opened.map(_ -> currentCtx);
                 }
+                // The handle's id is provider-opaque text; a BLANK one would reach destroy's delete
+                // call and match nothing, so the firewall would keep billing while the ledger claimed
+                // it was reclaimed. Fail the phase instead — the orchestrator's cleanup then runs
+                // while the just-created firewall is still the newest resource on the account.
+                var id = FirewallId.firewallId(opened.unwrap().providerResourceId());
 
-                var id = opened.unwrap().providerResourceId();
+                if (id.isFailure()) {
+                    return id.map(_ -> currentCtx);
+                }
                 // Every rule of a source lands on ONE firewall, so the record is added once — the
                 // set collapses the repeats a multi-rule (or "tcp+udp") source produces. Recording
                 // per-rule would make destroy issue N deletes for one resource.
-                if (firewallIds.add(id)) {
-                    nextCtx = recordFirewall(nextCtx, source, id);
+                if (firewallIds.add(id.unwrap())) {
+                    nextCtx = recordFirewall(nextCtx, source, id.unwrap());
                 }
             }
         }
@@ -198,13 +207,17 @@ public sealed interface BootstrapPhaseFirewall {
         return success(nextCtx.withFirewallIds(source.name(), List.copyOf(firewallIds)));
     }
 
-    private static BootstrapContext recordFirewall(BootstrapContext ctx, SourceProfile source, String firewallId) {
+    private static BootstrapContext recordFirewall(BootstrapContext ctx, SourceProfile source, FirewallId firewallId) {
         System.out.printf("  Ingress firewall %s in force for source '%s'%n", firewallId, source.name());
+        // The name is DERIVED, never assembled here: FirewallName.forSource is the same derivation
+        // the provider uses to name the firewall it creates, so the ledger records the name that is
+        // actually on the resource — including its truncation to the 63 characters every cloud
+        // accepts, which a locally concatenated string did not apply.
         var resource = CreatedResource.CloudFirewall.cloudFirewall(HETZNER_PROVIDER,
                                                                    firewallId,
-                                                                   source.name().value(),
-                                                                   "aether-" + ctx.config().cluster().name()
-                                                                  + "-" + source.name().value());
+                                                                   source.name(),
+                                                                   FirewallName.forSource(ctx.config().cluster().name(),
+                                                                                          source.name()));
 
         return ctx.withState(ctx.state().withResource(resource));
     }

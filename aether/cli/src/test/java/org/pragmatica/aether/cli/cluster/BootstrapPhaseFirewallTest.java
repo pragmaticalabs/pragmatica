@@ -24,6 +24,7 @@ import org.pragmatica.aether.environment.IngressHandle;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.ProvisionRequest;
+import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -38,6 +39,7 @@ import java.util.Map;
 import java.util.function.Supplier;
 
 import static org.pragmatica.aether.environment.ClusterName.clusterName;
+import static org.pragmatica.aether.environment.FirewallId.firewallId;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
@@ -48,24 +50,24 @@ import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 /// no firewall association accepts ALL inbound traffic (§6.2), so the gap failed OPEN.
 class BootstrapPhaseFirewallTest {
 
-    private record OpenCall(String sourceId, int port, String protocol, String cidr, String description) {}
+    private record OpenCall(SourceName source, int port, String protocol, String cidr, String description) {}
 
     /// Records ingress calls and hands back one firewall id per source, mirroring the real provider:
     /// every rule of a source lands on ONE firewall.
     private static final class RecordingCompute implements ComputeProvider {
         final List<OpenCall> opened = new ArrayList<>();
-        final Map<String, Long> idsBySource = new java.util.HashMap<>();
+        final Map<SourceName, Long> idsBySource = new java.util.HashMap<>();
         long nextId = 100L;
 
         @Override
-        public Promise<IngressHandle> openIngress(String sourceId,
+        public Promise<IngressHandle> openIngress(SourceName source,
                                                   int port,
                                                   String protocol,
                                                   String sourceCidr,
                                                   String description) {
-            opened.add(new OpenCall(sourceId, port, protocol, sourceCidr, description));
+            opened.add(new OpenCall(source, port, protocol, sourceCidr, description));
 
-            var id = idsBySource.computeIfAbsent(sourceId, _ -> nextId++);
+            var id = idsBySource.computeIfAbsent(source, _ -> nextId++);
 
             return Promise.success(IngressHandle.ingressHandle(Long.toString(id)));
         }
@@ -146,7 +148,7 @@ class BootstrapPhaseFirewallTest {
         assertTrue(result.isSuccess(), () -> "phase should succeed: " + result);
         assertEquals(List.of("tcp", "udp"), compute.opened.stream().map(OpenCall::protocol).toList(),
                      "tcp+udp must expand to exactly two provider rules");
-        assertEquals(List.of("100"), result.unwrap().firewallIdsFor(sourceNameOrDefault("eu-1")),
+        assertEquals(List.of(firewallId("100").unwrap()), result.unwrap().firewallIdsFor(sourceNameOrDefault("eu-1")),
                      "Both rules land on ONE firewall, so exactly one id is threaded to provision");
     }
 
@@ -159,7 +161,7 @@ class BootstrapPhaseFirewallTest {
 
         var result = run(contextWith(hetznerSource("eu-1", LoadBalancerMode.NONE, rules)), compute);
 
-        assertEquals(List.of("100"), result.unwrap().firewallIdsFor(sourceNameOrDefault("eu-1")));
+        assertEquals(List.of(firewallId("100").unwrap()), result.unwrap().firewallIdsFor(sourceNameOrDefault("eu-1")));
     }
 
     /// One firewall = one CreatedResource, so destroy issues exactly one delete rather than N.

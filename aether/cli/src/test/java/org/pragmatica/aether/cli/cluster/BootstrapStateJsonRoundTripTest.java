@@ -6,12 +6,15 @@
 package org.pragmatica.aether.cli.cluster;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.environment.FirewallId;
 import org.pragmatica.lang.Option;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
 
 import static org.pragmatica.aether.environment.ClusterName.clusterName;
+import static org.pragmatica.aether.environment.FirewallName.firewallName;
+import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -110,7 +113,10 @@ class BootstrapStateJsonRoundTripTest {
     /// provider-shaped id must survive a full serialize/parse round trip unchanged.
     @Test
     void roundTrip_preservesNonNumericAwsShapedFirewallId() {
-        var firewall = CreatedResource.CloudFirewall.cloudFirewall("aws", "sg-0abc123def", "us-east-1", "aether-us-east-1");
+        var firewall = CreatedResource.CloudFirewall.cloudFirewall("aws",
+                                                                    FirewallId.firewallId("sg-0abc123def").unwrap(),
+                                                                    sourceNameOrDefault("us-east-1"),
+                                                                    firewallName("aether-us-east-1").unwrap());
         var state = baseState().withResource(firewall);
 
         var restored = BootstrapState.fromJson(state.toJson()).onFailure(c -> fail(c.message()))
@@ -118,7 +124,7 @@ class BootstrapStateJsonRoundTripTest {
 
         assertEquals(1, restored.createdResources().size());
         var restoredFirewall = (CreatedResource.CloudFirewall) restored.createdResources().get(0);
-        assertEquals("sg-0abc123def", restoredFirewall.firewallId(),
+        assertEquals("sg-0abc123def", restoredFirewall.firewallId().value(),
                      "AWS security-group id must round-trip exactly");
     }
 
@@ -126,7 +132,10 @@ class BootstrapStateJsonRoundTripTest {
     @Test
     void roundTrip_preservesSlashContainingArmShapedFirewallId() {
         var armId = "/subscriptions/abc-123/resourceGroups/rg1/providers/Microsoft.Network/networkSecurityGroups/nsg1";
-        var firewall = CreatedResource.CloudFirewall.cloudFirewall("azure", armId, "westeurope", "aether-westeurope");
+        var firewall = CreatedResource.CloudFirewall.cloudFirewall("azure",
+                                                                    FirewallId.firewallId(armId).unwrap(),
+                                                                    sourceNameOrDefault("westeurope"),
+                                                                    firewallName("aether-westeurope").unwrap());
         var state = baseState().withResource(firewall);
 
         var restored = BootstrapState.fromJson(state.toJson()).onFailure(c -> fail(c.message()))
@@ -134,7 +143,7 @@ class BootstrapStateJsonRoundTripTest {
 
         assertEquals(1, restored.createdResources().size());
         var restoredFirewall = (CreatedResource.CloudFirewall) restored.createdResources().get(0);
-        assertEquals(armId, restoredFirewall.firewallId(),
+        assertEquals(armId, restoredFirewall.firewallId().value(),
                      "ARM resource-path id (containing '/') must round-trip exactly");
     }
 }

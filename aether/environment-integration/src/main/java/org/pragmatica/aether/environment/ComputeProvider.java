@@ -35,7 +35,7 @@ public interface ComputeProvider {
         return EnvironmentError.operationNotSupported("applyTags").promise();
     }
 
-    /// Ensure ONE ingress rule is in force for `sourceId`, returning the provider resource that
+    /// Ensure ONE ingress rule is in force for `source`, returning the provider resource that
     /// carries it (spec REQ-5.1.8.4). MUST be create-or-patch and idempotent: a `"tcp+udp"` entry
     /// expands to two rules (REQ-5.1.8.1) and every rule of a source lands on the SAME provider
     /// resource, so the second call patches what the first created and returns the same
@@ -51,7 +51,7 @@ public interface ComputeProvider {
     /// Defaults to a loud refusal: a provider that cannot manage ingress must FAIL rather than let
     /// the caller believe a rule is in force. Operators of such providers manage ingress themselves
     /// (§6.2), and pre-flight rejects the config before this is ever reached.
-    default Promise<IngressHandle> openIngress(String sourceId,
+    default Promise<IngressHandle> openIngress(SourceName source,
                                                int port,
                                                String protocol,
                                                String sourceCidr,
@@ -65,7 +65,7 @@ public interface ComputeProvider {
     /// MUST only ever touch resources this provider created — see `CreatedResource` tracking and
     /// the 2026-08-03 test-pg incident (#572), where an unscoped cleanup deleted standing shared
     /// infrastructure.
-    default Promise<Unit> closeIngress(String sourceId, int port, String protocol, String sourceCidr) {
+    default Promise<Unit> closeIngress(SourceName source, int port, String protocol, String sourceCidr) {
         return EnvironmentError.operationNotSupported("closeIngress").promise();
     }
 

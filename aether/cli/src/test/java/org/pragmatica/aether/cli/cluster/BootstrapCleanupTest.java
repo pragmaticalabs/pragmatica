@@ -11,6 +11,7 @@ import org.pragmatica.aether.cli.cluster.BootstrapState.PhaseStatus;
 import org.pragmatica.aether.cli.cluster.CreatedResource.ProvisionedVm;
 import org.pragmatica.aether.cli.cluster.CreatedResource.SshKeyResource;
 import org.pragmatica.aether.environment.ComputeProvider;
+import org.pragmatica.aether.environment.FirewallId;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.ProvisionRequest;
@@ -37,6 +38,8 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.pragmatica.aether.environment.ClusterName.clusterName;
+import static org.pragmatica.aether.environment.FirewallName.firewallName;
+import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -250,9 +253,9 @@ class BootstrapCleanupTest {
         var phases = new EnumMap<BootstrapPhase, PhaseStatus>(BootstrapPhase.class);
         for (var phase : BootstrapPhase.values()) {phases.put(phase, PhaseStatus.COMPLETED);}
         var resources = List.<CreatedResource>of(CreatedResource.CloudFirewall.cloudFirewall("hetzner",
-                                                                                             firewallId,
-                                                                                             "hetzner-eu",
-                                                                                             "aether-test-hetzner-eu"));
+                                                                                             FirewallId.firewallId(firewallId).unwrap(),
+                                                                                             sourceNameOrDefault("hetzner-eu"),
+                                                                                             firewallName("aether-test-hetzner-eu").unwrap()));
         return BootstrapState.bootstrapState(CLUSTER_NAME,
                                              "hash-1",
                                              "2026-05-01T00:00:00Z",
@@ -315,10 +318,10 @@ class BootstrapCleanupTest {
                                               providerName -> Result.success(new FirewallRecordingHetznerClient(firewallDeletes)));
 
         assertTrue(result.isFailure(), "a non-numeric hetzner firewall id must not be treated as deletable");
-        result.onFailure(cause -> assertTrue(cause.message().contains("non-numeric")
+        result.onFailure(cause -> assertTrue(cause.message().contains("not numeric")
                                              && cause.message().contains("sg-0abc123def")
                                              && cause.message().contains("Refusing to guess"),
-                                             () -> "failure must surface UnparseableHetznerFirewallId's refusal, was: " + cause.message()));
+                                             () -> "failure must surface FirewallId.NotNumeric's refusal, was: " + cause.message()));
         assertTrue(firewallDeletes.isEmpty(),
                    "deleteFirewall must NOT be called for a non-numeric id — guessing an id could destroy someone else's firewall");
     }

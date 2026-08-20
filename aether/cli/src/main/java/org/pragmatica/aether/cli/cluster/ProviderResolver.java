@@ -19,6 +19,7 @@ import org.pragmatica.aether.environment.CloudCredentials;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
 import org.pragmatica.aether.environment.EnvironmentIntegrationFactory;
+import org.pragmatica.aether.environment.FirewallId;
 import org.pragmatica.aether.environment.FloatingIpProvider;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -56,7 +57,7 @@ public final class ProviderResolver {
                                                               List<Long> sshKeyIds,
                                                               String userData,
                                                               ClusterName clusterName,
-                                                              List<String> firewallIds) {
+                                                              List<FirewallId> firewallIds) {
         return resolveCloudCompute(source, sshKeyIds, userData, Option.some(clusterName), firewallIds);
     }
 
@@ -68,7 +69,7 @@ public final class ProviderResolver {
                                                                List<Long> sshKeyIds,
                                                                String userData,
                                                                Option<ClusterName> clusterName,
-                                                               List<String> firewallIds) {
+                                                               List<FirewallId> firewallIds) {
         return source.provider()
                      .toResult(NO_PROVIDER)
                      .flatMap(provider -> lookupAndCreateCloud(provider.value(),
@@ -168,7 +169,7 @@ public final class ProviderResolver {
                                                                        List<Long> sshKeyIds,
                                                                        String userData,
                                                                        Option<ClusterName> clusterName,
-                                                                       List<String> firewallIds) {
+                                                                       List<FirewallId> firewallIds) {
         return lookupFactory(providerName).flatMap(factory -> factory.create(buildCloudConfig(providerName,
                                                                                               source,
                                                                                               sshKeyIds,
@@ -223,7 +224,7 @@ public final class ProviderResolver {
                                         List<Long> sshKeyIds,
                                         String userData,
                                         Option<ClusterName> clusterName,
-                                        List<String> firewallIds) {
+                                        List<FirewallId> firewallIds) {
         var credentials = new HashMap<String, String>();
 
         source.credentials()
@@ -246,7 +247,7 @@ public final class ProviderResolver {
         }
 
         if (!firewallIds.isEmpty()) {
-            compute.put("firewall_ids", String.join(",", firewallIds));
+            compute.put("firewall_ids", joinFirewallIds(firewallIds));
         }
 
         var discovery = clusterName.map(ProviderResolver::discoveryFor).or(Map.<String, String> of());
@@ -262,6 +263,14 @@ public final class ProviderResolver {
 
     private static Map<String, String> discoveryFor(ClusterName clusterName) {
         return Map.of("cluster_name", clusterName.value());
+    }
+
+    /// The provider config map is untyped text (it is the same `[cloud.compute] firewall_ids` key an
+    /// operator writes by hand), so the typed ids flatten HERE, at that boundary, and nowhere earlier.
+    private static String joinFirewallIds(List<FirewallId> ids) {
+        return ids.stream()
+                  .map(FirewallId::value)
+                  .collect(Collectors.joining(","));
     }
 
     private static String joinLongs(List<Long> ids) {

@@ -186,7 +186,7 @@ public record ApplyState(ClusterName clusterName,
         var startedAt = root.path("startedAt").asText();
         var waveIndex = root.path("currentWaveIndex").asInt(0);
         var waves = parseWaves(root.path("waves"));
-        var resources = parseResources(root.path("createdResources"));
+        var resources = parseResources(root.path("createdResources"), clusterName);
         var destroyed = parseStringList(root.path("destroyedNodeIds"));
 
         return applyState(clusterName, configHash, startedAt, waveIndex, waves, resources, destroyed);
@@ -211,7 +211,7 @@ public record ApplyState(ClusterName clusterName,
     }
 
     @SuppressWarnings("JBCT-PAT-01")
-    private static List<CreatedResource> parseResources(JsonNode node) {
+    private static List<CreatedResource> parseResources(JsonNode node, ClusterName clusterName) {
         if (node.isMissingNode() || node.isNull() || !node.isArray()) {
             return List.of();
         }
@@ -219,7 +219,7 @@ public record ApplyState(ClusterName clusterName,
         var resources = new ArrayList<CreatedResource>();
 
         for (var element : node) {
-            var resource = BootstrapStateJson.parseSingleResourceNode(element);
+            var resource = BootstrapStateJson.parseSingleResourceNode(element, clusterName);
 
             if (resource != null) {
                 resources.add(resource);

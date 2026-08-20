@@ -21,7 +21,6 @@ import org.pragmatica.cloud.hetzner.HetznerError;
 import org.pragmatica.cloud.hetzner.api.Server;
 import org.pragmatica.cloud.hetzner.api.SshKey;
 import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -531,6 +530,12 @@ sealed interface BootstrapCleanup {
     /// 2026-08-05 run — the very next attempt succeeded once the servers had drained. A single
     /// attempt therefore reports failure for a firewall that is about to be deletable, leaving the
     /// operator to re-run destroy by hand.
+    ///
+    /// The numeric conversion is [FirewallId#asNumeric], not a local parse: the recorded id is
+    /// provider-opaque so every provider can record what it created, and Hetzner's own API takes a
+    /// number. Keeping the conversion (and its refusal) on the type gives it ONE home — a non-numeric
+    /// id under `hetzner` means the ledger was written by something else, and guessing an id here
+    /// would delete someone else's firewall.
     @SuppressWarnings("JBCT-EX-01")
     private static Result<Unit> deleteCloudFirewall(BootstrapState state,
                                                     CreatedResource.CloudFirewall firewall,
@@ -540,36 +545,20 @@ sealed interface BootstrapCleanup {
             return new UnsupportedFirewallProvider(firewall.provider()).result();
         }
 
-        return hetznerFirewallId(firewall).flatMap(id -> resolveHetznerClientFor(state, firewall.provider(), resolvers).flatMap(client -> deleteFirewallWithRetry(client,
-                                                                                                                                                                  id,
-                                                                                                                                                                  firewall,
-                                                                                                                                                                  resolvers)));
+        return firewall.firewallId()
+                       .asNumeric()
+                       .flatMap(id -> resolveHetznerClientFor(state,
+                                                              firewall.provider(),
+                                                              resolvers).flatMap(client -> deleteFirewallWithRetry(client,
+                                                                                                                   id,
+                                                                                                                   firewall,
+                                                                                                                   resolvers)));
     }
 
     /// Attempts bounded by [#FIREWALL_DELETE_ATTEMPTS]; the LAST failure is what surfaces, so a
     /// genuinely undeletable firewall still fails loudly rather than being swallowed.
     int FIREWALL_DELETE_ATTEMPTS = 6;
     long FIREWALL_DELETE_RETRY_MILLIS = 5_000L;
-
-    /// The recorded id is provider-opaque (a String) so every provider can record what it created;
-    /// Hetzner's own API takes a number, so it is converted back HERE, at the provider edge, rather
-    /// than constraining the shared bookkeeping. A non-numeric id under the `hetzner` provider means
-    /// the state file was written by something that is not this provider — refuse rather than guess,
-    /// because a wrong id here deletes someone else's firewall.
-    private static Result<Long> hetznerFirewallId(CreatedResource.CloudFirewall firewall) {
-        return Number.parseLong(firewall.firewallId()).mapError(_ -> new UnparseableHetznerFirewallId(firewall.firewallId(),
-                                                                                                      firewall.name()));
-    }
-
-    record UnparseableHetznerFirewallId(String raw, String name) implements Cause {
-        @Override
-        public String message() {
-            return "Firewall '" + name
-                 + "' is recorded under provider 'hetzner' with a non-numeric id '" + raw
-                 + "'. Refusing to guess an id to delete — reclaim it manually and remove the entry "
-                 + "from bootstrap-state.json.";
-        }
-    }
 
     @SuppressWarnings("JBCT-PAT-01")
     private static Result<Unit> deleteFirewallWithRetry(HetznerClient client,

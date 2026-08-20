@@ -17,6 +17,7 @@ import java.util.function.Function;
 
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.environment.ClusterName;
+import org.pragmatica.aether.environment.FirewallId;
 import org.pragmatica.aether.environment.NodeAddress;
 import org.pragmatica.aether.environment.ProvisionedNode;
 import org.pragmatica.aether.environment.SourceName;
@@ -394,7 +395,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                             Option<String> apiKey,
                             List<SshPublicKey> sshPublicKeys,
                             Map<String, List<Long>> sshKeyIdsByProvider,
-                            Map<SourceName, List<String>> firewallIdsBySource,
+                            Map<SourceName, List<FirewallId>> firewallIdsBySource,
                             String clusterSecret,
                             String rawTomlContent) {
         static BootstrapContext bootstrapContext(ClusterBootstrapConfig config,
@@ -525,8 +526,8 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
             return sshKeyIdsByProvider.getOrDefault(provider, List.of());
         }
 
-        BootstrapContext withFirewallIds(SourceName sourceName, List<String> ids) {
-            var merged = new HashMap<SourceName, List<String>>(firewallIdsBySource);
+        BootstrapContext withFirewallIds(SourceName sourceName, List<FirewallId> ids) {
+            var merged = new HashMap<SourceName, List<FirewallId>>(firewallIdsBySource);
 
             merged.put(sourceName, List.copyOf(ids));
 
@@ -545,7 +546,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
         /// Ingress-firewall ids created for `sourceName` by [BootstrapPhaseFirewall], threaded into
         /// server-create so the rules are in force BEFORE the instance exists (§6.2). Keyed by SOURCE,
         /// not provider (unlike ssh keys): firewall rules are declared per source.
-        List<String> firewallIdsFor(SourceName sourceName) {
+        List<FirewallId> firewallIdsFor(SourceName sourceName) {
             return firewallIdsBySource.getOrDefault(sourceName, List.of());
         }
     }

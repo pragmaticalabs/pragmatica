@@ -15,6 +15,7 @@ import java.util.stream.Stream;
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentError;
+import org.pragmatica.aether.environment.FirewallName;
 import org.pragmatica.aether.environment.IngressHandle;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
@@ -415,8 +416,7 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     }
 
     private Promise<List<Long>> firewallsFor(ClusterName cluster, SourceName source) {
-        return client.listFirewalls(firewallSelector(cluster,
-                                                     source.value()))
+        return client.listFirewalls(firewallSelector(cluster, source))
                      .mapError(cause -> FirewallLookupFailed.firewallLookupFailed(cluster, source, cause))
                      .flatMap(found -> resolvedOrAbsent(found, cluster, source));
     }
@@ -617,14 +617,14 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     /// up and — per §6.2, Hetzner servers with no firewall association accept ALL inbound — fully
     /// open.
     @Override
-    public Promise<IngressHandle> openIngress(String sourceId,
+    public Promise<IngressHandle> openIngress(SourceName source,
                                               int port,
                                               String protocol,
                                               String sourceCidr,
                                               String description) {
         return firewallCluster().async()
                               .flatMap(cluster -> openIngressFor(cluster,
-                                                                 sourceId,
+                                                                 source,
                                                                  port,
                                                                  protocol,
                                                                  sourceCidr,
@@ -632,9 +632,9 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     }
 
     @Override
-    public Promise<Unit> closeIngress(String sourceId, int port, String protocol, String sourceCidr) {
+    public Promise<Unit> closeIngress(SourceName source, int port, String protocol, String sourceCidr) {
         return firewallCluster().async()
-                              .flatMap(cluster -> client.listFirewalls(firewallSelector(cluster, sourceId)))
+                              .flatMap(cluster -> client.listFirewalls(firewallSelector(cluster, source)))
                               .flatMap(found -> withdrawFrom(found, port, protocol, sourceCidr));
     }
 
@@ -651,43 +651,50 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
                                                        + "without the aether-cluster label cannot be reclaimed by cleanup and would leak)";
 
     private Promise<IngressHandle> openIngressFor(ClusterName cluster,
-                                                  String sourceId,
+                                                  SourceName source,
                                                   int port,
                                                   String protocol,
                                                   String sourceCidr,
                                                   String description) {
         var rule = Firewall.Rule.inbound(port, protocol, sourceCidr, description);
 
-        return client.listFirewalls(firewallSelector(cluster, sourceId))
-                     .flatMap(found -> openOrPatch(cluster, sourceId, rule, port, protocol, sourceCidr, found));
+        return client.listFirewalls(firewallSelector(cluster, source))
+                     .flatMap(found -> openOrPatch(cluster, source, rule, port, protocol, sourceCidr, found));
     }
 
     private Promise<IngressHandle> openOrPatch(ClusterName cluster,
-                                               String sourceId,
+                                               SourceName source,
                                                Firewall.Rule rule,
                                                int port,
                                                String protocol,
                                                String sourceCidr,
                                                List<Firewall> found) {
         if (found.isEmpty()) {
-            return createIngressFirewall(cluster, sourceId, rule);
+            return createIngressFirewall(cluster, source, rule);
         }
 
         return patchIngressFirewall(found.getFirst(), rule, port, protocol, sourceCidr);
     }
 
-    private Promise<IngressHandle> createIngressFirewall(ClusterName cluster, String sourceId, Firewall.Rule rule) {
+    /// The firewall's NAME is [FirewallName#forSource], not a locally assembled string: the derivation
+    /// is total (both inputs are RFC-1035 labels) and already truncates to the 63 characters every
+    /// supported cloud accepts, so the [#sanitizeLabelValue] that used to wrap it is a provable no-op
+    /// here and is gone. The LABELS still go through it — they carry `cluster`/`source` verbatim and
+    /// share the sanitizer with the role label, which is not a typed value.
+    private Promise<IngressHandle> createIngressFirewall(ClusterName cluster, SourceName source, Firewall.Rule rule) {
         var labels = Map.of(CLUSTER_LABEL,
                             sanitizeLabelValue(cluster.value()),
                             SOURCE_LABEL,
-                            sanitizeLabelValue(sourceId));
-        var request = CreateFirewallRequest.createFirewallRequest(firewallName(cluster, sourceId), List.of(rule), labels);
+                            sanitizeLabelValue(source.value()));
+        var request = CreateFirewallRequest.createFirewallRequest(FirewallName.forSource(cluster, source).value(),
+                                                                  List.of(rule),
+                                                                  labels);
 
         return client.createFirewall(request)
                      .onSuccess(firewall -> log.info("Hetzner ingress: created firewall '{}' (id={}) for source '{}' with rule {}/{} from {}",
                                                      firewall.name(),
                                                      firewall.id(),
-                                                     sourceId,
+                                                     source.value(),
                                                      rule.port(),
                                                      rule.protocol(),
                                                      sourceCidr(rule)))
@@ -750,15 +757,11 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     /// Selects the ONE firewall belonging to this (cluster, source). Scoping by both labels is what
     /// keeps create-or-patch and withdraw from ever touching a firewall Aether did not create —
     /// the 2026-08-03 test-pg incident (#572) is what unscoped cleanup costs.
-    private static String firewallSelector(ClusterName cluster, String sourceId) {
+    private static String firewallSelector(ClusterName cluster, SourceName source) {
         return CLUSTER_LABEL
              + "=" + sanitizeLabelValue(cluster.value())
              + "," + SOURCE_LABEL
-             + "=" + sanitizeLabelValue(sourceId);
-    }
-
-    private static String firewallName(ClusterName cluster, String sourceId) {
-        return sanitizeLabelValue("aether-" + cluster.value() + "-" + sourceId);
+             + "=" + sanitizeLabelValue(source.value());
     }
 
     private static final Pattern LABEL_VALUE_DISALLOWED = Pattern.compile("[^a-zA-Z0-9._-]");

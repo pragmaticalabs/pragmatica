@@ -4,6 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
+import org.pragmatica.aether.environment.FirewallId;
+import org.pragmatica.aether.environment.FirewallName;
+import org.pragmatica.aether.environment.SourceName;
+
+
 public sealed interface CreatedResource {
     String provider();
     String resourceId();
@@ -24,12 +29,21 @@ public sealed interface CreatedResource {
     /// (cluster-bootstrap-spec §6.2). ONE resource per source carrying ALL of that source's rules —
     /// a `"tcp+udp"` entry is two rules on this one firewall, not two firewalls — so destroy issues
     /// exactly one delete.
-    /// `firewallId` is the PROVIDER'S OWN id, kept as an opaque String. It was a `long`, which is a
-    /// Hetzner-shaped assumption: an AWS security group is `sg-0abc…`, an Azure NSG is an ARM resource
-    /// path, and a GCP rule is addressed by name. Numeric ids are a special case of string ids, so
-    /// widening loses nothing and lets every provider record what it actually created. Providers whose
-    /// API needs a number parse it back at their own edge — [BootstrapCleanup] does exactly that for
-    /// Hetzner, and REFUSES rather than guessing if the recorded id is not numeric.
+    ///
+    /// **Four same-shaped values, three of them now typed.** `firewallId`, `sourceName` and `name`
+    /// were all `String`, adjacent, and any two could be transposed and still compile — the exact
+    /// mistake that makes destroy issue a delete against the wrong resource. [FirewallId] is
+    /// provider-opaque (validated only as non-blank, since an AWS `sg-0abc…`, an Azure ARM path and a
+    /// GCP rule name share no grammar); [SourceName] and [FirewallName] are RFC-1035 labels.
+    /// `provider` stays a `String` deliberately: it is a `String` on EVERY [CreatedResource] variant,
+    /// and typing it here alone would be the inconsistency this record exists to remove — tracked as
+    /// #617.
+    ///
+    /// `firewallId` was once a `long`, which acted as an accidental type separator; widening it to
+    /// `String` for AWS/Azure/GCP removed that accident, and [FirewallId] restores it deliberately.
+    /// Providers whose API needs a number convert at their own edge via [FirewallId#asNumeric] —
+    /// [BootstrapCleanup] does exactly that for Hetzner, and REFUSES rather than guessing if the
+    /// recorded id is not numeric.
     ///
     /// **Stored-format note.** `bootstrap-state.json` is written by hand in [BootstrapStateJson], not by
     /// Jackson databind. Reading uses `JsonNode.asText()`, which yields `"12345"` for a legacy unquoted
@@ -37,14 +51,17 @@ public sealed interface CreatedResource {
     /// Writing now emits a QUOTED value, which a pre-widening binary would read as `0` via `asLong()`.
     /// The widening is therefore forward-compatible but not backward-compatible: downgrading the CLI
     /// after a bootstrap would strand the firewall rather than delete it.
-    record CloudFirewall(String provider, String firewallId, String sourceName, String name) implements CreatedResource {
-        static CloudFirewall cloudFirewall(String provider, String firewallId, String sourceName, String name) {
+    record CloudFirewall(String provider, FirewallId firewallId, SourceName sourceName, FirewallName name) implements CreatedResource {
+        static CloudFirewall cloudFirewall(String provider,
+                                           FirewallId firewallId,
+                                           SourceName sourceName,
+                                           FirewallName name) {
             return new CloudFirewall(provider, firewallId, sourceName, name);
         }
 
         @Override
         public String resourceId() {
-            return firewallId;
+            return firewallId.value();
         }
 
         @Override

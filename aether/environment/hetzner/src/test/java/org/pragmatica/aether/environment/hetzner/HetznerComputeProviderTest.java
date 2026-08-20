@@ -1290,7 +1290,7 @@ class HetznerComputeProviderTest {
     @Nested
     class OpenIngressTests {
         private static final ClusterName CLUSTER = clusterName("prod-eu").unwrap();
-        private static final String SOURCE = "hetzner-eu";
+        private static final SourceName SOURCE = sourceNameOrDefault("hetzner-eu");
 
         private HetznerComputeProvider ingressProvider;
 
@@ -1319,7 +1319,7 @@ class HetznerComputeProviderTest {
             assertThat(testClient.createFirewallCalls).isEqualTo(1);
             // Without BOTH labels the firewall is invisible to tools/cloud-reaper.sh and leaks.
             assertThat(testClient.lastCreateFirewallRequest.labels()).containsEntry("aether-cluster", CLUSTER.value())
-                                                                     .containsEntry("aether-source", SOURCE);
+                                                                     .containsEntry("aether-source", SOURCE.value());
             assertThat(testClient.lastCreateFirewallRequest.rules()).singleElement()
                                                                      .satisfies(created -> {
                                                                          assertThat(created.direction()).isEqualTo("in");
