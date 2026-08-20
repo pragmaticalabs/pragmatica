@@ -505,8 +505,13 @@ public final class DdlAnalyzer {
     private static void analyzeCreateIndex(CstNavigator stmt, CstNavigator root, List<SchemaEvent> events) {
         // UNIQUE lexes as `UniqueColConstraint` here — that rule spells the same literal and
         // claimed the kind — so the keyword lookup alone reports every unique index as non-unique.
-        boolean unique = !root.findAll("UniqueKW").isEmpty() || CstExtractor.hasLeafText(stmt, "unique");
-        boolean concurrent = !root.findAll("ConcurrentlyKW").isEmpty();
+        // Scoped to THIS statement. The previous root-wide `findAll("UniqueKW")` scanned the entire
+        // script, so a single `CONSTRAINT ... UNIQUE` anywhere marked EVERY index unique — which is
+        // how the tracked jOOQ XML came to claim `is_unique YES` for two plain CREATE INDEXes.
+        // Text rather than kind: UNIQUE lexes as `UniqueColConstraint` here, that rule having claimed
+        // the literal, so a keyword-kind lookup reports every unique index as non-unique.
+        boolean unique = CstExtractor.hasLeafText(stmt, "unique");
+        boolean concurrent = CstExtractor.hasLeafText(stmt, "concurrently");
         var colIds = stmt.findAll("ColId");
         var qnames = stmt.findAll("QualifiedName");
         String indexName = "";
