@@ -180,14 +180,31 @@ public final class RetentionEnforcer implements AutoCloseable {
         return ref.endOffset() <= deletableThrough;
     }
 
+    /// An unknown timestamp disables the AGE term only — it must not disable the whole policy.
+    ///
+    /// A segment's `maxTimestamp` does not survive a restart: `SegmentIndex.rebuildFromRefs` reconstructs
+    /// the index from ref NAMES, and a ref name carries only `streams/<stream>/<partition>/<start>-<end>`
+    /// (`SegmentIndex.buildRefName`), so every rebuilt ref comes back with `maxTimestamp = 0`. This method
+    /// used to `return false` on that, and because the check sat BEFORE the policy call it withheld the
+    /// segment from the count- and size-based limits as well. The effect was that every segment sealed
+    /// before a restart became permanently unreclaimable, and disk grew without bound across restarts.
+    ///
+    /// Passing an unknown age as `0` is the honest reading: nothing is claimed about the segment's age, so
+    /// the age limit cannot fire on it, while `count`/`bytes` limits still apply. Under `ANY` the size and
+    /// count terms are ORed and therefore work again; under `ALL` every limit must be exceeded, so an
+    /// unknown age still withholds the segment — conservative in the direction that cannot delete data.
+    ///
+    /// This does NOT restore age-based retention for pre-restart segments; their age is genuinely not
+    /// recorded anywhere. Fixing that means persisting `maxTimestamp` (a ref-name/metadata format change),
+    /// which is a stored-format decision rather than a local fix.
     private boolean isSegmentExpired(SegmentIndex.SegmentRef ref, long now, long segmentCount, long totalBytes) {
-        if (ref.maxTimestamp() <= 0) {
-            return false;
-        }
+        return retentionPolicy.shouldEvict(segmentCount, totalBytes, knownAgeMs(ref, now));
+    }
 
-        var ageMs = now - ref.maxTimestamp();
-
-        return retentionPolicy.shouldEvict(segmentCount, totalBytes, ageMs);
+    private static long knownAgeMs(SegmentIndex.SegmentRef ref, long now) {
+        return ref.maxTimestamp() <= 0
+               ? 0L
+               : now - ref.maxTimestamp();
     }
 
     private void removeSegment(String streamName, int partition, SegmentIndex.SegmentRef ref) {

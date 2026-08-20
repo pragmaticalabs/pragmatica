@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 import static org.pragmatica.lang.Option.empty;
 import static org.pragmatica.lang.Option.some;
 
@@ -18,7 +19,7 @@ import static org.pragmatica.lang.Option.some;
 class SourceProfileTest {
 
     private static SourceProfile cloudSource(Option<String> zone, List<String> zones) {
-        return SourceProfile.sourceProfile("hetzner-eu",
+        return SourceProfile.sourceProfile(sourceNameOrDefault("hetzner-eu"),
                                            SourceType.CLOUD,
                                            some(CloudProviderName.HETZNER),
                                            empty(),

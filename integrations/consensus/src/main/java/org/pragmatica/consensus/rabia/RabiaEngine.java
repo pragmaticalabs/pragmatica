@@ -1381,15 +1381,31 @@ public class RabiaEngine<C extends Command> {
         }
     }
 
-    /// Calculates quorum size for sync based on currently connected peers.
-    /// Unlike consensus quorum (fixed cluster size), sync quorum adapts to actual connectivity.
-    /// Uses minimum of connected count and expected cluster size for robustness.
+    /// Quorum required before this node will adopt another node's consensus state via sync.
+    ///
+    /// This gate MUST be a majority of the CLUSTER, never a majority of whoever this node currently
+    /// happens to reach. It previously computed `min(connectedNodeCount, clusterSize) / 2 + 1`, which
+    /// evaluates to **1** at connectivity 0 or 1 — so a node that could reach exactly one peer would
+    /// `restoreState` from a SINGLE response, adopting consensus state on the word of one other node,
+    /// precisely when it is least likely to be talking to the majority side of a partition. The old
+    /// docstring justified this as "adapts to actual connectivity", which is the defect stated as a
+    /// feature: connectivity is what a partition manipulates, so deriving a safety threshold from it
+    /// means the threshold collapses exactly when it is needed. Same class as #557, where cluster-start
+    /// quorum was declared from discovery rather than reachability.
+    ///
+    /// Direction of the change is one-way: this can only ever make the gate STRICTER, so it cannot admit
+    /// a sync that was previously refused. The cost is liveness, and it is deliberate — a node that
+    /// cannot reach a cluster majority now stays inactive instead of syncing from a minority. Refusing to
+    /// adopt state is the recoverable failure; adopting the wrong state is not.
+    ///
+    /// `clusterSize <= 1` yields 1: a single-node cluster has no peers to adopt from, and demanding more
+    /// would deadlock its sync path for no safety gain.
     private int syncQuorumSize() {
-        var connectedCount = network.connectedNodeCount();
         var clusterSize = topologyManager.clusterSize();
-        var effectiveSize = Math.min(connectedCount, clusterSize);
 
-        return effectiveSize / 2 + 1;
+        return clusterSize <= 1
+               ? 1
+               : clusterSize / 2 + 1;
     }
 
     /// Cleans up old phase data to prevent memory leaks.

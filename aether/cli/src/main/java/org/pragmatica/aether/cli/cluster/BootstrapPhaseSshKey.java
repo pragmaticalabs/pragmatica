@@ -10,6 +10,7 @@ import java.util.Base64;
 import java.util.HexFormat;
 import java.util.List;
 
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
 import org.pragmatica.aether.config.cluster.CloudProviderName;
 import org.pragmatica.aether.config.cluster.SourceProfile;
@@ -150,16 +151,13 @@ public sealed interface BootstrapPhaseSshKey {
     }
 
     /// Cluster-scoped Hetzner ssh-key name prefix (RFC-0016 W3 §3.3): `aether-bootstrap-<cluster>`.
-    /// Blank-defensive — a null/blank cluster name collapses to the bare [#HETZNER_KEY_NAME_PREFIX]
-    /// (no trailing dash, no empty cluster segment), mirroring how the provider's
-    /// `HetznerComputeProvider.bootstrapKeyPrefix` defends. Uploaded keys carry this prefix so the
-    /// provider resolves ONLY the cluster's own keys at replacement time.
-    static String hetznerKeyPrefix(String cluster) {
-        return Option.option(cluster)
-                     .map(String::trim)
-                     .filter(name -> !name.isEmpty())
-                     .map(name -> HETZNER_KEY_NAME_PREFIX + "-" + name)
-                     .or(HETZNER_KEY_NAME_PREFIX);
+    /// Uploaded keys carry this prefix so the provider resolves ONLY the cluster's own keys at
+    /// replacement time; `HetznerComputeProvider.bootstrapKeyPrefix` derives the identical string
+    /// from its own [ClusterName]. The blank-collapse-to-bare-prefix branch this method used to
+    /// carry is gone — a bootstrap always has a parsed cluster name, so the unscoped prefix (which
+    /// would have matched the whole account's keys) is no longer reachable from here.
+    static String hetznerKeyPrefix(ClusterName cluster) {
+        return HETZNER_KEY_NAME_PREFIX + "-" + cluster.value();
     }
 
     private static UploadOutcome recordUpload(SshKey uploaded, BootstrapContext ctx) {

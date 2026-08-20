@@ -6,13 +6,18 @@ package org.pragmatica.aether.cli.cluster;
 
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
+import org.pragmatica.aether.config.cluster.CloudProviderName;
 import org.pragmatica.aether.config.cluster.FirewallRule;
 import org.pragmatica.aether.config.cluster.LoadBalancerMode;
 import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.config.cluster.SourceType;
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ComputeProvider;
+import org.pragmatica.aether.environment.FirewallId;
+import org.pragmatica.aether.environment.FirewallName;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -42,6 +47,7 @@ public sealed interface BootstrapPhaseFirewall {
     /// never be opened here, consistent with `[infrastructure.networking] type = "manual"`.
     /// Only `app_http` is ever auto-opened, and only under REQ-5.1.8.2.
     String HETZNER_PROVIDER = "hetzner";
+    String AWS_PROVIDER = "aws";
 
     static Result<BootstrapContext> execute(BootstrapContext ctx) {
         return execute(ctx, ProviderResolver::resolveCloudCompute);
@@ -55,6 +61,7 @@ public sealed interface BootstrapPhaseFirewall {
         ClusterBootstrapOrchestrator.logPhase(CREATE_FIREWALL,
                                               "Applying ingress firewall rules for %d cloud source(s)",
                                               applicable);
+        warnIfIngressUnmanaged(ctx);
         if (applicable == 0) {
             return success(ctx);
         }
@@ -62,12 +69,60 @@ public sealed interface BootstrapPhaseFirewall {
         return applyForAllSources(ctx, computeResolver);
     }
 
+    /// #615 — REQ-5.1.8.2's auto-open AND the warning it dictates were both Hetzner-only, because the
+    /// entire phase is gated on [#managesIngressFor]. An elected LB on AWS/GCP/Azure therefore had its
+    /// `app_http` port neither opened nor mentioned: the operator saw a clean bootstrap and a load
+    /// balancer that served nothing, with no line anywhere pointing at ingress.
+    ///
+    /// Deliberately called BEFORE the `applicable == 0` early return — a cluster whose only cloud source
+    /// is non-Hetzner takes exactly that path, so a warning emitted after it would never fire for the
+    /// case it exists to cover.
+    ///
+    /// A WARNING, not an error. Security groups / VPC firewall rules / network security groups all deny
+    /// inbound by default, so such a node is UNREACHABLE rather than exposed, and managing ingress
+    /// yourself there is the supported arrangement PF-23 explicitly directs operators to. The defect is
+    /// the silence, so silence is what this fixes.
+    private static void warnIfIngressUnmanaged(BootstrapContext ctx) {
+        var appHttpPort = ctx.config().operations().ports().appHttp();
+
+        ctx.config().sources().forEach((name, source) -> warnIfElectedWithoutIngress(name, source, appHttpPort));
+    }
+
+    private static void warnIfElectedWithoutIngress(String name, SourceProfile source, int appHttpPort) {
+        if (manages(source) || source.type() != SourceType.CLOUD || source.loadBalancer() != LoadBalancerMode.ELECTED) {
+            return;
+        }
+
+        System.out.printf("  WARN: Source '%s' has an elected load balancer, but provider '%s' has no Aether-managed"
+                         + " ingress, so app_http port %d was NOT opened. Open it yourself (AWS security group / GCP"
+                         + " VPC firewall rule / Azure network security group) or the elected LB will not serve"
+                         + " traffic.%n",
+                          name,
+                          providerName(source),
+                          appHttpPort);
+    }
+
+    /// Providers whose `openIngress` is implemented. Adding one here is what makes the CREATE_FIREWALL
+    /// phase actually run for it — and what silences the #615 "no ingress was opened" warning, since that
+    /// warning exists precisely for providers NOT in this set.
+    Set<String> MANAGES_INGRESS = Set.of(HETZNER_PROVIDER, AWS_PROVIDER);
+
+    private static boolean manages(SourceProfile source) {
+        return MANAGES_INGRESS.contains(providerName(source));
+    }
+
+    private static String providerName(SourceProfile source) {
+        return source.provider()
+                     .map(CloudProviderName::value)
+                     .or("unknown");
+    }
+
     /// The resolver seam: (source, clusterName) → a provider able to manage ingress.
     interface ComputeResolver {
         Result<ComputeProvider> resolve(SourceProfile source,
                                         List<Long> sshKeyIds,
                                         String userData,
-                                        String clusterName);
+                                        ClusterName clusterName);
     }
 
     @SuppressWarnings("JBCT-PAT-01")
@@ -98,7 +153,7 @@ public sealed interface BootstrapPhaseFirewall {
     /// inbound, so an unmanaged source there is unreachable rather than exposed (§6.2).
     private static boolean managesIngressFor(SourceProfile source) {
         return source.type() == SourceType.CLOUD
-               && HETZNER_PROVIDER.equals(source.provider().map(provider -> provider.value()).or(""))
+               && manages(source)
                && !effectiveRules(source, 0).isEmpty();
     }
 
@@ -122,7 +177,7 @@ public sealed interface BootstrapPhaseFirewall {
                                                     SourceProfile source,
                                                     ComputeProvider compute,
                                                     List<FirewallRule> rules) {
-        var firewallIds = new LinkedHashSet<Long>();
+        var firewallIds = new LinkedHashSet<FirewallId>();
         var nextCtx = ctx;
 
         for (var rule : rules) {
@@ -138,8 +193,11 @@ public sealed interface BootstrapPhaseFirewall {
                 if (opened.isFailure()) {
                     return opened.map(_ -> currentCtx);
                 }
-
-                var id = parseFirewallId(opened.unwrap().providerResourceId());
+                // The handle's id is provider-opaque text; a BLANK one would reach destroy's delete
+                // call and match nothing, so the firewall would keep billing while the ledger claimed
+                // it was reclaimed. Fail the phase instead — the orchestrator's cleanup then runs
+                // while the just-created firewall is still the newest resource on the account.
+                var id = FirewallId.firewallId(opened.unwrap().providerResourceId());
 
                 if (id.isFailure()) {
                     return id.map(_ -> currentCtx);
@@ -156,27 +214,19 @@ public sealed interface BootstrapPhaseFirewall {
         return success(nextCtx.withFirewallIds(source.name(), List.copyOf(firewallIds)));
     }
 
-    private static BootstrapContext recordFirewall(BootstrapContext ctx, SourceProfile source, long firewallId) {
-        System.out.printf("  Ingress firewall %d in force for source '%s'%n", firewallId, source.name());
+    private static BootstrapContext recordFirewall(BootstrapContext ctx, SourceProfile source, FirewallId firewallId) {
+        System.out.printf("  Ingress firewall %s in force for source '%s'%n", firewallId, source.name());
+        // The name is DERIVED, never assembled here: FirewallName.forSource is the same derivation
+        // the provider uses to name the firewall it creates, so the ledger records the name that is
+        // actually on the resource — including its truncation to the 63 characters every cloud
+        // accepts, which a locally concatenated string did not apply.
         var resource = CreatedResource.CloudFirewall.cloudFirewall(HETZNER_PROVIDER,
                                                                    firewallId,
                                                                    source.name(),
-                                                                   "aether-" + ctx.config().cluster().name()
-                                                                  + "-" + source.name());
+                                                                   FirewallName.forSource(ctx.config().cluster().name(),
+                                                                                          source.name()));
 
         return ctx.withState(ctx.state().withResource(resource));
-    }
-
-    private static Result<Long> parseFirewallId(String raw) {
-        return Result.lift(() -> Long.parseLong(raw)).mapError(_ -> new UnparseableFirewallId(raw));
-    }
-
-    record UnparseableFirewallId(String raw) implements Cause {
-        @Override
-        public String message() {
-            return "Provider returned a firewall id that is not numeric: '" + raw
-                 + "'. The id must be recorded so destroy can reclaim the firewall.";
-        }
     }
 
     /// REQ-5.1.8.1 — a `"tcp+udp"` entry expands to TWO provider-level rules, one per protocol.

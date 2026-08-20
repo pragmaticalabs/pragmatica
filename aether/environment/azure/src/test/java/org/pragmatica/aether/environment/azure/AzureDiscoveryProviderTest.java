@@ -17,6 +17,7 @@ import org.pragmatica.lang.Promise;
 import java.util.List;
 import java.util.Map;
 
+import static org.pragmatica.aether.environment.ClusterName.clusterName;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.cloud.azure.AzureConfig.azureConfig;
 
@@ -33,7 +34,7 @@ class AzureDiscoveryProviderTest {
     @BeforeEach
     void setUp() {
         testClient = new TestAzureClient();
-        var config = BASE_CONFIG.withDiscovery("test-cluster").withSelfVmName("self-vm");
+        var config = BASE_CONFIG.withDiscovery(clusterName("test-cluster").unwrap()).withSelfVmName("self-vm");
         provider = AzureDiscoveryProvider.azureDiscoveryProvider(testClient, config);
     }
 
@@ -107,7 +108,7 @@ class AzureDiscoveryProviderTest {
 
         @Test
         void registerSelf_failsWhenNoSelfVmName() {
-            var configNoSelf = BASE_CONFIG.withDiscovery("test-cluster");
+            var configNoSelf = BASE_CONFIG.withDiscovery(clusterName("test-cluster").unwrap());
             var providerNoSelf = AzureDiscoveryProvider.azureDiscoveryProvider(testClient, configNoSelf);
             var self = new PeerInfo("10.0.0.1", 9100, Map.of());
 
@@ -136,7 +137,7 @@ class AzureDiscoveryProviderTest {
 
         @Test
         void deregisterSelf_failsWhenNoSelfVmName() {
-            var configNoSelf = BASE_CONFIG.withDiscovery("test-cluster");
+            var configNoSelf = BASE_CONFIG.withDiscovery(clusterName("test-cluster").unwrap());
             var providerNoSelf = AzureDiscoveryProvider.azureDiscoveryProvider(testClient, configNoSelf);
 
             providerNoSelf.deregisterSelf()

@@ -8,6 +8,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.cli.cluster.BootstrapState.PhaseStatus;
 import org.pragmatica.aether.cli.cluster.CreatedResource.ProvisionedVm;
 import org.pragmatica.aether.cli.cluster.CreatedResource.SshKeyResource;
@@ -25,12 +26,13 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
+import static org.pragmatica.aether.environment.ClusterName.clusterName;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ClusterBootstrapOrchestratorKeepOnFailureTest {
 
-    private static final String CLUSTER_NAME = "kof-test-cluster";
+    private static final ClusterName CLUSTER_NAME = clusterName("kof-test-cluster").unwrap();
 
     private Function<BootstrapState, Result<Unit>> originalHook;
 
@@ -159,11 +161,11 @@ class ClusterBootstrapOrchestratorKeepOnFailureTest {
             ClusterBootstrapOrchestrator.decorateAfterCleanup(CLUSTER_NAME, new TestCause("quorum-fail"), true);
 
             var output = captured.toString(StandardCharsets.UTF_8);
-            assertTrue(output.contains(CLUSTER_NAME), "warning should name cluster: " + output);
+            assertTrue(output.contains(CLUSTER_NAME.value()), "warning should name cluster: " + output);
             assertTrue(output.contains("PROVISION"), "warning should name failed phase: " + output);
             assertTrue(output.contains("3 provisioned VM"), "warning should count VMs: " + output);
             assertTrue(output.contains("2 SSH key"), "warning should count SSH keys: " + output);
-            assertTrue(output.contains("aether cluster destroy --cluster " + CLUSTER_NAME),
+            assertTrue(output.contains("aether cluster destroy --cluster " + CLUSTER_NAME.value()),
                        "warning should print destroy hint: " + output);
             assertTrue(output.contains("ssh aether@"), "warning should print SSH inspect hint: " + output);
         }

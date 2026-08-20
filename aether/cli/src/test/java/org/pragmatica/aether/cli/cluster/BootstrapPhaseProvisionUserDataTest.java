@@ -19,6 +19,7 @@ import org.pragmatica.aether.config.cluster.OperationsConfig;
 import org.pragmatica.aether.config.cluster.RoleSubTable;
 import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.config.cluster.SourceType;
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
@@ -26,6 +27,7 @@ import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.ProvisionRequest;
 import org.pragmatica.aether.environment.ProvisionSpec;
+import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -35,15 +37,17 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
+import static org.pragmatica.aether.environment.ClusterName.clusterName;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 
 class BootstrapPhaseProvisionUserDataTest {
 
     private static SourceProfile cloudHetznerSource(int coreCount) {
-        return SourceProfile.sourceProfile("eu-1",
+        return SourceProfile.sourceProfile(sourceNameOrDefault("eu-1"),
                                            SourceType.CLOUD,
                                            Option.some(CloudProviderName.HETZNER),
                                            Option.some("dummy-token"),
@@ -69,7 +73,7 @@ class BootstrapPhaseProvisionUserDataTest {
     /// own `image`, so the seed spec's tier-1 imageId can be asserted per role (worker → its image,
     /// core → absent, no cross-role fallback).
     private static SourceProfile cloudSourceWithPerRoleImages() {
-        return SourceProfile.sourceProfile("eu-1",
+        return SourceProfile.sourceProfile(sourceNameOrDefault("eu-1"),
                                            SourceType.CLOUD,
                                            Option.some(CloudProviderName.HETZNER),
                                            Option.some("dummy-token"),
@@ -109,7 +113,7 @@ class BootstrapPhaseProvisionUserDataTest {
     }
 
     private static BootstrapContext baseContext(ClusterBootstrapConfig config) {
-        var state = BootstrapState.initialState("prod", "h", "now").withClusterSecret("test-secret-xyz");
+        var state = BootstrapState.initialState(clusterName("prod").unwrap(), "h", "now").withClusterSecret("test-secret-xyz");
         return BootstrapContext.bootstrapContext(config, state, List.of(), List.of())
                                .withClusterSecret("test-secret-xyz");
     }
@@ -226,9 +230,10 @@ class BootstrapPhaseProvisionUserDataTest {
 
         var spec = invokeBuildCloudProvisionSpec(ctx, source, "eu-1-core-0", 0);
 
-        assertEquals("prod", spec.context().clusterName(),
+        assertEquals("prod",
+                     spec.context().clusterName().map(ClusterName::value).or(""),
                      "Context must include cluster name so reaper can label-match orphans");
-        assertEquals("eu-1", spec.context().sourceName());
+        assertEquals("eu-1", spec.context().sourceName().value());
         assertEquals("core", spec.context().role());
     }
 
@@ -357,22 +362,22 @@ class BootstrapPhaseProvisionUserDataTest {
         try {
             var method = BootstrapPhaseProvision.class.getDeclaredMethod("buildCloudProvisionSpec",
                                                                           BootstrapContext.class,
-                                                                          String.class,
+                                                                          SourceName.class,
                                                                           SourceProfile.class,
                                                                           NodeRole.class,
                                                                           String.class,
                                                                           int.class,
-                                                                          String.class);
+                                                                          ClusterName.class);
             method.setAccessible(true);
             @SuppressWarnings("unchecked")
             var result = (org.pragmatica.lang.Result<ProvisionSpec>) method.invoke(null,
                                                                                     ctx,
-                                                                                    "eu-1",
+                                                                                    sourceNameOrDefault("eu-1"),
                                                                                     source,
                                                                                     role,
                                                                                     nodeId,
                                                                                     nodeIndex,
-                                                                                    "prod");
+                                                                                    clusterName("prod").unwrap());
             return result.unwrap();
         } catch (ReflectiveOperationException e) {
             throw new AssertionError("Failed to invoke buildCloudProvisionSpec", e);

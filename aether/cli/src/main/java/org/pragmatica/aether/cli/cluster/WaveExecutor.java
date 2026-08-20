@@ -16,10 +16,12 @@ import org.pragmatica.aether.config.cluster.RoleSubTable;
 import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.config.cluster.SourceType;
 import org.pragmatica.aether.config.cluster.SshConfig;
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.CloudProviderSupport;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.NodeGroupConfig;
 import org.pragmatica.aether.environment.ProvisionedNode;
+import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
@@ -74,13 +76,13 @@ public final class WaveExecutor {
         };
     }
 
-    private static Result<Integer> logNewSource(String sourceName) {
+    private static Result<Integer> logNewSource(SourceName sourceName) {
         logAction("+", sourceName + ": new source added (roles provisioned individually)");
 
         return success(0);
     }
 
-    private static Result<Integer> provisionRole(String sourceName,
+    private static Result<Integer> provisionRole(SourceName sourceName,
                                                  NodeRole role,
                                                  int count,
                                                  ClusterBootstrapConfig desired) {
@@ -98,7 +100,7 @@ public final class WaveExecutor {
                                                      nodes.size()));
     }
 
-    private static Result<Integer> provisionScaleUp(String sourceName,
+    private static Result<Integer> provisionScaleUp(SourceName sourceName,
                                                     NodeRole role,
                                                     int from,
                                                     int to,
@@ -120,17 +122,17 @@ public final class WaveExecutor {
                                                      nodes.size()));
     }
 
-    private static Result<SourceProfile> rejectSshScaleUp(SourceProfile source, String sourceName) {
+    private static Result<SourceProfile> rejectSshScaleUp(SourceProfile source, SourceName sourceName) {
         return source.type() == SourceType.SSH
                ? new ApplyError.SshScaleNotSupported(sourceName).result()
                : success(source);
     }
 
-    private static Result<List<ProvisionedNode>> dispatchProvision(String sourceName,
+    private static Result<List<ProvisionedNode>> dispatchProvision(SourceName sourceName,
                                                                    SourceProfile source,
                                                                    NodeRole role,
                                                                    int count,
-                                                                   String clusterName) {
+                                                                   ClusterName clusterName) {
         return switch (source.type()) {
             case CLOUD -> resolveCloudAndProvision(sourceName, source, role, count, clusterName);
             case DOCKER -> resolveDockerAndProvision(sourceName, role, count, source, clusterName);
@@ -139,11 +141,11 @@ public final class WaveExecutor {
         };
     }
 
-    private static Result<List<ProvisionedNode>> resolveCloudAndProvision(String sourceName,
+    private static Result<List<ProvisionedNode>> resolveCloudAndProvision(SourceName sourceName,
                                                                           SourceProfile source,
                                                                           NodeRole role,
                                                                           int count,
-                                                                          String clusterName) {
+                                                                          ClusterName clusterName) {
         return ProviderResolver.resolveCloudCompute(source).flatMap(compute -> provisionViaCompute(compute,
                                                                                                    sourceName,
                                                                                                    role,
@@ -152,11 +154,11 @@ public final class WaveExecutor {
                                                                                                    clusterName));
     }
 
-    private static Result<List<ProvisionedNode>> resolveDockerAndProvision(String sourceName,
+    private static Result<List<ProvisionedNode>> resolveDockerAndProvision(SourceName sourceName,
                                                                            NodeRole role,
                                                                            int count,
                                                                            SourceProfile source,
-                                                                           String clusterName) {
+                                                                           ClusterName clusterName) {
         return ProviderResolver.resolveDockerCompute().flatMap(compute -> provisionViaCompute(compute,
                                                                                               sourceName,
                                                                                               role,
@@ -167,11 +169,11 @@ public final class WaveExecutor {
 
     @SuppressWarnings("JBCT-EX-01")
     private static Result<List<ProvisionedNode>> provisionViaCompute(ComputeProvider compute,
-                                                                     String sourceName,
+                                                                     SourceName sourceName,
                                                                      NodeRole role,
                                                                      int count,
                                                                      SourceProfile source,
-                                                                     String clusterName) {
+                                                                     ClusterName clusterName) {
         var instanceType = option(source.roles().get(role)).flatMap(rt -> rt.instanceType()).or("default");
         var zone = source.zone().or("default");
         // #442 v2b — carry the real cluster name in the group tags so `CloudProviderSupport.toContext`
@@ -193,11 +195,16 @@ public final class WaveExecutor {
     /// cloud enumeration can find and reap it. `aether-cluster` is the load-bearing one: it seeds
     /// `ProvisionContext.clusterName()` via `CloudProviderSupport.toContext`, which the provider
     /// stamps onto the VM. Package-private so the wiring test asserts it directly.
-    static Map<String, String> provisionTags(String clusterName, String sourceName, NodeRole role) {
-        return Map.of("aether-cluster", clusterName, "aether-source", sourceName, "aether-role", role.value());
+    static Map<String, String> provisionTags(ClusterName clusterName, SourceName sourceName, NodeRole role) {
+        return Map.of("aether-cluster",
+                      clusterName.value(),
+                      "aether-source",
+                      sourceName.value(),
+                      "aether-role",
+                      role.value());
     }
 
-    private static Result<List<ProvisionedNode>> forgeProvisionPlaceholder(String sourceName,
+    private static Result<List<ProvisionedNode>> forgeProvisionPlaceholder(SourceName sourceName,
                                                                            NodeRole role,
                                                                            int count) {
         logAction("+",
@@ -209,13 +216,15 @@ public final class WaveExecutor {
         var nodes = new ArrayList<ProvisionedNode>();
 
         for (int i = 0; i < count; i++) {
-            nodes.add(ProvisionedNode.provisionedNode(sourceName + "-" + role.value() + "-" + i, "forge", "127.0.0.1"));
+            nodes.add(ProvisionedNode.provisionedNode(sourceName.value() + "-" + role.value() + "-" + i,
+                                                      "forge",
+                                                      "127.0.0.1"));
         }
 
         return success(List.copyOf(nodes));
     }
 
-    private static Result<List<ProvisionedNode>> sshProvisionPlaceholder(String sourceName,
+    private static Result<List<ProvisionedNode>> sshProvisionPlaceholder(SourceName sourceName,
                                                                          NodeRole role,
                                                                          SourceProfile source) {
         var hosts = option(source.roles().get(role)).flatMap(rt -> rt.hosts()).or(List.of());
@@ -225,7 +234,9 @@ public final class WaveExecutor {
         var nodes = new ArrayList<ProvisionedNode>();
 
         for (int i = 0; i < hosts.size(); i++) {
-            nodes.add(ProvisionedNode.provisionedNode(sourceName + "-" + role.value() + "-" + i, "ssh", hosts.get(i)));
+            nodes.add(ProvisionedNode.provisionedNode(sourceName.value() + "-" + role.value() + "-" + i,
+                                                      "ssh",
+                                                      hosts.get(i)));
         }
 
         return success(List.copyOf(nodes));
@@ -278,7 +289,7 @@ public final class WaveExecutor {
                                                                                                     desired));
     }
 
-    private static Result<Integer> rollingRestart(String sourceName,
+    private static Result<Integer> rollingRestart(SourceName sourceName,
                                                   NodeRole role,
                                                   SourceProfile source,
                                                   ClusterBootstrapConfig desired) {
@@ -301,7 +312,7 @@ public final class WaveExecutor {
         return success(modified);
     }
 
-    private static Result<Integer> rollingRestartBatch(String sourceName,
+    private static Result<Integer> rollingRestartBatch(SourceName sourceName,
                                                        NodeRole role,
                                                        SourceProfile source,
                                                        ClusterBootstrapConfig desired,
@@ -311,7 +322,7 @@ public final class WaveExecutor {
         var modified = 0;
 
         for (int i = startIndex; i < startIndex + batchSize; i++) {
-            var nodeId = sourceName + "-" + role.value() + "-" + i;
+            var nodeId = sourceName.value() + "-" + role.value() + "-" + i;
             var result = rollingRestartSingleNode(nodeId, sourceName, role, source, desired, managementPort);
 
             if (result.isFailure()) {
@@ -325,7 +336,7 @@ public final class WaveExecutor {
     }
 
     private static Result<Integer> rollingRestartSingleNode(String nodeId,
-                                                            String sourceName,
+                                                            SourceName sourceName,
                                                             NodeRole role,
                                                             SourceProfile source,
                                                             ClusterBootstrapConfig desired,
@@ -339,7 +350,7 @@ public final class WaveExecutor {
     }
 
     private static Result<Unit> drainAndDestroyNode(String nodeId,
-                                                    String sourceName,
+                                                    SourceName sourceName,
                                                     NodeRole role,
                                                     SourceProfile source,
                                                     int managementPort) {
@@ -351,7 +362,7 @@ public final class WaveExecutor {
     }
 
     private static Result<Unit> drainSshNode(String nodeId,
-                                             String sourceName,
+                                             SourceName sourceName,
                                              SourceProfile source,
                                              int managementPort) {
         var hosts = option(source.roles()
@@ -386,7 +397,7 @@ public final class WaveExecutor {
     }
 
     private static Result<Unit> drainAndDestroyComputeNode(String nodeId,
-                                                           String sourceName,
+                                                           SourceName sourceName,
                                                            NodeRole role,
                                                            SourceProfile source,
                                                            int managementPort) {
@@ -400,7 +411,7 @@ public final class WaveExecutor {
                                 .flatMap(_ -> dispatchDestroy(sourceName, source, role, 1, managementPort));
     }
 
-    private static Result<List<ProvisionedNode>> reprovisionNode(String sourceName,
+    private static Result<List<ProvisionedNode>> reprovisionNode(SourceName sourceName,
                                                                  NodeRole role,
                                                                  ClusterBootstrapConfig desired) {
         return lookupSource(sourceName,
@@ -438,7 +449,7 @@ public final class WaveExecutor {
                                                                                                                                                                  desired)));
     }
 
-    private static Result<Integer> replaceBeforeRetire(String sourceName,
+    private static Result<Integer> replaceBeforeRetire(SourceName sourceName,
                                                        SourceProfile oldSource,
                                                        SourceProfile newSource,
                                                        ClusterBootstrapConfig desired) {
@@ -465,7 +476,7 @@ public final class WaveExecutor {
         return success(totalAffected);
     }
 
-    private static Result<Integer> replaceBeforeRetireRole(String sourceName,
+    private static Result<Integer> replaceBeforeRetireRole(SourceName sourceName,
                                                            NodeRole role,
                                                            int count,
                                                            SourceProfile newSource,
@@ -487,14 +498,14 @@ public final class WaveExecutor {
                                                            count));
     }
 
-    private static Result<Unit> drainOldNodes(String sourceName,
+    private static Result<Unit> drainOldNodes(SourceName sourceName,
                                               NodeRole role,
                                               int count,
                                               ClusterBootstrapConfig desired) {
         var managementPort = desired.operations().ports().management();
 
         for (int i = 0; i < count; i++) {
-            var nodeId = sourceName + "-" + role.value() + "-old-" + i;
+            var nodeId = sourceName.value() + "-" + role.value() + "-old-" + i;
             var address = resolveNodeAddress(nodeId);
             Result<Unit> result = ClusterHttpClient.drainNode(address, managementPort, nodeId).flatMap(_ -> ClusterHttpClient.waitForDrainComplete(address,
                                                                                                                                                    managementPort,
@@ -581,7 +592,7 @@ public final class WaveExecutor {
         };
     }
 
-    private static Result<Integer> destroyEntireSource(String sourceName,
+    private static Result<Integer> destroyEntireSource(SourceName sourceName,
                                                        ClusterBootstrapConfig stored,
                                                        int managementPort) {
         return lookupSource(sourceName, stored.sources()).flatMap(source -> destroyAllRoles(sourceName,
@@ -589,7 +600,7 @@ public final class WaveExecutor {
                                                                                             managementPort));
     }
 
-    private static Result<Integer> destroyAllRoles(String sourceName, SourceProfile source, int managementPort) {
+    private static Result<Integer> destroyAllRoles(SourceName sourceName, SourceProfile source, int managementPort) {
         var totalDestroyed = 0;
 
         for (var entry : source.roles().entrySet()) {
@@ -613,7 +624,7 @@ public final class WaveExecutor {
         return success(totalDestroyed);
     }
 
-    private static Result<Integer> destroyRole(String sourceName,
+    private static Result<Integer> destroyRole(SourceName sourceName,
                                                NodeRole role,
                                                int count,
                                                ClusterBootstrapConfig stored,
@@ -629,7 +640,7 @@ public final class WaveExecutor {
                                                  count));
     }
 
-    private static Result<Integer> destroyScaleDown(String sourceName,
+    private static Result<Integer> destroyScaleDown(SourceName sourceName,
                                                     NodeRole role,
                                                     int from,
                                                     int to,
@@ -651,7 +662,7 @@ public final class WaveExecutor {
                                                  excess));
     }
 
-    private static Result<Unit> dispatchDestroy(String sourceName,
+    private static Result<Unit> dispatchDestroy(SourceName sourceName,
                                                 SourceProfile source,
                                                 NodeRole role,
                                                 int count,
@@ -665,7 +676,7 @@ public final class WaveExecutor {
     }
 
     private static Result<Unit> resolveCloudAndDestroy(SourceProfile source,
-                                                       String sourceName,
+                                                       SourceName sourceName,
                                                        NodeRole role,
                                                        int count) {
         return ProviderResolver.resolveCloudCompute(source).flatMap(compute -> destroyViaCompute(compute,
@@ -674,7 +685,7 @@ public final class WaveExecutor {
                                                                                                  count));
     }
 
-    private static Result<Unit> resolveDockerAndDestroy(String sourceName, NodeRole role, int count) {
+    private static Result<Unit> resolveDockerAndDestroy(SourceName sourceName, NodeRole role, int count) {
         return ProviderResolver.resolveDockerCompute().flatMap(compute -> destroyViaCompute(compute,
                                                                                             sourceName,
                                                                                             role,
@@ -683,7 +694,7 @@ public final class WaveExecutor {
 
     @SuppressWarnings("JBCT-EX-01")
     private static Result<Unit> destroyViaCompute(ComputeProvider compute,
-                                                  String sourceName,
+                                                  SourceName sourceName,
                                                   NodeRole role,
                                                   int count) {
         var nodeIds = buildNodeIds(sourceName, role, count);
@@ -691,24 +702,24 @@ public final class WaveExecutor {
         return CloudProviderSupport.destroyVia(compute, nodeIds).await();
     }
 
-    private static List<String> buildNodeIds(String sourceName, NodeRole role, int count) {
+    private static List<String> buildNodeIds(SourceName sourceName, NodeRole role, int count) {
         var ids = new ArrayList<String>(count);
 
         for (int i = count - 1; i >= 0; i--) {
-            ids.add(sourceName + "-" + role.value() + "-" + i);
+            ids.add(sourceName.value() + "-" + role.value() + "-" + i);
         }
 
         return List.copyOf(ids);
     }
 
-    private static Result<Unit> forgeDestroyPlaceholder(String sourceName, NodeRole role, int count) {
+    private static Result<Unit> forgeDestroyPlaceholder(SourceName sourceName, NodeRole role, int count) {
         logAction("-",
                   sourceName + "." + role.value() + "/forge: " + count + " in-process node(s) will be stopped by Forge");
 
         return Result.unitResult();
     }
 
-    private static Result<Unit> drainAndStopSshNodes(String sourceName,
+    private static Result<Unit> drainAndStopSshNodes(SourceName sourceName,
                                                      NodeRole role,
                                                      int count,
                                                      SourceProfile source,
@@ -719,7 +730,7 @@ public final class WaveExecutor {
 
         for (int i = 0; i < stopCount; i++) {
             var host = hosts.get(hosts.size() - 1 - i);
-            var nodeId = sourceName + "-" + role.value() + "-" + (hosts.size() - 1 - i);
+            var nodeId = sourceName.value() + "-" + role.value() + "-" + (hosts.size() - 1 - i);
             var result = ClusterHttpClient.drainNode(host, managementPort, nodeId)
                                           .flatMap(_ -> ClusterHttpClient.waitForDrainComplete(host,
                                                                                                managementPort,
@@ -735,8 +746,8 @@ public final class WaveExecutor {
         return Result.unitResult();
     }
 
-    private static Result<SourceProfile> lookupSource(String sourceName, Map<String, SourceProfile> sources) {
-        return option(sources.get(sourceName)).toResult(new ApplyError.SourceNotFound(sourceName));
+    private static Result<SourceProfile> lookupSource(SourceName sourceName, Map<String, SourceProfile> sources) {
+        return option(sources.get(sourceName.value())).toResult(new ApplyError.SourceNotFound(sourceName));
     }
 
     private static int logAndCount(String symbol, String message, int count) {
@@ -751,14 +762,14 @@ public final class WaveExecutor {
     }
 
     public sealed interface ApplyError extends Cause {
-        record SourceNotFound(String sourceName) implements ApplyError {
+        record SourceNotFound(SourceName sourceName) implements ApplyError {
             @Override
             public String message() {
                 return "Source '" + sourceName + "' not found in configuration";
             }
         }
 
-        record SshScaleNotSupported(String sourceName) implements ApplyError {
+        record SshScaleNotSupported(SourceName sourceName) implements ApplyError {
             @Override
             public String message() {
                 return "SSH source '" + sourceName
@@ -766,14 +777,14 @@ public final class WaveExecutor {
             }
         }
 
-        record ProvisionFailed(String sourceName, String detail) implements ApplyError {
+        record ProvisionFailed(SourceName sourceName, String detail) implements ApplyError {
             @Override
             public String message() {
                 return "Provisioning failed for source '" + sourceName + "': " + detail;
             }
         }
 
-        record DestroyFailed(String sourceName, String detail) implements ApplyError {
+        record DestroyFailed(SourceName sourceName, String detail) implements ApplyError {
             @Override
             public String message() {
                 return "Destroy failed for source '" + sourceName + "': " + detail;

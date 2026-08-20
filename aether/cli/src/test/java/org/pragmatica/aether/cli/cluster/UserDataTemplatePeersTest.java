@@ -13,6 +13,7 @@ import org.pragmatica.config.toml.TomlDocument;
 
 import java.util.List;
 
+import static org.pragmatica.aether.environment.ClusterName.clusterName;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -161,7 +162,7 @@ class UserDataTemplatePeersTest {
                                        "eu-1-core-0",
                                        0,
                                        "test-secret",
-                                       "prod-cluster",
+                                       clusterName("prod-cluster").unwrap(),
                                        TomlDocument.EMPTY,
                                        List.of(),
                                        peers);
@@ -176,7 +177,7 @@ class UserDataTemplatePeersTest {
                                        "eu-1-core-0",
                                        0,
                                        "test-secret",
-                                       "prod-cluster",
+                                       clusterName("prod-cluster").unwrap(),
                                        TomlDocument.EMPTY,
                                        List.of(),
                                        peers);

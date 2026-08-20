@@ -4,11 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.config.cluster;
 
+import org.pragmatica.aether.environment.SourceName;
+
+
 public sealed interface DiffAction {
     String symbol();
     String description();
 
-    record AddSource(String sourceName) implements DiffAction {
+    record AddSource(SourceName sourceName) implements DiffAction {
         @Override
         public String symbol() {
             return "+";
@@ -20,7 +23,7 @@ public sealed interface DiffAction {
         }
     }
 
-    record RemoveSource(String sourceName) implements DiffAction {
+    record RemoveSource(SourceName sourceName) implements DiffAction {
         @Override
         public String symbol() {
             return "-";
@@ -32,7 +35,7 @@ public sealed interface DiffAction {
         }
     }
 
-    record AddRole(String sourceName, NodeRole role, int count) implements DiffAction {
+    record AddRole(SourceName sourceName, NodeRole role, int count) implements DiffAction {
         @Override
         public String symbol() {
             return "+";
@@ -44,7 +47,7 @@ public sealed interface DiffAction {
         }
     }
 
-    record RemoveRole(String sourceName, NodeRole role, int count) implements DiffAction {
+    record RemoveRole(SourceName sourceName, NodeRole role, int count) implements DiffAction {
         @Override
         public String symbol() {
             return "-";
@@ -56,7 +59,7 @@ public sealed interface DiffAction {
         }
     }
 
-    record ScaleUp(String sourceName, NodeRole role, int from, int to) implements DiffAction {
+    record ScaleUp(SourceName sourceName, NodeRole role, int from, int to) implements DiffAction {
         @Override
         public String symbol() {
             return "~";
@@ -68,7 +71,7 @@ public sealed interface DiffAction {
         }
     }
 
-    record ScaleDown(String sourceName, NodeRole role, int from, int to) implements DiffAction {
+    record ScaleDown(SourceName sourceName, NodeRole role, int from, int to) implements DiffAction {
         @Override
         public String symbol() {
             return "~";
@@ -80,7 +83,7 @@ public sealed interface DiffAction {
         }
     }
 
-    record RuntimeChange(String sourceName, NodeRole role, String fromRuntime, String toRuntime) implements DiffAction {
+    record RuntimeChange(SourceName sourceName, NodeRole role, String fromRuntime, String toRuntime) implements DiffAction {
         @Override
         public String symbol() {
             return "~";
@@ -92,7 +95,7 @@ public sealed interface DiffAction {
         }
     }
 
-    record SourceFieldChange(String sourceName, String field) implements DiffAction {
+    record SourceFieldChange(SourceName sourceName, String field) implements DiffAction {
         @Override
         public String symbol() {
             return "~";

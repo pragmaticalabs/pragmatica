@@ -117,7 +117,7 @@ class ClusterBootstrapConfigParserTest {
                 .onFailure(cause -> Assertions.fail(cause.message()))
                 .onSuccess(config -> {
                     assertThat(config.configVersion()).isEqualTo("1.0.0");
-                    assertThat(config.cluster().name()).isEqualTo("dev-local");
+                    assertThat(config.cluster().name().value()).isEqualTo("dev-local");
                     assertThat(config.cluster().version()).isEqualTo("1.0.0");
                     assertThat(config.sources()).containsKey("local");
 
@@ -169,7 +169,7 @@ class ClusterBootstrapConfigParserTest {
             ClusterBootstrapConfigParser.parse(toml)
                 .onFailure(cause -> Assertions.fail(cause.message()))
                 .onSuccess(config -> {
-                    assertThat(config.cluster().name()).isEqualTo("production");
+                    assertThat(config.cluster().name().value()).isEqualTo("production");
 
                     var source = config.sources().get("hetzner-eu");
                     assertThat(source.type()).isEqualTo(SourceType.CLOUD);

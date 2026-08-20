@@ -8,7 +8,9 @@ package org.pragmatica.aether.cli.cluster;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.cluster.NodeRole;
 
+import static org.pragmatica.aether.environment.ClusterName.clusterName;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 
 
 class WaveExecutorTest {
@@ -19,7 +21,7 @@ class WaveExecutorTest {
     // wiring at the point the fix changed: the real cluster name reaches the group tags.
     @Test
     void provisionTags_carriesRealClusterSourceAndRole() {
-        var tags = WaveExecutor.provisionTags("prod-cluster", "eu-1", NodeRole.CORE);
+        var tags = WaveExecutor.provisionTags(clusterName("prod-cluster").unwrap(), sourceNameOrDefault("eu-1"), NodeRole.CORE);
 
         assertEquals("prod-cluster", tags.get("aether-cluster"));
         assertEquals("eu-1", tags.get("aether-source"));

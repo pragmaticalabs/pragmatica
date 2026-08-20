@@ -7,13 +7,13 @@ package org.pragmatica.aether.environment;
 import java.util.Map;
 
 
-public record NodeGroupConfig(String sourceName,
+public record NodeGroupConfig(SourceName sourceName,
                               String role,
                               int count,
                               String instanceType,
                               String zone,
                               Map<String, String> tags) {
-    public static NodeGroupConfig nodeGroupConfig(String sourceName,
+    public static NodeGroupConfig nodeGroupConfig(SourceName sourceName,
                                                   String role,
                                                   int count,
                                                   String instanceType,

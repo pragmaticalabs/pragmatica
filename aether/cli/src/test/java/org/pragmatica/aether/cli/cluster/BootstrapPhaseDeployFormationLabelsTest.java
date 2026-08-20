@@ -31,7 +31,9 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
+import static org.pragmatica.aether.environment.ClusterName.clusterName;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 
 /// RFC-0017 stage 4 — the deploy phase's discovery-mode branch: the gate that selects it and the
 /// C4 formation observation (polling the provider API for `aether-formed=true` labels) that
@@ -45,7 +47,7 @@ class BootstrapPhaseDeployFormationLabelsTest {
                              RoleSubTable.roleSubTable(NodeRole.CORE, Option.some(coreCount), Option.empty(), Option.empty(), "default"))
                     : Map.<NodeRole, RoleSubTable> of();
 
-        return SourceProfile.sourceProfile(name,
+        return SourceProfile.sourceProfile(sourceNameOrDefault(name),
                                            type,
                                            type == SourceType.CLOUD
                                            ? Option.some(CloudProviderName.HETZNER)
@@ -111,8 +113,8 @@ class BootstrapPhaseDeployFormationLabelsTest {
                                                                                     ? 1
                                                                                     : 3),
                                                            3,
-                                                           "prod",
-                                                           "eu",
+                                                           clusterName("prod").unwrap(),
+                                                           sourceNameOrDefault("eu"),
                                                            5_000,
                                                            10);
 
@@ -128,7 +130,7 @@ class BootstrapPhaseDeployFormationLabelsTest {
             seen.add(filter);
 
             return Result.success(3);
-        }, 3, "prod", "eu", 5_000, 10);
+        }, 3, clusterName("prod").unwrap(), sourceNameOrDefault("eu"), 5_000, 10);
 
         assertThat(seen.getFirst())
                 .containsEntry("aether-cluster", "prod")
@@ -138,7 +140,7 @@ class BootstrapPhaseDeployFormationLabelsTest {
     /// Silence is not success: at the deadline the failure names the counts and where to look.
     @Test
     void pollFormedLabels_timesOut_namingTheShortfall() {
-        var result = BootstrapPhaseDeploy.pollFormedLabels(filter -> Result.success(1), 3, "prod", "eu", 60, 10);
+        var result = BootstrapPhaseDeploy.pollFormedLabels(filter -> Result.success(1), 3, clusterName("prod").unwrap(), sourceNameOrDefault("eu"), 60, 10);
 
         assertThat(result.isFailure()).isTrue();
         result.onFailure(cause -> assertThat(cause.message()).contains("1 of 3", "aether-formed", "cloud-init"));
@@ -153,8 +155,8 @@ class BootstrapPhaseDeployFormationLabelsTest {
                                                                      ? Causes.cause("api hiccup").result()
                                                                      : Result.success(3),
                                                            3,
-                                                           "prod",
-                                                           "eu",
+                                                           clusterName("prod").unwrap(),
+                                                           sourceNameOrDefault("eu"),
                                                            5_000,
                                                            10);
 

@@ -9,8 +9,11 @@ import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.swim.SwimMember;
 import org.pragmatica.swim.SwimMember.MemberState;
+
+import static org.pragmatica.aether.config.WorkerConfig.DEFAULT_ZONE;
 
 
 @SuppressWarnings({"JBCT-RET-01", "JBCT-STY-05"})
@@ -74,14 +77,34 @@ public final class GroupMembershipTracker {
     private void recomputeGroups() {
         var aliveIds = allAliveMembers();
 
-        currentGroups = GroupAssignment.computeGroups(aliveIds, groupName, maxGroupSize);
+        currentGroups = GroupAssignment.computeGroups(aliveIds, groupName, maxGroupSize, this::zoneOf);
         myGroup = currentGroups.entrySet()
                                .stream()
                                .filter(e -> e.getValue()
                                              .contains(self))
                                .map(Map.Entry::getKey)
                                .findFirst()
-                               .orElse(WorkerGroupId.workerGroupId(groupName, "local"));
+                               .orElse(WorkerGroupId.workerGroupId(groupName, DEFAULT_ZONE));
+    }
+
+    /// The zone a node ADVERTISES, read from its SWIM labels — the same `zone` label the Hello handshake
+    /// propagates (`AETHER_ZONE` → `NodeInfo.LABEL_ZONE` → announce → `SwimMember.labels`). #592 replaced
+    /// a string-split of the NodeId here: that produced zones like `"node"` from `node-1` and grouped by
+    /// naming convention rather than by topology.
+    ///
+    /// A node that advertises no zone falls back to [#DEFAULT_ZONE] rather than to a parsed fragment of
+    /// its name — one honest bucket for "zone unknown" beats several confident-looking wrong ones. Note
+    /// that until a node is actually given `AETHER_ZONE` this is the case for every node, which collapses
+    /// to exactly the previous single-zone behaviour rather than to a new grouping.
+    private String zoneOf(NodeId nodeId) {
+        return membershipSnapshot.stream()
+                                 .filter(member -> member.nodeId()
+                                                         .equals(nodeId))
+                                 .map(member -> member.labels()
+                                                      .get(NodeInfo.LABEL_ZONE))
+                                 .filter(zone -> zone != null && !zone.isBlank())
+                                 .findFirst()
+                                 .orElse(DEFAULT_ZONE);
     }
 
     private static boolean isAlive(SwimMember member) {

@@ -12,6 +12,7 @@ import java.util.concurrent.Callable;
 import java.util.function.Function;
 import java.util.regex.Pattern;
 
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.cli.ExitCode;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
@@ -36,7 +37,6 @@ import static org.pragmatica.lang.Option.option;
 @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-SEQ-01"})
 class ClusterBootstrapCommand implements Callable<Integer> {
     private static final int POLL_INTERVAL_MS = 2000;
-    private static final Pattern CLUSTER_NAME_PATTERN = Pattern.compile("^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$");
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
     private static final String READY_PHASE = "CONVERGED";
     private static final String CLUSTER_PHASE_FIELD = "state";
@@ -60,6 +60,8 @@ class ClusterBootstrapCommand implements Callable<Integer> {
     @Option(names = "--timeout", description = "Timeout in seconds when waiting", defaultValue = "300")
     private int timeoutSeconds;
 
+    /// Raw picocli-bound text, deliberately NOT a [ClusterName]: picocli assigns it before any Aether
+    /// code runs, and `ClusterBootstrapConfig.withClusterName` re-parses it through `ClusterIdentity`.
     @Option(names = "--cluster", description = "Override [cluster].name from the TOML (CLI > TOML > default)")
     private String clusterNameOverride;
 
@@ -96,7 +98,7 @@ class ClusterBootstrapCommand implements Callable<Integer> {
             return true;
         }
 
-        return CLUSTER_NAME_PATTERN.matcher(clusterNameOverride).matches();
+        return ClusterName.PATTERN.matcher(clusterNameOverride).matches();
     }
 
     private Result<ParsedConfig> applyClusterNameOverride(ParsedConfig parsed) {
@@ -182,7 +184,7 @@ class ClusterBootstrapCommand implements Callable<Integer> {
         System.out.printf("      %s: %d nodes%n", role.value(), size);
     }
 
-    private static boolean confirmBootstrap(String clusterName) {
+    private static boolean confirmBootstrap(ClusterName clusterName) {
         System.out.printf("This will provision cloud instances for cluster '%s'.%n", clusterName);
 
         return new org.pragmatica.aether.cli.Prompt().confirm("Continue?", false);

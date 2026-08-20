@@ -12,6 +12,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.DiscoveryProvider;
 import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.PeerInfo;
@@ -60,7 +61,7 @@ public final class HetznerDiscoveryProvider implements DiscoveryProvider {
     public static HetznerDiscoveryProvider hetznerDiscoveryProvider(HetznerClient client,
                                                                     HetznerEnvironmentConfig config) {
         return new HetznerDiscoveryProvider(client,
-                                            config.clusterName().or("default"),
+                                            config.clusterName().map(ClusterName::value).or("default"),
                                             config.selfServerId(),
                                             config.discoveryPollIntervalMs());
     }

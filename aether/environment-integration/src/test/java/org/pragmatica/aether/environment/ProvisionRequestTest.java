@@ -11,6 +11,9 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.aether.environment.ClusterName.clusterName;
+import static org.pragmatica.aether.environment.ClusterName.maybeClusterName;
+import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 
 
 /// Unit coverage for the single, non-overridable [ProvisionRequest#resolve] choke (RFC-0016 §2).
@@ -174,7 +177,7 @@ class ProvisionRequestTest {
     class ProducerPathsReachResolve {
         @Test
         void resolve_bootstrapSeedContext_producesOnDemandRequest() {
-            var context = ProvisionContext.forBootstrap("prod", "core", "eu-1", "eu-1-core-0");
+            var context = ProvisionContext.forBootstrap(clusterName("prod").unwrap(), "core", sourceNameOrDefault("eu-1"), "eu-1-core-0");
             var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "cx22", "core", context).unwrap();
             var request = ProvisionRequest.resolve(spec, defaults()).unwrap();
 
@@ -187,7 +190,7 @@ class ProvisionRequestTest {
             // The CTM auto-heal producer hardcodes InstanceType.ON_DEMAND and pool "core"
             // (ClusterTopologyManagerRecord:528); resolve() derives the market from the context ROLE,
             // so a spot replacement maps to SPOT — the downgrade the pre-boundary design missed.
-            var context = ProvisionContext.forReplacement("prod", "spot", "node-abc", "peers", 5);
+            var context = ProvisionContext.forReplacement(maybeClusterName("prod"), "spot", "node-abc", "peers", 5);
             var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "default", "core", context).unwrap();
             var request = ProvisionRequest.resolve(spec, defaults()).unwrap();
 
@@ -197,22 +200,22 @@ class ProvisionRequestTest {
 
         @Test
         void resolve_cloudSupportContext_producesResolvedRequest() {
-            var context = ProvisionContext.provisionContext("prod",
+            var context = ProvisionContext.provisionContext(maybeClusterName("prod"),
                                                             "core",
-                                                            "eu-1",
+                                                            sourceNameOrDefault("eu-1"),
                                                             ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
             var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "cx32", "core", context).unwrap();
             var request = ProvisionRequest.resolve(spec, defaults()).unwrap();
 
             assertThat(request.instanceSize()).isEqualTo("cx32");
-            assertThat(request.context().sourceName()).isEqualTo("eu-1");
+            assertThat(request.context().sourceName().value()).isEqualTo("eu-1");
         }
     }
 
     private static ProvisionSpec spec(String instanceSize, String role) {
-        var context = ProvisionContext.provisionContext("cluster-x",
+        var context = ProvisionContext.provisionContext(maybeClusterName("cluster-x"),
                                                         role,
-                                                        "eu-1",
+                                                        sourceNameOrDefault("eu-1"),
                                                         ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
 
         return ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, instanceSize, role, context).unwrap();

@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.stream.IntStream;
 
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.cli.ExitCode;
 import org.pragmatica.aether.cli.OutputFormatter;
 import org.pragmatica.json.JsonMapper;
@@ -190,15 +191,23 @@ class ClusterRotateKeyCommand implements Callable<Integer> {
     }
 
     private static Result<String> persistLocalKey(String newKey) {
-        return ClusterRegistry.load().flatMap(reg -> reg.current()
-                                                        .toResult(ClusterHttpClient.HttpError.NO_ACTIVE_CLUSTER)
-                                                        .flatMap(entry -> writeKeyFile(entry.name(),
-                                                                                       newKey)));
+        return ClusterRegistry.load()
+                              .flatMap(ClusterRotateKeyCommand::currentClusterName)
+                              .flatMap(clusterName -> writeKeyFile(clusterName, newKey));
+    }
+
+    /// The registry keeps section-key cluster names as `String`; parse at this boundary so the
+    /// `~/.aether/clusters/<cluster>/api-key` path is built from a name the rest of the CLI would
+    /// also accept, rather than from whatever text the registry file happens to hold.
+    private static Result<ClusterName> currentClusterName(ClusterRegistry registry) {
+        return registry.current()
+                       .toResult(ClusterHttpClient.HttpError.NO_ACTIVE_CLUSTER)
+                       .flatMap(entry -> ClusterName.clusterName(entry.name()));
     }
 
     @SuppressWarnings("JBCT-EX-01")
-    private static Result<String> writeKeyFile(String clusterName, String newKey) {
-        var keyFile = Path.of(System.getProperty("user.home"), ".aether", "clusters", clusterName, "api-key");
+    private static Result<String> writeKeyFile(ClusterName clusterName, String newKey) {
+        var keyFile = Path.of(System.getProperty("user.home"), ".aether", "clusters", clusterName.value(), "api-key");
 
         try {
             Files.createDirectories(keyFile.getParent());

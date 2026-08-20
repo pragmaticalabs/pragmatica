@@ -9,11 +9,13 @@ import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapR
 import org.pragmatica.aether.config.cluster.LoadBalancerMode;
 import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.environment.FloatingIpProvider;
+import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
 import static org.pragmatica.aether.cli.cluster.BootstrapPhase.POST_BOOTSTRAP;
+import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 import static org.pragmatica.lang.Result.success;
 
 
@@ -36,14 +38,14 @@ sealed interface BootstrapPhasePost {
             var source = entry.getValue();
 
             if (source.loadBalancer() == LoadBalancerMode.ELECTED) {
-                attachFloatingIp(entry.getKey(), source, ctx);
+                attachFloatingIp(sourceNameOrDefault(entry.getKey()), source, ctx);
             }
         }
     }
 
     @SuppressWarnings("JBCT-EX-01")
     @Contract
-    private static void attachFloatingIp(String sourceName, SourceProfile source, BootstrapContext ctx) {
+    private static void attachFloatingIp(SourceName sourceName, SourceProfile source, BootstrapContext ctx) {
         var _ = ProviderResolver.resolveFloatingIpProvider(source)
                                 .onSuccess(fip -> attachFirstCoreNode(fip, sourceName, source, ctx))
                                 .onFailure(cause -> System.out.printf("  WARN: %s: floating IP provider not available: %s%n",
@@ -53,11 +55,14 @@ sealed interface BootstrapPhasePost {
 
     @Contract
     private static void attachFirstCoreNode(FloatingIpProvider fip,
-                                            String sourceName,
+                                            SourceName sourceName,
                                             SourceProfile source,
                                             BootstrapContext ctx) {
-        var targetNode = ctx.nodes().stream().filter(n -> n.nodeId()
-                                                           .startsWith(sourceName + "-core-")).findFirst();
+        var targetNode = ctx.nodes()
+                            .stream()
+                            .filter(n -> n.nodeId()
+                                          .startsWith(sourceName.value() + "-core-"))
+                            .findFirst();
 
         targetNode.ifPresent(node -> attachLoadBalancerIps(fip, source, node.nodeId()));
     }
@@ -85,7 +90,7 @@ sealed interface BootstrapPhasePost {
                        : scheme + "://" + ctx.addresses().getFirst().publicIp();
 
         ClusterRegistry.load()
-                       .map(registry -> registry.add(clusterName,
+                       .map(registry -> registry.add(clusterName.value(),
                                                      endpoint,
                                                      Option.some(apiKeyEnvName)))
                        .flatMap(ClusterRegistry::save)

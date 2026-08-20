@@ -11,6 +11,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.InstanceId;
@@ -187,36 +188,27 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
         var tags = new java.util.HashMap<String, String>();
 
         tags.put("aether-managed", "true");
-        var clusterName = resolveClusterName(ctx);
-
-        if (!clusterName.isEmpty()) {
-            tags.put("aether-cluster", clusterName);
-        }
-
+        resolveClusterName(ctx).onPresent(name -> tags.put("aether-cluster", name.value()));
         if (!ctx.role().isEmpty()) {
             tags.put("aether-role", ctx.role());
         }
-
-        if (!ctx.sourceName().isEmpty()) {
-            tags.put("aether-source", ctx.sourceName());
-        }
-
+        // Unconditional: SourceName cannot be blank, so the historical emptiness guard here was dead.
+        tags.put("aether-source",
+                 ctx.sourceName().value());
         tags.put(NODE_ID_TAG, ctx.resolveNodeId());
         tags.putAll(ctx.extraTags());
 
         return Map.copyOf(tags);
     }
 
-    private static String resolveClusterName(ProvisionContext ctx) {
-        if (!ctx.clusterName().isEmpty()) {
-            return ctx.clusterName();
-        }
-
-        var fromEnv = System.getenv("AETHER_CLUSTER_NAME");
-
-        return fromEnv != null && !fromEnv.isEmpty()
-               ? fromEnv
-               : "";
+    /// Resolution chain: the provisioning context, then `AETHER_CLUSTER_NAME` (the pre-bootstrap
+    /// window). Ends [Option#empty] rather than at a placeholder — an unresolved cluster leaves the
+    /// `aether-cluster` tag OFF, exactly as the historical empty string did, and never stamps a name
+    /// a scoped cleanup sweep would then have to guess at. A value outside the RFC-1035 grammar in
+    /// the env var reads as absent here rather than as a name no selector can match.
+    private static Option<ClusterName> resolveClusterName(ProvisionContext ctx) {
+        return ctx.clusterName()
+                  .orElse(() -> ClusterName.maybeClusterName(System.getenv("AETHER_CLUSTER_NAME")));
     }
 
     /// The resolved zone from a [ProvisionRequest] is already a bare zone name (or `""` for the

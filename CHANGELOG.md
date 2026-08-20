@@ -6,6 +6,391 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Fixed
+- **The entity min-sync barrier counted the owner twice (#345 I3 path).** `minSyncReplicas` COUNTS the
+  owner — `DurableEntityConfig.minSyncReplicas()` states it outright: "`2` means the owner plus one peer,
+  i.e. `awaitReplication(..., minAcks)` blocks on ONE distinct non-self ack". But `awaitReplication`
+  counts DISTINCT NON-SELF acks, and `StreamEntityLogSubstrate.awaitBarrier` passed the raw value, so a
+  keyspace configured for `2` waited for TWO peers. At the default `replicationFactor = 3` that is
+  satisfiable only while BOTH peers are alive and caught up — losing a single peer failed every entity
+  write with `ReplicationBarrierUnmet`, which is precisely the failure replication exists to survive. At
+  `replicationFactor = 2` there is only one non-self replica in existence, so no entity write could ever
+  succeed. Both stream writers already subtract (`StreamWriteRouter`, `StreamForwardHandler.awaitMinSync`);
+  this was the third writer on the same barrier and the only one that did not.
+  Distinct from #596 (entities unreachable off the partition owner, no owner-forwarding) — same subsystem,
+  independent causes. #596's own evidence rules this out as its cause: 4 of 40 creates acked, which could
+  not happen if the barrier failed everything.
+  `[verified: unit + mutation — new StreamEntityLogSubstrateTest, 2 cases (minSync 2→1 ack, 3→2 acks, the
+  second guarding a mutant that hardcodes 1); reverting the fix turns both red. aether/node 874/0.]`
+- **A segment whose age was unknown blocked size- and count-based eviction too.**
+  `SegmentIndex.rebuildFromRefs` reconstructs the index from ref NAMES, and a ref name carries only
+  `streams/<stream>/<partition>/<start>-<end>` — so after a restart every rebuilt segment came back with
+  `maxTimestamp = 0`. `RetentionEnforcer.isSegmentExpired` returned `false` on that, and because the check
+  sat BEFORE the policy call it withheld the segment from the count and size limits as well. Every segment
+  sealed before a restart was therefore permanently unreclaimable and disk grew without bound across
+  restarts. An unknown age is now passed as `0`, which disables only the AGE term: under `ANY` the size and
+  count limits are ORed and work again; under `ALL` every limit must be exceeded, so an unknown age still
+  withholds the segment — conservative in the direction that cannot delete data.
+  **This does not restore age-based retention for pre-restart segments** — their age is genuinely recorded
+  nowhere. That needs `maxTimestamp` persisted, which is a ref-name/metadata format change and a
+  stored-format decision rather than a local fix.
+  `[verified: unit + mutation — 2 new RetentionEnforcerTest cases (maxTimestamp=0 evicted under mode ANY on
+  maxCount and on maxBytes); reverting the early return turns both red, and the pre-existing
+  "never evicts on age alone" case still passes. aether-stream 676/0.]`
+
+### Changed
+- **A sync-quorum test raced the resync timer rather than a too-short sleep.** `RabiaEngineTest$SyncQuorum`
+  failed ~80% of the time locally and twice on CI — including on a docs-only commit, which is what proved
+  it was never a code regression. The cause was not timing slack: `testConfig()` retries the sync round
+  every ~100ms and `RabiaEngine.doSynchronize` CLEARS `syncResponses` when a retry finds fewer than a
+  quorum, so the test's first response was discarded before its second arrived and the node could never
+  reach a quorum. Waiting longer could not have helped — the discarded response is gone and the test sends
+  no more. The test now runs with a 60s sync-retry interval, keeping exactly one sync round in flight for
+  its duration, and bounded polls replace the sleeps.
+  `[verified: 12/12 passes (was 2/10); consensus module 707/0; mutating syncQuorumSize() to 1 still fails
+  the safety assertion, so the test remains discriminating rather than merely quiet.]`
+
+### Fixed
+- **An elected load balancer on AWS/GCP/Azure opened no ingress and said nothing about it (#615).**
+  REQ-5.1.8.2's auto-open of `app_http` for an elected LB — and the warning that requirement dictates
+  verbatim — were BOTH reachable only through `BootstrapPhaseFirewall.managesIngressFor`, which requires
+  Hetzner. Three gates each declined to cover the combination for individually sound reasons: PF-17
+  restricts `ELECTED` only on SSH sources, PF-23 returns early when a source declares no explicit
+  `allow_ingress`, and the `CREATE_FIREWALL` phase skips non-Hetzner sources entirely. The operator saw a
+  clean bootstrap and a load balancer that served nothing, with no line anywhere pointing at ingress.
+  Any cloud source with an elected LB whose provider has no Aether-managed ingress now gets a warning
+  naming the source, the provider and the port that was NOT opened. It is emitted BEFORE the
+  `applicable == 0` early return — such a cluster has zero manageable sources and takes exactly that
+  path, so a warning placed after it would never fire for the only case it exists to cover.
+  **A warning, not an error.** Security groups, VPC firewall rules and network security groups all deny
+  inbound by default, so such a node is UNREACHABLE rather than exposed — the inverse of Hetzner, where an
+  unassociated server accepts all inbound. Managing ingress yourself there is the arrangement PF-23
+  explicitly directs operators to, so the config is legitimate; the defect was the silence.
+  Implementing `openIngress` for those three providers remains separate feature work — their native
+  mechanisms all exist, only the clients are missing.
+  `[verified: unit + mutation — BootstrapPhaseFirewallTest 4 new cases, aether/cli 656/0. Four mutations,
+  each killed: moving the call after the early return, deleting it, dropping the elected-LB condition, and
+  dropping the provider condition. Note the first two produce identical failures — the tests pin THAT the
+  warning fires, not where the call sits, so the placement is load-bearing and documented rather than
+  test-enforced.]`
+
+### Fixed
+- **A `CAUGHT_UP` replica that stopped acking served stale reads forever and inflated the ring-release
+  gate (§12 of the 2026-08-17 handover).** `ReplicationState.CAUGHT_UP` never downgrades — nothing moves
+  a replica out of it. Under a partition the value does not go stale, it FREEZES at its last good reading
+  and goes on reading as healthy indefinitely, which is the defect class the same session catalogued with
+  seven instances. Two consumers acted on that raw state: `ForwardingReadRouter` selected read targets
+  with it, so a replica readers could still reach but which had stopped acking kept serving stale data
+  with no error; and `AetherNode.streamCatchupView` counted it, so an owner could release its partition
+  ring believing enough replicas were caught up.
+  A replica now additionally has to be FRESH: its `confirmedOffset` must trail the freshest peer watermark
+  by no more than `[streaming] caught_up_max_lag_offsets`. Both consumers go through one method,
+  `ReplicaRegistry.freshPeersFor` — a guard applied at one reader and not the other is exactly what left
+  #590 live at the placement grain, so sharing the implementation makes that structural rather than a
+  review question.
+  **Lag, not a TTL, and the reason matters.** A watermark advances only on acks and backfill milestones;
+  NOTHING refreshes it on a quiet partition. A time-based rule would therefore age out every replica of a
+  write-idle stream and stop serving reads from the healthiest streams in the cluster — the trap #333
+  documented in its own seam. Lag is self-correcting when quiet: if the owner has not advanced, no peer is
+  behind. It also catches the case that motivated the finding, where writes continue while one replica
+  stops acking.
+  **Self rows are deliberately never lag-checked** — `selfCoversPartition`, `selfCaughtUp` and
+  `LinearizableOwnerServe` still read the raw state, each with a comment saying why. A node never acks
+  itself, so its own descriptor keeps the `SYNCING` / `-1` seed (#593) and reaches `CAUGHT_UP` through
+  backfill completion rather than the ack path; measuring it against a peer watermark would report
+  staleness on a perfectly healthy owner. Within `ForwardingReadRouter` one helper served both a peer and
+  a self check, so guarding it wholesale would have been wrong. `PartitionBackfill.selectSource` also
+  reads the raw state and is also correct: it takes the `max(confirmedOffset)` over `CAUGHT_UP` peers,
+  which is the very value used as the freshness reference, so its donor has lag 0 by construction and
+  routing it through the guard would select the identical node.
+  Known limits of a relative measure, both pinned by tests so they are decisions rather than surprises: a
+  partition with one registered peer compares it against itself and never finds it stale, and if every
+  peer row freezes together their lags stay equal and none is flagged.
+  **The default bound of 1024 is a guess** — not derived from a measured steady-state lag distribution.
+  It is a config key (validated `>= 0`) so an operator hitting false staleness can relieve it without a
+  rebuild; what would settle the value is observed peer lag under the 02y publish load.
+  `[verified: unit + mutation — ReplicaRegistryTest$FreshPeersTests 9/9, aether-stream 674/0, node 872/0,
+  ./build.sh green with 0 new lint. Mutation testing found a REAL HOLE on the first pass: deleting the
+  CAUGHT_UP-state filter left the whole suite green, because the one test meant to pin it was passing on
+  the lag arithmetic instead (a freshly registered peer seeds at -1, so it exceeded the bound anyway). A
+  case with a SYNCING peer AT the reference watermark now isolates the state filter, and deleting that
+  filter fails exactly that test. NOT integration-verified: no multi-node run has exercised a replica that
+  stops acking while writes continue.]`
+
+### Fixed
+- **Auto-heal replacements were provisioned with no firewall association at all (#444 residual).**
+  `HetznerComputeProvider.buildCreateRequest` took its firewall ids from `config.firewallIds()`, which is
+  populated ONLY on the CLI bootstrap path — `ProviderResolver` threads in the ids `BootstrapPhaseFirewall`
+  just created. A CTM auto-heal replacement is built from a `SourceProfile`, and that persists firewall
+  **rules** but never the created firewall's **id**, so the list resolved to empty and the server was
+  created unassociated. The provider's own javadoc states the consequence: a Hetzner server with no
+  firewall accepts ALL inbound. The window `ProviderResolver` was written to close was shut for bootstrap
+  nodes and wide open for every replacement — and the feature catalog claimed "no node is briefly
+  unfirewalled" on the strength of bootstrap-only live runs.
+  The association is now resolved BY LABEL at create, reusing the one-firewall-per-`(cluster, source)`
+  selector the ingress path already owns. Persisting the ids at bootstrap was rejected — they go stale the
+  moment a firewall is recreated out of band, and staleness in a security control is the worst failure mode
+  available. Re-creating from `SourceProfile.firewallRules` was rejected as heavier per provision and as
+  turning rule drift into a silent reconciliation.
+  **The interesting half is the empty lookup, and a bare fail-closed would have been wrong.** "This source
+  manages no ingress" and "a firewall exists but this source name did not select it" are indistinguishable
+  from the source-scoped lookup alone, and they want opposite answers: the first is PF-23's explicitly
+  endorsed *manage ingress via your own security groups* configuration, where every bootstrap peer is
+  equally unfirewalled, so refusing would permanently disable auto-heal and buy no security; the second is
+  the `ClusterTopologyManagerRecord.replacementSourceName` → `default` degradation, where the peers ARE
+  firewalled and proceeding recreates the exposure. A cluster-scoped second look separates them — firewalls
+  exist for this cluster but none for this source ⇒ refuse; none anywhere ⇒ create with a WARN. A lookup
+  ERROR always refuses: unknown firewall state is not evidence of a safe one. That last one is earned
+  structurally rather than by a guard — the failed lookup propagates through the create chain, so no
+  server is built either way; the error mapping only makes the operator-facing reason say so.
+  Refusing to provision is a deliberate behaviour change — today the node is created anyway. A missing
+  replacement is a visible, recoverable degradation; a publicly reachable one is neither. The create-time
+  log line now carries the firewall count next to the labels, so `firewalls=0` is readable at the moment
+  it is decided rather than inferred later from the Hetzner console.
+  The two provider-side lookups (cluster-scoped SSH keys, label-resolved firewall) are independent account
+  queries and now run concurrently rather than chained, so a refusal costs one extra read-only list call
+  that the sequential form would have skipped — and a lookup failure arrives as a composed error, which is
+  what the error mapping now renders into an operator-facing reason.
+  Both refusals are plain `Cause` records rather than wrapped exceptions: a fail-closed refusal is an
+  expected outcome on this path, not an exceptional one, and `toProvisionError` re-wraps whatever reaches
+  it — so the previous shape allocated and stack-filled two throwables per refusal purely to carry a
+  string, and lost the structured fields on the way.
+  `[verified: unit + mutation — HetznerComputeProviderTest.FirewallAssociationTests 5/5, hetzner module
+  83/0. Four mutations checked: making the label lookup inert, forcing the empty-cluster branch to never
+  fail, dropping the error mapping, and removing the configured-ids short-circuit. Each turns exactly the
+  pinning test(s) red and leaves the controls green; none leaves all five green. NOT cloud-verified:
+  end-to-end proof requires provisioning real paid servers, so the guarantee that a replacement comes up
+  firewalled is asserted against the create REQUEST, not against a live server.]`
+
+### Fixed
+- **Worker-community zone grouping parsed the zone out of the NodeId instead of reading it (#592).**
+  `GroupAssignment` string-split the `NodeId` at its last dash, so `node-1` grouped into a zone called
+  `"node"` and a CTM-minted `…-r<clock36>` worker into everything before the suffix. That is identifier
+  parsing, not zone awareness; it looked correct only because uniform naming put every node in one zone,
+  which hid the defect behind the single-community case. The operator-facing `[worker] zone` knob and the
+  `zone` label the Hello handshake propagates for exactly this purpose were both unread on this path.
+  `computeGroups` now takes a zone resolver — kept as a seam so the assignment logic stays pure and
+  directly testable — and `GroupMembershipTracker` binds it to the SWIM membership labels, which is where
+  the advertised zone actually arrives.
+  **The ticket described only half of it.** `AETHER_ZONE` was absent from
+  `ClusterIdentityEnv.IDENTITY_VARS`, and both provisioning paths iterate that allow-list, so a
+  provisioned node never received the variable and came up zoneless regardless. Fixing the grouping alone
+  would have left the whole chain inert — the same unwired-gate shape as the core-absence fence. It is now
+  in the allow-list, completing `AETHER_ZONE` → `NodeInfo.LABEL_ZONE` → announce → `SwimMember.labels` →
+  grouping.
+  A node advertising no zone falls back to `WorkerConfig.DEFAULT_ZONE` rather than to a fragment of its
+  name: one honest bucket for "zone unknown" beats several confident-looking wrong ones. Since nothing
+  sets `AETHER_ZONE` today, live behaviour collapses to exactly the previous single-zone case — this is a
+  correctness fix that changes nothing until an operator sets a zone.
+  `[verified: unit + mutation — GroupAssignmentTest 4/4, each written to FAIL against the old derivation
+  (node names deliberately chosen to split into the same fragment while advertising different zones, and
+  vice versa); re-deriving the zone from the name turns all four red. There was previously NO test
+  coverage of this path at all. aether/node 872/0, environment-integration 59/0, ./build.sh green, 0 new
+  lint. NOT integration-verified — a two-zone cluster run is #599.]`
+
+### Fixed
+- **ACTIVATING had no node-local remediation arm at all (#601).** `processStateTransition` carried a bare
+  `case ACTIVATING -> {}` observer — structurally the same gap #325 closed for ROUTING — so a node whose
+  activation stalled had nothing local to recover or report it. The only recourse was the leader-side
+  remediator, which judges by a projection and, before `d9b37e180`, force-UNLOADed a slice that had been
+  serving traffic 35 seconds earlier.
+  **The gate, not the transition, is the load-bearing part.** ROUTING's arm force-progresses
+  unconditionally, and its own javadoc earns that: the routes are already published and serving locally,
+  so the cross-node ack is a confirmation optimisation. ACTIVATING cannot borrow that reasoning — the
+  chain loads the slice at `activateSliceWithTimeout` and registers it for invocation only at the NEXT
+  step, so a chain stalled in between leaves the slice loaded but unable to answer a call. Forcing ACTIVE
+  there would manufacture a phantom-ACTIVE that the cluster routes traffic to, which is strictly worse
+  than a slice stuck activating — and the same run exhibited that state elsewhere
+  (`KV claims ACTIVE … not loaded locally`).
+  So the arm forces ACTIVATING → ACTIVE only on positive proof of serving:
+  `invocationHandler().localSlice(artifact)`, present exactly when the bridge is registered. That held in
+  the observed incident — the chain had run past registration and published endpoints, and the node was
+  serving `publish` calls when the leader unloaded it.
+  When the slice is NOT serving the arm deliberately does nothing beyond a loud warning: failing it there
+  would preempt the activation chain's own longer timeout, which may still legitimately complete. The
+  chain's timeout and the (now KV-confirming) cluster remediator remain the backstops.
+  `[verified: unit + mutation — NodeDeploymentStateSeedEpochAckTest$ActivationRemediation 3/3 (serving
+  forces, not-serving must NOT force, already-left is a no-op); removing the serving gate turns exactly
+  the phantom-ACTIVE test red. aether-deployment 837/0, aether/node 868/0, ./build.sh green, 0 new lint.
+  NOT integration-verified.]`
+
+### Fixed
+- **The orphan sweep force-unloaded slices cluster-wide off a projection nothing re-derives.**
+  `StaleEntryCleaner.cleanupOrphanedSliceEntries` classified a slice as orphaned purely from
+  `active.blueprints()` — a leader-local map rebuilt only on `Active` entry, never re-derived during a
+  term — and then issued UNLOAD for every slice of that artifact. It runs on each reconcile tick, so a
+  single missed `AppBlueprintPut` (or a rename path that cleared the entry and lost the re-put) would
+  unload healthy slices for the leader's entire term, under the reassuring log line
+  `"orphaned slice entries (no matching blueprint)"`.
+  It now confirms against the committed `SliceTargetValue` before destroying anything. The VERSION is
+  part of the check: a target that has moved on means this artifact is superseded and genuinely is an
+  orphan, so supersession still cleans up. Fail-safe as elsewhere — an absent or unreadable target falls
+  through to the previous behaviour, so this can only spare a slice the cluster still targets.
+  Also added the `coreMembershipResolved()` gate that the class javadoc already claimed **all** cleanups
+  had; the three siblings gated, this one did not.
+  Third instance of one defect class found by a single audit — see the community-placement and
+  stuck-slice-remediator entries. In each, a local projection or self-reported value was consumed as
+  observed truth by code that then acted destructively.
+  `[verified: unit + mutation — ClusterDeploymentStateActiveTest$OrphanSweepStaleProjection pins both
+  directions (a committed target spares the slice; a genuinely absent one still cleans up).]`
+
+### Fixed
+- **Rabia sync quorum was derived from CONNECTIVITY, so it collapsed to one at the partition edge (#557,
+  second defect).** `RabiaEngine.syncQuorumSize()` computed `min(connectedNodeCount(), clusterSize) / 2 + 1`,
+  which evaluates to **1** at connectivity 0 or 1 — so a node reaching exactly one peer would
+  `restoreState` from a SINGLE response, adopting another node's consensus state wholesale precisely when
+  it is least likely to be talking to the majority side of a partition. The old docstring justified this
+  as "adapts to actual connectivity", which is the defect stated as its own rationale: connectivity is
+  what a partition manipulates, so a safety threshold derived from it collapses exactly when needed. It
+  is now a majority of the CLUSTER (`clusterSize <= 1` yields 1, since a single-node cluster has no peer
+  to adopt from).
+  **Direction is one-way — strictly stricter, so it cannot admit a sync that was previously refused.** The
+  cost is liveness, deliberately: a node that cannot reach a cluster majority now stays inactive instead
+  of syncing from a minority. Refusing to adopt state is the recoverable failure; adopting the wrong
+  state is not.
+  The test fallout was itself the evidence: exactly two tests broke, both in a stall-detector fixture that
+  builds a **5-node** cluster and feeds **2** sync responses — a minority, which only ever activated
+  because the old gate had collapsed. The fixture now supplies a genuine majority; no assertion was
+  changed. The main 3-node fixture, where 2 responses IS a majority, stayed green throughout.
+  `[verified: unit + mutation — RabiaEngineTest$SyncQuorum pins both directions (one response must not
+  activate, two must, so it cannot pass against an engine that never activates); restoring the old
+  formula turns exactly that test red and leaves the other 31 green. integrations/consensus 707/0.]`
+- **Community placement read the community's own frozen member list (#590, at the placement grain).**
+  `CommunityLivenessView` — built as #590's fix — had exactly ONE consumer in the codebase, the
+  community-state FSM. `CommunityPlacementPlanner` never called it, and went on reading
+  `announcement.members()` and `memberCount()` raw: the community's claim about ITSELF, which under
+  partition cannot be rewritten, so it does not expire — it FREEZES. The core therefore kept weighting a
+  cut-off community at its full size and naming nodes it could not reach in `WorkerSliceDirectiveValue`s.
+  This is #590's stated consequence at a grain its own ACTIVE/DEGRADED gate cannot catch, because a
+  community can sit comfortably above the viability floor while having lost members.
+  Both placement axes now filter through the liveness view — WHICH nodes (`placeableMembers`) and HOW MANY
+  instances (`liveMemberCount`) — and the filter itself moved onto `CommunityLivenessView.liveMembers` so
+  the two cannot drift apart. Fail-safe throughout: `isAbsent` reports only POSITIVELY observed absence
+  and is `false` when the collector is unwired, so an unwired deployment places exactly as before; and a
+  community that publishes no member list keeps its declared count rather than being re-weighted to 1 on
+  no evidence.
+  `[verified: unit + mutation — CommunityPlacementPlannerTest 3 new tests covering partitioned members,
+  a wholly-absent community, and the unwired default; aether-deployment 832/0, aether/node 868/0.]`
+
+### Verification (2026-08-16)
+
+`02y-stream-crash` and `02w-entity-crash`, `--env remote` on cluster B: **2 suites, 2 passed, 0 failed.**
+This is the run that backs the integration-verified claims on the three stream/deploy fixes below. Same
+scenario that produced the data loss — 5 nodes, `min-sync-replicas=2`, `docker kill` of the node owning
+partitions 0 AND 2 with 40 publishes in flight:
+
+| | before the fixes | after |
+|---|---|---|
+| deploy to all-instances ACTIVE | timed out at 240s | **3s** |
+| ACKED events surviving the crash | 39 of 80 (41 lost) | **80 of 80, 0 missing** |
+| non-empty partitions post-crash | 2 of 4 | 4 of 4 |
+| 02y suite | FAIL, 327s | **PASS, 85s** |
+
+Not a vacuous pass: the suite's non-vacuity gate confirms 80 ACKED events were actually checked (that
+gate exists because an earlier run reported "0 acked, 0 missing" as success).
+
+The three fixes compose — any one alone leaves 02y red. The min-sync barrier makes the ack honest, slot
+preemption makes the guarantee *achievable* (the replica can now reach in-sync instead of starving for
+4½ minutes), and the remediator fix stops a healthy slice being destroyed while it converges.
+
+**Scope of the claim:** one run. Multi-node with failure injection, which is the feature-catalog bar for
+*Integration-verified* — but a single run does not establish the absence of a race.
+
+### Fixed
+- **The leader force-unloaded a healthy, serving slice on the strength of a stale in-memory view.**
+  `StuckTransitionalRemediator` judged a slice by `Active.sliceStates()` — a leader-local PROJECTION — and
+  destroyed it without ever re-reading the authority it mirrors, the committed `NodeArtifactValue` in the
+  KV-Store. When the projection missed a transition the slice looked stuck forever, because the map it was
+  judged by was the same map that had failed to advance.
+  Measured 2026-08-16 (`02y-stream-crash`, remote cluster B): node-2's activation chain SUCCEEDED and the
+  slice was serving traffic — node-2's own log records
+  `test-stream-multipart-stream-slice/publish depth=0 duration=25.591363ms` at 23:15:15 — yet the leader
+  still read ACTIVATING and force-UNLOADed it 35s later at 23:15:50, failing the deploy gate.
+  **The activation chain's 120s guard was never the problem, contrary to first reading.** `Promise.timeout`
+  arms a one-shot `fail()` against the SAME promise instance and returns `this`; `resolve()` is CAS-guarded,
+  so it is a deadline on that instance and a no-op once resolved. It did not misfire — the chain had already
+  succeeded, so there was nothing to fire at.
+  The remediator now re-reads the committed state before acting. **Fail-safe direction:** remediation is
+  skipped ONLY when the KV positively reports a SETTLED (non-transitional) state; an absent key, an
+  unreadable value, or a KV that agrees the slice is still transitional all fall through to the previous
+  behaviour. So a genuinely stuck slice is still recovered, and the change can only ever spare a slice the
+  cluster has already committed as settled.
+  **Reachable on an ordinary deploy** — node-4's SIGKILL landed at 23:15:55.833, five seconds AFTER
+  remediation, with consensus healthy and quorum intact. The chaos did not cause it.
+  This is the same shape as #593's `SYNCING` seed, #508's status field and #590's frozen `memberCount`: a
+  local or self-reported value read as observed truth. Not addressed here: the remediator's threshold is
+  `3 × 90s = 270s` against the deploy gate's 240s, so it cannot rescue a deploy in time even when correct;
+  and ACTIVATING still has no node-local remediation arm of its own.
+  `[verified: unit + mutation — ClusterDeploymentStateActiveTest$StaleViewProtection 2/2; bypassing the KV
+  confirmation turns the stale-view test red and leaves the still-transitional control green.
+  aether-deployment 829/0, aether/node 868/0, ./build.sh green with 0 new lint. integration-verified — see **Verification (2026-08-16)** below.]`
+
+### Fixed
+- **A stalled backfill held its reshuffle slot forever, starving the partitions queued behind it.** A slot
+  was released only when the partition stopped being a not-caught-up REPLICA — and `PartitionBackfill`
+  retries forever once its bounded wait elapses with a committed owner present (the #445 distrust gate), so
+  the release condition was exactly the condition that would never become true. Slot tenure was unbounded.
+  Measured 2026-08-16 (`02y-stream-crash`, remote cluster B): `entity:orders[4]` and `[6]` held BOTH of a
+  node's two slots continuously for 4m55s with **zero** releases in the entire log, while
+  `multipart-events[0]` and `[2]` — the partitions that node was the designated replica for — sat queued
+  behind them, never became in-sync, and were lost outright when their owner was SIGKILLed. 56 pacing
+  defers were logged (29 on partition 0, 27 on partition 2) across ~28 redrive attempts each.
+  A slot held past `RESHUFFLE_SLOT_MAX_TICKS` is now preempted: the backfill KEEPS RUNNING and keeps
+  retrying, it simply stops counting against the concurrency bound. Preemption is gated on a non-empty
+  queue, so a preempted worker is SWAPPED for a waiting one rather than multiplying concurrency — with
+  nothing queued the pacing bound is untouched.
+  **Trade, deliberate:** this bounds TENURE rather than detecting the stall, so a legitimately slow but
+  progressing backfill can also be preempted. Harmless — it continues — and it fixes starvation from any
+  cause rather than only the retry-forever one.
+  Permit accounting is the subtle part and is pinned by its own test: slot acquisition is idempotent VIA
+  `inFlightMaterializations` membership, so a preempted ref that re-entered the acquire path would take a
+  SECOND permit while only one is ever released, draining the pool. A preempted-set preserves that
+  idempotence.
+  `[verified: unit + mutation — StreamReshuffleLifecycleTest$StalledSlotPreemption 3/3; removing the
+  preempt step from the reconcile tick turns exactly the starvation and permit-accounting tests red and
+  leaves the empty-queue control green. aether-config 333/0, aether-stream 665/0, aether/node 868/0,
+  ./build.sh green with 0 new lint. integration-verified — see **Verification (2026-08-16)** below.]`
+
+### Added
+- **`[streaming] reshuffle_concurrency` is now a real config key.** It bounds how many partitions one node
+  holds in materialize+backfill at once. It was a hard-coded `static final int` with no binding of any
+  kind, while the paced-materialization error message named `reshuffle_concurrency` as though it were a
+  setting — an operator whose backfills were starving went looking for a knob that did not exist, and had
+  no way to raise the bound. Parsed by `ConfigLoader`, rejected below 1 by `ConfigValidator` (0 would stall
+  every replica backfill permanently) so it joins the same collected report as every other config error,
+  and wired in `AetherNode` BEFORE any materialization since it replaces the permit pool wholesale. The
+  paced error now reports the limit actually in force rather than a compile-time constant. The `[streaming]`
+  section was entirely undocumented and is now in `configuration.md` with all four of its keys.
+  `[verified: aether-config 333/0; ./build.sh green, 0 new lint]`
+
+### Fixed
+- **Forwarded stream publishes bypassed `min-sync-replicas`, losing ACKED events on a single node kill.**
+  Both writers route on LOCAL RING PRESENCE rather than ownership: `DefaultStreamPublisher.publishEventual`
+  and `StreamWriteRouter.publish` each await replication only on the arm where the node already holds the
+  partition ring, and otherwise forward to the HRW owner. On the owner the forward landed in
+  `StreamForwardHandler.onPublishForward` → `StreamPartitionManager.publishForwarded` → `publishLocal` and
+  was acked with **no `awaitReplication` anywhere** — so every forwarded publish acked on the owner's local
+  fsync alone, silently running at min-sync 1 however the stream was configured.
+  Found by `02y-stream-crash` on remote cluster B (5 nodes, 4 partitions, min-sync-replicas=2): 80/80
+  publishes ACKED, then a `docker kill` of the node owning partitions 0 and 2 lost **both partition logs
+  whole** — 41 acked events. A replacement node's later cold backfill pulled p0=2/p1=22/p2=1/p3=19 events,
+  the surplus being exactly the 5 post-crash liveness writes, proving p0 and p2 held none of the original 80
+  anywhere in the cluster. The reads were accurate rather than a probe artifact: survivors answered
+  `500 Stream partition is not owned by this node`, not a false empty list.
+  The barrier now sits on the OWNER, in `onPublishForward`, because that is where the ack for a forwarded
+  publish is produced — one gate covering both writer paths. `awaitReplication` is bounded (immediate
+  `NOT_ENOUGH_REPLICAS` when targets < minAcks, else a 5s pending-ack timeout), so gating there cannot leak.
+  **This makes the ack honest, not the cluster healthy:** where a replica is starved by
+  `reshuffle_concurrency` pacing and never reaches in-sync, such publishes now FAIL instead of falsely
+  acking — the same run shows 56 pacing defers (29 on partition 0, 27 on partition 2) with the designated
+  replica stuck `SYNCING` for ~4.5 minutes. That starvation is a separate, still-open defect.
+  `[verified: unit + mutation — StreamForwardHandlerTest$MinSyncBarrierTests; reverting the production
+  change turns onPublishForward_minSyncTwoWithNoInSyncReplica_doesNotAck red and leaves the min-sync≤1
+  control green. The tests wire a REAL ReplicationManager over an empty ReplicaRegistry deliberately: the
+  NOOP manager's awaitReplication returns success unconditionally, so a test on the default bare
+  streamPartitionManager would pass with or without the barrier. aether-stream 662/0, aether/node 868/0,
+  ./build.sh green with 0 new lint. integration-verified — see **Verification (2026-08-16)** below.]`
+
 ### Changed
 - **Durable-entity error surface renamed to entity-centric names (#432).** `DurableEntityError` →
   `EntityError` (symmetric with the sibling `StreamError`), `DurableEntityProvisioningError` →

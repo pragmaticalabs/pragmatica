@@ -9,6 +9,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.cli.ExitCode;
 import org.pragmatica.aether.cli.cluster.BootstrapState.PhaseStatus;
 import org.pragmatica.aether.cli.cluster.CreatedResource.ProvisionedVm;
@@ -33,6 +34,7 @@ import java.util.function.Function;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 
+import static org.pragmatica.aether.environment.ClusterName.clusterName;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -43,13 +45,13 @@ import static org.pragmatica.lang.Option.some;
 
 class ClusterDestroyCommandTest {
 
-    private static final String CLUSTER_NAME = "test-cluster";
+    private static final ClusterName CLUSTER_NAME = clusterName("test-cluster").unwrap();
 
-    private Function<String, Option<BootstrapState>> originalLoader;
+    private Function<ClusterName, Option<BootstrapState>> originalLoader;
 
     private Function<BootstrapState, Result<Unit>> originalCleaner;
 
-    private BiFunction<BootstrapState, String, Result<Unit>> originalSweeper;
+    private BiFunction<BootstrapState, ClusterName, Result<Unit>> originalSweeper;
 
     @BeforeEach
     void saveStaticSeams() {
@@ -174,7 +176,7 @@ class ClusterDestroyCommandTest {
 
         @Test
         void destroy_passesCorrectClusterNameToLoader() {
-            var capturedName = new AtomicReference<String>();
+            var capturedName = new AtomicReference<ClusterName>();
             ClusterDestroyCommand.stateLoader = name -> {
                 capturedName.set(name);
                 return none();
@@ -190,7 +192,7 @@ class ClusterDestroyCommandTest {
 
         @Test
         void destroy_invokesSshKeySweeper_afterStateCleanup() {
-            var sweepClusterName = new AtomicReference<String>();
+            var sweepClusterName = new AtomicReference<ClusterName>();
             ClusterDestroyCommand.stateLoader = name -> some(stateWithVms(2));
             ClusterDestroyCommand.resourceCleaner = state -> Result.unitResult();
             ClusterDestroyCommand.sshKeySweeper = (state, clusterName) -> {
@@ -293,7 +295,7 @@ class ClusterDestroyCommandTest {
             var command = new ClusterDestroyCommand();
             new CommandLine(command).parseArgs("--cluster", "my-cluster", "--yes", "--keep-resources");
 
-            assertTrue(command.cleanupCloudResources("my-cluster"),
+            assertTrue(command.cleanupCloudResources(clusterName("my-cluster").unwrap()),
                        "Override + --keep-resources should compose: cleanup short-circuits to ok");
         }
 
@@ -309,7 +311,7 @@ class ClusterDestroyCommandTest {
             var command = new ClusterDestroyCommand();
             new CommandLine(command).parseArgs("--cluster", "other-cluster", "--keep-resources", "--yes");
 
-            var ok = command.cleanupCloudResources("other-cluster");
+            var ok = command.cleanupCloudResources(clusterName("other-cluster").unwrap());
 
             assertTrue(ok);
             assertEquals(0, loaderCalls.get(), "--keep-resources must short-circuit before loader is consulted");
@@ -317,7 +319,7 @@ class ClusterDestroyCommandTest {
 
         @Test
         void destroy_clusterOverrideRoutesNameToStateLoader() {
-            var capturedName = new AtomicReference<String>();
+            var capturedName = new AtomicReference<ClusterName>();
             ClusterDestroyCommand.stateLoader = name -> {
                 capturedName.set(name);
                 return none();
@@ -327,9 +329,9 @@ class ClusterDestroyCommandTest {
             var command = new ClusterDestroyCommand();
             new CommandLine(command).parseArgs("--cluster", "named-cluster", "--yes");
 
-            command.cleanupCloudResources("named-cluster");
+            command.cleanupCloudResources(clusterName("named-cluster").unwrap());
 
-            assertEquals("named-cluster", capturedName.get(),
+            assertEquals(clusterName("named-cluster").unwrap(), capturedName.get(),
                          "Override name must be routed to BootstrapStatePersistence loader");
         }
     }
@@ -343,7 +345,7 @@ class ClusterDestroyCommandTest {
 
         private static final String ENDPOINT = "https://cluster.example:8080";
 
-        private BiFunction<ClusterRegistry, String, Result<ClusterRegistry>> originalRemover;
+        private BiFunction<ClusterRegistry, ClusterName, Result<ClusterRegistry>> originalRemover;
 
         private List<String> removalCalls;
 
@@ -359,15 +361,15 @@ class ClusterDestroyCommandTest {
             ClusterDestroyCommand.registryRemover = originalRemover;
         }
 
-        private Result<ClusterRegistry> recordRemoval(ClusterRegistry registry, String name) {
-            removalCalls.add(name);
-            return registry.remove(name);
+        private Result<ClusterRegistry> recordRemoval(ClusterRegistry registry, ClusterName name) {
+            removalCalls.add(name.value());
+            return registry.remove(name.value());
         }
 
-        private static ClusterRegistry registryWith(String name) {
+        private static ClusterRegistry registryWith(ClusterName name) {
             return ClusterRegistry.clusterRegistry(Path.of("unused-in-test.toml"),
-                                                   some(name),
-                                                   List.of(new ClusterRegistry.ClusterEntry(name,
+                                                   some(name.value()),
+                                                   List.of(new ClusterRegistry.ClusterEntry(name.value(),
                                                                                             ENDPOINT,
                                                                                             none())));
         }
@@ -401,7 +403,7 @@ class ClusterDestroyCommandTest {
             finalizeWith(true).onFailure(cause -> fail(cause.message()))
                               .onSuccess(code -> assertEquals(ExitCode.SUCCESS, (int) code));
 
-            assertEquals(List.of(CLUSTER_NAME), removalCalls,
+            assertEquals(List.of(CLUSTER_NAME.value()), removalCalls,
                          "a successful cleanup removes the registry entry");
         }
 
@@ -417,7 +419,7 @@ class ClusterDestroyCommandTest {
             assertTrue(cleanupOk);
             finalizeWith(cleanupOk).onFailure(cause -> fail(cause.message()))
                                    .onSuccess(code -> assertEquals(ExitCode.SUCCESS, (int) code));
-            assertEquals(List.of(CLUSTER_NAME), removalCalls,
+            assertEquals(List.of(CLUSTER_NAME.value()), removalCalls,
                          "--keep-resources is the acknowledged path: the registry entry is still removed");
         }
 

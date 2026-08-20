@@ -6,6 +6,7 @@ package org.pragmatica.aether.environment.hetzner;
 
 import java.util.List;
 
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.cloud.hetzner.HetznerConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -23,7 +24,7 @@ public record HetznerEnvironmentConfig(HetznerConfig hetznerConfig,
                                        List<Long> firewallIds,
                                        String userData,
                                        Option<HetznerLbConfig> loadBalancer,
-                                       Option<String> clusterName,
+                                       Option<ClusterName> clusterName,
                                        Option<Long> selfServerId,
                                        long discoveryPollIntervalMs) {
     private static final long DEFAULT_POLL_INTERVAL_MS = 30_000L;
@@ -79,7 +80,7 @@ public record HetznerEnvironmentConfig(HetznerConfig hetznerConfig,
                                                     DEFAULT_POLL_INTERVAL_MS));
     }
 
-    public HetznerEnvironmentConfig withDiscovery(String clusterLabel) {
+    public HetznerEnvironmentConfig withDiscovery(ClusterName clusterLabel) {
         return new HetznerEnvironmentConfig(hetznerConfig,
                                             serverType,
                                             image,

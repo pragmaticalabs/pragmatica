@@ -11,6 +11,7 @@ import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.config.toml.TomlDocument;
 
+import static org.pragmatica.aether.environment.ClusterName.clusterName;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.pragmatica.lang.Option.empty;
@@ -52,7 +53,7 @@ class UserDataTemplateTest {
                                              "node-1",
                                              0,
                                              "secret-xyz",
-                                             "prod-cluster",
+                                             clusterName("prod-cluster").unwrap(),
                                              overlay);
 
         assertTrue(script.contains("cat > /opt/aether/config/aether.toml"),
@@ -76,7 +77,7 @@ class UserDataTemplateTest {
                                              "node-1",
                                              0,
                                              "secret",
-                                             "prod-cluster",
+                                             clusterName("prod-cluster").unwrap(),
                                              overlay);
 
         assertTrue(script.contains("docker pull"), "Should pull image");
@@ -108,7 +109,7 @@ class UserDataTemplateTest {
                                              "node-1",
                                              0,
                                              "secret",
-                                             "prod-cluster",
+                                             clusterName("prod-cluster").unwrap(),
                                              TomlDocument.EMPTY);
 
         var configWriteIdx = script.indexOf("AETHER_CONFIG\n");
@@ -157,7 +158,7 @@ class UserDataTemplateTest {
                                              "node-1",
                                              0,
                                              "secret",
-                                             "prod-cluster",
+                                             clusterName("prod-cluster").unwrap(),
                                              TomlDocument.EMPTY);
 
         assertTrue(script.contains("-jar /opt/aether/aether-node.jar"),
@@ -186,7 +187,7 @@ class UserDataTemplateTest {
                                              "node-1",
                                              0,
                                              "secret-xyz",
-                                             "prod-cluster",
+                                             clusterName("prod-cluster").unwrap(),
                                              TomlDocument.EMPTY);
 
         assertTrue(script.contains("-e NODE_ID=\"${AETHER_NODE_ID}\""),
@@ -214,7 +215,7 @@ class UserDataTemplateTest {
                                              "node-1",
                                              0,
                                              "secret-xyz",
-                                             "prod-cluster",
+                                             clusterName("prod-cluster").unwrap(),
                                              TomlDocument.EMPTY);
 
         assertTrue(script.contains("-e AETHER_CLUSTER_NAME=\"prod-cluster\""),
@@ -237,7 +238,7 @@ class UserDataTemplateTest {
                                              "node-1",
                                              0,
                                              "secret",
-                                             "prod-cluster",
+                                             clusterName("prod-cluster").unwrap(),
                                              TomlDocument.EMPTY);
 
         assertTrue(script.contains("-l aether-role=core"),
@@ -260,7 +261,7 @@ class UserDataTemplateTest {
                                              "node-w1",
                                              0,
                                              "secret",
-                                             "prod-cluster",
+                                             clusterName("prod-cluster").unwrap(),
                                              TomlDocument.EMPTY);
 
         assertTrue(script.contains("-l aether-role=worker"),
@@ -285,7 +286,7 @@ class UserDataTemplateTest {
                                              "node-1",
                                              0,
                                              "secret",
-                                             "prod-cluster",
+                                             clusterName("prod-cluster").unwrap(),
                                              TomlDocument.EMPTY);
 
         var devMode = System.getenv("AETHER_INSECURE_DEV_MODE");
@@ -332,7 +333,7 @@ class UserDataTemplateTest {
                                              "node-1",
                                              0,
                                              "secret",
-                                             "prod-cluster",
+                                             clusterName("prod-cluster").unwrap(),
                                              TomlDocument.EMPTY);
 
         assertTrue(script.contains("AETHER_CLUSTER_PORT=\"6000\""),
@@ -356,7 +357,7 @@ class UserDataTemplateTest {
                                              "node-1",
                                              0,
                                              "secret",
-                                             "prod-cluster",
+                                             clusterName("prod-cluster").unwrap(),
                                              TomlDocument.EMPTY);
 
         assertTrue(script.contains("AETHER_ADVERTISE_HOST=\"$(ip route get 1.1.1.1 2>/dev/null | sed -n 's/.*src \\([0-9.]*\\).*/\\1/p' | head -n1)\" || true"),
@@ -400,7 +401,7 @@ class UserDataTemplateTest {
                                              "node-1",
                                              0,
                                              "secret",
-                                             "prod-cluster",
+                                             clusterName("prod-cluster").unwrap(),
                                              TomlDocument.EMPTY);
 
         assertTrue(script.contains("AETHER_ADVERTISE_HOST=\"$(ip route get 1.1.1.1 2>/dev/null | sed -n 's/.*src \\([0-9.]*\\).*/\\1/p' | head -n1)\" || true"),

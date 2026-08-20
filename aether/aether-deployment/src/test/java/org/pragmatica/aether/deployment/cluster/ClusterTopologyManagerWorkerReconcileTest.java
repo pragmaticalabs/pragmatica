@@ -19,6 +19,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.environment.AutoHealConfig;
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.InstanceStatus;
@@ -216,7 +217,7 @@ class ClusterTopologyManagerWorkerReconcileTest {
            .await()
            .onFailure(cause -> fail("provisionReplacement failed: " + cause.message()));
 
-        assertThat(lifecycleManager.provisionedSourceNames()).containsOnly(ProvisionContext.DEFAULT_SOURCE_NAME);
+        assertThat(lifecycleManager.provisionedSourceNames()).containsOnly(ProvisionContext.DEFAULT_SOURCE_NAME.value());
     }
 
     /// A pass sees what earlier provisions created (the recording manager feeds them back through
@@ -385,8 +386,10 @@ class ClusterTopologyManagerWorkerReconcileTest {
             return provisioned.stream().map(spec -> spec.context().role()).distinct().toList();
         }
 
+        /// Raw values, not [SourceName]s: these assertions pin what the provider stamps as the
+        /// `aether-source` label, which is the string the reconcile selector must round-trip.
         List<String> provisionedSourceNames() {
-            return provisioned.stream().map(spec -> spec.context().sourceName()).distinct().toList();
+            return provisioned.stream().map(spec -> spec.context().sourceName().value()).distinct().toList();
         }
 
         List<String> provisionedNodeIds() {
@@ -417,8 +420,8 @@ class ClusterTopologyManagerWorkerReconcileTest {
         }
 
         private static InstanceInfo instanceFor(ProvisionContext context) {
-            return instance(context.clusterName(),
-                            context.sourceName(),
+            return instance(context.clusterName().map(ClusterName::value).or(""),
+                            context.sourceName().value(),
                             context.role(),
                             context.nodeId().or("unknown"));
         }

@@ -11,6 +11,7 @@ import java.util.List;
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapError;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.NodeAddress;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Contract;
@@ -86,8 +87,8 @@ sealed interface BootstrapPhaseFormation {
     }
 
     @Contract
-    private static void persistApiKeyFile(String clusterName, String apiKey) {
-        var keyFile = Path.of(System.getProperty("user.home"), ".aether", "clusters", clusterName, "api-key");
+    private static void persistApiKeyFile(ClusterName clusterName, String apiKey) {
+        var keyFile = Path.of(System.getProperty("user.home"), ".aether", "clusters", clusterName.value(), "api-key");
         // #287: the persisted admin api-key file must be owner-only (0600). Replaces the deprecated
         // File.setReadable/setWritable dance with POSIX permissions via SecureFiles.
         ensureParentDir(keyFile).flatMap(_ -> SecureFiles.writeSecure(keyFile, apiKey))

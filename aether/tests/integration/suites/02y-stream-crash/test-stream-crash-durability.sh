@@ -58,6 +58,12 @@ MARKER_PREFIX="CRASHDUR"
 ACKED_PRE="$(mktemp)"                  # marker indices whose publish returned success
 ACKED_DURING="$(mktemp)"
 OWNER_TO_KILL=""
+# Which partitions the kill actually removes the owner of. Discovering ONLY the kill partition's owner
+# understates the blast radius and has already produced a wrong diagnosis: on 2026-08-16 the killed node
+# owned partitions 0 AND 2, both partitions' logs were lost, and the analysis proceeded for some time on
+# the premise that "partition 2's owner was never killed" — because the suite only ever asked about
+# partition 0. Recorded and logged BEFORE the kill so the post-crash arithmetic has the real scope.
+PARTITIONS_OWNED_BY_KILLED=""
 PUBLISHER_PID=""
 
 # Fixed-width zero-padded + terminator so no marker is a substring of a sibling.
@@ -228,6 +234,18 @@ replicas_snapshot_owner_view() {
     printf '%s' "$last_body"
 }
 
+# The HRW owner of one partition, from whichever node answers. Identity only — every node reports
+# `hrwOwner`, so no owner-authoritative view is needed (see the note in test_identify_partition_owner).
+owner_of_partition() {
+    local partition="$1" body
+    body=$(api_get "/api/streams/replicas/${STREAM_NAME}/${partition}" 2>/dev/null) || body=""
+    if [ -z "$body" ]; then
+        printf ''
+        return 0
+    fi
+    json_scalar "$body" hrwOwner
+}
+
 # Reap the concurrent publisher without silencing stderr. Muting the error stream and
 # forcing success (the R2 lint pattern) hides the very failure a chaos test exists to
 # surface. `wait` on an already-reaped or never-started PID legitimately returns
@@ -331,6 +349,20 @@ test_identify_partition_owner() {
     assert_ne "$owner" "" "HRW owner identified for partition ${KILL_PARTITION}"
     assert_ne "$owner" "none" "HRW owner is not 'none'"
     OWNER_TO_KILL="$owner"
+
+    # Record the FULL blast radius before killing anything: every partition this node owns loses its
+    # owner, not just KILL_PARTITION. Logged per partition so a post-crash gap can be attributed to the
+    # kill instead of being mistaken for loss on an untouched partition.
+    local partition partition_owner
+    PARTITIONS_OWNED_BY_KILLED=""
+    for ((partition = 0; partition < PARTITIONS; partition++)); do
+        partition_owner=$(owner_of_partition "$partition")
+        log_info "partition ${partition} hrwOwner=${partition_owner:-unknown}"
+        if [ "$partition_owner" = "$OWNER_TO_KILL" ]; then
+            PARTITIONS_OWNED_BY_KILLED="${PARTITIONS_OWNED_BY_KILLED}${partition} "
+        fi
+    done
+    log_info "killing ${OWNER_TO_KILL} removes the owner of partition(s): ${PARTITIONS_OWNED_BY_KILLED:-none}"
 }
 
 # The core of #508: SIGKILL the owner WHILE publishes are in flight, so the recorded
@@ -508,6 +540,19 @@ trap 'cleanup' EXIT
 
 run_test "Initial 5 nodes"                              test_initial_state
 run_test "Deploy multi-partition stream blueprint"      test_deploy_multipart_blueprint
+
+# PRECONDITION GATE. Everything below asserts a DURABILITY contract, and a durability verdict is only
+# meaningful on a cluster that actually converged. On 2026-08-16 the deploy gate failed (the blueprint
+# never reached all-instances ACTIVE) and the suite ran on regardless, reporting "41 of 80 ACKED events
+# missing" against a cluster whose slice placement was still unresolved. That verdict happened to be
+# real — but it was luck, not design: a result nobody can interpret is worse than no result, because it
+# costs an investigation to find out which. Stop here instead, with the reason stated.
+if [ "${TESTS_FAILED:-0}" -gt 0 ]; then
+    log_error "PRECONDITION FAILED: the stream blueprint did not deploy, so no durability claim below could mean anything. Skipping the remaining tests rather than reporting an uninterpretable verdict."
+    print_summary
+    exit 1
+fi
+
 run_test "Publish ${N_PRE}-event pre-kill history"      test_publish_pre_kill_history
 run_test "Events spread across partitions"              test_events_spread_across_partitions
 run_test "Pre-kill history readable"                    test_pre_kill_history_readable

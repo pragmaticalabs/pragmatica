@@ -46,9 +46,10 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 import static org.pragmatica.consensus.NodeId.nodeId;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
-import static org.assertj.core.api.Assertions.assertThat;
 
 
 /// Membership v2 / E2: the CTM is now a pure ACTUATOR driven by the `LeaderReconciler`
@@ -407,7 +408,7 @@ class ClusterTopologyManagerActuatorTest {
     void setDesiredSize_writesClusterConfigValueAtom_withIncrementedVersion() {
         ctm.activate();
         var before = clusterStore.currentVersion();
-        var result = ctm.setDesiredCount("primary", NodeRole.CORE, 7).await();
+        var result = ctm.setDesiredCount(sourceNameOrDefault("primary"), NodeRole.CORE, 7).await();
         assertThat(result.isSuccess()).isTrue();
         var after = clusterStore.current().unwrap();
         assertThat(after.coreCount()).isEqualTo(7);
@@ -418,7 +419,7 @@ class ClusterTopologyManagerActuatorTest {
     void setDesiredSize_belowQuorum_rejectedWithoutAtomWrite() {
         ctm.activate();
         var before = clusterStore.currentVersion();
-        var result = ctm.setDesiredCount("primary", NodeRole.CORE, 2).await();
+        var result = ctm.setDesiredCount(sourceNameOrDefault("primary"), NodeRole.CORE, 2).await();
         assertThat(result.isFailure()).isTrue();
         assertThat(clusterStore.currentVersion()).isEqualTo(before);
     }

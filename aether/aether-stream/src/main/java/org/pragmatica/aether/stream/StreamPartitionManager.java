@@ -92,7 +92,18 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// (a completed backfill or a release). OWNER materializations are NOT paced — an owner ring has no
     /// backfill (it is the source), so pacing it would only stall the owner write path with no throughput
     /// benefit. `2` is the spec default (one-at-a-time starves a large reshuffle; unbounded floods backfill).
+    /// DEFAULT reshuffle concurrency. `2` is the spec default (one-at-a-time starves a large reshuffle;
+    /// unbounded floods backfill). Overridable at wiring time via [#reshuffleConcurrency(int)], bound to
+    /// `[streaming] reshuffle_concurrency`. Until 2026-08-16 this was a hard-coded `static final` with NO
+    /// binding, while the paced-materialization error message named `reshuffle_concurrency` as though it
+    /// were a knob — an operator hitting the message went looking for a setting that did not exist.
     static final int RESHUFFLE_CONCURRENCY = 2;
+
+    /// Reconcile ticks a partition may hold a reshuffle slot before it is preempted to unblock a starving
+    /// queue ([#preemptStalledSlots]). At the 5s reconcile interval this is ~30s — comfortably past
+    /// `PartitionBackfill`'s own 20s bounded wait, so a healthy backfill completes or promotes long before it
+    /// is ever eligible. Only applies while partitions are actually queued.
+    static final int RESHUFFLE_SLOT_MAX_TICKS = 6;
 
     /// Flap-debounce grace, in reconcile ticks (#265 increment 5, spec §5.4 / §14.2). A materialized
     /// partition whose role transitions to NONE becomes a RELEASE CANDIDATE; it is released only after it has
@@ -196,11 +207,16 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// the reconcile tick.
     private volatile OwnerReleaseGuard ownerReleaseGuard = OWNER_ELSEWHERE;
 
-    /// Reshuffle-concurrency permits (#265 increment 5): `RESHUFFLE_CONCURRENCY` slots gating REPLICA
+    /// Reshuffle-concurrency permits (#265 increment 5): [#reshuffleConcurrency] slots gating REPLICA
     /// materialize+backfill. Acquired in {@link #buildAndInstall} for a REPLICA partition, released when the
     /// partition reaches CAUGHT_UP / loses the role / is released. Fair=false (throughput over ordering; the
-    /// queue provides the ordering).
-    private final Semaphore reshuffleSlots = new Semaphore(RESHUFFLE_CONCURRENCY);
+    /// queue provides the ordering). Replaced wholesale by [#reshuffleConcurrency(int)] at wiring time, which
+    /// is why neither this nor the limit beside it is final.
+    private volatile Semaphore reshuffleSlots = new Semaphore(RESHUFFLE_CONCURRENCY);
+
+    /// The reshuffle-slot limit in force. Reported by [org.pragmatica.aether.stream.StreamError.ReshufflePaced]
+    /// so the operator-facing message states the ACTUAL bound rather than a compile-time constant.
+    private volatile int reshuffleConcurrency = RESHUFFLE_CONCURRENCY;
 
     /// Partitions currently holding a reshuffle slot (materialize+backfill in flight). Membership set paired
     /// with {@link #reshuffleSlots}: `add` is the "acquire", `remove`+release is the "free". Swept each tick
@@ -215,6 +231,18 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Dedup set across both queues + a fast "is queued" membership test — a repeat materialize request for an
     /// already-queued partition is a no-op (idempotent, like the lazy-materialize path itself).
     private final Set<PartitionRef> queuedMaterializations = ConcurrentHashMap.newKeySet();
+
+    /// Reconcile tick at which each in-flight partition ACQUIRED its slot — the input to starvation
+    /// preemption ([#preemptStalledSlots]). Removed when the slot is freed or preempted.
+    private final Map<PartitionRef, Long> slotAcquiredTick = new ConcurrentHashMap<>();
+
+    /// Partitions whose backfill is still running but which no longer hold a reshuffle slot, because they
+    /// were preempted for starving the queue. Load-bearing for permit accounting, NOT bookkeeping: slot
+    /// acquisition is idempotent VIA {@link #inFlightMaterializations} membership ("a ref already in flight
+    /// returns true without a second permit"), so a preempted ref that re-entered the acquire path would take
+    /// a SECOND permit and only ever release one — leaking the pool empty. A ref listed here reports its slot
+    /// as already held and never takes another.
+    private final Set<PartitionRef> preemptedSlots = ConcurrentHashMap.newKeySet();
 
     /// Release candidacy (#265 increment 5): a materialized partition whose role went NONE maps to the
     /// reconcile tick at which candidacy started. Debounced (survive [#RELEASE_DEBOUNCE_TICKS] ticks) then
@@ -448,8 +476,25 @@ public final class StreamPartitionManager implements AutoCloseable {
         this.placementRoleSupplier = supplier;
     }
 
-    /// Late-bind the cluster-size source for the aggregate partition guard (#265 increment 4). `AetherNode`
-    /// wires this to the topology observer's live count (the SAME source [ReplicaSetController] uses for HRW
+    /// Set the reshuffle-slot limit (`[streaming] reshuffle_concurrency`). Set ONCE at wiring, before any
+    /// materialization: it replaces the permit pool wholesale, so calling it with slots in flight would
+    /// desynchronise permits from {@link #inFlightMaterializations}. A value below 1 is ignored — a zero
+    /// limit would stall every REPLICA materialization permanently, and silently accepting it here would
+    /// reproduce the starvation this bound is meant to pace. `ConfigValidator` rejects it up front so the
+    /// operator sees the error rather than this defensive floor.
+    @Contract
+    public void reshuffleConcurrency(int limit) {
+        if (limit < 1) {
+            log.warn("Ignoring reshuffle_concurrency={} — must be >= 1; keeping {}", limit, reshuffleConcurrency);
+
+            return;
+        }
+
+        this.reshuffleConcurrency = limit;
+        this.reshuffleSlots = new Semaphore(limit);
+    }
+
+    /// Late-bind the cluster-size source for the aggregate partition guard (#265 increment 4). `AetherNode`    /// wires this to the topology observer's live count (the SAME source [ReplicaSetController] uses for HRW
     /// placement). Until then — and in Forge/unit/legacy managers — the default `() -> 0` reports "cluster
     /// size unknown" and the aggregate guard is skipped (only the per-stream ceiling applies). Set once at
     /// wiring; read on the create-admission and snapshot paths.
@@ -1739,11 +1784,17 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Idempotent: a ref already in flight (its slot held) returns true without a second permit; a
     /// membership-add that cannot get a permit is rolled back so the ref is not falsely counted.
     private boolean tryAcquireReshuffleSlot(PartitionRef ref) {
+        if (preemptedSlots.contains(ref)) {
+            return true;
+        }
+
         if (!inFlightMaterializations.add(ref)) {
             return true;
         }
 
         if (reshuffleSlots.tryAcquire()) {
+            slotAcquiredTick.put(ref, reconcileTick.get());
+
             return true;
         }
 
@@ -1754,6 +1805,8 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     @Contract
     private void freeReshuffleSlot(PartitionRef ref) {
+        slotAcquiredTick.remove(ref);
+        preemptedSlots.remove(ref);
         if (inFlightMaterializations.remove(ref)) {
             reshuffleSlots.release();
         }
@@ -1770,13 +1823,15 @@ public final class StreamPartitionManager implements AutoCloseable {
              : appMaterializeQueue).add(ref);
         }
 
-        return new StreamError.ReshufflePaced(ref.streamName(), ref.partition(), RESHUFFLE_CONCURRENCY).result();
+        return new StreamError.ReshufflePaced(ref.streamName(), ref.partition(), reshuffleConcurrency).result();
     }
 
     /// Periodic reshuffle-lifecycle reconcile (#265 increment 5) — the release state machine + slot pacing
     /// tick. `AetherNode` schedules it every `STREAM_RESHUFFLE_RECONCILE_INTERVAL` (5s); tests call it directly
     /// to advance the machine deterministically. One tick, in order: (1) free reshuffle slots for partitions
-    /// that finished backfill (self CAUGHT_UP), became OWNER (no backfill), or lost the role; (2) evaluate
+    /// that finished backfill (self CAUGHT_UP), became OWNER (no backfill), or lost the role; (1b) preempt a
+    /// slot held past [#RESHUFFLE_SLOT_MAX_TICKS] while the queue is non-empty, so a stalled backfill cannot
+    /// starve the queue forever; (2) evaluate
     /// release candidates — a materialized partition whose role is NONE debounces [#RELEASE_DEBOUNCE_TICKS]
     /// ticks, then releases IFF the catch-up gate (≥ effective, clamped RF other replicas CAUGHT_UP) AND the
     /// owner rule (committed owner elsewhere) both pass, freeing the ring + its budget (WAL kept); (3) drain
@@ -1787,12 +1842,64 @@ public final class StreamPartitionManager implements AutoCloseable {
     public void reconcileReshuffle() {
         reconcileTick.incrementAndGet();
         freeCompletedSlots();
+        preemptStalledSlots();
         evaluateReleaseCandidates();
         drainMaterializeQueue();
     }
 
+    /// Anti-starvation preemption. A slot was held for as long as a partition stayed a not-caught-up REPLICA,
+    /// with NO upper bound — and [org.pragmatica.aether.stream.replication.PartitionBackfill] retries forever
+    /// once its bounded wait elapses with a committed owner present (the #445 distrust gate). The release
+    /// condition was therefore exactly the condition that would never become true, and a stalled backfill
+    /// occupied its slot indefinitely.
+    ///
+    /// Measured 2026-08-16 (02y-stream-crash, remote cluster B): `entity:orders[4]` and `[6]` held BOTH of a
+    /// node's slots for 4m55s with zero releases in the whole log, while `multipart-events[0]`/`[2]` — the
+    /// partitions it was the designated replica for — sat queued behind them, never became in-sync, and were
+    /// lost outright when their owner was killed.
+    ///
+    /// A backfill idle-waiting on an unreachable source performs no work, so it must not hold a work-pacing
+    /// slot while others wait. Preemption does NOT abort the backfill: it keeps running and keeps retrying,
+    /// it simply stops counting against `RESHUFFLE_CONCURRENCY`.
+    ///
+    /// TRADE, deliberate: this bounds tenure rather than detecting the stall, so a legitimately SLOW but
+    /// progressing backfill can also be preempted. That is harmless (it continues) and costs only that one
+    /// extra partition may materialize concurrently. Preemption is gated on a non-empty queue so a preempted
+    /// worker is SWAPPED for a waiting one rather than multiplying concurrency — with no waiter, the flood
+    /// pacing that this bound exists to preserve is untouched.
+    @Contract
+    private void preemptStalledSlots() {
+        if (queuedMaterializations.isEmpty()) {
+            return;
+        }
+
+        var tick = reconcileTick.get();
+
+        Set.copyOf(inFlightMaterializations)
+           .stream()
+           .filter(ref -> tick - slotAcquiredTick.getOrDefault(ref, tick) >= RESHUFFLE_SLOT_MAX_TICKS)
+           .forEach(this::preemptReshuffleSlot);
+    }
+
+    @Contract
+    private void preemptReshuffleSlot(PartitionRef ref) {
+        if (!inFlightMaterializations.remove(ref)) {
+            return;
+        }
+
+        slotAcquiredTick.remove(ref);
+        preemptedSlots.add(ref);
+        reshuffleSlots.release();
+        log.warn("Preempted reshuffle slot for {}[{}] after {} reconcile ticks — backfill continues but no longer counts against reshuffle concurrency ({} partitions were queued behind it)",
+                 ref.streamName(),
+                 ref.partition(),
+                 RESHUFFLE_SLOT_MAX_TICKS,
+                 queuedMaterializations.size());
+    }
+
     private void freeCompletedSlots() {
         Set.copyOf(inFlightMaterializations).forEach(this::freeSlotIfComplete);
+        Set.copyOf(preemptedSlots).stream().filter(this::slotComplete).forEach(preemptedSlots::remove);
     }
 
     @Contract

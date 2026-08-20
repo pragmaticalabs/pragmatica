@@ -22,6 +22,7 @@ import org.pragmatica.aether.config.TtmConfig;
 import org.pragmatica.aether.controller.ControllerConfig;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.membership.MembershipConfig;
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
 import org.pragmatica.aether.invoke.ObservabilityConfig;
@@ -75,7 +76,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                Option<MembershipConfig> membership,
                                StreamingConfig streaming,
                                ClusterFormationConfig clusterFormation,
-                               Option<String> clusterName) {
+                               Option<ClusterName> clusterName) {
     /// Cluster-wide deployment defaults. `canaryEvaluationInterval` / `defaultCanaryStages` drive
     /// progressive rollout; `communitySizing` is the leader's per-community target size and viability
     /// floor (worker-membership-spec §3.3 / §4.1) read by the cluster deployment FSM. A test/dev
@@ -190,7 +191,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     clusterName);
     }
 
-    public AetherNodeConfig withClusterName(String clusterName) {
+    public AetherNodeConfig withClusterName(Option<ClusterName> clusterName) {
         return new AetherNodeConfig(topology,
                                     protocol,
                                     sliceAction,
@@ -220,7 +221,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     membership,
                                     streaming,
                                     clusterFormation,
-                                    Option.some(clusterName));
+                                    clusterName);
     }
 
     public interface SelfStage {

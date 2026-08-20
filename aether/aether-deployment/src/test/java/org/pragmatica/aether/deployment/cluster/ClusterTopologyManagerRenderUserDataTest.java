@@ -40,6 +40,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import static org.pragmatica.aether.environment.ClusterName.clusterName;
 import static org.pragmatica.consensus.NodeId.nodeId;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -270,7 +271,7 @@ class ClusterTopologyManagerRenderUserDataTest {
                                                    "node-r3",
                                                    0,
                                                    secret.or(""),
-                                                   "prod-cluster",
+                                                   clusterName("prod-cluster").unwrap(),
                                                    composed,
                                                    List.of(),
                                                    List.of(peers.split(",")));

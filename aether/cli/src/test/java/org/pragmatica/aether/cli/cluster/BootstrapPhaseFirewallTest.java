@@ -24,17 +24,25 @@ import org.pragmatica.aether.environment.IngressHandle;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.ProvisionRequest;
+import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 
+import static org.pragmatica.aether.environment.ClusterName.clusterName;
+import static org.pragmatica.aether.environment.FirewallId.firewallId;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 
 /// #574 — `[source.X.firewall] allow_ingress` was parsed, validated, diffed and scaffolded into user
 /// configs by `aether cluster init`, with ZERO consumers on any provisioning path. Every layer the
@@ -42,24 +50,24 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// no firewall association accepts ALL inbound traffic (§6.2), so the gap failed OPEN.
 class BootstrapPhaseFirewallTest {
 
-    private record OpenCall(String sourceId, int port, String protocol, String cidr, String description) {}
+    private record OpenCall(SourceName source, int port, String protocol, String cidr, String description) {}
 
     /// Records ingress calls and hands back one firewall id per source, mirroring the real provider:
     /// every rule of a source lands on ONE firewall.
     private static final class RecordingCompute implements ComputeProvider {
         final List<OpenCall> opened = new ArrayList<>();
-        final Map<String, Long> idsBySource = new java.util.HashMap<>();
+        final Map<SourceName, Long> idsBySource = new java.util.HashMap<>();
         long nextId = 100L;
 
         @Override
-        public Promise<IngressHandle> openIngress(String sourceId,
+        public Promise<IngressHandle> openIngress(SourceName source,
                                                   int port,
                                                   String protocol,
                                                   String sourceCidr,
                                                   String description) {
-            opened.add(new OpenCall(sourceId, port, protocol, sourceCidr, description));
+            opened.add(new OpenCall(source, port, protocol, sourceCidr, description));
 
-            var id = idsBySource.computeIfAbsent(sourceId, _ -> nextId++);
+            var id = idsBySource.computeIfAbsent(source, _ -> nextId++);
 
             return Promise.success(IngressHandle.ingressHandle(Long.toString(id)));
         }
@@ -88,7 +96,7 @@ class BootstrapPhaseFirewallTest {
     private static SourceProfile hetznerSource(String name,
                                                LoadBalancerMode lbMode,
                                                List<FirewallRule> rules) {
-        return SourceProfile.sourceProfile(name,
+        return SourceProfile.sourceProfile(sourceNameOrDefault(name),
                                             SourceType.CLOUD,
                                             Option.some(CloudProviderName.HETZNER),
                                             Option.some("token"),
@@ -114,13 +122,13 @@ class BootstrapPhaseFirewallTest {
         var config = ClusterBootstrapConfig.clusterBootstrapConfig("1.0.0",
                                                                     ClusterIdentity.clusterIdentity("test", "1.0.0").unwrap(),
                                                                     CoreTopology.defaultCoreTopology(),
-                                                                    Map.of(source.name(), source),
+                                                                    Map.of(source.name().value(), source),
                                                                     Map.of(),
                                                                     InfrastructureConfig.infrastructureConfig(NetworkingType.MANUAL),
                                                                     OperationsConfig.defaultOperationsConfig());
 
         return BootstrapContext.bootstrapContext(config,
-                                                  BootstrapState.initialState("test", "h", "now"),
+                                                  BootstrapState.initialState(clusterName("test").unwrap(), "h", "now"),
                                                   List.of(),
                                                   List.of());
     }
@@ -140,7 +148,7 @@ class BootstrapPhaseFirewallTest {
         assertTrue(result.isSuccess(), () -> "phase should succeed: " + result);
         assertEquals(List.of("tcp", "udp"), compute.opened.stream().map(OpenCall::protocol).toList(),
                      "tcp+udp must expand to exactly two provider rules");
-        assertEquals(List.of(100L), result.unwrap().firewallIdsFor("eu-1"),
+        assertEquals(List.of(firewallId("100").unwrap()), result.unwrap().firewallIdsFor(sourceNameOrDefault("eu-1")),
                      "Both rules land on ONE firewall, so exactly one id is threaded to provision");
     }
 
@@ -153,7 +161,7 @@ class BootstrapPhaseFirewallTest {
 
         var result = run(contextWith(hetznerSource("eu-1", LoadBalancerMode.NONE, rules)), compute);
 
-        assertEquals(List.of(100L), result.unwrap().firewallIdsFor("eu-1"));
+        assertEquals(List.of(firewallId("100").unwrap()), result.unwrap().firewallIdsFor(sourceNameOrDefault("eu-1")));
     }
 
     /// One firewall = one CreatedResource, so destroy issues exactly one delete rather than N.
@@ -238,6 +246,121 @@ class BootstrapPhaseFirewallTest {
                                                      (_, _, _, _) -> Result.success(new RefusingCompute()));
 
         assertTrue(result.isFailure(), "a refused ingress rule must abort bootstrap, not proceed");
+    }
+
+    /// #615 — REQ-5.1.8.2's auto-open and the warning it mandates were BOTH gated on `managesIngressFor`,
+    /// which requires Hetzner. An elected LB on AWS/GCP/Azure got its app_http port neither opened nor
+    /// mentioned: a clean-looking bootstrap and an LB that serves nothing.
+    @Test
+    void execute_electedLbOnProviderWithoutIngress_warnsThatPortWasNotOpened() {
+        // GCP, not AWS: AWS gained `openIngress` (#463), so it is no longer a provider "without ingress"
+        // and correctly stops warning. The warning is for providers that still cannot open the port —
+        // pinning it against a provider that CAN would make this test pass for the wrong reason.
+        var ctx = contextWith(cloudSource("gcp-1", CloudProviderName.GCP, LoadBalancerMode.ELECTED, List.of()));
+
+        var output = captureStdoutOf(() -> BootstrapPhaseFirewall.execute(ctx,
+                                                                           (_, _, _, _) -> Result.success(new RefusingCompute()))).output();
+
+        assertTrue(output.contains("WARN"), "the operator must be told, not left with a silent no-op: " + output);
+        assertTrue(output.contains("gcp-1"), "the warning must name the source: " + output);
+        assertTrue(output.contains("gcp"), "the warning must name the provider: " + output);
+        assertTrue(output.contains("NOT opened"), "the warning must say the port was not opened: " + output);
+    }
+
+    /// The other half of #615, and the reason this pair exists: a provider that DOES manage ingress must
+    /// stop warning, or the warning becomes noise that operators learn to ignore. AWS moved from the
+    /// first test to this one when its `openIngress` landed.
+    @Test
+    void execute_electedLbOnAws_doesNotWarn_sinceAwsNowManagesIngress() {
+        var ctx = contextWith(cloudSource("us-1", CloudProviderName.AWS, LoadBalancerMode.ELECTED, List.of()));
+
+        var output = captureStdoutOf(() -> BootstrapPhaseFirewall.execute(ctx,
+                                                                           (_, _, _, _) -> Result.success(new RecordingCompute()))).output();
+
+        assertTrue(!output.contains("NOT opened"),
+                   "AWS opens the port now, so it must not claim otherwise: " + output);
+    }
+
+    /// The regression that matters: such a cluster has ZERO manageable sources, so it takes the
+    /// `applicable == 0` early return. A warning emitted after that return would never fire.
+    @Test
+    void execute_electedLbOnProviderWithoutIngress_warnsEvenThoughNoSourceIsManageable() {
+        var ctx = contextWith(cloudSource("gcp-1", CloudProviderName.GCP, LoadBalancerMode.ELECTED, List.of()));
+
+        var result = captureStdoutOf(() -> BootstrapPhaseFirewall.execute(ctx,
+                                                                           (_, _, _, _) -> Result.success(new RefusingCompute())));
+
+        assertTrue(result.value().isSuccess(), "an unmanageable source is not an error, only a warning");
+        assertTrue(result.output().contains("WARN"), "the early return must not swallow the warning: " + result.output());
+    }
+
+    @Test
+    void execute_hetznerElectedLb_doesNotEmitTheUnmanagedIngressWarning() {
+        // Hetzner DOES auto-open app_http here, so it must get REQ-5.1.8.2's own warning instead of the
+        // "not opened" one — asserting the absence keeps the two paths from converging on one message.
+        var ctx = contextWith(hetznerSource("eu-1", LoadBalancerMode.ELECTED, List.of()));
+
+        var output = captureStdoutOf(() -> BootstrapPhaseFirewall.execute(ctx,
+                                                                           (_, _, _, _) -> Result.success(new RecordingCompute()))).output();
+
+        assertTrue(!output.contains("NOT opened"), "Hetzner opens the port, so it must not claim otherwise: " + output);
+    }
+
+    @Test
+    void execute_nonElectedLbOnProviderWithoutIngress_staysSilent() {
+        // Nothing was promised, so there is nothing to warn about — the warning must not become noise on
+        // every non-Hetzner cloud source.
+        var ctx = contextWith(cloudSource("us-2", CloudProviderName.AWS, LoadBalancerMode.NONE, List.of()));
+
+        var output = captureStdoutOf(() -> BootstrapPhaseFirewall.execute(ctx,
+                                                                           (_, _, _, _) -> Result.success(new RefusingCompute()))).output();
+
+        assertTrue(!output.contains("WARN"), "no elected LB means no unopened-port promise: " + output);
+    }
+
+    private static SourceProfile cloudSource(String name,
+                                             CloudProviderName provider,
+                                             LoadBalancerMode lbMode,
+                                             List<FirewallRule> rules) {
+        return SourceProfile.sourceProfile(sourceNameOrDefault(name),
+                                            SourceType.CLOUD,
+                                            Option.some(provider),
+                                            Option.some("token"),
+                                            Option.some("us-east-1"),
+                                            Option.empty(),
+                                            Option.empty(),
+                                            Option.empty(),
+                                            Option.empty(),
+                                            lbMode,
+                                            List.of(),
+                                            Option.empty(),
+                                            Map.of(),
+                                            Map.of(NodeRole.CORE,
+                                                    RoleSubTable.roleSubTable(NodeRole.CORE,
+                                                                                Option.some(3),
+                                                                                Option.empty(),
+                                                                                Option.empty(),
+                                                                                "default")),
+                                            rules);
+    }
+
+    /// The warning IS the behaviour under test, and it is written to stdout in the same style as
+    /// REQ-5.1.8.2's mandated warning beside it — so stdout is what has to be asserted on.
+    private record Captured(String output, Result<BootstrapContext> value) {}
+
+    private static Captured captureStdoutOf(Supplier<Result<BootstrapContext>> action) {
+        var original = System.out;
+        var buffer = new ByteArrayOutputStream();
+
+        try (var stream = new PrintStream(buffer, true, StandardCharsets.UTF_8)) {
+            System.setOut(stream);
+
+            var value = action.get();
+
+            return new Captured(buffer.toString(StandardCharsets.UTF_8), value);
+        } finally {
+            System.setOut(original);
+        }
     }
 
     private static final class RefusingCompute implements ComputeProvider {

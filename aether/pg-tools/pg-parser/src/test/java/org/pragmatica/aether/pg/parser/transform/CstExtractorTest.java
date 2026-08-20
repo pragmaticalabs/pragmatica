@@ -172,13 +172,13 @@ class CstExtractorTest {
 
         @Test void detectPrimaryKey() {
             var constraints = parse("CREATE TABLE t (id bigint, PRIMARY KEY (id))").findAll("TableConstraintElem");
-            assertThat(constraints.stream().anyMatch(c -> c.has("PrimaryKW"))).isTrue();
+            assertThat(constraints.stream().anyMatch(c -> c.has("PrimaryKeyTblConstraint"))).isTrue();
         }
 
         @Test void detectForeignKey() {
             var constraints = parse("CREATE TABLE o (id bigint, uid bigint, FOREIGN KEY (uid) REFERENCES u(id) ON DELETE CASCADE)")
                 .findAll("TableConstraintElem");
-            assertThat(constraints.stream().anyMatch(c -> c.has("ForeignKW"))).isTrue();
+            assertThat(constraints.stream().anyMatch(c -> c.has("ForeignKeyTblConstraint"))).isTrue();
         }
     }
 }

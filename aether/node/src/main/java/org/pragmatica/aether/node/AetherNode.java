@@ -284,6 +284,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.FileOps;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.DiscoveryProvider;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
@@ -899,15 +900,23 @@ public interface AetherNode extends ManageableNode {
     /// effective, clamped RF); `selfCaughtUp` is whether THIS node has finished backfilling the partition (so
     /// its reshuffle slot may free). Self is excluded from the count so the "≥ RF caught-up remain AFTER I
     /// release" invariant holds regardless of whether the controller has already unregistered self.
+    ///
+    /// The OTHERS count goes through [ReplicaRegistry#freshPeersFor], which additionally requires each peer to
+    /// be within the configured lag bound of the freshest peer watermark. `CAUGHT_UP` never downgrades, so a
+    /// peer that stopped acking stays CAUGHT_UP forever; counting it raw let an owner release its ring
+    /// believing enough replicas were caught up when they had frozen. That method is shared with
+    /// `ForwardingReadRouter` on purpose — a guard applied at one reader and not the other is the same
+    /// half-applied fix that left #590 live at the placement grain.
+    ///
+    /// `selfCaughtUp` stays on the RAW state: a node never acks itself, so its own descriptor keeps the
+    /// `SYNCING` / `-1` seed (#593) and its `CAUGHT_UP` comes from backfill completion, not the ack path.
+    /// Lag-checking a self row would report staleness on a healthy owner.
     private static StreamPartitionManager.ReplicaCatchupSource.CatchupView streamCatchupView(ReplicaRegistry registry,
                                                                                              NodeId self,
                                                                                              String stream,
                                                                                              int partition) {
         var replicas = registry.replicasFor(stream, partition);
-        var caughtUpOthers = (int) replicas.stream()
-                                           .filter(descriptor -> descriptor.state() == ReplicationState.CAUGHT_UP && !descriptor.nodeId()
-                                                                                                                                .equals(self))
-                                           .count();
+        var caughtUpOthers = registry.freshPeersFor(stream, partition, self).size();
         var selfCaughtUp = replicas.stream()
                                    .anyMatch(descriptor -> descriptor.nodeId()
                                                                      .equals(self) && descriptor.state() == ReplicationState.CAUGHT_UP);
@@ -2469,7 +2478,7 @@ public interface AetherNode extends ManageableNode {
                                    // outbound ANNOUNCEs below, so both sides of the comparison come
                                    // from here. Absent (in-process harnesses that never pass through
                                    // Main) leaves it inert exactly as before.
-                                   .withClusterName(config.clusterName().or(""));
+                                   .withClusterName(config.clusterName().map(ClusterName::value).or(""));
         // Phase-aware SWIM cold-boot suppression (D.3, 2026-05-11). SWIM suppresses
         // FAULTY-for-never-HEALTHY peers ONLY while the cluster is in `COLD_BOOT`
         // (initial formation, never reached quorum). In `NORMAL` and `RECOVERING`,
@@ -2608,9 +2617,9 @@ public interface AetherNode extends ManageableNode {
         var quorumLossDetector = QuorumLossDetector.quorumLossDetector(membershipConfig, configuredCoreCountSupplier);
 
         quorumLossDetectorRef.set(quorumLossDetector);
-        Supplier<String> clusterNameSupplier = () -> clusterConfigReader.get()
-                                                                        .map(AetherValue.ClusterConfigValue::clusterName)
-                                                                        .or("");
+        Supplier<Option<ClusterName>> clusterNameSupplier = () -> clusterConfigReader.get()
+                                                                                     .map(AetherValue.ClusterConfigValue::clusterName)
+                                                                                     .flatMap(ClusterName::maybeClusterName);
         // Membership v2 Phase 2 LIVE — the per-member MembershipFsm is the authoritative membership-
         // death decision-maker. It is ALWAYS-ON per node (no leader gate): every node drives its own
         // per-member FSMs from its tapped SWIM/liveness edges. Wave 7 (cluster-topology-overhaul):
@@ -3074,7 +3083,7 @@ public interface AetherNode extends ManageableNode {
         // ReplicationManager.NONE. On every publishLocal the owner now replicates the event to its
         // registered replica set; the receive/apply side (streamReplicationReceiveHandler, wired below)
         // lands replicated events offset-preserving WITHOUT re-replicating (appendRecovered).
-        var streamReplicaRegistry = ReplicaRegistry.replicaRegistry();
+        var streamReplicaRegistry = ReplicaRegistry.replicaRegistry(config.streaming().caughtUpMaxLagOffsets());
         org.pragmatica.aether.stream.replication.ReplicationTransport streamReplicationTransport = clusterNode.network()::send;
         // #261: the live-ack path promotes a replica to CAUGHT_UP only when its confirmed offset
         // reaches back to the owner's earliest retained offset. The partition manager is constructed
@@ -3118,6 +3127,11 @@ public interface AetherNode extends ManageableNode {
                                                                                    streamSegmentIndex::lastSealedOffset);
 
         streamPartitionManagerRef.set(streamPartitionManager);
+        // `[streaming] reshuffle_concurrency` — set BEFORE any materialization, since it replaces the permit
+        // pool wholesale. Until 2026-08-16 this bound was a compile-time constant while the paced-materialize
+        // error message named it as a config key, so an operator whose backfills were starving had nothing to
+        // turn. ConfigValidator rejects < 1 up front.
+        streamPartitionManager.reshuffleConcurrency(config.streaming().reshuffleConcurrency());
         // stream-offheap-budget-spec §4.5c / reconciliation #14: route off-heap budget exhaustion
         // (create-floor + growth) OUT of aether-stream via the injected Consumer<Exhaustion> sink and
         // INTO the cluster-event aggregator, which stamps this node's id and emits a

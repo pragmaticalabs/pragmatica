@@ -23,17 +23,23 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.IntStream;
 
+import org.pragmatica.cloud.aws.api.CreateSecurityGroupResponse;
 import org.pragmatica.cloud.aws.api.DescribeInstancesResponse;
+import org.pragmatica.cloud.aws.api.DescribeSecurityGroupsResponse;
+import org.pragmatica.cloud.aws.api.DescribeSubnetsResponse;
 import org.pragmatica.cloud.aws.api.DescribeTargetHealthResponse;
 import org.pragmatica.cloud.aws.api.RunInstancesRequest;
 import org.pragmatica.cloud.aws.api.RunInstancesResponse;
+import org.pragmatica.cloud.aws.api.SecurityGroup;
 import org.pragmatica.cloud.aws.api.TargetHealth;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
 import org.pragmatica.http.JdkHttpOperations;
 import org.pragmatica.json.JsonMapper;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.xml.XmlMapper;
@@ -61,6 +67,38 @@ public interface AwsClient {
     Promise<Unit> rebootInstances(List<String> instanceIds);
     /// Creates tags on EC2 resources.
     Promise<Unit> createTags(List<String> resourceIds, Map<String, String> tags);
+    // --- EC2 security group operations ---
+    /// Creates a security group and returns its native id. An absent `vpcId` targets the account's
+    /// default VPC, matching EC2's own default for the omitted parameter.
+    ///
+    /// Unlike its inverse [#deleteSecurityGroup] this call is **not** idempotent, and deliberately
+    /// so: a duplicate name fails with `InvalidGroup.Duplicate`, whose body carries no group id, so
+    /// there is no id to resolve the Promise with. Callers wanting create-or-reuse read
+    /// [#describeSecurityGroups] first and create only on an empty result.
+    Promise<String> createSecurityGroup(String name, String description, Option<String> vpcId);
+    /// Describes security groups matching every supplied `tag:{key}` = value filter (`Filter.N`,
+    /// numbered from 1). A group that no longer exists yields an empty list rather than a failure,
+    /// so a teardown read after deletion is idempotent.
+    Promise<List<SecurityGroup>> describeSecurityGroups(Map<String, String> tagFilters);
+    /// Authorizes one inbound CIDR rule on a security group. A rule that already exists
+    /// (`InvalidPermission.Duplicate`) resolves as success, so re-bootstrapping over an existing
+    /// firewall is idempotent.
+    Promise<Unit> authorizeSecurityGroupIngress(String groupId,
+                                                String protocol,
+                                                int port,
+                                                String cidr,
+                                                String description);
+    /// Revokes one inbound CIDR rule from a security group. An already-absent rule
+    /// (`InvalidPermission.NotFound`) or an already-deleted group (`InvalidGroup.NotFound`)
+    /// resolves as success, so teardown is idempotent and order-insensitive.
+    Promise<Unit> revokeSecurityGroupIngress(String groupId, String protocol, int port, String cidr);
+    /// Deletes a security group. An already-deleted group (`InvalidGroup.NotFound`) resolves as
+    /// success, so repeated teardown is idempotent.
+    Promise<Unit> deleteSecurityGroup(String groupId);
+    /// The VPC a subnet belongs to, or empty when the subnet is unknown. Used to place a new security
+    /// group in the same VPC as the instances that will carry it — a group in the wrong VPC cannot be
+    /// attached, and `RunInstances` rejects the pair.
+    Promise<Option<String>> vpcOfSubnet(String subnetId);
     // --- ELBv2 operations ---
     /// Registers instances with a target group.
     Promise<Unit> registerTargets(String targetGroupArn, List<String> instanceIds);
@@ -94,6 +132,17 @@ record AwsClientRecord(AwsConfig config, HttpOperations http, JsonMapper jsonMap
     private static final String JSON_CONTENT_TYPE = "application/x-amz-json-1.1";
     /// Bounds every request so a stalled/unanswered service can never leave a Promise unresolved.
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(30);
+    /// EC2 error codes reporting that the call's end-state already holds. Absorbing them is
+    /// **design-out**, not error recovery: the postcondition each operation promises (rule present /
+    /// rule absent / group absent) is already satisfied by the very error, so there is nothing to
+    /// compensate (no BER) and nothing degraded (no FER). The tolerance is per-operation and
+    /// code-exact — any other AWS error code still fails the Promise, which
+    /// `authorizeSecurityGroupIngress_fails_forUnrelatedErrorCode` pins.
+    private static final Set<String> RULE_ALREADY_PRESENT = Set.of("InvalidPermission.Duplicate");
+    private static final Set<String> RULE_ALREADY_ABSENT = Set.of("InvalidPermission.NotFound", "InvalidGroup.NotFound");
+    private static final Set<String> GROUP_ALREADY_ABSENT = Set.of("InvalidGroup.NotFound");
+    private static final AwsError MISSING_GROUP_ID =
+        new AwsError.ParseError("Missing groupId in CreateSecurityGroup response", Option.none());
 
     @Override
     public Promise<RunInstancesResponse> runInstances(RunInstancesRequest request) {
@@ -137,6 +186,49 @@ record AwsClientRecord(AwsConfig config, HttpOperations http, JsonMapper jsonMap
     }
 
     @Override
+    public Promise<String> createSecurityGroup(String name, String description, Option<String> vpcId) {
+        return postQuery(EC2_SERVICE,
+                         config.ec2Url(),
+                         buildCreateSecurityGroupForm(name, description, vpcId),
+                         CreateSecurityGroupResponse.class).flatMap(AwsClientRecord::extractGroupId);
+    }
+
+    @Override
+    public Promise<List<SecurityGroup>> describeSecurityGroups(Map<String, String> tagFilters) {
+        return signAndSendQuery(EC2_SERVICE,
+                                config.ec2Url(),
+                                buildDescribeSecurityGroupsForm(tagFilters)).flatMap(this::parseSecurityGroups);
+    }
+
+    @Override
+    public Promise<Unit> authorizeSecurityGroupIngress(String groupId,
+                                                       String protocol,
+                                                       int port,
+                                                       String cidr,
+                                                       String description) {
+        return postQueryTolerating(EC2_SERVICE,
+                                   config.ec2Url(),
+                                   buildAuthorizeIngressForm(groupId, protocol, port, cidr, description),
+                                   RULE_ALREADY_PRESENT);
+    }
+
+    @Override
+    public Promise<Unit> revokeSecurityGroupIngress(String groupId, String protocol, int port, String cidr) {
+        return postQueryTolerating(EC2_SERVICE,
+                                   config.ec2Url(),
+                                   buildRevokeIngressForm(groupId, protocol, port, cidr),
+                                   RULE_ALREADY_ABSENT);
+    }
+
+    @Override
+    public Promise<Unit> deleteSecurityGroup(String groupId) {
+        return postQueryTolerating(EC2_SERVICE,
+                                   config.ec2Url(),
+                                   buildDeleteSecurityGroupForm(groupId),
+                                   GROUP_ALREADY_ABSENT);
+    }
+
+    @Override
     public Promise<Unit> registerTargets(String targetGroupArn, List<String> instanceIds) {
         return postQueryDiscarding(ELB_SERVICE,
                                    config.elbv2Url(),
@@ -172,6 +264,14 @@ record AwsClientRecord(AwsConfig config, HttpOperations http, JsonMapper jsonMap
 
     private Promise<Unit> postQueryDiscarding(String service, String url, String formBody) {
         return signAndSendQuery(service, url, formBody).flatMap(this::checkSuccess);
+    }
+
+    /// Like [#postQueryDiscarding] but resolves the listed AWS error codes as success — see
+    /// [#RULE_ALREADY_PRESENT] for why that is design-out rather than error recovery.
+    private Promise<Unit> postQueryTolerating(String service, String url, String formBody, Set<String> toleratedCodes) {
+        return signAndSendQuery(service,
+                                url,
+                                formBody).flatMap(result -> checkSuccessTolerating(result, toleratedCodes));
     }
 
     private Promise<HttpResult<String>> signAndSendQuery(String service, String url, String formBody) {
@@ -263,6 +363,42 @@ record AwsClientRecord(AwsConfig config, HttpOperations http, JsonMapper jsonMap
                        .promise();
     }
 
+    private Promise<Unit> checkSuccessTolerating(HttpResult<String> result, Set<String> toleratedCodes) {
+        if (result.isSuccess()) {
+            return Promise.success(Unit.unit());
+        }
+
+        var error = AwsError.fromResponse(result.statusCode(), result.body());
+
+        return isTolerated(error, toleratedCodes)
+               ? Promise.success(Unit.unit())
+               : error.promise();
+    }
+
+    private Promise<List<SecurityGroup>> parseSecurityGroups(HttpResult<String> result) {
+        if (result.isSuccess()) {
+            return xmlMapper.readString(result.body(),
+                                        DescribeSecurityGroupsResponse.class)
+                            .map(DescribeSecurityGroupsResponse::securityGroups)
+                            .async();
+        }
+
+        var error = AwsError.fromResponse(result.statusCode(), result.body());
+
+        return isTolerated(error, GROUP_ALREADY_ABSENT)
+               ? Promise.success(List.of())
+               : error.promise();
+    }
+
+    private static boolean isTolerated(AwsError error, Set<String> toleratedCodes) {
+        return error instanceof AwsError.ApiError apiError && toleratedCodes.contains(apiError.code());
+    }
+
+    private static Promise<String> extractGroupId(CreateSecurityGroupResponse response) {
+        return Option.option(response.groupId())
+                     .async(MISSING_GROUP_ID);
+    }
+
     // --- Form body builders ---
     private static String buildTagFilterForm(String tagKey, String tagValue) {
         return "Action=DescribeInstances&Version=" + EC2_API_VERSION
@@ -343,6 +479,80 @@ record AwsClientRecord(AwsConfig config, HttpOperations http, JsonMapper jsonMap
     private static void appendTagParam(StringBuilder sb, int index, Map.Entry<String, String> entry) {
         sb.append("&Tag.").append(index).append(".Key=").append(AwsSigV4Signer.urlEncode(entry.getKey()));
         sb.append("&Tag.").append(index).append(".Value=").append(AwsSigV4Signer.urlEncode(entry.getValue()));
+    }
+
+    // --- EC2 security group form builders ---
+    private static String buildCreateSecurityGroupForm(String name, String description, Option<String> vpcId) {
+        var sb = new StringBuilder("Action=CreateSecurityGroup&Version=").append(EC2_API_VERSION)
+                                                                        .append("&GroupName=")
+                                                                        .append(AwsSigV4Signer.urlEncode(name))
+                                                                        .append("&GroupDescription=")
+                                                                        .append(AwsSigV4Signer.urlEncode(description));
+
+        vpcId.onPresent(v -> sb.append("&VpcId=")
+                               .append(AwsSigV4Signer.urlEncode(v)));
+
+        return sb.toString();
+    }
+
+    /// Emits `Filter.N.Name=tag:{key}&Filter.N.Value.1={value}` for each entry, N starting at 1.
+    /// Filter order follows the map's own iteration order — EC2 ANDs the filters regardless, so
+    /// order carries no meaning on the wire, and the caller picks an ordered map when it wants a
+    /// reproducible body.
+    private static String buildDescribeSecurityGroupsForm(Map<String, String> tagFilters) {
+        var sb = new StringBuilder("Action=DescribeSecurityGroups&Version=").append(EC2_API_VERSION);
+        var filterEntries = List.copyOf(tagFilters.entrySet());
+
+        IntStream.range(0, filterEntries.size()).forEach(i -> appendTagFilter(sb, i + 1, filterEntries.get(i)));
+
+        return sb.toString();
+    }
+
+    private static void appendTagFilter(StringBuilder sb, int index, Map.Entry<String, String> entry) {
+        sb.append("&Filter.").append(index).append(".Name=tag:").append(AwsSigV4Signer.urlEncode(entry.getKey()));
+        sb.append("&Filter.").append(index).append(".Value.1=").append(AwsSigV4Signer.urlEncode(entry.getValue()));
+    }
+
+    private static String buildAuthorizeIngressForm(String groupId,
+                                                    String protocol,
+                                                    int port,
+                                                    String cidr,
+                                                    String description) {
+        return buildIngressRuleForm("AuthorizeSecurityGroupIngress", groupId, protocol, port, cidr)
+             + "&IpPermissions.1.IpRanges.1.Description=" + AwsSigV4Signer.urlEncode(description);
+    }
+
+    /// EC2 ignores a description on revoke — the rule is matched by protocol, port range and CIDR
+    /// alone — so [AwsClient#revokeSecurityGroupIngress] takes none and none is emitted.
+    private static String buildRevokeIngressForm(String groupId, String protocol, int port, String cidr) {
+        return buildIngressRuleForm("RevokeSecurityGroupIngress", groupId, protocol, port, cidr);
+    }
+
+    private static String buildIngressRuleForm(String action, String groupId, String protocol, int port, String cidr) {
+        return "Action=" + action + "&Version=" + EC2_API_VERSION
+             + "&GroupId=" + AwsSigV4Signer.urlEncode(groupId)
+             + "&IpPermissions.1.IpProtocol=" + AwsSigV4Signer.urlEncode(protocol)
+             + "&IpPermissions.1.FromPort=" + port
+             + "&IpPermissions.1.ToPort=" + port
+             + "&IpPermissions.1.IpRanges.1.CidrIp=" + AwsSigV4Signer.urlEncode(cidr);
+    }
+
+    @Override
+    public Promise<Option<String>> vpcOfSubnet(String subnetId) {
+        return postQuery(EC2_SERVICE,
+                         config.ec2Url(),
+                         buildDescribeSubnetsForm(subnetId),
+                         DescribeSubnetsResponse.class).map(DescribeSubnetsResponse::vpcId);
+    }
+
+    private static String buildDescribeSubnetsForm(String subnetId) {
+        return "Action=DescribeSubnets&Version=" + EC2_API_VERSION
+             + "&SubnetId.1=" + AwsSigV4Signer.urlEncode(subnetId);
+    }
+
+    private static String buildDeleteSecurityGroupForm(String groupId) {
+        return "Action=DeleteSecurityGroup&Version=" + EC2_API_VERSION
+             + "&GroupId=" + AwsSigV4Signer.urlEncode(groupId);
     }
 
     // --- ELBv2 Query-protocol form builders ---

@@ -20,7 +20,6 @@ import static org.pragmatica.lang.Result.success;
 
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"})
 public final class ClusterBootstrapConfigValidator {
-    private static final Pattern CLUSTER_NAME_PATTERN = Pattern.compile("^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$");
     private static final Pattern SEMVER_PATTERN = Pattern.compile("^\\d+\\.\\d+\\.\\d+$");
 
     private static final Pattern CIDR_PATTERN = Pattern.compile("^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}/\\d{1,2}$");
@@ -64,20 +63,16 @@ public final class ClusterBootstrapConfigValidator {
     }
 
     private static void validateClusterLevel(ClusterBootstrapConfig config, List<String> errors) {
-        validateClusterName(config.cluster().name(),
-                            errors);
+        // CL-01 (cluster-name grammar) is not checked here: `config.cluster().name()` is a
+        // `ClusterName`, so an out-of-grammar name is unrepresentable at this point and the branch
+        // was provably dead. The rejection happens where the operator's text is still available —
+        // `ClusterIdentity.clusterIdentity`, which reports `InvalidName` naming the offending value.
         validateClusterVersion(config.cluster().version(),
                                errors);
         validateDerivedCoreCount(config.derivedCoreCount(), errors);
         validateAtLeastOneCoreSubTable(config, errors);
         validateSourceNamesNonEmpty(config, errors);
         validateRuntimeReferences(config, errors);
-    }
-
-    private static void validateClusterName(String name, List<String> errors) {
-        if (!CLUSTER_NAME_PATTERN.matcher(name).matches()) {
-            errors.add("CL-01: Cluster name '" + name + "' must match ^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$");
-        }
     }
 
     private static void validateClusterVersion(String version, List<String> errors) {
@@ -329,9 +324,11 @@ public final class ClusterBootstrapConfigValidator {
     /// fail OPEN. On AWS/GCP/Azure the default security groups deny inbound, so the same gap fails
     /// closed — unreachable, not exposed — and operators are directed to their own security groups.
     /// Remove a provider's entry when its `openIngress` lands (#463).
-    private static final Map<CloudProviderName, String> INGRESS_UNSUPPORTED_REASONS = Map.of(CloudProviderName.AWS,
-                                                                                             "Provider 'aws' ingress management (security groups) is not yet implemented on this client",
-                                                                                             CloudProviderName.GCP,
+    /// AWS is absent because its `openIngress` LANDED (#463): security groups are created, tagged
+    /// `(aether-cluster, aether-source)`, attached at instance-create and reclaimed by `cluster destroy`.
+    /// GCP and Azure remain — remove each entry when its provider's `openIngress` lands, not before, or
+    /// pre-flight will accept `allow_ingress` that nothing enforces.
+    private static final Map<CloudProviderName, String> INGRESS_UNSUPPORTED_REASONS = Map.of(CloudProviderName.GCP,
                                                                                              "Provider 'gcp' ingress management (firewall rules) is not yet implemented on this client",
                                                                                              CloudProviderName.AZURE,
                                                                                              "Provider 'azure' ingress management (network security groups) is not yet implemented on this client");

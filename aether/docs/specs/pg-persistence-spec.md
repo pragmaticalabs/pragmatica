@@ -551,6 +551,45 @@ public final class OrderPersistenceFactory {
 | `Promise<Long>` | `db.queryOne(sql, longMapper, params...)` |
 | `Promise<Boolean>` | `db.queryOne(sql, boolMapper, params...)` |
 
+## SQL Grammar Limitations
+
+Two deliberate deviations from PostgreSQL in `pg-parser`'s grammar. Both are user-visible: SQL that
+PostgreSQL accepts will be rejected or mis-parsed here.
+
+### Nested block comments — UNSUPPORTED
+
+PostgreSQL nests `/* ... */` per the SQL standard, so the inner comment below closes the *inner*
+block and the statement remains commented until the outer `*/`:
+
+```sql
+SELECT 1 /* outer /* inner */ still a comment */ AS c;
+```
+
+`pg-parser` stops at the FIRST `*/` and mis-parses the remainder. `BlockComment` is
+`'/*' (!'*/' .)* '*/'`, and it cannot be fixed in the grammar: nested comments are not a regular
+language, and under peglib 0.7.x the rule is compiled into a DFA lexer. Expressing it needs a
+counting scanner in peglib itself — the same class of limitation as a back-reference. Tracked
+upstream; see the note at the rule in `postgres.peg`.
+
+**Impact:** a migration or `@PgSql` query containing nested block comments fails to parse. Single-level
+`/* ... */` and `--` line comments are unaffected. Nesting is rare in practice, which is why it went
+unnoticed until the parser corpus was extended with real harvested SQL.
+
+### `$` in identifiers — DELIBERATELY NARROWED
+
+PostgreSQL permits `$` in an identifier after the first character (`foo$bar`). `pg-parser` does not:
+
+```peg
+UnquotedIdentifier <- < [a-zA-Z_] [a-zA-Z0-9_]* >
+```
+
+With `$` in the continuation class, `world$$` in `$$hello world$$` lexes as a single 7-character
+identifier by maximal munch, swallowing the closing delimiter — dollar quoting cannot work at all.
+Dollar quoting is ubiquitous in real SQL (`$body$`, `$function$` bodies); `$` in identifiers is rare,
+and occurs **0 times** across every `.sql` file and every SQL string literal in this repository.
+
+**Impact:** an identifier containing `$` must be double-quoted (`"foo$bar"`).
+
 ## Phase 2 — Extensions
 
 - `:recordParam` expansion in contexts beyond VALUES and SET (WHERE, function arguments)

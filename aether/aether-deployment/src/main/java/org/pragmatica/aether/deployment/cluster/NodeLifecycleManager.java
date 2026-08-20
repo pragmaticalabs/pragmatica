@@ -7,6 +7,7 @@ package org.pragmatica.aether.deployment.cluster;
 import java.util.List;
 import java.util.Map;
 
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.InstanceInfo;
@@ -38,7 +39,7 @@ public interface NodeLifecycleManager {
     }
 
     @Contract
-    default void resetProvisionerState(String clusterName) {}
+    default void resetProvisionerState(Option<ClusterName> clusterName) {}
 
     /// Cap-less construction — no fleet bound is enforced. Retained for callers that provision
     /// against a non-cloud provider (Docker/forge), where an unbounded fleet is not a cost hazard.
@@ -51,14 +52,14 @@ public interface NodeLifecycleManager {
     /// without a name there is no correct scope to count within. A cap configured without a cluster
     /// name is a misconfiguration and is reported at construction rather than silently ignored.
     static NodeLifecycleManager nodeLifecycleManager(Option<ComputeProvider> computeProvider,
-                                                     Option<String> clusterName,
+                                                     Option<ClusterName> clusterName,
                                                      Option<Integer> maxNodes) {
         return new NodeLifecycleManagerRecord(computeProvider, clusterName, maxNodes);
     }
 }
 
 record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider,
-                                  Option<String> clusterName,
+                                  Option<ClusterName> clusterName,
                                   Option<Integer> maxNodes) implements NodeLifecycleManager {
     private static final Logger log = LoggerFactory.getLogger(NodeLifecycleManagerRecord.class);
     // Upper-layer canonical tag key for binding a cloud instance to its assigned NodeId.
@@ -125,8 +126,9 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider,
     private Promise<InstanceInfo> countThenProvision(ComputeProvider provider,
                                                      ProvisionSpec spec,
                                                      int cap,
-                                                     String name) {
-        return provider.listInstances(Map.of(CLUSTER_TAG, name))
+                                                     ClusterName name) {
+        return provider.listInstances(Map.of(CLUSTER_TAG,
+                                             name.value()))
                        .flatMap(instances -> enforceCap(provider,
                                                         spec,
                                                         cap,
@@ -138,7 +140,7 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider,
                                              ProvisionSpec spec,
                                              int cap,
                                              int observed,
-                                             String name) {
+                                             ClusterName name) {
         if (observed >= cap) {
             log.warn("Provisioning REFUSED for cluster {}: node cap {} reached ({} already provisioned)",
                      name,
@@ -182,7 +184,7 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider,
 
     @Contract
     @Override
-    public void resetProvisionerState(String clusterName) {
+    public void resetProvisionerState(Option<ClusterName> clusterName) {
         computeProvider.onPresent(provider -> provider.resetProvisionerState(clusterName));
     }
 

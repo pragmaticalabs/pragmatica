@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.function.LongConsumer;
 
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.InstanceId;
@@ -170,7 +171,7 @@ sealed interface BootstrapCleanup {
     /// prefix `aether-bootstrap-<cluster>-` — the SAME boundary `HetznerComputeProvider.isBootstrapKey` uses
     /// (post-#444), so a `prod` destroy never touches `production`'s keys. Runs AFTER the state-based cleanup,
     /// so an already-recorded-and-deleted key surfaces as a tolerated 404/`not_found`.
-    static Result<Unit> sweepClusterSshKeys(BootstrapState state, String clusterName) {
+    static Result<Unit> sweepClusterSshKeys(BootstrapState state, ClusterName clusterName) {
         return sweepClusterSshKeys(state, clusterName, CleanupResolvers.cleanupResolvers());
     }
 
@@ -178,7 +179,7 @@ sealed interface BootstrapCleanup {
     /// factory so the sweep is observable without a real cloud call. The Hetzner client is still resolved
     /// handle-first (from the persisted hetzner `SourceCleanupHandle`), never raw `HCLOUD_TOKEN`.
     static Result<Unit> sweepClusterSshKeys(BootstrapState state,
-                                            String clusterName,
+                                            ClusterName clusterName,
                                             Fn1<String, String> getenv,
                                             Fn1<HetznerClient, String> hetznerClientFactory) {
         return sweepClusterSshKeys(state,
@@ -188,16 +189,10 @@ sealed interface BootstrapCleanup {
                                                    .withHetznerClientFactory(hetznerClientFactory));
     }
 
-    // RET-06: `clusterName` may be absent/blank when the bootstrap state never captured it;
-    // the guarded skip is defensive scoping, not a business optional.
-    @SuppressWarnings({"JBCT-PAT-01", "JBCT-RET-06"})
-    static Result<Unit> sweepClusterSshKeys(BootstrapState state, String clusterName, CleanupResolvers resolvers) {
-        if (clusterName == null || clusterName.isBlank()) {
-            System.out.println("  Skipping SSH-key sweep: cluster name is blank (cannot scope the sweep).");
-
-            return Result.unitResult();
-        }
-
+    // The blank-name skip that used to open this method is gone: `clusterName` is a `ClusterName`,
+    // so an unscopeable sweep is unrepresentable here rather than guarded against.
+    @SuppressWarnings("JBCT-PAT-01")
+    static Result<Unit> sweepClusterSshKeys(BootstrapState state, ClusterName clusterName, CleanupResolvers resolvers) {
         var handle = state.sources()
                           .values()
                           .stream()
@@ -312,7 +307,7 @@ sealed interface BootstrapCleanup {
     /// which kills the leader's worker reconciler — and nothing re-provisions the workers this
     /// sweep reaps. Run before core death, a live leader would see a worker deficit and replace
     /// them mid-destroy.
-    static Result<Unit> sweepClusterVms(BootstrapState state, String clusterName) {
+    static Result<Unit> sweepClusterVms(BootstrapState state, ClusterName clusterName) {
         return sweepClusterVms(state, clusterName, CleanupResolvers.cleanupResolvers());
     }
 
@@ -320,7 +315,7 @@ sealed interface BootstrapCleanup {
     /// mirroring the #481 SSH-key sweep seams. Handle-first credential resolution — never raw
     /// `HCLOUD_TOKEN`.
     static Result<Unit> sweepClusterVms(BootstrapState state,
-                                        String clusterName,
+                                        ClusterName clusterName,
                                         Fn1<String, String> getenv,
                                         Fn1<HetznerClient, String> hetznerClientFactory) {
         return sweepClusterVms(state,
@@ -330,17 +325,12 @@ sealed interface BootstrapCleanup {
                                                .withHetznerClientFactory(hetznerClientFactory));
     }
 
-    // RET-06: `clusterName` may be absent/blank when the bootstrap state never captured it;
-    // the guarded skip is defensive scoping, not a business optional.
-    @SuppressWarnings({"JBCT-PAT-01", "JBCT-RET-06"})
-    static Result<Unit> sweepClusterVms(BootstrapState state, String clusterName, CleanupResolvers resolvers) {
-        if (clusterName == null || clusterName.isBlank()) {
-            System.out.println("  Skipping VM sweep: cluster name is blank (cannot scope the sweep).");
-
-            return Result.unitResult();
-        }
-
-        if (PROTECTED_CLUSTERS.contains(clusterName)) {
+    // The blank-name skip that used to open this method is gone: `clusterName` is a `ClusterName`,
+    // so an unscopeable sweep — the one that would have swept the whole account — is unrepresentable
+    // here rather than guarded against.
+    @SuppressWarnings("JBCT-PAT-01")
+    static Result<Unit> sweepClusterVms(BootstrapState state, ClusterName clusterName, CleanupResolvers resolvers) {
+        if (PROTECTED_CLUSTERS.contains(clusterName.value())) {
             return Causes.cause("Refusing to sweep VMs of protected cluster '" + clusterName
                                + "' — it hosts long-lived shared infrastructure (see tools/cloud-reaper.sh"
                                + " PROTECTED_CLUSTERS and incident #572). Remove its resources manually if you"
@@ -540,18 +530,21 @@ sealed interface BootstrapCleanup {
     /// 2026-08-05 run — the very next attempt succeeded once the servers had drained. A single
     /// attempt therefore reports failure for a firewall that is about to be deletable, leaving the
     /// operator to re-run destroy by hand.
+    ///
+    /// The numeric conversion is [FirewallId#asNumeric], not a local parse: the recorded id is
+    /// provider-opaque so every provider can record what it created, and Hetzner's own API takes a
+    /// number. Keeping the conversion (and its refusal) on the type gives it ONE home — a non-numeric
+    /// id under `hetzner` means the ledger was written by something else, and guessing an id here
+    /// would delete someone else's firewall.
     @SuppressWarnings("JBCT-EX-01")
     private static Result<Unit> deleteCloudFirewall(BootstrapState state,
                                                     CreatedResource.CloudFirewall firewall,
                                                     CleanupResolvers resolvers) {
-        System.out.printf("  Deleting firewall %s (id=%d)...%n", firewall.name(), firewall.firewallId());
-        if (!HETZNER_PROVIDER.equals(firewall.provider())) {
-            return new UnsupportedFirewallProvider(firewall.provider()).result();
-        }
+        System.out.printf("  Deleting firewall %s (id=%s)...%n", firewall.name(), firewall.firewallId());
 
-        return resolveHetznerClientFor(state, firewall.provider(), resolvers).flatMap(client -> deleteFirewallWithRetry(client,
-                                                                                                                        firewall,
-                                                                                                                        resolvers));
+        return resolveComputeFor(state, firewall, resolvers).flatMap(compute -> disposeWithRetry(compute,
+                                                                                                 firewall,
+                                                                                                 resolvers));
     }
 
     /// Attempts bounded by [#FIREWALL_DELETE_ATTEMPTS]; the LAST failure is what surfaces, so a
@@ -559,20 +552,24 @@ sealed interface BootstrapCleanup {
     int FIREWALL_DELETE_ATTEMPTS = 6;
     long FIREWALL_DELETE_RETRY_MILLIS = 5_000L;
 
+    /// Provider-agnostic: the id is destroyed through [ComputeProvider#disposeIngress], so a provider
+    /// that can CREATE an ingress resource can always reclaim it. This used to branch on `hetzner` and
+    /// refuse everything else, which is how the teardown path would have silently stranded every AWS
+    /// security group as a billable orphan the moment AWS gained `openIngress`.
     @SuppressWarnings("JBCT-PAT-01")
-    private static Result<Unit> deleteFirewallWithRetry(HetznerClient client,
-                                                        CreatedResource.CloudFirewall firewall,
-                                                        CleanupResolvers resolvers) {
+    private static Result<Unit> disposeWithRetry(ComputeProvider compute,
+                                                 CreatedResource.CloudFirewall firewall,
+                                                 CleanupResolvers resolvers) {
         var attempt = 1;
 
         while (true) {
-            var result = client.deleteFirewall(firewall.firewallId()).await();
+            var result = compute.disposeIngress(firewall.firewallId()).await();
 
             if (result.isSuccess() || attempt >= FIREWALL_DELETE_ATTEMPTS) {
                 return result;
             }
 
-            System.out.printf("  Firewall %d still attached (attempt %d/%d) — servers are still detaching; retrying...%n",
+            System.out.printf("  Firewall %s still attached (attempt %d/%d) — servers are still detaching; retrying...%n",
                               firewall.firewallId(),
                               attempt,
                               FIREWALL_DELETE_ATTEMPTS);
@@ -704,6 +701,31 @@ sealed interface BootstrapCleanup {
 
         if (handle.credentialEnvVars().isEmpty()) {
             return fallbackCompute(vm, UNMAPPED_HANDLE_REASON, resolvers);
+        }
+
+        return resolvers.handleComputeResolver()
+                        .apply(handle);
+    }
+
+    /// The compute provider that can reclaim this firewall, resolved the same way the VM path resolves
+    /// its own: the persisted per-source cleanup handle when there is one, else the raw provider-env
+    /// fallback. Keeping the two paths identical matters because a firewall and the VMs it protected
+    /// belong to the SAME source — if one resolves credentials and the other does not, teardown reclaims
+    /// half the source and strands the rest.
+    private static Result<ComputeProvider> resolveComputeFor(BootstrapState state,
+                                                             CreatedResource.CloudFirewall firewall,
+                                                             CleanupResolvers resolvers) {
+        var handle = state.sources().get(firewall.sourceName().value());
+
+        if (handle == null || handle.credentialEnvVars().isEmpty()) {
+            System.err.println("  WARN: no usable persisted cleanup handle for source '" + firewall.sourceName().value()
+                              + "'; falling back to raw " + firewall.provider()
+                              + " env credentials to reclaim firewall " + firewall.name()
+                              + ". A token that provisioned SHOULD be able to reap, so reaping proceeds rather"
+                              + " than stranding a paid resource.");
+
+            return resolvers.cloudComputeFallback()
+                            .apply(firewall.provider());
         }
 
         return resolvers.handleComputeResolver()

@@ -9,6 +9,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.CloudConfig;
 import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
@@ -98,11 +99,9 @@ public record AwsEnvironmentIntegrationFactory() implements EnvironmentIntegrati
 
     private static AwsEnvironmentConfig applyDiscovery(AwsEnvironmentConfig envConfig,
                                                        Map<String, String> discoveryMap) {
-        var clusterName = discoveryMap.getOrDefault("cluster_name", "");
+        var clusterName = ClusterName.maybeClusterName(discoveryMap.get("cluster_name"));
         var pollInterval = discoveryMap.getOrDefault("poll_interval_ms", "");
-        var result = clusterName.isEmpty()
-                     ? envConfig
-                     : envConfig.withDiscovery(clusterName);
+        var result = clusterName.map(envConfig::withDiscovery).or(envConfig);
 
         return pollInterval.isEmpty()
                ? result

@@ -18,6 +18,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
+import static org.pragmatica.aether.environment.ClusterName.clusterName;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -122,7 +123,7 @@ class ClusterBootstrapCommandPollTest {
         try {
             ClusterHttpClient.setApiKeyOverride(""); // reset to known empty
             var result = new ClusterBootstrapOrchestrator.BootstrapResult(
-                    "test-cluster", "http://localhost:9090", "k-secret-xyz",
+                    clusterName("test-cluster").unwrap(), "http://localhost:9090", "k-secret-xyz",
                     List.of(), "AETHER_TEST_CLUSTER_API_KEY");
 
             invokeApplyApiKeyOverride(result);
@@ -140,7 +141,7 @@ class ClusterBootstrapCommandPollTest {
         try {
             ClusterHttpClient.setApiKeyOverride("preexisting");
             var result = new ClusterBootstrapOrchestrator.BootstrapResult(
-                    "test-cluster", "http://localhost:9090", "  ",
+                    clusterName("test-cluster").unwrap(), "http://localhost:9090", "  ",
                     List.of(), "AETHER_TEST_CLUSTER_API_KEY");
 
             invokeApplyApiKeyOverride(result);

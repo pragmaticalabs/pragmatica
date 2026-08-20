@@ -26,6 +26,7 @@ import org.pragmatica.aether.deployment.cluster.DrainReason;
 import org.pragmatica.aether.deployment.cluster.ProvisionDisposition;
 import org.pragmatica.aether.deployment.membership.MembershipConfig;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
@@ -191,7 +192,7 @@ public final class LeaderReconciler {
     /// Cluster-name supplier (config-derived; empty string when not yet readable pre-formation).
     /// Used only to scope auto-heal replacement node ids to the cluster (`aether-<cluster>-node-<ulid>`)
     /// so a replacement is shape-identical to its compose-seeded siblings (NodeId == container name).
-    private final Supplier<String> clusterNameSupplier;
+    private final Supplier<Option<ClusterName>> clusterNameSupplier;
     /// Slice-ownership predicate (NEW narrow injected seam — drain-victim slice-owner exclusion).
     /// `true` when the given node currently OWNS / is serving active deployed slices, so it must
     /// NEVER be selected as a scale-down / over-provision drain victim — draining a node that is
@@ -297,7 +298,7 @@ public final class LeaderReconciler {
                              IntSupplier configuredCoreCountSupplier,
                              Supplier<Long> leaderTermSupplier,
                              ClusterTopologyManager ctm,
-                             Supplier<String> clusterNameSupplier,
+                             Supplier<Option<ClusterName>> clusterNameSupplier,
                              TimeSource timeSource,
                              NttTimerScheduler scheduler) {
         this.membershipConfig = membershipConfig;
@@ -334,7 +335,7 @@ public final class LeaderReconciler {
                                                     IntSupplier configuredCoreCountSupplier,
                                                     Supplier<Long> leaderTermSupplier,
                                                     ClusterTopologyManager ctm,
-                                                    Supplier<String> clusterNameSupplier) {
+                                                    Supplier<Option<ClusterName>> clusterNameSupplier) {
         return new LeaderReconciler(membershipConfig,
                                     presenceSampler,
                                     membershipFsm,
@@ -354,7 +355,7 @@ public final class LeaderReconciler {
                                                     IntSupplier configuredCoreCountSupplier,
                                                     Supplier<Long> leaderTermSupplier,
                                                     ClusterTopologyManager ctm,
-                                                    Supplier<String> clusterNameSupplier,
+                                                    Supplier<Option<ClusterName>> clusterNameSupplier,
                                                     TimeSource timeSource,
                                                     NttTimerScheduler scheduler) {
         return new LeaderReconciler(membershipConfig,
@@ -1010,8 +1011,8 @@ public final class LeaderReconciler {
 
     /// Cluster-scoped prefix for auto-heal replacement ids so a replacement carries the
     /// same `aether-<cluster>-node-` form as its compose-seeded siblings (NodeId ==
-    /// container name). Delegates unconditionally to the blank-defensive
-    /// [`ProvisionContext#coreNodeNamePrefix`], which collapses a blank cluster name to the
+    /// container name). Delegates unconditionally to
+    /// [`ProvisionContext#coreNodeNamePrefix`], which collapses an ABSENT cluster name to the
     /// canonical `aether-node` prefix — never the bare `node` prefix, which would drop the
     /// replacement out of the `aether-<cluster>-node-` family the harness filters key on.
     private String replacementNodeIdPrefix() {

@@ -16,8 +16,11 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
+import org.pragmatica.aether.environment.ClusterName;
+import org.pragmatica.aether.environment.FirewallId;
 import org.pragmatica.aether.environment.NodeAddress;
 import org.pragmatica.aether.environment.ProvisionedNode;
+import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -119,7 +122,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
         var clusterName = config.cluster().name();
 
         return BootstrapStatePersistence.load(clusterName)
-                                        .toResult(new BootstrapError.ProvisionFailed(clusterName,
+                                        .toResult(new BootstrapError.ProvisionFailed(clusterName.value(),
                                                                                      "No bootstrap state found for resume"))
                                         .flatMap(state -> validateResumeState(state, config))
                                         .flatMap(state -> resumeFromState(config, state, sshPublicKeys, rawTomlContent))
@@ -133,7 +136,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
         var currentHash = computeConfigHash(config);
 
         if (!currentHash.equals(state.configHash())) {
-            return new BootstrapError.ProvisionFailed(state.clusterName(),
+            return new BootstrapError.ProvisionFailed(state.clusterName().value(),
                                                       "Config has changed since last bootstrap (hash mismatch). Use fresh bootstrap or restore the original config.").result();
         }
 
@@ -218,7 +221,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
         BootstrapStatePersistence.save(failed.state());
     }
 
-    static Cause decorateAfterCleanup(String clusterName, Cause cause, boolean keepOnFailure) {
+    static Cause decorateAfterCleanup(ClusterName clusterName, Cause cause, boolean keepOnFailure) {
         if (keepOnFailure) {
             warnKeepOnFailure(clusterName, cause);
 
@@ -232,7 +235,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
         return new BootstrapError.BootstrapFailedWithOrphans(originalCause, cleanupCause.message());
     }
 
-    private static Result<Unit> cleanupOnFailure(String clusterName) {
+    private static Result<Unit> cleanupOnFailure(ClusterName clusterName) {
         return BootstrapStatePersistence.load(clusterName)
                                         .filter(state -> !state.createdResources()
                                                                .isEmpty())
@@ -241,7 +244,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
     }
 
     @Contract
-    private static void warnKeepOnFailure(String clusterName, Cause cause) {
+    private static void warnKeepOnFailure(ClusterName clusterName, Cause cause) {
         var state = BootstrapStatePersistence.load(clusterName);
         var resources = state.map(BootstrapState::createdResources).or(List.of());
         var vmCount = resources.stream().filter(r -> r instanceof CreatedResource.ProvisionedVm).count();
@@ -305,8 +308,9 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                      .encodeToString(bytes);
     }
 
-    static String deriveApiKeyEnvName(String clusterName) {
-        return "AETHER_" + clusterName.toUpperCase()
+    static String deriveApiKeyEnvName(ClusterName clusterName) {
+        return "AETHER_" + clusterName.value()
+                                      .toUpperCase()
                                       .replace('-', '_') + "_API_KEY";
     }
 
@@ -370,12 +374,12 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
         return Result.lift(() -> Long.parseLong(duration.substring(0, duration.length() - 1))).or(DEFAULT_TIMEOUT_MS / 1000);
     }
 
-    record BootstrapResult(String clusterName,
+    record BootstrapResult(ClusterName clusterName,
                            String endpoint,
                            String apiKey,
                            List<ProvisionedNode> nodes,
                            String apiKeyEnvName) {
-        static BootstrapResult bootstrapResult(String clusterName,
+        static BootstrapResult bootstrapResult(ClusterName clusterName,
                                                String endpoint,
                                                String apiKey,
                                                List<ProvisionedNode> nodes,
@@ -391,7 +395,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                             Option<String> apiKey,
                             List<SshPublicKey> sshPublicKeys,
                             Map<String, List<Long>> sshKeyIdsByProvider,
-                            Map<String, List<Long>> firewallIdsBySource,
+                            Map<SourceName, List<FirewallId>> firewallIdsBySource,
                             String clusterSecret,
                             String rawTomlContent) {
         static BootstrapContext bootstrapContext(ClusterBootstrapConfig config,
@@ -522,8 +526,8 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
             return sshKeyIdsByProvider.getOrDefault(provider, List.of());
         }
 
-        BootstrapContext withFirewallIds(String sourceName, List<Long> ids) {
-            var merged = new HashMap<String, List<Long>>(firewallIdsBySource);
+        BootstrapContext withFirewallIds(SourceName sourceName, List<FirewallId> ids) {
+            var merged = new HashMap<SourceName, List<FirewallId>>(firewallIdsBySource);
 
             merged.put(sourceName, List.copyOf(ids));
 
@@ -542,7 +546,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
         /// Ingress-firewall ids created for `sourceName` by [BootstrapPhaseFirewall], threaded into
         /// server-create so the rules are in force BEFORE the instance exists (§6.2). Keyed by SOURCE,
         /// not provider (unlike ssh keys): firewall rules are declared per source.
-        List<Long> firewallIdsFor(String sourceName) {
+        List<FirewallId> firewallIdsFor(SourceName sourceName) {
             return firewallIdsBySource.getOrDefault(sourceName, List.of());
         }
     }

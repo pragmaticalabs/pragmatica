@@ -14,6 +14,7 @@ import org.pragmatica.aether.deployment.cluster.NodeReconcilerState;
 import org.pragmatica.aether.deployment.cluster.ProvisionDisposition;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.environment.ProvisionContext;
+import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -52,6 +53,7 @@ import java.util.function.Consumer;
 import java.util.function.IntSupplier;
 import java.util.function.Supplier;
 
+import static org.pragmatica.aether.environment.ClusterName.maybeClusterName;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import static org.pragmatica.aether.deployment.membership.MembershipConfig.membershipConfig;
@@ -148,7 +150,7 @@ class LeaderReconcilerTest {
                                       configuredCoreCount,
                                       leaderTerm,
                                       ctm,
-                                      () -> "test-cluster",
+                                      () -> maybeClusterName("test-cluster"),
                                       timeSource,
                                       scheduler);
         reconciler.setReconcileListener(listener);
@@ -836,8 +838,8 @@ class LeaderReconcilerTest {
         private final NodeId seed4 = new NodeId("aether-test-cluster-node-4");
         private final NodeId seed5 = new NodeId("aether-test-cluster-node-5");
         /// Ephemeral CTM-provisioned replacements — ULID suffix → preferred as victims.
-        private final NodeId ctm1 = NodeId.randomNodeId(ProvisionContext.coreNodeNamePrefix("test-cluster"));
-        private final NodeId ctm2 = NodeId.randomNodeId(ProvisionContext.coreNodeNamePrefix("test-cluster"));
+        private final NodeId ctm1 = NodeId.randomNodeId(ProvisionContext.coreNodeNamePrefix(maybeClusterName("test-cluster")));
+        private final NodeId ctm2 = NodeId.randomNodeId(ProvisionContext.coreNodeNamePrefix(maybeClusterName("test-cluster")));
 
         /// A slice owner is removed from the victim pool entirely: with configured=1 and a 2-node
         /// surplus, the ONLY ephemeral candidate that would otherwise be drained is shielded as a
@@ -2246,7 +2248,7 @@ class LeaderReconcilerTest {
         }
 
         @Override
-        public Promise<Unit> setDesiredCount(String sourceName, NodeRole role, int count) {
+        public Promise<Unit> setDesiredCount(SourceName sourceName, NodeRole role, int count) {
             return Promise.success(unit());
         }
 
