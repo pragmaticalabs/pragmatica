@@ -593,7 +593,7 @@
       <unique_constraint_schema>public</unique_constraint_schema>
       <unique_constraint_name>orders_pkey</unique_constraint_name>
       <update_rule>NO ACTION</update_rule>
-      <delete_rule>NO ACTION</delete_rule>
+      <delete_rule>CASCADE</delete_rule>
     </referential_constraint>
     <referential_constraint>
       <constraint_catalog></constraint_catalog>
@@ -667,7 +667,7 @@
       <table_catalog></table_catalog>
       <table_schema>public</table_schema>
       <table_name>products</table_name>
-      <is_unique>YES</is_unique>
+      <is_unique>NO</is_unique>
     </index>
     <index>
       <index_catalog></index_catalog>
@@ -676,7 +676,7 @@
       <table_catalog></table_catalog>
       <table_schema>public</table_schema>
       <table_name>products</table_name>
-      <is_unique>YES</is_unique>
+      <is_unique>NO</is_unique>
     </index>
   </indexes>
   <index_column_usages>
