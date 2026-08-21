@@ -11,6 +11,7 @@ import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
+import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.InstanceType;
@@ -26,6 +27,17 @@ import static org.pragmatica.cloud.hetzner.HetznerConfig.hetznerConfig;
 /// Integration tests for the Hetzner Cloud provider.
 /// Requires HCLOUD_TOKEN environment variable to be set.
 /// Run with: mvn verify -Djbct.skip=true -Pwith-cloud-tests -pl aether/environment/hetzner -am
+/// Opt-in by an EXPLICIT flag, not by the mere presence of `HCLOUD_TOKEN`.
+///
+/// This suite creates REAL, BILLED Hetzner servers. Gating on the token alone made that a
+/// side effect of the environment: `mvn install` runs failsafe (install is after verify in the
+/// lifecycle), so any machine that happens to export a token — a developer box, or CI the day
+/// someone adds the secret for an unrelated job — provisions paid infrastructure from an
+/// ordinary build. The flag makes running it a decision instead of an accident.
+///
+/// Mirrors `ServerIT` (`TCP_INTEGRATION_TESTS`) and `DomainNameResolverIT`
+/// (`DNS_INTEGRATION_TESTS`). Run with `HETZNER_CLOUD_TESTS=true` AND `HCLOUD_TOKEN` set.
+@EnabledIfEnvironmentVariable(named = "HETZNER_CLOUD_TESTS", matches = "true")
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class HetznerCloudIT {
 
