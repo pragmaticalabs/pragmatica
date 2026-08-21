@@ -16,6 +16,16 @@
     <name>JBCT CLI</name>
     <description>Command-line interface for JBCT formatting and linting</description>
 
+    <properties>
+        <!-- Stamped into jbct-version.properties so the version flag can distinguish two builds
+             of the same version; see Version.java. This value is currently identical to Maven's
+             own default, so it is a PIN, not a change: VersionStampTest asserts the rendered
+             shape, and pinning the format here is what keeps that assertion from depending on a
+             default outside this repo. aether/cli, aether/node and slice-processor pin it the
+             same way. -->
+        <maven.build.timestamp.format>yyyy-MM-dd'T'HH:mm:ss'Z'</maven.build.timestamp.format>
+    </properties>
+
     <dependencies>
         <!-- Core module -->
         <dependency>
