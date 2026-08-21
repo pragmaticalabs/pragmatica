@@ -278,10 +278,10 @@ class AwsClientTest {
         }
 
         @Test
-        void revokeSecurityGroupIngress_success_sendsIpPermissionsFormWithoutDescription() {
+        void revokeSecurityGroupIngress_success_sendsStoredDescriptionSoTheRuleMatches() {
             testHttp.respondWith(200, REVOKE_INGRESS_RESPONSE);
 
-            client.revokeSecurityGroupIngress(GROUP_ID, "tcp", 8081, "10.0.0.0/8")
+            client.revokeSecurityGroupIngress(GROUP_ID, "tcp", 8081, "10.0.0.0/8", "aether ingress")
                   .await()
                   .onFailure(cause -> assertThat(cause).isNull())
                   .onSuccess(unit -> assertThat(unit).isEqualTo(Unit.unit()));
@@ -292,7 +292,21 @@ class AwsClientTest {
                          + "&IpPermissions.1.IpProtocol=tcp"
                          + "&IpPermissions.1.FromPort=8081"
                          + "&IpPermissions.1.ToPort=8081"
-                         + "&IpPermissions.1.IpRanges.1.CidrIp=10.0.0.0%2F8");
+                         + "&IpPermissions.1.IpRanges.1.CidrIp=10.0.0.0%2F8"
+                         + "&IpPermissions.1.IpRanges.1.Description=aether%20ingress");
+        }
+
+        /// A rule stored without a description must be revoked without one — emitting an empty
+        /// Description is itself a mismatch.
+        @Test
+        void revokeSecurityGroupIngress_blankDescription_omitsTheParameter() {
+            testHttp.respondWith(200, REVOKE_INGRESS_RESPONSE);
+
+            client.revokeSecurityGroupIngress(GROUP_ID, "tcp", 8081, "10.0.0.0/8", "")
+                  .await()
+                  .onFailure(cause -> assertThat(cause).isNull())
+                  .onSuccess(unit -> assertThat(unit).isEqualTo(Unit.unit()));
+
             assertThat(capturedBody.get()).doesNotContain("Description");
         }
 
@@ -327,20 +341,23 @@ class AwsClientTest {
         }
 
         @Test
-        void revokeSecurityGroupIngress_succeeds_whenRuleAbsent() {
+        /// The caller establishes absence by READING the group, so a `NotFound` here means the revoke
+        /// did not match a rule that was observed to exist — a mismatch, not an idempotent no-op.
+        /// Tolerating it is what let `closeIngress` report success while the rule survived.
+        void revokeSecurityGroupIngress_fails_whenRuleDoesNotMatch() {
             testHttp.respondWith(400, ec2Error("InvalidPermission.NotFound", "the specified rule does not exist"));
 
-            client.revokeSecurityGroupIngress(GROUP_ID, "tcp", 8081, "10.0.0.0/8")
-                  .await()
-                  .onFailure(cause -> assertThat(cause).isNull())
-                  .onSuccess(unit -> assertThat(unit).isEqualTo(Unit.unit()));
+            var outcome = client.revokeSecurityGroupIngress(GROUP_ID, "tcp", 8081, "10.0.0.0/8", "aether ingress")
+                                .await();
+
+            assertThat(outcome.isFailure()).isTrue();
         }
 
         @Test
         void revokeSecurityGroupIngress_succeeds_whenGroupAlreadyDeleted() {
             testHttp.respondWith(400, ec2Error("InvalidGroup.NotFound", "The security group does not exist"));
 
-            client.revokeSecurityGroupIngress(GROUP_ID, "tcp", 8081, "10.0.0.0/8")
+            client.revokeSecurityGroupIngress(GROUP_ID, "tcp", 8081, "10.0.0.0/8", "aether ingress")
                   .await()
                   .onFailure(cause -> assertThat(cause).isNull())
                   .onSuccess(unit -> assertThat(unit).isEqualTo(Unit.unit()));
