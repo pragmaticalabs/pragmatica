@@ -2308,6 +2308,20 @@ public class FactoryClassGenerator {
             return;
         }
 
+        // A SEALED interface names no codec of its own, but its permitted subclasses do. Without this
+        // recursion a sealed command hierarchy (`Mutator` variants) landed in `requiredTypes` with no
+        // codec generated for any variant, so the type checked out at compile time and failed at the
+        // first attempt to put one on the wire. Each variant is a record and takes the branch below;
+        // every variant is its own registered codec type, so the TAG is already the discriminator and
+        // no new wire concept is needed.
+        if (!te.getPermittedSubclasses().isEmpty()) {
+            for (var permitted : te.getPermittedSubclasses()) {
+                addResourceTypeArgumentEntry(permitted, importTracker, seen, entries, requiredTypes);
+            }
+
+            return;
+        }
+
         if (te.getKind() != ElementKind.RECORD && te.getKind() != ElementKind.ENUM) {
             requiredTypes.add(qualifiedName);
 
