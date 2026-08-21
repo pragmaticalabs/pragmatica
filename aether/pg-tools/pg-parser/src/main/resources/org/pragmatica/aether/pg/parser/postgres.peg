@@ -766,8 +766,12 @@ LineComment <- '--' [^\n]*
 # KNOWN GAP: PostgreSQL nests block comments per the SQL standard -- `/* outer /* inner */ still */`
 # -- and this rule stops at the FIRST '*/'. Nested comments are not a regular language, so a rule
 # compiled into peglib's DFA lexer cannot express them (same class as the DollarString
-# back-reference). Needs a counting scanner upstream; not fixable here. Found by harvesting real
-# SQL from the codebase -- no hand-written fixture had exercised it.
+# back-reference), and the recursive repair is refused outright by peglib's analyzer as
+# `grammar.whitespace-cycle`. Needs a counting scanner upstream (siy/java-peglib#45); not fixable
+# here. Found by harvesting real SQL from the codebase -- no hand-written fixture had exercised it.
+# NOT merely a parse failure: the remainder after the inner '*/' leaks in as live SQL, so when it
+# composes into something valid the parser SILENTLY ACCEPTS A DIFFERENT STATEMENT --
+# `SELECT 1 /* /* */ , 999 -- */\n FROM t;` parses as `SELECT 1, 999 FROM t`. See #619.
 BlockComment <- '/*' (!'*/' .)* '*/'
 
 %parser ColLabel

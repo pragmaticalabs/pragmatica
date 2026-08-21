@@ -571,9 +571,29 @@ language, and under peglib 0.7.x the rule is compiled into a DFA lexer. Expressi
 counting scanner in peglib itself — the same class of limitation as a back-reference. Tracked
 upstream; see the note at the rule in `postgres.peg`.
 
-**Impact:** a migration or `@PgSql` query containing nested block comments fails to parse. Single-level
-`/* ... */` and `--` line comments are unaffected. Nesting is rare in practice, which is why it went
-unnoticed until the parser corpus was extended with real harvested SQL.
+**Impact:** a migration or `@PgSql` query containing nested block comments **may silently parse as a
+different statement** — it does not reliably fail. The lexer closes at the inner `*/` and the
+remainder leaks into the statement as live SQL; when that leaked text composes into something valid,
+there is no error at all. Both of these parse cleanly with TWO select-list items where correct
+nesting demands one:
+
+```sql
+SELECT 1 /* /* */ , 999 -- */
+ FROM t;                        -- intended: SELECT 1 FROM t   | actual: SELECT 1, 999 FROM t
+
+SELECT 1 /* a /* b */ -- */
+ , 2 FROM t;                    -- intended: SELECT 1 FROM t   | actual: SELECT 1, 2 FROM t
+```
+
+The trailing `-- */` reads as a line comment and swallows the orphaned outer `*/`, leaving nothing to
+trip the parser. Where it does fail, the diagnostic misleads: `SELECT 1 /* outer /* inner */ still a
+comment */ AS c;` reports `expected end of input at 1:37` because the parser first ACCEPTS the
+truncated `SELECT 1 still` (reading `still` as an implicit column alias) and only then chokes — so the
+error points past the real cause and never mentions comments.
+
+Single-level `/* ... */` and `--` line comments are unaffected. Nesting is rare in practice, which is
+why it went unnoticed until the parser corpus was extended with real harvested SQL — but rarity is
+the only thing limiting the blast radius, not a loud failure.
 
 ### `$` in identifiers — DELIBERATELY NARROWED
 
