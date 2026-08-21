@@ -20,6 +20,7 @@ import org.pragmatica.aether.example.banking.shared.TransferSummary;
 import org.pragmatica.aether.slice.annotation.Slice;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 
 
 /// Transfer orchestrator coordinating accounts, exchange rates, and fraud detection.
@@ -146,10 +147,10 @@ public interface TransferService {
             return Promise.success(new ValidatedAccounts(source, destination));
         }
 
-        private Promise<Void> assessRisk(AccountId from, AccountId to, Money amount) {
+        private Promise<Unit> assessRisk(AccountId from, AccountId to, Money amount) {
             return fraud.assessTransfer(from, to, amount)
                         .flatMap(assessment -> assessment.isAcceptable()
-                                               ? Promise.success(null)
+                                               ? Promise.unitPromise()
                                                : new TransferError.FraudBlocked(assessment.reason()).promise());
         }
 
