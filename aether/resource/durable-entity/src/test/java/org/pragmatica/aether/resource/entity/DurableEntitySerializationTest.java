@@ -16,6 +16,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.stream.IntStream;
 
+import org.pragmatica.aether.resource.Mutator;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
@@ -33,12 +35,12 @@ class DurableEntitySerializationTest {
     /// the number of updates — any lost update (a read-modify-write race) would yield a smaller value.
     @Test
     void update_appliesEveryIncrementInTotalOrder_whenConcurrentOnSameKey() {
-        var entity = InMemoryDurableEntity.<String, Integer> inMemoryDurableEntity();
+        var entity = InMemoryDurableEntity.<String, Integer, IntOp> inMemoryDurableEntity();
 
         entity.create("counter", 0).await(AWAIT).onFailure(DurableEntitySerializationTest::fail);
 
         var updates = IntStream.range(0, CONCURRENT_UPDATES)
-                               .mapToObj(_ -> entity.update("counter", value -> value + 1))
+                               .mapToObj(_ -> entity.update("counter", new IntOp.Add(1)))
                                .toList();
 
         Promise.allOf(updates).await(AWAIT);
@@ -58,14 +60,14 @@ class DurableEntitySerializationTest {
     /// blocked rendezvous does not starve the pool.
     @Test
     void update_runsDifferentKeysInParallel_whenScheduledConcurrently() {
-        var entity = InMemoryDurableEntity.<Integer, Integer> inMemoryDurableEntity();
+        var entity = InMemoryDurableEntity.<Integer, Integer, Rendezvous> inMemoryDurableEntity();
         var barrier = new CyclicBarrier(DISTINCT_KEYS);
 
         IntStream.range(0, DISTINCT_KEYS)
                  .forEach(key -> entity.create(key, 0).await(AWAIT).onFailure(DurableEntitySerializationTest::fail));
 
         var updates = IntStream.range(0, DISTINCT_KEYS)
-                               .mapToObj(key -> entity.update(key, value -> rendezvous(barrier, value)))
+                               .mapToObj(key -> entity.update(key, new Rendezvous(barrier)))
                                .toList();
 
         Promise.allOf(updates).await(AWAIT);
@@ -82,6 +84,20 @@ class DurableEntitySerializationTest {
 
     /// Rendezvous on the barrier (test instrument) then return the incremented value. Surfaces a
     /// timeout as an unchecked failure so a missing cross-key parallelism would fail the test loudly.
+    /// A command that BLOCKS until every key's update has arrived — the device that proves distinct
+    /// keys run in parallel rather than behind one lock.
+    ///
+    /// Deliberately NOT an [IntOp] variant: it holds a [CyclicBarrier], so it could never be encoded
+    /// and could never cross a node boundary. Adding it to the shared fixture would put an
+    /// untransferable variant inside a hierarchy whose whole point is that every variant transfers.
+    /// This test only ever applies it in-process, which is exactly where that trade is sound.
+    record Rendezvous(CyclicBarrier barrier) implements Mutator<Integer> {
+        @Override
+        public Integer apply(Integer state) {
+            return rendezvous(barrier, state);
+        }
+    }
+
     private static Integer rendezvous(CyclicBarrier barrier, Integer value) {
         return await(barrier) + value + 1;
     }

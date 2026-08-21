@@ -97,7 +97,7 @@ class FencedDurableEntityFenceTest {
     private OwnershipEpochHighWater highWater;
     private StorageEngine engine;
     private MutableOwnerEpoch ownerEpoch;
-    private DurableEntity<String, Integer> entity;
+    private DurableEntity<String, Integer, IntOp> entity;
 
     @BeforeEach
     void setUp() {
@@ -128,7 +128,7 @@ class FencedDurableEntityFenceTest {
         void update_commitsAndReadsBack_atCurrentOwnerEpoch() {
             entity.create("o-1", 7).await(AWAIT).onFailure(FencedDurableEntityFenceTest::failCause);
 
-            entity.update("o-1", value -> value + 5)
+            entity.update("o-1", new IntOp.Add(5))
                   .await(AWAIT)
                   .onFailure(FencedDurableEntityFenceTest::failCause)
                   .onSuccess(state -> assertThat(state).isEqualTo(12));
@@ -151,7 +151,7 @@ class FencedDurableEntityFenceTest {
             // This node is deposed but still believes it owns the arc at the old epoch 8:0.
             ownerEpoch.set(8L, 0L);
 
-            entity.update("o-1", value -> value + 5)
+            entity.update("o-1", new IntOp.Add(5))
                   .await(AWAIT)
                   .onSuccess(state -> fail("Deposed owner's update must be rejected, got " + state))
                   .onFailure(cause -> assertThat(cause).isInstanceOf(EntityError.StaleOwnerEpoch.class));
@@ -176,7 +176,7 @@ class FencedDurableEntityFenceTest {
             newOwnerTakesOver(Epoch.epoch(9, 0));
             ownerEpoch.set(9L, 0L);
 
-            entity.update("o-1", value -> value + 1)
+            entity.update("o-1", new IntOp.Add(1))
                   .await(AWAIT)
                   .onFailure(FencedDurableEntityFenceTest::failCause)
                   .onSuccess(state -> assertThat(state).isEqualTo(8));
