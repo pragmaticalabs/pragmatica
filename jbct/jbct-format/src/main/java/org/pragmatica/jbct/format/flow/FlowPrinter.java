@@ -3115,6 +3115,15 @@ final class FlowPrinter {
             return true;
         }
 
+        // A `?` directly after `<` is a WILDCARD, never a ternary: `<` cannot precede a ternary's
+        // `?` in valid Java. `?` sits in the spaced-operator set for ternaries, and that spacing is
+        // normally suppressed by `typeContextDepth`, which the array-creation path leaves at 0 — so
+        // `new Class<?>[0]` was emitted as `new Class< ?>[0]` (#621). Keying off the preceding token
+        // rather than the depth fixes it wherever the depth is not raised.
+        if (firstChar == '?' && text.length() == 1 && lastChar == '<') {
+            return true;
+        }
+
         if (lastChar == '<') {
             // Generic '<' (inside TYPE_ARGS / TYPE_PARAMS) glues to the type argument that follows
             // (`List<String`, `static <T`). A relational/shift operator '<' (any non-type context)
