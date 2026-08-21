@@ -11,9 +11,10 @@
 |---|---|
 | **PR #618** pg-tools → peglib 0.7.2 + DML corpus + formatter fix | ✅ **MERGED** 2026-08-20 |
 | peglib 0.7.2 | ✅ **published to Central**, signed |
-| **PR #600** `feat/peglib-0.7.1` — jbct on peglib 0.7.2 | 🔓 **UNBLOCKED**, 44 commits behind |
-| **PR #602** `fix/lint-annotation-trivia-and-bnd01` | 🔓 green, 44 commits behind |
-| Issue **#619** nested block comments | open, needs upstream peglib work |
+| **PR #600** jbct on peglib 0.7.2 **+ all of #602** | ✅ rebuilt on current release, **CI green**, awaiting review |
+| **PR #602** | ⛔ **CLOSED** — superseded by #600, nothing lost |
+| Issue **#619** nested block comments | open — needs upstream peglib work |
+| Issue **#620** BND-01 works in unit tests, not through the CLI | open — pre-existing, not a regression |
 
 ---
 
@@ -127,20 +128,29 @@ export path. It is what caught bug (4) above. CI runs it; local module runs do n
 
 ## §3 Resume — recommended order
 
-1. **PR #600** (`feat/peglib-0.7.1`) — jbct on peglib 0.7.2. **Its only blocker is gone**: it pins
-   0.7.2, which now resolves from Central. It is **44 commits behind** release — merge the base in,
-   resolve, re-verify, land. This is the highest-value item: it restores **1962 lint findings** that
-   the 0.7.1 member-shape change silently dropped.
-2. **PR #602** (`fix/lint-annotation-trivia-and-bnd01`) — green, independent, 44 behind. Landing it
-   also unblocks the **peglib project itself**, which is pinned to jbct rc2 because `JBCT-BND-01`
-   flags its own `Expression.Optional` (17 sites, 9 files); #602 fixes exactly that.
-   Sibling to the formatter fix in #618: #602 is the *lint* half (a trailing comment disabled an
-   annotation), #618 the *format* half (an own-line comment was deleted).
-3. **JBCT-EX-02 burn-down** — #600's repaired rule surfaces **53 previously-invisible
-   `error`-severity violations** (49 in tests, 4 in production). Anything gating on a clean lint run
-   goes red the moment #600 lands, so sequence it immediately after.
+1. **Get PR #600 reviewed and merged.** It now carries **both** #600 and #602, rebuilt on top of
+   release-with-#618. **CI green** (build-and-test + forge-tests). It restores **1962 lint findings**
+   that the peglib 0.7.1 member-shape change silently dropped, and fixes three linter defects.
+   Merging it also unblocks the **peglib project itself**, which is pinned to jbct rc2 because
+   `JBCT-BND-01` flagged its own `Expression.Optional`.
+
+   Two conflicts were resolved keeping BOTH sides — re-check these first if anything looks wrong:
+   `CstFullyQualifiedNameRule` → `MapperSafety.blankNonCode(memberDeclText(method))`, and
+   `jbct/CHANGELOG.md`. Merged (not rebased) deliberately: #600 rewrites `FlowPrinter` (+211/−64),
+   the same file #618 fixed, and replaying 22 commits over 53 risked silently dropping #618.
+
+2. **#620 — BND-01's origin fix does not take effect through the CLI.** Its unit test passes with
+   `LintContext.defaultContext()`; the same fixture via `jbct lint` reports 2 findings. Reproduces on
+   #602's branch alone, so pre-existing, and not a regression (simple-name matching flagged it too).
+   Worth auditing whether other rule tests share the assumption that the default context matches what
+   the CLI ships.
+
+3. **JBCT-EX-02 — re-derive the number before planning a burn-down.** Earlier handovers say #600's
+   repaired rule surfaces **53** violations. This build reports **4 of 57** `.orElseThrow` calls, and
+   `CstOrElseThrowRule` was never modified by #600 — the "53" is not reproducible and should be
+   measured, not assumed.
+
 4. **#619 nested block comments** — needs a counting scanner in peglib; not fixable in the grammar.
-   Low urgency, documented in three places.
 
 Not started, from the design-review triage: **#604–#617**. #607 (slice-testkit cannot test the core
 programming model) and #606 (three examples teach patterns that do not run) remain the cluster worth
