@@ -18,6 +18,7 @@ import org.pragmatica.aether.setup.generators.Generator;
 import org.pragmatica.aether.setup.generators.KubernetesGenerator;
 import org.pragmatica.aether.setup.generators.LocalGenerator;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.parse.Number;
 
@@ -114,11 +115,15 @@ public final class AetherUp {
         return GENERATORS.stream()
                          .filter(g -> g.supports(config))
                          .findFirst()
-                         .orElseThrow(() -> noGeneratorError(config));
+                         .map(Option::some)
+                         .orElseGet(Option::empty)
+                         .onEmpty(() -> printErrorAndExit("Error:",
+                                                          noGeneratorMessage(config)))
+                         .expect("printErrorAndExit calls System.exit; unwrap unreachable on failure");
     }
 
-    private static IllegalStateException noGeneratorError(AetherConfig config) {
-        return new IllegalStateException("No generator found for environment: " + config.environment());
+    private static String noGeneratorMessage(AetherConfig config) {
+        return "No generator found for environment: " + config.environment();
     }
 
     private static void printDryRun(AetherConfig config, Path outputDir) {
