@@ -20,7 +20,7 @@ public record TransactionConfig(TransactionPropagation propagation,
                                 Class<?>[] rollbackFor) {
     private static final TransactionPropagation DEFAULT_PROPAGATION = TransactionPropagation.REQUIRED;
     private static final IsolationLevel DEFAULT_ISOLATION = IsolationLevel.DEFAULT;
-    private static final Class<?>[] EMPTY_ROLLBACK_FOR = new Class<?>[0];
+    private static final Class<?>[] EMPTY_ROLLBACK_FOR = new Class< ?>[0];
 
     public static Result<TransactionConfig> transactionConfig() {
         return success(new TransactionConfig(DEFAULT_PROPAGATION, DEFAULT_ISOLATION, none(), false, EMPTY_ROLLBACK_FOR));
