@@ -30,6 +30,7 @@ import org.pragmatica.aether.environment.MarketOptions;
 import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.ProvisionRequest;
 import org.pragmatica.aether.environment.RouteChange;
+import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.cloud.aws.AwsClient;
 import org.pragmatica.cloud.aws.AwsConfig;
 import org.pragmatica.cloud.aws.AwsError;
@@ -39,6 +40,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
 
 import static org.pragmatica.aether.environment.ClusterName.clusterName;
+import static org.pragmatica.aether.environment.FirewallId.firewallId;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
@@ -268,6 +270,168 @@ class AwsLocalStackContractTest {
         }
     }
 
+    /// Ingress (REQ-5.1.8.4) against a real EC2 surface. Two properties here are unreachable from a
+    /// unit test, and they are why this contract exists:
+    ///
+    /// - a created group lands in the SUBNET's VPC. The fixture builds a deliberately NON-default VPC,
+    ///   so a provider that derived no VPC (or reached for the default) fails here and only here.
+    /// - an instance whose config carries NO security groups picks up the `(cluster, source)`-tagged
+    ///   group at create. That is the auto-heal replacement path: a `SourceProfile` persists ingress
+    ///   RULES but never the created group's id, so `config.securityGroupIds()` is empty there and the
+    ///   replacement would otherwise launch with none of the ingress its bootstrap peers have.
+    ///
+    /// `resolveSecurityGroupIds` returns early on a NON-empty `securityGroupIds`, so [#computeConfig]
+    /// — which supplies one — can never reach that path. [#ingressConfig] supplies none, which is the
+    /// whole point of it being a separate config rather than a parameter.
+    ///
+    /// **Evidence bound:** LocalStack Community's EC2 is a mock and can accept what real EC2 rejects,
+    /// so green here is weaker than a credentialed run — the same caveat [LoadBalancerContract] carries
+    /// for ELBv2. Only a credentialed run settles VPC-membership enforcement.
+    @Nested
+    class IngressContract {
+        @Test
+        @Timeout(120)
+        void openIngress_createdGroup_livesInTheSubnetsVpc() {
+            var cluster = clusterName("ingress-vpc").unwrap();
+            var handle = awaitSuccess(ingressProvider(cluster).openIngress(INGRESS_SOURCE,
+                                                                           7001,
+                                                                           "tcp",
+                                                                           INGRESS_CIDR,
+                                                                           "contract vpc"));
+
+            assertThat(sgField(handle.providerResourceId(), "VpcId")).isEqualTo(vpcId);
+
+            deleteSecurityGroupQuietly(handle.providerResourceId());
+        }
+
+        @Test
+        @Timeout(120)
+        void openIngress_createdGroup_carriesClusterAndSourceTags() {
+            var cluster = clusterName("ingress-tags").unwrap();
+            var handle = awaitSuccess(ingressProvider(cluster).openIngress(INGRESS_SOURCE,
+                                                                           7002,
+                                                                           "tcp",
+                                                                           INGRESS_CIDR,
+                                                                           "contract tags"));
+            var groupId = handle.providerResourceId();
+
+            assertThat(sgTagValue(groupId, AwsComputeProvider.CLUSTER_TAG)).isEqualTo("ingress-tags");
+            assertThat(sgTagValue(groupId, AwsComputeProvider.SOURCE_TAG)).isEqualTo(INGRESS_SOURCE.value());
+
+            deleteSecurityGroupQuietly(groupId);
+        }
+
+        /// One group per `(cluster, source)`, so a `"tcp+udp"` entry becomes two permissions on ONE
+        /// group rather than two groups. A second group would split the ingress an instance receives.
+        @Test
+        @Timeout(120)
+        void openIngress_sameSourceTwice_reusesOneGroupAndAddsBothPermissions() {
+            var cluster = clusterName("ingress-reuse").unwrap();
+            var provider = ingressProvider(cluster);
+            var first = awaitSuccess(provider.openIngress(INGRESS_SOURCE, 7003, "tcp", INGRESS_CIDR, "first"));
+            var second = awaitSuccess(provider.openIngress(INGRESS_SOURCE, 7003, "udp", INGRESS_CIDR, "second"));
+
+            assertThat(second.providerResourceId()).isEqualTo(first.providerResourceId());
+            assertThat(sgPermissionCount(first.providerResourceId())).isEqualTo(2);
+
+            deleteSecurityGroupQuietly(first.providerResourceId());
+        }
+
+        /// Idempotent forward: EC2 answers a repeated authorize with `InvalidPermission.Duplicate`,
+        /// which the client resolves as success. Without that, a re-bootstrap fails on its own rules.
+        @Test
+        @Timeout(120)
+        void openIngress_duplicateRule_succeedsAndDoesNotDoubleCount() {
+            var cluster = clusterName("ingress-dup").unwrap();
+            var provider = ingressProvider(cluster);
+            var handle = awaitSuccess(provider.openIngress(INGRESS_SOURCE, 7004, "tcp", INGRESS_CIDR, "once"));
+
+            awaitSuccess(provider.openIngress(INGRESS_SOURCE, 7004, "tcp", INGRESS_CIDR, "again"));
+
+            assertThat(sgPermissionCount(handle.providerResourceId())).isEqualTo(1);
+
+            deleteSecurityGroupQuietly(handle.providerResourceId());
+        }
+
+        /// Idempotent backward: revoking a rule that is not there is SUCCESS, not a failure. Cleanup
+        /// runs on paths that cannot know whether the rule survived, and a hard failure there strands
+        /// the group as a billable orphan.
+        @Test
+        @Timeout(120)
+        void closeIngress_ruleNeverOpened_succeeds() {
+            var cluster = clusterName("ingress-close-absent").unwrap();
+            var provider = ingressProvider(cluster);
+            var handle = awaitSuccess(provider.openIngress(INGRESS_SOURCE, 7005, "tcp", INGRESS_CIDR, "present"));
+
+            awaitSuccess(provider.closeIngress(INGRESS_SOURCE, 7006, "tcp", INGRESS_CIDR));
+
+            assertThat(sgPermissionCount(handle.providerResourceId())).isEqualTo(1);
+
+            deleteSecurityGroupQuietly(handle.providerResourceId());
+        }
+
+        @Test
+        @Timeout(120)
+        void closeIngress_openedRule_removesOnlyThatPermission() {
+            var cluster = clusterName("ingress-close").unwrap();
+            var provider = ingressProvider(cluster);
+            var handle = awaitSuccess(provider.openIngress(INGRESS_SOURCE, 7007, "tcp", INGRESS_CIDR, "keep"));
+
+            awaitSuccess(provider.openIngress(INGRESS_SOURCE, 7008, "tcp", INGRESS_CIDR, "drop"));
+            awaitSuccess(provider.closeIngress(INGRESS_SOURCE, 7008, "tcp", INGRESS_CIDR));
+
+            assertThat(sgPermissionCount(handle.providerResourceId())).isEqualTo(1);
+
+            deleteSecurityGroupQuietly(handle.providerResourceId());
+        }
+
+        /// `disposeIngress` is the SPI seam `cluster destroy` reaches through with no vendor knowledge.
+        /// Deleting an already-absent group must succeed, or a second destroy pass fails on its own
+        /// completed work.
+        @Test
+        @Timeout(120)
+        void disposeIngress_groupAlreadyGone_succeeds() {
+            var cluster = clusterName("ingress-dispose").unwrap();
+            var provider = ingressProvider(cluster);
+            var handle = awaitSuccess(provider.openIngress(INGRESS_SOURCE, 7009, "tcp", INGRESS_CIDR, "dispose"));
+            var groupId = firewallId(handle.providerResourceId()).unwrap();
+
+            awaitSuccess(provider.disposeIngress(groupId));
+            awaitSuccess(provider.disposeIngress(groupId));
+
+            assertThat(securityGroupExists(handle.providerResourceId())).isFalse();
+        }
+
+        /// THE auto-heal case. Config carries NO security groups — exactly what a `SourceProfile`-built
+        /// replacement has — so the group must be resolved by `(cluster, source)` tag at create. Before
+        /// this seam existed the replacement launched accepting nothing its peers accepted.
+        @Test
+        @Timeout(120)
+        void createFrom_withNoConfiguredSecurityGroups_attachesTheTaggedGroup() {
+            var cluster = clusterName("ingress-resolve").unwrap();
+            var provider = ingressProvider(cluster);
+            var handle = awaitSuccess(provider.openIngress(INGRESS_SOURCE, 7010, "tcp", INGRESS_CIDR, "resolve"));
+            var info = awaitSuccess(provider.createFrom(onDemandRequest(cluster, "core")));
+
+            assertThat(describeField(info.id().value(), "SecurityGroups[0].GroupId"))
+                      .isEqualTo(handle.providerResourceId());
+
+            terminateQuietly(info.id().value());
+            deleteSecurityGroupQuietly(handle.providerResourceId());
+        }
+
+        /// A group without the `aether-cluster` tag is invisible to every scoped cleanup path and leaks
+        /// as a paid resource, so an unresolvable cluster REFUSES rather than creating one.
+        @Test
+        @Timeout(120)
+        void openIngress_withoutClusterName_refusesRatherThanCreatingAnUnreclaimableGroup() {
+            var outcome = computeProvider().openIngress(INGRESS_SOURCE, 7011, "tcp", INGRESS_CIDR, "no cluster")
+                                           .await(TEST_AWAIT);
+
+            assertThat(outcome.isFailure()).isTrue();
+        }
+    }
+
     // --- Docker gate (the ONE small helper; mirrors the aether-deployment schema-test pattern) ---
 
     private static boolean dockerAvailable() {
@@ -312,6 +476,32 @@ class AwsLocalStackContractTest {
         return AwsComputeProvider.awsComputeProvider(client, computeConfig()).unwrap();
     }
 
+    /// Must MATCH the source name [#onDemandRequest] stamps into its `ProvisionContext` — the whole
+    /// point of the resolve-at-create case is that the two agree.
+    private static final SourceName INGRESS_SOURCE = sourceNameOrDefault("contract-src");
+
+    private static final String INGRESS_CIDR = "10.0.0.0/16";
+
+    /// Deliberately supplies NO security groups. `resolveSecurityGroupIds` returns early on a
+    /// non-empty list, so [#computeConfig] can never reach the tag-resolution path this contract
+    /// exists to pin — and `withDiscovery` is what makes the cluster name resolvable, without which
+    /// ingress refuses outright.
+    private static AwsEnvironmentConfig ingressConfig(ClusterName cluster) {
+        return AwsEnvironmentConfig.awsEnvironmentConfig(localStackConfig(),
+                                                         contractAmi,
+                                                         INSTANCE_SIZE,
+                                                         Option.empty(),
+                                                         List.of(),
+                                                         subnetId,
+                                                         "")
+                                   .unwrap()
+                                   .withDiscovery(cluster);
+    }
+
+    private static AwsComputeProvider ingressProvider(ClusterName cluster) {
+        return AwsComputeProvider.awsComputeProvider(client, ingressConfig(cluster)).unwrap();
+    }
+
     private static ProvisionRequest onDemandRequest(ClusterName cluster, String role) {
         return new ProvisionRequest(InstanceType.ON_DEMAND,
                                     INSTANCE_SIZE,
@@ -341,6 +531,38 @@ class AwsLocalStackContractTest {
         return awslocalText("ec2", "describe-instances", "--instance-ids", instanceId,
                             "--query", "Reservations[0].Instances[0].Tags[?Key=='" + tagKey + "']|[0].Value",
                             "--output", "text");
+    }
+
+    private static String sgField(String groupId, String field) {
+        return awslocalText("ec2", "describe-security-groups", "--group-ids", groupId,
+                            "--query", "SecurityGroups[0]." + field, "--output", "text");
+    }
+
+    private static String sgTagValue(String groupId, String tagKey) {
+        return awslocalText("ec2", "describe-security-groups", "--group-ids", groupId,
+                            "--query", "SecurityGroups[0].Tags[?Key=='" + tagKey + "']|[0].Value",
+                            "--output", "text");
+    }
+
+    private static int sgPermissionCount(String groupId) {
+        return Integer.parseInt(awslocalText("ec2", "describe-security-groups", "--group-ids", groupId,
+                                             "--query", "length(SecurityGroups[0].IpPermissions)",
+                                             "--output", "text"));
+    }
+
+    /// Filter-based on purpose: `--group-ids` on an absent group exits NON-zero, which [#awslocalText]
+    /// turns into a test failure. A filter simply matches nothing and exits 0, which is what lets this
+    /// answer "gone" instead of exploding.
+    private static boolean securityGroupExists(String groupId) {
+        return !"0".equals(awslocalText("ec2", "describe-security-groups",
+                                        "--filters", "Name=group-id,Values=" + groupId,
+                                        "--query", "length(SecurityGroups)", "--output", "text"));
+    }
+
+    private static void deleteSecurityGroupQuietly(String groupId) {
+        if (securityGroupExists(groupId)) {
+            awslocalText("ec2", "delete-security-group", "--group-id", groupId);
+        }
     }
 
     private static String awslocalText(String... args) {
