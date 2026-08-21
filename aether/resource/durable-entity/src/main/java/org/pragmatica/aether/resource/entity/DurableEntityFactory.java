@@ -8,6 +8,7 @@ import org.pragmatica.aether.dht.CommittedPartitionOwnerSource;
 import org.pragmatica.aether.dht.CommittedPartitionOwnerSource.CommittedOwner;
 import org.pragmatica.aether.dht.EntityPartitionArc;
 import org.pragmatica.aether.dht.PartitionOwnerEpochSource;
+import org.pragmatica.aether.resource.Mutator;
 import org.pragmatica.aether.resource.ResourceFactory;
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
@@ -123,17 +124,17 @@ public final class DurableEntityFactory implements ResourceFactory<DurableEntity
     private static DurableEntity buildEntity(DurableEntityConfig config,
                                              ProvisioningContext context,
                                              FenceCollaborators fence) {
-        var entity = PartitionFencedDurableEntity.<Object, Object> partitionFencedDurableEntity(config.keyspace(),
-                                                                                                fence.substrate(),
-                                                                                                EntityPartitionArc.entityPartitionArc(config.keyspace(),
-                                                                                                                                      config.partitionCount()),
-                                                                                                fence.serializer(),
-                                                                                                fence.deserializer(),
-                                                                                                fence.self(),
-                                                                                                fence.committedOwners(),
-                                                                                                Option.some(fence.epochHighWater()),
-                                                                                                context.extension(EntityLinearizableBarrier.class)
-                                                                                                       .option());
+        var entity = PartitionFencedDurableEntity.<Object, Object, Mutator<Object>> partitionFencedDurableEntity(config.keyspace(),
+                                                                                                                 fence.substrate(),
+                                                                                                                 EntityPartitionArc.entityPartitionArc(config.keyspace(),
+                                                                                                                                                       config.partitionCount()),
+                                                                                                                 fence.serializer(),
+                                                                                                                 fence.deserializer(),
+                                                                                                                 fence.self(),
+                                                                                                                 fence.committedOwners(),
+                                                                                                                 Option.some(fence.epochHighWater()),
+                                                                                                                 context.extension(EntityLinearizableBarrier.class)
+                                                                                                                        .option());
 
         registerForCheckpointing(config, context, fence, entity);
 
@@ -153,8 +154,8 @@ public final class DurableEntityFactory implements ResourceFactory<DurableEntity
     private static void registerForCheckpointing(DurableEntityConfig config,
                                                  ProvisioningContext context,
                                                  FenceCollaborators fence,
-                                                 DurableEntity<?, ?> entity) {
-        if (! (entity instanceof PartitionFencedDurableEntity<?, ?> fenced)) {
+                                                 DurableEntity<?, ?, ?> entity) {
+        if (! (entity instanceof PartitionFencedDurableEntity<?, ?, ?> fenced)) {
             return;
         }
 

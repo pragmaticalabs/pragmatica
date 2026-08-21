@@ -6,8 +6,8 @@ package org.pragmatica.aether.resource.entity;
 
 import java.time.Duration;
 
-import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
+import org.pragmatica.aether.resource.Mutator;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
@@ -75,7 +75,7 @@ import org.pragmatica.lang.Unit;
 ///
 /// @param <K> entity key type — used only as a map key (equals/hashCode); never mutated
 /// @param <S> entity state type — an application-defined immutable value (record / sealed interface)
-public interface DurableEntity<K, S> {
+public interface DurableEntity<K, S, C extends Mutator<S>> {
     /// Create a new entity instance for `key` with `initial` state.
     ///
     /// Fails with [EntityError.EntityAlreadyExists] if the key already holds state. The create
@@ -132,7 +132,7 @@ public interface DurableEntity<K, S> {
     /// @param mutator pure state transition applied under the per-key serialization
     ///
     /// @return the post-mutation state, or a failure if the key is absent
-    Promise<S> update(K key, Fn1<S, S> mutator);
+    Promise<S> update(K key, C mutator);
 
     /// Schedule a one-shot timer that applies `onFire` to the entity state after `delay`.
     ///
@@ -145,7 +145,7 @@ public interface DurableEntity<K, S> {
     /// @param onFire pure state transition applied when the timer fires
     ///
     /// @return a token identifying the scheduled timer, or a failure
-    Promise<TimerToken> scheduleTimer(K key, Duration delay, Fn1<S, S> onFire);
+    Promise<TimerToken> scheduleTimer(K key, Duration delay, C onFire);
 
     /// Cancel a previously scheduled timer.
     ///

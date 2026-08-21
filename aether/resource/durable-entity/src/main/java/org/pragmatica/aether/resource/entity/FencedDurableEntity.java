@@ -12,8 +12,8 @@ import org.pragmatica.dht.DHTError;
 import org.pragmatica.dht.OwnerEpochSource;
 import org.pragmatica.dht.storage.StorageEngine;
 import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
+import org.pragmatica.aether.resource.Mutator;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.serialization.Deserializer;
@@ -48,7 +48,7 @@ import org.pragmatica.serialization.Serializer;
 ///
 /// @param <K> entity key type — rendered to bytes via `String.valueOf` for the DHT key (first cut)
 /// @param <S> entity state type — an application-defined immutable value, encoded via [Serializer]
-final class FencedDurableEntity<K, S> implements DurableEntity<K, S> {
+final class FencedDurableEntity<K, S, C extends Mutator<S>> implements DurableEntity<K, S, C> {
     private final StorageEngine storage;
     private final OwnerEpochSource ownerEpoch;
     private final Serializer serializer;
@@ -71,11 +71,11 @@ final class FencedDurableEntity<K, S> implements DurableEntity<K, S> {
         this.perKey = PerKeySerialExecutor.perKeySerialExecutor();
     }
 
-    static <K, S> DurableEntity<K, S> fencedDurableEntity(StorageEngine storage,
-                                                          OwnerEpochSource ownerEpoch,
-                                                          Serializer serializer,
-                                                          Deserializer deserializer,
-                                                          String keyspace) {
+    static <K, S, C extends Mutator<S>> DurableEntity<K, S, C> fencedDurableEntity(StorageEngine storage,
+                                                                                   OwnerEpochSource ownerEpoch,
+                                                                                   Serializer serializer,
+                                                                                   Deserializer deserializer,
+                                                                                   String keyspace) {
         return new FencedDurableEntity<>(storage, ownerEpoch, serializer, deserializer, keyspace);
     }
 
@@ -90,7 +90,7 @@ final class FencedDurableEntity<K, S> implements DurableEntity<K, S> {
     }
 
     @Override
-    public Promise<S> update(K key, Fn1<S, S> mutator) {
+    public Promise<S> update(K key, C mutator) {
         return perKey.submit(key, () -> doUpdate(key, mutator));
     }
 
@@ -100,7 +100,7 @@ final class FencedDurableEntity<K, S> implements DurableEntity<K, S> {
     }
 
     @Override
-    public Promise<TimerToken> scheduleTimer(K key, Duration delay, Fn1<S, S> onFire) {
+    public Promise<TimerToken> scheduleTimer(K key, Duration delay, C onFire) {
         return new EntityError.TimerNotSupported(String.valueOf(key)).promise();
     }
 
@@ -117,7 +117,7 @@ final class FencedDurableEntity<K, S> implements DurableEntity<K, S> {
         return readState(key);
     }
 
-    private Promise<S> doUpdate(K key, Fn1<S, S> mutator) {
+    private Promise<S> doUpdate(K key, C mutator) {
         return readState(key).flatMap(current -> current.fold(() -> keyNotFound(key),
                                                               state -> commit(key, mutator.apply(state))));
     }
