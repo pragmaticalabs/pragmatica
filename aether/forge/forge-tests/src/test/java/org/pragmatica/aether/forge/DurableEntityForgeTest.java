@@ -48,7 +48,7 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 ///
 /// ## Non-vacuity
 ///
-/// The fixture slice declares `@OrderEntity DurableEntity<String, OrderState>` and does nothing
+/// The fixture slice declares `@OrderEntity DurableEntity<String, OrderState, OrderCommand>` and does nothing
 /// else — if resource provisioning fails, the slice does not load and every test here fails at
 /// setup rather than passing quietly. Each response carries the slice instance's own id, so the
 /// cross-node assertions ([#get_returnsAbsentOnEveryOtherNode_afterCreateOnOneNode],

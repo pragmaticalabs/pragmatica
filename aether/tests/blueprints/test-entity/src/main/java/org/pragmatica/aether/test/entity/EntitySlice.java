@@ -7,6 +7,7 @@ package org.pragmatica.aether.test.entity;
 import java.time.Duration;
 import java.util.UUID;
 
+import org.pragmatica.aether.resource.Mutator;
 import org.pragmatica.aether.resource.entity.DurableEntity;
 import org.pragmatica.aether.slice.annotation.Slice;
 import org.pragmatica.lang.Cause;
@@ -64,6 +65,34 @@ public interface EntitySlice {
     /// The entity state. Deliberately never crosses the HTTP boundary — [EntityResponse] carries its
     /// fields flattened — so this fixture measures the ENTITY, never the slice codec. A codec defect
     /// would otherwise be indistinguishable from an entity defect.
+    /// The keyspace's command hierarchy — the transitions this slice can apply to an [OrderState].
+    ///
+    /// SEALED with record variants on purpose. A lambda has no name, so it cannot be persisted for a
+    /// durable timer nor forwarded to a partition owner; a record's components ARE its arguments, and
+    /// each variant is its own registered codec type, so the tag is already the discriminator. Being
+    /// sealed is also what stops a lambda being passed here at all.
+    ///
+    /// Declared as the `C` type argument of [DurableEntity] so the slice processor collects it: the
+    /// generator walks the type arguments of a resource-qualified parameter, and a command type that
+    /// is not a type argument is invisible to codec generation.
+    sealed interface OrderCommand extends Mutator<OrderState> {
+        record SetAmount(int amount) implements OrderCommand {
+            @Override
+            public OrderState apply(OrderState state) {
+                return state.withAmount(amount);
+            }
+        }
+
+        /// What a durable timer fires (#351). Real rather than an identity stub, so it keeps meaning
+        /// something once timers persist their action.
+        record Expire() implements OrderCommand {
+            @Override
+            public OrderState apply(OrderState state) {
+                return state.expired();
+            }
+        }
+    }
+
     record OrderState(String status, int amount) {
         OrderState withAmount(int newAmount) {
             return new OrderState(status, newAmount);
@@ -139,11 +168,11 @@ public interface EntitySlice {
     /// omitting this call would let a reader assume timers work.
     Promise<EntityResponse> scheduleTimer(KeyRequest request);
 
-    static EntitySlice entitySlice(@OrderEntity DurableEntity<String, OrderState> orders) {
+    static EntitySlice entitySlice(@OrderEntity DurableEntity<String, OrderState, OrderCommand> orders) {
         return new entitySlice(orders, UUID.randomUUID().toString());
     }
 
-    record entitySlice(DurableEntity<String, OrderState> orders, String instance) implements EntitySlice {
+    record entitySlice(DurableEntity<String, OrderState, OrderCommand> orders, String instance) implements EntitySlice {
         /// Long enough that the timer cannot plausibly fire during a test, short enough to stay
         /// meaningful once #351 makes it real.
         private static final Duration TIMER_DELAY = Duration.ofMinutes(5);
@@ -164,7 +193,7 @@ public interface EntitySlice {
 
         @Override
         public Promise<EntityResponse> update(UpdateRequest request) {
-            return orders.update(request.orderId(), state -> state.withAmount(request.amount()))
+            return orders.update(request.orderId(), new OrderCommand.SetAmount(request.amount()))
                          .map(state -> EntityResponse.updated(instance, state))
                          .recover(this::failure);
         }
@@ -178,7 +207,7 @@ public interface EntitySlice {
 
         @Override
         public Promise<EntityResponse> scheduleTimer(KeyRequest request) {
-            return orders.scheduleTimer(request.orderId(), TIMER_DELAY, OrderState::expired)
+            return orders.scheduleTimer(request.orderId(), TIMER_DELAY, new OrderCommand.Expire())
                          .map(token -> EntityResponse.scheduled(instance, token))
                          .recover(this::failure);
         }
