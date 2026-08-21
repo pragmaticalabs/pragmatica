@@ -5,39 +5,44 @@
 > aether-main's are the unsuffixed files.
 
 The peglib 0.7.2 migration is **complete and merged** on both sides — pg-tools (#618) and jbct
-(#600). peglib **0.7.2 is on Maven Central**. One regression from #600 is fixed and **awaiting merge
-in #622**.
+(#600) — and the one regression it introduced is fixed and merged too (#622). peglib **0.7.2 is on
+Maven Central**. Nothing from this workstream is outstanding.
 
 | Item | State |
 |---|---|
 | **#618** pg-tools → peglib 0.7.2, DML corpus, formatter comment fix | ✅ MERGED 2026-08-20 |
 | **#600** jbct → peglib 0.7.2 **+ all of #602** | ✅ MERGED 2026-08-21 |
 | **#602** | ⛔ CLOSED — superseded by #600, nothing lost |
-| **#622** wildcard-in-array-creation spacing (fixes #621) | 🔵 **OPEN, mergeable, CI in flight** |
+| **#622** wildcard-in-array-creation spacing (fixes #621) | ✅ MERGED 2026-08-21 |
 | **#619** nested block comments | open — needs upstream peglib |
 | **#620** BND-01 works in unit tests, not via the CLI | open — pre-existing, not a regression |
-| **#621** | open — closes when #622 merges |
+| **#621** | ✅ closed by #622 |
 
 ---
 
-## §1 FIRST THING: land #622
+## §1 The #600 regression, fixed in #622
 
-`jbct:format` rewrites `new Class<?>[0]` → `new Class< ?>[0]`. A regression from #600, cosmetic but
-blocking: **`jbct:check` bundles format-check, so wiring it into CI makes the formatter's output
-normative.** Until #622 lands, `release-1.0.0-rc3` carries one deliberately odd line
-(`TransactionConfig.java`, accepted in `e69392abe`); #622 reverts it.
+`jbct:format` rewrote `new Class<?>[0]` → `new Class< ?>[0]` — a regression from #600. Cosmetic, but
+it mattered because **`jbct:check` bundles format-check**, so wiring that into CI would have made the
+odd spelling normative. `TransactionConfig.java` had been committed in the odd form under protest
+(`e69392abe`); #622 reverts it, and the fixed formatter now leaves that file byte-identical.
 
 Cause: `?` is in the spaced-operator set for ternaries, and that spacing is suppressed by
-`typeContextDepth` — which the **array-creation path leaves at 0**. Instrumented, not inferred:
-the two `new Class<?>[…]` occurrences emit `?` at depth 0; every correct occurrence emits at depth 1.
+`typeContextDepth` — which the **array-creation path leaves at 0**. Instrumented, not inferred: the
+two `new Class<?>[…]` occurrences emit `?` at depth 0; every correct occurrence emits at depth 1.
 
 Fix: a `?` directly after `<` is always a wildcard (`<` cannot precede a ternary's `?` in valid
 Java), so the guard keys off the preceding token rather than the depth. The deeper cause — array
 creation not raising `typeContextDepth` — was deliberately NOT chased: `<` and `>` are already
-spaced correctly there, so `?` was the only observable symptom. Recorded in a comment at the guard.
+spaced correctly there, so `?` was the only observable symptom. Recorded in a comment at the guard,
+so anyone hitting a related symptom starts from the real cause rather than the workaround.
 
 `WildcardSpacingTest` pins the creation and declaration forms **separately** (different paths; only
 one regressed) and is mutation-checked — disabling the guard turns 4 of 6 red.
+
+**Why nothing caught it:** the output still compiled (Java permits whitespace inside type arguments)
+and was idempotent, so the tree did not churn. It surfaced only when a full build reformatted the
+single file in the corpus using that shape.
 
 ---
 
@@ -94,7 +99,7 @@ mvn -f jbct/pom.xml test -Djbct.skip=true                         # jbct reactor
 
 ---
 
-## §4 Resume — after #622
+## §4 Resume
 
 1. **#620 — BND-01's origin fix does not take effect through the CLI.** Its unit test passes with
    `LintContext.defaultContext()`; the same fixture via `jbct lint` reports 2 findings. Reproduces
