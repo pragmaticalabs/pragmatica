@@ -70,6 +70,7 @@ final class TestAwsClient implements AwsClient {
     String lastRevokeProtocol;
     int lastRevokePort;
     String lastRevokeCidr;
+    String lastRevokeDescription;
     String lastDeletedGroupId;
 
     @Override
@@ -144,11 +145,12 @@ final class TestAwsClient implements AwsClient {
     }
 
     @Override
-    public Promise<Unit> revokeSecurityGroupIngress(String groupId, String protocol, int port, String cidr) {
+    public Promise<Unit> revokeSecurityGroupIngress(String groupId, String protocol, int port, String cidr, String description) {
         lastRevokeGroupId = groupId;
         lastRevokeProtocol = protocol;
         lastRevokePort = port;
         lastRevokeCidr = cidr;
+        lastRevokeDescription = description;
         return revokeIngressResponse;
     }
 
