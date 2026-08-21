@@ -100,10 +100,7 @@ public class CstConstructorBypassRule implements CstLintRule {
             return true;
         }
 
-        return findAncestor(root, node, RuleKind.CLASS_MEMBER).orElse(() -> findAncestor(root,
-                                                                                         node,
-                                                                                         RuleKind.RECORD_MEMBER))
-                           .map(member -> {
+        return enclosingMember(root, node).map(member -> {
                                     var memberText = text(member);
 
                                     return memberText.contains("static ") && memberText.contains("Result<");

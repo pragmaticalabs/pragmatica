@@ -91,7 +91,7 @@ public class CstNullableParameterRule implements CstLintRule {
         var names = new HashSet<String>();
         // Only this method's own (direct) parameters — not parameters of nested local/anonymous
         // type methods, whose bodies are scanned separately.
-        var params = methodParams(method).map(node -> childrenByRule(node, RuleKind.PARAM))
+        var params = methodParams(method).map(node -> parameterNodes(node))
                                          .or(List.of());
 
         for (var param : params) {
@@ -132,13 +132,13 @@ public class CstNullableParameterRule implements CstLintRule {
     }
 
     private Diagnostic createDiagnostic(Cursor method, String paramName, LintContext ctx) {
-        var methodName = extractMethodName(text(method));
+        var methodName = extractMethodName(memberDeclText(method));
 
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
-                                     startLine(method),
-                                     startColumn(method),
+                                     startLine(anchorOf(method)),
+                                     startColumn(anchorOf(method)),
                                      "Parameter '" + paramName
                                     + "' in method '" + methodName
                                     + "' is checked for null - use Option<T> instead",

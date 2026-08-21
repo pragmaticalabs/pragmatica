@@ -45,12 +45,12 @@ public class CstTestMethodNamingRule implements CstLintRule {
 
         return findAllMethods(root).stream()
                              .filter(method -> isTestMethod(root, method))
-                             .filter(method -> !matchesTestNaming(extractMethodName(text(method))))
+                             .filter(method -> !matchesTestNaming(extractMethodName(memberDeclText(method))))
                              .map(method -> createDiagnostic(method, ctx));
     }
 
     private boolean isTestMethod(Cursor root, Cursor method) {
-        return hasTestAnnotation(method) || findAncestor(root, method, RuleKind.CLASS_MEMBER).map(this::hasTestAnnotation)
+        return hasTestAnnotation(method) || enclosingMember(root, method).map(this::hasTestAnnotation)
                                                         .or(false);
     }
 
@@ -60,7 +60,7 @@ public class CstTestMethodNamingRule implements CstLintRule {
     }
 
     private boolean isTestAnnotation(Cursor annotation) {
-        return "Test".equals(simpleName(findFirst(annotation, RuleKind.QUALIFIED_NAME).map(CstNodes::text)
+        return "Test".equals(simpleName(findFirst(annotation, RuleKind.QUALIFIED_NAME).map(CstNodes::tokenText)
                                                  .map(String::trim)
                                                  .or("")));
     }
@@ -90,13 +90,13 @@ public class CstTestMethodNamingRule implements CstLintRule {
     }
 
     private Diagnostic createDiagnostic(Cursor method, LintContext ctx) {
-        var name = extractMethodName(text(method));
+        var name = extractMethodName(memberDeclText(method));
 
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
-                                     startLine(method),
-                                     startColumn(method),
+                                     startLine(anchorOf(method)),
+                                     startColumn(anchorOf(method)),
                                      "Test method '" + name + "' should be named method_[scenario_]expectation",
                                      "Test names use at least two underscore-separated segments — the method or "
                                     + "scenario under test and the expected outcome, optionally with a scenario in "

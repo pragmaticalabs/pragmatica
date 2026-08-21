@@ -103,7 +103,7 @@ public class CstValueObjectFactoryRule implements CstLintRule {
     }
 
     private boolean isLocalRecord(Cursor root, Cursor record) {
-        return findAncestor(root, record, RuleKind.MEMBER).filter(CstNodes::isMethodMember)
+        return enclosingMethodMember(root, record).filter(CstNodes::isMethodMember)
                            .isPresent();
     }
 
@@ -160,7 +160,7 @@ public class CstValueObjectFactoryRule implements CstLintRule {
     }
 
     private boolean isWithMethodReturningSelf(Cursor method, String recordName) {
-        var methodText = text(method);
+        var methodText = memberDeclText(method);
         var nameMatcher = METHOD_NAME_PATTERN.matcher(methodText);
 
         if (!nameMatcher.find()) return false;
@@ -202,7 +202,7 @@ public class CstValueObjectFactoryRule implements CstLintRule {
         // In v6 modifiers are tokens (not CST children), so we detect 'sealed' textually
         // restricted to the head of the declaration (before the first '{').
         var fromTypeDecls = findAll(root, RuleKind.TYPE_DECL).stream().filter(this::hasSealedModifier);
-        var fromClassMembers = findAll(root, RuleKind.CLASS_MEMBER).stream().filter(this::hasSealedModifier);
+        var fromClassMembers = findAll(root, CstNodes::isMemberWrapper).stream().filter(this::hasSealedModifier);
 
         return Stream.concat(fromTypeDecls, fromClassMembers)
                      .filter(node -> containsInterface(node))

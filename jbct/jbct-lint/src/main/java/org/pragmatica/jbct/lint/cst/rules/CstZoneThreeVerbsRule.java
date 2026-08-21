@@ -91,9 +91,9 @@ public class CstZoneThreeVerbsRule implements CstLintRule {
     }
 
     private boolean isLeafFunction(Cursor method, Cursor root) {
-        // Find the class member containing this method
-        return findAncestor(root, method, RuleKind.CLASS_MEMBER).filter(classMember -> isPrivateLeafMethod(classMember,
-                                                                                                           method))
+        // Find the member wrapper containing this method
+        return enclosingMember(root, method).filter(classMember -> isPrivateLeafMethod(classMember,
+                                                                                       method))
                            .isPresent();
     }
 
@@ -104,14 +104,14 @@ public class CstZoneThreeVerbsRule implements CstLintRule {
             return false;
         }
         // Check if it's a simple method (no monadic chains = leaf)
-        var methodText = text(method);
+        var methodText = memberDeclText(method);
         var hasMonadicChain = methodText.contains(".map(") || methodText.contains(".flatMap(") || methodText.contains(".fold(");
         // Leaf functions typically don't have monadic chains (they're at the bottom)
         return ! hasMonadicChain;
     }
 
     private Stream<Diagnostic> checkMethodName(Cursor method, LintContext ctx) {
-        var methodName = extractMethodName(text(method));
+        var methodName = extractMethodName(memberDeclText(method));
 
         if (methodName.isEmpty()) {
             return Stream.empty();
@@ -171,8 +171,8 @@ public class CstZoneThreeVerbsRule implements CstLintRule {
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
-                                     startLine(node),
-                                     startColumn(node),
+                                     startLine(anchorOf(node)),
+                                     startColumn(anchorOf(node)),
                                      "Leaf function '" + methodName + "' uses Zone 2 verb '" + verb + "'",
                                      "Leaf functions should use Zone 3 implementation verbs. "
                                     + "Consider using a more specific verb like: " + suggestedVerb

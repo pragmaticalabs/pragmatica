@@ -723,7 +723,7 @@ public final class MethodShapeClassifier {
     private static Set<String> collectParamNames(Cursor params) {
         var names = new HashSet<String>();
 
-        for (var param : childrenByRule(params, RuleKind.PARAM)) {
+        for (var param : parameterNodes(params)) {
             var matcher = PARAM_NAME_TAIL.matcher(text(param).stripTrailing());
 
             if (matcher.find()) {
@@ -812,7 +812,7 @@ public final class MethodShapeClassifier {
         var out = new ArrayList<ZoneMixing>();
 
         for (var method : findAllMethods(root)) {
-            var masked = MapperSafety.blankNonCode(text(method));
+            var masked = MapperSafety.blankNonCode(memberDeclText(method));
 
             if (!masked.contains(".flatMap(") && !masked.contains(".map(")) {
                 continue;

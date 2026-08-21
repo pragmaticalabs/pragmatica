@@ -80,7 +80,7 @@ public class CstStaticImportRule implements CstLintRule {
     }
 
     private Stream<Diagnostic> findQualifiedCalls(Cursor method, Set<String> staticImports, LintContext ctx) {
-        var methodText = text(method);
+        var methodText = memberDeclText(method);
         var matcher = QUALIFIED_CALL.matcher(methodText);
 
         return Stream.iterate(matcher.find(),
@@ -103,8 +103,8 @@ public class CstStaticImportRule implements CstLintRule {
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
-                                     startLine(node),
-                                     startColumn(node),
+                                     startLine(anchorOf(node)),
+                                     startColumn(anchorOf(node)),
                                      "Use static import for " + typeName + "." + methodName + "()",
                                      "Add 'import static org.pragmatica.lang." + typeName
                                     + "." + methodName

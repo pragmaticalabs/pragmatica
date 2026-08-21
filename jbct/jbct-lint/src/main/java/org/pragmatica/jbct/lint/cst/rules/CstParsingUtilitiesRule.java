@@ -160,7 +160,7 @@ public class CstParsingUtilitiesRule implements CstLintRule {
     }
 
     private Stream<Diagnostic> findJdkParsing(Cursor method, LintContext ctx) {
-        var methodText = text(method);
+        var methodText = memberDeclText(method);
         var matcher = COMBINED_PATTERN.matcher(methodText);
 
         return Stream.iterate(matcher.find(),
@@ -198,8 +198,8 @@ public class CstParsingUtilitiesRule implements CstLintRule {
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
-                                     startLine(node),
-                                     startColumn(node),
+                                     startLine(anchorOf(node)),
+                                     startColumn(anchorOf(node)),
                                      "Use " + pattern.pragmaticaMethod() + "() instead of JDK parsing",
                                      "Pragmatica parsing utilities return Result<T> for composable error handling. "
                                     + "Import from " + pattern.importPath()

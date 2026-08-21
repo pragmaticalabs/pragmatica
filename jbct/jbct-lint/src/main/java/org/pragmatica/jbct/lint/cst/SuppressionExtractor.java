@@ -67,7 +67,7 @@ public final class SuppressionExtractor {
         var annotations = findAll(root, RuleKind.ANNOTATION);
 
         for (var annotation : annotations) {
-            var name = findFirst(annotation, RuleKind.QUALIFIED_NAME).map(qn -> text(qn).trim()).or("");
+            var name = findFirst(annotation, RuleKind.QUALIFIED_NAME).map(qn -> tokenText(qn).trim()).or("");
 
             if (CONTRACT_NAMES.contains(name)) {
                 addScope(root, annotation, lines, src, CONTRACT_SUPPRESSED_RULES, suppressions);
@@ -168,11 +168,11 @@ public final class SuppressionExtractor {
                 return Option.some(node);
             }
 
-            if (node.kindIs(RuleKind.CLASS_MEMBER) || node.kindIs(RuleKind.MEMBER)) {
+            if (isMemberLevel(node)) {
                 return Option.some(outermostClassMember(path, i));
             }
 
-            if (node.kindIs(RuleKind.LOCAL_VAR) || node.kindIs(RuleKind.PARAM)) {
+            if (node.kindIs(RuleKind.LOCAL_VAR) || node.kindIsAny(RuleKind.PLAIN_PARAM, RuleKind.LAST_PARAM, RuleKind.RECEIVER_PARAM)) {
                 return Option.some(node);
             }
         }
@@ -186,7 +186,7 @@ public final class SuppressionExtractor {
         for (int i = startIndex - 1; i >= 0; i--) {
             var parent = path.get(i);
 
-            if (parent.kindIs(RuleKind.CLASS_MEMBER) || parent.kindIs(RuleKind.MEMBER)) {
+            if (isMemberLevel(parent)) {
                 result = parent;
             } else {
                 break;

@@ -6,6 +6,7 @@ import java.util.stream.Stream;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
+import org.pragmatica.jbct.parser.CstNodes;
 import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.jbct.parser.RuleKind;
 
@@ -27,8 +28,8 @@ public class CstNestedRecordFactoryRule implements CstLintRule {
         if (!ctx.shouldLint(packageName(root))) {
             return Stream.empty();
         }
-        // Find ClassMember nodes with static methods containing local record declarations
-        return findAll(root, RuleKind.CLASS_MEMBER).stream()
+        // Find member wrappers with static methods containing local record declarations
+        return findAll(root, CstNodes::isMemberWrapper).stream()
                       .filter(this::isStaticMember)
                       .filter(member -> !isMultiMethodInterface(root, member))
                       .flatMap(member -> findFirstMethod(member).stream())
@@ -43,14 +44,13 @@ public class CstNestedRecordFactoryRule implements CstLintRule {
     }
 
     private int countAbstractMethods(Cursor iface) {
-        // Use ClassBody → direct ClassMember children to avoid counting methods inside nested types
-        return childByRule(iface, RuleKind.CLASS_BODY).map(body -> (int) childrenByRule(body, RuleKind.CLASS_MEMBER).stream()
-                                                                                       .filter(member -> !contains(member,
-                                                                                                                   RuleKind.TYPE_KIND))
-                                                                                       .filter(member -> containsMethod(member))
-                                                                                       .filter(this::isAbstractMethod)
-                                                                                       .count())
-                          .or(0);
+        // Use the type body's direct members to avoid counting methods inside nested types
+        return (int) typeBodyMembers(iface).stream()
+                                           .filter(member -> !contains(member,
+                                                                       RuleKind.TYPE_KIND))
+                                           .filter(member -> containsMethod(member))
+                                           .filter(this::isAbstractMethod)
+                                           .count();
     }
 
     private boolean isAbstractMethod(Cursor member) {
@@ -83,13 +83,13 @@ public class CstNestedRecordFactoryRule implements CstLintRule {
     }
 
     private Diagnostic createDiagnostic(Cursor method, LintContext ctx) {
-        var methodName = extractMethodName(text(method));
+        var methodName = extractMethodName(memberDeclText(method));
 
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
-                                     startLine(method),
-                                     startColumn(method),
+                                     startLine(anchorOf(method)),
+                                     startColumn(anchorOf(method)),
                                      "Factory method '" + methodName + "' uses nested record implementation",
                                      "Return lambdas directly instead of nested record implementations.")
                          .withExample("""

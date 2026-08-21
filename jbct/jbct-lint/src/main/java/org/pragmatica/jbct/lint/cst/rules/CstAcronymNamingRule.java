@@ -65,7 +65,7 @@ public class CstAcronymNamingRule implements CstLintRule {
     }
 
     private Stream<Diagnostic> checkMethodName(Cursor method, LintContext ctx) {
-        var matcher = METHOD_NAME_PATTERN.matcher(text(method));
+        var matcher = METHOD_NAME_PATTERN.matcher(memberDeclText(method));
 
         if (!matcher.find()) {
             return Stream.empty();
@@ -143,8 +143,8 @@ public class CstAcronymNamingRule implements CstLintRule {
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
-                                     startLine(node),
-                                     startColumn(node),
+                                     startLine(anchorOf(node)),
+                                     startColumn(anchorOf(node)),
                                      kind + " '" + name + "' uses all-caps acronym; prefer '" + suggested + "'",
                                      "Acronyms in identifiers should use PascalCase for readability. "
                                     + "Example: HTTPClient → HttpClient, XMLParser → XmlParser, URLEncoder → UrlEncoder.")

@@ -78,13 +78,13 @@ public class CstNoBusinessExceptionsRule implements CstLintRule {
     }
 
     private Diagnostic createThrowsClauseDiagnostic(Cursor method, LintContext ctx) {
-        var methodName = extractMethodName(text(method));
+        var methodName = extractMethodName(memberDeclText(method));
 
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
-                                     startLine(method),
-                                     startColumn(method),
+                                     startLine(anchorOf(method)),
+                                     startColumn(anchorOf(method)),
                                      "Method '" + methodName + "' has throws clause - use Result<T> instead",
                                      "JBCT methods shouldn't declare checked exceptions.");
     }

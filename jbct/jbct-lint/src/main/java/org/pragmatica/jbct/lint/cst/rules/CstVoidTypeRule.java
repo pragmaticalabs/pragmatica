@@ -40,13 +40,13 @@ public class CstVoidTypeRule implements CstLintRule {
     }
 
     private Diagnostic createDiagnostic(Cursor method, LintContext ctx) {
-        var methodName = extractMethodName(text(method));
+        var methodName = extractMethodName(memberDeclText(method));
 
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
-                                     startLine(method),
-                                     startColumn(method),
+                                     startLine(anchorOf(method)),
+                                     startColumn(anchorOf(method)),
                                      "Method '" + methodName + "' uses Void; use Unit instead",
                                      "JBCT uses Unit instead of Void for side-effect returns.");
     }

@@ -61,7 +61,7 @@ public class CstPartialOperationMapperRule implements CstLintRule {
     /// (never the whole file) keeps a marker in some *unrelated* member from exempting this mapper.
     /// Empty string when neither ancestor exists (never exempt).
     private String enclosingChain(Cursor root, Cursor lambda) {
-        return findAncestor(root, lambda, RuleKind.BLOCK_STMT).orElse(findAncestor(root, lambda, RuleKind.MEMBER))
+        return findAncestor(root, lambda, RuleKind.BLOCK_STMT).orElse(enclosingMethodMember(root, lambda))
                              .map(this::chainSpine)
                              .or("");
     }

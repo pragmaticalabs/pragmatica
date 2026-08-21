@@ -41,6 +41,7 @@ class CstBoundaryTypeRuleTest {
     void detects_completableFuture_parameter_type() {
         assertTrue(hasRule("""
                 package org.example;
+                import java.util.concurrent.CompletableFuture;
                 class Foo {
                     void run(CompletableFuture<String> f) {}
                 }
@@ -51,6 +52,7 @@ class CstBoundaryTypeRuleTest {
     void detects_nested_optional_type_argument() {
         assertTrue(hasRule("""
                 package org.example;
+                import java.util.Optional;
                 class Foo {
                     Result<Optional<String>> run() { return null; }
                 }
@@ -61,6 +63,7 @@ class CstBoundaryTypeRuleTest {
     void detects_mono_return_type() {
         assertTrue(hasRule("""
                 package org.example;
+                import reactor.core.publisher.Mono;
                 class Foo {
                     Mono<String> run() { return null; }
                 }
@@ -71,6 +74,7 @@ class CstBoundaryTypeRuleTest {
     void detects_responseEntity_field_type() {
         assertTrue(hasRule("""
                 package org.example;
+                import org.springframework.http.ResponseEntity;
                 class Foo {
                     ResponseEntity<String> value;
                 }

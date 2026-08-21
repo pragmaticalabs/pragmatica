@@ -53,7 +53,7 @@ public class CstNestedWrapperRule implements CstLintRule {
         var typeText = text(type).trim();
 
         return detectNestedWrapper(typeText).map(nestedPattern -> {
-            var methodName = extractMethodName(text(method));
+            var methodName = extractMethodName(memberDeclText(method));
 
             return createDiagnostic(method, methodName, nestedPattern, ctx);
         });
@@ -103,8 +103,8 @@ public class CstNestedWrapperRule implements CstLintRule {
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
-                                     startLine(method),
-                                     startColumn(method),
+                                     startLine(anchorOf(method)),
+                                     startColumn(anchorOf(method)),
                                      "Method '" + methodName + "' uses forbidden nested wrapper " + pattern,
                                      "JBCT prohibits redundant nesting. " + suggestion)
                          .withExample(getExample(pattern))

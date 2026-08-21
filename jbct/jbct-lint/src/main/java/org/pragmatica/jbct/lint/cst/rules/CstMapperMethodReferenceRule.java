@@ -100,7 +100,7 @@ public class CstMapperMethodReferenceRule implements CstLintRule {
                 continue;
             }
 
-            var name = extractMethodName(text(method)).or("");
+            var name = extractMethodName(memberDeclText(method)).or("");
 
             if (name.isEmpty()) {
                 continue;
@@ -148,7 +148,7 @@ public class CstMapperMethodReferenceRule implements CstLintRule {
                                            Map<Integer, Set<String>> partialSingletons,
                                            LintContext ctx) {
         var enclosingType = enclosingTypeIdx(root, method);
-        var methodText = MapperSafety.blankNonCode(text(method));
+        var methodText = MapperSafety.blankNonCode(memberDeclText(method));
         var matcher = METHOD_REF_IN_MAPPER.matcher(methodText);
         var diagnostics = new ArrayList<Diagnostic>();
 
@@ -157,7 +157,7 @@ public class CstMapperMethodReferenceRule implements CstLintRule {
             var refName = matcher.group(3);
 
             if (isPartialReference(receiver, refName, enclosingType, typeIdxByName, partialSingletons)) {
-                var line = startLine(method) + MapperSafety.newlinesBefore(methodText, matcher.start());
+                var line = startLine(anchorOf(method)) + MapperSafety.newlinesBefore(methodText, matcher.start());
 
                 diagnostics.add(createDiagnostic(method, receiver, refName, line, ctx));
             }
@@ -206,7 +206,7 @@ public class CstMapperMethodReferenceRule implements CstLintRule {
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
                                      line,
-                                     startColumn(method),
+                                     startColumn(anchorOf(method)),
                                      "Partial method reference '" + receiver + "::" + refName
                                     + "' in mapper - make the mapper total or lift to a typed Cause",
                                      "A method reference in map/flatMap/filter/replaceResult/fold whose target throws "

@@ -42,7 +42,7 @@ public class CstAlwaysSuccessResultRule implements CstLintRule {
     }
 
     private boolean alwaysReturnsSuccess(Cursor method) {
-        var methodText = text(method);
+        var methodText = memberDeclText(method);
         // Check if only uses Result.success() and never failure
         boolean hasSuccess = methodText.contains("Result.success(");
         boolean hasFailure = methodText.contains("Result.failure(") || methodText.contains(".result()") ||
@@ -53,13 +53,13 @@ public class CstAlwaysSuccessResultRule implements CstLintRule {
     }
 
     private Diagnostic createDiagnostic(Cursor method, LintContext ctx) {
-        var methodName = extractMethodName(text(method));
+        var methodName = extractMethodName(memberDeclText(method));
 
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
-                                     startLine(method),
-                                     startColumn(method),
+                                     startLine(anchorOf(method)),
+                                     startColumn(anchorOf(method)),
                                      "Method '" + methodName + "' always returns Result.success(); return T directly",
                                      "If a method can never fail, wrapping in Result adds unnecessary complexity.")
                          .withExample("""

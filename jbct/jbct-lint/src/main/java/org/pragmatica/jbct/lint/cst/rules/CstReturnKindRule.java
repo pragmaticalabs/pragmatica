@@ -51,8 +51,8 @@ public class CstReturnKindRule implements CstLintRule {
     }
 
     private boolean isPrivateMethod(Cursor method, Cursor root) {
-        // Find the ClassMember ancestor which contains the Modifier
-        return findAncestor(root, method, RuleKind.CLASS_MEMBER).map(cm -> text(cm).contains("private "))
+        // Find the member wrapper ancestor which contains the Modifier
+        return enclosingMember(root, method).map(cm -> text(cm).contains("private "))
                            .or(false);
     }
 
@@ -64,7 +64,7 @@ public class CstReturnKindRule implements CstLintRule {
 
     private Stream<Diagnostic> checkReturnType(Cursor method, Cursor type, LintContext ctx) {
         var typeText = text(type).trim();
-        var methodName = extractMethodName(text(method));
+        var methodName = extractMethodName(memberDeclText(method));
         // Check for void
         if (typeText.equals("void")) {
             return Stream.of(createVoidDiagnostic(method, methodName, ctx));
@@ -83,8 +83,8 @@ public class CstReturnKindRule implements CstLintRule {
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
-                                     startLine(method),
-                                     startColumn(method),
+                                     startLine(anchorOf(method)),
+                                     startColumn(anchorOf(method)),
                                      "Method '" + methodName
                                     + "' returns void; JBCT requires Result<Unit> or Promise<Unit>",
                                      "In JBCT, void methods should return Result<Unit> (sync) or Promise<Unit> (async).")
@@ -107,8 +107,8 @@ public class CstReturnKindRule implements CstLintRule {
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
-                                     startLine(method),
-                                     startColumn(method),
+                                     startLine(anchorOf(method)),
+                                     startColumn(anchorOf(method)),
                                      "Method '" + methodName
                                     + "' returns " + typeName
                                     + "; use " + replacement

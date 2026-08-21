@@ -3,6 +3,7 @@ package org.pragmatica.jbct.lint.cst.rules;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.function.Predicate;
 import java.util.stream.Stream;
 
 import org.pragmatica.jbct.lint.Diagnostic;
@@ -10,6 +11,7 @@ import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
 import org.pragmatica.jbct.lint.cst.filetype.FileType;
 import org.pragmatica.jbct.lint.cst.filetype.FileTypeClassifier;
+import org.pragmatica.jbct.parser.CstNodes;
 import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.jbct.parser.RuleKind;
 
@@ -101,9 +103,9 @@ public class CstMemberOrderingRule implements CstLintRule {
     private List<Cursor> orderedMembers(Cursor root, Cursor typeDecl) {
         var members = new ArrayList<Cursor>();
 
-        members.addAll(directOf(root, typeDecl, RuleKind.FIELD_DECL));
-        members.addAll(directOf(root, typeDecl, RuleKind.CONSTRUCTOR_DECL));
-        members.addAll(directOf(root, typeDecl, RuleKind.COMPACT_CONSTRUCTOR));
+        members.addAll(directOf(root, typeDecl, CstNodes::isFieldDecl));
+        members.addAll(directOf(root, typeDecl, node -> node.kindIs(RuleKind.CONSTRUCTOR_DECL)));
+        members.addAll(directOf(root, typeDecl, node -> node.kindIs(RuleKind.COMPACT_CONSTRUCTOR)));
         members.addAll(FileTypeClassifier.directMethods(root, typeDecl));
         members.addAll(FileTypeClassifier.directNestedTypes(root, typeDecl));
         members.sort(Comparator.comparingInt(Cursor::spanStart));
@@ -111,8 +113,8 @@ public class CstMemberOrderingRule implements CstLintRule {
         return members;
     }
 
-    private List<Cursor> directOf(Cursor root, Cursor typeDecl, RuleKind kind) {
-        return findAll(typeDecl, kind).stream()
+    private List<Cursor> directOf(Cursor root, Cursor typeDecl, Predicate<Cursor> predicate) {
+        return findAll(typeDecl, predicate).stream()
                      .filter(node -> FileTypeClassifier.directlyEncloses(root, typeDecl, node))
                      .toList();
     }
@@ -125,9 +127,10 @@ public class CstMemberOrderingRule implements CstLintRule {
 
     private int valueObjectRank(Cursor root, Cursor member, String ownName) {
         return switch (member.kind()) {
-            case FIELD_DECL -> FileTypeClassifier.isPrivate(root, member) ? IGNORED : RANK_CONSTANT;
+            case FIELD_DECL, INTERFACE_FIELD_DECL, RECORD_STATIC_FIELD ->
+                FileTypeClassifier.isPrivate(root, member) ? IGNORED : RANK_CONSTANT;
             case CONSTRUCTOR_DECL, COMPACT_CONSTRUCTOR -> RANK_CONSTRUCTOR;
-            case MEMBER -> memberRank(root, member, ownName, RANK_METHOD, RANK_METHOD);
+            case MEMBER, INTERFACE_MEMBER, RECORD_MEMBER -> memberRank(root, member, ownName, RANK_METHOD, RANK_METHOD);
             default -> IGNORED;
         };
     }
@@ -135,7 +138,7 @@ public class CstMemberOrderingRule implements CstLintRule {
     private int useCaseRank(Cursor root, Cursor member, String ownName) {
         return switch (member.kind()) {
             case TYPE_KIND -> useCaseTypeRank(member);
-            case MEMBER -> memberRank(root, member, ownName, RANK_UC_FACTORY, RANK_UC_ENTRY);
+            case MEMBER, INTERFACE_MEMBER, RECORD_MEMBER -> memberRank(root, member, ownName, RANK_UC_FACTORY, RANK_UC_ENTRY);
             default -> IGNORED;
         };
     }
@@ -167,8 +170,8 @@ public class CstMemberOrderingRule implements CstLintRule {
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
-                                     startLine(member),
-                                     startColumn(member),
+                                     startLine(anchorOf(member)),
+                                     startColumn(anchorOf(member)),
                                      "Member is out of order for a " + describe(fileType),
                                      expectedOrder(fileType));
     }

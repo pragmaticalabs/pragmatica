@@ -17,7 +17,7 @@ import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.jbct.parser.RuleKind;
 import org.pragmatica.jbct.shared.ImportGroups;
 import org.pragmatica.lang.Option;
-import org.pragmatica.peg.v6.token.TokenArray;
+import org.pragmatica.peg.token.TokenArray;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
@@ -351,20 +351,24 @@ final class FlowPrinter {
             case ENUM_BODY -> printEnumBody(br);
             case RECORD_BODY -> printRecordBody(br);
             case MEMBER -> printMember(br);
-            case FIELD_DECL -> printFieldDecl(br);
+            case FIELD_DECL, INTERFACE_FIELD_DECL -> printFieldDecl(br);
             case CLASS_BODY -> printClassBody(br);
+            case INTERFACE_BODY -> printInterfaceBody(br);
             case ANNOTATION_BODY -> printAnnotationBody(br);
             case BLOCK -> printBlock(br);
             case STMT -> printStmt(br);
             case SWITCH_BLOCK -> printSwitchBlock(br);
             case UNARY -> printUnary(br);
             case POSTFIX -> printPostfix(br);
+            case STMT_EXPR -> printStmtExpr(br);
             case POST_OP -> printPostOp(br);
             case ARGS -> printArgs(br);
             case LAMBDA -> printLambda(br);
-            case LAMBDA_PARAM -> printLambdaParam(br);
-            case PARAM -> printParam(br);
-            case PARAMS -> printParams(br);
+            case TYPED_LAMBDA_PARAM, VAR_LAMBDA_PARAM -> printLambdaParam(br);
+            case PLAIN_PARAM, LAST_PARAM, RECEIVER_PARAM -> printParam(br);
+            // `Params` wraps its entries in `OrdinaryParams`, which carries the separating
+            // commas. Route the wrapper through the same logic so break-on-comma still sees them.
+            case PARAMS, ORDINARY_PARAMS -> printParams(br);
             case PRIMARY -> printPrimary(br);
             case RECORD_DECL -> printRecordDecl(br);
             case RECORD_COMPONENTS -> printRecordComponents(br);
@@ -461,7 +465,7 @@ final class FlowPrinter {
     /// record members, enum constants, local var/type decls, annotation members).
     private static boolean annotationsBreakOnNewlineInParent(RuleKind kind) {
         return switch (kind) {
-            case TYPE_DECL, CLASS_MEMBER, ANNOTATION_MEMBER, ANNOTATION_ELEM_DECL, RECORD_MEMBER, ENUM_CONST, LOCAL_VAR, LOCAL_VAR_NO_SEMI, LOCAL_TYPE_DECL -> true;
+            case TYPE_DECL, CLASS_MEMBER, INTERFACE_MEMBER, ANNOTATION_MEMBER, ANNOTATION_ELEM_DECL, RECORD_MEMBER, ENUM_CONST, LOCAL_VAR, LOCAL_VAR_NO_SEMI, LOCAL_TYPE_DECL -> true;
             default -> false;
         };
     }
@@ -637,6 +641,13 @@ final class FlowPrinter {
     // ===== Type bodies =====
     private void printClassBody(Cursor.Branch classBody) {
         printBracedBody(classBody, RuleKind.CLASS_MEMBER);
+    }
+
+    /// Interfaces used to reuse `ClassBody`. The grammar now gives them their own
+    /// `InterfaceBody <- '{' InterfaceMember* '}'`, so they need the same braced-body
+    /// treatment keyed on `InterfaceMember` — without this they print inline.
+    private void printInterfaceBody(Cursor.Branch interfaceBody) {
+        printBracedBody(interfaceBody, RuleKind.INTERFACE_MEMBER);
     }
 
     private void printAnnotationBody(Cursor.Branch annotBody) {
@@ -1437,42 +1448,170 @@ final class FlowPrinter {
     }
 
     private void printPostfixWithPrimary(Cursor primary, Cursor.Branch postfix) {
-        if (measuringMode) {
-            // Measurement only needs width — emit primary + each postOp inline.
-            printNode(primary);
-            for (var postOp : childrenByRule(postfix, RuleKind.POST_OP)) {
-                printNode(postOp);
-            }
+        printChainWithPrimary(primary,
+                              singletonLinks(childrenByRule(postfix, RuleKind.POST_OP)),
+                              countDotMethodChainLinks(postfix));
+    }
+
+    /// Statement-position chains are `StmtExpr -> Primary CallChain` since peglib 0.7.1
+    /// (the JLS 14.8 rework), not `Postfix -> Primary PostOp*`. It is the same chain with a
+    /// different spine, so normalise it to links and reuse the identical break/align logic.
+    private void printStmtExpr(Cursor.Branch stmtExpr) {
+        var primary = childByRule(stmtExpr, RuleKind.PRIMARY);
+
+        if (primary.isEmpty()) {
+            // `StmtExpr <- ('++' / '--') Unary` — no chain to align.
+            walkTokens(stmtExpr);
 
             return;
         }
 
-        var postOps = childrenByRule(postfix, RuleKind.POST_OP);
-        int allDotMethodCount = countDotMethodChainLinks(postfix);
-        var dotPlusParenPostOps = postOps.stream().filter(this::isDotMethodPostOp).toList();
-        boolean primaryHasMethodAccess = hasMethodAccessInPrimary(primary);
-        boolean hasInvocationOfMethodInPrimary = primaryHasMethodAccess && postOps.stream()
-                                                                                  .anyMatch(this::isBareInvocationPostOp);
-        int chainLinkCount = Math.max(allDotMethodCount,
-                                      dotPlusParenPostOps.size() + (hasInvocationOfMethodInPrimary
-                                                                    ? 1
-                                                                    : 0));
-        boolean shouldBreakChain = shouldBreakChain(primary, chainLinkCount, postOps);
+        printChainWithPrimary(primary.or((Cursor) null), callChainLinks(stmtExpr), 0);
+    }
 
-        if (shouldBreakChain && !measuringMode) {
-            printMethodChainAligned(primary, postOps, dotPlusParenPostOps, hasInvocationOfMethodInPrimary);
+    /// A chain LINK is one logical `.name(args)` step, which may span more than one node.
+    /// `Postfix` keeps it as a single `PostOp`; `CallChain` splits it into `ChainOp[.name]`
+    /// followed by an invocation op. Merging the split form is what keeps link COUNTS — and
+    /// therefore every break decision — identical between statement and expression position.
+    private void printChainWithPrimary(Cursor primary, List<List<Cursor>> links, int nestedDotMethodCount) {
+        if (measuringMode) {
+            // Measurement only needs width — emit primary + each op inline.
+            printNode(primary);
+            forEachOp(links, this::printNode);
+
+            return;
+        }
+
+        var flatOps = flattenLinks(links);
+        var dotMethodLinks = links.stream().filter(FlowPrinter::isDotMethodLink).toList();
+        boolean primaryHasMethodAccess = hasMethodAccessInPrimary(primary);
+        boolean hasInvocationOfMethodInPrimary = primaryHasMethodAccess && links.stream()
+                                                                                .anyMatch(link -> isBareInvocationPostOp(link.getFirst()));
+        int chainLinkCount = Math.max(nestedDotMethodCount,
+                                      dotMethodLinks.size() + (hasInvocationOfMethodInPrimary
+                                                               ? 1
+                                                               : 0));
+
+        if (shouldBreakChain(primary, chainLinkCount, flatOps)) {
+            printMethodChainAligned(primary, links, dotMethodLinks, hasInvocationOfMethodInPrimary);
         } else {
-            boolean canInline = !measuringMode && fitsOnLineUnary(primary, postOps);
+            boolean canInline = fitsOnLineUnary(primary, flatOps);
 
             printNode(primary);
-            for (var postOp : postOps) {
-                if (canInline) {
-                    printNodeContent(postOp);
-                } else {
-                    printNode(postOp);
+            forEachOp(links,
+                      op -> {
+                          if (canInline) {
+                              printNodeContent(op);
+                          } else {
+                              printNode(op);
+                          }
+                      });
+        }
+    }
+
+    private static List<List<Cursor>> singletonLinks(List<Cursor> ops) {
+        return ops.stream()
+                  .map(List::of)
+                  .toList();
+    }
+
+    private static List<Cursor> flattenLinks(List<List<Cursor>> links) {
+        return links.stream()
+                    .flatMap(List::stream)
+                    .toList();
+    }
+
+    private void forEachOp(List<List<Cursor>> links, java.util.function.Consumer<Cursor> action) {
+        for (var link : links) {
+            for (var op : link) {
+                action.accept(op);
+            }
+        }
+    }
+
+    /// Walk the right-recursive `CallChain` spine, collecting its operator nodes in source
+    /// order, then merge each `.name` with the invocation that follows it.
+    private static List<List<Cursor>> callChainLinks(Cursor.Branch stmtExpr) {
+        var ops = new ArrayList<Cursor>();
+
+        for (var chain = firstCallChain(stmtExpr); chain != null; chain = firstCallChain(chain)) {
+            for (var child : children(chain)) {
+                if (child.kindIsAny(RuleKind.CHAIN_OP, RuleKind.CALL_OP)) {
+                    ops.add(child);
                 }
             }
         }
+
+        return mergeDotNameWithInvocation(ops);
+    }
+
+    private static Cursor.Branch firstCallChain(Cursor node) {
+        for (var child : children(node)) {
+            if (child.kindIs(RuleKind.CALL_CHAIN) && child instanceof Cursor.Branch branch) {
+                return branch;
+            }
+        }
+
+        return null;
+    }
+
+    /// `.c` + `(y)` become one link so `a.b().c(y)` counts 2 links as a statement, matching
+    /// what it counts as an expression. `.new Foo(...)` already carries its own parens and is
+    /// left alone.
+    private static List<List<Cursor>> mergeDotNameWithInvocation(List<Cursor> ops) {
+        var links = new ArrayList<List<Cursor>>();
+        int i = 0;
+
+        while (i < ops.size()) {
+            var op = ops.get(i);
+            boolean mergeable = i + 1 < ops.size()
+                                && startsWith(op, ".")
+                                && !containsToken(op, "(")
+                                && startsWith(ops.get(i + 1), "(");
+
+            if (mergeable) {
+                links.add(List.of(op, ops.get(i + 1)));
+                i += 2;
+            } else {
+                links.add(List.of(op));
+                i++;
+            }
+        }
+
+        return links;
+    }
+
+    /// A multi-node link is by construction `.name` + invocation, i.e. a dot-method call.
+    private static boolean isDotMethodLink(List<Cursor> link) {
+        return link.size() > 1 || isDotMethodOp(link.getFirst());
+    }
+
+    private static boolean startsWith(Cursor node, String text) {
+        var tokens = node.cst().tokens();
+
+        for (int t = node.firstTokenIdx(); t <= node.lastTokenIdx(); t++) {
+            if (!tokens.isTrivia(t)) {
+                return text.contentEquals(tokens.textAt(t));
+            }
+        }
+
+        return false;
+    }
+
+    private static boolean containsToken(Cursor node, String text) {
+        var tokens = node.cst().tokens();
+
+        for (int t = node.firstTokenIdx(); t <= node.lastTokenIdx(); t++) {
+            if (!tokens.isTrivia(t) && text.contentEquals(tokens.textAt(t))) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static boolean isDotMethodOp(Cursor op) {
+        return startsWith(op, ".") && containsToken(op, "(");
     }
 
     /// Sequencer-as-steps: chain (2+ method calls) breaks vertically in TAIL contexts
@@ -1583,7 +1722,10 @@ final class FlowPrinter {
         boolean shouldBreakChain = shouldBreakChain(primary, chainLinkCount, postOps);
 
         if (shouldBreakChain && !measuringMode) {
-            printMethodChainAligned(primary, postOps, dotPlusParenPostOps, hasInvocationOfMethodInPrimary);
+            printMethodChainAligned(primary,
+                                    singletonLinks(postOps),
+                                    singletonLinks(dotPlusParenPostOps),
+                                    hasInvocationOfMethodInPrimary);
         } else {
             boolean canInline = !measuringMode && fitsOnLine(postfix);
 
@@ -1602,12 +1744,15 @@ final class FlowPrinter {
     }
 
     private void printMethodChainAligned(Cursor primary,
-                                         List<Cursor> postOps,
-                                         List<Cursor> methodCallPostOps,
+                                         List<List<Cursor>> links,
+                                         List<List<Cursor>> methodCallLinks,
                                          boolean primaryHasInvocation) {
         int startColumn = currentColumn;
         int alignColumn = startColumn;
-        var methodCallSet = new HashSet<>(methodCallPostOps);
+        // Identify a link by its head node; a merged link's head is its `.name` op.
+        var methodCallSet = new HashSet<Cursor>(methodCallLinks.stream()
+                                                               .map(List::getFirst)
+                                                               .toList());
 
         if (primary != null) {
             // If primary contains an internal `.` (e.g. `value.trim`), the chain anchor
@@ -1633,8 +1778,9 @@ final class FlowPrinter {
             // its own line at the chain column rather than gluing to the closing `)`.
             boolean firstMethodCallPending = !primaryHasInvocation;
 
-            for (int pi = 0; pi < postOps.size(); pi++) {
-                var postOp = postOps.get(pi);
+            for (int pi = 0; pi < links.size(); pi++) {
+                var link = links.get(pi);
+                var postOp = link.getFirst();
                 boolean isMethodCall = methodCallSet.contains(postOp);
                 // A leading comment on this post-op forces it onto its own line at the chain
                 // column. Handle positioning here (a single newline to column 0, then let
@@ -1676,17 +1822,21 @@ final class FlowPrinter {
                 int lineBefore = currentLine;
                 boolean isBareInvoc = isBareInvocationPostOp(postOp);
 
-                printNodeContent(postOp);
-                // Emit trailing line comments from the next postOp's leading trivia
+                for (var op : link) {
+                    printNodeContent(op);
+                }
+
+                // Emit trailing line comments from the next link's leading trivia
                 // before the newline that separates chain calls.
-                if (pi + 1 < postOps.size()) {
-                    emitTrailingCommentsFrom(postOps.get(pi + 1));
+                if (pi + 1 < links.size()) {
+                    emitTrailingCommentsFrom(links.get(pi + 1).getFirst());
                 }
 
                 boolean spanned = currentLine != lineBefore;
+                boolean linkHasLambda = link.stream().anyMatch(FlowPrinter::containsLambda);
 
-                scope.notePostOpEmitted(spanned, containsLambda(postOp));
-                if (isBareInvoc && spanned && !containsLambda(postOp)) {
+                scope.notePostOpEmitted(spanned, linkHasLambda);
+                if (isBareInvoc && spanned && !linkHasLambda) {
                     // Broken bare-args: the next dot-method breaks to the chain column.
                     scope.noteBrokenArgsPostOp();
                 }
@@ -2076,6 +2226,15 @@ final class FlowPrinter {
 
     // ===== Lambda =====
     private void printLambda(Cursor.Branch lambda) {
+        printLambdaWith(lambda, this::printNode);
+    }
+
+    /// A lambda BODY is a tail context — chains inside it break vertically — and both entry
+    /// points must establish it. Since peglib 0.7.1 hoisted `Lambda` out of `Primary`
+    /// (`Expr <- Lambda / Assignment`), an argument lambda is reached through
+    /// `printNodeContent` rather than `printNode`, so a content-only variant that skipped the
+    /// tail context silently stopped breaking those chains.
+    private void printLambdaWith(Cursor.Branch lambda, java.util.function.Consumer<Cursor> printHead) {
         walkTokensWith(lambda,
                        new TokenWalker() {
             boolean afterArrow = false;
@@ -2083,14 +2242,13 @@ final class FlowPrinter {
             @Override
             public void onChild(Cursor child) {
                            if (afterArrow) {
-                           // Lambda body: enter tail context so chains inside break vertically.
                            try (var scope = alignment.enterTailContext()) {
                            printNodeContent(child);
                        }
 
                            afterArrow = false;
                        } else {
-                           printNode(child);
+                           printHead.accept(child);
                        }
                        }
 
@@ -2141,7 +2299,9 @@ final class FlowPrinter {
                        new TokenWalker() {
             @Override
             public void onChild(Cursor child) {
-                           if (child.kindIs(RuleKind.PARAM)) {
+                           if (child.kindIs(RuleKind.PLAIN_PARAM)
+                               || child.kindIs(RuleKind.LAST_PARAM)
+                               || child.kindIs(RuleKind.RECEIVER_PARAM)) {
                            printNodeContent(child);
                        } else {
                            printNode(child);
@@ -2632,25 +2792,27 @@ final class FlowPrinter {
             case Cursor.Branch br -> {
                 switch (br.kind()) {
                     case LAMBDA -> printLambdaContent(br);
-                    case LAMBDA_PARAM -> printLambdaParam(br);
+                    case TYPED_LAMBDA_PARAM, VAR_LAMBDA_PARAM -> printLambdaParam(br);
                     case ARGS -> printArgs(br);
                     case BLOCK -> printBlock(br);
                     case POSTFIX -> printPostfix(br);
+                    case STMT_EXPR -> printStmtExpr(br);
                     case POST_OP -> printPostOp(br);
                     case TERNARY -> printTernary(br);
                     case ADDITIVE -> printAdditive(br);
                     case LOG_AND -> printLogAnd(br);
-                    case PARAMS -> printParams(br);
+                    case PARAMS, ORDINARY_PARAMS -> printParams(br);
                     case RECORD_COMPONENTS -> printRecordComponents(br);
                     case TYPE_ARGS -> printTypeArgs(br);
                     case TYPE_PARAMS -> printTypeParams(br);
                     case SWITCH_BLOCK -> printSwitchBlock(br);
                     case UNARY -> printUnary(br);
-                    case FIELD_DECL -> printFieldDecl(br);
-                    case PARAM -> printParam(br);
+                    case FIELD_DECL, INTERFACE_FIELD_DECL -> printFieldDecl(br);
+                    case PLAIN_PARAM, LAST_PARAM, RECEIVER_PARAM -> printParam(br);
                     case ENUM_BODY -> printEnumBody(br);
                     case RECORD_BODY -> printRecordBody(br);
                     case CLASS_BODY -> printClassBody(br);
+                    case INTERFACE_BODY -> printInterfaceBody(br);
                     case ANNOTATION_BODY -> printAnnotationBody(br);
                     case PRIMARY -> printPrimary(br);
                     case RECORD_DECL -> printRecordDecl(br);
@@ -2681,22 +2843,7 @@ final class FlowPrinter {
     }
 
     private void printLambdaContent(Cursor.Branch lambda) {
-        walkTokensWith(lambda,
-                       new TokenWalker() {
-            @Override
-            public void onChild(Cursor child) {
-                           printNodeContent(child);
-                       }
-
-            @Override
-            public void onToken(int kind, String text) {
-                           if ("->".equals(text)) {
-                           emit(" -> ");
-                       } else {
-                           emitToken(text);
-                       }
-                       }
-        });
+        printLambdaWith(lambda, this::printNodeContent);
     }
 
     // ===== Comment emission (inline, but never affects layout decisions) =====

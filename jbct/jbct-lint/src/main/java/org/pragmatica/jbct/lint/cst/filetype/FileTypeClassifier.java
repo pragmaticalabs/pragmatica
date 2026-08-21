@@ -139,7 +139,7 @@ public final class FileTypeClassifier {
 
     /// Simple name of a method member (the identifier immediately preceding its parameter list).
     public static String methodName(Cursor method) {
-        var matcher = METHOD_NAME.matcher(text(method));
+        var matcher = METHOD_NAME.matcher(memberDeclText(method));
 
         return matcher.find()
                ? matcher.group(1)
@@ -447,9 +447,9 @@ public final class FileTypeClassifier {
 
     /// Text of the member wrapper carrying a method's modifiers (`static`, `default`, `public`).
     /// The `MEMBER` node text begins at the return type, so modifiers live on the enclosing
-    /// `CLASS_MEMBER`; falls back to the method text when no wrapper is found.
+    /// wrapper; falls back to the method text when no wrapper is found.
     private static String modifiersText(Cursor root, Cursor method) {
-        return findAncestor(root, method, RuleKind.CLASS_MEMBER).map(wrapper -> text(wrapper))
+        return enclosingMember(root, method).map(wrapper -> text(wrapper))
                             .or(text(method));
     }
 

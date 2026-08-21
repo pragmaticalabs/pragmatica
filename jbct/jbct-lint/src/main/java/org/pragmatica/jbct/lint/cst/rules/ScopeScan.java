@@ -23,7 +23,7 @@ import static org.pragmatica.jbct.parser.CstNodes.text;
 sealed interface ScopeScan permits ScopeScan.unused {
     record unused() implements ScopeScan {}
 
-    RuleKind[] NESTED_TYPE_BODIES = {RuleKind.CLASS_BODY, RuleKind.RECORD_BODY, RuleKind.ENUM_BODY};
+    RuleKind[] NESTED_TYPE_BODIES = {RuleKind.CLASS_BODY, RuleKind.INTERFACE_BODY, RuleKind.RECORD_BODY, RuleKind.ENUM_BODY};
 
     /// String- and comment-blanked text of `scope`, with the span of every nested type body
     /// additionally blanked to spaces (newlines preserved).

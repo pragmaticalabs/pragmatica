@@ -63,8 +63,8 @@ public class CstShapeUnclassifiedRule implements CstLintRule {
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
-                                     startLine(method),
-                                     startColumn(method),
+                                     startLine(anchorOf(method)),
+                                     startColumn(anchorOf(method)),
                                      "Method has no single JBCT pattern — " + reason,
                                      "The book's single-pattern-per-function rule wants each method to reduce to one "
                                     + "composition root. Restructure the imperative residue into a Leaf/Sequencer/"
