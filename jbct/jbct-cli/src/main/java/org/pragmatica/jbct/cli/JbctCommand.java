@@ -27,7 +27,7 @@ public class JbctCommand implements Runnable {
     public static class VersionProvider implements CommandLine.IVersionProvider {
         @Override
         public String[] getVersion() {
-            return new String[]{Version.get()};
+            return new String[]{Version.full()};
         }
     }
 }
