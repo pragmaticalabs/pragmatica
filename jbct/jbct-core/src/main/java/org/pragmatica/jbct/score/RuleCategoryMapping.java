@@ -36,7 +36,8 @@ public sealed interface RuleCategoryMapping permits RuleCategoryMapping.unused {
     Map.entry("JBCT-TOT-03", ScoreCategory.NULL_SAFETY),       // wire-record accessor derefs possibly-null component
 
     // Exception Hygiene — no business exceptions, proper typed error handling
-    Map.entry("JBCT-EX-01", ScoreCategory.EXCEPTION_HYGIENE),  // no business exceptions
+    Map.entry("JBCT-EX-01", ScoreCategory.EXCEPTION_HYGIENE),
+    Map.entry("JBCT-REC-01", ScoreCategory.EXCEPTION_HYGIENE),   // absorbed failure with no recorded reason
     Map.entry("JBCT-EX-02", ScoreCategory.EXCEPTION_HYGIENE),  // no orElseThrow
     Map.entry("JBCT-STY-01", ScoreCategory.EXCEPTION_HYGIENE), // fluent failure (cause.result())
     Map.entry("JBCT-SEAL-01", ScoreCategory.EXCEPTION_HYGIENE),// sealed error interfaces

@@ -272,6 +272,9 @@ public class CstLinter {
         // Forbidden boundary types in business logic (JBCT-BND-01)
         new CstBoundaryTypeRule(),
 
+        // JBCT-REC-01
+        new CstAbsorbedFailureRule(),
+
         // Nested ternaries (JBCT-STY-09)
         new CstNestedTernaryRule(),
 
