@@ -18,6 +18,16 @@ import org.apache.maven.plugins.annotations.Parameter;
 /// Maven goal reporting JBCT violation density.
 @Mojo(name = "score", defaultPhase = LifecyclePhase.VERIFY)
 public class ScoreMojo extends AbstractJbctMojo {
+    /// Whether `src/test/java` is collected alongside `src/main/java`.
+    ///
+    /// Declared per goal: there is no inherited field to shadow, which is what made this parameter
+    /// inert for the format-family goals (#624). The default is `false` for every goal — test
+    /// sources have never been in the gate, so honouring the value this parameter USED to claim
+    /// would newly admit them wholesale; that is a policy change, deliberately not bundled with the
+    /// mechanism fix. Set `-Djbct.includeTests=true` to opt in.
+    @Parameter(property = "jbct.includeTests", defaultValue = "false")
+    protected boolean includeTests;
+
     @Parameter(property = DensityGate.MAX_DENSITY_PROPERTY)
     Double maxDensity;
 
@@ -41,7 +51,7 @@ public class ScoreMojo extends AbstractJbctMojo {
         var jbctConfig = loadConfig();
         var context = createLintContext(jbctConfig);
         var linter = JbctLinter.jbctLinter(context);
-        var filesToProcess = collectJavaFiles(jbctConfig.files());
+        var filesToProcess = collectJavaFiles(jbctConfig.files(), includeTests);
 
         if (filesToProcess.isEmpty()) {
             getLog().info("No Java files found.");
