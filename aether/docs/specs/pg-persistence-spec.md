@@ -574,16 +574,18 @@ upstream; see the note at the rule in `postgres.peg`.
 **Impact:** a migration or `@PgSql` query containing nested block comments **may silently parse as a
 different statement** — it does not reliably fail. The lexer closes at the inner `*/` and the
 remainder leaks into the statement as live SQL; when that leaked text composes into something valid,
-there is no error at all. Both of these parse cleanly with TWO select-list items where correct
-nesting demands one:
+there is no error at all. This parses cleanly with TWO select-list items where correct nesting
+demands one:
 
 ```sql
 SELECT 1 /* /* */ , 999 -- */
  FROM t;                        -- intended: SELECT 1 FROM t   | actual: SELECT 1, 999 FROM t
-
-SELECT 1 /* a /* b */ -- */
- , 2 FROM t;                    -- intended: SELECT 1 FROM t   | actual: SELECT 1, 2 FROM t
 ```
+
+`, 999` sits INSIDE the balanced span, which is what makes it diverge. A comment that balances before
+the leaked text — `SELECT 1 /* a /* b */ -- */` followed by ` , 2 FROM t;` — does NOT diverge: two
+opens, two closes, so `, 2` is legitimately outside and two items is correct under both the old and
+the fixed lexer. Count the delimiters before deciding what the right answer is.
 
 The trailing `-- */` reads as a line comment and swallows the orphaned outer `*/`, leaving nothing to
 trip the parser. Where it does fail, the diagnostic misleads: `SELECT 1 /* outer /* inner */ still a
