@@ -761,17 +761,26 @@ BothKW    <- < 'BOTH'i ![a-zA-Z0-9_$] >
 # ============================================================
 # Whitespace (auto-skipped, includes comments)
 # ============================================================
-%whitespace <- ([ \t\r\n]+ / LineComment / BlockComment)*
+# Block comments NEST, per the SQL standard, and `%nest` (peglib 0.7.3) is what expresses that: it
+# lexes the pair with a depth-counting scanner instead of a DFA path. There is no grammar-only
+# alternative -- nested comments are not a regular language so no DFA can match them, and the
+# recursive spelling is refused by peglib's analyzer as `grammar.whitespace-cycle` because a
+# BlockComment rule would be reachable from %whitespace and reference itself.
+#
+# The scanner runs INSTEAD OF the DFA at a token start when the block balances, and an unterminated
+# block falls through to the DFA. There is deliberately NO BlockComment alternative in %whitespace:
+# `%nest` fully subsumes it. That was measured, not assumed -- keeping the alternative and dropping
+# it produce identical results on a single-level comment, a nested comment, a nested comment with a
+# statement-splitting `;` inside it, and an unterminated block (byte-identical error text). Two lex
+# paths for one construct could only drift.
+#
+# History: before 0.7.3 this was `BlockComment <- '/*' (!'*/' .)* '*/'`, which closed at the FIRST
+# '*/' and leaked the remainder in as live SQL -- not reliably an error, since a leak that composed
+# into valid SQL was accepted silently as a DIFFERENT statement. See #619, upstream
+# siy/java-peglib#45.
+%nest '/*' '*/'
+
+%whitespace <- ([ \t\r\n]+ / LineComment)*
 LineComment <- '--' [^\n]*
-# KNOWN GAP: PostgreSQL nests block comments per the SQL standard -- `/* outer /* inner */ still */`
-# -- and this rule stops at the FIRST '*/'. Nested comments are not a regular language, so a rule
-# compiled into peglib's DFA lexer cannot express them (same class as the DollarString
-# back-reference), and the recursive repair is refused outright by peglib's analyzer as
-# `grammar.whitespace-cycle`. Needs a counting scanner upstream (siy/java-peglib#45); not fixable
-# here. Found by harvesting real SQL from the codebase -- no hand-written fixture had exercised it.
-# NOT merely a parse failure: the remainder after the inner '*/' leaks in as live SQL, so when it
-# composes into something valid the parser SILENTLY ACCEPTS A DIFFERENT STATEMENT --
-# `SELECT 1 /* /* */ , 999 -- */\n FROM t;` parses as `SELECT 1, 999 FROM t`. See #619.
-BlockComment <- '/*' (!'*/' .)* '*/'
 
 %parser ColLabel

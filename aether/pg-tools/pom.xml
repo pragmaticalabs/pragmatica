@@ -28,7 +28,7 @@
     <properties>
         <!-- One version governs both the runtime dependency and the generator plugin: they are
              released together, and a generated parser must run against its own runtime. -->
-        <peglib.version>0.7.2</peglib.version>
+        <peglib.version>0.7.3</peglib.version>
     </properties>
 
     <dependencyManagement>
