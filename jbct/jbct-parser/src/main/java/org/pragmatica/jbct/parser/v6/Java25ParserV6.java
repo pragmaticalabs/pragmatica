@@ -1,3 +1,4 @@
+// peglib-generator: 0.7.3 (build:767ffbbe347d)
 package org.pragmatica.jbct.parser.v6;
 
 import java.util.ArrayList;
@@ -156,28 +157,27 @@ public final class Java25ParserV6 {
     private static final int RULE_ROOT_KIND = 139;
 
     private static final int KIND_INLINE__SEMI = 94;
+    private static final int KIND_STATICKW = 9;
+    private static final int KIND_SYNCHRONIZEDKW = 17;
     private static final int KIND_INLINE_DEFAULT = 52;
-    private static final int KIND_INLINE_STATIC = 56;
-    private static final int KIND_INLINE_SEALED = 122;
-    private static final int KIND_INLINE_NON_MINUSSEALED = 123;
-    private static final int KIND_INLINE_SYNCHRONIZED = 129;
-    private static final int KIND_INLINE_PUBLIC = 147;
-    private static final int KIND_INLINE_PROTECTED = 148;
-    private static final int KIND_INLINE_PRIVATE = 149;
-    private static final int KIND_INLINE_FINAL = 150;
-    private static final int KIND_INLINE_ABSTRACT = 151;
-    private static final int KIND_INLINE_NATIVE = 152;
-    private static final int KIND_INLINE_TRANSIENT = 153;
-    private static final int KIND_INLINE_VOLATILE = 154;
-    private static final int KIND_INLINE_STRICTFP = 155;
-    private static final int KIND_INLINE_RECORD = 121;
+    private static final int KIND_INLINE_SEALED = 120;
+    private static final int KIND_INLINE_NON_MINUSSEALED = 121;
+    private static final int KIND_INLINE_PUBLIC = 130;
+    private static final int KIND_INLINE_PROTECTED = 131;
+    private static final int KIND_INLINE_PRIVATE = 132;
+    private static final int KIND_INLINE_FINAL = 133;
+    private static final int KIND_INLINE_ABSTRACT = 134;
+    private static final int KIND_INLINE_NATIVE = 135;
+    private static final int KIND_INLINE_TRANSIENT = 136;
+    private static final int KIND_INLINE_VOLATILE = 137;
+    private static final int KIND_INLINE_STRICTFP = 138;
+    private static final int KIND_RECORDKW = 8;
     private static final int KIND_INLINE_PACKAGE = 49;
     private static final int KIND_INLINE_IMPORT = 54;
     private static final int KIND_INLINE_MODULE = 55;
     private static final int KIND_INLINE__DOT = 95;
     private static final int KIND_INLINE__STAR = 96;
     private static final int KIND_IDENTIFIER = 36;
-    private static final int KIND_RECORDKW = 8;
     private static final int KIND_YIELDKW = 23;
     private static final int KIND_WHENKW = 26;
     private static final int KIND_VALUEKW = 38;
@@ -190,21 +190,18 @@ public final class Java25ParserV6 {
     private static final int KIND_INLINE_OPEN = 63;
     private static final int KIND_INLINE_USES = 64;
     private static final int KIND_INLINE_WITH = 65;
-    private static final int KIND_INLINE_WHEN = 70;
     private static final int KIND_INLINE_VAR = 73;
     private static final int KIND_INLINE_TO = 75;
-    private static final int KIND_INLINE_YIELD = 135;
-    private static final int KIND_INLINE_VALUE = 156;
     private static final int KIND_INLINE__LBRACE = 97;
     private static final int KIND_INLINE__RBRACE = 98;
     private static final int KIND_INLINE__COMMA = 99;
-    private static final int KIND_INLINE_CLASS = 61;
+    private static final int KIND_CLASSKW = 5;
     private static final int KIND_INLINE_EXTENDS = 51;
-    private static final int KIND_INLINE_INTERFACE = 46;
+    private static final int KIND_INTERFACEKW = 6;
     private static final int KIND_INLINE__AT = 100;
     private static final int KIND_INLINE__LPAREN = 101;
     private static final int KIND_INLINE__RPAREN = 102;
-    private static final int KIND_INLINE_ENUM = 120;
+    private static final int KIND_ENUMKW = 7;
     private static final int KIND_INLINE_IMPLEMENTS = 44;
     private static final int KIND_INLINE__LT = 103;
     private static final int KIND_INLINE__GT = 104;
@@ -214,22 +211,22 @@ public final class Java25ParserV6 {
     private static final int KIND_INLINE__ = 107;
     private static final int KIND_INLINE_THIS = 66;
     private static final int KIND_INLINE_THROWS = 57;
-    private static final int KIND_INLINE_IF = 124;
+    private static final int KIND_IFKW = 11;
     private static final int KIND_INLINE_ELSE = 67;
-    private static final int KIND_INLINE_WHILE = 59;
-    private static final int KIND_INLINE_FOR = 125;
-    private static final int KIND_INLINE_DO = 126;
-    private static final int KIND_INLINE_TRY = 127;
-    private static final int KIND_INLINE_SWITCH = 128;
-    private static final int KIND_INLINE_RETURN = 130;
-    private static final int KIND_INLINE_THROW = 131;
-    private static final int KIND_INLINE_BREAK = 132;
-    private static final int KIND_INLINE_CONTINUE = 133;
-    private static final int KIND_INLINE_ASSERT = 134;
+    private static final int KIND_WHILEKW = 12;
+    private static final int KIND_FORKW = 13;
+    private static final int KIND_DOKW = 14;
+    private static final int KIND_TRYKW = 15;
+    private static final int KIND_SWITCHKW = 16;
+    private static final int KIND_RETURNKW = 18;
+    private static final int KIND_THROWKW = 19;
+    private static final int KIND_BREAKKW = 20;
+    private static final int KIND_CONTINUEKW = 21;
+    private static final int KIND_ASSERTKW = 22;
     private static final int KIND_INLINE__COLON = 108;
-    private static final int KIND_INLINE_CATCH = 136;
+    private static final int KIND_CATCHKW = 24;
     private static final int KIND_INLINE__PIPE = 109;
-    private static final int KIND_INLINE_FINALLY = 137;
+    private static final int KIND_FINALLYKW = 25;
     private static final int KIND_INLINE__MINUS_GT = 76;
     private static final int KIND_INLINE_CASE = 68;
     private static final int KIND_INLINE_NULL = 69;
@@ -266,15 +263,15 @@ public final class Java25ParserV6 {
     private static final int KIND_INLINE__LBRACK = 118;
     private static final int KIND_INLINE__RBRACK = 119;
     private static final int KIND_INLINE__COLON_COLON = 93;
-    private static final int KIND_INLINE_VOID = 146;
-    private static final int KIND_INLINE_BOOLEAN = 138;
-    private static final int KIND_INLINE_BYTE = 139;
-    private static final int KIND_INLINE_SHORT = 140;
-    private static final int KIND_INLINE_INT = 141;
-    private static final int KIND_INLINE_LONG = 142;
-    private static final int KIND_INLINE_FLOAT = 143;
-    private static final int KIND_INLINE_DOUBLE = 144;
-    private static final int KIND_INLINE_CHAR = 145;
+    private static final int KIND_VOIDTYPE = 34;
+    private static final int KIND_INLINE_BOOLEAN = 122;
+    private static final int KIND_INLINE_BYTE = 123;
+    private static final int KIND_INLINE_SHORT = 124;
+    private static final int KIND_INLINE_INT = 125;
+    private static final int KIND_INLINE_LONG = 126;
+    private static final int KIND_INLINE_FLOAT = 127;
+    private static final int KIND_INLINE_DOUBLE = 128;
+    private static final int KIND_INLINE_CHAR = 129;
     private static final int KIND_INLINE_TRUE = 71;
     private static final int KIND_INLINE_FALSE = 62;
     private static final int KIND_CHARLIT = 39;
@@ -283,10 +280,10 @@ public final class Java25ParserV6 {
 
     private static final int[] DEFAULT_SYNC = new int[] {94, 98, 99, 102, 119};
 
-    private static final int[] ALIAS_MODIFIER = new int[] {52, 56, 122, 123, 129, 147, 148, 149, 150, 151, 152, 153, 154, 155};
-    private static final int[] ALIAS_PRIMTYPE = new int[] {138, 139, 140, 141, 142, 143, 144, 145};
+    private static final int[] ALIAS_MODIFIER = new int[] {9, 17, 52, 120, 121, 130, 131, 132, 133, 134, 135, 136, 137, 138};
+    private static final int[] ALIAS_PRIMTYPE = new int[] {122, 123, 124, 125, 126, 127, 128, 129};
 
-    private static final int[] IDFALL_IDENTIFIER = new int[] {8, 23, 26, 36, 38, 43, 47, 48, 50, 53, 55, 58, 63, 64, 65, 70, 73, 75, 121, 122, 135, 156};
+    private static final int[] IDFALL_IDENTIFIER = new int[] {8, 23, 26, 36, 38, 43, 47, 48, 50, 53, 55, 58, 63, 64, 65, 73, 75, 120};
 
     private final TokenArray tokens;
     private final CstArrayBuilder cst;
@@ -1133,7 +1130,7 @@ public final class Java25ParserV6 {
             int savedNodes_not_2 = cst.currentNodeCount();
             boolean notMatched_not_2 = false;
             do {
-                { int __k = peek(); if (__k != KIND_INLINE_RECORD) { fail("RecordKW", RULE_TopLevelMember_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_RECORDKW) { fail("RecordKW", RULE_TopLevelMember_KIND); break; } }
                 advance();
                 notMatched_not_2 = true;
             } while (false);
@@ -1247,7 +1244,7 @@ public final class Java25ParserV6 {
                         int savedNodes_opt_1 = cst.currentNodeCount();
                         boolean optOk_opt_1 = false;
                         do {
-                            if (peek() != KIND_INLINE_STATIC) { fail("'static'", RULE_ImportDecl_KIND); break; }
+                            if (peek() != KIND_STATICKW) { fail("'static'", RULE_ImportDecl_KIND); break; }
                             advance();
                             optOk_opt_1 = true;
                         } while (false);
@@ -1278,7 +1275,7 @@ public final class Java25ParserV6 {
                         int savedNodes_opt_2 = cst.currentNodeCount();
                         boolean optOk_opt_2 = false;
                         do {
-                            if (peek() != KIND_INLINE_STATIC) { fail("'static'", RULE_ImportDecl_KIND); break; }
+                            if (peek() != KIND_STATICKW) { fail("'static'", RULE_ImportDecl_KIND); break; }
                             advance();
                             optOk_opt_2 = true;
                         } while (false);
@@ -1546,7 +1543,7 @@ public final class Java25ParserV6 {
                     }
                     if (!matched_alt_1 && !cutHit_alt_1) {
                         do {
-                            if (peek() != KIND_INLINE_STATIC) { fail("'static'", RULE_RequiresDirective_KIND); break; }
+                            if (peek() != KIND_STATICKW) { fail("'static'", RULE_RequiresDirective_KIND); break; }
                             advance();
                             matched_alt_1 = true;
                         } while (false);
@@ -1787,7 +1784,7 @@ public final class Java25ParserV6 {
                     }
                     if (!matched_alt_2 && !cutHit_alt_2) {
                         do {
-                            { int __k = peek(); if (__k != KIND_INLINE_VALUE) { fail("ValueKW", RULE_TypeDecl_KIND); break; } }
+                            { int __k = peek(); if (__k != KIND_VALUEKW) { fail("ValueKW", RULE_TypeDecl_KIND); break; } }
                             advance();
                             // and-predicate: and_3
                             {
@@ -1820,7 +1817,7 @@ public final class Java25ParserV6 {
                                         boolean cutHit_alt_5 = false;
                                         if (!matched_alt_5 && !cutHit_alt_5) {
                                             do {
-                                                { int __k = peek(); if (__k != KIND_INLINE_CLASS) { fail("ClassKW", RULE_TypeDecl_KIND); break; } }
+                                                { int __k = peek(); if (__k != KIND_CLASSKW) { fail("ClassKW", RULE_TypeDecl_KIND); break; } }
                                                 advance();
                                                 matched_alt_5 = true;
                                             } while (false);
@@ -1831,7 +1828,7 @@ public final class Java25ParserV6 {
                                         }
                                         if (!matched_alt_5 && !cutHit_alt_5) {
                                             do {
-                                                { int __k = peek(); if (__k != KIND_INLINE_RECORD) { fail("RecordKW", RULE_TypeDecl_KIND); break; } }
+                                                { int __k = peek(); if (__k != KIND_RECORDKW) { fail("RecordKW", RULE_TypeDecl_KIND); break; } }
                                                 advance();
                                                 matched_alt_5 = true;
                                             } while (false);
@@ -1949,7 +1946,7 @@ public final class Java25ParserV6 {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_ClassDecl_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_CLASS) { fail("ClassKW", RULE_ClassDecl_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_CLASSKW) { fail("ClassKW", RULE_ClassDecl_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         // not-predicate: not_0
@@ -1958,7 +1955,7 @@ public final class Java25ParserV6 {
             int savedNodes_not_0 = cst.currentNodeCount();
             boolean notMatched_not_0 = false;
             do {
-                { int __k = peek(); if (__k != KIND_INLINE_VAR && __k != KIND_INLINE_YIELD) { fail("RestrictedTypeName", RULE_ClassDecl_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_YIELDKW && __k != KIND_INLINE_VAR) { fail("RestrictedTypeName", RULE_ClassDecl_KIND); break; } }
                 advance();
                 notMatched_not_0 = true;
             } while (false);
@@ -2039,7 +2036,7 @@ public final class Java25ParserV6 {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_InterfaceDecl_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_INTERFACE) { fail("InterfaceKW", RULE_InterfaceDecl_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_INTERFACEKW) { fail("InterfaceKW", RULE_InterfaceDecl_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         // not-predicate: not_0
@@ -2048,7 +2045,7 @@ public final class Java25ParserV6 {
             int savedNodes_not_0 = cst.currentNodeCount();
             boolean notMatched_not_0 = false;
             do {
-                { int __k = peek(); if (__k != KIND_INLINE_VAR && __k != KIND_INLINE_YIELD) { fail("RestrictedTypeName", RULE_InterfaceDecl_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_YIELDKW && __k != KIND_INLINE_VAR) { fail("RestrictedTypeName", RULE_InterfaceDecl_KIND); break; } }
                 advance();
                 notMatched_not_0 = true;
             } while (false);
@@ -2118,7 +2115,7 @@ public final class Java25ParserV6 {
         int self = cst.beginNode(RULE_AnnotationDecl_KIND, firstTok, parent);
         if (peek() != KIND_INLINE__AT) { fail("'@'", RULE_AnnotationDecl_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         advance();
-        { int __k = peek(); if (__k != KIND_INLINE_INTERFACE) { fail("InterfaceKW", RULE_AnnotationDecl_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_INTERFACEKW) { fail("InterfaceKW", RULE_AnnotationDecl_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         // not-predicate: not_0
@@ -2127,7 +2124,7 @@ public final class Java25ParserV6 {
             int savedNodes_not_0 = cst.currentNodeCount();
             boolean notMatched_not_0 = false;
             do {
-                { int __k = peek(); if (__k != KIND_INLINE_VAR && __k != KIND_INLINE_YIELD) { fail("RestrictedTypeName", RULE_AnnotationDecl_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_YIELDKW && __k != KIND_INLINE_VAR) { fail("RestrictedTypeName", RULE_AnnotationDecl_KIND); break; } }
                 advance();
                 notMatched_not_0 = true;
             } while (false);
@@ -2262,7 +2259,7 @@ public final class Java25ParserV6 {
                                 }
                                 if (!matched_alt_3 && !cutHit_alt_3) {
                                     do {
-                                        { int __k = peek(); if (__k != KIND_INLINE_VALUE) { fail("ValueKW", RULE_AnnotationMember_KIND); break; } }
+                                        { int __k = peek(); if (__k != KIND_VALUEKW) { fail("ValueKW", RULE_AnnotationMember_KIND); break; } }
                                         advance();
                                         // and-predicate: and_4
                                         {
@@ -2295,7 +2292,7 @@ public final class Java25ParserV6 {
                                                     boolean cutHit_alt_6 = false;
                                                     if (!matched_alt_6 && !cutHit_alt_6) {
                                                         do {
-                                                            { int __k = peek(); if (__k != KIND_INLINE_CLASS) { fail("ClassKW", RULE_AnnotationMember_KIND); break; } }
+                                                            { int __k = peek(); if (__k != KIND_CLASSKW) { fail("ClassKW", RULE_AnnotationMember_KIND); break; } }
                                                             advance();
                                                             matched_alt_6 = true;
                                                         } while (false);
@@ -2306,7 +2303,7 @@ public final class Java25ParserV6 {
                                                     }
                                                     if (!matched_alt_6 && !cutHit_alt_6) {
                                                         do {
-                                                            { int __k = peek(); if (__k != KIND_INLINE_RECORD) { fail("RecordKW", RULE_AnnotationMember_KIND); break; } }
+                                                            { int __k = peek(); if (__k != KIND_RECORDKW) { fail("RecordKW", RULE_AnnotationMember_KIND); break; } }
                                                             advance();
                                                             matched_alt_6 = true;
                                                         } while (false);
@@ -2531,7 +2528,7 @@ public final class Java25ParserV6 {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_EnumDecl_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_ENUM) { fail("EnumKW", RULE_EnumDecl_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_ENUMKW) { fail("EnumKW", RULE_EnumDecl_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         // not-predicate: not_0
@@ -2540,7 +2537,7 @@ public final class Java25ParserV6 {
             int savedNodes_not_0 = cst.currentNodeCount();
             boolean notMatched_not_0 = false;
             do {
-                { int __k = peek(); if (__k != KIND_INLINE_VAR && __k != KIND_INLINE_YIELD) { fail("RestrictedTypeName", RULE_EnumDecl_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_YIELDKW && __k != KIND_INLINE_VAR) { fail("RestrictedTypeName", RULE_EnumDecl_KIND); break; } }
                 advance();
                 notMatched_not_0 = true;
             } while (false);
@@ -2577,7 +2574,7 @@ public final class Java25ParserV6 {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_RecordDecl_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_RECORD) { fail("RecordKW", RULE_RecordDecl_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_RECORDKW) { fail("RecordKW", RULE_RecordDecl_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // and-predicate: and_0
         {
@@ -2615,7 +2612,7 @@ public final class Java25ParserV6 {
             int savedNodes_not_2 = cst.currentNodeCount();
             boolean notMatched_not_2 = false;
             do {
-                { int __k = peek(); if (__k != KIND_INLINE_VAR && __k != KIND_INLINE_YIELD) { fail("RestrictedTypeName", RULE_RecordDecl_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_YIELDKW && __k != KIND_INLINE_VAR) { fail("RestrictedTypeName", RULE_RecordDecl_KIND); break; } }
                 advance();
                 notMatched_not_2 = true;
             } while (false);
@@ -2965,7 +2962,7 @@ public final class Java25ParserV6 {
                                 }
                                 if (!matched_alt_3 && !cutHit_alt_3) {
                                     do {
-                                        { int __k = peek(); if (__k != KIND_INLINE_VALUE) { fail("ValueKW", RULE_InterfaceMember_KIND); break; } }
+                                        { int __k = peek(); if (__k != KIND_VALUEKW) { fail("ValueKW", RULE_InterfaceMember_KIND); break; } }
                                         advance();
                                         // and-predicate: and_4
                                         {
@@ -2998,7 +2995,7 @@ public final class Java25ParserV6 {
                                                     boolean cutHit_alt_6 = false;
                                                     if (!matched_alt_6 && !cutHit_alt_6) {
                                                         do {
-                                                            { int __k = peek(); if (__k != KIND_INLINE_CLASS) { fail("ClassKW", RULE_InterfaceMember_KIND); break; } }
+                                                            { int __k = peek(); if (__k != KIND_CLASSKW) { fail("ClassKW", RULE_InterfaceMember_KIND); break; } }
                                                             advance();
                                                             matched_alt_6 = true;
                                                         } while (false);
@@ -3009,7 +3006,7 @@ public final class Java25ParserV6 {
                                                     }
                                                     if (!matched_alt_6 && !cutHit_alt_6) {
                                                         do {
-                                                            { int __k = peek(); if (__k != KIND_INLINE_RECORD) { fail("RecordKW", RULE_InterfaceMember_KIND); break; } }
+                                                            { int __k = peek(); if (__k != KIND_RECORDKW) { fail("RecordKW", RULE_InterfaceMember_KIND); break; } }
                                                             advance();
                                                             matched_alt_6 = true;
                                                         } while (false);
@@ -3228,7 +3225,7 @@ public final class Java25ParserV6 {
                                 }
                                 if (!matched_alt_3 && !cutHit_alt_3) {
                                     do {
-                                        { int __k = peek(); if (__k != KIND_INLINE_VALUE) { fail("ValueKW", RULE_ClassMember_KIND); break; } }
+                                        { int __k = peek(); if (__k != KIND_VALUEKW) { fail("ValueKW", RULE_ClassMember_KIND); break; } }
                                         advance();
                                         // and-predicate: and_4
                                         {
@@ -3261,7 +3258,7 @@ public final class Java25ParserV6 {
                                                     boolean cutHit_alt_6 = false;
                                                     if (!matched_alt_6 && !cutHit_alt_6) {
                                                         do {
-                                                            { int __k = peek(); if (__k != KIND_INLINE_CLASS) { fail("ClassKW", RULE_ClassMember_KIND); break; } }
+                                                            { int __k = peek(); if (__k != KIND_CLASSKW) { fail("ClassKW", RULE_ClassMember_KIND); break; } }
                                                             advance();
                                                             matched_alt_6 = true;
                                                         } while (false);
@@ -3272,7 +3269,7 @@ public final class Java25ParserV6 {
                                                     }
                                                     if (!matched_alt_6 && !cutHit_alt_6) {
                                                         do {
-                                                            { int __k = peek(); if (__k != KIND_INLINE_RECORD) { fail("RecordKW", RULE_ClassMember_KIND); break; } }
+                                                            { int __k = peek(); if (__k != KIND_RECORDKW) { fail("RecordKW", RULE_ClassMember_KIND); break; } }
                                                             advance();
                                                             matched_alt_6 = true;
                                                         } while (false);
@@ -3384,7 +3381,7 @@ public final class Java25ParserV6 {
                         int savedNodes_not_1 = cst.currentNodeCount();
                         boolean notMatched_not_1 = false;
                         do {
-                            { int __k = peek(); if (__k != KIND_INLINE_RECORD) { fail("RecordKW", RULE_Member_KIND); break; } }
+                            { int __k = peek(); if (__k != KIND_RECORDKW) { fail("RecordKW", RULE_Member_KIND); break; } }
                             advance();
                             notMatched_not_1 = true;
                         } while (false);
@@ -3447,7 +3444,7 @@ public final class Java25ParserV6 {
             int savedNodes_opt_0 = cst.currentNodeCount();
             boolean optOk_opt_0 = false;
             do {
-                if (peek() != KIND_INLINE_STATIC) { fail("'static'", RULE_InitializerBlock_KIND); break; }
+                if (peek() != KIND_STATICKW) { fail("'static'", RULE_InitializerBlock_KIND); break; }
                 advance();
                 optOk_opt_0 = true;
             } while (false);
@@ -3865,7 +3862,7 @@ public final class Java25ParserV6 {
                                 }
                                 if (!matched_alt_3 && !cutHit_alt_3) {
                                     do {
-                                        { int __k = peek(); if (__k != KIND_INLINE_VALUE) { fail("ValueKW", RULE_RecordMember_KIND); break; } }
+                                        { int __k = peek(); if (__k != KIND_VALUEKW) { fail("ValueKW", RULE_RecordMember_KIND); break; } }
                                         advance();
                                         // and-predicate: and_4
                                         {
@@ -3898,7 +3895,7 @@ public final class Java25ParserV6 {
                                                     boolean cutHit_alt_6 = false;
                                                     if (!matched_alt_6 && !cutHit_alt_6) {
                                                         do {
-                                                            { int __k = peek(); if (__k != KIND_INLINE_CLASS) { fail("ClassKW", RULE_RecordMember_KIND); break; } }
+                                                            { int __k = peek(); if (__k != KIND_CLASSKW) { fail("ClassKW", RULE_RecordMember_KIND); break; } }
                                                             advance();
                                                             matched_alt_6 = true;
                                                         } while (false);
@@ -3909,7 +3906,7 @@ public final class Java25ParserV6 {
                                                     }
                                                     if (!matched_alt_6 && !cutHit_alt_6) {
                                                         do {
-                                                            { int __k = peek(); if (__k != KIND_INLINE_RECORD) { fail("RecordKW", RULE_RecordMember_KIND); break; } }
+                                                            { int __k = peek(); if (__k != KIND_RECORDKW) { fail("RecordKW", RULE_RecordMember_KIND); break; } }
                                                             advance();
                                                             matched_alt_6 = true;
                                                         } while (false);
@@ -4017,7 +4014,7 @@ public final class Java25ParserV6 {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_STATIC) { fail("StaticKW", RULE_RecordMember_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_STATICKW) { fail("StaticKW", RULE_RecordMember_KIND); break; } }
                     advance();
                     if (!parseBlock(self)) { break; }
                     matched_alt_0 = true;
@@ -4064,7 +4061,7 @@ public final class Java25ParserV6 {
                     int savedNodes_not_1 = cst.currentNodeCount();
                     boolean notMatched_not_1 = false;
                     do {
-                        { int __k = peek(); if (__k != KIND_INLINE_STATIC) { fail("StaticKW", RULE_RecordStaticField_KIND); break; } }
+                        { int __k = peek(); if (__k != KIND_STATICKW) { fail("StaticKW", RULE_RecordStaticField_KIND); break; } }
                         advance();
                         notMatched_not_1 = true;
                     } while (false);
@@ -4083,7 +4080,7 @@ public final class Java25ParserV6 {
             }
             if (pos == savedPos_rep_0) break; // guard against infinite loops on zero-width matches
         }
-        { int __k = peek(); if (__k != KIND_INLINE_STATIC) { fail("StaticKW", RULE_RecordStaticField_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_STATICKW) { fail("StaticKW", RULE_RecordStaticField_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // zero-or-more: rep_2
         while (true) {
@@ -5139,7 +5136,7 @@ public final class Java25ParserV6 {
                                 int savedNodes_not_3 = cst.currentNodeCount();
                                 boolean notMatched_not_3 = false;
                                 do {
-                                    { int __k = peek(); if (__k != KIND_INLINE_STATIC && __k != KIND_INLINE_SEALED && __k != KIND_INLINE_NON_MINUSSEALED) { fail("IllegalLocalClassMod", RULE_LocalTypeDecl_KIND); break; } }
+                                    { int __k = peek(); if (__k != KIND_STATICKW && __k != KIND_INLINE_SEALED && __k != KIND_INLINE_NON_MINUSSEALED) { fail("IllegalLocalClassMod", RULE_LocalTypeDecl_KIND); break; } }
                                     advance();
                                     notMatched_not_3 = true;
                                 } while (false);
@@ -5158,7 +5155,7 @@ public final class Java25ParserV6 {
                     }
                     if (!matched_alt_2 && !cutHit_alt_2) {
                         do {
-                            { int __k = peek(); if (__k != KIND_INLINE_VALUE) { fail("ValueKW", RULE_LocalTypeDecl_KIND); break; } }
+                            { int __k = peek(); if (__k != KIND_VALUEKW) { fail("ValueKW", RULE_LocalTypeDecl_KIND); break; } }
                             advance();
                             // and-predicate: and_4
                             {
@@ -5191,7 +5188,7 @@ public final class Java25ParserV6 {
                                         boolean cutHit_alt_6 = false;
                                         if (!matched_alt_6 && !cutHit_alt_6) {
                                             do {
-                                                { int __k = peek(); if (__k != KIND_INLINE_CLASS) { fail("ClassKW", RULE_LocalTypeDecl_KIND); break; } }
+                                                { int __k = peek(); if (__k != KIND_CLASSKW) { fail("ClassKW", RULE_LocalTypeDecl_KIND); break; } }
                                                 advance();
                                                 matched_alt_6 = true;
                                             } while (false);
@@ -5202,7 +5199,7 @@ public final class Java25ParserV6 {
                                         }
                                         if (!matched_alt_6 && !cutHit_alt_6) {
                                             do {
-                                                { int __k = peek(); if (__k != KIND_INLINE_RECORD) { fail("RecordKW", RULE_LocalTypeDecl_KIND); break; } }
+                                                { int __k = peek(); if (__k != KIND_RECORDKW) { fail("RecordKW", RULE_LocalTypeDecl_KIND); break; } }
                                                 advance();
                                                 matched_alt_6 = true;
                                             } while (false);
@@ -5389,7 +5386,7 @@ public final class Java25ParserV6 {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_IF) { fail("IfKW", RULE_Stmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_IFKW) { fail("IfKW", RULE_Stmt_KIND); break; } }
                     advance();
                     cutHit_alt_0 = true;
                     if (peek() != KIND_INLINE__LPAREN) { fail("'('", RULE_Stmt_KIND); break; }
@@ -5423,7 +5420,7 @@ public final class Java25ParserV6 {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_WHILE) { fail("WhileKW", RULE_Stmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_WHILEKW) { fail("WhileKW", RULE_Stmt_KIND); break; } }
                     advance();
                     cutHit_alt_0 = true;
                     if (peek() != KIND_INLINE__LPAREN) { fail("'('", RULE_Stmt_KIND); break; }
@@ -5441,7 +5438,7 @@ public final class Java25ParserV6 {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_FOR) { fail("ForKW", RULE_Stmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_FORKW) { fail("ForKW", RULE_Stmt_KIND); break; } }
                     advance();
                     cutHit_alt_0 = true;
                     if (peek() != KIND_INLINE__LPAREN) { fail("'('", RULE_Stmt_KIND); break; }
@@ -5459,11 +5456,11 @@ public final class Java25ParserV6 {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_DO) { fail("DoKW", RULE_Stmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_DOKW) { fail("DoKW", RULE_Stmt_KIND); break; } }
                     advance();
                     cutHit_alt_0 = true;
                     if (!parseStmt(self)) { break; }
-                    if (peek() != KIND_INLINE_WHILE) { fail("'while'", RULE_Stmt_KIND); break; }
+                    if (peek() != KIND_WHILEKW) { fail("'while'", RULE_Stmt_KIND); break; }
                     advance();
                     if (peek() != KIND_INLINE__LPAREN) { fail("'('", RULE_Stmt_KIND); break; }
                     advance();
@@ -5481,7 +5478,7 @@ public final class Java25ParserV6 {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_TRY) { fail("TryKW", RULE_Stmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_TRYKW) { fail("TryKW", RULE_Stmt_KIND); break; } }
                     advance();
                     cutHit_alt_0 = true;
                     // choice: alt_2
@@ -5610,7 +5607,7 @@ public final class Java25ParserV6 {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_SWITCH) { fail("SwitchKW", RULE_Stmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_SWITCHKW) { fail("SwitchKW", RULE_Stmt_KIND); break; } }
                     advance();
                     cutHit_alt_0 = true;
                     if (peek() != KIND_INLINE__LPAREN) { fail("'('", RULE_Stmt_KIND); break; }
@@ -5628,7 +5625,7 @@ public final class Java25ParserV6 {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_RETURN) { fail("ReturnKW", RULE_Stmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_RETURNKW) { fail("ReturnKW", RULE_Stmt_KIND); break; } }
                     advance();
                     // optional: opt_8
                     {
@@ -5655,7 +5652,7 @@ public final class Java25ParserV6 {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_THROW) { fail("ThrowKW", RULE_Stmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_THROWKW) { fail("ThrowKW", RULE_Stmt_KIND); break; } }
                     advance();
                     if (!parseExpr(self)) { break; }
                     if (peek() != KIND_INLINE__SEMI) { fail("';'", RULE_Stmt_KIND); break; }
@@ -5669,7 +5666,7 @@ public final class Java25ParserV6 {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_BREAK) { fail("BreakKW", RULE_Stmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_BREAKKW) { fail("BreakKW", RULE_Stmt_KIND); break; } }
                     advance();
                     // optional: opt_9
                     {
@@ -5697,7 +5694,7 @@ public final class Java25ParserV6 {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_CONTINUE) { fail("ContinueKW", RULE_Stmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_CONTINUEKW) { fail("ContinueKW", RULE_Stmt_KIND); break; } }
                     advance();
                     // optional: opt_10
                     {
@@ -5725,7 +5722,7 @@ public final class Java25ParserV6 {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_ASSERT) { fail("AssertKW", RULE_Stmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_ASSERTKW) { fail("AssertKW", RULE_Stmt_KIND); break; } }
                     advance();
                     if (!parseExpr(self)) { break; }
                     // optional: opt_11
@@ -5755,7 +5752,7 @@ public final class Java25ParserV6 {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_SYNCHRONIZED) { fail("SynchronizedKW", RULE_Stmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_SYNCHRONIZEDKW) { fail("SynchronizedKW", RULE_Stmt_KIND); break; } }
                     advance();
                     cutHit_alt_0 = true;
                     if (peek() != KIND_INLINE__LPAREN) { fail("'('", RULE_Stmt_KIND); break; }
@@ -5773,7 +5770,7 @@ public final class Java25ParserV6 {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_YIELD) { fail("YieldKW", RULE_Stmt_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_YIELDKW) { fail("YieldKW", RULE_Stmt_KIND); break; } }
                     advance();
                     if (!parseExpr(self)) { break; }
                     if (peek() != KIND_INLINE__SEMI) { fail("';'", RULE_Stmt_KIND); break; }
@@ -6374,7 +6371,7 @@ public final class Java25ParserV6 {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_Catch_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_CATCH) { fail("CatchKW", RULE_Catch_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_CATCHKW) { fail("CatchKW", RULE_Catch_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         if (peek() != KIND_INLINE__LPAREN) { fail("'('", RULE_Catch_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
@@ -6460,7 +6457,7 @@ public final class Java25ParserV6 {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_Finally_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_FINALLY) { fail("FinallyKW", RULE_Finally_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_FINALLYKW) { fail("FinallyKW", RULE_Finally_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         // cut: no enclosing Choice — no-op
         if (!parseBlock(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
@@ -6550,7 +6547,7 @@ public final class Java25ParserV6 {
                         }
                         if (!matched_alt_1 && !cutHit_alt_1) {
                             do {
-                                { int __k = peek(); if (__k != KIND_INLINE_THROW) { fail("ThrowKW", RULE_SwitchRule_KIND); break; } }
+                                { int __k = peek(); if (__k != KIND_THROWKW) { fail("ThrowKW", RULE_SwitchRule_KIND); break; } }
                                 advance();
                                 if (!parseExpr(self)) { break; }
                                 if (peek() != KIND_INLINE__SEMI) { fail("';'", RULE_SwitchRule_KIND); break; }
@@ -6803,7 +6800,7 @@ public final class Java25ParserV6 {
                                 }
                                 if (!matched_alt_2 && !cutHit_alt_2) {
                                     do {
-                                        if (peek() != KIND_INLINE_WHEN) { fail("'when'", RULE_CaseItem_KIND); break; }
+                                        if (peek() != KIND_WHENKW) { fail("'when'", RULE_CaseItem_KIND); break; }
                                         advance();
                                         matched_alt_2 = true;
                                     } while (false);
@@ -7353,7 +7350,7 @@ public final class Java25ParserV6 {
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
         int self = cst.beginNode(RULE_Guard_KIND, firstTok, parent);
-        { int __k = peek(); if (__k != KIND_INLINE_WHEN) { fail("WhenKW", RULE_Guard_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
+        { int __k = peek(); if (__k != KIND_WHENKW) { fail("WhenKW", RULE_Guard_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
         if (!parseAssignment(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
         int lastTok = pos > firstTok ? pos - 1 : firstTok;
@@ -9105,7 +9102,7 @@ public final class Java25ParserV6 {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_SWITCH) { fail("SwitchKW", RULE_Primary_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_SWITCHKW) { fail("SwitchKW", RULE_Primary_KIND); break; } }
                     advance();
                     if (peek() != KIND_INLINE__LPAREN) { fail("'('", RULE_Primary_KIND); break; }
                     advance();
@@ -9179,7 +9176,7 @@ public final class Java25ParserV6 {
                     if (!parseUnannType(self)) { break; }
                     if (peek() != KIND_INLINE__DOT) { fail("'.'", RULE_TypeExpr_KIND); break; }
                     advance();
-                    if (peek() != KIND_INLINE_CLASS) { fail("'class'", RULE_TypeExpr_KIND); break; }
+                    if (peek() != KIND_CLASSKW) { fail("'class'", RULE_TypeExpr_KIND); break; }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -9266,7 +9263,7 @@ public final class Java25ParserV6 {
             boolean cutHit_alt_0 = false;
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_VOID) { fail("VoidType", RULE_UnannType_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_VOIDTYPE) { fail("VoidType", RULE_UnannType_KIND); break; } }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
@@ -9377,7 +9374,7 @@ public final class Java25ParserV6 {
             int savedNodes_not_0 = cst.currentNodeCount();
             boolean notMatched_not_0 = false;
             do {
-                { int __k = peek(); if (__k != KIND_INLINE_VAR && __k != KIND_INLINE_YIELD) { fail("RestrictedTypeName", RULE_PlainTypeName_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_YIELDKW && __k != KIND_INLINE_VAR) { fail("RestrictedTypeName", RULE_PlainTypeName_KIND); break; } }
                 advance();
                 notMatched_not_0 = true;
             } while (false);
@@ -10187,7 +10184,7 @@ public final class Java25ParserV6 {
                         int savedNodes_not_6 = cst.currentNodeCount();
                         boolean notMatched_not_6 = false;
                         do {
-                            { int __k = peek(); if (__k != KIND_INLINE_YIELD) { fail("YieldKW", RULE_StmtExpr_KIND); break; } }
+                            { int __k = peek(); if (__k != KIND_YIELDKW) { fail("YieldKW", RULE_StmtExpr_KIND); break; } }
                             advance();
                             notMatched_not_6 = true;
                         } while (false);
@@ -10760,7 +10757,7 @@ public final class Java25ParserV6 {
             boolean cutHit_alt_1 = false;
             if (!matched_alt_1 && !cutHit_alt_1) {
                 do {
-                    { int __k = peek(); if (__k != KIND_INLINE_VOID) { fail("VoidType", RULE_Type_KIND); break; } }
+                    { int __k = peek(); if (__k != KIND_VOIDTYPE) { fail("VoidType", RULE_Type_KIND); break; } }
                     advance();
                     matched_alt_1 = true;
                 } while (false);
@@ -10932,7 +10929,7 @@ public final class Java25ParserV6 {
             int savedNodes_not_1 = cst.currentNodeCount();
             boolean notMatched_not_1 = false;
             do {
-                { int __k = peek(); if (__k != KIND_INLINE_VAR && __k != KIND_INLINE_YIELD) { fail("RestrictedTypeName", RULE_AnnotatedTypeName_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_YIELDKW && __k != KIND_INLINE_VAR) { fail("RestrictedTypeName", RULE_AnnotatedTypeName_KIND); break; } }
                 advance();
                 // not-predicate: not_2
                 {
@@ -11247,7 +11244,7 @@ public final class Java25ParserV6 {
             int savedNodes_not_1 = cst.currentNodeCount();
             boolean notMatched_not_1 = false;
             do {
-                { int __k = peek(); if (__k != KIND_INLINE_VAR && __k != KIND_INLINE_YIELD) { fail("RestrictedTypeName", RULE_RawTypeName_KIND); break; } }
+                { int __k = peek(); if (__k != KIND_YIELDKW && __k != KIND_INLINE_VAR) { fail("RestrictedTypeName", RULE_RawTypeName_KIND); break; } }
                 advance();
                 notMatched_not_1 = true;
             } while (false);
@@ -11719,7 +11716,7 @@ public final class Java25ParserV6 {
             int savedNodes_not_0 = cst.currentNodeCount();
             boolean notMatched_not_0 = false;
             do {
-                if (peek() != KIND_INLINE_INTERFACE) { fail("'interface'", RULE_Annotation_KIND); break; }
+                if (peek() != KIND_INTERFACEKW) { fail("'interface'", RULE_Annotation_KIND); break; }
                 advance();
                 notMatched_not_0 = true;
             } while (false);
