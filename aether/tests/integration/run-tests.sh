@@ -285,6 +285,34 @@ collect_blueprints() {
 # ---------------------------------------------------------------------------
 # Run a single suite against a specific cluster
 # ---------------------------------------------------------------------------
+# Best-effort node-log capture for a failed suite. Never fails the run: it exists to
+# preserve evidence, and losing evidence must not also lose the result that produced it.
+capture_node_logs() {
+    local suite_name="$1" target_cluster="$2"
+    local out_dir="${SCRIPT_DIR}/failure-logs/${suite_name}"
+
+    mkdir -p "$out_dir" 2>/dev/null || return 0
+
+    local names
+    case "$ENV_TYPE" in
+        docker)
+            names=$(docker ps -a --format '{{.Names}}' --filter "name=aether-${target_cluster}-node-" 2>/dev/null)
+            for n in $names; do
+                docker logs --tail 400 "$n" > "${out_dir}/${n}.log" 2>&1 || true
+            done
+            ;;
+        remote)
+            names=$(remote_exec "docker ps -a --format '{{.Names}}' --filter name=aether-${target_cluster}-node-" 2>/dev/null)
+            for n in $names; do
+                remote_exec "docker logs --tail 400 ${n}" > "${out_dir}/${n}.log" 2>&1 || true
+            done
+            ;;
+        *) return 0 ;;
+    esac
+
+    log_info "${suite_name}: node logs captured to ${out_dir}"
+}
+
 run_suite() {
     local suite_prefix="$1"
     # CRITICAL: name this `target_cluster` not `cluster`. `parse_suite_conf` sources
@@ -386,6 +414,13 @@ run_suite() {
     local duration=$(( $(date +%s) - start_time ))
     local status="passed"
     [ "$suite_fail" -gt 0 ] && status="failed"
+
+    # Capture node logs while the cluster is STILL UP. Teardown deletes the containers,
+    # so without this a failed suite leaves no evidence and the only way to investigate
+    # is to reproduce it — which does not work for a failure that does not reproduce.
+    if [ "$status" = "failed" ]; then
+        capture_node_logs "$suite_name" "$target_cluster" || true
+    fi
 
     echo "{\"suite\":\"${suite_name}\",\"status\":\"${status}\",\"pass\":${suite_pass},\"fail\":${suite_fail},\"duration\":${duration}}" >> "$RESULTS_FILE"
 
@@ -560,6 +595,13 @@ version_parity_preflight() {
     if [ -n "${AETHER_BIN:-}" ]; then
         if [ ! -x "$AETHER_BIN" ]; then
             log_error "version-parity preflight: AETHER_BIN='${AETHER_BIN}' is not an executable file"
+            return 1
+        fi
+        # Resolution below is BY NAME (`command -v aether`) after prepending this file's
+        # directory to PATH, so a differently-named binary would validate here and then be
+        # silently ignored — the stale CLI on PATH wins and only the version check catches it.
+        if [ "$(basename "$AETHER_BIN")" != "aether" ]; then
+            log_error "version-parity preflight: AETHER_BIN='${AETHER_BIN}' must be named 'aether' (resolution is by name on PATH)"
             return 1
         fi
         local _bin_dir
