@@ -109,6 +109,38 @@ class CstAlwaysSuccessResultRuleTest {
                                 """)).doesNotContain(RULE);
         }
 
+        /// Found by auditing the rule's own corpus output, not by imagining a case. `Promise.allOf`
+        /// joins fallible calls and its failure propagates — callers of this very method handle it
+        /// with `.onFailure(...)`. An earlier pattern matched a bare `all(` and missed `allOf(`,
+        /// which is the dominant spelling here (33 uses against 3).
+        @Test
+        void joiningFallibleCallsWithAllOf_isSilent() {
+            assertThat(rulesFor("""
+                                package demo;
+                                class Sample {
+                                    Promise<Unit> forward(Event event) {
+                                        return Promise.allOf(urls.stream().map(this::send).toList()).map(_ -> Unit.unit());
+                                    }
+                                }
+                                """)).doesNotContain(RULE);
+        }
+
+        /// The second audit finding, and the one that showed the real defect: the body MENTIONS
+        /// success, but what it RETURNS is a delegate whose other branch fails. Condition 1 is
+        /// "every return IS a success construction", not "a success appears somewhere".
+        @Test
+        void returningADelegateThatMerelyContainsSuccess_isSilent() {
+            assertThat(rulesFor("""
+                                package demo;
+                                class Sample {
+                                    Promise<Unit> sendToWebhook(String url, String payload) {
+                                        return httpOps.fold(() -> Promise.success(Unit.unit()),
+                                                            ops -> sendWithRetry(ops, url, payload, 0));
+                                    }
+                                }
+                                """)).doesNotContain(RULE);
+        }
+
         @Test
         void genuinelyFallibleBody_isSilent() {
             assertThat(rulesFor("""

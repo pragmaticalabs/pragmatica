@@ -1,5 +1,7 @@
 package org.pragmatica.jbct.lint.cst.rules;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
@@ -45,16 +47,32 @@ public class CstAlwaysSuccessResultRule implements CstLintRule {
     /// asserts optionality, not failure, and an always-present `Option` is a different smell.
     private static final Pattern FALLIBLE_RETURN = Pattern.compile("^(Result|Promise)\\s*<");
 
-    /// Success construction, including the statically-imported bare `success(`.
-    private static final Pattern SUCCESS = Pattern.compile("\\bsuccess\\s*\\(");
+    /// Every `return` in the body, with whatever follows it — the anchor for condition 1.
+    private static final Pattern RETURN_STATEMENT = Pattern.compile("\\breturn\\s+");
+
+    /// A returned expression that IS a success construction: `Result.success(`, `Promise.success(`,
+    /// or a statically-imported bare `success(`. Anchored at the start of the returned expression on
+    /// purpose — "the body mentions success somewhere" is a different and much weaker claim, and
+    /// getting that distinction wrong is what produced every false positive an audit of this rule
+    /// found. `httpOps.fold(() -> Promise.success(unit()), ops -> sendWithRetry(...))` mentions
+    /// success, but returns a DELEGATE whose other branch fails.
+    private static final Pattern SUCCESS_HEAD = Pattern.compile("^(?:Result|Promise)\\s*\\.\\s*success\\s*\\(|^success\\s*\\(");
 
     /// Anything that introduces a failure in this body.
     private static final Pattern FAILURE =
         Pattern.compile("\\bfailure\\b|\\.result\\s*\\(\\s*\\)|\\.promise\\s*\\(\\s*\\)|\\.filter\\s*\\(|\\.ensure\\s*\\(");
 
     /// Condition 3: composition over a delegate's wrapper, which carries the delegate's failure.
+    ///
+    /// The aggregate forms are enumerated from `Promise`'s actual surface — `all`, `allOf`,
+    /// `allOrCancel`, `allOfOrCancel`, `any` — rather than guessed. An earlier version matched only
+    /// a bare `all(`, which silently missed `allOf(`: the dominant spelling in this codebase (33
+    /// uses against 3) and the one that produced the one confirmed false positive an audit of these
+    /// findings turned up — `AlertForwarder.forward`, whose `Promise.allOf(...)` joins fallible
+    /// webhook calls and whose callers handle the failure it propagates.
     private static final Pattern DELEGATES =
-        Pattern.compile("\\.flatMap\\s*\\(|\\.async\\s*\\(\\s*\\)|\\ball\\s*\\(");
+        Pattern.compile("\\.flatMap\\s*\\(|\\.async\\s*\\(\\s*\\)|"
+                       + "\\b(?:Result|Promise|Option)\\s*\\.\\s*(?:all|allOf|allOrCancel|allOfOrCancel|any)\\s*\\(");
 
     @Override
     public String ruleId() {
@@ -69,8 +87,13 @@ public class CstAlwaysSuccessResultRule implements CstLintRule {
 
         return findAllMethods(root).stream()
                              .filter(this::returnsResult)
-                             .filter(method -> !implementsAnInheritedContract(root, method))
                              .filter(this::alwaysReturnsSuccess)
+                             // Ordered last on purpose: this one walks to the enclosing member and
+                             // scans its subtree for annotations, while the two above are a type
+                             // check and a regex over text already in hand. Very few methods reach
+                             // it, so the tree walk runs on candidates rather than on every
+                             // Result/Promise-returning method in the file.
+                             .filter(method -> !implementsAnInheritedContract(root, method))
                              .map(method -> createDiagnostic(method, ctx));
     }
 
@@ -95,12 +118,31 @@ public class CstAlwaysSuccessResultRule implements CstLintRule {
                                        .or(false);
     }
 
+    /// Condition 1 as stated: EVERY return yields a success construction — not "a success appears
+    /// somewhere in the body". Conditions 2 and 3 then rule out a body that can still fail or that
+    /// carries a delegate's failure through a combinator.
     private boolean alwaysReturnsSuccess(Cursor method) {
         var methodText = memberDeclText(method);
+        var returns = returnedExpressions(methodText);
 
-        return SUCCESS.matcher(methodText).find()
+        return !returns.isEmpty()
+              && returns.stream().allMatch(expression -> SUCCESS_HEAD.matcher(expression).find())
               && !FAILURE.matcher(methodText).find()
               && !DELEGATES.matcher(methodText).find();
+    }
+
+    /// The expression each `return` yields, trimmed of leading whitespace. Text-level because a
+    /// return's expression head is not a distinct CST node kind here; anchoring at the head is what
+    /// makes it sound, not the fact that it is text.
+    private List<String> returnedExpressions(String methodText) {
+        var expressions = new ArrayList<String>();
+        var matcher = RETURN_STATEMENT.matcher(methodText);
+
+        while (matcher.find()) {
+            expressions.add(methodText.substring(matcher.end()).stripLeading());
+        }
+
+        return expressions;
     }
 
     private Diagnostic createDiagnostic(Cursor method, LintContext ctx) {
