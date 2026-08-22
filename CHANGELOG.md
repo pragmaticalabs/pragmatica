@@ -39,6 +39,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   "never evicts on age alone" case still passes. aether-stream 676/0.]`
 
 ### Changed
+- **A durable entity's transition is now a NAMED command, not a lambda (#596 prerequisite, unblocks
+  #351/#353/#354).** `DurableEntity<K, S>` becomes `DurableEntity<K, S, C extends Mutator<S>>`, and both
+  `update` and `scheduleTimer` take `C` instead of `Fn1<S, S>`. The blocker this removes is not stylistic:
+  a lambda has no name, so it can be neither persisted for a durable timer's `onFire` nor forwarded to a
+  partition owner. The slice JAR is already on every node, so the CODE is cluster-wide and only the DATA
+  identifying which transition to run has to travel — and a record has a name where a lambda does not.
+  `Mutator<S>` lives in `resource/api` (the lowest module every consumer sees) and deliberately does NOT
+  extend `Fn1`: `Fn1.then`/`before` return a COMPOSED LAMBDA typed as `Fn1`, which is not a record, gets
+  no generated codec, and carries no tag — inheriting them would let `a.then(b)` typecheck and produce
+  something that looks like a transition and cannot cross a boundary, on exactly the paths this type
+  exists to make safe. Implementors declare a SEALED hierarchy of record variants, which is also what
+  keeps lambdas out: a lambda cannot implement a sealed interface, so an unpersistable transition is
+  unrepresentable rather than merely discouraged.
+  `[verified: durable-entity 130/0; aether/node 874/0 with no tag collision in the full assembly;
+  the blueprint build REJECTED a surviving method reference (`OrderState::expired`) at compile time,
+  so the guarantee is enforced by the type system rather than by review.]`
+- **Slice codec generation now recurses into a sealed root's permitted subclasses.**
+  `FactoryClassGenerator.addResourceTypeArgumentEntry` bailed on anything that was not a RECORD or ENUM,
+  so a sealed command hierarchy landed in `requiredTypes` with NO codec generated for any variant — and
+  the build still succeeded, leaving the failure for the first attempt to put a command on the wire. Each
+  variant is a record and takes the existing path, and since every variant is its own registered codec
+  type, the tag IS the discriminator: no new wire concept, no envelope-version question.
+  `[verified: mutation — removing the recursion drops the blueprint's generated codec references from 8
+  to 1 while the build stays GREEN, which is what makes the omission silent and the fix load-bearing.]`
 - **A sync-quorum test raced the resync timer rather than a too-short sleep.** `RabiaEngineTest$SyncQuorum`
   failed ~80% of the time locally and twice on CI — including on a docs-only commit, which is what proved
   it was never a code regression. The cause was not timing slack: `testConfig()` retries the sync round
