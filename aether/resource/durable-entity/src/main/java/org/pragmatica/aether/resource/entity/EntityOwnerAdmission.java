@@ -9,6 +9,7 @@ import org.pragmatica.aether.dht.CommittedPartitionOwnerSource.CommittedOwner;
 import org.pragmatica.aether.dht.EntityPartitionArc;
 import org.pragmatica.aether.slice.fence.OwnershipDomain.StreamPartition;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
@@ -71,6 +72,23 @@ final class EntityOwnerAdmission {
                                                    domain.partition())
                                    .fold(() -> ownershipNotYetCommitted(key, domain),
                                          committed -> admitIfSelf(committed, key));
+    }
+
+    /// The committed owner for `key` when it is a REMOTE node, or empty when this node owns the arc or
+    /// no ownership is committed yet.
+    ///
+    /// Deliberately a POSITIVE reading rather than an interpretation of [EntityError.NotCurrentOwner]:
+    /// a forward must be aimed at an owner the code actually observed, and "no committed owner yet" is
+    /// NOT a forwarding target — it is the pre-ownership window, where the caller retries here rather
+    /// than going elsewhere. Both absences collapse to `empty`, so an unwired or undecided arc keeps
+    /// the existing admission behaviour instead of inventing a destination.
+    Option<NodeId> remoteOwner(Object key) {
+        var domain = arc.arcOf(String.valueOf(key));
+
+        return committedOwnerSource.committedOwner(domain.stream(),
+                                                   domain.partition())
+                                   .map(CommittedOwner::owner)
+                                   .filter(owner -> !owner.equals(selfNodeId));
     }
 
     private Result<Unit> admitIfSelf(CommittedOwner committed, Object key) {

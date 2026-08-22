@@ -11,12 +11,13 @@ import org.pragmatica.aether.dht.EntityPartitionArc;
 import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.aether.resource.Mutator;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
@@ -63,6 +64,7 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
     private final Deserializer deserializer;
     private final PerKeySerialExecutor<K> perKey;
     private final Option<EntityOwnerAdmission> admission;
+    private Option<EntityOwnerForward> forward = Option.none();
     private final Option<LinearizableEntityServe<K, S>> linearizableServe;
 
     private PartitionFencedDurableEntity(String keyspace,
@@ -204,8 +206,14 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
         return ready(key).flatMap(_ -> readState(key));
     }
 
+    /// A remote committed owner is FORWARDED to rather than refused (#596) when a transport is wired.
+    /// The owner re-runs admission on arrival, so its epoch fence still decides — the hop cannot land a
+    /// write the owner would have rejected, and the per-key total order stays the owner's to enforce.
     private Promise<S> doUpdate(K key, C mutator) {
-        return admitWrite(key).fold(Cause::promise, _ -> ready(key).flatMap(_ -> updateAdmitted(key, mutator)));
+        return forwardTarget(key).fold(() -> admitWrite(key).fold(Cause::promise,
+                                                                  _ -> ready(key).flatMap(_ -> updateAdmitted(key,
+                                                                                                              mutator))),
+                                       owner -> forwardUpdate(owner, key, mutator));
     }
 
     private Promise<S> updateAdmitted(K key, C mutator) {
@@ -227,6 +235,52 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
 
     /// Owner admission, ahead of the read-modify-write and ahead of the log's epoch fence: only the
     /// committed owner of the key's arc may mutate it. See [EntityOwnerAdmission].
+    /// Wire owner-forwarding (#596). Absent by default so an unwired deployment behaves EXACTLY as
+    /// before — a non-owner is refused rather than silently reaching a different node.
+    @Contract
+    void withOwnerForward(EntityOwnerForward ownerForward) {
+        this.forward = Option.option(ownerForward);
+    }
+
+    /// Forward only on a POSITIVE remote-owner reading AND a wired transport. `remoteOwner` is empty
+    /// both when this node owns the arc and when no ownership is committed yet, so neither case can be
+    /// mistaken for a destination.
+    private Option<NodeId> forwardTarget(K key) {
+        return forward.isEmpty()
+               ? Option.none()
+               : admission.flatMap(gate -> gate.remoteOwner(key));
+    }
+
+    private Promise<S> forwardUpdate(NodeId owner, K key, C mutator) {
+        return forward.toResult(FORWARD_UNWIRED)
+                      .async()
+                      .flatMap(transport -> transport.forwardUpdate(owner,
+                                                                    keyspace,
+                                                                    serializer.encode(key),
+                                                                    serializer.encode(mutator)))
+                      .map(this::decode);
+    }
+
+    /// Apply a command that ARRIVED from a non-owner. Goes through this instance's own per-key queue and
+    /// its own admission, so the hop neither bypasses the single-writer total order nor escapes the
+    /// epoch fence — a write forwarded to a node that has since been deposed is refused here, exactly as
+    /// a local write would be.
+    ///
+    /// Deliberately calls the LOCAL path rather than [#doUpdate]: re-entering the forwarding decision on
+    /// the receiving side would let a stale ownership view bounce a command between two nodes.
+    @SuppressWarnings("unchecked")
+    Promise<byte[]> applyForwarded(byte[] encodedKey, byte[] encodedCommand) {
+        var key = (K) deserializer.decode(encodedKey);
+        var mutator = (C) deserializer.decode(encodedCommand);
+
+        return perKey.submit(key,
+                             () -> admitWrite(key).fold(Cause::promise,
+                                                        _ -> ready(key).flatMap(_ -> updateAdmitted(key, mutator))))
+                     .map(serializer::encode);
+    }
+
+    private static final Cause FORWARD_UNWIRED = Causes.cause("entity owner-forward transport disappeared between the target check and the send");
+
     private Result<Unit> admitWrite(K key) {
         return admission.fold(Result::unitResult, gate -> gate.admit(key));
     }
