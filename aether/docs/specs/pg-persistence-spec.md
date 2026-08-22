@@ -571,9 +571,31 @@ language, and under peglib 0.7.x the rule is compiled into a DFA lexer. Expressi
 counting scanner in peglib itself — the same class of limitation as a back-reference. Tracked
 upstream; see the note at the rule in `postgres.peg`.
 
-**Impact:** a migration or `@PgSql` query containing nested block comments fails to parse. Single-level
-`/* ... */` and `--` line comments are unaffected. Nesting is rare in practice, which is why it went
-unnoticed until the parser corpus was extended with real harvested SQL.
+**Impact:** a migration or `@PgSql` query containing nested block comments **may silently parse as a
+different statement** — it does not reliably fail. The lexer closes at the inner `*/` and the
+remainder leaks into the statement as live SQL; when that leaked text composes into something valid,
+there is no error at all. This parses cleanly with TWO select-list items where correct nesting
+demands one:
+
+```sql
+SELECT 1 /* /* */ , 999 -- */
+ FROM t;                        -- intended: SELECT 1 FROM t   | actual: SELECT 1, 999 FROM t
+```
+
+`, 999` sits INSIDE the balanced span, which is what makes it diverge. A comment that balances before
+the leaked text — `SELECT 1 /* a /* b */ -- */` followed by ` , 2 FROM t;` — does NOT diverge: two
+opens, two closes, so `, 2` is legitimately outside and two items is correct under both the old and
+the fixed lexer. Count the delimiters before deciding what the right answer is.
+
+The trailing `-- */` reads as a line comment and swallows the orphaned outer `*/`, leaving nothing to
+trip the parser. Where it does fail, the diagnostic misleads: `SELECT 1 /* outer /* inner */ still a
+comment */ AS c;` reports `expected end of input at 1:37` because the parser first ACCEPTS the
+truncated `SELECT 1 still` (reading `still` as an implicit column alias) and only then chokes — so the
+error points past the real cause and never mentions comments.
+
+Single-level `/* ... */` and `--` line comments are unaffected. Nesting is rare in practice, which is
+why it went unnoticed until the parser corpus was extended with real harvested SQL — but rarity is
+the only thing limiting the blast radius, not a loud failure.
 
 ### `$` in identifiers — DELIBERATELY NARROWED
 
