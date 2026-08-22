@@ -164,6 +164,13 @@ public final class DurableEntityFactory implements ResourceFactory<DurableEntity
                                                     config.partitionCount(),
                                                     fenced.fold(),
                                                     fence.substrate()));
+        // Owner-forwarding (#596) is OPT-IN on both halves, and each half is independently inert:
+        // without the transport a non-owner still refuses, and without the registry a forwarded command
+        // finds no target. Neither absence silently degrades into applying a write on the wrong node.
+        context.extension(EntityOwnerForward.class).onSuccess(transport -> fenced.withOwnerForward(transport));
+        context.extension(EntityForwardRegistry.class)
+               .onSuccess(registry -> registry.register(config.keyspace(),
+                                                        fenced::applyForwarded));
     }
 
     private record FenceCollaborators(EntityLogSubstrate substrate,

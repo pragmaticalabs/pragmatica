@@ -102,7 +102,11 @@ import org.pragmatica.aether.resource.ResourceProvider;
 import org.pragmatica.aether.resource.SpiResourceProvider;
 import org.pragmatica.aether.resource.artifact.ArtifactStore;
 import org.pragmatica.aether.resource.artifact.MavenProtocolHandler;
+import org.pragmatica.aether.node.entityforward.EntityForwardMessage;
+import org.pragmatica.aether.node.entityforward.EntityForwardService;
 import org.pragmatica.aether.resource.entity.EntityCheckpointDriver;
+import org.pragmatica.aether.resource.entity.EntityOwnerForward;
+import org.pragmatica.aether.resource.entity.EntityForwardRegistry;
 import org.pragmatica.aether.resource.entity.EntityKeyspaceRegistrar;
 import org.pragmatica.aether.resource.entity.EntityLogSubstrate;
 import org.pragmatica.aether.resource.entity.EntityLinearizableBarrier;
@@ -747,6 +751,10 @@ public interface AetherNode extends ManageableNode {
     /// (cheap when nothing new has sealed), so a modest 30s tick keeps the WAL bounded without contending
     /// with the publish fsync path.
     TimeSpan WAL_TRUNCATE_INTERVAL = TimeSpan.timeSpan(30).seconds();
+    /// How long a forwarded entity command waits for its owner before failing (#596).
+    /// Deliberately finite: the caller must learn the write did not land rather than hang, and
+    /// the sender must NEVER fall back to applying locally — that is a second writer on the key.
+    TimeSpan ENTITY_FORWARD_TIMEOUT = TimeSpan.timeSpan(30).seconds();
 
     /// Cadence for the NodeDeploymentManager activation level-heal. On a cold-start
     /// `restart_all_nodes` the single CAS-latched `ClusterStateNotification.ACTIVE` edge can be
@@ -3599,7 +3607,16 @@ public interface AetherNode extends ManageableNode {
                                                                     Option.some(streamForwardClient),
                                                                     config.self(),
                                                                     streamReplicaSetController::ownerFor);
+        // Entity owner-forwarding (#596). Same `network::send` seam the stream forward client uses, so a
+        // command reaches the committed owner over the ordinary FORWARD lane rather than a new transport.
+        var entityForwardService = EntityForwardService.entityForwardService(config.self(),
+                                                                             clusterNode.network()::send,
+                                                                             ENTITY_FORWARD_TIMEOUT);
 
+        allEntries.add(MessageRouter.Entry.route(EntityForwardMessage.EntityUpdateForward.class,
+                                                 entityForwardService::onEntityUpdateForward));
+        allEntries.add(MessageRouter.Entry.route(EntityForwardMessage.EntityUpdateForwardResponse.class,
+                                                 entityForwardService::onEntityUpdateForwardResponse));
         allEntries.add(MessageRouter.Entry.route(StreamForwardMessage.PublishForward.class,
                                                  streamForwardHandler::onPublishForward));
         allEntries.add(MessageRouter.Entry.route(StreamForwardMessage.PublishForwardResponse.class,
@@ -3671,7 +3688,8 @@ public interface AetherNode extends ManageableNode {
                                                                                    streamingConfig.readForwardTimeout()))
                                  : Option.none(),
                                  entityLogSubstrate,
-                                 entityCheckpointDriver);
+                                 entityCheckpointDriver,
+                                 entityForwardService);
         // The only thing that ever bounds an entity log: until a partition is checkpointed, the retention
         // floor refuses to reclaim any of its segments (correctly — nothing has been folded anywhere), so
         // a node that never ticks grows its entity logs without limit.
@@ -5575,7 +5593,8 @@ public interface AetherNode extends ManageableNode {
                                                  EntityKeyspaceRegistrar entityKeyspaceRegistrar,
                                                  Option<EntityLinearizableBarrier> entityBarrier,
                                                  EntityLogSubstrate entityLogSubstrate,
-                                                 EntityCheckpointDriver entityCheckpointDriver) {
+                                                 EntityCheckpointDriver entityCheckpointDriver,
+                                                 EntityForwardService entityForwardService) {
         resourceProviderSetup.spiProvider()
                              .onPresent(spi -> registerEntityExtensionsOnSpi(spi,
                                                                              kvStore,
@@ -5583,7 +5602,8 @@ public interface AetherNode extends ManageableNode {
                                                                              entityKeyspaceRegistrar,
                                                                              entityBarrier,
                                                                              entityLogSubstrate,
-                                                                             entityCheckpointDriver));
+                                                                             entityCheckpointDriver,
+                                                                             entityForwardService));
     }
 
     private static void registerEntityExtensionsOnSpi(SpiResourceProvider spi,
@@ -5592,7 +5612,8 @@ public interface AetherNode extends ManageableNode {
                                                       EntityKeyspaceRegistrar entityKeyspaceRegistrar,
                                                       Option<EntityLinearizableBarrier> entityBarrier,
                                                       EntityLogSubstrate entityLogSubstrate,
-                                                      EntityCheckpointDriver entityCheckpointDriver) {
+                                                      EntityCheckpointDriver entityCheckpointDriver,
+                                                      EntityForwardService entityForwardService) {
         // The entity's DURABLE backing (#345 I3). Entity state is the fold of a fenced, fsync-durable,
         // replicated log — one stream named entity:<keyspace> per keyspace — so it now survives both a
         // restart of its owner and the loss of that owner. This replaces the MemoryStorageEngine that
@@ -5619,6 +5640,11 @@ public interface AetherNode extends ManageableNode {
         // correctness) but ALWAYS registered here — without it no entity log is ever reclaimed and the
         // retention floor pins every segment forever.
         spi.registerExtension(EntityCheckpointDriver.class, entityCheckpointDriver);
+        // Owner-forwarding (#596), both halves of the same service: the SENDER a non-owner uses to reach
+        // the committed owner, and the REGISTRY an arriving command is applied through. Registered
+        // together because a node that can send but not receive would forward into silence.
+        spi.registerExtension(EntityOwnerForward.class, entityForwardService);
+        spi.registerExtension(EntityForwardRegistry.class, entityForwardService);
     }
 
     /// How far a stream's sealed log may be reclaimed without destroying state something still needs
