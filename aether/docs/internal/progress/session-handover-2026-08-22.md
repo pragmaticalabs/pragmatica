@@ -1,4 +1,4 @@
-# Session handover — 2026-08-22: the named-command primitive, owner-forwarding, and three defects the new log capture made visible
+# Session handover — 2026-08-22/23: the named-command primitive, owner-forwarding, and a livelock that took three refuted hypotheses to find
 
 > **Stream: `aether-main` (release / integration / cloud stream). Written for the aether-main agent.**
 >
@@ -6,8 +6,11 @@
 > own state. This stream (`~/IdeaProjects/pragmatica`) keeps the UNSUFFIXED name; `pragmatica-clone`
 > handovers carry a `-clone` suffix.
 
-**Branch:** `release-1.0.0-rc3` · **HEAD:** `66e32c39c` · **ALL PUSHED** · tree clean ·
-`./build.sh` green · **all six open PRs merged**.
+**Branch:** `release-1.0.0-rc3` · **HEAD:** `1ce829bc9` · **all six open PRs merged** ·
+`./build.sh` green as of the merge commit.
+
+⚠ **ONE FILE UNCOMMITTED:** `PartitionBackfill.java` — the #631 fix (§10). Compiles;
+`aether-stream` 676/0. NOT yet run through `./build.sh`, and NOT yet pinned by a test.
 
 ---
 
@@ -148,6 +151,65 @@ Full remote run on a pristine host: **12 cluster-A suites green.**
 mechanism; `02-chaos`'s own logs refuted it (2 occurrences vs 1436/212). Corrected on the issue. A
 plausible-but-wrong mechanism on a tracked ticket is worse than none.
 
+## §10 #631 — the livelock, and the three hypotheses that were wrong
+
+**Read this before touching `PartitionBackfill`.** Three plausible diagnoses died here; each would have
+produced a fix that changed nothing.
+
+### What it is NOT
+
+1. **"The promotion gate never checks owner liveness."** It does —
+   `AetherNode.committedOwnerStillAlive(membershipFsm, owner)` already exists, is already wired into the
+   source `PartitionBackfill` receives, and already handles the empty-member-view caveat
+   (*"Empty membership means 'cannot judge liveness', not 'nobody is alive'"*).
+2. **"Membership failed to evict the dead owner."** It did not fail. `02y` logs: owner DEAD at 16:50:01,
+   evicted by 16:50:09, replacement joined 16:50:32 — all BEFORE the livelock began at 16:51:06.
+3. **"The owner self-promotes without pulling from a replica that is ahead."** `decideOwnerCatchup`
+   already pulls when `bestTail > localWatermark`, and already refuses to promote when ANY peer is
+   unreachable. The owner-side logic is correct.
+
+### What it actually is
+
+`02y` deploys a **brand-new stream**. Nothing has ever been written, so:
+
+- the owner is legitimately at watermark **-1** and self-promotes — correct, and its probe confirmed
+  every peer reachable and equally empty (`"owner self-promoting to CAUGHT_UP at watermark -1
+  (no reachable source ahead) [authoritative owner]"`)
+- replicas request catch-up, get an EMPTY response
+- **#445 says an empty owner read is never trustworthy** → route to the no-source path
+- bound elapses → "a committed owner exists" → stay SYNCING → forever
+
+**#445 cannot distinguish "empty because failover lost the history" from "empty because nothing was ever
+written".** For a fresh deploy the second is the NORMAL case, and the gate treats it as the dangerous
+one. Two safety gates, each correct alone, jointly making genesis unrecoverable.
+
+### The fix (uncommitted)
+
+`waitThenPromote` suppressed on the mere EXISTENCE of an owner record. It now defers only on a POSITIVE
+reading that the owner is AHEAD:
+
+- owner tail > self → defer (it holds history we lack — the real #445 case)
+- owner unreachable → defer (an unknown tail must not be read as an empty one)
+- owner not ahead → fall through to the probe contest
+
+**No wire-format change**, deliberately: `CatchupResponse` is tag-pinned at 99 and rolling upgrade is
+Phase-1 only, so adding a record component would change a system message's encoded shape. Asking the
+owner for its tail is strictly more information than asking whether its record exists.
+
+**The gate gets FINER, not looser.** `decidePromotion` — the contest it falls through to — already
+refuses to promote when any peer is unreachable or any peer is ahead. The blanket suppression it
+replaces was strictly coarser than the check it deferred to.
+
+`[verified: aether-stream 676/0. NOT pinned by a test yet, NOT through build.sh, NOT run against the
+suites.]`
+
+### Scope limit — do not overstate this
+
+**Proven for `02y` (genesis). UNPROVEN for `03-scaling`.** `03-scaling`'s captured nodes show only
+replica-side messages; its owner's log is the one the capture LOST to `Connection reset by … port 22`
+(42 bytes). Its shape may be a genuine failover this fix does not touch. A re-run with a working
+capture is the only way to know — and the capture should probably retry on SSH failure.
+
 ## §8 Traps found
 
 - **Maven's incremental compiler will hand you a false green.** `test-compile` reported BUILD SUCCESS
@@ -164,11 +226,10 @@ plausible-but-wrong mechanism on a tracked ticket is worse than none.
 
 ## §9 Next
 
-1. **#631** — one qualified condition, and `membersSupplier` is ALREADY a field on the class. **Resolve
-   the caveat first:** the member view can be transiently empty, and a naive `filter` would flip
-   suppression off during a reshuffle — trading a livelock for a premature promotion at a possibly `-1`
-   watermark, which is worse and is what the #445 gate exists to prevent. Needs "member view non-empty
-   AND lacks the owner".
+1. **#631 — fix is written but UNCOMMITTED (§10).** Next: pin it with a test (empty owner + empty
+   replicas → promotes; owner ahead → still defers; owner unreachable → still defers), then `build.sh`,
+   then `02y` and `03-scaling`. Ignore the earlier "add a membership filter" plan recorded elsewhere —
+   that check already exists and was not the defect.
 2. **#598** — pick which artifact moves to a named datasource. The product's own error message says
    "give this blueprint its own datasource section". Moving `test-persistence` is cheapest but
    `10-database` is the schema suite, so the default `[database]` path is arguably its subject; moving
