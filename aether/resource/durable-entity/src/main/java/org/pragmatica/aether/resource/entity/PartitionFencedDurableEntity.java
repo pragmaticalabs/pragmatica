@@ -5,12 +5,14 @@
 package org.pragmatica.aether.resource.entity;
 
 import java.time.Duration;
+import java.util.function.Supplier;
 
 import org.pragmatica.aether.dht.CommittedPartitionOwnerSource;
 import org.pragmatica.aether.dht.EntityPartitionArc;
 import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -55,7 +57,7 @@ import org.pragmatica.serialization.Serializer;
 ///
 /// @param <K> entity key type — rendered to bytes via `String.valueOf` for the log record
 /// @param <S> entity state type — an application-defined immutable value, encoded via [Serializer]
-final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements DurableEntity<K, S, C> {
+final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements DurableEntity<K, S, C>, EntityForwardRegistry.ForwardTarget {
     private final String keyspace;
     private final EntityLogSubstrate substrate;
     private final EntityFold fold;
@@ -195,7 +197,10 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
     /// half-built view — the alternative is a create that succeeds because a prior value has not been
     /// replayed yet, which would overwrite committed state.
     private Promise<S> doCreate(K key, S initial) {
-        return admitWrite(key).fold(Cause::promise, _ -> ready(key).flatMap(_ -> createAdmitted(key, initial)));
+        return forwardTarget(key).fold(() -> admitWrite(key).fold(Cause::promise,
+                                                                  _ -> ready(key).flatMap(_ -> createAdmitted(key,
+                                                                                                              initial))),
+                                       owner -> forwardCreate(owner, key, initial));
     }
 
     private Promise<S> createAdmitted(K key, S initial) {
@@ -222,7 +227,9 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
     }
 
     private Promise<Unit> doDelete(K key) {
-        return admitWrite(key).fold(Cause::promise, _ -> ready(key).flatMap(_ -> deleteAdmitted(key)));
+        return forwardTarget(key).fold(() -> admitWrite(key).fold(Cause::promise,
+                                                                  _ -> ready(key).flatMap(_ -> deleteAdmitted(key))),
+                                       owner -> forwardDelete(owner, key));
     }
 
     private Promise<Unit> deleteAdmitted(K key) {
@@ -251,15 +258,56 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
                : admission.flatMap(gate -> gate.remoteOwner(key));
     }
 
+    /// The encodes are LIFTED for the same reason [#commit]'s is: [Serializer] throws on a codec miss,
+    /// and these run INSIDE the per-key tail, so an escaping throw would leave the caller's promise
+    /// unresolved — a hang rather than a typed failure.
     private Promise<S> forwardUpdate(NodeId owner, K key, C mutator) {
-        return forward.toResult(FORWARD_UNWIRED)
-                      .async()
-                      .flatMap(transport -> transport.forwardUpdate(owner,
-                                                                    keyspace,
-                                                                    serializer.encode(key),
-                                                                    serializer.encode(mutator)))
-                      .map(this::decode);
+        return transport().flatMap(transport -> encodedPair(key,
+                                                            () -> serializer.encode(mutator)).flatMap(payload -> transport.forwardUpdate(owner,
+                                                                                                                                         keyspace,
+                                                                                                                                         payload.key(),
+                                                                                                                                         payload.body())))
+                        .map(this::decode);
     }
+
+    private Promise<S> forwardCreate(NodeId owner, K key, S initial) {
+        return transport().flatMap(transport -> encodedPair(key,
+                                                            () -> serializer.encode(initial)).flatMap(payload -> transport.forwardCreate(owner,
+                                                                                                                                         keyspace,
+                                                                                                                                         payload.key(),
+                                                                                                                                         payload.body())))
+                        .map(this::decode);
+    }
+
+    /// Answers with empty bytes by contract, so the result is discarded rather than decoded — decoding
+    /// an empty payload as an `S` would fail on a delete that actually succeeded.
+    private Promise<Unit> forwardDelete(NodeId owner, K key) {
+        return transport().flatMap(transport -> encodedKey(key).flatMap(encoded -> transport.forwardDelete(owner,
+                                                                                                           keyspace,
+                                                                                                           encoded)))
+                        .mapToUnit();
+    }
+
+    private Promise<EntityOwnerForward> transport() {
+        return forward.toResult(FORWARD_UNWIRED)
+                      .async();
+    }
+
+    private Promise<byte[]> encodedKey(K key) {
+        return Result.lift(throwable -> codecFailed(key, throwable),
+                           () -> serializer.encode(key))
+                     .async();
+    }
+
+    private Promise<EncodedPayload> encodedPair(K key, Supplier<byte[]> body) {
+        return Result.lift(throwable -> codecFailed(key, throwable),
+                           () -> new EncodedPayload(serializer.encode(key),
+                                                    body.get()))
+                     .async();
+    }
+
+    /// One lift covers BOTH encodes: either can throw, and both failures are the same codec fault.
+    private record EncodedPayload(byte[] key, byte[] body) {}
 
     /// Apply a command that ARRIVED from a non-owner. Goes through this instance's own per-key queue and
     /// its own admission, so the hop neither bypasses the single-writer total order nor escapes the
@@ -268,16 +316,78 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
     ///
     /// Deliberately calls the LOCAL path rather than [#doUpdate]: re-entering the forwarding decision on
     /// the receiving side would let a stale ownership view bounce a command between two nodes.
-    @SuppressWarnings("unchecked")
-    Promise<byte[]> applyForwarded(byte[] encodedKey, byte[] encodedCommand) {
-        var key = (K) deserializer.decode(encodedKey);
-        var mutator = (C) deserializer.decode(encodedCommand);
+    @Override
+    public Promise<byte[]> applyForwarded(byte[] encodedKey, byte[] encodedCommand) {
+        return decoded(encodedKey).flatMap(key -> decodedCommand(encodedCommand).flatMap(mutator -> admittedOnOwner(key,
+                                                                                                                    () -> updateAdmitted(key,
+                                                                                                                                         mutator))))
+                      .flatMap(this::encodedState);
+    }
 
+    /// The create half. Runs [#createAdmitted], so the owner's own already-exists check governs — a
+    /// forwarded create cannot overwrite a key a local create would have refused.
+    @Override
+    public Promise<byte[]> createForwarded(byte[] encodedKey, byte[] encodedInitial) {
+        return decoded(encodedKey).flatMap(key -> decodedState(encodedInitial).flatMap(initial -> admittedOnOwner(key,
+                                                                                                                  () -> createAdmitted(key,
+                                                                                                                                       initial))))
+                      .flatMap(this::encodedState);
+    }
+
+    /// The delete half. Answers EMPTY bytes rather than an encoded state: a delete has no post-state, and
+    /// the sender discards the payload.
+    @Override
+    public Promise<byte[]> deleteForwarded(byte[] encodedKey) {
+        return decoded(encodedKey).flatMap(key -> admittedOnOwner(key,
+                                                                  () -> deleteAdmitted(key)))
+                      .map(_ -> new byte[0]);
+    }
+
+    /// The shared receiving-side shape: this instance's own per-key queue and its own admission, so the
+    /// hop neither bypasses the single-writer total order nor escapes the epoch fence.
+    private <R> Promise<R> admittedOnOwner(K key, Supplier<Promise<R>> operation) {
         return perKey.submit(key,
                              () -> admitWrite(key).fold(Cause::promise,
-                                                        _ -> ready(key).flatMap(_ -> updateAdmitted(key, mutator))))
-                     .map(serializer::encode);
+                                                        _ -> ready(key).flatMap(_ -> operation.get())));
     }
+
+    /// Decoding is LIFTED on arrival: [Deserializer] throws on a codec miss, and a throw escaping here
+    /// would propagate into the message router instead of answering the sender — which turns a typed
+    /// failure into the sender's 30s timeout.
+    @SuppressWarnings("unchecked")
+    private Promise<K> decoded(byte[] encodedKey) {
+        return Result.lift(FORWARD_KEY_UNDECODABLE,
+                           () -> (K) deserializer.decode(encodedKey))
+                     .async();
+    }
+
+    @SuppressWarnings("unchecked")
+    private Promise<C> decodedCommand(byte[] encodedCommand) {
+        return Result.lift(FORWARD_COMMAND_UNDECODABLE,
+                           () -> (C) deserializer.decode(encodedCommand))
+                     .async();
+    }
+
+    @SuppressWarnings("unchecked")
+    private Promise<S> decodedState(byte[] encodedState) {
+        return Result.lift(FORWARD_STATE_UNDECODABLE,
+                           () -> (S) deserializer.decode(encodedState))
+                     .async();
+    }
+
+    private Promise<byte[]> encodedState(S state) {
+        return Result.lift(FORWARD_STATE_UNENCODABLE,
+                           () -> serializer.encode(state))
+                     .async();
+    }
+
+    private static final Fn1<Cause, Throwable> FORWARD_KEY_UNDECODABLE = throwable -> Causes.cause("forwarded entity key could not be decoded: " + throwable.getMessage());
+
+    private static final Fn1<Cause, Throwable> FORWARD_COMMAND_UNDECODABLE = throwable -> Causes.cause("forwarded entity command could not be decoded: " + throwable.getMessage());
+
+    private static final Fn1<Cause, Throwable> FORWARD_STATE_UNDECODABLE = throwable -> Causes.cause("forwarded entity initial state could not be decoded: " + throwable.getMessage());
+
+    private static final Fn1<Cause, Throwable> FORWARD_STATE_UNENCODABLE = throwable -> Causes.cause("forwarded entity result state could not be encoded: " + throwable.getMessage());
 
     private static final Cause FORWARD_UNWIRED = Causes.cause("entity owner-forward transport disappeared between the target check and the send");
 

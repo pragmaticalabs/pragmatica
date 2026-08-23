@@ -170,7 +170,7 @@ public final class DurableEntityFactory implements ResourceFactory<DurableEntity
         context.extension(EntityOwnerForward.class).onSuccess(transport -> fenced.withOwnerForward(transport));
         context.extension(EntityForwardRegistry.class)
                .onSuccess(registry -> registry.register(config.keyspace(),
-                                                        fenced::applyForwarded));
+                                                        fenced));
     }
 
     private record FenceCollaborators(EntityLogSubstrate substrate,

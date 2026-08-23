@@ -45,7 +45,44 @@ public sealed interface EntityForwardMessage extends ProtocolMessage {
         }
     }
 
-    /// `state` carries the encoded POST-mutation state on success, and is empty on failure.
+    /// Create `key` with `initial` in `keyspace`, on this node.
+    ///
+    /// A DISTINCT record rather than a flag on [EntityUpdateForward]: adding a component to a shipped
+    /// record changes its encoded shape, whereas a new permitted subclass of a sealed `@Codec` interface
+    /// gets its own tag and leaves every existing message on the wire untouched.
+    record EntityCreateForward(NodeId sender, String correlationId, String keyspace, byte[] key, byte[] initial) implements EntityForwardMessage {
+        public EntityCreateForward {
+            key = key.clone();
+            initial = initial.clone();
+        }
+
+        public static EntityCreateForward entityCreateForward(NodeId sender,
+                                                              String correlationId,
+                                                              String keyspace,
+                                                              byte[] key,
+                                                              byte[] initial) {
+            return new EntityCreateForward(sender, correlationId, keyspace, key, initial);
+        }
+    }
+
+    /// Delete `key` in `keyspace`, on this node. No payload beyond the key — a delete carries no state.
+    record EntityDeleteForward(NodeId sender, String correlationId, String keyspace, byte[] key) implements EntityForwardMessage {
+        public EntityDeleteForward {
+            key = key.clone();
+        }
+
+        public static EntityDeleteForward entityDeleteForward(NodeId sender,
+                                                              String correlationId,
+                                                              String keyspace,
+                                                              byte[] key) {
+            return new EntityDeleteForward(sender, correlationId, keyspace, key);
+        }
+    }
+
+    /// The response for ALL THREE forwarded operations — update, create and delete. Deliberately NOT
+    /// renamed to match: the name is a codec identity, and renaming a `@Codec` type re-derives its tag
+    /// for a cosmetic gain. `state` carries the encoded post-mutation state for update and create, is
+    /// EMPTY for delete (which has no post-state), and is empty on failure.
     ///
     /// A failure here must reach the original caller as a failure. The one thing the sender must never
     /// do is apply the command locally instead — that would put a second writer on the key, which is

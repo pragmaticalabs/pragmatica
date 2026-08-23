@@ -49,4 +49,14 @@ public interface EntityOwnerForward {
     ///
     /// @return the encoded post-mutation state
     Promise<byte[]> forwardUpdate(NodeId owner, String keyspace, byte[] key, byte[] command);
+
+    /// Create `key` with `initial` on the owner. Separate from [#forwardUpdate] because a create carries
+    /// an initial STATE, not a [org.pragmatica.aether.resource.Mutator] — there is no prior state to
+    /// mutate, and the owner must run the same already-exists check a local create runs.
+    ///
+    /// @return the encoded post-create state
+    Promise<byte[]> forwardCreate(NodeId owner, String keyspace, byte[] key, byte[] initial);
+    /// Delete `key` on the owner. Carries no payload beyond the key, and answers with no state — the
+    /// outcome is the success or failure itself, so the response's state bytes are empty by contract.
+    Promise<byte[]> forwardDelete(NodeId owner, String keyspace, byte[] key);
 }

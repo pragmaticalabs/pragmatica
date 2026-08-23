@@ -30,5 +30,11 @@ public interface EntityForwardRegistry {
     /// per-key queue and the codecs for its own `K`, `S` and `C`.
     interface ForwardTarget {
         Promise<byte[]> applyForwarded(byte[] encodedKey, byte[] encodedCommand);
+        /// Create, as [#applyForwarded] is update. Runs the owner's own already-exists check, so a
+        /// forwarded create cannot overwrite a key a local create would have refused.
+        Promise<byte[]> createForwarded(byte[] encodedKey, byte[] encodedInitial);
+        /// Delete, as [#applyForwarded] is update. Answers with EMPTY bytes: a delete has no post-state,
+        /// and the outcome the caller needs is the success or failure itself.
+        Promise<byte[]> deleteForwarded(byte[] encodedKey);
     }
 }

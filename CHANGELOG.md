@@ -7,6 +7,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [1.0.0-rc3] - Unreleased
 
 ### Fixed
+- **Entity `create` and `delete` now forward to the committed owner (#596).** The owner-forwarding that
+  landed with the `Mutator` primitive covered `update` ALONE — `forwardTarget` had exactly one call site —
+  so `create` and `delete` on a non-owner were still refused outright. That is the operation #596 was filed
+  on: its evidence was creates failing, 4 of 40 acked. Both now take the same hop, with the same guarantees
+  the update path already had: the owner re-runs its OWN admission on arrival (so a hop to a deposed owner
+  is refused exactly as a local write would be), the command runs inside the owner's per-key serialization,
+  and a failed forward surfaces as a failure and is never applied locally — that fallback is the split-brain
+  the ownership fence exists to prevent.
+  `EntityCreateForward` and `EntityDeleteForward` are NEW variants of the sealed `@Codec` message rather
+  than a flag on the shipped `EntityUpdateForward`: adding a component changes an existing message's encoded
+  shape, whereas a new permitted subclass gets its own tag and leaves the wire untouched. They share
+  `EntityUpdateForwardResponse` (empty `state` for delete, which has no post-state) — deliberately NOT
+  renamed to match, because a `@Codec` type's name IS its tag identity and re-deriving it for a cosmetic
+  gain is not worth a wire change.
+  **Also fixed, because the new paths would otherwise have copied it:** the landed `forwardUpdate` called
+  `serializer.encode(...)` inline inside a `flatMap`. `Serializer` THROWS on a codec miss and `doUpdate` runs
+  INSIDE the per-key tail, so an escaping throw left the caller's promise unresolved and wedged that key's
+  serialization tail for good — the exact hazard `readState`/`commit` in the same file lift their encodes to
+  avoid. All three send paths now lift, and the receiving side lifts its decodes too, so an undecodable
+  payload answers the sender with a typed failure instead of making it wait out the 30s timeout.
+  `[verified: unit + mutation — durable-entity 147/0, aether/node 874/0, `EntityOwnerForwardTest` 17/17;
+  6 mutations, 6 kills, no survivors (create/delete no longer forward, receiver skips admission, delete
+  answers a state, failed forward falls back locally, unwired no longer inert)]`
+  `[design intent — unverified]` on the live path: no forwarded create or delete has crossed a real network.
+  `02w-entity-crash` is the suite that would prove it and it CANNOT yet — it fails earlier, on entity
+  ownership never converging across partitions (2147s against a 480s budget), which is a separate defect.
+  **Two tests were found passing for the wrong reason** while pinning this, both by mutation rather than by
+  reading. `applyForwarded_refuses_whenTheReceiverIsNotTheOwner` — pre-existing, from the landed write half —
+  asserted only `isFailure()`; on a fresh substrate, removing the ownership fence ENTIRELY still fails, with
+  `keyNotFound`, so it would have stayed green with the fence deleted. The `refusesAsBefore` trio had the
+  same shape: an unwired transport fails with `FORWARD_UNWIRED`, which is indistinguishable from an admission
+  refusal through a bare `isFailure()`. All six now assert the failure's CAUSE.
 - **A never-written stream pinned every replica in `SYNCING` forever (#631).** Three gates each exclude the
   GENESIS case — a stream just created and never written — and together they made it unrecoverable. The owner
   is legitimately at watermark `-1` and self-promotes; replicas pull from it, receive an EMPTY response, and

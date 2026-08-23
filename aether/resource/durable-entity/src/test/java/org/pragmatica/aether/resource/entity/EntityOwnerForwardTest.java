@@ -20,6 +20,7 @@ import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
@@ -85,7 +86,7 @@ class EntityOwnerForwardTest {
     void update_refusesAsBefore_whenNoTransportIsWired() {
         var result = entityAs(SELF, OTHER, Option.none()).update("k1", new IntOp.Add(7)).await();
 
-        assertThat(result.isFailure()).isTrue();
+        assertThat(refusalOf(result)).contains("reached a non-owner");
         assertThat(transport.calls).isEmpty();
     }
 
@@ -124,8 +125,143 @@ class EntityOwnerForwardTest {
                                              "Add:5".getBytes(StandardCharsets.UTF_8))
                              .await();
 
+        assertThat(refusalOf(result))
+            .as("must be refused BY THE FENCE — on a fresh substrate 'key not found' fails too, so a "
+                + "bare isFailure() stays green with admission removed entirely")
+            .contains("reached a non-owner");
+        assertThat(substrate.appended).isEmpty();
+    }
+
+    /// #596 was filed on CREATES failing (4 of 40 acked), and `create` carries an initial STATE rather
+    /// than a `Mutator` — so it needs its own hop and cannot ride the update one.
+    @Test
+    void create_forwardsToTheCommittedOwner_whenSelfIsNotOwner() {
+        var result = entityAs(SELF, OTHER, Option.some(transport)).create("k1", 5).await();
+
+        assertThat(result.isSuccess()).isTrue();
+
+        int state = result.fold(cause -> fail(cause.message()), value -> value);
+
+        assertThat(state).isEqualTo(107);
+        assertThat(transport.calls).hasSize(1);
+        assertThat(transport.calls.getFirst().op()).isEqualTo("create");
+        assertThat(transport.calls.getFirst().owner()).isEqualTo(OTHER);
+    }
+
+    @Test
+    void create_sendsTheEncodedKeyAndInitialState_soTheOwnerCanReconstructBoth() {
+        entityAs(SELF, OTHER, Option.some(transport)).create("k9", 42).await();
+
+        var call = transport.calls.getFirst();
+
+        assertThat(new String(call.key(), StandardCharsets.UTF_8)).isEqualTo("k9");
+        assertThat(new String(call.command(), StandardCharsets.UTF_8)).isEqualTo("42");
+    }
+
+    @Test
+    void create_refusesAsBefore_whenNoTransportIsWired() {
+        var result = entityAs(SELF, OTHER, Option.none()).create("k1", 5).await();
+
+        assertThat(refusalOf(result))
+            .as("unwired must refuse by ADMISSION, exactly as before forwarding existed — not by "
+                + "reporting an absent transport, which is a different (and misleading) failure")
+            .contains("reached a non-owner");
+        assertThat(transport.calls).isEmpty();
+    }
+
+    /// The same safety property the update path has: a failed forward must not fall back to creating
+    /// the key here, which would put a second writer on it.
+    @Test
+    void create_failsWithoutApplyingLocally_whenTheForwardFails() {
+        transport.failWith("owner unreachable");
+
+        var result = entityAs(SELF, OTHER, Option.some(transport)).create("k1", 5).await();
+
         assertThat(result.isFailure()).isTrue();
         assertThat(substrate.appended).isEmpty();
+    }
+
+    @Test
+    void create_appliesLocally_whenSelfIsTheCommittedOwner() {
+        var result = entityAs(SELF, SELF, Option.some(transport)).create("k1", 5).await();
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(transport.calls).isEmpty();
+    }
+
+    @Test
+    void delete_forwardsToTheCommittedOwner_whenSelfIsNotOwner() {
+        var result = entityAs(SELF, OTHER, Option.some(transport)).delete("k1").await();
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(transport.calls).hasSize(1);
+        assertThat(transport.calls.getFirst().op()).isEqualTo("delete");
+        assertThat(transport.calls.getFirst().owner()).isEqualTo(OTHER);
+        assertThat(new String(transport.calls.getFirst().key(), StandardCharsets.UTF_8)).isEqualTo("k1");
+    }
+
+    @Test
+    void delete_refusesAsBefore_whenNoTransportIsWired() {
+        var result = entityAs(SELF, OTHER, Option.none()).delete("k1").await();
+
+        assertThat(refusalOf(result)).contains("reached a non-owner");
+        assertThat(transport.calls).isEmpty();
+    }
+
+    @Test
+    void delete_failsWithoutRemovingLocally_whenTheForwardFails() {
+        transport.failWith("owner unreachable");
+
+        var result = entityAs(SELF, OTHER, Option.some(transport)).delete("k1").await();
+
+        assertThat(result.isFailure()).isTrue();
+        assertThat(substrate.appended).isEmpty();
+    }
+
+    @Test
+    void createForwarded_refuses_whenTheReceiverIsNotTheOwner() {
+        var receiver = fencedEntityAs(SELF, OTHER, Option.none());
+
+        var result = receiver.createForwarded("k1".getBytes(StandardCharsets.UTF_8),
+                                              "5".getBytes(StandardCharsets.UTF_8))
+                             .await();
+
+        assertThat(refusalOf(result)).contains("reached a non-owner");
+        assertThat(substrate.appended).isEmpty();
+    }
+
+    @Test
+    void deleteForwarded_refuses_whenTheReceiverIsNotTheOwner() {
+        var receiver = fencedEntityAs(SELF, OTHER, Option.none());
+
+        var result = receiver.deleteForwarded("k1".getBytes(StandardCharsets.UTF_8)).await();
+
+        assertThat(refusalOf(result)).contains("reached a non-owner");
+        assertThat(substrate.appended).isEmpty();
+    }
+
+    /// A delete has no post-state, so the owner answers EMPTY bytes and the sender discards them. If this
+    /// ever returned an encoded state the sender would try to decode it as an `S` — and an empty payload
+    /// decodes to a NumberFormatException here, turning a successful delete into a failure.
+    @Test
+    void deleteForwarded_answersEmptyBytes_soTheSenderNeverDecodesAState() {
+        var owner = fencedEntityAs(SELF, SELF, Option.none());
+
+        owner.create("k1", 5).await();
+
+        var result = owner.deleteForwarded("k1".getBytes(StandardCharsets.UTF_8)).await();
+
+        assertThat(result.isSuccess()).isTrue();
+
+        byte[] answer = result.fold(cause -> fail(cause.message()), value -> value);
+
+        assertThat(answer).isEmpty();
+    }
+
+    /// The failure's own message. A bare `isFailure()` cannot tell an admission refusal from an
+    /// absent-transport error, and those are different bugs.
+    private static <T> String refusalOf(Result<T> result) {
+        return result.fold(Cause::message, value -> "unexpectedly succeeded with " + value);
     }
 
     // --- fixtures ---
@@ -163,7 +299,9 @@ class EntityOwnerForwardTest {
         return (_, _) -> Option.some(new CommittedOwner(owner, Epoch.ZERO));
     }
 
-    private record ForwardCall(NodeId owner, String keyspace, byte[] key, byte[] command) {}
+    /// `op` distinguishes which operation crossed the seam — without it a test asserting "something was
+    /// forwarded" would pass when the wrong operation was sent.
+    private record ForwardCall(String op, NodeId owner, String keyspace, byte[] key, byte[] command) {}
 
     /// Answers every forward with state 107, so a successful result proves the value came back ACROSS
     /// the seam rather than from local state (which starts empty here).
@@ -177,7 +315,21 @@ class EntityOwnerForwardTest {
 
         @Override
         public Promise<byte[]> forwardUpdate(NodeId owner, String keyspace, byte[] key, byte[] command) {
-            calls.add(new ForwardCall(owner, keyspace, key, command));
+            return record("update", owner, keyspace, key, command);
+        }
+
+        @Override
+        public Promise<byte[]> forwardCreate(NodeId owner, String keyspace, byte[] key, byte[] initial) {
+            return record("create", owner, keyspace, key, initial);
+        }
+
+        @Override
+        public Promise<byte[]> forwardDelete(NodeId owner, String keyspace, byte[] key) {
+            return record("delete", owner, keyspace, key, new byte[0]);
+        }
+
+        private Promise<byte[]> record(String op, NodeId owner, String keyspace, byte[] key, byte[] body) {
+            calls.add(new ForwardCall(op, owner, keyspace, key, body));
 
             return failure == null
                    ? Promise.success("107".getBytes(StandardCharsets.UTF_8))
