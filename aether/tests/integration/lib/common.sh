@@ -939,7 +939,22 @@ SSH_OPTS=(-o StrictHostKeyChecking=no
 remote_exec() {
     : "${AETHER_SSH_USER:?AETHER_SSH_USER must be set for remote_exec}"
     : "${AETHER_SSH_KEY:?AETHER_SSH_KEY must be set for remote_exec}"
-    ssh -i "$AETHER_SSH_KEY" "${SSH_OPTS[@]}" \
+    # `-n` (stdin from /dev/null) is LOAD-BEARING, not hygiene. Without it ssh SLURPS STDIN, so any
+    # remote_exec reached from inside a `while read ... done < file` loop eats the rest of that file
+    # and the loop silently runs a couple of iterations instead of all of them.
+    #
+    # This was already known and fixed ONE LEVEL DOWN — `node_app_endpoints` closes stdin around
+    # `host_port_for_container` with a comment describing this exact failure (measured 2026-08-14: a
+    # healthy 5-node cluster reported "1 per-node app endpoint resolved"). But the guard was applied at
+    # the call site, so every other path stayed exposed. On 2026-08-23 it bit again, further out:
+    # 02w's durability assertion iterates its ACKED-key file on stdin and calls read_amount per key;
+    # that reaches refresh_app_endpoints -> node_app_endpoints -> remote_exec "docker ps ...", which is
+    # NOT guarded. The loop checked 2 of 40 acked entities and reported "1/2 lost" — a durability
+    # verdict rendered over 5% of its population, in the one assertion the suite exists to make.
+    #
+    # Guarding the TOOL rather than each caller is the fix: 59 call sites, none of which feeds stdin
+    # deliberately (verified — no heredoc, no pipe, no redirect into remote_exec anywhere in the tree).
+    ssh -n -i "$AETHER_SSH_KEY" "${SSH_OPTS[@]}" \
         "${AETHER_SSH_USER}@${TARGET_HOST}" "$@"
 }
 
