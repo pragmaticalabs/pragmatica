@@ -7,6 +7,50 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [1.0.0-rc3] - Unreleased
 
 ### Fixed
+- **Durable-entity structural review (#596 follow-up): four fixes from one read of spec vs implementation
+  against live evidence.**
+  **S1 — a fold was rebuilt once and then FROZEN.** `EntityFold.ready()` memoizes a successful rebuild
+  forever, and `fold.apply` had exactly two callers — both on the owner's own append path — so nothing ever
+  fed REPLICATED records into a replica's fold. `BOUNDED_STALE` on a replica therefore served a
+  rebuild-time snapshot (unbounded staleness under a bounded name), and a replica later PROMOTED kept the
+  frozen view — mutating on top of stale state and silently dropping every record replicated after its
+  rebuild: lost updates on the failover path. Every access now catches the fold up to the log's current
+  head before serving (one runner per partition; joiners wait and re-check, since interleaved appliers
+  could write a key's older state over its newer one; offsets the append path already applied are
+  accounted, never re-applied). A fold whose watermark fell behind retention clears its rebuild memo and
+  the next access rebuilds from the checkpoint — the only bridge over a truncated range.
+  `[verified: 4 new EntityFoldFreshnessTest pins — replica staleness, promotion-mutates-replicated-state,
+  watermark accounting under interleave, truncation→re-rebuild; 3 mutations (hook reverted, account-only,
+  memo-clear removed), all killed]`
+  `[design intent — unverified]` that S1 was the mechanism behind a live durability failure: the 02w
+  durability verdict over a full population is still pending, and the frozen-fold consequence is
+  established by code reading and unit pins, not yet by a cluster reproduction.
+  **S6 — a forward the transport refused burned the full 30s correlation timeout in silence.** The send
+  seam was fire-and-forget; 02w measured the cost (40 creates in 8977s — ~75s each — against 12–15ms for a
+  create whose partition was ready). The service now sends via `sendOutcome` and a refusal
+  (`ConnectionDead` / `NoPeerState` / `BackpressureRefused`) fails the caller immediately with a typed
+  cause naming the refusal; the timeout remains as the backstop for sent-but-unanswered.
+  `[verified: 5 new EntityForwardServiceTest cases; mutation (outcome ignored) killed by the named test]`
+  **S4 — `ensureLog` was idempotent AND shape-blind.** `tolerateAlreadyExists` accepted a redeploy
+  declaring a different `partition_count` against an existing stream — the arc then re-hashes keys onto
+  partitions whose history lives elsewhere, and they read back as absent with nothing saying why. The
+  declared shape must now match the existing stream's `(partitions, replicas, minSync)` or provisioning
+  refuses, naming both shapes. `[verified: 2 new StreamEntityLogSubstrateTest pins; mutation killed]`
+  **S2 — `ReplicationBarrierUnmet` advised "retrying is safe", which is FALSE for update.** The write is
+  fsync-durable locally, locally served, and replayed on recovery — a retried `update` re-applies the
+  mutator on state that already includes it. The cause now states the per-operation recovery: a retried
+  create/delete self-identifies via `EntityAlreadyExists`/`EntityNotFound`; an update must read back and
+  decide from observed state. This is a third outcome (durable-but-under-replicated) distinct from
+  success and failure, and its docs now say so.
+  **Spec reconciled (S5):** `BOUNDED_STALE`'s bound is the backing stream partition's REPLICATION lag
+  (entity state has lived on stream partitions since I3, not in consensus-applied KV), earned by the S1
+  catch-up; a node outside the replica set refuses rather than answering "absent". The
+  `replication_factor` comment claiming the field is "ignored once the log path is wired" said the
+  opposite of what landed.
+  **Deliberately NOT in this batch:** the spec's `(key, n)` idempotency counter (S3). Its only stated
+  consumer is slice side-effect code in the workflow/saga increments (I5/I6), and the part that would fix
+  caller-retry double-apply needs an API-level idempotency token — a public-surface decision recorded
+  here as OPEN, not silently dropped.
 - **Entity `create` and `delete` now forward to the committed owner (#596).** The owner-forwarding that
   landed with the `Mutator` primitive covered `update` ALONE — `forwardTarget` had exactly one call site —
   so `create` and `delete` on a non-owner were still refused outright. That is the operation #596 was filed

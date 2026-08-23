@@ -3610,7 +3610,7 @@ public interface AetherNode extends ManageableNode {
         // Entity owner-forwarding (#596). Same `network::send` seam the stream forward client uses, so a
         // command reaches the committed owner over the ordinary FORWARD lane rather than a new transport.
         var entityForwardService = EntityForwardService.entityForwardService(config.self(),
-                                                                             clusterNode.network()::send,
+                                                                             clusterNode.network()::sendOutcome,
                                                                              ENTITY_FORWARD_TIMEOUT);
 
         allEntries.add(MessageRouter.Entry.route(EntityForwardMessage.EntityUpdateForward.class,

@@ -23,7 +23,9 @@ import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.aether.stream.StreamCreateOutcome;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamPartitionManager;
+import org.pragmatica.aether.stream.replication.StreamCatalog;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -107,7 +109,53 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
         return StreamCreateOutcome.tolerateAlreadyExists(partitionManager.createStream(entityStreamConfig(keyspace,
                                                                                                           partitionCount,
                                                                                                           replicationFactor,
-                                                                                                          minSyncReplicas)));
+                                                                                                          minSyncReplicas))).flatMap(_ -> assertExistingShape(keyspace,
+                                                                                                                                                              partitionCount,
+                                                                                                                                                              replicationFactor,
+                                                                                                                                                              minSyncReplicas));
+    }
+
+    /// `tolerateAlreadyExists` makes ensure idempotent — and, unguarded, it also made it SHAPE-BLIND
+    /// (#596 review S4): a redeploy declaring a different `partition_count` was silently accepted, the
+    /// arc re-hashed every key against a stream laid out for the OLD count, and keys landed on partitions
+    /// whose history lives elsewhere — reading back as absent, with nothing anywhere saying why. The
+    /// declared shape must MATCH the stream that actually exists, or provisioning fails naming both.
+    ///
+    /// The check runs on the freshly-created stream too, where it trivially passes — cheaper than
+    /// threading "was it created or found" out of the outcome classification.
+    private Result<Unit> assertExistingShape(String keyspace,
+                                             int partitionCount,
+                                             int replicationFactor,
+                                             int minSyncReplicas) {
+        var streamName = EntityPartitionArc.arcName(keyspace);
+
+        return partitionManager.replicaCatalog()
+                               .streams()
+                               .stream()
+                               .filter(spec -> spec.name()
+                                                   .equals(streamName))
+                               .findFirst()
+                               .map(spec -> matchShape(spec, partitionCount, replicationFactor, minSyncReplicas))
+                               .orElseGet(Result::unitResult);
+    }
+
+    private static Result<Unit> matchShape(StreamCatalog.StreamSpec spec,
+                                           int partitionCount,
+                                           int replicationFactor,
+                                           int minSyncReplicas) {
+        if (spec.partitions() == partitionCount && spec.replicas() == replicationFactor && spec.minSyncReplicas() == minSyncReplicas) {
+            return Result.unitResult();
+        }
+
+        return Causes.cause("entity log for '" + spec.name()
+                           + "' already exists with shape (partitions=" + spec.partitions()
+                           + ", replicas=" + spec.replicas()
+                           + ", minSync=" + spec.minSyncReplicas()
+                           + ") but this deployment declares (partitions=" + partitionCount
+                           + ", replicas=" + replicationFactor
+                           + ", minSync=" + minSyncReplicas
+                           + ") — a changed partition_count re-hashes keys onto partitions whose history"
+                           + " lives elsewhere, so the mismatch is refused rather than served wrong").result();
     }
 
     /// The backing stream's shape.

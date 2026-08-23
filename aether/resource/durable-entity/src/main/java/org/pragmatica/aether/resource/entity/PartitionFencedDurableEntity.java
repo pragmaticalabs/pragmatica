@@ -236,8 +236,17 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
         return readState(key).flatMap(current -> current.fold(() -> keyNotFound(key), _ -> removeState(key)));
     }
 
+    /// Ready is TWO gates: the memoized rebuild, then a catch-up to the log's current head. The second is
+    /// what keeps a fold FRESH after its one-time rebuild — a replica's fold otherwise freezes at rebuild
+    /// time (nothing but the owner's own append path ever fed it), which made `BOUNDED_STALE` unbounded
+    /// there and let a later-promoted owner mutate on top of a stale view, silently dropping records
+    /// replicated after its rebuild. `LinearizableEntityServe` reads through [#get], so the linearizable
+    /// path inherits both gates.
     private Promise<Unit> ready(K key) {
-        return fold.ready(partitionOf(key));
+        var partition = partitionOf(key);
+
+        return fold.ready(partition)
+                   .flatMap(_ -> fold.caughtUp(partition));
     }
 
     /// Owner admission, ahead of the read-modify-write and ahead of the log's epoch fence: only the

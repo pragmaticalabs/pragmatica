@@ -54,6 +54,7 @@ final class EntityFold {
         private final Map<String, byte[]> state = new ConcurrentHashMap<>();
         private final ConcurrentSkipListSet<Long> appliedAhead = new ConcurrentSkipListSet<>();
         private final AtomicReference<Promise<Unit>> rebuild = new AtomicReference<>();
+        private final AtomicReference<Promise<Unit>> catchUp = new AtomicReference<>();
         private final AtomicLong appliedThrough = new AtomicLong(-1L);
     }
 
@@ -130,6 +131,10 @@ final class EntityFold {
     /// threads can never claim the same offset, and accumulating with [Math#max] means a thread that read
     /// a stale base can never push the watermark backwards.
     private static void advanceApplied(PartitionFold fold, long offset) {
+        if (offset <= fold.appliedThrough.get()) {
+            return;
+        }
+
         fold.appliedAhead.add(offset);
         drain(fold);
     }
@@ -145,7 +150,9 @@ final class EntityFold {
             advanced++;
         }
 
-        fold.appliedThrough.accumulateAndGet(advanced, Math::max);
+        var settled = fold.appliedThrough.accumulateAndGet(advanced, Math::max);
+
+        fold.appliedAhead.headSet(settled + 1).clear();
     }
 
     /// The highest offset every record at or below which is applied to `state` — the only offset a
@@ -156,6 +163,119 @@ final class EntityFold {
         drain(fold);
 
         return fold.appliedThrough.get();
+    }
+
+    /// Apply every log record past the watermark, so the fold reflects the log's CURRENT head — records
+    /// this node appended AND records replication landed behind its back (#596 review S1).
+    ///
+    /// Without this, a fold was fed by exactly one thing after its rebuild: the owner's own append path.
+    /// A REPLICA's fold was therefore frozen at rebuild time — `BOUNDED_STALE` there served a snapshot,
+    /// not a bounded lag — and a replica later PROMOTED kept the frozen view, mutating on top of stale
+    /// state and silently dropping every record replicated after its rebuild. Catch-up on access closes
+    /// both: staleness becomes replication lag, and a new owner's first operation drains the gap before
+    /// it serves or mutates anything.
+    ///
+    /// One runner per partition; joiners wait and RE-CHECK rather than applying concurrently, because two
+    /// interleaved appliers could write one key's older state over its newer one. The skip rules inside
+    /// the batch protect the owner's hot path the same way: an offset at or below the watermark, or
+    /// parked in `appliedAhead`, was already applied by the append path — re-applying its state could
+    /// regress a key the owner has since advanced, so it is only ACCOUNTED, never re-applied.
+    Promise<Unit> caughtUp(int partition) {
+        var fold = partitionFold(partition);
+        var head = substrate.headOffset(keyspace, partition);
+
+        if (fold.appliedThrough.get() >= head) {
+            return Promise.unitPromise();
+        }
+
+        var running = fold.catchUp.get();
+
+        if (running != null) {
+            return running.flatMap(_ -> caughtUp(partition));
+        }
+
+        var started = Promise.<Unit> promise();
+
+        if (!fold.catchUp.compareAndSet(null, started)) {
+            return fold.catchUp.get()
+                               .flatMap(_ -> caughtUp(partition));
+        }
+
+        runCatchUp(partition, fold, head).onResult(result -> completeCatchUp(fold, started, result));
+
+        return started;
+    }
+
+    private static void completeCatchUp(PartitionFold fold, Promise<Unit> started, Result<Unit> result) {
+        fold.catchUp.set(null);
+        started.resolve(result);
+    }
+
+    /// A fold whose watermark has fallen behind what the log still RETAINS cannot be caught up record by
+    /// record — the missing records are gone from here, and only the (necessarily newer) checkpoint can
+    /// bridge them. Clearing the rebuild memo makes the next access re-run the full rebuild; the failure
+    /// returned here is transient, exactly like [EntityLogError.FoldInProgress].
+    private Promise<Unit> runCatchUp(int partition, PartitionFold fold, long head) {
+        var from = fold.appliedThrough.get() + 1;
+
+        if (from > head) {
+            return Promise.unitPromise();
+        }
+
+        if (substrate.earliestRetainedOffset(keyspace, partition) > from) {
+            fold.rebuild.set(null);
+
+            return new EntityLogError.FoldInProgress(keyspace, partition).promise();
+        }
+
+        return catchUpBatch(partition, fold, from, head);
+    }
+
+    private Promise<Unit> catchUpBatch(int partition, PartitionFold fold, long from, long head) {
+        return substrate.read(keyspace, partition, from, REPLAY_BATCH)
+                        .flatMap(records -> applyCatchUpBatch(partition, fold, from, head, records));
+    }
+
+    /// An empty read below the head is a replication gap still in flight, not corruption — transient,
+    /// unlike the rebuild replay's refusal, because a replica's ring fills as replication lands.
+    private Promise<Unit> applyCatchUpBatch(int partition,
+                                            PartitionFold fold,
+                                            long from,
+                                            long head,
+                                            List<byte[]> records) {
+        if (records.isEmpty()) {
+            return new EntityLogError.FoldInProgress(keyspace, partition).promise();
+        }
+
+        var offset = from;
+
+        for (var raw : records) {
+            var decoded = EntityLogRecord.decode(raw);
+
+            if (decoded instanceof Result.Failure<EntityLogRecord>(var cause)) {
+                return new EntityLogError.FoldFailed(keyspace, partition, cause).promise();
+            }
+
+            var applyAt = offset;
+
+            decoded.onSuccess(record -> applyCaughtUp(fold, record, applyAt));
+            offset++;
+        }
+
+        return offset > head
+               ? Promise.unitPromise()
+               : catchUpBatch(partition, fold, offset, head);
+    }
+
+    /// Apply-or-account: state is written ONLY for an offset the append path has not already applied.
+    /// `remove` on the parked set is atomic, so exactly one side ever accounts an offset; either way the
+    /// watermark advances monotonically via max.
+    private static void applyCaughtUp(PartitionFold fold, EntityLogRecord record, long offset) {
+        if (offset > fold.appliedThrough.get() && !fold.appliedAhead.remove(offset)) {
+            applyToState(fold, record);
+        }
+
+        fold.appliedThrough.accumulateAndGet(offset, Math::max);
     }
 
     /// The encoded fold of `partition`, for a checkpoint at [#checkpointableThrough].

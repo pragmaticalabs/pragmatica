@@ -17,6 +17,7 @@ import org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityUpdat
 import org.pragmatica.aether.resource.entity.EntityForwardRegistry;
 import org.pragmatica.aether.resource.entity.EntityOwnerForward;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn1;
@@ -53,9 +54,13 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
 
     /// Sending is a one-line seam so the node can supply its `ClusterNetwork` without this class
     /// depending on the whole network surface — and so a test can drive both halves in-process.
+    ///
+    /// Returns the send's LOCAL outcome (`WriteOutcome`) so a request that cannot leave this node fails
+    /// its caller NOW instead of burning the full correlation timeout: a dead link, an unknown peer or a
+    /// backpressure refusal is knowable synchronously, and 02w measured what ignoring that costs — every
+    /// forward to an unreachable owner blocked its caller for the whole 30s.
     public interface Sender {
-        @Contract
-        void send(NodeId target, EntityForwardMessage message);
+        Promise<WriteOutcome> send(NodeId target, EntityForwardMessage message);
     }
 
     private EntityForwardService(NodeId selfNodeId, Sender sender, TimeSpan timeout) {
@@ -117,10 +122,34 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
 
         pending.put(correlationId, promise);
         SharedScheduler.schedule(() -> timeoutRequest(correlationId, owner, keyspace), timeout);
-        sender.send(owner, message.apply(correlationId));
+        sender.send(owner,
+                    message.apply(correlationId))
+              .onSuccess(outcome -> failFastOnRefusedSend(correlationId, owner, keyspace, outcome));
         log.trace("Sent entity owner-forward to {} for keyspace '{}' correlationId={}", owner, keyspace, correlationId);
 
         return promise;
+    }
+
+    /// A send the transport refused never left this node, so nothing can ever answer it — waiting out the
+    /// correlation timeout would just convert a knowable failure into 30s of silence. The pending entry is
+    /// removed first, so a raced timeout resolves nothing.
+    private void failFastOnRefusedSend(String correlationId, NodeId owner, String keyspace, WriteOutcome outcome) {
+        if (outcome.isSent()) {
+            return;
+        }
+
+        var promise = pending.remove(correlationId);
+
+        if (promise == null) {
+            return;
+        }
+
+        log.warn("Entity owner-forward to {} for keyspace '{}' refused at send: {} (correlationId={})",
+                 owner,
+                 keyspace,
+                 outcome,
+                 correlationId);
+        promise.resolve(FORWARD_SEND_REFUSED.apply(owner.id(), outcome).result());
     }
 
     private void timeoutRequest(String correlationId, NodeId owner, String keyspace) {
@@ -173,23 +202,39 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
 
         if (target == null) {
             log.warn("Entity owner-forward: no target for keyspace '{}' (correlationId={})", keyspace, correlationId);
-            sender.send(requester,
-                        EntityUpdateForwardResponse.failureResponse(selfNodeId,
-                                                                    correlationId,
-                                                                    "no entity registered for keyspace " + keyspace));
+            answer(requester,
+                   correlationId,
+                   EntityUpdateForwardResponse.failureResponse(selfNodeId,
+                                                               correlationId,
+                                                               "no entity registered for keyspace " + keyspace));
 
             return;
         }
 
         operation.apply(target)
-                 .onSuccess(state -> sender.send(requester,
-                                                 EntityUpdateForwardResponse.successResponse(selfNodeId,
-                                                                                             correlationId,
-                                                                                             state)))
-                 .onFailure(cause -> sender.send(requester,
-                                                 EntityUpdateForwardResponse.failureResponse(selfNodeId,
-                                                                                             correlationId,
-                                                                                             cause.message())));
+                 .onSuccess(state -> answer(requester,
+                                            correlationId,
+                                            EntityUpdateForwardResponse.successResponse(selfNodeId, correlationId, state)))
+                 .onFailure(cause -> answer(requester,
+                                            correlationId,
+                                            EntityUpdateForwardResponse.failureResponse(selfNodeId,
+                                                                                        correlationId,
+                                                                                        cause.message())));
+    }
+
+    /// A refused RESPONSE send is logged and nothing more: the requester's own timeout (or its own
+    /// fast-fail, if the link died symmetrically) is the recovery, and there is no one else to tell.
+    private void answer(NodeId requester, String correlationId, EntityForwardMessage response) {
+        sender.send(requester, response).onSuccess(outcome -> logRefusedAnswer(requester, correlationId, outcome));
+    }
+
+    private static void logRefusedAnswer(NodeId requester, String correlationId, WriteOutcome outcome) {
+        if (!outcome.isSent()) {
+            log.warn("Entity owner-forward response to {} refused at send: {} (correlationId={})",
+                     requester,
+                     correlationId,
+                     outcome);
+        }
     }
 
     /// Resolve the waiting promise. A response whose correlation id is unknown is DROPPED with a trace:
@@ -209,6 +254,10 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
                         ? Result.success(response.state())
                         : FORWARD_REFUSED.apply(response.errorMessage()).result());
     }
+
+    private static final BiFunction<String, WriteOutcome, Cause> FORWARD_SEND_REFUSED = (owner, outcome) -> Causes.cause("entity owner-forward to " + owner
+                                                                                                                        + " refused at send (" + outcome
+                                                                                                                        + ") — the owner was never reached");
 
     private static final BiFunction<String, String, Cause> FORWARD_TIMED_OUT = (owner, keyspace) -> Causes.cause("entity owner-forward to " + owner
                                                                                                                 + " for keyspace " + keyspace

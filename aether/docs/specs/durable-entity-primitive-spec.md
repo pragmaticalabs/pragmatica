@@ -294,7 +294,10 @@ public @interface OrdersEntity {}
 [orders-entity]
 # Partition count for this entity type; each partition gets one fenced owner.
 partitions        = 64
-# RF for KV replication (HA path). Ignored once restart-durable log path is wired.
+# Replication factor of the entity's backing stream partition — copies per partition INCLUDING
+# the owner. Honored on the restart-durable log path (I3): minSyncReplicas derives from it, and the
+# write acks only after owner-plus-peers meet the barrier. (An earlier revision said "ignored once
+# the log path is wired" — the opposite landed.)
 replication-factor = 3
 # Retention after terminal state before GC.
 terminal-ttl      = "7d"
@@ -842,9 +845,15 @@ Every read (`get`/`current`/`status`) takes an optional `ReadConsistency`:
 
 ```java
 public enum ReadConsistency {
-    /** Default. Local committed-prefix read: ~µs, no coordination, never torn; staleness =
-        consensus apply lag (ms healthy; grows on a partitioned minority). Monotonic per node.
-        Keeps serving through owner failover and leader churn. */
+    /** Default. Local committed-prefix read: ~µs steady-state, no coordination, never torn.
+        Staleness = REPLICATION lag of the entity's backing stream partition (ms healthy; grows
+        while a replica is catching up or partitioned) — entity state lives on a replicated
+        stream partition since I3, not in consensus-applied KV, so consensus apply lag is not
+        the bound. Each access catches the local fold up to the log's current head before
+        serving, which is what makes the lag the bound rather than a frozen rebuild-time
+        snapshot. Monotonic per node. Keeps serving through owner failover and leader churn on
+        nodes that HOLD the partition; a node outside the replica set refuses (PartitionNotHeld)
+        rather than answering "absent" for keys it cannot see. */
     BOUNDED_STALE,
     /** Linearizable: the read reflects every write acknowledged before it began. Costs a
         coordination round (mechanism below); blocks (retriable) during owner/leader churn. */

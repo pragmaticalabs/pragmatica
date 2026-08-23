@@ -95,9 +95,18 @@ public sealed interface EntityLogError extends Cause {
     /// The write reached the owner's disk but not enough replicas before the barrier gave up.
     ///
     /// The record IS in the log — the append is fsync-durable before this is raised, and `offset` names
-    /// where it landed — so this is emphatically not "the write did not happen". It says the write did not
-    /// achieve the durability the keyspace declared, which is the honest report: a caller that treats it
-    /// as a hard failure and retries is safe, because the fold is idempotent per key.
+    /// where it landed — so this is emphatically not "the write did not happen". It is a THIRD outcome,
+    /// distinct from success and from failure: the mutation is APPLIED (locally durable, locally served,
+    /// and a recovering node will replay it) but did not achieve the durability the keyspace declared.
+    ///
+    /// ## Recovery is per operation — a blind retry is NOT uniformly safe (#596 review S2)
+    ///   - `create` retried → `EntityAlreadyExists`, which IS the ack: these keys are the caller's own,
+    ///     so the only way the key can exist is that this create landed.
+    ///   - `delete` retried → `EntityNotFound`, same reading: the delete landed.
+    ///   - **`update` retried → the mutator runs AGAIN on state that already includes it.** An earlier
+    ///     revision of this message said "retrying is safe because the fold is idempotent per key" — true
+    ///     only of replaying the SAME record; a retried update appends a NEW record. The safe recovery is
+    ///     a read-back: the write is already visible, so re-read and decide from the observed state.
     ///
     /// `offset` is load-bearing, not diagnostic. The entity applies the record to its local fold on this
     /// cause, because a recovering node WILL replay it; without the offset the fold could not be advanced
@@ -110,7 +119,8 @@ public sealed interface EntityLogError extends Cause {
                  + " write at offset " + offset
                  + " is durable on the owner but did not reach " + required
                  + " in-sync replica(s): " + reason.message()
-                 + " — the record IS present; retrying is safe because the fold is idempotent per key";
+                 + " — the record IS present and locally served; do not blindly retry an update"
+                 + " (it would apply the mutator twice) — re-read and decide from the observed state";
         }
     }
 }

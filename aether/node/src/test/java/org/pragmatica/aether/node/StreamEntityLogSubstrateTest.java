@@ -33,6 +33,47 @@ import static org.pragmatica.aether.node.StreamEntityLogSubstrate.streamEntityLo
 /// go through `partitionManager` alone — so they are passed as `null` rather than built for no purpose.
 class StreamEntityLogSubstrateTest {
 
+    /// #596 review S4: `ensureLog` is idempotent, and idempotent must not mean SHAPE-BLIND. A redeploy
+    /// declaring a different partition_count re-hashes every key against a stream laid out for the old
+    /// count — keys land on partitions whose history lives elsewhere and read back as absent. The
+    /// mismatch is refused at provisioning, naming both shapes.
+    @Test
+    void ensureLog_existingStreamWithDifferentShape_isRefused_namingBothShapes() {
+        var partitionManager = StreamPartitionManager.streamPartitionManager(64L * 1024 * 1024);
+        var substrate = streamEntityLogSubstrate(partitionManager, (_, _) -> new StreamPartitionManager.ReplicaCatchupSource.CatchupView(0,
+                                                                                                                                          false),
+                                                 null,
+                                                 null,
+                                                 null);
+
+        substrate.ensureLog("orders", 8, 3, 2).unwrap();
+
+        var mismatched = substrate.ensureLog("orders", 4, 3, 2);
+
+        assertThat(mismatched.isFailure()).isTrue();
+
+        String refusal = mismatched.fold(cause -> cause.message(), _ -> "unexpectedly succeeded");
+
+        assertThat(refusal).contains("partitions=8")
+                           .contains("partitions=4");
+    }
+
+    @Test
+    void ensureLog_existingStreamWithTheSameShape_staysIdempotent() {
+        var partitionManager = StreamPartitionManager.streamPartitionManager(64L * 1024 * 1024);
+        var substrate = streamEntityLogSubstrate(partitionManager, (_, _) -> new StreamPartitionManager.ReplicaCatchupSource.CatchupView(0,
+                                                                                                                                          false),
+                                                 null,
+                                                 null,
+                                                 null);
+
+        substrate.ensureLog("orders", 8, 3, 2).unwrap();
+
+        assertThat(substrate.ensureLog("orders", 8, 3, 2).isSuccess())
+            .as("the same declaration must keep re-ensuring cleanly — every node hosting the keyspace calls it")
+            .isTrue();
+    }
+
     @Test
     void append_awaitsMinSyncReplicasMinusOne_notRawMinSyncReplicas() {
         var capturedMinAcks = new AtomicInteger(Integer.MIN_VALUE);
