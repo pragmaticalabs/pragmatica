@@ -240,8 +240,64 @@ public final class MethodShapeClassifier {
     /// Classify a method member, or [Option#none()] when the member is not a classifiable body —
     /// an abstract interface method (no body) or an empty body, both excluded from the census.
     public static Option<ShapeVerdict> classify(Cursor methodMember) {
-        return methodBody(methodMember).flatMap(body -> classifyBody(methodMember, body));
+        return methodBody(methodMember).flatMap(body -> classifyBody(methodMember, body))
+                                       .map(verdict -> foldNestedPatternIntoMixed(methodMember, verdict));
     }
+
+    /// Phase 2 of MIXED (#448): a composition whose chain passes an INLINE LAMBDA carrying its own
+    /// structural pattern is the book's "each function implements exactly one pattern" violation, and
+    /// classifies MIXED rather than by its outer shape alone.
+    ///
+    /// Phase 1 scoped MIXED to a single blend — a fork-join head with a stream pipeline at one
+    /// altitude — and left the richer nestings to `JBCT-PAT-02` / `JBCT-LAM-03` / `JBCT-NEST-01`.
+    /// That split made the two surfaces disagree on the same method: lint reported "Fork-Join pattern
+    /// nested inside Sequencer chain" while the census called it a clean SEQUENCER. Worse, the bucket
+    /// was unreachable in practice — 0 across 49,460 methods in seven codebases, including deliberate
+    /// violations — so a measured `MIXED = 0` read as conformance when it was the instrument's
+    /// silence. The predicate is therefore taken from the classifier's own shape vocabulary rather
+    /// than re-derived, so the census and the rules cannot drift apart again.
+    ///
+    /// **A method reference is not a lambda.** `.flatMap(this::gatherInParallel)` is extraction
+    /// working correctly and stays SEQUENCER — that asymmetry IS the rule, since the fix the book
+    /// prescribes is exactly to extract.
+    ///
+    /// **Imperative code stays UNCLASSIFIED**, deliberately. Only a shape that is already a
+    /// composition can be promoted, so a method with no chain is never absorbed here. MIXED must mean
+    /// "JBCT code mixing JBCT patterns", an actionable defect with a named fix; if it also meant "not
+    /// written in the vocabulary" it would measure something else entirely and swamp any
+    /// cross-codebase comparison.
+    ///
+    /// A lambda body that is itself UNCLASSIFIED does not promote either — the claim is that the
+    /// lambda carries a PATTERN, not that it lacks one.
+    private static ShapeVerdict foldNestedPatternIntoMixed(Cursor methodMember, ShapeVerdict verdict) {
+        if (!PROMOTABLE_TO_MIXED.contains(verdict.shape())) {
+            return verdict;
+        }
+
+        for (var postfix : findAll(methodMember, RuleKind.POSTFIX)) {
+            for (var link : chainLambdaLinks(postfix)) {
+                var nested = classifyLambdaBody(methodMember, link.lambda()).shape();
+
+                if (NESTED_PATTERNS.contains(nested)) {
+                    return new ShapeVerdict(MethodShape.MIXED,
+                                            verdict.shape() + " chain with a nested " + nested + " in an inline lambda");
+                }
+            }
+        }
+
+        return verdict;
+    }
+
+    /// Outer shapes that can be promoted to MIXED: the composition shapes. LEAF has no chain to nest
+    /// in, UNCLASSIFIED is imperative code that is not mixing patterns, ASPECT is a deliberate
+    /// decorator, and MIXED is already the answer.
+    private static final Set<MethodShape> PROMOTABLE_TO_MIXED =
+        Set.of(MethodShape.SEQUENCER, MethodShape.FORK_JOIN, MethodShape.CONDITION, MethodShape.ITERATION);
+
+    /// Lambda-body shapes that count as carrying a pattern. LEAF is a plain step (the conformant
+    /// case) and UNCLASSIFIED is the absence of a pattern, so neither promotes.
+    private static final Set<MethodShape> NESTED_PATTERNS =
+        Set.of(MethodShape.SEQUENCER, MethodShape.FORK_JOIN, MethodShape.CONDITION, MethodShape.ITERATION, MethodShape.MIXED);
 
     private static Option<ShapeVerdict> classifyBody(Cursor methodMember, Cursor body) {
         var statements = realStatements(body);
