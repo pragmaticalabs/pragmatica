@@ -30,9 +30,6 @@ public abstract class AbstractJbctMojo extends AbstractMojo {
     @Parameter(property = "jbct.skip", defaultValue = "false")
     protected boolean skip;
 
-    @Parameter(property = "jbct.includeTests", defaultValue = "false")
-    protected boolean includeTests;
-
     /// Load JBCT configuration from project directory.
     protected JbctConfig loadConfig() {
         var projectDir = project.getBasedir().toPath();
@@ -46,7 +43,14 @@ public abstract class AbstractJbctMojo extends AbstractMojo {
     }
 
     /// Collect Java files from source directories, applying file filters.
-    protected List<Path> collectJavaFiles(FilesConfig filesConfig) {
+    ///
+    /// `includeTests` is passed in rather than read from a field here, and this class deliberately
+    /// declares no `includeTests` field. It used to: three subclasses that wanted a different
+    /// default declared their own field of that name, which SHADOWED it, and since a field read is
+    /// statically bound this method kept reading the parent's — so `jbct:process` and `jbct:format`
+    /// never saw `src/test/java` and `-Djbct.includeTests=true` was inert for them (#624). With no
+    /// field to shadow, each goal's declared default is the value that reaches collection.
+    protected List<Path> collectJavaFiles(FilesConfig filesConfig, boolean includeTests) {
         return FileCollector.collectFromDirectories(Option.option(sourceDirectory).map(File::toPath),
                                                     Option.option(testSourceDirectory).map(File::toPath),
                                                     includeTests,

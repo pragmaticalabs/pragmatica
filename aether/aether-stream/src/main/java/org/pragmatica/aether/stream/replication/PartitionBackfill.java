@@ -1074,26 +1074,100 @@ public final class PartitionBackfill {
 
             return NO_SOURCE_REPLICA.promise();
         }
-        // #491 m2: the cold-start self-promote is a DEADLOCK-BREAK for a GENUINE cold start where NO owner
-        // can exist (every replica SYNCING). When a committed owner EXISTS this is a FAILOVER, not a
-        // deadlock — the owner is authoritative and the redrive's owner re-pull will catch self up once the
-        // owner's ring fills (owner-side #491 F1/m3 land the true tail this same batch). Self-promoting off
-        // the probe contest here would falsely flip CAUGHT_UP at self's (possibly -1) local watermark, past
-        // the #445 empty-owner distrust gate. Stay SYNCING and keep re-pulling — a safety gate, not a new
-        // loop. Trade-off: SYNCING-forever under a wedged owner, acceptable because the owner-side fixes
-        // land together. Reaching here already implies isSelfOwner() is false, so a present committed owner
-        // is a genuine owner-elsewhere case, never a self-promote we are starving.
-        if (committedOwnerSource.committedOwner(streamName, partition).isPresent()) {
-            log.warn("Backfill {}[{}]: bound elapsed with no source but a committed owner exists — staying "
-                    + "SYNCING (failover, not cold-start; cold-start self-promote suppressed to preserve the "
-                    + "#445 empty-owner distrust gate)",
-                     streamName,
-                     partition);
+        // #491 m2 / #631: the cold-start self-promote is a DEADLOCK-BREAK for a GENUINE cold start where no
+        // reachable owner holds history this replica lacks. Promoting past an owner that IS ahead would
+        // falsely flip CAUGHT_UP at self's (possibly -1) local watermark, past the #445 empty-owner distrust
+        // gate — so the deferral is decided on the owner's TAIL, never on the mere EXISTENCE of its record.
+        // #631: an owner record always exists for a freshly-created stream, so suppressing on existence
+        // alone left every replica of a never-written stream SYNCING forever. Reaching here already implies
+        // isSelfOwner() is false, so a present committed owner is a genuine owner-elsewhere case, never a
+        // self-promote we are starving.
+        return committedOwnerSource.committedOwner(streamName, partition)
+                                   .fold(() -> attemptColdStartPromotion(streamName,
+                                                                         partition,
+                                                                         replicas,
+                                                                         TieBreak.ELECT_ONE),
+                                         committed -> deferOnlyIfOwnerIsAhead(streamName,
+                                                                              partition,
+                                                                              replicas,
+                                                                              committed.owner()));
+    }
 
-            return NO_SOURCE_REPLICA.promise();
+    /// Suppress the cold-start promote only when the committed owner actually HOLDS something we lack.
+    ///
+    /// The previous condition suppressed on the mere EXISTENCE of an owner record, which cannot tell a
+    /// freshly-elected owner with an empty ring from one holding real history. For a stream that has just
+    /// been created and never written, an empty owner is the NORMAL state — so every replica deferred to
+    /// it forever and the partition never left SYNCING (#631: `02y-stream-crash` pinned all 4 partitions
+    /// of a brand-new stream for its entire 240s deploy window; the owner had correctly self-promoted at
+    /// watermark -1).
+    ///
+    /// Asking the owner for its tail is strictly MORE information than asking whether its record exists,
+    /// and every safety outcome is preserved:
+    ///   - owner ahead of self → defer exactly as before (it holds history we lack — the #445 case),
+    ///   - owner unreachable → defer, because an unknown tail must not be read as an empty one,
+    ///   - owner not ahead → fall through to the probe contest, which independently REFUSES to promote
+    ///     when any peer is unreachable or any peer is ahead ({@link #decidePromotion}). The contest is a
+    ///     strictly finer gate than the blanket suppression it replaces. Self exactly AT the owner's tail
+    ///     additionally drops the contest's single-winner election ({@link TieBreak}) — without that, the
+    ///     owner (a registered replica at the same watermark, on a code path that never contests) wins the
+    ///     tie-break by default and every non-owner stays pinned, which is #631 unfixed.
+    private Promise<Long> deferOnlyIfOwnerIsAhead(String streamName,
+                                                  int partition,
+                                                  List<ReplicaDescriptor> replicas,
+                                                  NodeId owner) {
+        var selfLocal = selfWatermark.localWatermark(streamName, partition);
+        // `fold` over the PROBE's own Result, never `orElse` over the whole chain: `orElse` also catches a
+        // deliberate downstream defer and a declined contest, re-reporting both as an unreachable owner —
+        // a false operator signal on the very surface a pinned partition is diagnosed from.
+        return probe.probe(owner, streamName, partition)
+                    .fold(result -> result.fold(_ -> deferToUnreachableOwner(streamName, partition, owner),
+                                                ownerTail -> promoteOrDeferOnOwnerTail(streamName,
+                                                                                       partition,
+                                                                                       replicas,
+                                                                                       ownerTail,
+                                                                                       selfLocal)));
+    }
+
+    /// `ownerTail == selfLocal` is GENESIS: self sits exactly at the authoritative owner's tail, so it is
+    /// caught up by definition and the contest's ELECTION must not park it (#631). `ownerTail < selfLocal`
+    /// means self is ahead of an owner that lost history — stay conservative and keep the election.
+    private Promise<Long> promoteOrDeferOnOwnerTail(String streamName,
+                                                    int partition,
+                                                    List<ReplicaDescriptor> replicas,
+                                                    long ownerTail,
+                                                    long selfLocal) {
+        if (ownerTail > selfLocal) {
+            return deferToOwnerAhead(streamName, partition, ownerTail, selfLocal);
         }
 
-        return attemptColdStartPromotion(streamName, partition, replicas);
+        return attemptColdStartPromotion(streamName,
+                                         partition,
+                                         replicas,
+                                         ownerTail == selfLocal
+                                         ? TieBreak.NOT_APPLICABLE
+                                         : TieBreak.ELECT_ONE);
+    }
+
+    private Promise<Long> deferToOwnerAhead(String streamName, int partition, long ownerTail, long selfLocal) {
+        log.warn("Backfill {}[{}]: bound elapsed with no source and the committed owner is AHEAD "
+                + "(owner tail {} > self {}) — staying SYNCING; it holds history this replica lacks",
+                 streamName,
+                 partition,
+                 ownerTail,
+                 selfLocal);
+
+        return NO_SOURCE_REPLICA.promise();
+    }
+
+    private Promise<Long> deferToUnreachableOwner(String streamName, int partition, NodeId owner) {
+        log.warn("Backfill {}[{}]: bound elapsed with no source and the committed owner {} is UNREACHABLE "
+                + "— staying SYNCING; an unknown owner tail must not be read as an empty one",
+                 streamName,
+                 partition,
+                 owner);
+
+        return NO_SOURCE_REPLICA.promise();
     }
 
     /// Probe every other registered replica's watermark+reachability, then decide promotion off the
@@ -1103,7 +1177,8 @@ public final class PartitionBackfill {
     /// not erase the reachable peers' watermarks from the decision view.
     private Promise<Long> attemptColdStartPromotion(String streamName,
                                                     int partition,
-                                                    List<ReplicaDescriptor> replicas) {
+                                                    List<ReplicaDescriptor> replicas,
+                                                    TieBreak tieBreak) {
         var peers = peerNodeIds(replicas);
         var selfLocal = selfWatermark.localWatermark(streamName, partition);
 
@@ -1111,7 +1186,20 @@ public final class PartitionBackfill {
                                                                                                                                                partition,
                                                                                                                                                peers,
                                                                                                                                                selfLocal,
-                                                                                                                                               results));
+                                                                                                                                               results,
+                                                                                                                                               tieBreak));
+    }
+
+    /// Whether the cold-start contest must ELECT a single winner. The lowest-NodeId tie-break exists to pick
+    /// ONE authority when no authority exists at all. When the committed owner has reported a tail that self
+    /// exactly matches, an authority already exists and self is at it — every replica in that position is
+    /// genuinely caught up, so electing one and parking the rest is wrong (#631: the owner is a registered
+    /// replica sitting at the same `-1`, and it wins the tie-break it never contests, because it promotes on
+    /// the owner-immediate path). The contest's SAFETY checks — every peer reachable, none ahead — govern
+    /// identically in both modes; only the election is dropped.
+    private enum TieBreak {
+        ELECT_ONE,
+        NOT_APPLICABLE
     }
 
     /// Promotion predicate. Promote self iff (a) EVERY peer probe succeeded (all reachable) AND (b)
@@ -1122,7 +1210,8 @@ public final class PartitionBackfill {
                                           int partition,
                                           List<NodeId> peers,
                                           long selfWm,
-                                          List<Result<Long>> results) {
+                                          List<Result<Long>> results,
+                                          TieBreak tieBreak) {
         if (results.stream().anyMatch(Result::isFailure)) {
             log.warn("Backfill {}[{}]: cold-start self-promotion BLOCKED — a co-replica is unreachable "
                     + "(self watermark {}, peers {}) — staying SYNCING to avoid serving stale state",
@@ -1136,7 +1225,10 @@ public final class PartitionBackfill {
 
         var maxPeerWatermark = results.stream().mapToLong(result -> result.or(-1L)).max().orElse(-1L);
 
-        if (selfWm < maxPeerWatermark || losesTieBreak(peers, selfWm, results, maxPeerWatermark)) {
+        if (selfWm < maxPeerWatermark || (tieBreak == TieBreak.ELECT_ONE && losesTieBreak(peers,
+                                                                                          selfWm,
+                                                                                          results,
+                                                                                          maxPeerWatermark))) {
             log.warn("Backfill {}[{}]: cold-start self-promotion declined — self watermark {} does not win "
                     + "(max reachable peer watermark {}, peers {}) — staying SYNCING",
                      streamName,

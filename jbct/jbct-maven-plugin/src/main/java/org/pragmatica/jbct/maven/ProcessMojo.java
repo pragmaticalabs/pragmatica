@@ -38,7 +38,14 @@ import org.apache.maven.plugins.annotations.Parameter;
 /// only one of the two operations.
 @Mojo(name = "process", defaultPhase = LifecyclePhase.PROCESS_SOURCES, threadSafe = true)
 public class ProcessMojo extends AbstractJbctMojo {
-    @Parameter(property = "jbct.includeTests", defaultValue = "true")
+    /// Whether `src/test/java` is collected alongside `src/main/java`.
+    ///
+    /// Declared per goal: there is no inherited field to shadow, which is what made this parameter
+    /// inert for the format-family goals (#624). The default is `false` for every goal — test
+    /// sources have never been in the gate, so honouring the value this parameter USED to claim
+    /// would newly admit them wholesale; that is a policy change, deliberately not bundled with the
+    /// mechanism fix. Set `-Djbct.includeTests=true` to opt in.
+    @Parameter(property = "jbct.includeTests", defaultValue = "false")
     protected boolean includeTests;
 
     /// If true, lint errors at the configured failure threshold prevent the format write
@@ -58,7 +65,7 @@ public class ProcessMojo extends AbstractJbctMojo {
         var lintContext = createLintContext(jbctConfig);
         var linter = JbctLinter.jbctLinter(lintContext);
         var parser = new Java25Parser();
-        var filesToProcess = collectJavaFiles(jbctConfig.files());
+        var filesToProcess = collectJavaFiles(jbctConfig.files(), includeTests);
 
         if (filesToProcess.isEmpty()) {
             getLog().info("No Java files found.");

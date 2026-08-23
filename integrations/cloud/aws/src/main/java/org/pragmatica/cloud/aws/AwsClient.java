@@ -91,7 +91,10 @@ public interface AwsClient {
     /// Revokes one inbound CIDR rule from a security group. An already-absent rule
     /// (`InvalidPermission.NotFound`) or an already-deleted group (`InvalidGroup.NotFound`)
     /// resolves as success, so teardown is idempotent and order-insensitive.
-    Promise<Unit> revokeSecurityGroupIngress(String groupId, String protocol, int port, String cidr);
+    /// `description` must reproduce the stored rule's own description, or EC2 does not match it and
+    /// answers `InvalidPermission.NotFound`. Pass the value read back from the group, not the one the
+    /// caller happens to remember. Empty when the rule carries none.
+    Promise<Unit> revokeSecurityGroupIngress(String groupId, String protocol, int port, String cidr, String description);
     /// Deletes a security group. An already-deleted group (`InvalidGroup.NotFound`) resolves as
     /// success, so repeated teardown is idempotent.
     Promise<Unit> deleteSecurityGroup(String groupId);
@@ -139,7 +142,6 @@ record AwsClientRecord(AwsConfig config, HttpOperations http, JsonMapper jsonMap
     /// code-exact — any other AWS error code still fails the Promise, which
     /// `authorizeSecurityGroupIngress_fails_forUnrelatedErrorCode` pins.
     private static final Set<String> RULE_ALREADY_PRESENT = Set.of("InvalidPermission.Duplicate");
-    private static final Set<String> RULE_ALREADY_ABSENT = Set.of("InvalidPermission.NotFound", "InvalidGroup.NotFound");
     private static final Set<String> GROUP_ALREADY_ABSENT = Set.of("InvalidGroup.NotFound");
     private static final AwsError MISSING_GROUP_ID =
         new AwsError.ParseError("Missing groupId in CreateSecurityGroup response", Option.none());
@@ -213,11 +215,11 @@ record AwsClientRecord(AwsConfig config, HttpOperations http, JsonMapper jsonMap
     }
 
     @Override
-    public Promise<Unit> revokeSecurityGroupIngress(String groupId, String protocol, int port, String cidr) {
+    public Promise<Unit> revokeSecurityGroupIngress(String groupId, String protocol, int port, String cidr, String description) {
         return postQueryTolerating(EC2_SERVICE,
                                    config.ec2Url(),
-                                   buildRevokeIngressForm(groupId, protocol, port, cidr),
-                                   RULE_ALREADY_ABSENT);
+                                   buildRevokeIngressForm(groupId, protocol, port, cidr, description),
+                                   GROUP_ALREADY_ABSENT);
     }
 
     @Override
@@ -524,8 +526,14 @@ record AwsClientRecord(AwsConfig config, HttpOperations http, JsonMapper jsonMap
 
     /// EC2 ignores a description on revoke — the rule is matched by protocol, port range and CIDR
     /// alone — so [AwsClient#revokeSecurityGroupIngress] takes none and none is emitted.
-    private static String buildRevokeIngressForm(String groupId, String protocol, int port, String cidr) {
-        return buildIngressRuleForm("RevokeSecurityGroupIngress", groupId, protocol, port, cidr);
+    private static String buildRevokeIngressForm(String groupId, String protocol, int port, String cidr, String description) {
+        var form = buildIngressRuleForm("RevokeSecurityGroupIngress", groupId, protocol, port, cidr);
+
+        if (description == null || description.isBlank()) {
+            return form;
+        }
+
+        return form + "&IpPermissions.1.IpRanges.1.Description=" + AwsSigV4Signer.urlEncode(description);
     }
 
     private static String buildIngressRuleForm(String action, String groupId, String protocol, int port, String cidr) {

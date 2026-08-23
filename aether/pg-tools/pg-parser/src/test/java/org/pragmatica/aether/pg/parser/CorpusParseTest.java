@@ -30,7 +30,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// before, build after, diff:
 ///
 /// ```
-/// mvn -Pgenerate-parser -pl aether/pg-tools/pg-parser test -Dtest=ZCstDumpTest \
+/// mvn -pl aether/pg-tools/pg-parser test -Dtest=ZCstDumpTest \
 ///     -Dsurefire.failIfNoSpecifiedTests=false -Dcstdump.out=/abs/path/dump.txt
 /// ```
 class CorpusParseTest {

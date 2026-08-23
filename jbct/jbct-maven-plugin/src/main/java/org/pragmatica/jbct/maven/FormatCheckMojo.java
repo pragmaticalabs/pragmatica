@@ -19,7 +19,14 @@ import org.apache.maven.plugins.annotations.Parameter;
 /// Does not modify files - only reports violations.
 @Mojo(name = "format-check", defaultPhase = LifecyclePhase.VERIFY)
 public class FormatCheckMojo extends AbstractJbctMojo {
-    @Parameter(property = "jbct.includeTests", defaultValue = "true")
+    /// Whether `src/test/java` is collected alongside `src/main/java`.
+    ///
+    /// Declared per goal: there is no inherited field to shadow, which is what made this parameter
+    /// inert for the format-family goals (#624). The default is `false` for every goal — test
+    /// sources have never been in the gate, so honouring the value this parameter USED to claim
+    /// would newly admit them wholesale; that is a policy change, deliberately not bundled with the
+    /// mechanism fix. Set `-Djbct.includeTests=true` to opt in.
+    @Parameter(property = "jbct.includeTests", defaultValue = "false")
     protected boolean includeTests;
 
     @Override
@@ -30,7 +37,7 @@ public class FormatCheckMojo extends AbstractJbctMojo {
 
         var config = loadConfig();
         var formatter = JbctFormatter.jbctFormatter(config.formatter());
-        var filesToProcess = collectJavaFiles(config.files());
+        var filesToProcess = collectJavaFiles(config.files(), includeTests);
 
         if (filesToProcess.isEmpty()) {
             getLog().info("No Java files found.");

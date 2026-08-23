@@ -11,8 +11,8 @@ import org.pragmatica.aether.dht.CommittedPartitionOwnerSource;
 import org.pragmatica.aether.dht.EntityPartitionArc;
 import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
+import org.pragmatica.aether.resource.Mutator;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
@@ -42,7 +42,7 @@ import static org.pragmatica.lang.Promise.unitPromise;
 ///
 /// @param <K> entity key type
 /// @param <S> entity state type (immutable)
-final class InMemoryDurableEntity<K, S> implements DurableEntity<K, S> {
+final class InMemoryDurableEntity<K, S, C extends Mutator<S>> implements DurableEntity<K, S, C> {
     private final ConcurrentHashMap<K, S> state;
     private final PerKeySerialExecutor<K> serializer;
     private final Option<LinearizableEntityServe<K, S>> linearizableServe;
@@ -68,18 +68,18 @@ final class InMemoryDurableEntity<K, S> implements DurableEntity<K, S> {
                                                                                              this::get));
     }
 
-    static <K, S> DurableEntity<K, S> inMemoryDurableEntity() {
+    static <K, S, C extends Mutator<S>> DurableEntity<K, S, C> inMemoryDurableEntity() {
         return new InMemoryDurableEntity<>();
     }
 
     /// Linearizable-capable in-memory entity: a [ReadConsistency#LINEARIZABLE] read routes to the key's
     /// committed partition owner via [LinearizableEntityServe] (owner-serve pipeline over the shared
     /// ownership substrate). Used by tests today and by the entity node wiring (#277) in production.
-    static <K, S> DurableEntity<K, S> inMemoryDurableEntity(NodeId selfNodeId,
-                                                            EntityPartitionArc arc,
-                                                            CommittedPartitionOwnerSource committedOwnerSource,
-                                                            Option<OwnershipEpochHighWater> epochHighWater,
-                                                            Option<EntityLinearizableBarrier> barrier) {
+    static <K, S, C extends Mutator<S>> DurableEntity<K, S, C> inMemoryDurableEntity(NodeId selfNodeId,
+                                                                                     EntityPartitionArc arc,
+                                                                                     CommittedPartitionOwnerSource committedOwnerSource,
+                                                                                     Option<OwnershipEpochHighWater> epochHighWater,
+                                                                                     Option<EntityLinearizableBarrier> barrier) {
         return new InMemoryDurableEntity<>(selfNodeId, arc, committedOwnerSource, epochHighWater, barrier);
     }
 
@@ -112,7 +112,7 @@ final class InMemoryDurableEntity<K, S> implements DurableEntity<K, S> {
     }
 
     @Override
-    public Promise<S> update(K key, Fn1<S, S> mutator) {
+    public Promise<S> update(K key, C mutator) {
         return serializer.submit(key, () -> doUpdate(key, mutator));
     }
 
@@ -122,7 +122,7 @@ final class InMemoryDurableEntity<K, S> implements DurableEntity<K, S> {
     }
 
     @Override
-    public Promise<TimerToken> scheduleTimer(K key, Duration delay, Fn1<S, S> onFire) {
+    public Promise<TimerToken> scheduleTimer(K key, Duration delay, C onFire) {
         return new EntityError.TimerNotSupported(String.valueOf(key)).promise();
     }
 
@@ -139,14 +139,14 @@ final class InMemoryDurableEntity<K, S> implements DurableEntity<K, S> {
         return Promise.success(option(state.get(key)));
     }
 
-    private Promise<S> doUpdate(K key, Fn1<S, S> mutator) {
+    private Promise<S> doUpdate(K key, C mutator) {
         return option(state.get(key)).fold(() -> keyNotFound(key), current -> mutate(key, current, mutator));
     }
 
     /// Apply the pure mutator and commit the result. Runs only under the per-key serialization (the
     /// tail), so the read-modify-write is single-threaded for this key; the mutator therefore runs
     /// outside any map bin lock — different keys mutate concurrently.
-    private Promise<S> mutate(K key, S current, Fn1<S, S> mutator) {
+    private Promise<S> mutate(K key, S current, C mutator) {
         return commit(key, mutator.apply(current));
     }
 

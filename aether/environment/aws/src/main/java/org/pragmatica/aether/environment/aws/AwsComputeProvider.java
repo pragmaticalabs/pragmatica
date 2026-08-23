@@ -7,6 +7,7 @@ package org.pragmatica.aether.environment.aws;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -341,11 +342,69 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
             return Promise.success(Unit.unit());
         }
 
-        var groupId = found.getFirst().groupId();
+        var group = found.getFirst();
+        var groupId = group.groupId();
 
-        return client.revokeSecurityGroupIngress(groupId, protocol, port, sourceCidr)
-                     .flatMap(_ -> client.describeSecurityGroups(Map.of()))
-                     .flatMap(groups -> deleteWhenEmptied(groups, groupId));
+        return revokeWhenPresent(group, groupId, port, protocol, sourceCidr).flatMap(_ -> client.describeSecurityGroups(Map.of()))
+                                .flatMap(groups -> deleteWhenEmptied(groups, groupId));
+    }
+
+    /// Revoke ONLY on a positive reading of the rule in the group we just described, and reproduce its
+    /// stored description — EC2 matches a revoke on protocol/ports/CIDR **and** description, so a
+    /// reconstructed form that omits the description answers `InvalidPermission.NotFound`.
+    ///
+    /// That code used to be tolerated as success, which made a failed revoke indistinguishable from an
+    /// idempotent no-op: `closeIngress` reported success while the rule survived. Now absence is
+    /// established by READING rather than inferred from an error code, so the tolerated set no longer
+    /// has to cover it and a genuine mismatch surfaces as a failure.
+    private Promise<Unit> revokeWhenPresent(SecurityGroup group,
+                                            String groupId,
+                                            int port,
+                                            String protocol,
+                                            String sourceCidr) {
+        return matchingRange(group, port, protocol, sourceCidr).fold(() -> Promise.success(Unit.unit()),
+                                                                     range -> client.revokeSecurityGroupIngress(groupId,
+                                                                                                                protocol,
+                                                                                                                port,
+                                                                                                                sourceCidr,
+                                                                                                                range.description()));
+    }
+
+    /// The stored range for this `(protocol, port, cidr)`, or empty when the group does not carry it.
+    /// `fromPort`/`toPort` are boxed because EC2 omits them for port-less protocols, so they are
+    /// compared with [java.util.Objects#equals] rather than `==`.
+    private static Option<SecurityGroup.IpRange> matchingRange(SecurityGroup group,
+                                                               int port,
+                                                               String protocol,
+                                                               String sourceCidr) {
+        if (group.ipPermissions() == null || group.ipPermissions().items() == null) {
+            return Option.empty();
+        }
+
+        return group.ipPermissions()
+                    .items()
+                    .stream()
+                    .filter(permission -> matchesPort(permission, port, protocol))
+                    .flatMap(permission -> rangesOf(permission).stream())
+                    .filter(range -> sourceCidr.equals(range.cidrIp()))
+                    .findFirst()
+                    .map(Option::some)
+                    .orElseGet(Option::empty);
+    }
+
+    private static boolean matchesPort(SecurityGroup.IpPermission permission, int port, String protocol) {
+        return protocol.equalsIgnoreCase(permission.ipProtocol())
+               && Objects.equals(permission.fromPort(), port)
+               && Objects.equals(permission.toPort(), port);
+    }
+
+    private static List<SecurityGroup.IpRange> rangesOf(SecurityGroup.IpPermission permission) {
+        if (permission.ipRanges() == null || permission.ipRanges().items() == null) {
+            return List.of();
+        }
+
+        return permission.ipRanges()
+                         .items();
     }
 
     private Promise<Unit> deleteWhenEmptied(List<SecurityGroup> groups, String groupId) {

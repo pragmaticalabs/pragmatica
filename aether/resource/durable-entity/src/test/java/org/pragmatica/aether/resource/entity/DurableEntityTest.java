@@ -21,7 +21,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 class DurableEntityTest {
     private static final TimeSpan AWAIT = timeSpan(5).seconds();
 
-    private static DurableEntity<String, Integer> entity() {
+    private static DurableEntity<String, Integer, IntOp> entity() {
         return InMemoryDurableEntity.inMemoryDurableEntity();
     }
 
@@ -61,7 +61,7 @@ class DurableEntityTest {
 
             entity.create("a", 7).await(AWAIT).onFailure(DurableEntityTest::failCause);
 
-            entity.update("a", value -> value * 3)
+            entity.update("a", new IntOp.Multiply(3))
                   .await(AWAIT)
                   .onFailure(DurableEntityTest::failCause)
                   .onSuccess(state -> assertThat(state).isEqualTo(21));
@@ -72,7 +72,7 @@ class DurableEntityTest {
             var entity = entity();
 
             entity.create("a", 7).await(AWAIT).onFailure(DurableEntityTest::failCause);
-            entity.update("a", value -> value + 1).await(AWAIT).onFailure(DurableEntityTest::failCause);
+            entity.update("a", new IntOp.Add(1)).await(AWAIT).onFailure(DurableEntityTest::failCause);
 
             entity.get("a")
                   .await(AWAIT)
@@ -110,7 +110,7 @@ class DurableEntityTest {
 
         @Test
         void update_fails_whenKeyNotFound() {
-            entity().update("absent", value -> value + 1)
+            entity().update("absent", new IntOp.Add(1))
                     .await(AWAIT)
                     .onSuccess(state -> fail("expected EntityNotFound, got " + state))
                     .onFailure(cause -> assertThat(cause).isInstanceOf(EntityError.EntityNotFound.class));
@@ -129,7 +129,7 @@ class DurableEntityTest {
     class TimerOperations {
         @Test
         void scheduleTimer_fails_withTimerNotSupported() {
-            entity().scheduleTimer("a", Duration.ofSeconds(1), value -> value + 1)
+            entity().scheduleTimer("a", Duration.ofSeconds(1), new IntOp.Add(1))
                     .await(AWAIT)
                     .onSuccess(token -> fail("expected TimerNotSupported, got " + token))
                     .onFailure(cause -> assertThat(cause).isInstanceOf(EntityError.TimerNotSupported.class));

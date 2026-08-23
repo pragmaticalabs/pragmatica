@@ -285,10 +285,10 @@ class EntityLinearizableReadTest {
 
     // ---- helpers -------------------------------------------------------------------------------
 
-    private static DurableEntity<String, Integer> seeded(CommittedPartitionOwnerSource committedOwnerSource,
+    private static DurableEntity<String, Integer, IntOp> seeded(CommittedPartitionOwnerSource committedOwnerSource,
                                                          Option<OwnershipEpochHighWater> highWater,
                                                          Option<EntityLinearizableBarrier> barrier) {
-        var entity = InMemoryDurableEntity.<String, Integer> inMemoryDurableEntity(SELF,
+        var entity = InMemoryDurableEntity.<String, Integer, IntOp> inMemoryDurableEntity(SELF,
                                                                                    ARC,
                                                                                    committedOwnerSource,
                                                                                    highWater,
@@ -299,8 +299,8 @@ class EntityLinearizableReadTest {
         return entity;
     }
 
-    private static DurableEntity<String, Integer> seededPlain() {
-        var entity = InMemoryDurableEntity.<String, Integer> inMemoryDurableEntity();
+    private static DurableEntity<String, Integer, IntOp> seededPlain() {
+        var entity = InMemoryDurableEntity.<String, Integer, IntOp> inMemoryDurableEntity();
 
         entity.create(KEY, 7).await(AWAIT).onFailure(EntityLinearizableReadTest::failCause);
 

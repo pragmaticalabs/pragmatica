@@ -77,7 +77,7 @@ class PartitionFencedDurableEntityFenceTest {
             var entity = unwiredEntity();
 
             entity.create("k1", 1).await();
-            entity.update("k1", value -> value + 41)
+            entity.update("k1", new IntOp.Add(41))
                   .await()
                   .onFailure(PartitionFencedDurableEntityFenceTest::failCause);
 
@@ -97,7 +97,7 @@ class PartitionFencedDurableEntityFenceTest {
             entity.create("k1", 1).await();
             substrate.reshuffle(arc.partitionOf("k1"));
 
-            entity.update("k1", value -> value + 1)
+            entity.update("k1", new IntOp.Add(1))
                   .await()
                   .onSuccess(_ -> fail("a deposed partition owner's update must be fenced out"))
                   .onFailure(PartitionFencedDurableEntityFenceTest::assertStaleOwner);
@@ -128,7 +128,7 @@ class PartitionFencedDurableEntityFenceTest {
             substrate.reshuffle(partition);
             substrate.adoptCurrentEpoch(partition);
 
-            entity.update("k1", value -> value + 41)
+            entity.update("k1", new IntOp.Add(41))
                   .await()
                   .onFailure(PartitionFencedDurableEntityFenceTest::failCause);
 
@@ -150,7 +150,7 @@ class PartitionFencedDurableEntityFenceTest {
 
             substrate.reshuffle(arc.partitionOf(keys.reshuffled()));
 
-            entity.update(keys.untouched(), value -> value + 41)
+            entity.update(keys.untouched(), new IntOp.Add(41))
                   .await()
                   .onFailure(PartitionFencedDurableEntityFenceTest::failCause);
 
@@ -167,7 +167,7 @@ class PartitionFencedDurableEntityFenceTest {
 
             substrate.reshuffle(arc.partitionOf(keys.reshuffled()));
 
-            entity.update(keys.reshuffled(), value -> value + 1)
+            entity.update(keys.reshuffled(), new IntOp.Add(1))
                   .await()
                   .onSuccess(_ -> fail("the reshuffled partition's key must be fenced out"))
                   .onFailure(PartitionFencedDurableEntityFenceTest::assertStaleOwner);
@@ -230,7 +230,7 @@ class PartitionFencedDurableEntityFenceTest {
         void update_rejectedWithNotCurrentOwner_whenAnotherNodeOwnsTheArc() {
             seed();
 
-            wiredEntity(OTHER).update("k1", value -> value + 1)
+            wiredEntity(OTHER).update("k1", new IntOp.Add(1))
                               .await()
                               .onSuccess(_ -> fail("a non-owner must not accept an update"))
                               .onFailure(PartitionFencedDurableEntityFenceTest::assertNotCurrentOwner);
@@ -343,7 +343,7 @@ class PartitionFencedDurableEntityFenceTest {
         return (_, _) -> Promise.success(Unit.unit());
     }
 
-    private DurableEntity<String, Integer> unwiredEntity() {
+    private DurableEntity<String, Integer, IntOp> unwiredEntity() {
         return PartitionFencedDurableEntity.partitionFencedDurableEntity(KEYSPACE,
                                                                          substrate,
                                                                          arc,
@@ -351,15 +351,15 @@ class PartitionFencedDurableEntityFenceTest {
                                                                          new IntDeserializer());
     }
 
-    private DurableEntity<String, Integer> wiredEntity(NodeId committedOwner) {
+    private DurableEntity<String, Integer, IntOp> wiredEntity(NodeId committedOwner) {
         return entityAs(SELF, fixedOwner(committedOwner), Option.some(noOpBarrier()));
     }
 
-    private DurableEntity<String, Integer> entityAs(NodeId self, CommittedPartitionOwnerSource owners) {
+    private DurableEntity<String, Integer, IntOp> entityAs(NodeId self, CommittedPartitionOwnerSource owners) {
         return entityAs(self, owners, Option.some(noOpBarrier()));
     }
 
-    private DurableEntity<String, Integer> entityAs(NodeId self,
+    private DurableEntity<String, Integer, IntOp> entityAs(NodeId self,
                                                     CommittedPartitionOwnerSource owners,
                                                     Option<EntityLinearizableBarrier> barrier) {
         return PartitionFencedDurableEntity.partitionFencedDurableEntity(KEYSPACE,
@@ -377,7 +377,7 @@ class PartitionFencedDurableEntityFenceTest {
         return (_, _) -> Option.some(new CommittedOwner(owner, Epoch.ZERO));
     }
 
-    private static Option<Integer> read(DurableEntity<String, Integer> entity, String key) {
+    private static Option<Integer> read(DurableEntity<String, Integer, IntOp> entity, String key) {
         return entity.get(key).await().fold(cause -> fail(cause.message()), value -> value);
     }
 

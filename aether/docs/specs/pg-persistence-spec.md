@@ -556,24 +556,33 @@ public final class OrderPersistenceFactory {
 Two deliberate deviations from PostgreSQL in `pg-parser`'s grammar. Both are user-visible: SQL that
 PostgreSQL accepts will be rejected or mis-parsed here.
 
-### Nested block comments — UNSUPPORTED
+### Nested block comments — SUPPORTED (peglib 0.7.3)
 
-PostgreSQL nests `/* ... */` per the SQL standard, so the inner comment below closes the *inner*
-block and the statement remains commented until the outer `*/`:
+PostgreSQL nests `/* ... */` per the SQL standard, and `pg-parser` follows it:
 
 ```sql
 SELECT 1 /* outer /* inner */ still a comment */ AS c;
 ```
 
-`pg-parser` stops at the FIRST `*/` and mis-parses the remainder. `BlockComment` is
-`'/*' (!'*/' .)* '*/'`, and it cannot be fixed in the grammar: nested comments are not a regular
-language, and under peglib 0.7.x the rule is compiled into a DFA lexer. Expressing it needs a
-counting scanner in peglib itself — the same class of limitation as a back-reference. Tracked
-upstream; see the note at the rule in `postgres.peg`.
+The grammar declares `%nest '/*' '*/'`, which lexes the pair with a depth-counting scanner instead of
+a DFA path. That is the only way to express it: nested comments are not a regular language, so no DFA
+can match them, and the recursive spelling is refused by peglib's analyzer as
+`grammar.whitespace-cycle` because `BlockComment` is reachable from `%whitespace`. The scanner runs
+instead of the DFA at a token start when the block balances; an unterminated block falls through to
+the DFA, so malformed input reads exactly as it did before.
 
-**Impact:** a migration or `@PgSql` query containing nested block comments fails to parse. Single-level
-`/* ... */` and `--` line comments are unaffected. Nesting is rare in practice, which is why it went
-unnoticed until the parser corpus was extended with real harvested SQL.
+**History (#619, upstream `siy/java-peglib#45`).** Before 0.7.3 the rule closed at the FIRST `*/` and
+the remainder leaked into the statement as live SQL. That was not reliably a parse error: when the
+leaked text composed into something valid the parser accepted a **different statement with no
+diagnostic** — `SELECT 1 /* /* */ , 999 -- */\n FROM t;` parsed as `SELECT 1, 999 FROM t`, because
+the trailing `-- */` swallowed the orphaned outer `*/`. Kept here because it is the reason to distrust
+"it would have failed loudly" as a mitigation for any lexer-level gap.
+
+One trap worth keeping, learned by getting it wrong: the leaked text must sit INSIDE the balanced
+span to diverge. `SELECT 1 /* a /* b */ -- */` followed by ` , 2 FROM t;` does NOT diverge — two
+opens, two closes, so `, 2` is legitimately outside the comment and two select-list items is correct
+under the old lexer and the new one alike. Count the delimiters before deciding what the right
+answer is.
 
 ### `$` in identifiers — DELIBERATELY NARROWED
 

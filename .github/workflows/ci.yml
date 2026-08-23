@@ -25,6 +25,14 @@ jobs:
       - name: Bootstrap annotation processors and Maven plugins
         run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor,aether/pg-tools/pg-codegen -am
 
+      # The gate build.sh runs locally and CI never did: format-check + lint. PR #618 passed CI and
+      # still broke ./build.sh, because `mvn install` compiles unformatted, lint-violating sources
+      # perfectly happily. Non-mutating (`check`, not `process`), so it reports rather than rewrites.
+      # `-pl '!jbct'` mirrors build.sh: the linter depends on core, so jbct self-lints in its own build.
+      - name: JBCT format + lint gate
+        run: mvn org.pragmatica-lite:jbct-maven-plugin:check -B -pl '!jbct'
+        timeout-minutes: 15
+
       - name: Build and test all modules
         run: mvn install -B -pl '!examples'
         timeout-minutes: 45

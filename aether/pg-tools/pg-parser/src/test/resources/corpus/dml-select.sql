@@ -145,3 +145,11 @@ SELECT u.nonexistent FROM users u;
 SELECT version, type, description, script, checksum, applied_by, applied_at, execution_ms;
 SELECT x.id FROM users u;
 SELECT x.id FROM users u JOIN orders o ON u.id = o.user_id;
+--
+-- Nested block comments (#619, upstream siy/java-peglib#45, fixed by %nest in peglib 0.7.3).
+-- Excluded from the corpus while the gap was open. The `;` INSIDE the comment is the point: it must
+-- stay inside it, or the statement splits. The sibling case the issue lists,
+-- `SELECT 1 /* outer ; /* inner ; */ still ; */ ; SELECT 2;`, is deliberately NOT here -- it is two
+-- statements on one line, and this corpus is one statement per line (the count assertion in
+-- CorpusParseTest derives its expectation from that).
+SELECT 1 /* outer /* inner */ still-comment ; */ AS c;

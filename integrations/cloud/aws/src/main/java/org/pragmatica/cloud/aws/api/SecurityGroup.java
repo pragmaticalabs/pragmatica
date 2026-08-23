@@ -59,8 +59,13 @@ public record SecurityGroup(@JacksonXmlProperty(localName = "groupId") String gr
     public record IpRangeSet(@JacksonXmlElementWrapper(useWrapping = false)
                              @JacksonXmlProperty(localName = "item") List<IpRange> items) {}
 
+    /// `description` is bound because a REVOKE has to reproduce the stored rule exactly. EC2 accepted
+    /// the rule with the description `openIngress` attached, and a revoke that omits it fails to match
+    /// — answering `InvalidPermission.NotFound`, which used to be swallowed as success, so the rule
+    /// silently survived. Absent for rules created without one, hence nullable.
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record IpRange(@JacksonXmlProperty(localName = "cidrIp") String cidrIp) {}
+    public record IpRange(@JacksonXmlProperty(localName = "cidrIp") String cidrIp,
+                          @JacksonXmlProperty(localName = "description") String description) {}
 
     /// How many inbound permissions this group carries. Absent/empty deserializes to zero rather than
     /// failing: a group with no rules is an ordinary state — it is exactly what the last revoke leaves

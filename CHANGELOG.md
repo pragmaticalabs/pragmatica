@@ -7,6 +7,56 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [1.0.0-rc3] - Unreleased
 
 ### Fixed
+- **A never-written stream pinned every replica in `SYNCING` forever (#631).** Three gates each exclude the
+  GENESIS case — a stream just created and never written — and together they made it unrecoverable. The owner
+  is legitimately at watermark `-1` and self-promotes; replicas pull from it, receive an EMPTY response, and
+  #445 routes that into the no-source path because an empty owner read is never trustworthy. `waitThenPromote`
+  then suppressed the cold-start promote on the mere EXISTENCE of a committed owner record — always present for
+  a freshly-created stream. Observed in `02y-stream-crash` as all 4 partitions of the suite's OWN fresh
+  blueprint pinned for the entire 240s deploy window, so the livelock IS the deploy timeout; `03-scaling`
+  showed 1436 pins on `entity:orders`. The deferral is now decided on the owner's probed TAIL rather than on
+  its record's existence: owner ahead → defer (the real #445 case), owner unreachable → defer (an unknown tail
+  must not be read as an empty one), owner not ahead → fall through to the probe contest. **No wire-format
+  change** — `CatchupResponse` is tag-pinned at 99 and rolling upgrade is Phase-1 only, so the owner is asked
+  for its tail instead of a record component being added.
+  Two further defects surfaced while pinning it, neither addressed by the tail check alone. **The contest's
+  single-winner ELECTION parked every non-owner**: the owner is a registered replica sitting at the same `-1`
+  and wins the lowest-NodeId tie-break from a code path it never contests, so the designated winner never
+  participates and every other replica stays SYNCING. The election is now dropped when self sits exactly AT the
+  owner's authoritative tail; the contest's SAFETY checks — every peer reachable, none ahead — are untouched
+  and govern identically in both modes. **And the unreachable-owner fallback was attached to the whole promise
+  chain** rather than to the probe's own `Result`, so a deliberate defer and a declined contest were both
+  re-reported as an unreachable owner — a fabricated operator signal on the exact surface a pinned partition is
+  diagnosed from. The issue's filed mechanism (a missing owner-liveness check) and its suggested membership
+  filter are both obsolete: `AetherNode.committedOwnerStillAlive` already filters the committed-owner source,
+  empty-view caveat included.
+  Also removed `backfill_emptyOwner_boundElapsed_committedOwnerPresent_staysSyncing_notColdStartPromoted`,
+  which asserted the exact rule this reverses AND was vacuous — it set the clock past the bound before the
+  first call, but `firstNoSourceMs` is armed lazily on that same call, so `waited == 0` and it returned at the
+  within-bound guard without ever reaching the branch it named. It passed identically before and after the
+  change, in both directions.
+  `[verified: unit + mutation — aether-stream 680/0; 5 new `GenesisEmptyStreamPromotion` cases, each killed by
+  a distinct mutation (election restored, defer-on-equal, `orElse` scope, owner-ahead defer removed,
+  unreachable treated as empty) — 5 mutations, 5 kills, no survivors]`
+  `[verified: aether/tests/integration --env remote, 2026-08-23, 5-node cluster B with failure injection —
+  02y-stream-crash 1p/0f in 94s (was 0p/1f, blueprint never ACTIVE, deploy timing out at 240s); its
+  multi-partition blueprint now deploys in 8s and the suite completes SIGKILL-of-the-owner-under-concurrent-
+  publish, ACKED-event survival and offset contiguity. 03-scaling 3p/0f in 248s — exactly its recorded
+  baseline, against 4204s and a 100.00% error rate on Scale_down_7_-_5_under_load when broken]`
+  Two limits on that evidence, stated rather than glossed. The per-node pin COUNTS (212 on `02y`, 1436 on
+  `03-scaling`) were NOT re-measured: node logs are captured only on suite FAILURE, so a green run produces
+  none — the evidence here is behavioural (the livelock WAS the 240s deploy timeout; a deploy completing in 8s
+  cannot be livelocked), not a direct pin count. And `03-scaling`'s mechanism was never confirmed to be this
+  one — its owner log was lost to an SSH reset — so its recovery is CONSISTENT with this root cause without
+  proving it alone. The election is deliberately KEPT on the failover path: after a real owner eviction the
+  recomputed HRW owner self-promotes on the owner-immediate path and replicas catch up from it, so the contest
+  is a fallback there rather than the mechanism.
+- pg-parser: **nested block comments now parse correctly** (#619, upstream `siy/java-peglib#45`). PostgreSQL nests `/* ... */` per the SQL standard; the grammar now declares `%nest '/*' '*/'`, new in peglib **0.7.3**, which lexes the pair with a depth-counting scanner instead of a DFA path. There was no grammar-only alternative: nested comments are not a regular language so no DFA can match them, and the recursive spelling is refused by peglib's analyzer as `grammar.whitespace-cycle` because `BlockComment` is reachable from `%whitespace`. **The `BlockComment` alternative is removed rather than kept alongside `%nest`** — measured, not assumed: keeping it and dropping it give identical results on a single-level comment, a nested comment, a nested comment whose span contains a statement-splitting `;`, and an unterminated block (byte-identical error text, since an unterminated block falls through to the DFA either way). Two lex paths for one construct could only drift. The corpus statement excluded while the gap was open is restored to `dml-select.sql`, where `CorpusParseTest`'s per-line statement count now pins that a `;` inside a nested comment does not split the statement. `NestedBlockCommentGapTest`, which deliberately asserted the broken behaviour so that closing the gap would turn it red, is replaced by `NestedBlockCommentTest` asserting the correct behaviour — the load-bearing assertion counts select-list items rather than parse success, because the defect's whole danger was that it did not fail
+- Correction to the previous entry describing this gap: `SELECT 1 /* a /* b */ -- */\n , 2 FROM t;` was cited as a second silent-divergence case and is **not** one. That comment is balanced (two opens, two closes), so `, 2` is legitimately outside it and two select-list items is the correct reading — which the old lexer also produced, by a different route. Only `SELECT 1 /* /* */ , 999 -- */\n FROM t;` diverges, because `, 999` sits inside the balanced span (2 items on 0.7.2, 1 on 0.7.3). Count the delimiters before deciding what the right answer is: a balanced nested comment is precisely the case where the buggy and correct lexers agree
+- pg-parser: the nested-block-comment gap (#619) is **not a parse failure** — it can silently accept a different statement, and the docs said otherwise. PostgreSQL nests `/* … */` per the SQL standard; `BlockComment` closes at the first `*/` and the remainder leaks into the statement as live SQL. When that leaked text composes into something valid there is no diagnostic at all: `SELECT 1 /* /* */ , 999 -- */\n FROM t;` parses cleanly as `SELECT 1, 999 FROM t` (two select-list items) where correct nesting means `SELECT 1 FROM t` — note that `, 999` must sit INSIDE the balanced span for this to diverge; a comment that balances before the leaked text (`/* a /* b */ -- */` then `, 2`) reads the same either way — the trailing `-- */` reads as a line comment and swallows the orphaned outer `*/`. Even the loud cases mislead: `SELECT 1 /* outer /* inner */ still a comment */ AS c;` reports `expected end of input at 1:37` because the parser first ACCEPTS the truncated `SELECT 1 still` (implicit column alias) and only then chokes, pointing past the real cause and never mentioning comments. The original ticket's "fails to parse, rare in practice" held only for the inputs it happened to try; rarity is the only thing bounding the blast radius. Spec, feature catalog and the note at the rule in `postgres.peg` corrected. `NestedBlockCommentGapTest` pins the CURRENT wrong behaviour on purpose — a disabled test documents intent but never fires, whereas an assertion on today's behaviour goes red the day peglib closes the gap, which is the signal to re-add the two excluded corpus statements and revert the docs. Root cause is upstream and now tracked as **siy/java-peglib#45**: `%whitespace` alternatives are DFA-absorbed, and the recursive repair is refused by peglib's analyzer as `grammar.whitespace-cycle`, so no grammar-side fix exists. Also corrected a stale `-Pgenerate-parser` instruction (that profile was retired in `03d547e26`) in #619's repro block and in `CorpusParseTest`'s doc comment
+- Examples: `examples/banking` never ran the jbct plugin at all. The root pom defaults `jbct.skip` to `true` (to avoid a reactor cycle) and every other example subtree overrides it to `false`; banking did not, so `CollectSliceDepsMojo.execute()` returned at its first line and `slice-deps.properties` was never written for any of the four modules. `DependencyVersionResolver` then fell back to package-derived coordinates, which is why the generated factory named the account slice `org.pragmatica.aether.example.banking:account` while its manifest called it `banking-account-account-service`. Banking was the only example family in this state, and the only one with slice-to-slice dependencies, so it was the only place the fallback was visible. With the override, `collect-slice-deps` writes the three real coordinates (`banking-account-account-service`, `banking-exchange-exchange-rate-service`, `banking-fraud-fraud-detection-service`, all `:1.0.0-rc3`) and the generated factory, the caller's manifest and the target's `slice.artifactId` all agree. Nothing was wrong with the resolution mechanism — note for future investigations that a build stopping before `package` ALWAYS produces an empty deps file, since `CollectSliceDepsMojo` reads slice manifests out of dependency JARs and skips any artifact whose file is not a `.jar` (a reactor sibling resolves to its `target/classes` directory), and that a manifest's `base.artifact` is the base module GAV, not the routing coordinate
+- Examples: enabling the plugin on banking surfaced one build-breaking lint error that had never been checked — `TransferService.assessRisk` returned `Promise<Void>` and produced it with `Promise.success(null)` (`JBCT-RET-04`). Now `Promise<Unit>` / `Promise.unitPromise()`, which also removes the null. Banking had **zero** format drift despite never having been format-checked. 26 warnings remain (naming, zone-verb, nesting, chain length); they do not gate the build and 11 sit in the file #606 will rewrite
+- Examples: slice-goal wiring made uniform across all 19 slice modules — `install-slices` and `verify-slice` added to `comprehensive-persistence`, `verify-slice` added to `step-composition`, `url-shortener` and `url-shortener-v2`. All four pass `jbct:verify-slice`, as do banking's four slice modules now that the plugin actually runs there. Non-slice `shared` modules are unaffected: they declare no jbct executions, and `verify-slice` is bound only in the slice modules themselves
 - **The entity min-sync barrier counted the owner twice (#345 I3 path).** `minSyncReplicas` COUNTS the
   owner — `DurableEntityConfig.minSyncReplicas()` states it outright: "`2` means the owner plus one peer,
   i.e. `awaitReplication(..., minAcks)` blocks on ONE distinct non-self ack". But `awaitReplication`
@@ -39,6 +89,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   "never evicts on age alone" case still passes. aether-stream 676/0.]`
 
 ### Changed
+- **A durable entity's transition is now a NAMED command, not a lambda (#596 prerequisite, unblocks
+  #351/#353/#354).** `DurableEntity<K, S>` becomes `DurableEntity<K, S, C extends Mutator<S>>`, and both
+  `update` and `scheduleTimer` take `C` instead of `Fn1<S, S>`. The blocker this removes is not stylistic:
+  a lambda has no name, so it can be neither persisted for a durable timer's `onFire` nor forwarded to a
+  partition owner. The slice JAR is already on every node, so the CODE is cluster-wide and only the DATA
+  identifying which transition to run has to travel — and a record has a name where a lambda does not.
+  `Mutator<S>` lives in `resource/api` (the lowest module every consumer sees) and deliberately does NOT
+  extend `Fn1`: `Fn1.then`/`before` return a COMPOSED LAMBDA typed as `Fn1`, which is not a record, gets
+  no generated codec, and carries no tag — inheriting them would let `a.then(b)` typecheck and produce
+  something that looks like a transition and cannot cross a boundary, on exactly the paths this type
+  exists to make safe. Implementors declare a SEALED hierarchy of record variants, which is also what
+  keeps lambdas out: a lambda cannot implement a sealed interface, so an unpersistable transition is
+  unrepresentable rather than merely discouraged.
+  `[verified: durable-entity 130/0; aether/node 874/0 with no tag collision in the full assembly;
+  the blueprint build REJECTED a surviving method reference (`OrderState::expired`) at compile time,
+  so the guarantee is enforced by the type system rather than by review.]`
+- **Slice codec generation now recurses into a sealed root's permitted subclasses.**
+  `FactoryClassGenerator.addResourceTypeArgumentEntry` bailed on anything that was not a RECORD or ENUM,
+  so a sealed command hierarchy landed in `requiredTypes` with NO codec generated for any variant — and
+  the build still succeeded, leaving the failure for the first attempt to put a command on the wire. Each
+  variant is a record and takes the existing path, and since every variant is its own registered codec
+  type, the tag IS the discriminator: no new wire concept, no envelope-version question.
+  `[verified: mutation — removing the recursion drops the blueprint's generated codec references from 8
+  to 1 while the build stays GREEN, which is what makes the omission silent and the fix load-bearing.]`
 - **A sync-quorum test raced the resync timer rather than a too-short sleep.** `RabiaEngineTest$SyncQuorum`
   failed ~80% of the time locally and twice on CI — including on a docs-only commit, which is what proved
   it was never a code regression. The cause was not timing slack: `testConfig()` retries the sync round

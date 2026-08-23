@@ -168,7 +168,7 @@ class DurableEntityFactoryTest {
 
     @SuppressWarnings("unchecked")
     private static void assertWorks(DurableEntity entity) {
-        DurableEntity<String, Integer> typed = entity;
+        DurableEntity<String, Integer, IntOp> typed = entity;
 
         typed.create("k", 1)
              .await(AWAIT)
