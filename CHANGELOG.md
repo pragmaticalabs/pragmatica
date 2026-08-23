@@ -7,6 +7,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [1.0.0-rc3] - Unreleased
 
 ### Fixed
+- **A never-written stream pinned every replica in `SYNCING` forever (#631).** Three gates each exclude the
+  GENESIS case — a stream just created and never written — and together they made it unrecoverable. The owner
+  is legitimately at watermark `-1` and self-promotes; replicas pull from it, receive an EMPTY response, and
+  #445 routes that into the no-source path because an empty owner read is never trustworthy. `waitThenPromote`
+  then suppressed the cold-start promote on the mere EXISTENCE of a committed owner record — always present for
+  a freshly-created stream. Observed in `02y-stream-crash` as all 4 partitions of the suite's OWN fresh
+  blueprint pinned for the entire 240s deploy window, so the livelock IS the deploy timeout; `03-scaling`
+  showed 1436 pins on `entity:orders`. The deferral is now decided on the owner's probed TAIL rather than on
+  its record's existence: owner ahead → defer (the real #445 case), owner unreachable → defer (an unknown tail
+  must not be read as an empty one), owner not ahead → fall through to the probe contest. **No wire-format
+  change** — `CatchupResponse` is tag-pinned at 99 and rolling upgrade is Phase-1 only, so the owner is asked
+  for its tail instead of a record component being added.
+  Two further defects surfaced while pinning it, neither addressed by the tail check alone. **The contest's
+  single-winner ELECTION parked every non-owner**: the owner is a registered replica sitting at the same `-1`
+  and wins the lowest-NodeId tie-break from a code path it never contests, so the designated winner never
+  participates and every other replica stays SYNCING. The election is now dropped when self sits exactly AT the
+  owner's authoritative tail; the contest's SAFETY checks — every peer reachable, none ahead — are untouched
+  and govern identically in both modes. **And the unreachable-owner fallback was attached to the whole promise
+  chain** rather than to the probe's own `Result`, so a deliberate defer and a declined contest were both
+  re-reported as an unreachable owner — a fabricated operator signal on the exact surface a pinned partition is
+  diagnosed from. The issue's filed mechanism (a missing owner-liveness check) and its suggested membership
+  filter are both obsolete: `AetherNode.committedOwnerStillAlive` already filters the committed-owner source,
+  empty-view caveat included.
+  Also removed `backfill_emptyOwner_boundElapsed_committedOwnerPresent_staysSyncing_notColdStartPromoted`,
+  which asserted the exact rule this reverses AND was vacuous — it set the clock past the bound before the
+  first call, but `firstNoSourceMs` is armed lazily on that same call, so `waited == 0` and it returned at the
+  within-bound guard without ever reaching the branch it named. It passed identically before and after the
+  change, in both directions.
+  `[verified: unit + mutation — aether-stream 680/0; 5 new `GenesisEmptyStreamPromotion` cases, each killed by
+  a distinct mutation (election restored, defer-on-equal, `orElse` scope, owner-ahead defer removed,
+  unreachable treated as empty) — 5 mutations, 5 kills, no survivors]`
+  `[design intent — unverified]` that this clears #631 on the live path: no partition has crossed a real
+  network with the fix, and `02y-stream-crash` is the suite that would show it. `03-scaling` is UNPROVEN — its
+  captured owner log was lost to an SSH reset and its shape may be a genuine failover this does not touch. The
+  election is deliberately KEPT on the failover path, so after a real owner eviction only one replica promotes
+  per round.
 - pg-parser: **nested block comments now parse correctly** (#619, upstream `siy/java-peglib#45`). PostgreSQL nests `/* ... */` per the SQL standard; the grammar now declares `%nest '/*' '*/'`, new in peglib **0.7.3**, which lexes the pair with a depth-counting scanner instead of a DFA path. There was no grammar-only alternative: nested comments are not a regular language so no DFA can match them, and the recursive spelling is refused by peglib's analyzer as `grammar.whitespace-cycle` because `BlockComment` is reachable from `%whitespace`. **The `BlockComment` alternative is removed rather than kept alongside `%nest`** — measured, not assumed: keeping it and dropping it give identical results on a single-level comment, a nested comment, a nested comment whose span contains a statement-splitting `;`, and an unterminated block (byte-identical error text, since an unterminated block falls through to the DFA either way). Two lex paths for one construct could only drift. The corpus statement excluded while the gap was open is restored to `dml-select.sql`, where `CorpusParseTest`'s per-line statement count now pins that a `;` inside a nested comment does not split the statement. `NestedBlockCommentGapTest`, which deliberately asserted the broken behaviour so that closing the gap would turn it red, is replaced by `NestedBlockCommentTest` asserting the correct behaviour — the load-bearing assertion counts select-list items rather than parse success, because the defect's whole danger was that it did not fail
 - Correction to the previous entry describing this gap: `SELECT 1 /* a /* b */ -- */\n , 2 FROM t;` was cited as a second silent-divergence case and is **not** one. That comment is balanced (two opens, two closes), so `, 2` is legitimately outside it and two select-list items is the correct reading — which the old lexer also produced, by a different route. Only `SELECT 1 /* /* */ , 999 -- */\n FROM t;` diverges, because `, 999` sits inside the balanced span (2 items on 0.7.2, 1 on 0.7.3). Count the delimiters before deciding what the right answer is: a balanced nested comment is precisely the case where the buggy and correct lexers agree
 - pg-parser: the nested-block-comment gap (#619) is **not a parse failure** — it can silently accept a different statement, and the docs said otherwise. PostgreSQL nests `/* … */` per the SQL standard; `BlockComment` closes at the first `*/` and the remainder leaks into the statement as live SQL. When that leaked text composes into something valid there is no diagnostic at all: `SELECT 1 /* /* */ , 999 -- */\n FROM t;` parses cleanly as `SELECT 1, 999 FROM t` (two select-list items) where correct nesting means `SELECT 1 FROM t` — note that `, 999` must sit INSIDE the balanced span for this to diverge; a comment that balances before the leaked text (`/* a /* b */ -- */` then `, 2`) reads the same either way — the trailing `-- */` reads as a line comment and swallows the orphaned outer `*/`. Even the loud cases mislead: `SELECT 1 /* outer /* inner */ still a comment */ AS c;` reports `expected end of input at 1:37` because the parser first ACCEPTS the truncated `SELECT 1 still` (implicit column alias) and only then chokes, pointing past the real cause and never mentioning comments. The original ticket's "fails to parse, rare in practice" held only for the inputs it happened to try; rarity is the only thing bounding the blast radius. Spec, feature catalog and the note at the rule in `postgres.peg` corrected. `NestedBlockCommentGapTest` pins the CURRENT wrong behaviour on purpose — a disabled test documents intent but never fires, whereas an assertion on today's behaviour goes red the day peglib closes the gap, which is the signal to re-add the two excluded corpus statements and revert the docs. Root cause is upstream and now tracked as **siy/java-peglib#45**: `%whitespace` alternatives are DFA-absorbed, and the recursive repair is refused by peglib's analyzer as `grammar.whitespace-cycle`, so no grammar-side fix exists. Also corrected a stale `-Pgenerate-parser` instruction (that profile was retired in `03d547e26`) in #619's repro block and in `CorpusParseTest`'s doc comment
