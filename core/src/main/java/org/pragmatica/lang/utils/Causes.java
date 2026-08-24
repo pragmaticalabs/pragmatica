@@ -61,6 +61,20 @@ public sealed interface Causes {
         return cause(message, none());
     }
 
+    /// A cause marked TERMINAL: retry facilities stop on it immediately (see [Cause#isTerminal]).
+    /// Use for conditions a retry cannot change; prefer it over spelling "(terminal)" into message text
+    /// that no policy reads.
+    static Cause terminal(String message) {
+        record terminalCause(String message) implements SimpleCause {
+            @Override
+            public boolean isTerminal() {
+                return true;
+            }
+        }
+
+        return new terminalCause(message);
+    }
+
     static Cause cause(String message, Option<Cause> source) {
         record simpleCause(String message, Option<Cause> source) implements SimpleCause {
             @Override

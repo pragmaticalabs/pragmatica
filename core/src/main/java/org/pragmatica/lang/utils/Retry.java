@@ -69,6 +69,13 @@ public interface Retry {
                                           Result<T> result) {
                 return switch (result) {
                     case Result.Success<T> success -> output.succeed(success.value());
+                    case Result.Failure<T> failure when failure.cause().isTerminal() -> {
+                        log.warn("Operation failed with a TERMINAL cause (attempt {}/{}), not retrying: {}",
+                                 attempt,
+                                 maxAttempts,
+                                 failure.cause().message());
+                        yield output.fail(failure.cause());
+                    }
                     case Result.Failure<T> failure when(attempt >= maxAttempts) -> output.fail(failure.cause());
                     case Result.Failure<T> failure -> {
                         var delay = backoffStrategy.nextTimeout(attempt);

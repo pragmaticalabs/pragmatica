@@ -27,6 +27,17 @@ public interface Cause {
     String message();
 
     /// **[Pure Transform]**
+    /// True when no retry of the failed operation can change the outcome — the condition this cause
+    /// reports is settled (a peer terminally removed, a resource that cannot exist, an argument that
+    /// cannot parse). Retry facilities consult this and stop immediately rather than re-driving a
+    /// verdict: the alternative was measured at 4,160 scheduled retries of a cause whose own message
+    /// said "terminal". `false` by default — absence of classification means "unknown", and unknown
+    /// stays retryable-with-bounds, so an unclassified cause behaves exactly as before.
+    default boolean isTerminal() {
+        return false;
+    }
+
+    /// **[Pure Transform]**
     /// The original cause (if any) of the error.
     default Option<Cause> source() {
         return Option.empty();

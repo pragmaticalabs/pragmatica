@@ -1944,7 +1944,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
                                                 NodeId peerId,
                                                 StreamType streamType) {
         if (isPeerRemoved(peerId)) {
-            return Causes.cause(streamType + " stream dropped: peer " + peerId + " is REMOVED (terminal)").promise();
+            // Causes.terminal, not text: "(terminal)" spelled into a message no policy reads was measured
+            // at 4,160 scheduled retries of this exact cause. The classification must live where Retry
+            // looks — Cause.isTerminal() — so the enclosing Retry stops on the FIRST removed-peer verdict,
+            // including a peer that transitions to REMOVED mid-retry.
+            return Causes.terminal(streamType + " stream dropped: peer " + peerId + " is REMOVED (terminal)").promise();
         }
 
         if (ch.isActive() && ch.isWritable()) {

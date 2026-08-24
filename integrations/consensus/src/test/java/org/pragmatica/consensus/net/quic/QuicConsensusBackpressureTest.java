@@ -315,7 +315,11 @@ class QuicConsensusBackpressureTest {
 
             network.rawConsensusWriteForTest(ch, payload(), DEAD)
                    .await(TimeSpan.timeSpan(5).seconds())
-                   .onSuccess(_ -> fail("REMOVED peer must drop, not deliver"));
+                   .onSuccess(_ -> fail("REMOVED peer must drop, not deliver"))
+                   .onFailure(cause -> org.junit.jupiter.api.Assertions.assertTrue(cause.isTerminal(),
+                       "the removed-peer cause must be TERMINAL so the enclosing Retry stops on the first"
+                       + " verdict — '(terminal)' in message text alone was measured at 4,160 scheduled"
+                       + " retries of this exact cause"));
             verify(ch, never()).writeAndFlush(any());
         }
 

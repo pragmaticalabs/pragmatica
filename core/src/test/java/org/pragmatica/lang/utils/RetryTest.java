@@ -14,6 +14,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.pragmatica.lang.Promise.success;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.lang.utils.Causes.cause;
+import org.pragmatica.lang.utils.Retry.BackoffStrategy;
 import static org.pragmatica.lang.utils.Retry.BackoffStrategy.*;
 import static org.pragmatica.lang.utils.Retry.create;
 
@@ -44,6 +45,46 @@ class RetryTest {
              .onSuccess(value -> assertEquals("Success on attempt 3", value));
 
         assertEquals(3, attempts.get());
+    }
+
+    @Test
+    void shouldStopImmediatelyOnTerminalCause() {
+        var attempts = new AtomicInteger(0);
+        var terminal = Causes.terminal("peer removed - retrying cannot change this");
+
+        var result = Retry.retry()
+                          .attempts(10)
+                          .strategy(BackoffStrategy.fixed()
+                                                   .interval(timeSpan(10).millis()))
+                          .execute(() -> {
+                              attempts.incrementAndGet();
+
+                              return terminal.promise();
+                          })
+                          .await();
+
+        assertTrue(result.isFailure());
+        assertEquals(1, attempts.get(), "a terminal cause must stop retrying after the FIRST attempt");
+        result.onFailure(cause -> assertTrue(cause.isTerminal()));
+    }
+
+    @Test
+    void shouldKeepRetryingOnUnclassifiedCause() {
+        var attempts = new AtomicInteger(0);
+
+        var result = Retry.retry()
+                          .attempts(3)
+                          .strategy(BackoffStrategy.fixed()
+                                                   .interval(timeSpan(10).millis()))
+                          .execute(() -> {
+                              attempts.incrementAndGet();
+
+                              return Causes.cause("transient-looking").promise();
+                          })
+                          .await();
+
+        assertTrue(result.isFailure());
+        assertEquals(3, attempts.get(), "an unclassified cause keeps the bounded-retry behaviour");
     }
 
     @Test
