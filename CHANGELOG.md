@@ -7,6 +7,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [1.0.0-rc3] - Unreleased
 
 ### Fixed
+- **`Retry` now stops on a terminal-classified `Cause` (core), and the QUIC removed-peer verdict is one.**
+  Measured on 02w (2026-08-23): 4,160 scheduled retries of `stream dropped: peer is REMOVED (terminal)` —
+  the classification lived in message text no policy reads. `Cause.isTerminal()` (default false, so every
+  unclassified cause keeps bounded-retry behaviour), `Causes.terminal(...)`, and `Retry` fails immediately
+  on a terminal cause with a distinct log line. The prior fix had made the removed-peer failure FAST; this
+  makes it FINAL. `[verified: core RetryTest 13/0 incl. 2 new pins, mutation (guard removed) killed;
+  consensus 15/0 with the seam pinned — the removed-peer cause asserts isTerminal]`
+- **#634 item 1 — replicated stream records are fsynced BEFORE the replica acks.** `appendRecovered` never
+  called `durablyLog` (one call site: the owner's publish path), so the "replicated" half of
+  `minSyncReplicas` was RAM-until-seal: correlated power loss inside the unsealed window lost acked entity
+  writes at ANY replication factor. Replicated/backfilled records now enter the same per-partition WAL the
+  owner uses, CHAINED per partition (PartitionWal runs each append on a per-call async supplier, so
+  unchained calls race FILE order — and file order is load-bearing: recovery derives `lastOffset` from the
+  last record, truncation assumes monotonic offsets; the chain costs what the owner's own `durablyLog`
+  already pays per record). `ReplicationReceiveHandler` awaits the new `syncReplicated` barrier before
+  acking; a failed fsync WITHHOLDS the ack, so the owner's barrier degrades honestly instead of counting a
+  copy that does not exist. A mid-chain failure deliberately poisons the chain — a later success would
+  leave a WAL hole the ring does not have. Wall-less deployments resolve the barrier immediately: their ack
+  means exactly what it meant before. `[verified: StreamPartitionManagerWalTest — independent-reader fsync
+  proof for appendRecovered+syncReplicated, wall-less immediate resolve; ReplicationReceiveHandlerTest —
+  ack held until the barrier resolves, ack withheld on sync failure; aether-stream 15/0 in the touched
+  suites]`
+- **#634 item 2 — an unwritable WAL dir now REFUSES BOOT instead of one WARN and fsync-free acks.** The
+  degrade silently converted "durable entity" into "in-memory entity". Opt-in for explicitly best-effort
+  deployments: `-Daether.allowNonDurableStreams=true` / `AETHER_ALLOW_NON_DURABLE_STREAMS=true` keeps the
+  previous WARN-degrade byte-identical. The decision is an extracted, tested seam
+  (`AetherNode.decideWalAvailability`) — the boot guard is the part most likely to be "simplified" into a
+  silent-degrade regression. `[verified: WalAvailabilityGateTest 3/0 — refusal names the escape hatch]`
+- **#634 item 6 — three documentation overclaims corrected:** AHSE feature-catalog row 207 Complete →
+  Partial (noOp demotion/GC, unreachable RemoteTier, no compression/encryption on the engine write path,
+  absent §10 metrics, ack-at-last-tier until #349 DD-8-1); the CHANGELOG's "KV-Store backed MetadataStore"
+  claim (never built — `InMemoryMetadataStore` is the only implementation); two stale
+  `EvictionListener.NOOP` gap notes (the segment sink IS wired via `StorageSegmentSink`).
 - **Durable-entity structural review (#596 follow-up): four fixes from one read of spec vs implementation
   against live evidence.**
   **S1 — a fold was rebuilt once and then FROZEN.** `EntityFold.ready()` memoizes a successful rebuild
@@ -1581,7 +1614,7 @@ preemption makes the guarantee *achievable* (the replica can now reach in-sync i
 ## [0.25.0] - 2026-04-01
 
 ### Added
-- **Hierarchical Storage Engine (AHSE)** — Content-addressed block storage with tiered Memory + Disk hierarchy. Core library at `integrations/storage` (zero Aether deps), Aether adapter at `aether/aether-storage`. BlockId (SHA-256), MemoryTier (CAS-bounded), LocalDiskTier (sharded filesystem), StorageInstance (write-through + tier-waterfall reads), SingleFlightCache (read dedup), MetadataStore (in-memory + KV-Store backed), SnapshotManager (dual-trigger: mutation count + time interval, rolling pruning), StorageReadinessGate (startup sequencing with read/write barriers), per-instance TOML config (`[storage.*]` sections), ArtifactStore migration (chunks via StorageInstance), config-driven StorageFactory with node wiring, per-node REST API (`/api/storage`, `/api/storage/{name}`, `/api/storage/{name}/snapshot`), per-cluster REST API (`/api/cluster/storage`, `/api/cluster/storage/{name}`) with KV-Store status publishing, CLI commands (`aether storage list/status/snapshot`), 107 unit + integration tests
+- **Hierarchical Storage Engine (AHSE)** — Content-addressed block storage with tiered Memory + Disk hierarchy. Core library at `integrations/storage` (zero Aether deps), Aether adapter at `aether/aether-storage`. BlockId (SHA-256), MemoryTier (CAS-bounded), LocalDiskTier (sharded filesystem), StorageInstance (write-through + tier-waterfall reads), SingleFlightCache (read dedup), MetadataStore (in-memory; the KV-Store-backed variant was never built — `InMemoryMetadataStore` is the only implementation and `StorageBlockKey`/`StorageRefKey` have zero production readers; corrected 2026-08-24, #634 item 6), SnapshotManager (dual-trigger: mutation count + time interval, rolling pruning), StorageReadinessGate (startup sequencing with read/write barriers), per-instance TOML config (`[storage.*]` sections), ArtifactStore migration (chunks via StorageInstance), config-driven StorageFactory with node wiring, per-node REST API (`/api/storage`, `/api/storage/{name}`, `/api/storage/{name}/snapshot`), per-cluster REST API (`/api/cluster/storage`, `/api/cluster/storage/{name}`) with KV-Store status publishing, CLI commands (`aether storage list/status/snapshot`), 107 unit + integration tests
 - **Streaming Phase 1 runtime** — `StreamPublisherFactory` and `StreamAccessFactory` (ResourceFactory SPI), `StreamPublisherImpl` with partition-key routing or round-robin, `PartitionedStreamAccess` with cross-partition fetch and consensus cursor checkpointing, `StreamConsumerAdapter` for single-event and batch handlers, `StreamConfigParser` for blueprint `[streams.xxx]` TOML sections
 - **CDM stream integration** — stream creation from blueprint config during deployment, consumer subscription registration at slice activation via KV-Store, unsubscription on deactivation
 - **QUIC certificate rotation** — `CertificateRenewalScheduler` wired to node startup, triggers at 60% remaining validity, exponential retry backoff (5min→4h cap), server restart on same port with atomic SSL context swap
