@@ -810,18 +810,56 @@ public interface AetherNode extends ManageableNode {
                    .resolve(config.self().id());
     }
 
-    /// The per-node stream WAL directory (`<streamDataDir>/wal`) when it is writable, else `none()`.
-    /// Probing with a create mirrors the disk-tier degradation: on a read-only mount (e.g. Forge's
-    /// `/data`) the WAL is disabled and streaming runs non-crash-durable (in-memory tail only), so the
-    /// optional-WAL path leaves existing in-memory deployments and tests unchanged.
+    /// The per-node stream WAL directory (`<streamDataDir>/wal`) when it is writable.
+    ///
+    /// An UNWRITABLE dir is a BOOT ERROR by default (#634 item 2). The old behaviour — one startup WARN,
+    /// then every publish acks with no fsync — silently converted "durable entity" into "in-memory
+    /// entity": the ack path (`durablyLog`) degrades to `success(offset)` when the WAL is absent, and
+    /// nothing downstream can tell. A node that cannot honour the durability its streams declare must
+    /// say so at the moment an operator is looking at it, not in a log line nobody reads back.
+    ///
+    /// Explicitly best-effort deployments (Forge on a read-only mount, dev profiles) opt in with the
+    /// `aether.allowNonDurableStreams=true` system property or `AETHER_ALLOW_NON_DURABLE_STREAMS=true`
+    /// env — and keep exactly the previous degrade-with-WARN.
     private static Option<Path> resolveStreamWalDir(AetherNodeConfig config) {
         var walDir = streamDataDir(config).resolve("wal");
 
-        return FileOps.createDirectories(walDir).fold(cause -> walDisabled(walDir, cause), _ -> Option.some(walDir));
+        return decideWalAvailability(walDir,
+                                     FileOps.createDirectories(walDir).mapToUnit(),
+                                     nonDurableStreamsAllowed())
+                .fold(cause -> {
+                          LOG.error("FATAL: {}", cause.message());
+                          throw new IllegalStateException(cause.message());
+                      },
+                      dir -> dir);
+    }
+
+    /// The decision, separated from the probe and the abort so the gate is directly testable: the boot
+    /// guard is the part most likely to be "simplified" into a silent-degrade regression.
+    static Result<Option<Path>> decideWalAvailability(Path walDir, Result<Unit> probe, boolean allowNonDurable) {
+        return probe.fold(cause -> allowNonDurable
+                                   ? Result.success(walDisabled(walDir, cause))
+                                   : walUnavailable(walDir, cause),
+                          _ -> Result.success(Option.some(walDir)));
+    }
+
+    private static Result<Option<Path>> walUnavailable(Path walDir, Cause cause) {
+        return Causes.cause("stream WAL directory " + walDir + " is not writable (" + cause.message()
+                           + ") — refusing to boot: streams on this node would ack writes with NO fsync,"
+                           + " silently converting durable entities into in-memory ones. Fix the mount, or"
+                           + " opt in to non-durable streams explicitly with -Daether.allowNonDurableStreams=true"
+                           + " (env AETHER_ALLOW_NON_DURABLE_STREAMS=true) for best-effort dev/Forge profiles")
+                     .result();
+    }
+
+    private static boolean nonDurableStreamsAllowed() {
+        return Boolean.getBoolean("aether.allowNonDurableStreams")
+               || "true".equalsIgnoreCase(System.getenv("AETHER_ALLOW_NON_DURABLE_STREAMS"));
     }
 
     private static Option<Path> walDisabled(Path walDir, Cause cause) {
-        LOG.warn("Stream WAL disabled ({} not writable): {} — streaming runs non-crash-durable (in-memory tail)",
+        LOG.warn("Stream WAL disabled ({} not writable): {} — streaming runs non-crash-durable (in-memory tail)"
+                + " [explicitly allowed by aether.allowNonDurableStreams]",
                  walDir,
                  cause.message());
 
@@ -3640,7 +3678,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                   streamPartitionManager::nextExpectedOffset,
                                                                                                   streamReplicationTransport,
                                                                                                   (streamName, partition) -> streamBackfillExecutor.execute(() -> streamPartitionBackfill.backfill(streamName,
-                                                                                                                                                                                                   partition)));
+                                                                                                                                                                                                   partition)),
+                                                                                                  streamPartitionManager::syncReplicated);
 
         allEntries.add(MessageRouter.Entry.route(ReplicationMessage.ReplicateEvents.class,
                                                  streamReplicationReceiveHandler::onReplicateEvents));

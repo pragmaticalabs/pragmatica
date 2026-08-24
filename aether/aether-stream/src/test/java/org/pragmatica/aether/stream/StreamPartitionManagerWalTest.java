@@ -55,6 +55,48 @@ class StreamPartitionManagerWalTest {
         manager.close();
     }
 
+    /// #634 item 1: REPLICATED records are crash-durable too, not RAM-until-seal. `appendRecovered`
+    /// enters the same WAL the owner's publish uses, and [StreamPartitionManager#syncReplicated] is the
+    /// fsync barrier an acking replica awaits. Verified the same way W3 is: an independent reader on the
+    /// same file sees the records only if they were fsynced.
+    @Test
+    void appendRecovered_afterSyncReplicated_isFsyncDurable_inTheSameWal() {
+        var manager = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
+        createStream(manager);
+
+        IntStream.range(0, EVENTS)
+                 .forEach(i -> manager.appendRecovered(STREAM, PARTITION, payload(i), 1000L + i)
+                                      .onFailure(cause -> fail(cause.message())));
+        manager.syncReplicated(STREAM, PARTITION)
+               .await()
+               .onFailure(cause -> fail(cause.message()));
+
+        var verifier = PartitionWal.open(walFile()).unwrap();
+        var records = replayAll(verifier);
+
+        assertThat(records).as("replica-side records must reach the WAL — RAM-until-seal loses acked"
+                              + " entity writes to correlated power loss at ANY replication factor")
+                           .hasSize(EVENTS);
+        IntStream.range(0, EVENTS).forEach(i -> assertRecord(records.get(i), i));
+
+        verifier.close();
+        manager.close();
+    }
+
+    @Test
+    void syncReplicated_withoutWal_resolvesImmediately_preservingWallessSemantics() {
+        var manager = streamPartitionManager(Long.MAX_VALUE, Option.none());
+        createStream(manager);
+
+        manager.appendRecovered(STREAM, PARTITION, payload(0), 1000L).onFailure(cause -> fail(cause.message()));
+
+        assertThat(manager.syncReplicated(STREAM, PARTITION).await().isSuccess())
+            .as("wall-less deployments keep their exact pre-barrier ack semantics")
+            .isTrue();
+
+        manager.close();
+    }
+
     @Test
     void publishLocal_writesNoWalFiles_whenNoWalBaseDir() {
         var manager = streamPartitionManager(Long.MAX_VALUE, Option.none());

@@ -10,6 +10,8 @@ import java.util.function.BiConsumer;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Result;
 import org.pragmatica.messaging.MessageReceiver;
 
@@ -87,22 +89,36 @@ public final class ReplicationReceiveHandler {
         long nextExpectedOffset(String streamName, int partition);
     }
 
+    /// #634 item 1: the durability barrier awaited BETWEEN applying a batch and acking it, so an ack
+    /// means "fsynced here", not "in my RAM". Production wires `StreamPartitionManager::syncReplicated`;
+    /// the default resolves immediately, which is byte-identical to the pre-barrier behaviour — unwired
+    /// deployments (Forge, legacy tests, the explicit non-durable opt-in) keep their exact semantics.
+    @FunctionalInterface
+    public interface ReplicaDurability {
+        Promise<Unit> sync(String streamName, int partition);
+    }
+
+    public static final ReplicaDurability NO_DURABILITY_BARRIER = (_, _) -> Promise.unitPromise();
+
     private final NodeId self;
     private final RecoveredAppender appender;
     private final LocalHead localHead;
     private final ReplicationTransport transport;
     private final BiConsumer<String, Integer> onGap;
+    private final ReplicaDurability durability;
 
     private ReplicationReceiveHandler(NodeId self,
                                       RecoveredAppender appender,
                                       LocalHead localHead,
                                       ReplicationTransport transport,
-                                      BiConsumer<String, Integer> onGap) {
+                                      BiConsumer<String, Integer> onGap,
+                                      ReplicaDurability durability) {
         this.self = self;
         this.appender = appender;
         this.localHead = localHead;
         this.transport = transport;
         this.onGap = onGap;
+        this.durability = durability;
     }
 
     /// Backward-compatible factory with no local-head verification: the incoming `fromOffset` is
@@ -115,7 +131,8 @@ public final class ReplicationReceiveHandler {
                                              appender,
                                              NO_LOCAL_HEAD,
                                              transport,
-                                             (_, _) -> {});
+                                             (_, _) -> {},
+                                             NO_DURABILITY_BARRIER);
     }
 
     /// Factory with an explicit `onGap` repair seam, fired `(streamName, partition)` whenever a batch
@@ -124,7 +141,7 @@ public final class ReplicationReceiveHandler {
                                                                       RecoveredAppender appender,
                                                                       ReplicationTransport transport,
                                                                       BiConsumer<String, Integer> onGap) {
-        return new ReplicationReceiveHandler(self, appender, NO_LOCAL_HEAD, transport, onGap);
+        return new ReplicationReceiveHandler(self, appender, NO_LOCAL_HEAD, transport, onGap, NO_DURABILITY_BARRIER);
     }
 
     /// Verifying factory (S1 / #260): `localHead` reports the replica's next-expected offset so an
@@ -134,7 +151,17 @@ public final class ReplicationReceiveHandler {
                                                                       LocalHead localHead,
                                                                       ReplicationTransport transport,
                                                                       BiConsumer<String, Integer> onGap) {
-        return new ReplicationReceiveHandler(self, appender, localHead, transport, onGap);
+        return new ReplicationReceiveHandler(self, appender, localHead, transport, onGap, NO_DURABILITY_BARRIER);
+    }
+
+    /// Verifying factory WITH the replica durability barrier (#634 item 1) — the production wiring.
+    public static ReplicationReceiveHandler replicationReceiveHandler(NodeId self,
+                                                                      RecoveredAppender appender,
+                                                                      LocalHead localHead,
+                                                                      ReplicationTransport transport,
+                                                                      BiConsumer<String, Integer> onGap,
+                                                                      ReplicaDurability durability) {
+        return new ReplicationReceiveHandler(self, appender, localHead, transport, onGap, durability);
     }
 
     @Contract
@@ -226,7 +253,20 @@ public final class ReplicationReceiveHandler {
 
         var highestApplied = localNext + applied - 1;
 
-        transport.send(message.governorId(), replicateAck(self, streamName, partition, highestApplied));
+        // Ack ONLY after the batch is fsynced here (#634 item 1): the owner's min-sync barrier counts
+        // this ack as a durable copy, so acking from RAM would let correlated power loss inside the
+        // unsealed window erase writes the caller was told reached RF. A failed sync WITHHOLDS the ack —
+        // the record is applied and serveable, but this replica must not be counted toward durability;
+        // the owner's barrier degrades honestly instead of over-counting.
+        durability.sync(streamName, partition)
+                  .onSuccess(_ -> transport.send(message.governorId(),
+                                                 replicateAck(self, streamName, partition, highestApplied)))
+                  .onFailure(cause -> log.warn("ReplicationReceiveHandler: durability sync failed for {}[{}] "
+                                              + "up to {} — WITHHOLDING ack (applied but not fsynced): {}",
+                                               streamName,
+                                               partition,
+                                               highestApplied,
+                                               cause.message()));
     }
 
     private int applyBatch(String streamName,

@@ -151,6 +151,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// ring-create time, and an OWNER publish (`publishLocal`) does not ack until the event is
     /// fsync-durable in that WAL. The replica-receive path (`appendRecovered`) never writes the WAL.
     private final Option<Path> walBaseDir;
+    private final ConcurrentHashMap<String, Promise<Unit>> lastReplicatedWalWrite = new ConcurrentHashMap<>();
     /// Source of the durable last-sealed offset per `(stream, partition)` (streaming-persistence W4).
     /// Bounds WAL replay when a partition ring is (re)built: sealed segments already serve
     /// `[0, lastSealedOffset]`, so a recovered ring is seeded above that bound and replays only the
@@ -1234,7 +1235,53 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                  partition,
                                                                                  payload,
                                                                                  timestamp,
-                                                                                 ownerEpoch));
+                                                                                 ownerEpoch))
+                                             .onSuccess(offset -> walReplicated(streamName,
+                                                                                partition,
+                                                                                offset,
+                                                                                payload,
+                                                                                timestamp));
+    }
+
+    /// #634 item 1: a replicated/backfilled record enters the SAME per-partition WAL the owner's publish
+    /// path uses, so the "replicated" half of `minSyncReplicas` is crash-durable rather than RAM-until-seal
+    /// — before this, correlated power loss inside the unsealed window lost acked entity writes at ANY RF.
+    ///
+    /// The append is NOT awaited here: backfill replays thousands of records sequentially, and awaiting
+    /// each would serialize the pull on the group-commit cadence. Durability is claimed at the ACK, not
+    /// the append — [#syncReplicated] is the barrier, and the replication receive handler awaits it
+    /// before acking, so the owner's barrier counts only fsynced replicas. Group commit resolves appends
+    /// in offset order, so awaiting the LAST append's promise covers the whole prefix.
+    private void walReplicated(String streamName, int partition, long offset, byte[] payload, long timestamp) {
+        walFor(streamName, partition).onPresent(wal -> chainWalWrite(streamName, partition, wal, offset, payload, timestamp));
+    }
+
+    /// Appends are CHAINED per partition — each starts only after its predecessor is durable — because
+    /// [PartitionWal#append] runs its file write on a per-call async supplier: unchained concurrent calls
+    /// race the FILE order, and file order is load-bearing (recovery derives `lastOffset` from the last
+    /// record; truncation assumes monotonic offsets). The cost per record equals what the owner's own
+    /// publish path already pays in `durablyLog`. A failed append deliberately POISONS the chain: a later
+    /// success after a mid-chain failure would leave a hole the ring does not have, so `localLogComplete`
+    /// would lie — instead every later [#syncReplicated] fails, acks stop, and the owner's barrier
+    /// degrades honestly until the replica is repaired or restarted.
+    private void chainWalWrite(String streamName, int partition, PartitionWal wal, long offset, byte[] payload, long timestamp) {
+        lastReplicatedWalWrite.compute(partitionKeyOf(streamName, partition),
+                                       (_, previous) -> previous == null
+                                                        ? wal.append(offset, payload, timestamp)
+                                                        : previous.flatMap(_ -> wal.append(offset, payload, timestamp)));
+    }
+
+    /// The durability barrier for replicated records: resolves once every WAL append issued by
+    /// [#appendRecovered] for `(streamName, partition)` so far is fsynced. Wall-less deployments (legacy,
+    /// Forge, the explicit non-durable opt-in) resolve immediately — the ack then means exactly what it
+    /// meant before this change.
+    public Promise<Unit> syncReplicated(String streamName, int partition) {
+        return option(lastReplicatedWalWrite.get(partitionKeyOf(streamName, partition)))
+                .or(Promise::unitPromise);
+    }
+
+    private static String partitionKeyOf(String streamName, int partition) {
+        return streamName + "#" + partition;
     }
 
     /// The offset the NEXT contiguous append would be assigned for `(streamName, partition)` — the
