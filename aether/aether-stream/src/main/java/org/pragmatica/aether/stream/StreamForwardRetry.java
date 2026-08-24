@@ -46,21 +46,18 @@ sealed interface StreamForwardRetry {
     }
 
     private static Promise<Long> attempt(Fn0<Promise<Long>> sendAttempt, int attemptNo, Deadline deadline) {
-        return Deadline.runWith(deadline, sendAttempt::apply)
-                       .fold(result -> result.fold(cause -> retryOrPropagate(sendAttempt,
-                                                                             attemptNo,
-                                                                             cause,
-                                                                             deadline),
-                                                   Promise::success));
+        return Deadline.runWith(deadline, sendAttempt::apply).fold(result -> result.fold(cause -> retryOrPropagate(sendAttempt,
+                                                                                                                   attemptNo,
+                                                                                                                   cause,
+                                                                                                                   deadline),
+                                                                                         Promise::success));
     }
 
     private static Promise<Long> retryOrPropagate(Fn0<Promise<Long>> sendAttempt,
                                                   int attemptNo,
                                                   Cause cause,
                                                   Deadline deadline) {
-        return StreamForwardError.isRetryablePublish(cause)
-               && attemptNo < MAX_FORWARD_ATTEMPTS
-               && !deadline.expired(FORWARD_RETRY_BACKOFF)
+        return StreamForwardError.isRetryablePublish(cause) && attemptNo < MAX_FORWARD_ATTEMPTS && !deadline.expired(FORWARD_RETRY_BACKOFF)
                ? scheduleRetry(sendAttempt, attemptNo + 1, deadline)
                : cause.promise();
     }
@@ -70,8 +67,7 @@ sealed interface StreamForwardRetry {
     private static Promise<Long> scheduleRetry(Fn0<Promise<Long>> sendAttempt, int nextAttempt, Deadline deadline) {
         var pending = Promise.<Long> promise();
 
-        SharedScheduler.schedule(() -> sendScheduled(pending, sendAttempt, nextAttempt, deadline),
-                                 FORWARD_RETRY_BACKOFF);
+        SharedScheduler.schedule(() -> sendScheduled(pending, sendAttempt, nextAttempt, deadline), FORWARD_RETRY_BACKOFF);
 
         return pending;
     }

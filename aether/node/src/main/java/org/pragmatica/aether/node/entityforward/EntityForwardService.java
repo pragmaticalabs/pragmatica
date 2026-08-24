@@ -128,7 +128,9 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
         var deadline = Deadline.current();
 
         if (deadline.expired(BUDGET_FLOOR)) {
-            return FORWARD_BUDGET_EXHAUSTED.apply(owner.id(), keyspace).promise();
+            return FORWARD_BUDGET_EXHAUSTED.apply(owner.id(),
+                                                  keyspace)
+                                           .promise();
         }
 
         var correlationId = UUID.randomUUID().toString();

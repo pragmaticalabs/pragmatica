@@ -400,7 +400,7 @@ public interface HttpForwarder {
                 // not the leader that produced it (the "hall of mirrors" that nearly defeated
                 // tonight's zero-leader diagnosis).
                 return forwardToSpecificNode(requestContext, leader, requestId, deadline, 1).map(response -> withServedBy(response,
-                                                                                                                         leader));
+                                                                                                                          leader));
             }
 
             /// Returns a copy of `response` with the `X-Aether-Served-By` header set to the node
@@ -506,11 +506,7 @@ public interface HttpForwarder {
                     return;
                 }
 
-                forwardToSpecificNode(requestContext,
-                                      owner,
-                                      requestId,
-                                      deadline,
-                                      retriesRemaining + 1).onSuccess(resultPromise::succeed)
+                forwardToSpecificNode(requestContext, owner, requestId, deadline, retriesRemaining + 1).onSuccess(resultPromise::succeed)
                                      .onFailure(cause -> {
                                                     log.debug("Forward to owner {} failed: {} (retries={}) [{}]",
                                                               owner,
