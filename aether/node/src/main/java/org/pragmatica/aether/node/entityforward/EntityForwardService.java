@@ -135,7 +135,6 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
         var correlationId = UUID.randomUUID().toString();
         Promise<byte[]> promise = Promise.promise();
         var effectiveTimeout = deadline.bounded(timeout);
-
         // Debug, not trace: run5 burned 48 minutes on forwards whose waits left NO log line at all,
         // making "bounded to the client budget" and "unbounded 30s constant" indistinguishable
         // post-hoc. One line per forward names which one this is.
@@ -287,8 +286,7 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
 
         promise.resolve(response.success()
                         ? Result.success(response.state())
-                        : new EntityOwnerForward.ForwardRefused(response.failureType(),
-                                                                response.errorMessage()).result());
+                        : new EntityOwnerForward.ForwardRefused(response.failureType(), response.errorMessage()).result());
     }
 
     /// Below this much remaining budget a forward is refused instead of sent: the owner round trip

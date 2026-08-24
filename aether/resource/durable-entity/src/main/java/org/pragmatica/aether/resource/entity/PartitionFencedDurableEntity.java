@@ -321,10 +321,10 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
     private Cause retypeForwarded(Cause cause, K key) {
         return cause instanceof EntityOwnerForward.ForwardRefused(var failureType, var ignored)
                ? switch (failureType) {
-                   case "EntityAlreadyExists" -> new EntityError.EntityAlreadyExists(String.valueOf(key));
-                   case "EntityNotFound" -> new EntityError.EntityNotFound(String.valueOf(key));
-                   default -> cause;
-               }
+            case "EntityAlreadyExists" -> new EntityError.EntityAlreadyExists(String.valueOf(key));
+            case "EntityNotFound" -> new EntityError.EntityNotFound(String.valueOf(key));
+            default -> cause;
+        }
                : cause;
     }
 
