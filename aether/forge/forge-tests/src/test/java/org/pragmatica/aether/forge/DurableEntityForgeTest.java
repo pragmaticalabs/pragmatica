@@ -25,7 +25,11 @@ import org.pragmatica.lang.Option;
 import java.net.URI;
 import java.net.http.HttpRequest;
 import java.time.Duration;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
@@ -78,6 +82,14 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 /// Still NOT flipped, and still measured: state is per-node and dies with its holder
 /// ([#state_isUnrecoverable_afterTheOnlyNodeHoldingItStops]). The backing is `MemoryStorageEngine`;
 /// restart-durability is I3. `replication_factor` is no longer ignored — it is REFUSED above 1.
+///
+/// ## What the 02w hosting-set fix changed here
+///
+/// The suite now forms MORE nodes than slice instances (5/3, see [#INSTANCES]), so the leader's
+/// ownership reconcile is exercised against the configuration that broke in the 02w cloud run:
+/// owners must come from the keyspace's registered hosts, and failover re-placement
+/// ([#state_survivesTheLossOfTheNodeThatOwnedIt]) must stay within that set.
+/// [#ownership_isMintedOnlyOverNodesHostingTheEntitySlice] asserts the invariant directly.
 @Tag("Heavy")
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -87,7 +99,15 @@ class DurableEntityForgeTest {
     private static final int BASE_MGMT_PORT = 19100;
     private static final int BASE_APP_HTTP_PORT = 19200;
     private static final int NODES = 5;
-    private static final int INSTANCES = 5;
+    /// Deliberately FEWER instances than nodes (02w hosting-set fix): the leader must mint entity arc
+    /// ownership over the nodes hosting the declaring slice, never the whole member view. With 5/5 the
+    /// two sets coincide and the defect is invisible; at 3/5 a wrongly-placed arc lands on a node with
+    /// no entity registered, every write to it refuses, and setUp's ownership convergence times out —
+    /// so the whole suite re-proves the hosting-set property as a precondition.
+    private static final int INSTANCES = 3;
+    /// Must match `partition_count` in the fixture's `resources.toml` — the ownership assertion counts
+    /// committed arcs against it.
+    private static final int ENTITY_PARTITIONS = 8;
 
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
@@ -173,6 +193,29 @@ class DurableEntityForgeTest {
     }
 
     // --- the API surface actually executes ------------------------------------
+
+    /// The 02w hosting-set pin, asserted directly: every committed `entity:orders` arc owner is a node
+    /// hosting an ACTIVE instance of the entity slice. Before the fix the leader minted owners over ALL
+    /// members, so with 3 instances on 5 nodes roughly two-fifths of the arcs landed on nodes with no
+    /// entity registered and refused every write (22/40 creates in the 02w cloud run). setUp already
+    /// fails without the fix (convergence times out); this test names the invariant and reports the
+    /// offending arcs when it regresses. Ordered before the writes so it reads the freshly-converged
+    /// records with the cluster intact.
+    @Test
+    @Order(0)
+    void ownership_isMintedOnlyOverNodesHostingTheEntitySlice() {
+        var hosts = activeSliceHosts();
+        var owners = entityArcOwners();
+
+        assertThat(hosts).describedAs("the blueprint places fewer instances than nodes, else this pin is vacuous")
+                         .hasSize(INSTANCES);
+        assertThat(owners).describedAs("every entity partition must carry a committed ownership record")
+                          .hasSize(ENTITY_PARTITIONS);
+        assertThat(owners.entrySet()).describedAs("every arc owner must host the declaring slice; owners=%s hosts=%s",
+                                                  owners,
+                                                  hosts)
+                                     .allSatisfy(entry -> assertThat(hosts).contains(entry.getValue()));
+    }
 
     /// The headline I0 assertion: a durable entity provisioned from `resources.toml` accepts a
     /// create inside a running node and returns the state it stored. Against a runtime where the
@@ -578,6 +621,35 @@ class DurableEntityForgeTest {
     }
 
     // --- cluster addressing ------------------------------------------------------
+
+    /// Node ids hosting an ACTIVE instance of the entity slice, from the cluster-wide slice view. The
+    /// suite deploys exactly one slice, so every `nodeId` in the filtered response belongs to it.
+    private Set<String> activeSliceHosts() {
+        var body = httpGet(anyMgmtPort(), "/api/slices?state=ACTIVE");
+        var matcher = Pattern.compile("\"nodeId\"\\s*:\\s*\"([^\"]+)\"").matcher(body);
+        var hosts = new HashSet<String>();
+
+        while (matcher.find()) {
+            hosts.add(matcher.group(1));
+        }
+
+        return hosts;
+    }
+
+    /// Committed `entity:orders` arc owners by partition, from the stream ownership domain (entity
+    /// arcs ride the stream record family under the `entity:` namespace).
+    private Map<Integer, String> entityArcOwners() {
+        var body = httpGet(anyMgmtPort(), "/api/ownership/stream");
+        var matcher = Pattern.compile("\"identity\"\\s*:\\s*\"entity:orders:(\\d+)\"[^}]*\"owner\"\\s*:\\s*\"([^\"]+)\"")
+                             .matcher(body);
+        var owners = new HashMap<Integer, String>();
+
+        while (matcher.find()) {
+            owners.put(Integer.parseInt(matcher.group(1)), matcher.group(2));
+        }
+
+        return owners;
+    }
 
     private List<Integer> appPorts() {
         return cluster.getAvailableAppHttpPorts();

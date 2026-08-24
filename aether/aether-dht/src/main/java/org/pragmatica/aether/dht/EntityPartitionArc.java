@@ -78,6 +78,17 @@ public final class EntityPartitionArc {
         return ARC_PREFIX + keyspace;
     }
 
+    /// The raw keyspace behind an entity ownership-arc name — the inverse of [#arcName], and the ONE
+    /// place the prefix rule is decided in that direction. [Option#none] when `arcName` is not
+    /// entity-namespaced, i.e. it names a plain stream: the two families share the ownership record
+    /// type, so a caller answering an entity question for a stream name (or vice versa) is exactly the
+    /// collision the prefix exists to make impossible.
+    public static Option<String> keyspaceOf(String arcName) {
+        return arcName.startsWith(ARC_PREFIX)
+               ? Option.some(arcName.substring(ARC_PREFIX.length()))
+               : Option.none();
+    }
+
     /// This mapper's namespaced ownership-arc name.
     public String arcName() {
         return arcName;

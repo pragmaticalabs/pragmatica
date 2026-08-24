@@ -1364,26 +1364,39 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
-    /// Cluster-wide DECLARATION that a durable-entity keyspace is live somewhere in the cluster (#345 I1,
-    /// narrow C). It exists for one reason: the per-`(keyspace, partition)` ownership records that fence
-    /// entity writes are minted by a LEADER-ONLY reconcile pass, and the leader has no other way to learn
-    /// that a keyspace exists — `DurableEntityConfig` is per-slice and node-local. Every node that
-    /// provisions the keyspace writes the same key, so the put is idempotent (last-write-wins on an equal
-    /// value) and the record survives any single node leaving.
+    /// PER-NODE declaration that a durable-entity keyspace is live ON `node` (#345 I1, narrow C). It
+    /// exists for two reasons: the per-`(keyspace, partition)` ownership records that fence entity writes
+    /// are minted by a LEADER-ONLY reconcile pass, and the leader has no other way to learn that a
+    /// keyspace exists — `DurableEntityConfig` is per-slice and node-local; and the leader must mint
+    /// owners ONLY over the nodes that actually host the keyspace's declaring slice, which it can only
+    /// know from the set of committed per-node records. A keyspace-wide record (the original shape of this
+    /// key) could not carry the hosting set: with `instances` below the cluster size the leader minted
+    /// owners over ALL nodes, and every partition owned by a non-hosting node refused every write.
+    ///
+    /// Each hosting node writes ITS OWN `(keyspace, node)` record, so the put stays idempotent with no
+    /// read-modify-write race, and the node's level-triggered reconcile can make "my committed records"
+    /// equal "my locally-provisioned keyspaces" in both directions — asserting on provision, pruning on
+    /// unload or on a restart that no longer hosts the slice.
     ///
     /// `keyspace` is the RAW name from `resources.toml`; the `entity:` ownership-arc prefix is applied by
     /// `EntityPartitionArc`, not stored here, so this key stays a statement about the DECLARATION and the
-    /// arc naming has exactly one owner.
+    /// arc naming has exactly one owner. `keyspace` never contains `/` — ENFORCED at the one entry point
+    /// every keyspace passes through, `DurableEntityConfig.durableEntityConfig` (a `/` is refused at bind
+    /// time with `InvalidKeyspace`) — and [#fromIdentity] relies on that to split the identity at the
+    /// FIRST separator.
     ///
-    /// Deliberately NOT a stream: registering the keyspace via `createStream` would allocate off-heap
-    /// rings, a WAL and reshuffle/backfill enrolment for a log that carries zero appends until plan
-    /// Phase 3 moves entity state onto it.
-    record EntityKeyspaceRegistrationKey(String keyspace) implements AetherKey {
+    /// The REGISTRATION is deliberately not a stream record, even though the keyspace's LOG has been a
+    /// real stream (`entity:<keyspace>`, created by `StreamEntityLogSubstrate.ensureLog`) since #345 I3:
+    /// a keyspace must be declared and owned before — and independently of — its log's replica
+    /// lifecycle, and deriving the hosting set from stream records would couple the declaration to
+    /// whichever nodes happen to hold log replicas rather than to where the SLICE is provisioned.
+    record EntityKeyspaceRegistrationKey(String keyspace, NodeId node) implements AetherKey {
         private static final String PREFIX = "entity-keyspace/";
+        private static final String SEPARATOR = "/";
 
         @Override
         public String asString() {
-            return PREFIX + keyspace;
+            return PREFIX + keyspace + SEPARATOR + node.id();
         }
 
         @Override
@@ -1391,17 +1404,23 @@ public sealed interface AetherKey extends StructuredKey {
             return asString();
         }
 
-        public static EntityKeyspaceRegistrationKey entityKeyspaceRegistrationKey(String keyspace) {
-            return new EntityKeyspaceRegistrationKey(keyspace);
+        public static EntityKeyspaceRegistrationKey entityKeyspaceRegistrationKey(String keyspace, NodeId node) {
+            return new EntityKeyspaceRegistrationKey(keyspace, node);
         }
 
-        /// Rebuild from the snapshot IDENTITY (the part after the section prefix), which for this
-        /// single-component key IS the keyspace. No string surgery is needed, so this validates rather
-        /// than parses — an empty identity is the only malformed form.
+        /// Rebuild from the snapshot IDENTITY (the part after the section prefix):
+        /// `<keyspace>/<nodeId>`. The split is at the FIRST `/` — legal because a keyspace never
+        /// contains one (see the type comment) while nothing constrains the node-id tail.
         public static Result<EntityKeyspaceRegistrationKey> fromIdentity(String identity) {
-            return identity.isEmpty()
-                   ? ENTITY_KEYSPACE_KEY_FORMAT_ERROR.apply(PREFIX + identity).result()
-                   : success(new EntityKeyspaceRegistrationKey(identity));
+            var separator = identity.indexOf(SEPARATOR);
+
+            if (separator <= 0 || separator == identity.length() - 1) {
+                return ENTITY_KEYSPACE_KEY_FORMAT_ERROR.apply(PREFIX + identity).result();
+            }
+
+            return NodeId.nodeId(identity.substring(separator + 1)).map(node -> new EntityKeyspaceRegistrationKey(identity.substring(0,
+                                                                                                                                     separator),
+                                                                                                                  node));
         }
     }
 

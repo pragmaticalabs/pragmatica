@@ -4,8 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.entity;
 
+import org.pragmatica.aether.resource.entity.EntityProvisioningError.InvalidKeyspace;
 import org.pragmatica.aether.resource.entity.EntityProvisioningError.InvalidPartitionCount;
 import org.pragmatica.aether.resource.entity.EntityProvisioningError.InvalidReplicationFactor;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
 
@@ -70,7 +72,9 @@ public record DurableEntityConfig(String keyspace, int partitionCount, int repli
 
     /// Build a config with an explicit partition count and replication factor.
     ///
-    /// @param keyspace          logical name of the entity family
+    /// @param keyspace          logical name of the entity family; non-blank, no `/` (see
+    ///                          [EntityProvisioningError.InvalidKeyspace] for why the character is
+    ///                          reserved)
     /// @param partitionCount    number of ownership arcs for the keyspace
     /// @param replicationFactor total copies including the owner; must be at least 1
     ///
@@ -78,7 +82,7 @@ public record DurableEntityConfig(String keyspace, int partitionCount, int repli
     public static Result<DurableEntityConfig> durableEntityConfig(String keyspace,
                                                                   int partitionCount,
                                                                   int replicationFactor) {
-        return all(Verify.ensure(keyspace, Verify.Is::present),
+        return all(validKeyspace(keyspace),
                    Verify.ensure(partitionCount,
                                  Verify.Is::greaterThanOrEqualTo,
                                  1,
@@ -87,5 +91,15 @@ public record DurableEntityConfig(String keyspace, int partitionCount, int repli
                                  Verify.Is::greaterThanOrEqualTo,
                                  1,
                                  new InvalidReplicationFactor(replicationFactor))).map(DurableEntityConfig::new);
+    }
+
+    /// Parse-don't-validate for the keyspace name: this factory is the ONE entry point every keyspace
+    /// passes through, so the `/`-free invariant both downstream parsers rely on
+    /// (`EntityPartitionArc.arcOf`, `EntityKeyspaceRegistrationKey.fromIdentity`) is established here,
+    /// once, and everything after can rely on it instead of re-checking.
+    private static Result<String> validKeyspace(String keyspace) {
+        return Option.option(keyspace)
+                     .filter(name -> !name.isBlank() && !name.contains("/"))
+                     .toResult(new InvalidKeyspace(keyspace));
     }
 }

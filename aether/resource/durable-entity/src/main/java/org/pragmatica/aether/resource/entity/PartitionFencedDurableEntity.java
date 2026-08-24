@@ -5,6 +5,7 @@
 package org.pragmatica.aether.resource.entity;
 
 import java.time.Duration;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 import org.pragmatica.aether.dht.CommittedPartitionOwnerSource;
@@ -68,6 +69,7 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
     private final PerKeySerialExecutor<K> perKey;
     private final Option<EntityOwnerAdmission> admission;
     private Option<EntityOwnerForward> forward = Option.none();
+    private final AtomicReference<Option<Runnable>> closeHook = new AtomicReference<>(Option.none());
     private final Option<LinearizableEntityServe<K, S>> linearizableServe;
 
     private PartitionFencedDurableEntity(String keyspace,
@@ -268,6 +270,27 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
     @Contract
     void withOwnerForward(EntityOwnerForward ownerForward) {
         this.forward = Option.option(ownerForward);
+    }
+
+    /// Install the unload hook [#unload] runs — the factory builds it from the same provision-time
+    /// collaborators it registered this entity with (registrar, forward registry, checkpoint driver),
+    /// which are unreachable at close time otherwise.
+    @Contract
+    void withCloseHook(Runnable closeHook) {
+        this.closeHook.set(Option.option(closeHook));
+    }
+
+    /// Unload: run the factory-installed hook exactly once — the atomic swap makes that literal, even
+    /// under a concurrent double-close (each action in the hook is idempotent anyway; the swap makes the
+    /// doc claim true rather than approximately true). Reached ONLY through `DurableEntityFactory.close`
+    /// when the keyspace's last local consumer slice stops. Deliberately NOT `AutoCloseable.close`: the
+    /// entity is handed to slices as `DurableEntity`, and a public close would let one
+    /// `instanceof AutoCloseable` in slice code retract the keyspace's registration and unhook its
+    /// forward target on a LIVE node — silently removing it from the hosting set until redeploy, with no
+    /// re-declare path because provisioning is cached. Package-private, so only the factory can unload.
+    @Contract
+    void unload() {
+        closeHook.getAndSet(Option.none()).onPresent(Runnable::run);
     }
 
     /// Forward only on a POSITIVE remote-owner reading AND a wired transport. `remoteOwner` is empty

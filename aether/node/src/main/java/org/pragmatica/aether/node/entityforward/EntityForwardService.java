@@ -20,6 +20,7 @@ import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
@@ -79,6 +80,13 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
     public void register(String keyspace, ForwardTarget target) {
         targets.put(keyspace, target);
         log.info("Entity owner-forward: keyspace '{}' registered as a forward target", keyspace);
+    }
+
+    @Override
+    @Contract
+    public void unregister(String keyspace) {
+        Option.option(targets.remove(keyspace)).onPresent(_ -> log.info("Entity owner-forward: keyspace '{}' unregistered as a forward target",
+                                                                        keyspace));
     }
 
     // --- sender ---

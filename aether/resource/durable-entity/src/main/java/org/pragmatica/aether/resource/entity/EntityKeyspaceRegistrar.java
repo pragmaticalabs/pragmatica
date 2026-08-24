@@ -8,23 +8,31 @@ import org.pragmatica.lang.Unit;
 
 
 /// Declares to the node that this process has provisioned an entity `keyspace` spread over
-/// `partitionCount` ownership arcs (#345 I1, narrow C).
+/// `partitionCount` ownership arcs (#345 I1, narrow C) — and retracts the declaration when the
+/// keyspace's last local consumer unloads.
 ///
 /// ## Why this seam exists
 /// Entity writes are admitted only by the committed owner of the key's arc, and those ownership records
 /// are minted by a LEADER-ONLY reconcile pass over the shared `StreamPartitionOwnershipWriter`. The
-/// leader therefore has to know which entity keyspaces exist and how many arcs each spans — and it
-/// cannot work that out for itself: `DurableEntityConfig` is per-slice and node-local, and the slice
-/// manifest carries only the config SECTION name, never the section's contents. Provisioning is the
-/// first moment `partitionCount` is known, so it is where the declaration is made.
+/// leader therefore has to know which entity keyspaces exist, how many arcs each spans, and — because
+/// owners must be minted ONLY over nodes that can actually serve the keyspace — which nodes host its
+/// declaring slice. It cannot work any of that out for itself: `DurableEntityConfig` is per-slice and
+/// node-local, and the slice manifest carries only the config SECTION name, never the section's
+/// contents. Provisioning is the first moment `partitionCount` is known, so it is where the declaration
+/// is made; each node's declaration commits as its OWN per-node record, and the set of committed records
+/// IS the hosting set the leader places owners over.
 ///
 /// ## Contract
-/// [#declare] is **synchronous, IO-free and idempotent**. It records intent; it does not perform the
-/// consensus write. Provisioning must stay resolved-on-return (a slice load that blocked on a consensus
-/// round would fail whenever the cluster was briefly unquorate), and a one-shot fire-and-forget commit
-/// would silently strand the keyspace forever if that single apply failed. The node's implementation is
-/// therefore level-triggered: it keeps the declaration and re-asserts it until it is committed, in the
-/// self-healing shape `SystemStreamRegistrar` uses for the same reason.
+/// [#declare] and [#retract] are **synchronous, IO-free and idempotent**. They record intent; they do
+/// not perform the consensus write. Provisioning must stay resolved-on-return (a slice load that blocked
+/// on a consensus round would fail whenever the cluster was briefly unquorate), and a one-shot
+/// fire-and-forget commit would silently strand the keyspace forever if that single apply failed. The
+/// node's implementation is therefore level-triggered IN BOTH DIRECTIONS: every reconcile tick it makes
+/// this node's committed records equal this node's declared set — asserting declared keyspaces until the
+/// put commits, and pruning committed records for keyspaces no longer declared until the remove commits.
+/// The prune leg is what makes [#retract] durable, and it also self-heals the case retract can never
+/// see: a node that died and restarted WITHOUT the slice (moved away while it was down) finds its stale
+/// record and removes it, because "committed but not declared" is the same observable state.
 ///
 /// The keyspace declared here is the RAW `resources.toml` name. The `entity:` ownership-arc prefix is
 /// applied by [org.pragmatica.aether.dht.EntityPartitionArc], which owns that naming.
@@ -41,15 +49,19 @@ import org.pragmatica.lang.Unit;
 /// **Move this to `NodeDeploymentState` once the envelope unfreezes post-GA.** A layering compromise
 /// with a recorded expiry condition is a decision; an unexplained one becomes folklore.
 ///
-/// ## Known gap: a registration outlives a crashed node
-/// Removal rides `ResourceFactory.close`, which does not run when a node dies abruptly. A keyspace can
-/// therefore stay registered with nothing using it, and the leader keeps minting ownership records for
-/// its arcs. No correctness impact — the records are consistent, they simply describe a keyspace nobody
-/// reads — but the registration is not self-cleaning, and a keyspace that is genuinely gone needs its
-/// registration removed by hand or by a reaper that does not exist yet.
-@FunctionalInterface
+/// ## A crashed node's record is stale until the node returns
+/// Nothing runs on a node that dies abruptly, so its record stays committed until the node itself comes
+/// back and prunes (or re-asserts) it. That staleness is harmless for placement: the leader intersects
+/// the hosting set with live membership before minting, so a dead host is never chosen. A node that
+/// never returns leaves a permanently dead record — consistent, describing nothing, excluded from every
+/// decision — reaped only by hand until a reaper exists.
 public interface EntityKeyspaceRegistrar {
     /// Record that `keyspace` is live on this node over `partitionCount` ownership arcs. Idempotent:
-    /// re-declaring the same keyspace, including from another node, is a no-op.
+    /// re-declaring the same keyspace is a no-op.
     Unit declare(String keyspace, int partitionCount);
+    /// Record that `keyspace` is no longer live on this node — the last local consumer of its entity
+    /// resource unloaded. Idempotent: retracting an undeclared keyspace is a no-op. The committed
+    /// record disappears on the node's next reconcile tick, and the leader then re-places any arcs this
+    /// node owned within the remaining hosting set.
+    Unit retract(String keyspace);
 }

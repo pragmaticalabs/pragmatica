@@ -18,8 +18,12 @@ import org.pragmatica.dht.storage.StorageEngine;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Result.all;
 
@@ -46,6 +50,8 @@ import static org.pragmatica.lang.Result.all;
 /// resource-backed slice loads at all.
 @SuppressWarnings("rawtypes")
 public final class DurableEntityFactory implements ResourceFactory<DurableEntity, DurableEntityConfig> {
+    private static final Logger LOG = LoggerFactory.getLogger(DurableEntityFactory.class);
+
     @Override
     public Class<DurableEntity> resourceType() {
         return DurableEntity.class;
@@ -60,6 +66,32 @@ public final class DurableEntityFactory implements ResourceFactory<DurableEntity
     public Promise<DurableEntity> provision(DurableEntityConfig config) {
         return new EntityProvisioningError.FenceUnavailable(config.keyspace(),
                                                             "a ProvisioningContext carrying the node's fence extensions").promise();
+    }
+
+    /// The unload half of the resource lifecycle, invoked by the provider when the keyspace's last local
+    /// consumer slice stops. Runs the entity's package-private [PartitionFencedDurableEntity#unload]
+    /// rather than relying on the `AutoCloseable` default — the entity deliberately is NOT
+    /// `AutoCloseable`, so slice code holding it as `DurableEntity` cannot unhook a live keyspace.
+    ///
+    /// The catch is an adapter-boundary lift, same justification as the reconcile tick's: the provider
+    /// composes this promise with `flatMap`, which does not catch a mapper throw, so an escaping
+    /// exception would silently break the whole `releaseAll` chain — and a swallowed one would strand
+    /// the registration with nothing anywhere saying why. Logging is the middle path: the unload keeps
+    /// its failure visible without taking down the release of every other resource.
+    @Override
+    public Promise<Unit> close(DurableEntity resource) {
+        if (resource instanceof PartitionFencedDurableEntity<?, ?, ?> fenced) {
+            try {
+                fenced.unload();
+            } catch (RuntimeException e) {
+                LOG.warn("Durable-entity unload hook failed — the keyspace registration may be stranded"
+                        + " until the node restarts without the slice: {}",
+                         e.toString(),
+                         e);
+            }
+        }
+
+        return Promise.unitPromise();
     }
 
     @Override
@@ -171,6 +203,20 @@ public final class DurableEntityFactory implements ResourceFactory<DurableEntity
         context.extension(EntityForwardRegistry.class)
                .onSuccess(registry -> registry.register(config.keyspace(),
                                                         fenced));
+        fenced.withCloseHook(() -> retractOnUnload(config, context, fence));
+    }
+
+    /// The unload mirror of provisioning, run through `ResourceFactory.close` when the keyspace's last
+    /// local consumer slice stops. Retracting the keyspace declaration is what shrinks the hosting set
+    /// the leader mints ownership over — without it, a node whose slice moved away stays a placement
+    /// candidate forever and refuses every write it is handed. The registry and driver unhooks keep the
+    /// forward path and the checkpoint tick from reaching into an unloaded slice's classloader.
+    private static void retractOnUnload(DurableEntityConfig config,
+                                        ProvisioningContext context,
+                                        FenceCollaborators fence) {
+        fence.registrar().retract(config.keyspace());
+        context.extension(EntityForwardRegistry.class).onSuccess(registry -> registry.unregister(config.keyspace()));
+        context.extension(EntityCheckpointDriver.class).onSuccess(driver -> driver.unregister(config.keyspace()));
     }
 
     private record FenceCollaborators(EntityLogSubstrate substrate,

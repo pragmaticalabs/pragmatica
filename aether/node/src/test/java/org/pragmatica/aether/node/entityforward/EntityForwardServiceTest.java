@@ -98,22 +98,7 @@ class EntityForwardServiceTest {
 
     @Test
     void onEntityCreateForward_registeredKeyspace_appliesAndAnswersSuccess() {
-        service.register("orders", new EntityForwardRegistry.ForwardTarget() {
-            @Override
-            public Promise<byte[]> applyForwarded(byte[] key, byte[] command) {
-                return Promise.success(bytes("updated"));
-            }
-
-            @Override
-            public Promise<byte[]> createForwarded(byte[] key, byte[] initial) {
-                return Promise.success(bytes("created:" + new String(initial, StandardCharsets.UTF_8)));
-            }
-
-            @Override
-            public Promise<byte[]> deleteForwarded(byte[] key) {
-                return Promise.success(new byte[0]);
-            }
-        });
+        service.register("orders", echoTarget());
 
         service.onEntityCreateForward(EntityCreateForward.entityCreateForward(OWNER, "corr-1", "orders", bytes("k1"), bytes("5")));
 
@@ -131,6 +116,57 @@ class EntityForwardServiceTest {
 
         assertThat(response.success()).isFalse();
         assertThat(response.errorMessage()).contains("ghosts");
+    }
+
+    /// The unload half of the registry (`DurableEntityFactory`'s close hook). After the keyspace's
+    /// entity resource unloads, an arriving forward must reach the SAME typed refusal a never-registered
+    /// keyspace gets — not the unloaded entity, whose slice classloader is gone. Armed by the first
+    /// assertion: the identical forward succeeds while the registration stands, so the refusal below is
+    /// the unregister and not a broken fixture.
+    @Test
+    void onEntityCreateForward_afterUnregister_refusesWithTheUnknownKeyspaceCause() {
+        service.register("orders", echoTarget());
+        service.onEntityCreateForward(EntityCreateForward.entityCreateForward(OWNER, "corr-3", "orders", bytes("k1"), bytes("5")));
+
+        assertThat(((EntityUpdateForwardResponse) sender.lastMessage()).success())
+            .as("registered keyspace must serve the forward — else the refusal below proves nothing")
+            .isTrue();
+
+        service.unregister("orders");
+        service.onEntityCreateForward(EntityCreateForward.entityCreateForward(OWNER, "corr-4", "orders", bytes("k1"), bytes("5")));
+
+        assertRefusedAsUnknownKeyspace((EntityUpdateForwardResponse) sender.lastMessage());
+    }
+
+    @Test
+    void onEntityUpdateForward_afterUnregister_refusesWithTheUnknownKeyspaceCause() {
+        service.register("orders", echoTarget());
+        service.onEntityUpdateForward(EntityUpdateForward.entityUpdateForward(OWNER, "corr-5", "orders", bytes("k1"), bytes("Add:5")));
+
+        assertThat(((EntityUpdateForwardResponse) sender.lastMessage()).success())
+            .as("registered keyspace must serve the forward — else the refusal below proves nothing")
+            .isTrue();
+
+        service.unregister("orders");
+        service.onEntityUpdateForward(EntityUpdateForward.entityUpdateForward(OWNER, "corr-6", "orders", bytes("k1"), bytes("Add:5")));
+
+        assertRefusedAsUnknownKeyspace((EntityUpdateForwardResponse) sender.lastMessage());
+    }
+
+    /// Idempotent by contract: the close hook runs per keyspace and a node that never hosted one still
+    /// calls through. Unregistering an unknown keyspace must not disturb the ones that ARE registered.
+    @Test
+    void unregister_unknownKeyspace_leavesRegisteredKeyspacesServing() {
+        service.register("orders", echoTarget());
+
+        service.unregister("ghosts");
+
+        service.onEntityCreateForward(EntityCreateForward.entityCreateForward(OWNER, "corr-7", "orders", bytes("k1"), bytes("5")));
+
+        var response = (EntityUpdateForwardResponse) sender.lastMessage();
+
+        assertThat(response.success()).isTrue();
+        assertThat(new String(response.state(), StandardCharsets.UTF_8)).isEqualTo("created:5");
     }
 
     /// Deadline budget, exhausted case: the command must never be SENT — the caller is gone, and an
@@ -188,6 +224,35 @@ class EntityForwardServiceTest {
 
     private static byte[] bytes(String text) {
         return text.getBytes(StandardCharsets.UTF_8);
+    }
+
+    /// A live keyspace's forward target: it echoes what it was handed, so a successful response proves
+    /// the command reached THIS registration rather than any other path.
+    private static EntityForwardRegistry.ForwardTarget echoTarget() {
+        return new EntityForwardRegistry.ForwardTarget() {
+            @Override
+            public Promise<byte[]> applyForwarded(byte[] key, byte[] command) {
+                return Promise.success(bytes("updated"));
+            }
+
+            @Override
+            public Promise<byte[]> createForwarded(byte[] key, byte[] initial) {
+                return Promise.success(bytes("created:" + new String(initial, StandardCharsets.UTF_8)));
+            }
+
+            @Override
+            public Promise<byte[]> deleteForwarded(byte[] key) {
+                return Promise.success(new byte[0]);
+            }
+        };
+    }
+
+    /// The refusal must be the TYPED one — `failureType` is what the sender reconstructs a cause from,
+    /// so an untyped failure would reach the caller as an unexplained generic error.
+    private static void assertRefusedAsUnknownKeyspace(EntityUpdateForwardResponse response) {
+        assertThat(response.success()).isFalse();
+        assertThat(response.failureType()).isEqualTo("UnknownKeyspace");
+        assertThat(response.errorMessage()).contains("no entity registered for keyspace orders");
     }
 
     private static final class RecordingSender implements EntityForwardService.Sender {

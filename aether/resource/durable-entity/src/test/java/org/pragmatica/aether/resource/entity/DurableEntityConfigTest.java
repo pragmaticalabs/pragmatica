@@ -135,7 +135,28 @@ class DurableEntityConfigTest {
         @Test
         void durableEntityConfig_refuses_forBlankKeyspace() {
             DurableEntityConfig.durableEntityConfig("  ", PARTITIONS, 1)
-                               .onSuccess(DurableEntityConfigTest::failAccepted);
+                               .onSuccess(DurableEntityConfigTest::failAccepted)
+                               .onFailure(DurableEntityConfigTest::assertInvalidKeyspace);
+        }
+
+        /// `/` is reserved by two parsed coordinates the keyspace is embedded in: the entity DHT key
+        /// (`entity:<keyspace>/<partition>/<key>`) and the per-node registration identity
+        /// (`<keyspace>/<nodeId>`). A name containing it would not fail loudly — it would silently shift
+        /// both parses: writes fenced against the FLOOR arc as if unowned, and a snapshot restore
+        /// reassembling a different keyspace with a phantom host. Refusing at bind time is the only place
+        /// the rule can hold.
+        @Test
+        void durableEntityConfig_refusesKeyspaceContainingSlash() {
+            DurableEntityConfig.durableEntityConfig("orders/eu", PARTITIONS, 1)
+                               .onSuccess(DurableEntityConfigTest::failAccepted)
+                               .onFailure(DurableEntityConfigTest::assertInvalidKeyspace);
+        }
+
+        @Test
+        void durableEntityConfig_namesTheRejectedKeyspace_inTheRefusal() {
+            DurableEntityConfig.durableEntityConfig("orders/eu", PARTITIONS, 1)
+                               .onSuccess(DurableEntityConfigTest::failAccepted)
+                               .onFailure(cause -> assertThat(cause.message()).contains("orders/eu"));
         }
 
         @Test
@@ -167,6 +188,10 @@ class DurableEntityConfigTest {
 
     private static void assertInvalidPartitionCount(Cause cause) {
         assertThat(cause.stream()).hasAtLeastOneElementOfType(EntityProvisioningError.InvalidPartitionCount.class);
+    }
+
+    private static void assertInvalidKeyspace(Cause cause) {
+        assertThat(cause.stream()).hasAtLeastOneElementOfType(EntityProvisioningError.InvalidKeyspace.class);
     }
 
     private static void failAccepted(DurableEntityConfig config) {

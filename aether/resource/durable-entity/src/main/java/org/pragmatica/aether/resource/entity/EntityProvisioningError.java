@@ -61,6 +61,23 @@ public sealed interface EntityProvisioningError extends Cause {
         }
     }
 
+    /// The keyspace name must be present and must not contain `/` — it is embedded in TWO parsed
+    /// coordinates whose grammar reserves that character: the DHT key / ownership-arc format
+    /// (`entity:<keyspace>/<partition>/<key>`, parsed back by `EntityPartitionArc.arcOf`) and the
+    /// per-node registration snapshot identity (`<keyspace>/<nodeId>`, parsed back by
+    /// `EntityKeyspaceRegistrationKey.fromIdentity`). A `/` in the name would not fail here-and-now: it
+    /// would silently shift both parses — writes fenced against the FLOOR arc as if unowned, and a
+    /// snapshot restore reassembling a different keyspace with a phantom host — which is why the rule is
+    /// enforced at the one entry point every keyspace passes through, instead of trusted at each parser.
+    record InvalidKeyspace(String requested) implements EntityProvisioningError {
+        @Override
+        public String message() {
+            return "Durable entity keyspace '" + requested
+                 + "' is invalid: must be non-blank and must not contain '/'"
+                 + " (reserved by the entity DHT-key and registration-identity formats)";
+        }
+    }
+
     /// A collaborator the WRITE FENCE depends on was absent from the provisioning context, so the entity
     /// could only have been built unfenced.
     ///

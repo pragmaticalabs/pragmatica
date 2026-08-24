@@ -21,6 +21,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.dht.storage.MemoryStorageEngine;
 import org.pragmatica.dht.storage.StorageEngine;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -30,6 +31,8 @@ import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.ServiceLoader;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -144,6 +147,109 @@ class DurableEntityFactoryTest {
         }
     }
 
+    /// The unload half of provisioning: `ResourceFactory.close` on a keyspace whose last local consumer
+    /// slice stopped. Every collaborator the factory hooked at provision time has to be released, and the
+    /// three losses are different sizes — a stranded REGISTRATION keeps this node a placement candidate
+    /// for a keyspace it can no longer serve (the 02w failure mode, permanently refused writes); a
+    /// stranded FORWARD target lets an arriving command reach an unloaded slice's classloader instead of
+    /// an honest refusal; a stranded CHECKPOINT registration keeps the tick folding through a dead fold.
+    @Nested
+    class Unload {
+        @Test
+        void close_retractsTheKeyspace_andUnhooksTheForwardRegistryAndCheckpointDriver() {
+            unloadFixture().onFailure(DurableEntityFactoryTest::failCause)
+                           .onSuccess(DurableEntityFactoryTest::assertUnloadReleasesEverything);
+        }
+
+        /// The provider guards single-close per cached resource, but the hook must not depend on that:
+        /// [PartitionFencedDurableEntity#unload] swaps the hook out atomically so a second close is inert.
+        @Test
+        void close_twice_retractsExactlyOnce() {
+            unloadFixture().onFailure(DurableEntityFactoryTest::failCause)
+                           .onSuccess(DurableEntityFactoryTest::assertSecondCloseIsInert);
+        }
+    }
+
+    // ---- unload helpers ------------------------------------------------------------------------
+
+    private record UnloadFixture(DurableEntityConfig config,
+                                 ProvisioningContext context,
+                                 RecordingRegistrar registrar,
+                                 RecordingForwardRegistry registry,
+                                 EntityCheckpointDriver driver) {}
+
+    /// A fully-wired provisioning context — the shape `AetherNode.registerEntityExtensionsOnSpi`
+    /// produces — with the three unload collaborators reachable so the test can watch them.
+    private static Result<UnloadFixture> unloadFixture() {
+        var registrar = new RecordingRegistrar();
+        var registry = new RecordingForwardRegistry();
+        var driver = EntityCheckpointDriver.entityCheckpointDriver();
+        var context = fencedContext(registrar).withExtension(EntityForwardRegistry.class, registry)
+                                              .withExtension(EntityCheckpointDriver.class, driver);
+
+        return config().map(config -> new UnloadFixture(config, context, registrar, registry, driver));
+    }
+
+    private static void assertUnloadReleasesEverything(UnloadFixture fixture) {
+        var entity = provisioned(fixture);
+
+        assertThat(fixture.registrar().declared)
+            .as("provisioning must declare the keyspace — else the retract below has nothing to undo")
+            .containsExactly(KEYSPACE);
+        assertThat(fixture.registry().registered)
+            .as("provisioning must register the forward target — else the unregister below is vacuous")
+            .containsExactly(KEYSPACE);
+        assertThat(driverKeyspaces(fixture))
+            .as("provisioning must register for checkpointing — else the empty snapshot below is vacuous")
+            .containsExactly(KEYSPACE);
+
+        closeOnce(entity);
+
+        assertThat(fixture.registrar().retracted)
+            .as("retracting is what SHRINKS the hosting set the leader mints ownership over")
+            .containsExactly(KEYSPACE);
+        assertThat(fixture.registry().unregistered).containsExactly(KEYSPACE);
+        assertThat(driverKeyspaces(fixture))
+            .as("the checkpoint tick must stop folding through an unloaded entity")
+            .isEmpty();
+    }
+
+    private static void assertSecondCloseIsInert(UnloadFixture fixture) {
+        var entity = provisioned(fixture);
+
+        closeOnce(entity);
+        closeOnce(entity);
+
+        assertThat(fixture.registrar().retracted)
+            .as("the close hook runs exactly once, however many times close() is called")
+            .containsExactly(KEYSPACE);
+        assertThat(fixture.registry().unregistered).containsExactly(KEYSPACE);
+    }
+
+    private static List<String> driverKeyspaces(UnloadFixture fixture) {
+        return fixture.driver()
+                      .snapshot()
+                      .keyspaces()
+                      .stream()
+                      .map(EntityCheckpointDriver.KeyspaceCheckpoints::keyspace)
+                      .toList();
+    }
+
+    private static DurableEntity<?, ?, ?> provisioned(UnloadFixture fixture) {
+        return new DurableEntityFactory().provision(fixture.config(), fixture.context())
+                                         .await(AWAIT)
+                                         .fold(cause -> fail(cause.message()), entity -> entity);
+    }
+
+    /// Unload through the SPI path a resource provider takes: the factory's `close` override runs the
+    /// entity's package-private unload. Deliberately NOT `AutoCloseable` — a slice holding the entity
+    /// must not be able to unhook a live keyspace — so the override is the ONLY route to the hook.
+    private static void closeOnce(DurableEntity<?, ?, ?> entity) {
+        new DurableEntityFactory().close(entity)
+                                  .await(AWAIT)
+                                  .onFailure(DurableEntityFactoryTest::failCause);
+    }
+
     // ---- helpers -------------------------------------------------------------------------------
 
     private static void assertRefusesWithout(Class<?> omitted) {
@@ -181,9 +287,48 @@ class DurableEntityFactoryTest {
     }
 
     /// The node's registrar is level-triggered and IO-free at this seam, so a test one that simply
-    /// accepts the declaration is faithful — the committing half lives in `AetherNode`.
+    /// records the declaration is faithful — the committing half lives in `EntityOwnershipReconciler`.
+    /// BOTH directions are recorded: the retract is what the unload tests are watching for.
     private static EntityKeyspaceRegistrar recordingRegistrar() {
-        return (_, _) -> Unit.unit();
+        return new RecordingRegistrar();
+    }
+
+    private static final class RecordingRegistrar implements EntityKeyspaceRegistrar {
+        private final List<String> declared = new ArrayList<>();
+        private final List<String> retracted = new ArrayList<>();
+
+        @Override
+        public Unit declare(String keyspace, int partitionCount) {
+            declared.add(keyspace);
+
+            return Unit.unit();
+        }
+
+        @Override
+        public Unit retract(String keyspace) {
+            retracted.add(keyspace);
+
+            return Unit.unit();
+        }
+    }
+
+    /// The node's forward registry, reduced to what the unload test needs to see. `void` on both halves
+    /// is the interface's own contract — a registration sink has no outcome to fold.
+    private static final class RecordingForwardRegistry implements EntityForwardRegistry {
+        private final List<String> registered = new ArrayList<>();
+        private final List<String> unregistered = new ArrayList<>();
+
+        @Override
+        @Contract
+        public void register(String keyspace, ForwardTarget target) {
+            registered.add(keyspace);
+        }
+
+        @Override
+        @Contract
+        public void unregister(String keyspace) {
+            unregistered.add(keyspace);
+        }
     }
 
     private static EntityLinearizableBarrier noOpBarrier() {
@@ -195,13 +340,17 @@ class DurableEntityFactoryTest {
     /// every arc, which is what a provisioned entity sees on the node that owns its keys; with the
     /// no-owner source the write path would (correctly) refuse every write as transient.
     private static ProvisioningContext fencedContext() {
+        return fencedContext(recordingRegistrar());
+    }
+
+    private static ProvisioningContext fencedContext(EntityKeyspaceRegistrar registrar) {
         var highWater = OwnershipEpochHighWater.ownershipEpochHighWater(emptyStore());
 
         return ProvisioningContext.provisioningContext()
                                   .withExtension(EntityLogSubstrate.class, inMemoryLog())
                                   .withExtension(CommittedPartitionOwnerSource.class, selfOwnsEveryArc())
                                   .withExtension(OwnershipEpochHighWater.class, highWater)
-                                  .withExtension(EntityKeyspaceRegistrar.class, recordingRegistrar())
+                                  .withExtension(EntityKeyspaceRegistrar.class, registrar)
                                   .withExtension(NodeId.class, SELF)
                                   .withExtension(Serializer.class, intSerializer())
                                   .withExtension(Deserializer.class, intDeserializer());

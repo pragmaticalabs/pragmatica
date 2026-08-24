@@ -115,6 +115,17 @@ public final class EntityCheckpointDriver {
         LOG.info("Entity checkpoint: keyspace '{}' registered over {} partition(s)", keyspace, partitionCount);
     }
 
+    /// Drop a keyspace's registration when its entity resource unloads. Idempotent: unregistering an
+    /// unknown keyspace is a no-op. Without this, the tick keeps folding through an unloaded entity's
+    /// `EntityFold` — an object whose slice classloader is gone — for the life of the node.
+    @Contract
+    public void unregister(String keyspace) {
+        if (registrations.removeIf(registration -> registration.keyspace()
+                                                               .equals(keyspace))) {
+            LOG.info("Entity checkpoint: keyspace '{}' unregistered", keyspace);
+        }
+    }
+
     /// One tick over every registered keyspace and partition.
     ///
     /// `ScheduledExecutorService` CANCELS a periodic task whose run throws, silently and permanently. This

@@ -26,6 +26,13 @@ public interface EntityForwardRegistry {
     @Contract
     void register(String keyspace, ForwardTarget target);
 
+    /// Called when the keyspace's entity resource unloads. Idempotent: unregistering an unknown
+    /// keyspace is a no-op. Without this, an arriving forward still finds the unloaded entity and
+    /// applies the command through a slice whose classloader is gone — instead of the honest typed
+    /// refusal a genuinely absent keyspace produces.
+    @Contract
+    void unregister(String keyspace);
+
     /// A keyspace's apply-an-encoded-command entry point. Bound to one entity instance, which owns the
     /// per-key queue and the codecs for its own `K`, `S` and `C`.
     interface ForwardTarget {

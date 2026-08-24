@@ -1112,11 +1112,13 @@ public sealed interface AetherValue {
         }
     }
 
-    /// Payload of an [AetherKey.EntityKeyspaceRegistrationKey] — the one fact the leader-only ownership
+    /// Payload of an [AetherKey.EntityKeyspaceRegistrationKey] — the fact the leader-only ownership
     /// writer cannot derive for itself: how many `(entity:<keyspace>, partition)` arcs the keyspace
     /// spreads over, so it can mint an ownership record for each. Taken from the keyspace's
     /// `DurableEntityConfig.partitionCount` at provisioning time, which is the first moment it is known
-    /// (the manifest carries only the config SECTION name, not the section's contents).
+    /// (the manifest carries only the config SECTION name, not the section's contents). The OTHER fact
+    /// the writer needs — which nodes host the keyspace — lives in the per-node KEY, not here: the set
+    /// of committed registration keys IS the hosting set.
     record EntityKeyspaceRegistrationValue(int partitionCount) implements AetherValue {
         public static EntityKeyspaceRegistrationValue entityKeyspaceRegistrationValue(int partitionCount) {
             return new EntityKeyspaceRegistrationValue(partitionCount);
