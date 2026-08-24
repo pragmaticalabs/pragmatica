@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Fixed
+- **The #596 entity owner-forward wire pair was NEVER REGISTERED in the node codec — every entity
+  forward in every run silently vanished at the transport.** The annotation processor generated
+  `EntityforwardCodecsNode`; the hand-maintained `NodeCodecs` aggregation never included it (the
+  #492 defect class — "generated codecs lived only in the orphaned registry" — second occurrence),
+  and the transport swallowed the encode throw, so the sender saw nothing and burned its full
+  correlation timeout. ONE line explains every entity integration symptom across runs 2–5:
+  8,977s creates (30s constant per doomed leg pre-budget), run5's ~64s creates and "unreachable"
+  keys (the 10s budget cut the per-leg burn — the budget was NEVER unbounded; the 30.1s gap
+  quantization was 3 × 10.03s doomed legs), convergence timeouts on healthy clusters, and the
+  forge suite's 299s setUp hang. Fixed by aggregating the registry — upon which the SystemTags
+  pinning guard immediately demanded hand-assigned tags (1660–1663), exactly as designed. Also
+  fixed while the (never-functional) wire was free to change: the forward response now carries
+  `failureType`, and the entity reconstructs the owner's TYPED refusal
+  (`EntityAlreadyExists`/`EntityNotFound`) — a string-flattened duplicate-create read as an
+  unexplained failure to every matcher keyed on the type, which would have undercounted 02w's
+  acked creates. `DurableEntityForgeTest` updated from the pre-#596 contract (non-owner refuses
+  `NotCurrentOwner`) to the forwarding contract (the owner's verdict reaches every caller) — the
+  suite is failsafe-excluded from CI and had never run since forwarding landed.
+  `[verified: DurableEntityForgeTest 11/11 incl. state-survives-owner-loss, 100/100 forwards
+  complete within budget, 0 timeouts, convergence in seconds vs 299s hang; NodeCodecsRoutedTypesTest
+  pins the four codecs; EntityOwnerForwardTest 21/21 incl. typed-reconstruction pins; node 892/0;
+  durable-entity 155/0]` Follow-ups recorded: boot-time routed-type⇒codec verification (the
+  structural fix for the #492 class), and the transport's silent swallow of encode failures.
+
 ### Verification (2026-08-24 — 02w run5, first run with complete evidence)
 - **The 02w wall-clock disease is fixed: 4,230s (~70 min) end-to-end vs run4's 5.6h+ killed.**
   Deadline budget live-validated server-side (stage 1+2): suite legs bounded, cluster B formed in

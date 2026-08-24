@@ -49,7 +49,18 @@ including the SIGKILLed one — first time ever).
   answers in ~20ms. That single pathology accounts for the convergence FAIL (989s vs 480s — probe
   rounds cost 30–120s/key), the ~64s creates, and the unreachable reads.
 
-## §3 THE OPEN QUESTION — production reads the budget as unbounded; every in-JVM pin says it can't
+## §3 THE OPEN QUESTION — RESOLVED SAME SESSION: there was no ScopedValue mystery, the wire pair was never registered
+
+> **This section is superseded.** The forge repro with the §4 sensor showed `bounded=true` ~10s on
+> every forward — the budget was NEVER unbounded anywhere. Run5's "exact multiples of 30.1s" were
+> 3 × 10.03s doomed legs between successful creates — gap quantization, not per-leg timing. The
+> real cause: `NodeCodecs` never aggregated the generated `EntityforwardCodecsNode` registry, so
+> every #596 owner-forward silently vanished at the transport (the #492 "orphaned generated
+> registry" class, second occurrence; the encode throw is swallowed — that silence is a recorded
+> follow-up). Fixed + typed-refusal fidelity added + forge suite moved to the #596 contract:
+> DurableEntityForgeTest 11/11 incl. state-survives-owner-loss, 100/100 forwards complete,
+> 0 timeouts. See CHANGELOG for the full record. The in-JVM pins from the original hunt
+> (AppHttpServerLocalDeadlineTest etc.) remain valid and keep their value as regression guards.
 
 The 30s silences mean `EntityForwardService.dispatch` armed its full `ENTITY_FORWARD_TIMEOUT`
 (30s, hardcoded `AetherNode:757`) — i.e. `Deadline.current()` was UNBOUNDED there. But:
