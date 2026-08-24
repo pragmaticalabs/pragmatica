@@ -516,13 +516,18 @@ _api_call() {
     # poll loop (wait_for / wait_for_node_count) burns ~30s/iteration and starves
     # the rest of cluster-B. On cloud, fast-fail the connect so a dead endpoint
     # surfaces as a curl failure in ~3s and the caller can rotate to a live node
-    # on the next poll (it re-refreshes MGMT_ENTRY_POINT). docker/local/remote keep
-    # the original `-m 30` with no connect cap — byte-identical behaviour there.
+    # on the next poll (it re-refreshes MGMT_ENTRY_POINT).
+    #
+    # docker/local/remote keep `-m 30` but gain a connect cap too (2026-08-24): a
+    # killed container's published port usually refuses instantly, but a mid-restart
+    # or fire-walled port can SYN-hang, and the 02w per-node sweeps multiply any such
+    # stall by nodes × passes × keys. The cap bounds only connection ESTABLISHMENT;
+    # a slow-but-connected server keeps the full 30s.
     local conn_opts=()
     if [ "${CLOUD_MODE:-false}" = "true" ]; then
         conn_opts=(--connect-timeout "${CLOUD_API_CONNECT_TIMEOUT:-3}" -m "${CLOUD_API_MAX_TIME:-15}")
     else
-        conn_opts=(-m 30)
+        conn_opts=(--connect-timeout "${API_CONNECT_TIMEOUT:-5}" -m 30)
     fi
     if [ -n "$body" ]; then
         response=$(curl -sk "${conn_opts[@]}" -X "$method" -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \

@@ -132,7 +132,16 @@ create_entity() {
 create_range_recording_acks() {
     local start="$1" count="$2" outfile="$3"
     local i idx
+    # Wall-clock budget: run3 spent 8977s here with no bound. Exhaustion only CAPS the acked
+    # population (the durability assertion ranges over ACKED keys, so a smaller set stays a
+    # valid, smaller experiment) — it is a warning, not a verdict.
+    local budget="${CREATE_BUDGET:-900}"
+    local phase_deadline=$((SECONDS + budget))
     for ((i = 0; i < count; i++)); do
+        if [ "$SECONDS" -ge "$phase_deadline" ]; then
+            log_warn "create budget (${budget}s) exhausted after ${i}/${count} creates — proceeding with the acked subset"
+            return 1
+        fi
         idx=$((start + i))
         if create_entity "$idx"; then
             printf '%s\n' "$idx" >> "$outfile"
@@ -148,19 +157,30 @@ read_amount() {
     # lost and turn the durability assertion into a false alarm, so this looks for a POSITIVE
     # answer from any node.
     #
+    # Three-way protocol (2026-08-24) — run4's one "mismatch" line was uninterpretable because ''
+    # meant BOTH "no node has it" and "every attempt timed out", so a merely-slow cluster read as
+    # data loss:
+    #   rc 0 — found: the amount is on stdout.
+    #   rc 3 — ABSENT: a node HOLDING the key's arc answered `"outcome":"absent"` (positive
+    #          evidence — non-holders answer PartitionNotHeld, never "absent").
+    #   rc 4 — UNREACHABLE: no node gave any positive answer (timeouts, dead ports, refusals).
+    #          This is "the verdict cannot be measured", NEVER evidence of loss.
+    #
     # Every log helper writes to STDOUT and this function's stdout IS the parsed amount, so
     # diagnostics must be redirected or they silently corrupt the compared value.
     if body=$(entity_post_any "/api/entity/get" "{\"orderId\":\"${key}\"}" \
-                              '"outcome"[[:space:]]*:[[:space:]]*"found"'); then
-        printf '%s' "$body" | sed -E 's/.*"amount"[[:space:]]*:[[:space:]]*(-?[0-9]+).*/\1/'
-        return 0
+                              '"outcome"[[:space:]]*:[[:space:]]*"(found|absent)"'); then
+        if printf '%s' "$body" | grep -qE '"outcome"[[:space:]]*:[[:space:]]*"found"'; then
+            printf '%s' "$body" | sed -E 's/.*"amount"[[:space:]]*:[[:space:]]*(-?[0-9]+).*/\1/'
+            return 0
+        fi
+        return 3
     fi
 
     if [ -n "$body" ]; then
-        log_warn "read ${key}: no node returned it; last body: $(printf '%s' "$body" | head -c 200)" >&2
+        log_warn "read ${key}: no positive answer from any node; last body: $(printf '%s' "$body" | head -c 200)" >&2
     fi
-    printf ''
-    return 1
+    return 4
 }
 
 reap_creator() {
@@ -237,7 +257,10 @@ test_ownership_converged_across_partitions() {
 }
 
 test_create_pre_kill_history() {
-    create_range_recording_acks 0 "$N_PRE" "$ACKED_PRE"
+    # `|| true`: budget exhaustion returns 1 to say "population capped", which under
+    # `set -euo pipefail` would otherwise abort this function — the acked SUBSET is
+    # still a valid experiment and the zero-acked gate below catches the empty case.
+    create_range_recording_acks 0 "$N_PRE" "$ACKED_PRE" || true
 
     local acked
     acked=$(grep -c . "$ACKED_PRE" || true)
@@ -251,18 +274,45 @@ test_create_pre_kill_history() {
 }
 
 test_pre_kill_state_readable() {
-    local idx key expected actual bad=0
+    local idx key expected actual rc bad=0 unreachable=0 checked=0
+    # Wall-clock phase budget: this loop had NONE, and run3/run4 ground for hours in it (the
+    # 20,295s readback was this shape one test further down). Exhaustion is reported as
+    # UNMEASURABLE — a budget overrun says nothing about durability.
+    local budget="${READBACK_BUDGET:-900}"
+    local phase_deadline=$((SECONDS + budget))
+
     while read -r idx; do
         [ -n "$idx" ] || continue
+        if [ "$SECONDS" -ge "$phase_deadline" ]; then
+            log_fail "pre-kill readback budget (${budget}s) exhausted after ${checked} keys — verdict UNMEASURABLE"
+            return 1
+        fi
+        checked=$((checked + 1))
         key="$(key_for "$idx")"
         expected="$(amount_for "$idx")"
-        actual="$(read_amount "$key" || true)"
-        if [ "$actual" != "$expected" ]; then
-            log_error "pre-kill readback mismatch for ${key}: expected ${expected}, got '${actual}'"
-            bad=$((bad + 1))
-        fi
+        actual="$(read_amount "$key")" && rc=0 || rc=$?
+        case "$rc" in
+            0)
+                if [ "$actual" != "$expected" ]; then
+                    log_error "pre-kill readback mismatch for ${key}: expected ${expected}, got '${actual}'"
+                    bad=$((bad + 1))
+                fi
+                ;;
+            3)
+                log_error "pre-kill readback: ${key} ACKED but a holding node answered ABSENT"
+                bad=$((bad + 1))
+                ;;
+            *)
+                log_warn "pre-kill readback: ${key} unreachable (no node answered) — not counted as loss"
+                unreachable=$((unreachable + 1))
+                ;;
+        esac
     done < "$ACKED_PRE"
 
+    if [ "$unreachable" -ne 0 ]; then
+        log_fail "${unreachable} pre-kill entities UNREACHABLE — verdict unmeasurable, fix the cluster/harness first"
+        return 1
+    fi
     if [ "$bad" -ne 0 ]; then
         log_fail "${bad} pre-kill entities did not read back correctly"
         return 1
@@ -346,7 +396,11 @@ test_failover_completed() {
 # no crash. That is the #508 lesson one level up: the ack-count gate was present and
 # still let a hollow pass through. The crash itself must be a precondition.
 test_every_acked_entity_survives_the_crash() {
-    local total=0 missing=0 wrong=0 idx key expected actual f
+    local total=0 missing=0 wrong=0 unreachable=0 idx key expected actual rc f
+    # Wall-clock phase budget — run4's version of this loop ran 20,295s against nothing.
+    # Overrun = UNMEASURABLE; only a POSITIVE "absent" from an arc-holding node counts as loss.
+    local budget="${READBACK_BUDGET:-900}"
+    local phase_deadline=$((SECONDS + budget))
 
     if [ "$KILL_CONFIRMED" -ne 1 ]; then
         log_fail "no SIGKILL was performed — this assertion would pass without testing anything"
@@ -356,18 +410,31 @@ test_every_acked_entity_survives_the_crash() {
     for f in "$ACKED_PRE" "$ACKED_DURING"; do
         while read -r idx; do
             [ -n "$idx" ] || continue
+            if [ "$SECONDS" -ge "$phase_deadline" ]; then
+                log_fail "durability readback budget (${budget}s) exhausted after ${total} keys — verdict UNMEASURABLE"
+                return 1
+            fi
             total=$((total + 1))
             key="$(key_for "$idx")"
             expected="$(amount_for "$idx")"
-            actual="$(read_amount "$key" || true)"
+            actual="$(read_amount "$key")" && rc=0 || rc=$?
 
-            if [ -z "$actual" ]; then
-                missing=$((missing + 1))
-                log_error "LOST after SIGKILL: ${key} (acked, now unreadable)"
-            elif [ "$actual" != "$expected" ]; then
-                wrong=$((wrong + 1))
-                log_error "CORRUPTED after SIGKILL: ${key} expected ${expected}, got ${actual}"
-            fi
+            case "$rc" in
+                0)
+                    if [ "$actual" != "$expected" ]; then
+                        wrong=$((wrong + 1))
+                        log_error "CORRUPTED after SIGKILL: ${key} expected ${expected}, got ${actual}"
+                    fi
+                    ;;
+                3)
+                    missing=$((missing + 1))
+                    log_error "LOST after SIGKILL: ${key} (acked; a holding node answers ABSENT)"
+                    ;;
+                *)
+                    unreachable=$((unreachable + 1))
+                    log_warn "UNREACHABLE after SIGKILL: ${key} (no node answered — NOT counted as loss)"
+                    ;;
+            esac
         done < "$f"
     done
 
@@ -378,8 +445,15 @@ test_every_acked_entity_survives_the_crash() {
         return 1
     fi
 
-    log_info "post-SIGKILL: ${total} acked, ${missing} missing, ${wrong} corrupted"
+    log_info "post-SIGKILL: ${total} acked, ${missing} missing, ${wrong} corrupted, ${unreachable} unreachable"
 
+    # Unreachable keys make the verdict unmeasurable — the run FAILS, but as a harness/cluster
+    # health failure, explicitly NOT a durability claim. Conflating the two is what made run2's
+    # "1/2 lost" line meaningless.
+    if [ "$unreachable" -ne 0 ]; then
+        log_fail "${unreachable}/${total} keys UNREACHABLE — durability verdict unmeasurable this run"
+        return 1
+    fi
     if [ "$missing" -ne 0 ] || [ "$wrong" -ne 0 ]; then
         log_fail "${missing}/${total} lost and ${wrong}/${total} corrupted after the crash"
         return 1

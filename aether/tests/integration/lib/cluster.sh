@@ -1781,6 +1781,38 @@ drop_ctm_replacements() {
 # hardcoded against compose YAML rather than parsed at runtime — the compose
 # files are authoritative and seldom-changed, and runtime parsing on the remote
 # would itself add a failure surface.
+# ---------------------------------------------------------------------------
+# Capture-before-heal log streamers (remote only)
+# ---------------------------------------------------------------------------
+# Auto-heal destroys a dying node's container WITH its logs (`docker rm`), which made the
+# run2/run4 pre-kill deaths (node-5, node-3) undiagnosable. A remote-side daemon
+# (scripts/log-streamer.sh) keeps an appending `docker logs -f` attached to every aether-*
+# container — including auto-heal replacements, via a 5s re-scan — so the FILES survive
+# container removal. capture_node_logs (run-tests.sh) fetches them as streamed-*.log.
+start_log_streamers() {
+    [ "$ENV_TYPE" = "remote" ] || return 0
+
+    if ! remote_scp "${SCRIPT_DIR}/scripts/log-streamer.sh" "/tmp/aether-log-streamer.sh"; then
+        log_warn "log-streamer deploy failed — pre-removal node logs will not survive auto-heal this run"
+        return 0
+    fi
+    # Restart clean: a previous run's daemon, streams, and files must not pollute this run's
+    # evidence (the failure-log dir had exactly that staleness bug on the harness side).
+    remote_exec "[ -f /tmp/aether-node-logs/daemon.pid ] && kill \$(cat /tmp/aether-node-logs/daemon.pid) 2>/dev/null; \
+pkill -f 'docker logs -f aether-' 2>/dev/null; \
+rm -rf /tmp/aether-node-logs && mkdir -p /tmp/aether-node-logs; \
+chmod +x /tmp/aether-log-streamer.sh; \
+nohup /tmp/aether-log-streamer.sh >/dev/null 2>&1 & echo \$! > /tmp/aether-node-logs/daemon.pid" \
+        || { log_warn "log-streamer start failed — continuing without capture-before-heal"; return 0; }
+    log_info "log streamers started on ${TARGET_HOST} (files under /tmp/aether-node-logs survive docker rm)"
+}
+
+stop_log_streamers() {
+    [ "$ENV_TYPE" = "remote" ] || return 0
+    remote_exec "[ -f /tmp/aether-node-logs/daemon.pid ] && kill \$(cat /tmp/aether-node-logs/daemon.pid) 2>/dev/null; \
+pkill -f 'docker logs -f aether-' 2>/dev/null; true" >/dev/null 2>&1 || true
+}
+
 cleanup_cluster_zombies() {
     local cluster_id="$1"
     if [ -z "$cluster_id" ]; then

@@ -292,6 +292,11 @@ capture_node_logs() {
     local out_dir="${SCRIPT_DIR}/failure-logs/${suite_name}"
 
     mkdir -p "$out_dir" 2>/dev/null || return 0
+    # Clear STALE captures first: this dir accumulates across runs, and run3's diagnosis
+    # nearly used run2's node-5.log sitting beside run3's fresh files. A capture must
+    # only ever contain THIS run's evidence.
+    rm -f "${out_dir}"/*.log 2>/dev/null || true
+    date -u '+captured %Y-%m-%dT%H:%M:%SZ' > "${out_dir}/capture-manifest.txt" 2>/dev/null || true
 
     local names
     case "$ENV_TYPE" in
@@ -305,6 +310,16 @@ capture_node_logs() {
             names=$(remote_exec "docker ps -a --format '{{.Names}}' --filter name=aether-${target_cluster}-node-" 2>/dev/null)
             for n in $names; do
                 remote_exec "docker logs --tail 400 ${n}" > "${out_dir}/${n}.log" 2>&1 || true
+            done
+            # Streamed logs survive `docker rm` (auto-heal destroys a dying node's container
+            # WITH its logs — node-5 in run2, node-3 in run4 died undiagnosable). The streamer
+            # daemon (start_log_streamers, lib/cluster.sh) appends to per-container files on
+            # the remote host; fetch whatever it has, prefixed so live-capture and streamed
+            # views of the same node stay distinguishable.
+            local streamed
+            streamed=$(remote_exec "ls /tmp/aether-node-logs/*.log 2>/dev/null" 2>/dev/null || true)
+            for f in $streamed; do
+                remote_exec "tail -c 2000000 ${f}" > "${out_dir}/streamed-$(basename "$f")" 2>&1 || true
             done
             ;;
         *) return 0 ;;
@@ -730,6 +745,9 @@ deploy_docker() {
         remote_exec "cd ~ && docker rm -f \$(docker ps -aq --filter name=aether-b-node-) 2>/dev/null; docker rm -f \$(docker ps -aq --filter name=aether-default-node-) 2>/dev/null || true; docker compose -f docker-compose-b.yml down -v 2>/dev/null || true"
         cleanup_cluster_zombies "b"
         remote_exec "cd ~ && docker compose -f docker-compose-b.yml up -d 2>&1 | tail -5"
+        # Capture-before-heal: streamed log files survive the `docker rm` auto-heal performs
+        # on a dying node — without this, the container's death destroys its own evidence.
+        start_log_streamers
     fi
 }
 
@@ -847,6 +865,9 @@ teardown() {
                 docker compose -f "$COMPOSE_A" down -v 2>/dev/null || true
                 docker compose -f "$COMPOSE_B" down -v 2>/dev/null || true
             else
+                # Stop the capture-before-heal streamers BEFORE removing their containers,
+                # so the daemon is not left re-attaching to a cluster being torn down.
+                stop_log_streamers
                 # Same order on remote: sweep CTM containers before compose down
                 remote_exec "docker rm -f \$(docker ps -aq --filter name=aether-a-node-) 2>/dev/null; docker rm -f \$(docker ps -aq --filter name=aether-b-node-) 2>/dev/null; docker rm -f \$(docker ps -aq --filter name=aether-default-node-) 2>/dev/null || true"
                 remote_exec "docker compose -f ~/docker-compose-a.yml down -v 2>/dev/null || true"
