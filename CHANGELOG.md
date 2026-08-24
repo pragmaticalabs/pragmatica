@@ -6,6 +6,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Verification (2026-08-24 — 02w run5, first run with complete evidence)
+- **The 02w wall-clock disease is fixed: 4,230s (~70 min) end-to-end vs run4's 5.6h+ killed.**
+  Deadline budget live-validated server-side (stage 1+2): suite legs bounded, cluster B formed in
+  14s, failover settled in 2s, post-crash liveness create+read passed. Capture-before-heal proven:
+  the SIGKILLed node's full log survived its `docker rm` for the first time
+  (`streamed-aether-b-node-5.log`), along with the auto-heal replacement's.
+- **Durability verdict: UNMEASURABLE this run — and for the first time that is what it says,
+  instead of a false loss claim.** 14/40 creates acked inside the 900s create budget (~64s/create);
+  pre-kill readback green (14/14 exact values); post-kill readback exhausted its 900s budget at
+  11/14 keys with 2 UNREACHABLE (no node answered — quarantined, NOT counted as loss). Among the
+  measurable: 0 lost, 0 corrupted. `[design intent — unverified]` remains the standing durability
+  claim; the run adds NO evidence of loss.
+- **The remaining defect is localized and quantified:** entity operations from most nodes
+  chronically burn their full 10s budget before one leg lands (~64s/create healthy, ~82s/read
+  post-kill; ownership convergence 989s vs 480s budget on a HEALTHY cluster). One pathology
+  explains all three red measurements. Root-cause investigation on the complete run5 logs is the
+  next work item; suite generation counter hit 1:4254 (churn to explain).
+
+### Fixed
+- **02w's verdict could not distinguish data loss from an unreachable cluster — now it must.**
+  `read_amount` is a three-way protocol: `found` (value), ABSENT (positive `"outcome":"absent"`
+  from a node HOLDING the key's arc — non-holders answer `PartitionNotHeld`, never absent), and
+  UNREACHABLE (no positive answer — fails the run as "verdict unmeasurable", never as loss; run2's
+  "1/2 lost" was rendered over exactly this conflation). Create and both readback loops carry
+  wall-clock phase budgets (`CREATE_BUDGET`/`READBACK_BUDGET`, 900s) — run4 ran a 20,295s readback
+  against nothing; budget exhaustion caps the population (creates) or reports UNMEASURABLE
+  (readback), never a fabricated verdict. Remote `_api_call` gains a 5s connect cap; the
+  failure-log dir is cleared per run (run3's diagnosis nearly used run2's stale capture); and
+  capture-before-heal log streamers on the remote host (scripts/log-streamer.sh, self-healing
+  5s re-scan picks up auto-heal replacements) make node logs survive `docker rm` — auto-heal
+  destroyed the dying node's evidence in runs 2 and 4. The streamer's own pkill uses the
+  self-excluding `-[f]` pattern: the bare pattern matched the remote shell running the start
+  chain and killed it (run5 hit this live; the recorded "pgrep matches your own waiter" class).
+  `[verified: 02w run5 — budgets fired and reported honestly, streamed logs captured for all
+  nodes including the killed one, UNREACHABLE quarantined from the loss count]`
+
 ### Added
 - **Per-request deadline budget shared across layers (`Deadline`, core) — the fix for the 02w
   wall-clock disease.** Client-visible operations had no deadline shared across layers, so each
