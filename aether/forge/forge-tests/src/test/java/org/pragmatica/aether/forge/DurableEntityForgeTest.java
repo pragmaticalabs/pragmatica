@@ -242,10 +242,10 @@ class DurableEntityForgeTest {
         assertThat(text(duplicate, "failureType")).isEqualTo("EntityAlreadyExists");
     }
 
-    /// Owner-aware because admission now precedes the key lookup: a non-owner answers `NotCurrentOwner`,
-    /// and only the owner gets far enough to report `EntityNotFound`. That precedence is correct, not a
-    /// regression — a node with no right to touch a key should not report on its contents. Asserting the
-    /// whole five-node shape rather than just the owner's answer also re-proves the fence for free.
+    /// Under owner-forwarding (#596) every node relays the update to the committed owner, so all five
+    /// callers receive the OWNER's verdict: `EntityNotFound`, typed, reconstructed across the wire.
+    /// Asserting the whole five-node shape proves the forward carries the owner's answer faithfully —
+    /// a node that reported its own (non-authoritative) view instead would stand out here.
     @Test
     @Order(6)
     void update_failsWithKeyNotFound_forUnknownKey() {
@@ -253,11 +253,8 @@ class DurableEntityForgeTest {
                                      .map(port -> text(update(port, "order-never-created", 1), "failureType"))
                                      .toList();
 
-        assertThat(failureTypes).describedAs("exactly the owner reports on the key's contents")
-                                .containsOnlyOnce("EntityNotFound");
-        assertThat(failureTypes).filteredOn(type -> !"EntityNotFound".equals(type))
-                                .describedAs("every non-owner is turned away before the lookup")
-                                .containsOnly("NotCurrentOwner");
+        assertThat(failureTypes).describedAs("every caller receives the owner's typed verdict through the forward (#596)")
+                                .containsOnly("EntityNotFound");
     }
 
     @Test
@@ -349,15 +346,13 @@ class DurableEntityForgeTest {
                          .toList();
     }
 
-    /// The I1 gate, flipped. At I0 all five nodes accepted a create for the SAME key and each believed it
-    /// held the only copy — five single-writer entities for one key, not one. Exactly one may accept now:
-    /// only the committed owner of the key's `(entity:orders, partition)` arc is admitted, and the other
-    /// four are turned away with `NotCurrentOwner`.
-    ///
-    /// The fence is what makes this true, but note WHICH half: the per-partition epoch fence rejects a
-    /// DEPOSED owner, and could never reject these four — they are live and read the same committed epoch
-    /// the owner does. Owner ADMISSION is what produces one-accepted-four-rejected. Both are wired; this
-    /// asserts the second.
+    /// The I1 gate, flipped — then flipped once more by #596. At I0 all five nodes accepted a create for
+    /// the SAME key and each believed it held the only copy — five single-writer entities for one key,
+    /// not one. With admission, exactly one accepted and four refused `NotCurrentOwner`. With
+    /// owner-forwarding, every node ACCEPTS the request but relays it to the committed owner — so the
+    /// single-writer invariant now shows as: exactly one attempt CREATES, and every later attempt
+    /// surfaces the owner's `EntityAlreadyExists`. The owner's admission still decides; the forward is
+    /// a route to it, not a way around it.
     ///
     /// Deliberately a thin assertion over [#createOnOwner], the same helper every other create in this
     /// suite goes through — so the property is checked continuously as a side effect of ordinary setup,
@@ -441,7 +436,7 @@ class DurableEntityForgeTest {
     /// The port that accepted a create, plus its response body.
     private record Accepted(int port, String response) {}
 
-    /// Create `key` by offering it to EVERY node and requiring that exactly one accepts.
+    /// Create `key` by offering it to EVERY node and requiring that exactly one creates it.
     ///
     /// This is the shared create helper rather than a special case in the fence test, and that is
     /// deliberate: tests 1–5, 7–9 and 11 all need a successful create as a precondition anyway, so routing
@@ -452,9 +447,12 @@ class DurableEntityForgeTest {
     /// resolution were wrong, as long as it were wrong the same way on both sides. Offering the write to
     /// all five and counting acceptances cannot be fooled that way.
     ///
-    /// Every rejection must be `NotCurrentOwner`. `OwnershipNotYetCommitted` would mean the arc has no
-    /// committed owner — a real defect once setUp has waited for convergence — so it is failed on
-    /// explicitly rather than lumped in with "not accepted".
+    /// Under owner-forwarding (#596) every node ACCEPTS the request — a non-owner forwards it to the
+    /// committed owner — so the single-writer invariant now shows as: exactly one attempt CREATES, and
+    /// every later attempt surfaces `EntityAlreadyExists` (the owner's typed duplicate refusal,
+    /// reconstructed across the wire). `OwnershipNotYetCommitted` would still mean the arc has no
+    /// committed owner — a real defect once setUp has waited for convergence — and `containsOnly`
+    /// fails it explicitly rather than lumping it in with "not created".
     private Accepted createOnOwner(String key, String status, int amount) {
         var responses = appPorts().stream()
                                   .map(port -> new Accepted(port, create(port, key, status, amount)))
@@ -464,12 +462,12 @@ class DurableEntityForgeTest {
                                 .toList();
 
         assertThat(responses).describedAs("every node must have answered").hasSize(NODES);
-        assertThat(accepted).describedAs("exactly one node may accept a create for '%s'; got %s",
+        assertThat(accepted).describedAs("exactly one attempt may create '%s'; got %s",
                                           key,
                                           outcomesOf(responses))
                             .hasSize(1);
-        assertThat(rejectionTypesOf(responses)).describedAs("every non-owner must be turned away as a non-owner, not as an unowned arc")
-                                               .containsOnly("NotCurrentOwner");
+        assertThat(rejectionTypesOf(responses)).describedAs("every later attempt must surface the duplicate as EntityAlreadyExists — its forward reached the owner and the single-writer invariant held (#596)")
+                                               .containsOnly("EntityAlreadyExists");
 
         return accepted.getFirst();
     }

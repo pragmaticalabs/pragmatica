@@ -87,23 +87,28 @@ public sealed interface EntityForwardMessage extends ProtocolMessage {
     /// A failure here must reach the original caller as a failure. The one thing the sender must never
     /// do is apply the command locally instead — that would put a second writer on the key, which is
     /// precisely what the ownership fence prevents.
+    /// `failureType` is the owner-side cause's simple class name ("" on success) — carried so the
+    /// sender can reconstruct the TYPED refusal instead of a string-flattened one; see
+    /// `EntityOwnerForward.ForwardRefused`.
     record EntityUpdateForwardResponse(NodeId sender,
                                        String correlationId,
                                        boolean success,
                                        byte[] state,
+                                       String failureType,
                                        String errorMessage) implements EntityForwardMessage {
         public EntityUpdateForwardResponse {
             state = state.clone();
         }
 
         public static EntityUpdateForwardResponse successResponse(NodeId sender, String correlationId, byte[] state) {
-            return new EntityUpdateForwardResponse(sender, correlationId, true, state, "");
+            return new EntityUpdateForwardResponse(sender, correlationId, true, state, "", "");
         }
 
         public static EntityUpdateForwardResponse failureResponse(NodeId sender,
                                                                   String correlationId,
+                                                                  String failureType,
                                                                   String errorMessage) {
-            return new EntityUpdateForwardResponse(sender, correlationId, false, new byte[0], errorMessage);
+            return new EntityUpdateForwardResponse(sender, correlationId, false, new byte[0], failureType, errorMessage);
         }
     }
 }

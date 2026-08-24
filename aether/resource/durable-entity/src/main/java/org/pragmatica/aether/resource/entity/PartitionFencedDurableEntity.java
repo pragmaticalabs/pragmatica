@@ -288,6 +288,7 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
                                                                                                                                          keyspace,
                                                                                                                                          payload.key(),
                                                                                                                                          payload.body())))
+                        .mapError(cause -> retypeForwarded(cause, key))
                         .map(this::decode);
     }
 
@@ -297,6 +298,7 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
                                                                                                                                          keyspace,
                                                                                                                                          payload.key(),
                                                                                                                                          payload.body())))
+                        .mapError(cause -> retypeForwarded(cause, key))
                         .map(this::decode);
     }
 
@@ -306,7 +308,24 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
         return transport().flatMap(transport -> encodedKey(key).flatMap(encoded -> transport.forwardDelete(owner,
                                                                                                            keyspace,
                                                                                                            encoded)))
+                        .mapError(cause -> retypeForwarded(cause, key))
                         .mapToUnit();
+    }
+
+    /// Reconstruct the owner's TYPED refusal from the wire carrier. The wire flattens causes to
+    /// strings, and the slice reports failures by cause TYPE — so a forwarded duplicate-create that
+    /// surfaced as a generic failure instead of [EntityError.EntityAlreadyExists] read as an
+    /// unexplained error to every matcher keyed on the type (02w counts acked creates exactly that
+    /// way). Only the variants that legitimately cross this boundary are reconstructed; anything
+    /// else keeps the carrier, whose message already names the owner's reason.
+    private Cause retypeForwarded(Cause cause, K key) {
+        return cause instanceof EntityOwnerForward.ForwardRefused(var failureType, var ignored)
+               ? switch (failureType) {
+                   case "EntityAlreadyExists" -> new EntityError.EntityAlreadyExists(String.valueOf(key));
+                   case "EntityNotFound" -> new EntityError.EntityNotFound(String.valueOf(key));
+                   default -> cause;
+               }
+               : cause;
     }
 
     private Promise<EntityOwnerForward> transport() {

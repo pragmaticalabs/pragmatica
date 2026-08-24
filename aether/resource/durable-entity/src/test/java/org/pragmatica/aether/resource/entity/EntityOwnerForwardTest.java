@@ -329,6 +329,36 @@ class EntityOwnerForwardTest {
             .containsExactly(false);
     }
 
+    /// The wire flattens causes to strings; the typed refusal must be RECONSTRUCTED from the
+    /// carrier's failureType, or a forwarded duplicate-create reads as an unexplained generic
+    /// failure to every consumer matching on the cause type (02w counts acked creates that way).
+    @Test
+    void create_ownerRefusesAsAlreadyExists_surfacesTheTypedCauseNotTheCarrier() {
+        transport.refuseWith(new EntityOwnerForward.ForwardRefused("EntityAlreadyExists", "entity already exists: k1"));
+
+        var result = entityAs(SELF, OTHER, Option.some(transport)).create("k1", 100).await();
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> assertThat(cause)
+            .as("the sender must see the owner's TYPED refusal, not a string-flattened carrier")
+            .isInstanceOf(EntityError.EntityAlreadyExists.class));
+    }
+
+    /// An unknown failureType keeps the carrier — its message names the owner's reason verbatim,
+    /// and minting a wrong typed cause would be worse than a generic one.
+    @Test
+    void create_ownerRefusesWithUnknownType_keepsTheCarrierCause() {
+        transport.refuseWith(new EntityOwnerForward.ForwardRefused("SomethingNovel", "owner said no"));
+
+        var result = entityAs(SELF, OTHER, Option.some(transport)).create("k1", 100).await();
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> {
+            assertThat(cause).isInstanceOf(EntityOwnerForward.ForwardRefused.class);
+            assertThat(cause.message()).contains("owner said no");
+        });
+    }
+
     private record ForwardCall(String op, NodeId owner, String keyspace, byte[] key, byte[] command) {}
 
     /// Answers every forward with state 107, so a successful result proves the value came back ACROSS
@@ -337,9 +367,14 @@ class EntityOwnerForwardTest {
         private final List<ForwardCall> calls = new ArrayList<>();
         private final List<Boolean> boundedAtCall = new ArrayList<>();
         private String failure;
+        private Cause refusal;
 
         void failWith(String message) {
             this.failure = message;
+        }
+
+        void refuseWith(Cause cause) {
+            this.refusal = cause;
         }
 
         @Override
@@ -360,6 +395,10 @@ class EntityOwnerForwardTest {
         private Promise<byte[]> record(String op, NodeId owner, String keyspace, byte[] key, byte[] body) {
             calls.add(new ForwardCall(op, owner, keyspace, key, body));
             boundedAtCall.add(Deadline.current().isBounded());
+
+            if (refusal != null) {
+                return refusal.promise();
+            }
 
             return failure == null
                    ? Promise.success("107".getBytes(StandardCharsets.UTF_8))

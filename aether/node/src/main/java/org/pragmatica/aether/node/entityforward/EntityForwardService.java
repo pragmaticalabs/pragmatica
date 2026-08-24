@@ -6,7 +6,6 @@ package org.pragmatica.aether.node.entityforward;
 
 import java.util.Map;
 import java.util.function.BiFunction;
-import java.util.function.Function;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -240,6 +239,7 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
                    correlationId,
                    EntityUpdateForwardResponse.failureResponse(selfNodeId,
                                                                correlationId,
+                                                               "UnknownKeyspace",
                                                                "no entity registered for keyspace " + keyspace));
 
             return;
@@ -253,6 +253,7 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
                                             correlationId,
                                             EntityUpdateForwardResponse.failureResponse(selfNodeId,
                                                                                         correlationId,
+                                                                                        cause.getClass().getSimpleName(),
                                                                                         cause.message())));
     }
 
@@ -286,7 +287,8 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
 
         promise.resolve(response.success()
                         ? Result.success(response.state())
-                        : FORWARD_REFUSED.apply(response.errorMessage()).result());
+                        : new EntityOwnerForward.ForwardRefused(response.failureType(),
+                                                                response.errorMessage()).result());
     }
 
     /// Below this much remaining budget a forward is refused instead of sent: the owner round trip
@@ -307,6 +309,4 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
     private static final BiFunction<String, String, Cause> FORWARD_BUDGET_EXHAUSTED = (owner, keyspace) -> Causes.cause("entity owner-forward to " + owner
                                                                                                                        + " for keyspace " + keyspace
                                                                                                                        + " refused: request budget exhausted — the command was never sent");
-
-    private static final Function<String, Cause> FORWARD_REFUSED = message -> Causes.cause("entity owner-forward refused by the owner: " + message);
 }

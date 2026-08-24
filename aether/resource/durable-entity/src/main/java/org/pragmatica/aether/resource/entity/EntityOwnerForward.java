@@ -5,6 +5,7 @@
 package org.pragmatica.aether.resource.entity;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 
 
@@ -59,4 +60,17 @@ public interface EntityOwnerForward {
     /// Delete `key` on the owner. Carries no payload beyond the key, and answers with no state — the
     /// outcome is the success or failure itself, so the response's state bytes are empty by contract.
     Promise<byte[]> forwardDelete(NodeId owner, String keyspace, byte[] key);
+
+    /// A refusal that crossed the forward wire. `failureType` is the OWNER-side cause's simple class
+    /// name, carried explicitly because the wire otherwise flattens causes to message strings — and a
+    /// forwarded duplicate-create that surfaced as a generic failure instead of `EntityAlreadyExists`
+    /// reads as an unexplained error to every consumer that matches on the type (02w counts acked
+    /// creates exactly that way). The entity reconstructs the typed [EntityError] variants it knows;
+    /// anything else keeps this carrier, whose message names the owner's reason verbatim.
+    record ForwardRefused(String failureType, String ownerMessage) implements Cause {
+        @Override
+        public String message() {
+            return "entity owner-forward refused by the owner: " + ownerMessage;
+        }
+    }
 }
