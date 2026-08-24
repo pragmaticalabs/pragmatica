@@ -109,15 +109,25 @@ is wrong somewhere else.
 - `probe_partition_spread` needs 12/12 creates in ONE round: at 30–120s/key a round outruns any
   budget — when the forward stall is fixed, convergence should collapse to seconds.
 
-## §6 Next (priority order)
+## §6 Next (priority order — FINAL, after run6 delivered the durability verdict)
 
-1. **Ember/forge multi-node repro of §3** with the §4 sensor — find where the binding dies in the
-   real assembly. Then fix at that mechanism, not at a symptom site.
-2. **Re-run 02w** (now cheap: ~70 min) — with the stall fixed expect 40/40 creates in minutes, full
-   readback, and the actual durability verdict (also live-validates #634-1 replica fsync-before-ack).
+> **Run6 (post codec-fix): THE VERDICT IS GREEN.** All 21 acked entities (18 pre-kill + 3 DURING
+> the kill) survived SIGKILL with exact values — 0 lost / 0 corrupted / 0 unreachable, suite in
+> 552s. #634-1 replica fsync-before-ack is live-validated. 9/10 tests pass.
+
+1. **Entity arc ownership must be minted over the HOSTING node set** — the one remaining 02w
+   failure. Blueprint places `instances = 3`; the leader's ownership reconcile mints
+   `(entity:orders, partition)` owners across all 5 nodes; partitions owned by non-hosting
+   nodes 4/5 refuse every write with the (new, typed) `no entity registered for keyspace orders`
+   — 22/40 creates. Fix in the leader reconcile: candidate owners = nodes hosting the keyspace's
+   declaring slice; failover re-placement stays within that set. Forge can pin it by forming more
+   nodes than instances.
+2. **Re-run 02w** after item 1 — expect 10/10 and 40/40, closing the suite green.
 3. **#634-3+4** tri-floor operator surface (management-API quad) — design settled on the ticket.
-4. Generation-counter churn (1:4254 in one suite) has NO log line — observability gap flagged by
-   the investigator; fold into #634-3's surface or file separately.
-5. Spontaneous pre-kill node deaths (run2 node-5, run4 node-3): run5 had none, but streamers now
-   guarantee evidence when it recurs.
+4. Structural follow-ups from this session: boot-time routed-type⇒codec verification (the #492
+   class killer), transport's silent swallow of encode failures, invoke-layer budget caps,
+   entity-forward wire budget, generation-counter observability (1:4254 in run5 — unexplained,
+   unlogged).
+5. Spontaneous pre-kill node deaths (run2/run4): none in run5/run6; streamers now guarantee
+   evidence on recurrence.
 6. #634-7 remainder, #634-5 (owner rulings), S3 idempotency, #598, #628.

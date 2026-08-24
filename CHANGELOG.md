@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Verification (2026-08-24 — 02w run6, post codec-fix: THE DURABILITY VERDICT, first ever)
+- **All 21 ACKED entities survived a SIGKILL with their exact values — 0 lost, 0 corrupted,
+  0 unreachable, full population checked within budget.** 18 pre-kill + 3 acked DURING the kill
+  window (the first run fast enough for the concurrent creator to land anything). Failover settled
+  in 1s; post-crash liveness green; checkpoint driver clean. This live-validates the
+  fsync-before-ack chain including #634-1's replica path.
+  `[verified: 02w run6 — Every_ACKED_entity_survives_the_crash over 21 acked keys under SIGKILL]`
+- **Suite wall clock: 552s** — runs 2–4 were killed past 5.6h, run5 took 4,230s. 9 of 10 tests
+  pass; the one failure (ownership convergence) is now PRECISELY diagnosed by the typed refusal
+  the same session added: `no entity registered for keyspace orders` from nodes 4 and 5 — the
+  blueprint places `instances = 3`, and **the leader's ownership reconcile mints entity
+  partition-arc owners across ALL cluster nodes instead of the entity-hosting set**, so partitions
+  owned by non-hosting nodes refuse every write (22/40 creates). Forge cannot see this (formation
+  size = instance count). Next work item: mint entity arc ownership over the keyspace's hosting
+  nodes, and keep re-placement within them on failover.
+
 ### Fixed
 - **The #596 entity owner-forward wire pair was NEVER REGISTERED in the node codec — every entity
   forward in every run silently vanished at the transport.** The annotation processor generated
