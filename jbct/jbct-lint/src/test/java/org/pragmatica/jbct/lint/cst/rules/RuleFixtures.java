@@ -100,6 +100,27 @@ final class RuleFixtures {
                 }
                 """),
 
+        // JBCT-REC-01: recover(...) absorbing a failure with no recovery-triple justification.
+        // The negative carries an FER tag, which is what the corpus does at every one of its sites.
+        fixture("JBCT-REC-01", 3,
+                """
+                package org.example;
+                class Foo {
+                    Promise<Unit> notifyBuyer(Confirmation c) {
+                        return notifier.send(c).recover(_ -> Unit.unit());
+                    }
+                }
+                """,
+                """
+                package org.example;
+                class Foo {
+                    // FER: a notification failure is swallowed so it never fails the buy.
+                    Promise<Unit> notifyBuyer(Confirmation c) {
+                        return notifier.send(c).recover(_ -> Unit.unit());
+                    }
+                }
+                """),
+
         // JBCT-RET-05: no always-succeeding Result (only Result.success, never a failure).
         fixture("JBCT-RET-05", 3,
                 """

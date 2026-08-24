@@ -41,6 +41,111 @@ class MethodShapeClassifierTest {
                                  .unwrap();
     }
 
+    /// Phase-2 MIXED (#448): a composition whose chain passes an inline lambda carrying its own
+    /// structural pattern.
+    ///
+    /// Phase 1 scoped MIXED to a fork-join head plus a stream pipeline, leaving the richer nestings
+    /// to JBCT-PAT-02 / LAM-03 / NEST-01. The bucket was then unreachable in practice — 0 across
+    /// 49,460 methods in seven codebases, including deliberate violations — so a measured
+    /// `MIXED = 0` read as conformance when it was the instrument's silence, and `lint` and
+    /// `shape-census` gave contradictory verdicts on the same method.
+    ///
+    /// The three violation cases below are the reported reproduction verbatim. The two controls are
+    /// what keep the bucket meaning "JBCT code mixing JBCT patterns" rather than "not written in the
+    /// vocabulary".
+    @Nested
+    class NestedPatternMixing {
+        @Test
+        void classify_forkJoinInsideSequencerLambda_isMixed() {
+            assertShape(MethodShape.MIXED,
+                        """
+                        Promise<R> m(Request request) {
+                            return validate(request)
+                                .flatMap(this::loadAccount)
+                                .flatMap(acc -> Promise.all(fetchLimits(acc), fetchHistory(acc)).map(this::combine))
+                                .map(this::toResponse);
+                        }
+                        """);
+        }
+
+        @Test
+        void classify_conditionInsideSequencerLambda_isMixed() {
+            assertShape(MethodShape.MIXED,
+                        """
+                        Promise<R> m(Request request) {
+                            return validate(request)
+                                .flatMap(v -> v.isPremium() ? premiumPath(v) : standardPath(v))
+                                .map(this::toResponse);
+                        }
+                        """);
+        }
+
+        @Test
+        void classify_iterationInsideSequencerLambda_isMixed() {
+            assertShape(MethodShape.MIXED,
+                        """
+                        Promise<R> m(Request request) {
+                            return validate(request)
+                                .map(v -> v.items().stream().filter(Item::isActive).toList())
+                                .flatMap(this::persistAll)
+                                .map(this::toResponse);
+                        }
+                        """);
+        }
+
+        /// The regression guard. Method references ARE the fix the book prescribes, so extraction
+        /// must never be penalised — if this goes MIXED the rule punishes the correction.
+        @Test
+        void classify_sameShapesExtractedToMethodReferences_staysSequencer() {
+            assertShape(MethodShape.SEQUENCER,
+                        """
+                        Promise<R> m(Request request) {
+                            return validate(request)
+                                .flatMap(this::loadAccount)
+                                .flatMap(this::gatherInParallel)
+                                .map(this::toResponse);
+                        }
+                        """);
+        }
+
+        /// Imperative code is not mixing patterns; it is not written in the vocabulary. If MIXED
+        /// absorbed it, the bucket would measure "is this JBCT code" and swamp any cross-codebase
+        /// comparison — in the run that found this bug, 48,000 external methods would have gone
+        /// almost entirely to MIXED.
+        @Test
+        void classify_maximalImperativeBody_staysUnclassified() {
+            assertShape(MethodShape.UNCLASSIFIED,
+                        """
+                        String m(Order order, int mode) {
+                            var out = new StringBuilder();
+                            if (order == null) { return ""; } else { out.append("x"); }
+                            for (var line : order.lines()) { out.append(line.sku()); }
+                            int i = 0;
+                            while (i < 3) { out.append(i++); }
+                            switch (mode) { case 1 -> out.append("one"); default -> out.append("other"); }
+                            return out.toString();
+                        }
+                        """);
+        }
+
+        /// A lambda whose body is a one-link chain classifies LEAF, and a plain step is the
+        /// CONFORMANT case. This is where the classifier and JBCT-NEST-01 legitimately diverge:
+        /// NEST-01 flags any nested monadic operation, which is a broader claim than "carries a
+        /// structural pattern". Promoting this would make MIXED mean what NEST-01 means and would
+        /// pull conformant multi-argument lambdas into the bucket.
+        @Test
+        void classify_lambdaWhoseBodyIsAPlainStep_staysSequencer() {
+            assertShape(MethodShape.SEQUENCER,
+                        """
+                        Promise<R> m(String raw) {
+                            return load(raw)
+                                .flatMap(id -> CollateralId.collateralId(id).map(Option::some))
+                                .map(this::toResponse);
+                        }
+                        """);
+        }
+    }
+
     @Nested
     class SixShapes {
         @Test

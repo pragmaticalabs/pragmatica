@@ -193,6 +193,10 @@ public record LintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
     // Forbidden boundary types in business logic
     Map.entry("JBCT-BND-01", DiagnosticSeverity.ERROR),
 
+    // Failure absorbed with no recorded reason. WARNING, not ERROR: absorption is legitimate and
+    // common, and the corpus that motivated the rule documents every one of its eight sites.
+    Map.entry("JBCT-REC-01", DiagnosticSeverity.WARNING),
+
     // Nested ternaries
     Map.entry("JBCT-STY-09", DiagnosticSeverity.WARNING),
 

@@ -6,7 +6,7 @@ import picocli.CommandLine.Option;
 
 
 /// Main entry point for the JBCT CLI tool.
-@Command(name = "jbct", description = "JBCT code formatting and linting tool", mixinStandardHelpOptions = true, versionProvider = JbctCommand.VersionProvider.class, subcommands = {FormatCommand.class, LintCommand.class, CheckCommand.class, CheckSheetCommand.class, DeriveCommand.class, ScoreCommand.class, DocCommand.class, UpgradeCommand.class, InitCommand.class, AddSliceCommand.class, AddEventCommand.class, AddPersistenceCommand.class, FixSliceCommand.class, UpdateCommand.class, MigrateCommand.class, VerifySliceCommand.class})
+@Command(name = "jbct", description = "JBCT code formatting and linting tool", mixinStandardHelpOptions = true, versionProvider = JbctCommand.VersionProvider.class, subcommands = {FormatCommand.class, LintCommand.class, CheckCommand.class, CheckSheetCommand.class, DeriveCommand.class, ScoreCommand.class, ShapeCensusCommand.class, ObligationsCommand.class, DocCommand.class, UpgradeCommand.class, InitCommand.class, AddSliceCommand.class, AddEventCommand.class, AddPersistenceCommand.class, FixSliceCommand.class, UpdateCommand.class, MigrateCommand.class, VerifySliceCommand.class})
 public class JbctCommand implements Runnable {
     @Option(names = {"-v", "--verbose"}, description = "Enable verbose output")
     boolean verbose;
