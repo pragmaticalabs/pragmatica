@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Verification (2026-08-24 — 02w run7, post hosting-set fix: THE SUITE IS FULLY GREEN, first ever)
+- **14/14 assertions across all 10 phases, 0 failures — every number the hosting-set defect suppressed
+  is now at its ceiling.** Ownership converged across all partitions in **31s** (run6: FAILED at 989s
+  against a 480s budget); **40/40 pre-kill creates ACKED** (run6: 22/40 refused by non-hosting
+  owners); the SIGKILL landed with **40 concurrent acks recorded during the kill window** (run6: 3 —
+  the fast create path is what lets the concurrent creator land anything); **all 80 ACKED entities
+  survived the crash with their exact values — 0 missing, 0 corrupted, 0 unreachable** (run6: 21).
+  Failover settled in 2s; the checkpoint driver reports alive on exactly the 3 HOSTING nodes
+  (`instances = 3` — the fix's shape visible in operations); post-crash liveness green; auto-heal
+  restored all 5 cores to terminal convergence. Suite phase time 57s.
+  `[verified: 02w-entity-crash run7 — evidence in aether/tests/integration/failure-logs/02w-run7-green/]`
+  This closes the durability arc: #634-1 fsync-before-ack, #596 write-half forwarding, the deadline
+  budget, the codec registration, and hosting-set ownership are all live-validated in one run.
+
 ### Fixed (2026-08-24 — entity arc ownership is minted over the HOSTING set: the last 02w defect)
 - **The leader's entity-ownership reconcile minted `(entity:<keyspace>, partition)` owners over ALL
   cluster members; with `instances = 3` on five nodes, arcs owned by non-hosting nodes refused every
@@ -23,8 +37,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `[verified: DurableEntityForgeTest 12/12 forming 5 nodes with instances=3 — incl. the new
   ownership_isMintedOnlyOverNodesHostingTheEntitySlice pin and state-survives-owner-loss, 82s;
   EntityOwnershipReconcilerTest 15/15, mutation-proven (removing the hosting-set intersection —
-  the literal defect — reds 3 tests); touched modules 1879/0]` The cloud 02w re-run (expect 10/10,
-  40/40) is the remaining final gate per the in-JVM-first sequencing rule.
+  the literal defect — reds 3 tests); touched modules 1879/0]` The cloud 02w re-run — the final gate
+  per the in-JVM-first sequencing rule — ran the same day and closed the suite fully green (see the
+  run7 verification block above).
 - **Review catch (MAJOR): the reconciler was not the SOLE writer of `entity:*` ownership.** Entity
   logs are real streams since I3, so the stream-side replica reconcile walks them too — and its
   ownership driver, placing over the whole member view, would have re-placed entity arcs onto
