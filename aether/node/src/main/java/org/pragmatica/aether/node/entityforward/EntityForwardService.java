@@ -135,9 +135,20 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
 
         var correlationId = UUID.randomUUID().toString();
         Promise<byte[]> promise = Promise.promise();
+        var effectiveTimeout = deadline.bounded(timeout);
 
+        // Debug, not trace: run5 burned 48 minutes on forwards whose waits left NO log line at all,
+        // making "bounded to the client budget" and "unbounded 30s constant" indistinguishable
+        // post-hoc. One line per forward names which one this is.
+        log.debug("Entity owner-forward to {} keyspace '{}' waits {} (budget bounded={}) correlationId={}",
+                  owner,
+                  keyspace,
+                  effectiveTimeout,
+                  deadline.isBounded(),
+                  correlationId);
         pending.put(correlationId, promise);
-        SharedScheduler.schedule(() -> timeoutRequest(correlationId, owner, keyspace), deadline.bounded(timeout));
+        SharedScheduler.schedule(() -> timeoutRequest(correlationId, owner, keyspace, effectiveTimeout),
+                                 effectiveTimeout);
         sender.send(owner,
                     message.apply(correlationId))
               .onSuccess(outcome -> failFastOnRefusedSend(correlationId, owner, keyspace, outcome));
@@ -168,10 +179,17 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
         promise.resolve(FORWARD_SEND_REFUSED.apply(owner.id(), outcome).result());
     }
 
-    private void timeoutRequest(String correlationId, NodeId owner, String keyspace) {
+    /// A fired timeout WARNS with the wait it enforced: run5's forwards timed out for 48 minutes in
+    /// total silence, leaving "bounded wait" vs "unbounded 30s constant" undecidable from the logs.
+    private void timeoutRequest(String correlationId, NodeId owner, String keyspace, TimeSpan waited) {
         var promise = pending.remove(correlationId);
 
         if (promise != null) {
+            log.warn("Entity owner-forward to {} for keyspace '{}' timed out after {} (correlationId={})",
+                     owner,
+                     keyspace,
+                     waited,
+                     correlationId);
             promise.resolve(FORWARD_TIMED_OUT.apply(owner.id(), keyspace).result());
         }
     }
