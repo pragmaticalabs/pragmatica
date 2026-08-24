@@ -49,6 +49,8 @@ All configurable timeouts in a single table, grouped by TOML section.
 | `max_retries` | `3` | Maximum number of forwarding retry attempts |
 | `app_timeout` | `5s` | Per-attempt timeout for application HTTP request forwarding to the target node |
 | `management_timeout` | `5s` | Per-attempt timeout for management API request forwarding (task-group / any-core targets) |
+| `request_budget` | `10s` | Per-request deadline budget minted when a client request enters the app HTTP server. Every waiting layer under the request (forward hops, entity owner-forwards, remote stream reads) caps its own timeout by what remains of this budget, and the remaining budget travels with forwarded requests so a receiver drops work whose sender has already given up. Bounds the total server-side wait for one request; sized under the typical client timeout (e.g. a 30s curl). |
+| `management_request_budget` | `10s` | Same budget, minted when a management request is forwarded off-node (leader / task-group / per-node targets). Caps the whole forward chain including ownership-retry loops. |
 
 ### `[timeouts.deployment]`
 
@@ -198,6 +200,30 @@ Client Request
 The 5-second gap between `invoker_timeout` and `timeout` accommodates retry delays and routing overhead. The forwarding timeout is shorter because it covers only the network hop, not the execution.
 
 **Retry behavior:** On invocation failure, the system retries up to `max_retries` (3) times with exponential backoff starting from `retry_base_delay` (100ms). Forwarding failures retry up to `forwarding.max_retries` (3) times with a fixed `retry_delay` (200ms). Retries on node departure are immediate (event-driven, no delay).
+
+**The request budget caps the forward chain.** The per-layer timeouts above are ceilings for a single
+attempt; without a shared budget they *stack* — hops × retries × downstream forwards can add up to
+minutes of server-side work for a client that gave up after 30 seconds. `request_budget` (default
+10s) is minted once when the request enters the app HTTP server, and the layers that consume it take
+`min(own timeout, remaining budget)`:
+
+- each forward hop gets `min(app_timeout, remaining / attempts-left)` — counting an outer retry
+  loop's attempts too — and the hunt stops with a typed failure when less than 200ms remains;
+- the remaining budget rides on the forwarded message, so a receiving node refuses (rather than
+  dispatches) a request whose sender has already timed out — under 50ms remaining, the answer
+  cannot arrive before the sender's hop timer fires — and re-binds the budget for its local
+  dispatch;
+- entity owner-forwards refuse below a 50ms floor and cap their correlation wait by the remainder;
+- remote stream reads and publishes cap their ack waits, including the shared forward-publish
+  retry ladder (which also stops retrying once the backoff would outlive the budget).
+
+**Not yet budgeted:** the invocation-layer timeouts (`timeout`/`invoker_timeout`, east-west slice
+invocation) — capping them requires budget propagation on the invoke wire message; and the entity
+forward message itself carries no budget, so the owner-side apply of a forwarded entity command
+runs unbudgeted. Both are recorded follow-ups.
+
+Background work (schedulers, reconcilers — anything outside a client request) carries no budget and
+keeps the full per-layer defaults.
 
 ## Cluster Infrastructure
 

@@ -6,6 +6,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Added
+- **Per-request deadline budget shared across layers (`Deadline`, core) — the fix for the 02w
+  wall-clock disease.** Client-visible operations had no deadline shared across layers, so each
+  layer's timeout multiplied the one above: 5s forward hops re-driven over an unbounded receiver
+  dispatch, over a hardcoded 30s entity owner-forward wait, over 5s+retry remote stream reads —
+  run4 measured creates at ~97s each against a 30s client, and every abandoned hop left a receiver
+  computing an answer nobody collects. Now the app HTTP server mints a budget
+  (`timeouts.forwarding.request_budget`, default 10s; management forwards mint
+  `management_request_budget`, 10s) carried as an ambient `Deadline` (ScopedValue; TimeSpan API)
+  and consumed as `min(own timeout, remaining)` by: forwarder hops (`remaining/attempts-left`,
+  counting an outer task-group retry loop's attempts, typed stop under a 200ms floor; remaining
+  stamped on `HttpForwardRequest` so BOTH receivers — app and management — REFUSE a request whose
+  sender already gave up at a 50ms floor and re-bind the budget for local dispatch); entity
+  owner-forwards (refuse-below-floor before the send — a doomed send only widens the
+  unknown-outcome window on a non-idempotent write; timeout cause now states the owner MAY have
+  applied the command); and remote stream read/publish ack waits including the shared
+  forward-publish retry ladder, which captures the budget once and re-binds it around every
+  attempt (retries run on scheduler threads where the ScopedValue is gone) and stops retrying
+  when the backoff would outlive the budget. The `ContextPropagation` snapshot now carries the
+  deadline, so every propagated async hop keeps it. Unbudgeted callers (background work, direct
+  construction) keep every previous default — an unbound scope reads as unbounded. The
+  durable-entity API captures the caller's budget and re-binds it across the
+  `PerKeySerialExecutor` thread hop. NOT yet budgeted (recorded follow-ups): the
+  invocation-layer east-west timeouts (needs budget on `InvokeRequest`) and the entity forward
+  wire message (owner-side apply runs unbudgeted). `[verified: core DeadlineTest (fake-clock);
+  HttpForwarderDeadlineTest — exhausted budget = typed fail with zero sends, wire stamped,
+  hop wait capped; AppHttpServerForwardBudgetTest — expired wire budget refused with router
+  never invoked, healthy budget re-minted for dispatch; EntityForwardServiceTest — refuse-before-
+  send at zero AND below-floor + wait capped vs 60s config; EntityOwnerForwardTest — budget
+  observed across the executor hop; StreamForwardClientTest — read/publish waits capped vs 60s
+  config; StreamForwardRetryDeadlineTest — every retry attempt observes the budget, sub-backoff
+  budget stops the ladder]`
+  Handover 2026-08-24 correction recorded: the burn was NOT `InvocationTimeouts` re-driving the
+  forwarder ×3 (those retry knobs are parsed but wired to nothing) — the re-driver is the layer
+  ABOVE the node: harness sweeps × forwarder hops × the 30s `ENTITY_FORWARD_TIMEOUT`, now all
+  consuming one budget.
+
 ### Fixed
 - **`Retry` now stops on a terminal-classified `Cause` (core), and the QUIC removed-peer verdict is one.**
   Measured on 02w (2026-08-23): 4,160 scheduled retries of `stream dropped: peer is REMOVED (terminal)` —
