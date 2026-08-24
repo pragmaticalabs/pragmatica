@@ -824,14 +824,24 @@ public interface AetherNode extends ManageableNode {
     private static Option<Path> resolveStreamWalDir(AetherNodeConfig config) {
         var walDir = streamDataDir(config).resolve("wal");
 
+        return FileOps.createDirectories(walDir).fold(cause -> walDisabled(walDir, cause), _ -> Option.some(walDir));
+    }
+
+    /// #634 item 2 — the boot gate, exposed for [org.pragmatica.aether.Main]'s verification chain (the
+    /// same `verify* -> abortBoot` idiom as the cluster-name and dev-mode gates). An unwritable WAL dir
+    /// without the explicit non-durable opt-in REFUSES BOOT: the old behaviour — one WARN, then every
+    /// publish acks with no fsync — silently converted "durable entity" into "in-memory entity".
+    ///
+    /// Enforced at the PRODUCTION entrypoint only, deliberately: a node constructed directly
+    /// (Forge, tests, embedded harnesses) never passes through Main and keeps the degrade-with-WARN in
+    /// [#resolveStreamWalDir] — those are exactly the explicitly-best-effort deployments the opt-in
+    /// exists for.
+    public static Result<Unit> verifyWalBootable(AetherNodeConfig config) {
+        var walDir = streamDataDir(config).resolve("wal");
+
         return decideWalAvailability(walDir,
                                      FileOps.createDirectories(walDir).mapToUnit(),
-                                     nonDurableStreamsAllowed())
-                .fold(cause -> {
-                          LOG.error("FATAL: {}", cause.message());
-                          throw new IllegalStateException(cause.message());
-                      },
-                      dir -> dir);
+                                     nonDurableStreamsAllowed()).mapToUnit();
     }
 
     /// The decision, separated from the probe and the abort so the gate is directly testable: the boot
@@ -844,17 +854,16 @@ public interface AetherNode extends ManageableNode {
     }
 
     private static Result<Option<Path>> walUnavailable(Path walDir, Cause cause) {
-        return Causes.cause("stream WAL directory " + walDir + " is not writable (" + cause.message()
+        return Causes.cause("stream WAL directory " + walDir
+                           + " is not writable (" + cause.message()
                            + ") — refusing to boot: streams on this node would ack writes with NO fsync,"
                            + " silently converting durable entities into in-memory ones. Fix the mount, or"
                            + " opt in to non-durable streams explicitly with -Daether.allowNonDurableStreams=true"
-                           + " (env AETHER_ALLOW_NON_DURABLE_STREAMS=true) for best-effort dev/Forge profiles")
-                     .result();
+                           + " (env AETHER_ALLOW_NON_DURABLE_STREAMS=true) for best-effort dev/Forge profiles").result();
     }
 
     private static boolean nonDurableStreamsAllowed() {
-        return Boolean.getBoolean("aether.allowNonDurableStreams")
-               || "true".equalsIgnoreCase(System.getenv("AETHER_ALLOW_NON_DURABLE_STREAMS"));
+        return Boolean.getBoolean("aether.allowNonDurableStreams") || "true".equalsIgnoreCase(System.getenv("AETHER_ALLOW_NON_DURABLE_STREAMS"));
     }
 
     private static Option<Path> walDisabled(Path walDir, Cause cause) {

@@ -32,8 +32,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **#634 item 2 — an unwritable WAL dir now REFUSES BOOT instead of one WARN and fsync-free acks.** The
   degrade silently converted "durable entity" into "in-memory entity". Opt-in for explicitly best-effort
   deployments: `-Daether.allowNonDurableStreams=true` / `AETHER_ALLOW_NON_DURABLE_STREAMS=true` keeps the
-  previous WARN-degrade byte-identical. The decision is an extracted, tested seam
-  (`AetherNode.decideWalAvailability`) — the boot guard is the part most likely to be "simplified" into a
+  previous WARN-degrade byte-identical. Enforced in `Main`'s `verify* -> abortBoot` chain (the same idiom
+  as the cluster-name and dev-mode gates — JBCT forbids the throw-based abort first attempted, and the
+  lint pushed the gate to where boot policy belongs); a node constructed DIRECTLY (Forge, tests, embedded)
+  never passes Main and keeps the degrade-with-WARN, which is exactly the explicitly-best-effort population.
+  The decision is an extracted, tested seam (`AetherNode.decideWalAvailability` /
+  `AetherNode.verifyWalBootable`) — the boot guard is the part most likely to be "simplified" into a
   silent-degrade regression. `[verified: WalAvailabilityGateTest 3/0 — refusal names the escape hatch]`
 - **#634 item 6 — three documentation overclaims corrected:** AHSE feature-catalog row 207 Complete →
   Partial (noOp demotion/GC, unreachable RemoteTier, no compression/encryption on the engine write path,

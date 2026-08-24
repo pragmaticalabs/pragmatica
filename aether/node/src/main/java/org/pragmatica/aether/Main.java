@@ -117,6 +117,8 @@ public record Main(String[] args) {
                                      // were missing or malformed, so the value is present and validated.
                                      .withClusterName(resolveClusterName())
                                      .withAutoHeal(resolveAutoHeal(aetherConfig));
+
+        enforceWalDurabilityBootable(config);
         var node = AetherNode.aetherNode(config).expect("Failed to initialize Aether node at startup");
 
         registerShutdownHook(node);
@@ -223,6 +225,16 @@ public record Main(String[] args) {
 
     private static final Fn1<Cause, String> MALFORMED_CLUSTER_NAME = Causes.forOneValue("AETHER_CLUSTER_NAME '%s' is malformed — must match "
                                                                                        + "[a-z]([a-z0-9-]{0,61}[a-z0-9])? (lowercase DNS label, 1-63 chars, e.g. a or prod-eu).");
+
+    /// Boot gate (#634 item 2): a node whose stream WAL directory is unwritable must not start unless
+    /// non-durable streams were opted into explicitly — otherwise every publish acks with NO fsync and
+    /// "durable entity" silently becomes "in-memory entity". Delegates to the pure
+    /// [AetherNode#verifyWalBootable] guard (tested via `WalAvailabilityGateTest`), exits on violation —
+    /// the same `verify* -> abortBoot` idiom as the cluster-name and dev-mode gates above.
+    @Contract
+    private void enforceWalDurabilityBootable(AetherNodeConfig config) {
+        AetherNode.verifyWalBootable(config).onFailure(this::abortBoot);
+    }
 
     /// Boot gate: insecure dev-mode must be fundamentally incompatible with a real
     /// (operator-supplied) TLS deployment. Reads the dev-mode env and the resolved TLS

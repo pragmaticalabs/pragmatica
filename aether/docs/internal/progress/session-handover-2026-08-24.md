@@ -31,6 +31,29 @@ durable-entity 151/0, node 881/0, aether-stream 680/0.
    trap was fixed at ONE call site on 08-14 and bit again 9 days later: fix shared mechanisms AT the
    mechanism.
 
+## §1a Second batch, same night (commits `890b47b2a`..): retry classification + #634 items 1/2/6
+
+- **`Cause.isTerminal()` + `Causes.terminal` + `Retry` stops on terminal** (core); the QUIC removed-peer
+  verdict is classified. The 4,160-retry storm class is dead at the mechanism.
+- **#634-1**: replicated records fsync-before-ack — chained WAL writes (file ORDER is load-bearing;
+  unchained async appends raced it), `syncReplicated` barrier, ack WITHHELD on failed fsync.
+- **#634-2**: unwritable WAL dir refuses boot via `Main`'s verify→abortBoot chain (JBCT lint rejected the
+  first throw-based version and thereby improved it); direct constructions (Forge/tests) keep the degrade
+  deliberately. Opt-in: `aether.allowNonDurableStreams` / `AETHER_ALLOW_NON_DURABLE_STREAMS`.
+- **#634-6**: AHSE catalog row → Partial with delta; MetadataStore CHANGELOG claim corrected; stale
+  `EvictionListener.NOOP` notes fixed.
+- **Two proposal items DISSOLVED by evidence — do not re-implement:** liveness-filtered HTTP candidates
+  (already wired: `membershipFsm.reachableMembers` at AetherNode:2328, pinned by
+  HttpForwarderAccessibilityTest) and genesis pacing (run4 logs: all 8 partitions promoted inside a
+  30-second window; the minutes-apart lines were post-churn RE-promotions on the deliberate re-verify
+  cadence).
+- **Still open from this arc:** deadline propagation (stage 1 = total-budget inside HttpForwarder, no wire
+  change; stage 2 = deadline on the wire via new sealed variants — pre-GA window argues do it soon);
+  #634-4 (retention invariant check at the reclaim site — read RetentionEnforcer's apply-site first);
+  #634-3 (WAL under storage config/budget/metrics — carries the management-API quad);
+  #634-5 (double-gated: DD-8-1 AND the BSL→Apache license boundary — needs owner approval);
+  #634-7 remainder (fsync-failure injection, crash-mid-compaction).
+
 ## §2 The 02w durability verdict is STILL UNOBTAINED — and why
 
 Three runs, none delivered it:

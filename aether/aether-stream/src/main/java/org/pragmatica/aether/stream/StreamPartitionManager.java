@@ -1236,11 +1236,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                  payload,
                                                                                  timestamp,
                                                                                  ownerEpoch))
-                                             .onSuccess(offset -> walReplicated(streamName,
-                                                                                partition,
-                                                                                offset,
-                                                                                payload,
-                                                                                timestamp));
+                                 .onSuccess(offset -> walReplicated(streamName, partition, offset, payload, timestamp));
     }
 
     /// #634 item 1: a replicated/backfilled record enters the SAME per-partition WAL the owner's publish
@@ -1253,7 +1249,12 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// before acking, so the owner's barrier counts only fsynced replicas. Group commit resolves appends
     /// in offset order, so awaiting the LAST append's promise covers the whole prefix.
     private void walReplicated(String streamName, int partition, long offset, byte[] payload, long timestamp) {
-        walFor(streamName, partition).onPresent(wal -> chainWalWrite(streamName, partition, wal, offset, payload, timestamp));
+        walFor(streamName, partition).onPresent(wal -> chainWalWrite(streamName,
+                                                                     partition,
+                                                                     wal,
+                                                                     offset,
+                                                                     payload,
+                                                                     timestamp));
     }
 
     /// Appends are CHAINED per partition — each starts only after its predecessor is durable — because
@@ -1264,7 +1265,12 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// success after a mid-chain failure would leave a hole the ring does not have, so `localLogComplete`
     /// would lie — instead every later [#syncReplicated] fails, acks stop, and the owner's barrier
     /// degrades honestly until the replica is repaired or restarted.
-    private void chainWalWrite(String streamName, int partition, PartitionWal wal, long offset, byte[] payload, long timestamp) {
+    private void chainWalWrite(String streamName,
+                               int partition,
+                               PartitionWal wal,
+                               long offset,
+                               byte[] payload,
+                               long timestamp) {
         lastReplicatedWalWrite.compute(partitionKeyOf(streamName, partition),
                                        (_, previous) -> previous == null
                                                         ? wal.append(offset, payload, timestamp)
@@ -1276,8 +1282,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Forge, the explicit non-durable opt-in) resolve immediately — the ack then means exactly what it
     /// meant before this change.
     public Promise<Unit> syncReplicated(String streamName, int partition) {
-        return option(lastReplicatedWalWrite.get(partitionKeyOf(streamName, partition)))
-                .or(Promise::unitPromise);
+        return option(lastReplicatedWalWrite.get(partitionKeyOf(streamName, partition))).or(Promise::unitPromise);
     }
 
     private static String partitionKeyOf(String streamName, int partition) {
