@@ -6,6 +6,67 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Fixed (2026-08-24 — entity arc ownership is minted over the HOSTING set: the last 02w defect)
+- **The leader's entity-ownership reconcile minted `(entity:<keyspace>, partition)` owners over ALL
+  cluster members; with `instances = 3` on five nodes, arcs owned by non-hosting nodes refused every
+  write** (run6's one red test: `no entity registered for keyspace orders` from nodes 4/5, 22/40
+  creates). Root cause was structural: the keyspace registration was a single cluster-wide record
+  carrying only `partitionCount`, so the hosting set was unknowable at the decision site. Fixed by
+  making the registration PER-NODE (`EntityKeyspaceRegistrationKey` is now `(keyspace, node)`; the
+  set of committed records IS the hosting set) and giving entity arcs their own
+  `StreamPartitionOwnershipWriter` whose HrwOwner places over registered hosts ∩ the reconciled
+  member snapshot — same leader gate, epoch discipline and record family as streams; only the
+  candidate set differs. Empty candidate set leaves the committed record untouched (no self-promote;
+  writes refuse with the honest transient cause until a host returns). Failover re-placement stays
+  within the hosting set by construction. The logic moved to a new testable
+  `EntityOwnershipReconciler` (aether/node).
+  `[verified: DurableEntityForgeTest 12/12 forming 5 nodes with instances=3 — incl. the new
+  ownership_isMintedOnlyOverNodesHostingTheEntitySlice pin and state-survives-owner-loss, 82s;
+  EntityOwnershipReconcilerTest 15/15, mutation-proven (removing the hosting-set intersection —
+  the literal defect — reds 3 tests); touched modules 1879/0]` The cloud 02w re-run (expect 10/10,
+  40/40) is the remaining final gate per the in-JVM-first sequencing rule.
+- **Review catch (MAJOR): the reconciler was not the SOLE writer of `entity:*` ownership.** Entity
+  logs are real streams since I3, so the stream-side replica reconcile walks them too — and its
+  ownership driver, placing over the whole member view, would have re-placed entity arcs onto
+  non-hosting nodes on every catalog/membership edge (entity deploys included — `createStream` fires
+  a config Put that reconciles immediately), fighting the entity reconcile record-for-record with up
+  to one 5s tick of refused writes per flip. The forge suite structurally cannot observe that window
+  (it converges before asserting). Fixed by excluding entity arcs from the stream ownership driver
+  (`driveStreamOwnership` filters through `EntityOwnershipReconciler.withoutEntityArcs`; log REPLICA
+  placement is untouched) — the entity reconciler is now the exclusive authority, which is what makes
+  the "by construction" claim above true. `[verified: withoutEntityArcs unit pin — entity arcs
+  dropped, stream arcs kept including one whose bare name equals the keyspace]`
+- **Review catch (MAJOR): a keyspace containing `/` was unvalidated while two parsers rely on its
+  absence** (the entity DHT-key grammar and the new registration identity — a `/` would silently
+  fence writes against the floor arc and shred snapshot restores into a phantom keyspace). Now
+  refused at bind time by `durableEntityConfig` with the typed `InvalidKeyspace`, the one entry
+  point every keyspace passes through.
+  `[verified: DurableEntityConfigTest slash-refusal + named-cause pins]`
+- **Registrations now have a full lifecycle.** The reconcile tick makes each node's committed
+  records equal its locally-declared set in BOTH directions: asserting declared keyspaces (as
+  before) and PRUNING committed-but-undeclared self-records. `EntityKeyspaceRegistrar.retract` +
+  a close hook on the provisioned entity (run via the factory's `close` override when the keyspace's
+  last local consumer slice stops) retract the declaration, unregister the forward target
+  (`EntityForwardRegistry.unregister` — an arriving forward for an unloaded keyspace now gets the
+  typed refusal instead of reaching into a dead classloader) and unhook the checkpoint driver. The
+  entity deliberately is NOT `AutoCloseable` (review catch): a public close would let slice code
+  unhook a live keyspace, so the unload seam is package-private and reachable only through the
+  factory.
+  The prune leg also heals what retract can never see: a node that died and restarted WITHOUT the
+  slice sheds its stale record, so a live node can no longer stay a placement candidate for a
+  keyspace it stopped hosting. Residual (recorded in `EntityKeyspaceRegistrar` docs): a node that
+  dies and NEVER returns leaves a permanently dead record — excluded from every placement decision
+  by the liveness intersection, reaped only by hand until a reaper exists.
+  `[verified: DurableEntityFactoryTest Unload 2 pins (close retracts + unhooks, exactly once);
+  EntityForwardServiceTest unregister pins; registrationDelta both-directions pins incl.
+  leaves-other-nodes'-records-alone]`
+- Wire/snapshot note: the `EntityKeyspaceRegistrationKey` payload (SystemTags 1107) and its
+  text-snapshot identity changed shape (`<keyspace>` → `<keyspace>/<nodeId>`). Same-version
+  clusters only; rc3 is unreleased, no migration. Hosting-set observability (which nodes registered
+  a keyspace) is folded into the #634-3/4 operator surface per owner ruling this session; committed
+  arc owners were already visible via `GET /api/ownership/stream` and `aether cluster ownership
+  stream` (entity arcs ride the stream family under the `entity:` namespace).
+
 ### Verification (2026-08-24 — 02w run6, post codec-fix: THE DURABILITY VERDICT, first ever)
 - **All 21 ACKED entities survived a SIGKILL with their exact values — 0 lost, 0 corrupted,
   0 unreachable, full population checked within budget.** 18 pre-kill + 3 acked DURING the kill
