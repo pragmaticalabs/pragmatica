@@ -15,6 +15,7 @@ import org.pragmatica.aether.slice.ReadPreference;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Deadline;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageReceiver;
 
@@ -171,7 +172,11 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
         Promise<Long> promise = Promise.promise();
 
         pendingRequests.put(correlationId, promise);
-        SharedScheduler.schedule(() -> timeoutRequest(correlationId), publishTimeout);
+        // The wait for the ack — not the write itself — is capped by the ambient request budget:
+        // a client-driven publish stops waiting when its caller stops waiting, while background
+        // callers (no bound scope) keep the configured timeout unchanged.
+        SharedScheduler.schedule(() -> timeoutRequest(correlationId),
+                                 Deadline.current().bounded(publishTimeout));
         var message = publishForward(selfNodeId, correlationId, streamName, partition, payload, timestamp);
 
         transport.send(governorId, message);
@@ -205,7 +210,8 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
         Promise<ReadForwardResult> promise = Promise.promise();
 
         pendingReads.put(correlationId, promise);
-        SharedScheduler.schedule(() -> timeoutRead(correlationId), readTimeout);
+        SharedScheduler.schedule(() -> timeoutRead(correlationId),
+                                 Deadline.current().bounded(readTimeout));
         var message = readForward(selfNodeId,
                                   correlationId,
                                   streamName,

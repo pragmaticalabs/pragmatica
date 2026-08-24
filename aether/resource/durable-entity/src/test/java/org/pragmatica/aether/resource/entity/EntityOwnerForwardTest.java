@@ -24,6 +24,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.lang.utils.Deadline;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
@@ -301,12 +302,40 @@ class EntityOwnerForwardTest {
 
     /// `op` distinguishes which operation crossed the seam — without it a test asserting "something was
     /// forwarded" would pass when the wrong operation was sent.
+    /// The ambient request budget must survive the [PerKeySerialExecutor] hop: it is captured at the
+    /// public API on the caller's thread and re-bound inside the queued task — a ScopedValue does not
+    /// cross threads by itself, and an unbounded read at the forward would hand it the full configured
+    /// timeout regardless of the client's deadline.
+    @Test
+    void update_underAmbientDeadline_forwardObservesTheBoundedBudget() {
+        var entity = entityAs(SELF, OTHER, Option.some(transport));
+
+        var result = Deadline.runWith(Deadline.fromWireMillis(5_000),
+                                      () -> entity.update("k1", new IntOp.Add(7)))
+                             .await();
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(transport.boundedAtCall)
+            .as("the forward must see the caller's bounded budget across the executor hop")
+            .containsExactly(true);
+    }
+
+    @Test
+    void update_withoutAmbientDeadline_forwardObservesUnbounded() {
+        entityAs(SELF, OTHER, Option.some(transport)).update("k1", new IntOp.Add(7)).await();
+
+        assertThat(transport.boundedAtCall)
+            .as("no caller budget -> the forward keeps its full configured timeout")
+            .containsExactly(false);
+    }
+
     private record ForwardCall(String op, NodeId owner, String keyspace, byte[] key, byte[] command) {}
 
     /// Answers every forward with state 107, so a successful result proves the value came back ACROSS
     /// the seam rather than from local state (which starts empty here).
     private static final class RecordingForward implements EntityOwnerForward {
         private final List<ForwardCall> calls = new ArrayList<>();
+        private final List<Boolean> boundedAtCall = new ArrayList<>();
         private String failure;
 
         void failWith(String message) {
@@ -330,6 +359,7 @@ class EntityOwnerForwardTest {
 
         private Promise<byte[]> record(String op, NodeId owner, String keyspace, byte[] key, byte[] body) {
             calls.add(new ForwardCall(op, owner, keyspace, key, body));
+            boundedAtCall.add(Deadline.current().isBounded());
 
             return failure == null
                    ? Promise.success("107".getBytes(StandardCharsets.UTF_8))

@@ -25,6 +25,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.lang.utils.Deadline;
 import org.pragmatica.lang.utils.SharedScheduler;
 
 import org.slf4j.Logger;
@@ -116,12 +117,25 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
 
     /// One correlation protocol for all three operations: the pending map, the timeout and the response
     /// handler are shared, so only the message built differs.
+    ///
+    /// The wait is capped by the ambient request budget ([Deadline]): the configured correlation
+    /// timeout is this service's own ceiling, but a caller under a client deadline gets at most what
+    /// remains of it — waiting longer answers nobody. A budget below [#BUDGET_FLOOR] refuses BEFORE
+    /// the send: the round trip cannot complete in time, and a command whose ack has no collector
+    /// widens the unknown-outcome window on a non-idempotent write for nothing (caller-retry dedup
+    /// is the open S3 idempotency decision).
     private Promise<byte[]> dispatch(NodeId owner, String keyspace, Fn1<EntityForwardMessage, String> message) {
+        var deadline = Deadline.current();
+
+        if (deadline.expired(BUDGET_FLOOR)) {
+            return FORWARD_BUDGET_EXHAUSTED.apply(owner.id(), keyspace).promise();
+        }
+
         var correlationId = UUID.randomUUID().toString();
         Promise<byte[]> promise = Promise.promise();
 
         pending.put(correlationId, promise);
-        SharedScheduler.schedule(() -> timeoutRequest(correlationId, owner, keyspace), timeout);
+        SharedScheduler.schedule(() -> timeoutRequest(correlationId, owner, keyspace), deadline.bounded(timeout));
         sender.send(owner,
                     message.apply(correlationId))
               .onSuccess(outcome -> failFastOnRefusedSend(correlationId, owner, keyspace, outcome));
@@ -255,13 +269,24 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
                         : FORWARD_REFUSED.apply(response.errorMessage()).result());
     }
 
+    /// Below this much remaining budget a forward is refused instead of sent: the owner round trip
+    /// cannot complete before the caller's deadline, so the send could only produce an uncollectable
+    /// ack — and, on a non-idempotent write, an owner-side apply the caller cannot distinguish from
+    /// a lost command.
+    private static final TimeSpan BUDGET_FLOOR = TimeSpan.timeSpan(50).millis();
+
     private static final BiFunction<String, WriteOutcome, Cause> FORWARD_SEND_REFUSED = (owner, outcome) -> Causes.cause("entity owner-forward to " + owner
                                                                                                                         + " refused at send (" + outcome
                                                                                                                         + ") — the owner was never reached");
 
     private static final BiFunction<String, String, Cause> FORWARD_TIMED_OUT = (owner, keyspace) -> Causes.cause("entity owner-forward to " + owner
                                                                                                                 + " for keyspace " + keyspace
-                                                                                                                + " timed out — the write was NOT applied here, and must not be");
+                                                                                                                + " timed out — NOT applied on this node; the owner may or may not have"
+                                                                                                                + " applied it (outcome unknown, a blind retry can double-apply)");
+
+    private static final BiFunction<String, String, Cause> FORWARD_BUDGET_EXHAUSTED = (owner, keyspace) -> Causes.cause("entity owner-forward to " + owner
+                                                                                                                       + " for keyspace " + keyspace
+                                                                                                                       + " refused: request budget exhausted — the command was never sent");
 
     private static final Function<String, Cause> FORWARD_REFUSED = message -> Causes.cause("entity owner-forward refused by the owner: " + message);
 }

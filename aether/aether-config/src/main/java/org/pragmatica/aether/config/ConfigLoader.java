@@ -568,7 +568,15 @@ public final class ConfigLoader {
                                                      parseTimeSpan(doc,
                                                                    "timeouts.forwarding",
                                                                    "management_timeout",
-                                                                   d.managementTimeout()));
+                                                                   d.managementTimeout()),
+                                                     parseTimeSpan(doc,
+                                                                   "timeouts.forwarding",
+                                                                   "request_budget",
+                                                                   d.requestBudget()),
+                                                     parseTimeSpan(doc,
+                                                                   "timeouts.forwarding",
+                                                                   "management_request_budget",
+                                                                   d.managementRequestBudget()));
     }
 
     private static TimeoutsConfig.DeploymentTimeouts parseDeploymentTimeouts(TomlDocument doc,

@@ -107,7 +107,9 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.lang.utils.Deadline;
 import org.pragmatica.net.tcp.TlsConfig;
 
 import io.netty.channel.EventLoopGroup;
@@ -207,6 +209,9 @@ class ManagementServerImpl implements ManagementServer {
     private final Option<Serializer> forwardSerializer;
     private final Option<Deserializer> forwardDeserializer;
     private final ForwardingTimeouts forwardingTimeouts;
+    /// Below this much remaining wire budget a forwarded management request is refused instead of
+    /// dispatched: the answer cannot reach the sender before its hop timeout fires.
+    private static final TimeSpan RECEIVER_BUDGET_FLOOR = TimeSpan.timeSpan(50).millis();
     private final Consumer<NodeId> drainCommandSink;
     private final Supplier<Set<NodeId>> pendingDrainsSupplier;
 
@@ -941,18 +946,33 @@ class ManagementServerImpl implements ManagementServer {
         var requestId = ctx.requestId();
 
         ensureMgmtForwarder().fold(() -> sendForwardUnavailable(response, path, requestId, methodName, startTime),
-                                   forwarder -> {
-                                       forwarder.forwardManagement(toManagementRequestContext(ctx, path),
-                                                                   requestId)
-                                                .onSuccess(responseData -> sendForwardedResponse(response, responseData))
-                                                .onFailure(cause -> sendForwardError(response, path, requestId, cause))
-                                                .onResultRun(() -> recordRequestMetrics(methodName,
-                                                                                        path,
-                                                                                        response,
-                                                                                        startTime));
+                                   forwarder -> forwardViaForwarder(forwarder,
+                                                                    ctx,
+                                                                    response,
+                                                                    methodName,
+                                                                    startTime,
+                                                                    path,
+                                                                    requestId));
+    }
 
-                                       return Unit.unit();
-                                   });
+    /// Budget minted at the forward decision: `forwardManagement` captures the ambient deadline
+    /// synchronously at entry, and every hop, task-group retry and re-query under this request
+    /// consumes from that one budget.
+    private Unit forwardViaForwarder(HttpForwarder forwarder,
+                                     HttpRequest ctx,
+                                     InstrumentedResponseWriter response,
+                                     String methodName,
+                                     long startTime,
+                                     String path,
+                                     String requestId) {
+        Deadline.runWith(Deadline.startingNow(forwardingTimeouts.managementRequestBudget()),
+                         () -> forwarder.forwardManagement(toManagementRequestContext(ctx, path),
+                                                           requestId))
+                .onSuccess(responseData -> sendForwardedResponse(response, responseData))
+                .onFailure(cause -> sendForwardError(response, path, requestId, cause))
+                .onResultRun(() -> recordRequestMetrics(methodName, path, response, startTime));
+
+        return Unit.unit();
     }
 
     private Option<HttpForwarder> ensureMgmtForwarder() {
@@ -1084,6 +1104,29 @@ class ManagementServerImpl implements ManagementServer {
                                            HttpForwardRequest request,
                                            ClusterNetwork network,
                                            Serializer ser) {
+        // Stage 2 of deadline propagation, management pipeline: a request whose sender's budget is
+        // already gone is refused before touching the router — its answer has no collector. A live
+        // budget is re-minted and BOUND for the dispatch, so a handler that forwards again or waits
+        // on cluster state consumes the sender's remaining budget instead of its full defaults.
+        var deadline = Deadline.fromWireMillis(request.remainingMillis());
+
+        if (deadline.expired(RECEIVER_BUDGET_FLOOR)) {
+            log.warn("[{}] Management forward arrived with {} budget remaining; refusing without dispatch",
+                     request.requestId(),
+                     deadline.remaining());
+            sendManagementForwardError(network, request, "Sender request budget exhausted before dispatch");
+
+            return;
+        }
+
+        Deadline.runWith(deadline, () -> dispatchManagementForwardWithinBudget(context, request, network, ser));
+    }
+
+    @SuppressWarnings("JBCT-PAT-01")
+    private void dispatchManagementForwardWithinBudget(HttpRequestContext context,
+                                                       HttpForwardRequest request,
+                                                       ClusterNetwork network,
+                                                       Serializer ser) {
         var serverCtx = ForwardedRequestContext.forwardedRequestContext(context);
         var responseCapture = ForwardedResponseWriter.forwardedResponseWriter();
 

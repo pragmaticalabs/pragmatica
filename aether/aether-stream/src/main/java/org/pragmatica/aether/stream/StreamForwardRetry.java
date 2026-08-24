@@ -9,6 +9,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Deadline;
 import org.pragmatica.lang.utils.SharedScheduler;
 
 
@@ -24,6 +25,12 @@ import org.pragmatica.lang.utils.SharedScheduler;
 /// with a short fixed {@link #FORWARD_RETRY_BACKOFF} scheduled through the shared scheduler (no blocking
 /// sleep). Every other failure is permanent and never retried; success and permanent failure both resolve
 /// immediately.
+///
+/// The caller's ambient [Deadline] is captured ONCE at [#withBoundedRetry] and re-bound around every
+/// attempt: retries run from resolution and scheduler threads where the ScopedValue binding is gone,
+/// and without the re-bind each retry would read unbounded and wait its full configured timeout
+/// regardless of the client's budget. An expired budget also stops the retry ladder — re-forwarding
+/// for a caller that already gave up is pure zombie work.
 sealed interface StreamForwardRetry {
     /// Bounded forward-publish retry budget: 1 initial attempt + up to 2 retries.
     int MAX_FORWARD_ATTEMPTS = 3;
@@ -35,33 +42,45 @@ sealed interface StreamForwardRetry {
     /// bounded retry. The thunk is re-invoked per attempt, so every retry issues a fresh forward with the
     /// same target, identical to an inline per-site retry but with no per-call argument threading.
     static Promise<Long> withBoundedRetry(Fn0<Promise<Long>> sendAttempt) {
-        return attempt(sendAttempt, 1);
+        return attempt(sendAttempt, 1, Deadline.current());
     }
 
-    private static Promise<Long> attempt(Fn0<Promise<Long>> sendAttempt, int attemptNo) {
-        return sendAttempt.apply()
-                          .fold(result -> result.fold(cause -> retryOrPropagate(sendAttempt, attemptNo, cause),
-                                                      Promise::success));
+    private static Promise<Long> attempt(Fn0<Promise<Long>> sendAttempt, int attemptNo, Deadline deadline) {
+        return Deadline.runWith(deadline, sendAttempt::apply)
+                       .fold(result -> result.fold(cause -> retryOrPropagate(sendAttempt,
+                                                                             attemptNo,
+                                                                             cause,
+                                                                             deadline),
+                                                   Promise::success));
     }
 
-    private static Promise<Long> retryOrPropagate(Fn0<Promise<Long>> sendAttempt, int attemptNo, Cause cause) {
-        return StreamForwardError.isRetryablePublish(cause) && attemptNo < MAX_FORWARD_ATTEMPTS
-               ? scheduleRetry(sendAttempt, attemptNo + 1)
+    private static Promise<Long> retryOrPropagate(Fn0<Promise<Long>> sendAttempt,
+                                                  int attemptNo,
+                                                  Cause cause,
+                                                  Deadline deadline) {
+        return StreamForwardError.isRetryablePublish(cause)
+               && attemptNo < MAX_FORWARD_ATTEMPTS
+               && !deadline.expired(FORWARD_RETRY_BACKOFF)
+               ? scheduleRetry(sendAttempt, attemptNo + 1, deadline)
                : cause.promise();
     }
 
     /// Schedule the next attempt after the fixed backoff through the shared scheduler (no `Thread.sleep`),
     /// bridging its resolution into the pending promise returned to the caller.
-    private static Promise<Long> scheduleRetry(Fn0<Promise<Long>> sendAttempt, int nextAttempt) {
+    private static Promise<Long> scheduleRetry(Fn0<Promise<Long>> sendAttempt, int nextAttempt, Deadline deadline) {
         var pending = Promise.<Long> promise();
 
-        SharedScheduler.schedule(() -> sendScheduled(pending, sendAttempt, nextAttempt), FORWARD_RETRY_BACKOFF);
+        SharedScheduler.schedule(() -> sendScheduled(pending, sendAttempt, nextAttempt, deadline),
+                                 FORWARD_RETRY_BACKOFF);
 
         return pending;
     }
 
-    private static void sendScheduled(Promise<Long> pending, Fn0<Promise<Long>> sendAttempt, int nextAttempt) {
-        attempt(sendAttempt, nextAttempt).onResult(pending::resolve);
+    private static void sendScheduled(Promise<Long> pending,
+                                      Fn0<Promise<Long>> sendAttempt,
+                                      int nextAttempt,
+                                      Deadline deadline) {
+        attempt(sendAttempt, nextAttempt, deadline).onResult(pending::resolve);
     }
 
     record unused() implements StreamForwardRetry {}

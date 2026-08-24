@@ -16,8 +16,10 @@ import org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityUpdat
 import org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityUpdateForwardResponse;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.WriteOutcome;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Deadline;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.node.entityforward.EntityForwardService.entityForwardService;
@@ -131,6 +133,59 @@ class EntityForwardServiceTest {
         assertThat(response.errorMessage()).contains("ghosts");
     }
 
+    /// Deadline budget, exhausted case: the command must never be SENT — the caller is gone, and an
+    /// unsendable ack would leave the owner doing work nobody collects. The refusal cause says so.
+    @Test
+    void forwardCreate_underExhaustedBudget_refusesBeforeSending() {
+        var result = Deadline.runWith(Deadline.fromWireMillis(0),
+                                      () -> service.forwardCreate(OWNER, "orders", bytes("k1"), bytes("5")))
+                             .await();
+
+        assertThat(result.isFailure()).isTrue();
+
+        String refusal = result.fold(Cause::message, _ -> "unexpectedly succeeded");
+
+        assertThat(refusal)
+            .as("an exhausted budget refuses up front, naming that the command never left this node")
+            .contains("budget exhausted")
+            .contains("never sent");
+        assertThat(sender.messageCount()).as("nothing may reach the transport").isZero();
+    }
+
+    /// The floor, not just zero: below ~50ms the owner round trip cannot complete, so sending would
+    /// only widen the unknown-outcome window on a non-idempotent write. Refused before the send.
+    @Test
+    void forwardCreate_underBudgetBelowTheFloor_refusesBeforeSending() {
+        var result = Deadline.runWith(Deadline.fromWireMillis(30),
+                                      () -> service.forwardCreate(OWNER, "orders", bytes("k1"), bytes("5")))
+                             .await();
+
+        assertThat(result.isFailure()).isTrue();
+        assertThat(sender.messageCount()).as("a sub-floor budget must not buy a doomed send").isZero();
+    }
+
+    /// Deadline budget, bounded case: the correlation wait is min(configured, remaining). With a 60s
+    /// configured timeout and ~150ms of budget, an unanswered forward must fail in well under the
+    /// configured minute — the pre-fix behavior (waiting the full configured timeout) turns this red.
+    @Test
+    void forwardCreate_underSmallRemainingBudget_timesOutAtRemainingNotConfigured() {
+        var startedAt = System.nanoTime();
+        var result = Deadline.runWith(Deadline.fromWireMillis(150),
+                                      () -> service.forwardCreate(OWNER, "orders", bytes("k1"), bytes("5")))
+                             .await();
+        var elapsedMillis = (System.nanoTime() - startedAt) / 1_000_000;
+
+        assertThat(result.isFailure()).isTrue();
+        assertThat(sender.messageCount()).as("within budget, the command IS sent").isEqualTo(1);
+        assertThat(elapsedMillis)
+            .as("the wait is capped by the remaining budget, not the 60s configured timeout")
+            .isLessThan(10_000);
+
+        String cause = result.fold(Cause::message, _ -> "unexpectedly succeeded");
+
+        assertThat(cause).contains("timed out");
+    }
+
     private static byte[] bytes(String text) {
         return text.getBytes(StandardCharsets.UTF_8);
     }
@@ -145,6 +200,10 @@ class EntityForwardServiceTest {
 
         EntityForwardMessage lastMessage() {
             return messages.getLast();
+        }
+
+        int messageCount() {
+            return messages.size();
         }
 
         @Override

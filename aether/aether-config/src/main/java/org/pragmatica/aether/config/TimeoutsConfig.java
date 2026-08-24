@@ -49,12 +49,30 @@ public record TimeoutsConfig(InvocationTimeouts invocation,
         }
     }
 
+    /// `requestBudget` / `managementRequestBudget` are the per-request deadline budgets minted when
+    /// a client request enters the app HTTP server or a management request is forwarded off-node.
+    /// The layers that consume it — each taking `min(own default, remaining)` — are: forward hops
+    /// (share of remaining per attempt, wire-propagated so a receiver drops an abandoned request),
+    /// entity owner-forwards, and remote stream read/publish ack waits, including the shared
+    /// forward-publish retry ladder. The invocation-layer timeouts above ([InvocationTimeouts]:
+    /// east-west slice invocation, 15s/20s) do NOT yet consume the budget — capping them needs
+    /// budget propagation on `InvokeRequest`, recorded as follow-up work. Deadlock of stacked
+    /// constants is what the budget removes: 02w measured 5s hops × 30s entity forwards × harness
+    /// sweeps burning minutes per operation against a 30s client. Defaults sized under the
+    /// integration harness's 30s curl cap (owner ruling 2026-08-24: 10s app / 10s management).
     public record ForwardingTimeouts(TimeSpan retryDelay,
                                      int maxRetries,
                                      TimeSpan appTimeout,
-                                     TimeSpan managementTimeout) {
+                                     TimeSpan managementTimeout,
+                                     TimeSpan requestBudget,
+                                     TimeSpan managementRequestBudget) {
         public static ForwardingTimeouts forwardingTimeouts() {
-            return new ForwardingTimeouts(timeSpan(200).millis(), 3, timeSpan(5).seconds(), timeSpan(5).seconds());
+            return new ForwardingTimeouts(timeSpan(200).millis(),
+                                          3,
+                                          timeSpan(5).seconds(),
+                                          timeSpan(5).seconds(),
+                                          timeSpan(10).seconds(),
+                                          timeSpan(10).seconds());
         }
     }
 

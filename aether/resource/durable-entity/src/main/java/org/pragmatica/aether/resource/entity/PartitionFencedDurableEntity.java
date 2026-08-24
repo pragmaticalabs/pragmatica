@@ -20,6 +20,7 @@ import org.pragmatica.aether.resource.Mutator;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Deadline;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
@@ -152,12 +153,12 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
 
     @Override
     public Promise<S> create(K key, S initial) {
-        return perKey.submit(key, () -> doCreate(key, initial));
+        return submitWithDeadline(key, () -> doCreate(key, initial));
     }
 
     @Override
     public Promise<Option<S>> get(K key) {
-        return perKey.submit(key, () -> doGet(key));
+        return submitWithDeadline(key, () -> doGet(key));
     }
 
     @Override
@@ -174,12 +175,23 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
 
     @Override
     public Promise<S> update(K key, C mutator) {
-        return perKey.submit(key, () -> doUpdate(key, mutator));
+        return submitWithDeadline(key, () -> doUpdate(key, mutator));
     }
 
     @Override
     public Promise<Unit> delete(K key) {
-        return perKey.submit(key, () -> doDelete(key));
+        return submitWithDeadline(key, () -> doDelete(key));
+    }
+
+    /// The caller's ambient request budget, carried across the [PerKeySerialExecutor] hop. The
+    /// ScopedValue binding survives only synchronous chains, and the per-key task runs later on
+    /// another thread — captured here on the caller side, re-bound inside the task, so the owner
+    /// forward path can cap its wait by what the client is still willing to wait for. Callers
+    /// outside any request scope capture [Deadline#unbounded()] and keep today's behavior.
+    private <R> Promise<R> submitWithDeadline(K key, Supplier<Promise<R>> operation) {
+        var deadline = Deadline.current();
+
+        return perKey.submit(key, () -> Deadline.runWith(deadline, operation));
     }
 
     @Override

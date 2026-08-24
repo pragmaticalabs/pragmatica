@@ -74,6 +74,8 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Deadline;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.net.tcp.QuicSslContextFactory;
 import org.pragmatica.net.tcp.TlsConfig;
@@ -305,6 +307,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     private final Option<HttpRequestObserver> requestObserver;
     private final Option<HttpForwarder> httpForwarder;
     private final AppHttpContext context;
+    private final TimeSpan requestBudget;
     private volatile boolean quorumEstablished;
     private final AtomicLong routeNotReadyRejections = new AtomicLong();
 
@@ -347,6 +350,7 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                 taskGroupOwnerResolver,
                                                 accessibilityFilter);
         this.context = buildContext(selfNodeId, this::computeRouteTable, () -> quorumEstablished);
+        this.requestBudget = forwardingTimeouts.requestBudget();
     }
 
     private record FsmAndContext(Fsm<AppHttpState, ClusterFsmEvent> fsm, AppHttpContext context) {}
@@ -854,12 +858,13 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                                selfNodeId.id(),
                                                                0,
                                                                true,
-                                                               () -> dispatchToRoute(request,
-                                                                                     response,
-                                                                                     routeTable,
-                                                                                     method,
-                                                                                     normalizedPath,
-                                                                                     requestId)));
+                                                               () -> Deadline.runWith(Deadline.startingNow(requestBudget),
+                                                                                      () -> dispatchToRoute(request,
+                                                                                                            response,
+                                                                                                            routeTable,
+                                                                                                            method,
+                                                                                                            normalizedPath,
+                                                                                                            requestId))));
     }
 
     private void dispatchToRoute(HttpRequest request,
@@ -1369,6 +1374,33 @@ class AppHttpServerAdapter implements AppHttpServer {
                                           HttpForwardRequest request,
                                           ClusterNetwork network,
                                           Serializer ser) {
+        // Stage 2 of deadline propagation: the sender stamped its remaining budget onto the wire.
+        // An arrived-expired request is refused without touching the router — the sender's hop
+        // timeout has already fired, so computing an answer would be work nobody collects (the
+        // zombie-dispatch amplification 02w measured behind every abandoned forward hop).
+        var deadline = Deadline.fromWireMillis(request.remainingMillis());
+
+        if (deadline.expired(RECEIVER_BUDGET_FLOOR)) {
+            log.warn("[{}] Forwarded request arrived with {} budget remaining; refusing without dispatch",
+                     request.requestId(),
+                     deadline.remaining());
+            sendForwardError(network, request, "Sender request budget exhausted before dispatch");
+
+            return;
+        }
+
+        Deadline.runWith(deadline, () -> dispatchForwardedWithinBudget(httpCtx, request, network, ser));
+    }
+
+    /// Below this much remaining wire budget a forwarded request is refused instead of dispatched:
+    /// the answer cannot reach the sender before its hop timeout fires.
+    private static final TimeSpan RECEIVER_BUDGET_FLOOR = TimeSpan.timeSpan(50).millis();
+
+    @Contract
+    private void dispatchForwardedWithinBudget(HttpRequestContext httpCtx,
+                                               HttpForwardRequest request,
+                                               ClusterNetwork network,
+                                               Serializer ser) {
         var method = httpCtx.method();
         var path = httpCtx.path();
         var normalizedPath = normalizePath(path);

@@ -38,6 +38,7 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.CoreError;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.lang.utils.Deadline;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
@@ -245,6 +246,10 @@ public interface HttpForwarder {
                              AccessibilityFilter accessibilityFilter) implements HttpForwarder {
             private static final Logger log = LoggerFactory.getLogger(HttpForwarder.class);
             private static final int MAX_PENDING_FORWARDS = 10_000;
+            /// Below this much remaining budget the hunt stops: another hop cannot answer before the
+            /// client (or the forwarding sender) is gone, so starting one only feeds zombie work.
+            private static final TimeSpan BUDGET_FLOOR = timeSpan(200).millis();
+            private static final Cause BUDGET_EXHAUSTED = Causes.cause("Request budget exhausted before a node answered");
 
             record PendingForward(Promise<HttpResponseData> promise,
                                   long createdAtMs,
@@ -278,7 +283,9 @@ public interface HttpForwarder {
                                  routeIdentity,
                                  requestId,
                                  Math.min(connectedNodes.size() - 1, maxForwardRetries),
-                                 Pipeline.APP);
+                                 Pipeline.APP,
+                                 Deadline.current(),
+                                 1);
 
                 return resultPromise;
             }
@@ -304,7 +311,9 @@ public interface HttpForwarder {
                                  routeIdentity,
                                  requestId,
                                  Math.min(connectedNodes.size() - 1, maxForwardRetries),
-                                 Pipeline.APP);
+                                 Pipeline.APP,
+                                 Deadline.current(),
+                                 1);
 
                 return resultPromise;
             }
@@ -320,6 +329,10 @@ public interface HttpForwarder {
 
                     return Causes.cause("Unsupported HTTP method: " + requestContext.method()).promise();
                 }
+                // Captured ONCE at the public entry: every path below hops through schedulers and
+                // response callbacks where the ScopedValue binding is gone, so the deadline threads
+                // through as an explicit parameter from here on.
+                var deadline = Deadline.current();
 
                 return ManagementRoute.match(methodOpt.unwrap(),
                                              requestContext.path())
@@ -329,31 +342,37 @@ public interface HttpForwarder {
                                                           requestContext.path(),
                                                           requestId);
 
-                                                return forwardToAnyCoreNode(requestContext, requestId);
+                                                return forwardToAnyCoreNode(requestContext, requestId, deadline);
                                             },
                                             matched -> dispatchByTarget(matched.route(),
                                                                         requestContext,
-                                                                        requestId));
+                                                                        requestId,
+                                                                        deadline));
             }
 
             private Promise<HttpResponseData> dispatchByTarget(ManagementRoute route,
                                                                HttpRequestContext requestContext,
-                                                               String requestId) {
+                                                               String requestId,
+                                                               Deadline deadline) {
                 return switch (route.target()) {
                     case RouteTarget.LocalNode __ -> ManagementRouteError.localNotForwardable(route.name()).<HttpResponseData> promise();
-                    case RouteTarget.AnyCoreNode __ -> forwardToAnyCoreNode(requestContext, requestId);
+                    case RouteTarget.AnyCoreNode __ -> forwardToAnyCoreNode(requestContext, requestId, deadline);
                     case RouteTarget.TaskGroupTarget(var group) -> forwardToTaskGroupOwner(group,
                                                                                            requestContext,
-                                                                                           requestId);
-                    case RouteTarget.LeaderNode __ -> forwardToLeader(requestContext, requestId);
+                                                                                           requestId,
+                                                                                           deadline);
+                    case RouteTarget.LeaderNode __ -> forwardToLeader(requestContext, requestId, deadline);
                     case RouteTarget.NodeIdParam(var paramIndex) -> forwardToTargetNode(route,
                                                                                         requestContext,
                                                                                         paramIndex,
-                                                                                        requestId);
+                                                                                        requestId,
+                                                                                        deadline);
                 };
             }
 
-            private Promise<HttpResponseData> forwardToLeader(HttpRequestContext requestContext, String requestId) {
+            private Promise<HttpResponseData> forwardToLeader(HttpRequestContext requestContext,
+                                                              String requestId,
+                                                              Deadline deadline) {
                 var leaderOpt = leaderResolver.get();
 
                 if (leaderOpt.isEmpty()) {
@@ -380,8 +399,8 @@ public interface HttpForwarder {
                 // /api/cluster/status reads as if it came from the node that received the request,
                 // not the leader that produced it (the "hall of mirrors" that nearly defeated
                 // tonight's zero-leader diagnosis).
-                return forwardToSpecificNode(requestContext, leader, requestId).map(response -> withServedBy(response,
-                                                                                                             leader));
+                return forwardToSpecificNode(requestContext, leader, requestId, deadline, 1).map(response -> withServedBy(response,
+                                                                                                                         leader));
             }
 
             /// Returns a copy of `response` with the `X-Aether-Served-By` header set to the node
@@ -396,7 +415,8 @@ public interface HttpForwarder {
             }
 
             private Promise<HttpResponseData> forwardToAnyCoreNode(HttpRequestContext requestContext,
-                                                                   String requestId) {
+                                                                   String requestId,
+                                                                   Deadline deadline) {
                 var resultPromise = Promise.<HttpResponseData> promise();
                 var connectedCoreNodes = connectedCoreNodes();
 
@@ -416,7 +436,9 @@ public interface HttpForwarder {
                                  routeIdentity,
                                  requestId,
                                  Math.min(connectedCoreNodes.size() - 1, maxForwardRetries),
-                                 Pipeline.MANAGEMENT);
+                                 Pipeline.MANAGEMENT,
+                                 deadline,
+                                 1);
 
                 return resultPromise;
             }
@@ -435,10 +457,11 @@ public interface HttpForwarder {
             // retry, with a small delay between attempts to let propagation converge.
             private Promise<HttpResponseData> forwardToTaskGroupOwner(TaskGroup group,
                                                                       HttpRequestContext requestContext,
-                                                                      String requestId) {
+                                                                      String requestId,
+                                                                      Deadline deadline) {
                 var resultPromise = Promise.<HttpResponseData> promise();
 
-                attemptTaskGroupForward(group, requestContext, requestId, resultPromise, maxForwardRetries);
+                attemptTaskGroupForward(group, requestContext, requestId, resultPromise, maxForwardRetries, deadline);
 
                 return resultPromise;
             }
@@ -447,7 +470,8 @@ public interface HttpForwarder {
                                                  HttpRequestContext requestContext,
                                                  String requestId,
                                                  Promise<HttpResponseData> resultPromise,
-                                                 int retriesRemaining) {
+                                                 int retriesRemaining,
+                                                 Deadline deadline) {
                 var ownerResult = taskGroupOwnerResolver.apply(group);
 
                 if (ownerResult.isFailure()) {
@@ -457,6 +481,7 @@ public interface HttpForwarder {
                                          requestId,
                                          resultPromise,
                                          retriesRemaining,
+                                         deadline,
                                          () -> Causes.cause("Task group " + group + " has no owner after retries"));
 
                     return;
@@ -475,12 +500,17 @@ public interface HttpForwarder {
                                          requestId,
                                          resultPromise,
                                          retriesRemaining,
+                                         deadline,
                                          () -> ManagementRouteError.ownerDisconnected(group, owner.id()));
 
                     return;
                 }
 
-                forwardToSpecificNode(requestContext, owner, requestId).onSuccess(resultPromise::succeed)
+                forwardToSpecificNode(requestContext,
+                                      owner,
+                                      requestId,
+                                      deadline,
+                                      retriesRemaining + 1).onSuccess(resultPromise::succeed)
                                      .onFailure(cause -> {
                                                     log.debug("Forward to owner {} failed: {} (retries={}) [{}]",
                                                               owner,
@@ -492,6 +522,7 @@ public interface HttpForwarder {
                                                                          requestId,
                                                                          resultPromise,
                                                                          retriesRemaining,
+                                                                         deadline,
                                                                          () -> cause);
                                                 });
             }
@@ -501,9 +532,16 @@ public interface HttpForwarder {
                                               String requestId,
                                               Promise<HttpResponseData> resultPromise,
                                               int retriesRemaining,
+                                              Deadline deadline,
                                               Supplier<Cause> exhaustionCause) {
                 if (retriesRemaining <= 0) {
                     resultPromise.fail(exhaustionCause.get());
+
+                    return;
+                }
+
+                if (deadline.expired(BUDGET_FLOOR)) {
+                    resultPromise.fail(BUDGET_EXHAUSTED);
 
                     return;
                 }
@@ -514,12 +552,18 @@ public interface HttpForwarder {
                                                               requestContext,
                                                               requestId,
                                                               resultPromise,
-                                                              retriesRemaining - 1));
+                                                              retriesRemaining - 1,
+                                                              deadline));
             }
 
+            /// `budgetShares` counts the attempts an OUTER retry loop still has ahead of it (the
+            /// task-group path passes its retries-remaining + 1) so the hop share divides across
+            /// them; single-shot callers pass 1.
             private Promise<HttpResponseData> forwardToSpecificNode(HttpRequestContext requestContext,
                                                                     NodeId targetNode,
-                                                                    String requestId) {
+                                                                    String requestId,
+                                                                    Deadline deadline,
+                                                                    int budgetShares) {
                 var resultPromise = Promise.<HttpResponseData> promise();
                 var routeIdentity = "MANAGEMENT:" + targetNode.id();
 
@@ -530,7 +574,9 @@ public interface HttpForwarder {
                                  routeIdentity,
                                  requestId,
                                  0,
-                                 Pipeline.MANAGEMENT);
+                                 Pipeline.MANAGEMENT,
+                                 deadline,
+                                 budgetShares);
 
                 return resultPromise;
             }
@@ -542,7 +588,8 @@ public interface HttpForwarder {
             private Promise<HttpResponseData> forwardToTargetNode(ManagementRoute route,
                                                                   HttpRequestContext requestContext,
                                                                   int paramIndex,
-                                                                  String requestId) {
+                                                                  String requestId,
+                                                                  Deadline deadline) {
                 var methodOpt = parseHttpMethod(requestContext.method());
 
                 if (methodOpt.isEmpty()) {
@@ -591,7 +638,7 @@ public interface HttpForwarder {
                     return ManagementRouteError.targetDisconnected(target.id()).<HttpResponseData> promise();
                 }
 
-                return forwardToSpecificNode(requestContext, target, requestId);
+                return forwardToSpecificNode(requestContext, target, requestId, deadline, 1);
             }
 
             private static Option<HttpMethod> parseHttpMethod(String raw) {
@@ -676,7 +723,16 @@ public interface HttpForwarder {
                                           String routeIdentity,
                                           String requestId,
                                           int retriesRemaining,
-                                          Pipeline pipeline) {
+                                          Pipeline pipeline,
+                                          Deadline deadline,
+                                          int budgetShares) {
+                if (deadline.expired(BUDGET_FLOOR)) {
+                    log.warn("Request budget exhausted for {} [{}], not trying further nodes", routeIdentity, requestId);
+                    resultPromise.fail(BUDGET_EXHAUSTED);
+
+                    return;
+                }
+
                 var candidates = availableNodes.stream().filter(n -> !triedNodes.contains(n)).toList();
 
                 if (candidates.isEmpty()) {
@@ -685,7 +741,9 @@ public interface HttpForwarder {
                                        routeIdentity,
                                        requestId,
                                        retriesRemaining,
-                                       pipeline);
+                                       pipeline,
+                                       deadline,
+                                       budgetShares);
 
                     return;
                 }
@@ -699,13 +757,31 @@ public interface HttpForwarder {
                               targetNode,
                               requestId,
                               pipeline,
+                              hopTimeout(Math.max(budgetShares, retriesRemaining + 1), deadline),
+                              deadline,
                               () -> handleRetryOrExhausted(requestContext,
                                                            resultPromise,
                                                            newTriedNodes,
                                                            routeIdentity,
                                                            requestId,
                                                            retriesRemaining,
-                                                           pipeline));
+                                                           pipeline,
+                                                           deadline,
+                                                           budgetShares));
+            }
+
+            /// A hop's slice of the remaining budget: the configured per-hop timeout, capped so the
+            /// attempts still ahead of us each keep a share of what is left. `shareParts` counts ALL
+            /// attempts still ahead — the inner hunt's own retries or an outer retry loop's (the
+            /// task-group path re-enters with a single-node hunt per attempt, and dividing by 1 there
+            /// would hand the first attempt the whole budget and starve the attempts behind it).
+            /// Unbounded deadlines keep the configured timeout unchanged.
+            private TimeSpan hopTimeout(int shareParts, Deadline deadline) {
+                var share = deadline.remainingShare(shareParts);
+
+                return share.compareTo(forwardTimeout) < 0
+                       ? share
+                       : forwardTimeout;
             }
 
             private void handleNoCandidates(HttpRequestContext requestContext,
@@ -713,8 +789,19 @@ public interface HttpForwarder {
                                             String routeIdentity,
                                             String requestId,
                                             int retriesRemaining,
-                                            Pipeline pipeline) {
+                                            Pipeline pipeline,
+                                            Deadline deadline,
+                                            int budgetShares) {
                 if (retriesRemaining > 0) {
+                    if (deadline.expired(BUDGET_FLOOR)) {
+                        log.warn("Request budget exhausted for {} [{}], not waiting for candidates",
+                                 routeIdentity,
+                                 requestId);
+                        resultPromise.fail(BUDGET_EXHAUSTED);
+
+                        return;
+                    }
+
                     log.debug("No candidates for {} [{}], waiting {}ms before re-query ({} retries remaining)",
                               routeIdentity,
                               requestId,
@@ -727,7 +814,9 @@ public interface HttpForwarder {
                                                           routeIdentity,
                                                           requestId,
                                                           retriesRemaining,
-                                                          pipeline));
+                                                          pipeline,
+                                                          deadline,
+                                                          budgetShares));
 
                     return;
                 }
@@ -741,7 +830,9 @@ public interface HttpForwarder {
                                          String routeIdentity,
                                          String requestId,
                                          int retriesRemaining,
-                                         Pipeline pipeline) {
+                                         Pipeline pipeline,
+                                         Deadline deadline,
+                                         int budgetShares) {
                 var freshNodes = freshCandidatesForRoute(routeIdentity, pipeline);
 
                 forwardWithRetry(requestContext,
@@ -751,7 +842,9 @@ public interface HttpForwarder {
                                  routeIdentity,
                                  requestId,
                                  retriesRemaining - 1,
-                                 pipeline);
+                                 pipeline,
+                                 deadline,
+                                 budgetShares);
             }
 
             private void handleRetryOrExhausted(HttpRequestContext requestContext,
@@ -760,7 +853,9 @@ public interface HttpForwarder {
                                                 String routeIdentity,
                                                 String requestId,
                                                 int retriesRemaining,
-                                                Pipeline pipeline) {
+                                                Pipeline pipeline,
+                                                Deadline deadline,
+                                                int budgetShares) {
                 if (retriesRemaining > 0) {
                     log.debug("Retrying request [{}], {} retries remaining, re-querying route",
                               requestId,
@@ -774,7 +869,9 @@ public interface HttpForwarder {
                                      routeIdentity,
                                      requestId,
                                      retriesRemaining - 1,
-                                     pipeline);
+                                     pipeline,
+                                     deadline,
+                                     budgetShares);
                 } else {
                     log.error("All retries exhausted for [{}]", requestId);
                     resultPromise.fail(Causes.cause("Request failed after all retries"));
@@ -786,6 +883,8 @@ public interface HttpForwarder {
                                        NodeId targetNode,
                                        String requestId,
                                        Pipeline pipeline,
+                                       TimeSpan hopTimeout,
+                                       Deadline deadline,
                                        Runnable onFailure) {
                 if (!clusterNetwork.connectedPeers().contains(targetNode)) {
                     log.debug("Target node {} already disconnected, immediate retry [{}]", targetNode, requestId);
@@ -824,8 +923,13 @@ public interface HttpForwarder {
 
                 pendingForwards.put(correlationId, pending);
                 pendingForwardsByNode.computeIfAbsent(targetNode, _ -> ConcurrentHashMap.newKeySet()).add(correlationId);
-                internalPromise.timeout(forwardTimeout);
-                var forwardRequest = new HttpForwardRequest(selfNodeId, correlationId, requestId, requestData, pipeline);
+                internalPromise.timeout(hopTimeout);
+                var forwardRequest = new HttpForwardRequest(selfNodeId,
+                                                            correlationId,
+                                                            requestId,
+                                                            requestData,
+                                                            pipeline,
+                                                            deadline.toWireMillis());
 
                 clusterNetwork.send(targetNode, forwardRequest);
                 log.trace("Forwarded request to {} [{}] correlationId={}", targetNode, requestId, correlationId);
@@ -834,6 +938,7 @@ public interface HttpForwarder {
                                                                          correlationId,
                                                                          targetNode,
                                                                          requestId,
+                                                                         hopTimeout,
                                                                          onFailure));
             }
 
@@ -841,6 +946,7 @@ public interface HttpForwarder {
                                                String correlationId,
                                                NodeId targetNode,
                                                String requestId,
+                                               TimeSpan hopTimeout,
                                                Runnable onFailure) {
                 var removed = pendingForwards.remove(correlationId);
 
@@ -849,7 +955,7 @@ public interface HttpForwarder {
                 }
 
                 if (cause instanceof CoreError.Timeout) {
-                    log.warn("Forward to {} timed out after {} [{}]", targetNode, forwardTimeout, requestId);
+                    log.warn("Forward to {} timed out after {} [{}]", targetNode, hopTimeout, requestId);
                 }
 
                 onFailure.run();

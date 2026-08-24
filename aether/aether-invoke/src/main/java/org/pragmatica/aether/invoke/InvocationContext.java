@@ -7,6 +7,7 @@ package org.pragmatica.aether.invoke;
 import java.util.function.Supplier;
 
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.utils.Deadline;
 import org.pragmatica.utility.IdGenerator;
 
 import org.slf4j.MDC;
@@ -161,20 +162,35 @@ public final class InvocationContext {
                                    currentOriginNode().or((String) null),
                                    currentDepth(),
                                    isSampled(),
-                                   currentVariant().or((String) null));
+                                   currentVariant().or((String) null),
+                                   Deadline.current());
     }
 
     public static String generateRequestId() {
         return IdGenerator.generate();
     }
 
+    /// Carries the ambient [Deadline] alongside the invocation identity: this snapshot is what
+    /// [org.pragmatica.lang.ContextPropagation] restores across async executor hops, and a budget
+    /// that does not travel with it silently reads as unbounded on the far side — every downstream
+    /// wait then reverts to its full stacked default.
     public record ContextSnapshot(String requestId,
                                   String principal,
                                   String originNode,
                                   int depth,
                                   boolean sampled,
-                                  String variant) {
+                                  String variant,
+                                  Deadline deadline) {
         public <T> T runWithCaptured(Supplier<T> supplier) {
+            return Deadline.runWith(deadline, () -> runWithInvocationIdentity(supplier));
+        }
+
+        @SuppressWarnings("JBCT-RET-01")
+        public void runWithCaptured(Runnable runnable) {
+            Deadline.runWith(deadline, () -> runWithInvocationIdentity(runnable));
+        }
+
+        private <T> T runWithInvocationIdentity(Supplier<T> supplier) {
             if (requestId == null) {
                 return runWithVariantIfPresent(supplier);
             }
@@ -188,7 +204,7 @@ public final class InvocationContext {
         }
 
         @SuppressWarnings("JBCT-RET-01")
-        public void runWithCaptured(Runnable runnable) {
+        private void runWithInvocationIdentity(Runnable runnable) {
             if (requestId == null) {
                 runWithVariantIfPresent(runnable);
 
