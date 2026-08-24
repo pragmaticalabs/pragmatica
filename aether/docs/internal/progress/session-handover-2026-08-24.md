@@ -5,8 +5,9 @@
 > Two streams write handovers here on the shared branch — check the banner before reading one as your
 > own state. This stream keeps the UNSUFFIXED name.
 
-**Branch:** `release-1.0.0-rc3` · **HEAD:** `b7aa5a081` (UNPUSHED, 1 ahead) · `./build.sh` green ·
-durable-entity 151/0, node 881/0, aether-stream 680/0.
+**Branch:** `release-1.0.0-rc3` · **HEAD:** `e7423956f` · **ALL PUSHED** · final sweep: `./build.sh`
+green + core 829/0, consensus 707/0, aether-stream 684/0, node 884/0 (1 pre-existing bench skip),
+durable-entity 151/0 — 3,255 tests, 0 failures, 0 new lint findings. Remote host torn down clean.
 
 ---
 
@@ -56,10 +57,17 @@ durable-entity 151/0, node 881/0, aether-stream 680/0.
   the wire (`HttpForwardRequest`) so a receiver drops work the sender already abandoned. Read the invoke
   layer's forward call sites FIRST; this changes request-level semantics and needs owner eyes on the
   budget defaults;
-  #634-4 (retention invariant check at the reclaim site — read RetentionEnforcer's apply-site first);
-  #634-3 (WAL under storage config/budget/metrics — carries the management-API quad);
-  #634-5 (double-gated: DD-8-1 AND the BSL→Apache license boundary — needs owner approval);
-  #634-7 remainder (fsync-failure injection, crash-mid-compaction).
+  **#634-3 + #634-4 as ONE piece of work** — the apply-site read settled it: the reclaim site already
+  enforces the segment-side floor structurally (`isReclaimable` runs BEFORE policy), so re-asserting it
+  is vacuous, and the JOINT invariant (`earliest-retained ≤ checkpoint+1 unless the WAL covers the gap`)
+  needs the tri-floor view (WAL truncation watermark / seal floor / checkpoint floor) that only item 3's
+  operator surface can host — a checker that cannot see the WAL false-alarms on the legitimate
+  all-segments-reclaimed case (checkpoint ≥ sealed). Carries the management-API quad. Full reasoning on
+  the ticket: https://github.com/pragmaticalabs/pragmatica/issues/634#issuecomment-5391684384;
+  #634-5 (DOUBLE-gated: DD-8-1 AND the BSL→Apache license boundary — `PartitionWal` is `aether/**` BSL,
+  `integrations/storage` is Apache; the move re-licenses and needs explicit owner approval);
+  #634-7 remainder (fsync-failure injection, crash-mid-compaction) — needs a test-only CHANNEL SEAM in
+  `PartitionWal`; deliberate daylight work on the best-crash-tested primitive, not a night edit.
 
 ## §2 The 02w durability verdict is STILL UNOBTAINED — and why
 
@@ -98,15 +106,23 @@ each layer's timeout multiplies the one above (5s hops × 30s curls × 2-pass ro
 - My own wrong turns, kept for calibration: predicted create collapse to minutes (wrong — the cost was
   in HTTP routing, not entity forwards); read convergence 1641s as a pass (it FAILED at budget 480s).
 
-## §5 Next (priority order)
+## §5 Next (priority order — REVISED end of session; §1a's second batch closed the old item 1, and the
+## old item 3 was disproven by run4's own logs)
 
-1. **The consensus-lane retry-to-REMOVED-peer storm** — file + fix; the message itself proves the defect.
-2. **App-HTTP invoke routing under stale instance views** — needs its selection made observable (debug→
-   operator surface), then hedged/deadline-budgeted forwards. This gates ANY timely 02w run.
-3. **Genesis pacing** — fresh-stream partitions should promote in one redrive pass, not minutes apart.
-4. **Why do cluster-B nodes keep dying pre-kill?** (node-5 run2, node-3 run4) — capture-before-heal for
-   the dying node's logs is part of the fix.
-5. **Harness**: `wait_for` per-call bound (owed since #441); `read_amount` absent-vs-unreachable split;
-   connect-timeout for `--env remote`; failure-log dir cleared per run.
-6. Then the 02w durability verdict on the S1 build — the run that finally answers it.
-7. S3 idempotency (owner ruling), #598 datasource pick, #628.
+1. **Deadline budget at the invoke→forward seam** — the measured 30s+ burns are `InvocationTimeouts`
+   (15s/20s × 3 retries) re-driving `ForwardingTimeouts`' whole hunt (~20.6s bounded) per retry. Invoke
+   mints the budget, forwarder consumes `remaining`; stage 2 puts remaining-millis on the wire
+   (`HttpForwardRequest`) inside the pre-GA Phase-1-only window. Needs owner eyes on budget defaults.
+   **This gates any timely 02w run** — do not re-run 02w before it, or it is another 5-hour readback.
+2. **#634-3+4 as one piece** — the tri-floor operator surface (WAL/seal/checkpoint) with the joint
+   invariant check as its consumer; management-API quad applies. See the ticket comment for the design.
+3. **Why do cluster-B nodes keep dying pre-kill?** (node-5 run2, node-3 run4) — capture-before-heal for
+   the dying node's logs is PART of the fix (auto-heal currently destroys the evidence).
+4. **Harness**: `wait_for` per-call bound (owed since #441 — measured 20,295s against a 480s budget);
+   `read_amount` absent-vs-unreachable split (its `''` conflation made the one "mismatch" line
+   uninterpretable); connect-timeout for `--env remote`; failure-log dir cleared per run.
+5. **Then the 02w durability verdict** on the S1+#634-1 build — the run that finally answers it, and it
+   now also live-validates replica fsync-before-ack (watch replication-ack latency for the chained-WAL
+   cost, expected ≈ owner's own per-record fsync).
+6. **#634-7 remainder** (PartitionWal channel seam) · **#634-5** (owner ruling: DD-8-1 + license).
+7. S3 idempotency (owner ruling on an API-level token), #598 datasource pick, #628 (`02-chaos`).
