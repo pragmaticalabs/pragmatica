@@ -47,8 +47,15 @@ durable-entity 151/0, node 881/0, aether-stream 680/0.
   HttpForwarderAccessibilityTest) and genesis pacing (run4 logs: all 8 partitions promoted inside a
   30-second window; the minutes-apart lines were post-churn RE-promotions on the deliberate re-verify
   cadence).
-- **Still open from this arc:** deadline propagation (stage 1 = total-budget inside HttpForwarder, no wire
-  change; stage 2 = deadline on the wire via new sealed variants — pre-GA window argues do it soon);
+- **Still open from this arc:** deadline propagation — REDESIGNED by a scoping read before implementation:
+  HttpForwarder is ALREADY bounded (~20.6s worst: ≤4 hops × 5s appTimeout + retryDelay re-queries), so a
+  budget inside it adds little. The measured 30s+ burns are the STACK: `InvocationTimeouts` (15s/20s, ×3
+  retries) re-drives the forwarder's whole hunt per retry ≈ 60s+ against a 30s client. Stage 1 therefore
+  belongs at the INVOKE→FORWARD seam — the invoke layer mints the budget, the forwarder consumes
+  `remaining` (per-hop = min(appTimeout, remaining/attemptsLeft)) — and stage 2 puts remaining-millis on
+  the wire (`HttpForwardRequest`) so a receiver drops work the sender already abandoned. Read the invoke
+  layer's forward call sites FIRST; this changes request-level semantics and needs owner eyes on the
+  budget defaults;
   #634-4 (retention invariant check at the reclaim site — read RetentionEnforcer's apply-site first);
   #634-3 (WAL under storage config/budget/metrics — carries the management-API quad);
   #634-5 (double-gated: DD-8-1 AND the BSL→Apache license boundary — needs owner approval);
