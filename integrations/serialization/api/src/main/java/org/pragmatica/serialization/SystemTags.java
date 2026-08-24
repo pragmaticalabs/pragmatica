@@ -430,6 +430,12 @@ public interface SystemTags {
         pin(table, 1658, "org.pragmatica.aether.slice.kvstore.AetherValue.WorkerSliceDirectiveValue");
         pin(table, 1659, "org.pragmatica.aether.slice.kvstore.CommunityState");
 
+        // entity owner-forwarding (#596)  [base 1660]
+        pin(table, 1660, "org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityUpdateForward");
+        pin(table, 1661, "org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityCreateForward");
+        pin(table, 1662, "org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityDeleteForward");
+        pin(table, 1663, "org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityUpdateForwardResponse");
+
         // ---- 2112..16383 RESERVED ----
         rejectDuplicateTags(table);
 

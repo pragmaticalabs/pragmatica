@@ -60,6 +60,13 @@ public sealed interface NodeCodecs {
         all.addAll(org.pragmatica.aether.slice.blueprint.BlueprintCodecsSlice.CODECS);
         all.addAll(org.pragmatica.aether.invoke.InvokeCodecsInvoke.CODECS);
         all.addAll(org.pragmatica.aether.http.forward.ForwardCodecsInvoke.CODECS);
+        // #596 owner-forwarding wire pair. The generated registry existed but was never aggregated
+        // here — the #492 defect class ("generated codecs lived only in the orphaned registry"),
+        // second occurrence: every entity owner-forward left dispatch() and vanished, the sender
+        // burned its full correlation timeout, and 02w measured the system as one that can only
+        // write when the harness happens to hit the owner directly. Aggregation is manual, so a new
+        // @Codec package is INERT until this line exists — check here FIRST for any new wire type.
+        all.addAll(org.pragmatica.aether.node.entityforward.EntityforwardCodecsNode.CODECS);
         // aether-stream wire types (replication, read-forward, stream-consensus) — without these the
         // active replication / catch-up / forward sends throw "No codec registered" over the cluster network.
         all.addAll(org.pragmatica.aether.stream.consensus.ConsensusCodecsStream.CODECS);
