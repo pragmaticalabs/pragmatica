@@ -19,6 +19,7 @@ package org.pragmatica.lang.utils;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.text.MessageFormat;
+import java.util.Locale;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Predicate;
@@ -29,6 +30,7 @@ import org.pragmatica.lang.Functions;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Functions.Fn3;
+import org.pragmatica.lang.Functions.Fn4;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
@@ -104,7 +106,7 @@ public sealed interface Causes {
     ///
     /// @return created mapping function
     static <T> Fn1<Cause, T> forOneValue(String template) {
-        return (T input) -> cause(String.format(template, input));
+        return (T input) -> cause(String.format(Locale.ROOT, template, input));
     }
 
     /// Create a mapper which will map two values into a formatted message.
@@ -113,7 +115,7 @@ public sealed interface Causes {
     ///
     /// @return created mapping function
     static <T1, T2> Fn2<Cause, T1, T2> forTwoValues(String template) {
-        return (T1 input1, T2 input2) -> cause(String.format(template, input1, input2));
+        return (T1 input1, T2 input2) -> cause(String.format(Locale.ROOT, template, input1, input2));
     }
 
     /// Create a mapper which will map three values into a formatted message.
@@ -122,7 +124,53 @@ public sealed interface Causes {
     ///
     /// @return created mapping function
     static <T1, T2, T3> Fn3<Cause, T1, T2, T3> forThreeValues(String template) {
-        return (T1 input1, T2 input2, T3 input3) -> cause(String.format(template, input1, input2, input3));
+        return (T1 input1, T2 input2, T3 input3) -> cause(String.format(Locale.ROOT, template, input1, input2, input3));
+    }
+
+    /// Typed variant of [#forOneValue(String)]: the mapper builds a CONCRETE cause from the
+    /// formatted message, keeping the cause type end to end. The canonical target is a
+    /// message-only record's constructor reference.
+    ///
+    /// Formatting pins [Locale#ROOT] (as do all `forXValues` rungs) so numeric conversions render
+    /// identically across JVMs.
+    static <T, C extends Cause> Fn1<C, T> forOneValue(String template, Fn1<C, String> causeFactory) {
+        return input -> causeFactory.apply(String.format(Locale.ROOT, template, input));
+    }
+
+    /// Typed variant of [#forTwoValues(String)]; see [#forOneValue(String, Fn1)].
+    static <T1, T2, C extends Cause> Fn2<C, T1, T2> forTwoValues(String template, Fn1<C, String> causeFactory) {
+        return (input1, input2) -> causeFactory.apply(String.format(Locale.ROOT, template, input1, input2));
+    }
+
+    /// Typed variant of [#forThreeValues(String)]; see [#forOneValue(String, Fn1)].
+    static <T1, T2, T3, C extends Cause> Fn3<C, T1, T2, T3> forThreeValues(String template, Fn1<C, String> causeFactory) {
+        return (input1, input2, input3) -> causeFactory.apply(String.format(Locale.ROOT, template, input1, input2, input3));
+    }
+
+    /// Data-retaining rung of [#forOneValue(String, Fn1)]: the mapper receives the VALUE and the
+    /// formatted message, in constructor order, so the canonical constructor reference of a
+    /// data-carrying cause record (`record InvalidEmail(String raw, String message)`) is the
+    /// factory — the error's data stays available as typed components instead of being baked into
+    /// prose (R1/R2 of `core/docs/typed-error-construction.md`).
+    ///
+    /// Three is the ceiling by decision, not omission: an error carrying more values hand-rolls
+    /// its factory in one line.
+    static <T, C extends Cause> Fn1<C, T> forOneValue(String template, Fn2<C, T, String> causeFactory) {
+        return input -> causeFactory.apply(input, String.format(Locale.ROOT, template, input));
+    }
+
+    /// Two-value data-retaining rung; see [#forOneValue(String, Fn2)].
+    static <T1, T2, C extends Cause> Fn2<C, T1, T2> forTwoValues(String template, Fn3<C, T1, T2, String> causeFactory) {
+        return (input1, input2) -> causeFactory.apply(input1, input2, String.format(Locale.ROOT, template, input1, input2));
+    }
+
+    /// Three-value data-retaining rung; see [#forOneValue(String, Fn2)].
+    static <T1, T2, T3, C extends Cause> Fn3<C, T1, T2, T3> forThreeValues(String template,
+                                                                           Fn4<C, T1, T2, T3, String> causeFactory) {
+        return (input1, input2, input3) -> causeFactory.apply(input1,
+                                                              input2,
+                                                              input3,
+                                                              String.format(Locale.ROOT, template, input1, input2, input3));
     }
 
     interface CompositeCause extends Cause {
