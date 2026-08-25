@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Fixed (2026-08-25 — the boot codec guard's first real catch: the cluster forward-apply pair had NO codec)
+- **`ForwardApplyRequest`/`ForwardApplyResponse` were routed wire types with no registered codec.**
+  CI forge-tests went red on the first node boot after the #634 boot guard landed (`6c5ed495e`) —
+  the guard refused assembly naming exactly these two types. A true positive, not an over-strict
+  guard: `ForwardingClusterNode` really sends them (`network.send`, command forwarding to a core
+  node for consensus application), their `ProtocolMessage` siblings (the Rabia family) all carry
+  `@Codec`, and this pair simply never got the annotation — every forwarded command would have
+  silently vanished at the transport, the exact #492 class the guard exists to catch. Fix, in two
+  halves each demanded by its own guard: `@Codec` on both records (the cluster module already runs
+  the codec processor; generated `ForwardCodecs` verified by content) + aggregation into
+  `NodeCodecs`; then hand-assigned system tags 1664/1665 in `SystemTags` — the tag-space discipline
+  rejected the hash-fallback tags by name ("System types with no hand-assigned tag"), exactly as
+  designed after the codec-tag-collision hazard. Detection-gap note: the
+  branch was boot-refused from `6c5ed495e` until this fix and no local gate saw it — `./build.sh`
+  only BUILDS forge tests and the module test gates don't run them; forge CI was the first thing
+  to actually boot an assembly. `[verified: ClusterFormationTest (forge) — previously ERRORED at
+  assembly in 0.05s, now forms the cluster]`
+
 ### Added/Fixed (2026-08-25 — #634-7 remainder: WAL fsync-failure injection + crash-mid-compaction, closing the ticket's test-gap list)
 - **The WAL fail-stops on a failed fsync (found by writing the owed injection test).** Before this,
   a failed group-commit `force` failed only the covered appends — the next append RETRIED the fsync
