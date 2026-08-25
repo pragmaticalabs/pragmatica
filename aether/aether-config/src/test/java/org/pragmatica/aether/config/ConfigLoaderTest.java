@@ -486,4 +486,67 @@ class ConfigLoaderTest {
                 assertThat(config.streaming().maxReadResponseBytes()).isEqualTo(defaults.maxReadResponseBytes());
             });
     }
+
+    // #634-3: the stream WAL's base directory as a first-class [storage.streams] key. Empty means
+    // DERIVE the pre-#634-3 sibling path, so an absent key must change nothing for deployments that
+    // never heard of it.
+    @Test
+    void loadFromString_parsesWalPath_whenStorageSectionDeclaresIt() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 5
+
+            [storage.streams]
+            disk_path = "/data/aether/streams"
+            wal_path = "/mnt/nvme/aether-wal"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> assertWalPath(config, "/mnt/nvme/aether-wal", true));
+    }
+
+    @Test
+    void loadFromString_walPathAbsent_derivesTheDefaultPath() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 5
+
+            [storage.streams]
+            disk_path = "/data/aether/streams"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> assertWalPath(config, "", false));
+    }
+
+    // A blank value is an operator saying nothing, not an operator asking for the filesystem root:
+    // the value is carried through verbatim (so the loader is not silently dropping keys) yet reports
+    // as non-explicit, which is what routes it back to the derived path.
+    @Test
+    void loadFromString_blankWalPath_derivesTheDefaultPath() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 5
+
+            [storage.streams]
+            wal_path = "   "
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> assertWalPath(config, "   ", false));
+    }
+
+    private static void assertWalPath(AetherConfig config, String expected, boolean explicit) {
+        var storage = config.storage().get("streams");
+
+        assertThat(storage).as("the [storage.streams] instance must be parsed at all").isNotNull();
+        assertThat(storage.walPath()).isEqualTo(expected);
+        assertThat(storage.hasExplicitWalPath()).isEqualTo(explicit);
+    }
 }

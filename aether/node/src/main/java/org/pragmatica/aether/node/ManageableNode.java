@@ -44,6 +44,7 @@ import org.pragmatica.aether.node.stream.StreamConsumerManager;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.aether.stream.StreamWriteRouter;
+import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
 import org.pragmatica.aether.ttm.TTMManager;
@@ -104,6 +105,18 @@ public interface ManageableNode {
     ClusterEventAggregator eventAggregator();
     BackupService backupService();
     StreamPartitionManager streamPartitionManager();
+
+    /// The node's sealed-segment index (#634-3/4): per-partition [SegmentIndex.SegmentRef] ranges, the
+    /// third local retention-floor source beside the ring tail and the WAL watermark. The default is an
+    /// EMPTY index — for HAND-WRITTEN test implementations only ("no segments known" is the honest
+    /// answer for a fake with no stream storage); JDK dynamic proxies never reach it — they route
+    /// default methods to their handler like any other. The production
+    /// record supplies the live index as a component, so forgetting to wire it is a compile error, not
+    /// a silent empty.
+    default SegmentIndex streamSegmentIndex() {
+        return new SegmentIndex();
+    }
+
     StreamReadRouter streamReadRouter();
 
     /// Owner-routed publish path — the write-side mirror of [#streamReadRouter]. Since #265 made

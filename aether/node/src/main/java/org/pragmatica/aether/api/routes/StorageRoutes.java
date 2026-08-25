@@ -19,6 +19,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.StorageStatusKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StorageStatusValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StorageStatusValue.TierStatus;
+import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.storage.ReadinessState;
 import org.pragmatica.storage.StorageInstance.TierInfo;
@@ -35,6 +36,8 @@ import org.pragmatica.lang.utils.Causes;
 
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-PAT-01"})
 public final class StorageRoutes implements RouteSource {
+    /// The storage instance the stream subsystem (segments + WAL) reports under.
+    private static final String STREAMS_INSTANCE = "streams";
     private static final Cause STORAGE_NOT_FOUND = Causes.cause("Storage instance not found");
     private static final Cause CLUSTER_INSTANCE_NOT_FOUND = Causes.cause("Storage instance not found in cluster");
 
@@ -61,23 +64,33 @@ public final class StorageRoutes implements RouteSource {
 
     record SnapshotDetail(long lastEpoch, long lastTimestampMs) {}
 
-    record StorageInstanceSummary(String name, List<TierDetail> tiers, ReadinessDetail readiness) {}
+    /// Live stream-WAL usage on this node (#634-3): present only on the `streams` instance, whose
+    /// disk footprint was otherwise under-reported by the entire WAL (a sibling directory of the
+    /// segment store, not a tier — reported as a peer field rather than a fabricated tier level).
+    record WalUsage(long totalBytes, int walPartitions) {}
+
+    record StorageInstanceSummary(String name,
+                                  List<TierDetail> tiers,
+                                  ReadinessDetail readiness,
+                                  Option<WalUsage> wal) {}
 
     record StorageListResponse(List<StorageInstanceSummary> instances) {}
 
     record StorageDetailResponse(String name,
                                  List<TierDetail> tiers,
                                  SnapshotDetail snapshot,
-                                 ReadinessDetail readiness) {}
+                                 ReadinessDetail readiness,
+                                 Option<WalUsage> wal) {}
 
     record SnapshotResponse(String name, long epoch, long timestampMs) {}
 
-    record NodeStorageSummary(String nodeId, List<TierDetail> tiers, ReadinessDetail readiness) {}
+    record NodeStorageSummary(String nodeId, List<TierDetail> tiers, ReadinessDetail readiness, long walBytes) {}
 
     record ClusterStorageInstanceSummary(String name,
                                          int nodeCount,
                                          long totalUsedBytes,
                                          long totalMaxBytes,
+                                         long totalWalBytes,
                                          List<NodeStorageSummary> nodes) {}
 
     record ClusterStorageListResponse(List<ClusterStorageInstanceSummary> instances) {}
@@ -85,12 +98,14 @@ public final class StorageRoutes implements RouteSource {
     record NodeStorageDetail(String nodeId,
                              List<TierDetail> tiers,
                              SnapshotDetail snapshot,
-                             ReadinessDetail readiness) {}
+                             ReadinessDetail readiness,
+                             long walBytes) {}
 
     record ClusterStorageDetailResponse(String name,
                                         int nodeCount,
                                         long totalUsedBytes,
                                         long totalMaxBytes,
+                                        long totalWalBytes,
                                         List<NodeStorageDetail> nodes) {}
 
     @Override
@@ -114,13 +129,43 @@ public final class StorageRoutes implements RouteSource {
     }
 
     private StorageListResponse listInstances() {
-        var summaries = nodeSupplier.get().storageSetups().values().stream().map(StorageRoutes::toSummary).toList();
+        var node = nodeSupplier.get();
+        var summaries = node.storageSetups()
+                            .values()
+                            .stream()
+                            .map(setup -> toSummary(setup,
+                                                    walUsageFor(node, setup)))
+                            .toList();
 
         return new StorageListResponse(summaries);
     }
 
     private Result<StorageDetailResponse> instanceDetail(String name) {
-        return findSetup(name).map(StorageRoutes::toDetailResponse);
+        var node = nodeSupplier.get();
+
+        return findSetup(name).map(setup -> toDetailResponse(setup, walUsageFor(node, setup)));
+    }
+
+    /// The `streams` instance is the only one with a WAL beside it; every other instance reports
+    /// absent rather than a zero that would read as "has a WAL, currently empty".
+    private static Option<WalUsage> walUsageFor(ManageableNode node, StorageSetup setup) {
+        return STREAMS_INSTANCE.equals(setup.name())
+               ? Option.some(walUsage(node.streamPartitionManager().walSnapshot()))
+               : Option.none();
+    }
+
+    private static WalUsage walUsage(StreamPartitionManager.WalSnapshot snapshot) {
+        return new WalUsage(RetentionRoutes.walTotalBytes(snapshot), walPartitionCount(snapshot));
+    }
+
+    private static int walPartitionCount(StreamPartitionManager.WalSnapshot snapshot) {
+        return (int) snapshot.streams()
+                             .stream()
+                             .flatMap(stream -> stream.partitions()
+                                                      .stream())
+                             .filter(partition -> partition.wal()
+                                                           .isPresent())
+                             .count();
     }
 
     private Result<SnapshotResponse> forceSnapshot(String name) {
@@ -154,11 +199,13 @@ public final class StorageRoutes implements RouteSource {
                    .stream()
                    .map(e -> (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(StorageStatusKey.storageStatusKey(nodeId,
                                                                                                                         e.getKey()),
-                                                                                      buildStatusValue(e.getValue())))
+                                                                                      buildStatusValue(e.getValue(),
+                                                                                                       publishedWalBytes(node,
+                                                                                                                         e.getValue()))))
                    .toList();
     }
 
-    private static StorageStatusValue buildStatusValue(StorageSetup setup) {
+    private static StorageStatusValue buildStatusValue(StorageSetup setup, long walBytes) {
         var tiers = setup.instance().tierInfo().stream().map(StorageRoutes::toTierStatus).toList();
         var gate = setup.readinessGate();
 
@@ -168,7 +215,13 @@ public final class StorageRoutes implements RouteSource {
                                                      gate.isReadReady(),
                                                      gate.isWriteReady(),
                                                      setup.snapshotManager().lastSnapshotEpoch(),
-                                                     setup.snapshotManager().lastSnapshotTimestamp());
+                                                     setup.snapshotManager().lastSnapshotTimestamp(),
+                                                     walBytes);
+    }
+
+    private static long publishedWalBytes(ManageableNode node, StorageSetup setup) {
+        return walUsageFor(node, setup).map(WalUsage::totalBytes)
+                          .or(0L);
     }
 
     private static TierStatus toTierStatus(TierInfo info) {
@@ -193,6 +246,7 @@ public final class StorageRoutes implements RouteSource {
                                                  nodes.size(),
                                                  totalUsedBytes(entries),
                                                  totalMaxBytes(entries),
+                                                 totalWalBytes(entries),
                                                  nodes);
     }
 
@@ -214,6 +268,13 @@ public final class StorageRoutes implements RouteSource {
                       .sum();
     }
 
+    private static long totalWalBytes(List<Map.Entry<StorageStatusKey, StorageStatusValue>> entries) {
+        return entries.stream()
+                      .mapToLong(e -> e.getValue()
+                                       .walBytes())
+                      .sum();
+    }
+
     private static NodeStorageSummary toNodeStorageSummary(Map.Entry<StorageStatusKey, StorageStatusValue> entry) {
         var value = entry.getValue();
         var tiers = value.tiers().stream().map(StorageRoutes::statusTierToDetail).toList();
@@ -221,7 +282,8 @@ public final class StorageRoutes implements RouteSource {
 
         return new NodeStorageSummary(entry.getKey().nodeId().id(),
                                       tiers,
-                                      readiness);
+                                      readiness,
+                                      value.walBytes());
     }
 
     private static Promise<ClusterStorageDetailResponse> buildClusterDetailResponse(ManageableNode node, String name) {
@@ -242,6 +304,7 @@ public final class StorageRoutes implements RouteSource {
                                                 nodes.size(),
                                                 totalUsedBytes(entries),
                                                 totalMaxBytes(entries),
+                                                totalWalBytes(entries),
                                                 nodes);
     }
 
@@ -254,7 +317,8 @@ public final class StorageRoutes implements RouteSource {
         return new NodeStorageDetail(entry.getKey().nodeId().id(),
                                      tiers,
                                      snapshot,
-                                     readiness);
+                                     readiness,
+                                     value.walBytes());
     }
 
     private static Map<String, List<Map.Entry<StorageStatusKey, StorageStatusValue>>> collectStatusesByInstance(ManageableNode node) {
@@ -287,15 +351,16 @@ public final class StorageRoutes implements RouteSource {
         return Option.option(nodeSupplier.get().storageSetups().get(name)).toResult(STORAGE_NOT_FOUND);
     }
 
-    private static StorageInstanceSummary toSummary(StorageSetup setup) {
-        return new StorageInstanceSummary(setup.name(), toTierDetails(setup), toReadinessDetail(setup));
+    private static StorageInstanceSummary toSummary(StorageSetup setup, Option<WalUsage> wal) {
+        return new StorageInstanceSummary(setup.name(), toTierDetails(setup), toReadinessDetail(setup), wal);
     }
 
-    private static StorageDetailResponse toDetailResponse(StorageSetup setup) {
+    private static StorageDetailResponse toDetailResponse(StorageSetup setup, Option<WalUsage> wal) {
         return new StorageDetailResponse(setup.name(),
                                          toTierDetails(setup),
                                          toSnapshotDetail(setup),
-                                         toReadinessDetail(setup));
+                                         toReadinessDetail(setup),
+                                         wal);
     }
 
     private static SnapshotResponse triggerSnapshot(StorageSetup setup) {

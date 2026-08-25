@@ -4145,7 +4145,7 @@ public class AetherCli implements Runnable {
     /// retention floor reclaims nothing for it. A driver that silently stopped shows no other symptom —
     /// writes and reads keep succeeding — so `writes` climbing is the signal an operator needs, and a
     /// keyspace whose `writes` stays flat under load is the thing to act on.
-    @Command(name = "entity", description = "Inspect durable entity keyspaces", subcommands = {EntityCommand.CheckpointsCommand.class})
+    @Command(name = "entity", description = "Inspect durable entity keyspaces", subcommands = {EntityCommand.CheckpointsCommand.class, EntityCommand.KeyspacesCommand.class})
     static class EntityCommand {
         @CommandLine.ParentCommand
         AetherCli parent;
@@ -4160,6 +4160,23 @@ public class AetherCli implements Runnable {
             @Override
             public Integer call() {
                 var response = entityParent.parent.fetch(ENTITY_CHECKPOINTS);
+
+                return OutputFormatter.printQuery(response, entityParent.parent.outputOptions());
+            }
+        }
+
+        /// The HOSTING view (#634-3 fold-in): which nodes committed a registration for each keyspace —
+        /// the exact candidate set the leader mints entity-arc owners over. Assembled from replicated
+        /// KV, so any caught-up node answers identically; `partitionCountsDisagree: true` marks a
+        /// rolling-redeploy window where hosts declared different counts (arcs span the max).
+        @Command(name = "keyspaces", description = "Show durable-entity keyspaces with their hosting node sets")
+        static class KeyspacesCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private EntityCommand entityParent;
+
+            @Override
+            public Integer call() {
+                var response = entityParent.parent.fetch(ENTITY_KEYSPACES);
 
                 return OutputFormatter.printQuery(response, entityParent.parent.outputOptions());
             }

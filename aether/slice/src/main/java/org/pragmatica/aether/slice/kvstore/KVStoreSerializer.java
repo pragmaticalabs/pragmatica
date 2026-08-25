@@ -487,10 +487,14 @@ public final class KVStoreSerializer {
                                                                                                                                                                                                                                                       "\\|");
     }
 
-    private static String serializeStorageStatus(StorageStatusValue v) {
+    /// Package-visible for direct round-trip testing (the `storage-status` section is EPHEMERAL, so
+    /// it never flows through `toToml` — the arms exist for switch exhaustiveness and symmetry, and
+    /// without a direct test a field added to the value would change them blind, which is how
+    /// `walBytes` arrived to zero coverage).
+    static String serializeStorageStatus(StorageStatusValue v) {
         var tiersStr = v.tiers().stream().map(KVStoreSerializer::serializeTierStatus).collect(Collectors.joining(";"));
 
-        return v.instanceName() + PIPE + tiersStr + PIPE + v.readinessState() + PIPE + v.isReadReady() + PIPE + v.isWriteReady() + PIPE + v.lastSnapshotEpoch() + PIPE + v.lastSnapshotTimestamp() + PIPE + v.updatedAt();
+        return v.instanceName() + PIPE + tiersStr + PIPE + v.readinessState() + PIPE + v.isReadReady() + PIPE + v.isWriteReady() + PIPE + v.lastSnapshotEpoch() + PIPE + v.lastSnapshotTimestamp() + PIPE + v.walBytes() + PIPE + v.updatedAt();
     }
 
     private static String serializeTierStatus(StorageStatusValue.TierStatus t) {
@@ -1332,11 +1336,12 @@ public final class KVStoreSerializer {
         return List.copyOf(entries);
     }
 
-    private static Result<Map.Entry<AetherKey, AetherValue>> parseStorageStatusEntry(String identity, String raw) {
+    /// Package-visible for direct round-trip testing (the `storage-status` section is ephemeral).
+    static Result<Map.Entry<AetherKey, AetherValue>> parseStorageStatusEntry(String identity, String raw) {
         var parts = raw.split("(?<!\\\\)\\|", -1);
 
-        if (parts.length != 8) {
-            return parseFailure("storage-status value requires 8 fields, got " + parts.length);
+        if (parts.length != 9) {
+            return parseFailure("storage-status value requires 9 fields, got " + parts.length);
         }
 
         return StorageStatusKey.storageStatusKey("storage-status/" + identity).map(key -> entry(key,
@@ -1347,7 +1352,8 @@ public final class KVStoreSerializer {
                                                                                                                        Boolean.parseBoolean(parts[4]),
                                                                                                                        Long.parseLong(parts[5]),
                                                                                                                        Long.parseLong(parts[6]),
-                                                                                                                       Long.parseLong(parts[7]))));
+                                                                                                                       Long.parseLong(parts[7]),
+                                                                                                                       Long.parseLong(parts[8]))));
     }
 
     private static List<StorageStatusValue.TierStatus> parseTierStatuses(String raw) {

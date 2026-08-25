@@ -1455,6 +1455,76 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                        Collectors.counting()));
     }
 
+    /// Cheap point-in-time per-partition WAL + retention-floor view (#634-3) — the [#hydrationSnapshot]
+    /// pattern: assembled ON REQUEST from the live `streams` map, adds NO hot-path accounting. Per
+    /// MATERIALIZED partition it reports the WAL's [PartitionWal.WalStats] (absent on the no-WAL path),
+    /// the ring tail (earliest offset still retained in memory) and the durable sealed bound — two of
+    /// the three floors the #634-4 invariant spans; the third (the entity checkpoint floor) lives in
+    /// consensus KV and is joined by the node-side assembler, which is also where the invariant itself
+    /// is evaluated (a checker that cannot see all three floors is a lying sensor, per the ticket).
+    public WalSnapshot walSnapshot() {
+        return new WalSnapshot(streams.entrySet()
+                                      .stream()
+                                      .map(entry -> streamWalView(entry.getKey(),
+                                                                  entry.getValue()))
+                                      .filter(view -> !view.partitions()
+                                                           .isEmpty())
+                                      .toList());
+    }
+
+    private StreamWalView streamWalView(String name, StreamEntry entry) {
+        var partitions = IntStream.range(0,
+                                         entry.declaredPartitions())
+                                  .mapToObj(partition -> partitionWalView(name, partition, entry))
+                                  .flatMap(Option::stream)
+                                  .toList();
+
+        return new StreamWalView(name, partitions);
+    }
+
+    /// [Option#none] for a partition this node has not materialized — nothing local exists to report,
+    /// and reporting zeros would be indistinguishable from a real empty WAL.
+    private Option<PartitionWalView> partitionWalView(String streamName, int partition, StreamEntry entry) {
+        return Option.option(entry.materialized().get(partition)).map(materialized -> toWalView(streamName,
+                                                                                                partition,
+                                                                                                materialized));
+    }
+
+    /// One materialized partition's view (extracted per the lambda-format rule). The ring tail is
+    /// reported as `-1` for an EMPTY ring — review catch: `tailOffset()` is raw slot state, `0` on a
+    /// ring that never held a record, which would satisfy any covered-from check and silently declare
+    /// a restarted-empty partition healthy under a committed checkpoint, the exact blind spot the
+    /// retention surface exists to expose. Emptiness is judged by the head: allocation seeds
+    /// `headOffset = -1`, and a negative head means no record was ever appended.
+    private PartitionWalView toWalView(String streamName,
+                                       int partition,
+                                       StreamEntry.MaterializedPartition materialized) {
+        var ring = materialized.ring();
+        var ringTail = ring.headOffset() < 0
+                       ? -1L
+                       : ring.tailOffset();
+
+        return new PartitionWalView(partition,
+                                    materialized.wal().map(PartitionWal::stats),
+                                    ringTail,
+                                    lastSealedOffset.lastSealedOffset(streamName, partition));
+    }
+
+    /// Per-node WAL/floors view: one entry per stream with at least one materialized partition.
+    public record WalSnapshot(List<StreamWalView> streams) {}
+
+    public record StreamWalView(String stream, List<PartitionWalView> partitions) {}
+
+    /// @param wal                  the partition WAL's counters, absent on the no-WAL (non-durable) path
+    /// @param ringTailOffset       earliest offset still retained in the in-memory ring, `-1` when empty
+    /// @param sealedThroughOffset  durable sealed bound (`-1` when nothing sealed) — the same value that
+    ///                             drives WAL truncation, reported so the operator sees the floor the
+    ///                             truncation watermark chases
+    public record PartitionWalView(int partition,
+                                   Option<PartitionWal.WalStats> wal,
+                                   long ringTailOffset,
+                                   long sealedThroughOffset) {}
+
     /// Adapt this manager to the narrow {@link org.pragmatica.aether.stream.replication.StreamCatalog}
     /// consumed by `ReplicaSetController`. Exposes `(name, partitions, replicas, minSyncReplicas)` per
     /// stream — placement uses `replicas` (the replication factor), while `minSyncReplicas` (the write-

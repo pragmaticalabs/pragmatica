@@ -1191,6 +1191,9 @@ public sealed interface AetherValue {
         }
     }
 
+    /// `walBytes` (#634-3): live stream-WAL bytes on the reporting node — non-zero only for the
+    /// `streams` instance, whose disk footprint was otherwise under-reported by the entire WAL (the
+    /// WAL is a sibling directory of the segment store, not a tier).
     record StorageStatusValue(String instanceName,
                               List<TierStatus> tiers,
                               String readinessState,
@@ -1198,6 +1201,7 @@ public sealed interface AetherValue {
                               boolean isWriteReady,
                               long lastSnapshotEpoch,
                               long lastSnapshotTimestamp,
+                              long walBytes,
                               long updatedAt) implements AetherValue {
         public record TierStatus(String level, long usedBytes, long maxBytes) {
             public static TierStatus tierStatus(String level, long usedBytes, long maxBytes) {
@@ -1211,7 +1215,8 @@ public sealed interface AetherValue {
                                                             boolean isReadReady,
                                                             boolean isWriteReady,
                                                             long lastSnapshotEpoch,
-                                                            long lastSnapshotTimestamp) {
+                                                            long lastSnapshotTimestamp,
+                                                            long walBytes) {
             return new StorageStatusValue(instanceName,
                                           List.copyOf(tiers),
                                           readinessState,
@@ -1219,6 +1224,7 @@ public sealed interface AetherValue {
                                           isWriteReady,
                                           lastSnapshotEpoch,
                                           lastSnapshotTimestamp,
+                                          walBytes,
                                           System.currentTimeMillis());
         }
     }

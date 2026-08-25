@@ -12,7 +12,7 @@ import picocli.CommandLine;
 import picocli.CommandLine.Command;
 
 
-@Command(name = "storage", description = "Storage instance management", subcommands = {StorageListCommand.class, StorageStatusCommand.class, StorageSnapshotCommand.class})
+@Command(name = "storage", description = "Storage instance management", subcommands = {StorageListCommand.class, StorageStatusCommand.class, StorageSnapshotCommand.class, StorageRetentionCommand.class})
 @Contract
 public class StorageCommand implements Runnable {
     @CommandLine.ParentCommand

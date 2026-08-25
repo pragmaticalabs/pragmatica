@@ -945,6 +945,19 @@ public sealed interface ManagementApiResponses {
                                         long failures,
                                         Map<Integer, Long> checkpointedThrough) {}
 
+    /// Per-keyspace HOSTING view (#634-3, entity hosting-set fold-in, owner-ruled 2026-08-24): the set
+    /// of nodes with a committed per-node registration IS the candidate set the leader mints entity-arc
+    /// owners over, and until this surface it was invisible — the 02w hosting-set defect was diagnosed
+    /// from typed write refusals instead of one GET. Assembled from replicated KV, so any caught-up
+    /// node answers identically. `partitionCountsDisagree` mirrors the reconciler's rolling-redeploy
+    /// signal: hosts declared different counts, arcs span the max until configs re-converge.
+    record EntityKeyspacesResponse(List<EntityKeyspaceView> keyspaces) {}
+
+    record EntityKeyspaceView(String keyspace,
+                              int partitionCount,
+                              List<String> hosts,
+                              boolean partitionCountsDisagree) {}
+
     /// Per-slice version registry projection in [VersionsResponse]. `slice` is the deployed artifact
     /// coordinate; `apiPrefix` is the version-agnostic base prefix; `requireVersionHeader` and
     /// `defaultVersion` are the header-mode detection knobs (`defaultVersion` is `Option.none()` /

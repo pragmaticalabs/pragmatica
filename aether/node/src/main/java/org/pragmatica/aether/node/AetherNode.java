@@ -36,6 +36,7 @@ import org.pragmatica.aether.api.ClusterEventAggregator;
 import org.pragmatica.aether.api.LogLevelRegistry;
 import org.pragmatica.aether.api.ManagementServer;
 import org.pragmatica.aether.api.OperationalEvent;
+import org.pragmatica.aether.api.routes.RetentionRoutes;
 import org.pragmatica.aether.api.DynamicConfigManager;
 import org.pragmatica.aether.backup.BackupService;
 import org.pragmatica.config.ConfigService;
@@ -794,6 +795,11 @@ public interface AetherNode extends ManageableNode {
     /// seconds against a ring measured in minutes leaves a wide margin; raising it narrows the margin
     /// toward that refusal.
     TimeSpan ENTITY_CHECKPOINT_INTERVAL = TimeSpan.timeSpan(30).seconds();
+    /// #634-4 periodic invariant check — the tri-floor retention invariant is evaluated on every
+    /// `/api/storage/retention` read, but a violation nobody polls for must still reach an operator:
+    /// the metrics-threshold alert path only runs while a dashboard client is connected. Five minutes
+    /// matches the RetentionEnforcer cadence — the only mover that can newly violate between checks.
+    TimeSpan RETENTION_INVARIANT_CHECK_INTERVAL = TimeSpan.timeSpan(5).minutes();
 
     /// Per-node, restart-stable data dir for the disk-backed stream storage. Derived as a sibling of
     /// the node's artifact disk path (the artifacts/content convention, `StorageConfig.diskPath()`)
@@ -810,7 +816,28 @@ public interface AetherNode extends ManageableNode {
                    .resolve(config.self().id());
     }
 
-    /// The per-node stream WAL directory (`<streamDataDir>/wal`) when it is writable.
+    /// The per-node stream WAL BASE directory (#634-3): the `streams` storage instance's explicit
+    /// `wal_path` when set, else the derived pre-#634-3 sibling (`<streamDataDir>/wal`). The node-id
+    /// suffix on the explicit path keeps co-located nodes (EmberCluster, containers sharing a mount)
+    /// from ever sharing one WAL dir — the same invariant `streamDataDir` enforces, independent of
+    /// operator input.
+    private static Path streamWalBaseDir(AetherNodeConfig config) {
+        var streamsConfig = Option.option(config.storageConfig().get("streams")).or(StorageConfig.storageConfig());
+
+        return effectiveWalBase(streamsConfig, config.self(), streamDataDir(config).resolve("wal"));
+    }
+
+    /// The pure wal-path decision, package-visible so the SUFFIX invariant is pinned (review m10
+    /// verdict: required): an explicit `wal_path` is ALWAYS suffixed with the node id — two co-located
+    /// nodes sharing one WAL directory is corruption, and this is the one line keeping that
+    /// independent of operator input. The derive branch passes the pre-#634-3 path through verbatim.
+    static Path effectiveWalBase(StorageConfig streamsConfig, NodeId self, Path derivedWalDir) {
+        return streamsConfig.hasExplicitWalPath()
+               ? Path.of(streamsConfig.walPath()).resolve(self.id())
+               : derivedWalDir;
+    }
+
+    /// The per-node stream WAL directory when it is writable.
     ///
     /// An UNWRITABLE dir is a BOOT ERROR by default (#634 item 2). The old behaviour — one startup WARN,
     /// then every publish acks with no fsync — silently converted "durable entity" into "in-memory
@@ -822,7 +849,7 @@ public interface AetherNode extends ManageableNode {
     /// `aether.allowNonDurableStreams=true` system property or `AETHER_ALLOW_NON_DURABLE_STREAMS=true`
     /// env — and keep exactly the previous degrade-with-WARN.
     private static Option<Path> resolveStreamWalDir(AetherNodeConfig config) {
-        var walDir = streamDataDir(config).resolve("wal");
+        var walDir = streamWalBaseDir(config);
 
         return FileOps.createDirectories(walDir).fold(cause -> walDisabled(walDir, cause), _ -> Option.some(walDir));
     }
@@ -837,7 +864,7 @@ public interface AetherNode extends ManageableNode {
     /// [#resolveStreamWalDir] — those are exactly the explicitly-best-effort deployments the opt-in
     /// exists for.
     public static Result<Unit> verifyWalBootable(AetherNodeConfig config) {
-        var walDir = streamDataDir(config).resolve("wal");
+        var walDir = streamWalBaseDir(config);
 
         return decideWalAvailability(walDir,
                                      FileOps.createDirectories(walDir).mapToUnit(),
@@ -1367,6 +1394,7 @@ public interface AetherNode extends ManageableNode {
                           ClusterEventAggregator eventAggregator,
                           BackupService backupService,
                           StreamPartitionManager streamPartitionManager,
+                          SegmentIndex streamSegmentIndex,
                           StreamReadRouter streamReadRouter,
                           StreamWriteRouter streamWriteRouter,
                           ConsumerGroupCoordinator consumerGroupCoordinator,
@@ -3830,6 +3858,7 @@ public interface AetherNode extends ManageableNode {
                                   eventAggregator,
                                   BackupService.disabled(),
                                   streamPartitionManager,
+                                  streamSegmentIndex,
                                   streamReadRouter,
                                   streamWriteRouter,
                                   consumerGroupCoordinator,
@@ -3862,6 +3891,24 @@ public interface AetherNode extends ManageableNode {
                                   periodicTasks);
 
         nodeDeploymentManager.setShutdownCallback(node::stop);
+        // #634-4, the periodic half (owner-ruled: on-read + periodic alert). The watch binds the three
+        // SHARED components directly — never a node record instance, of which two are constructed on
+        // the management-enabled path — WARN-logs and raises one operator alert per partition violated
+        // on two consecutive ticks, through the injection path: the metrics-threshold path is
+        // evaluated only while a dashboard client is connected.
+        var retentionInvariantWatch = RetentionRoutes.RetentionInvariantWatch.retentionInvariantWatch(streamPartitionManager,
+                                                                                                      streamSegmentIndex,
+                                                                                                      kvStore,
+                                                                                                      (name, message) -> alertManager.inject(name,
+                                                                                                                                             RetentionRoutes.ALERT_SEVERITY,
+                                                                                                                                             message,
+                                                                                                                                             Option.none(),
+                                                                                                                                             Option.none())
+                                                                                                                                     .onFailure(cause -> LOG.warn("Retention alert injection failed: {}",
+                                                                                                                                                                  cause.message())));
+
+        periodicTasks.add(SharedScheduler.scheduleAtFixedRate(retentionInvariantWatch::tick,
+                                                              RETENTION_INVARIANT_CHECK_INTERVAL));
         nodeDeploymentManager.setSelfReadySignal(() -> markSubsystemsReady(nodeLifecycle::signalReady,
                                                                            nodeReportedStateHolder));
         // Activation level-heal: a cold-start `restart_all_nodes` can drop the single CAS-latched
@@ -3969,6 +4016,7 @@ public interface AetherNode extends ManageableNode {
                                       eventAggregator,
                                       BackupService.disabled(),
                                       streamPartitionManager,
+                                      streamSegmentIndex,
                                       streamReadRouter,
                                       streamWriteRouter,
                                       consumerGroupCoordinator,

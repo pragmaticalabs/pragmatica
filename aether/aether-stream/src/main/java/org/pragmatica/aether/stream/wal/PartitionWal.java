@@ -108,6 +108,9 @@ public final class PartitionWal implements AutoCloseable {
     private volatile long lastOffset;  // last appended offset (-1 when none)
     private volatile long truncatedUpto = -1;  // in-memory discard watermark
     private volatile long lastCompactedUpto = -1;  // last physical compaction point
+    private volatile long fsyncCount;  // group commits completed; guarded by syncLock
+    private volatile long fsyncTotalNanos;  // guarded by syncLock
+    private volatile long fsyncMaxNanos;  // guarded by syncLock
     private volatile boolean closed;
 
     private PartitionWal(Path file, FileChannel channel, long writePosition, long lastOffset) {
@@ -172,6 +175,40 @@ public final class PartitionWal implements AutoCloseable {
         return lastOffset;
     }
 
+    /// Point-in-time observability view (#634-3): live bytes on disk (the write position — a lazy
+    /// truncate does not shrink it until compaction), the truncation watermark, the last physical
+    /// compaction point, and the group-commit fsync counters. Reads of independently-published
+    /// volatiles — values are individually current but NOT one atomic cut, which is the right trade
+    /// for a snapshot surface that must add zero cost to the append path. Latency derivations
+    /// (mean = totalNanos/count) belong to the reader; this reports the raw accumulators.
+    public WalStats stats() {
+        return new WalStats(writePosition,
+                            lastOffset,
+                            truncatedUpto,
+                            lastCompactedUpto,
+                            fsyncCount,
+                            fsyncTotalNanos,
+                            fsyncMaxNanos);
+    }
+
+    /// @param sizeBytes        end of valid data in the file (live bytes; lazy-truncated records
+    ///                         still count until compaction reclaims them)
+    /// @param lastOffset       last appended offset, `-1` when none
+    /// @param truncatedUpto    in-memory discard watermark (`-1` when nothing truncated); resets on
+    ///                         crash by design — a reclamation hint, not a durability fact
+    /// @param lastCompactedUpto last offset physically reclaimed by a compaction rewrite, `-1` when
+    ///                         the file was never compacted
+    /// @param fsyncCount       group commits completed since open
+    /// @param fsyncTotalNanos  total wall time spent inside `force` since open
+    /// @param fsyncMaxNanos    slowest single `force` since open
+    public record WalStats(long sizeBytes,
+                           long lastOffset,
+                           long truncatedUpto,
+                           long lastCompactedUpto,
+                           long fsyncCount,
+                           long fsyncTotalNanos,
+                           long fsyncMaxNanos) {}
+
     // === append path ===
     private Result<Unit> appendDurably(long offset, byte[] payload, long timestampMillis) {
         return writeRecord(offset, payload, timestampMillis).flatMap(this::groupCommit);
@@ -225,10 +262,22 @@ public final class PartitionWal implements AutoCloseable {
 
     private Result<Unit> forceAndPublish() {
         var target = writtenSeq;
+        var startedAt = System.nanoTime();
 
         return Result.lift(APPEND_FAILED,
                            () -> channel.force(false))
-                     .onSuccess(_ -> syncedSeq = target);
+                     .onSuccess(_ -> publishSync(target,
+                                                 System.nanoTime() - startedAt));
+    }
+
+    /// Runs under `syncLock` (the only writer of these fields). The timing wraps ONLY the
+    /// `force` call — one nanoTime pair per GROUP COMMIT, not per append, so a burst of N
+    /// pipelined appends still pays for one measurement (#634-3).
+    private void publishSync(long target, long elapsedNanos) {
+        syncedSeq = target;
+        fsyncCount = fsyncCount + 1;
+        fsyncTotalNanos = fsyncTotalNanos + elapsedNanos;
+        fsyncMaxNanos = Math.max(fsyncMaxNanos, elapsedNanos);
     }
 
     // === replay path ===

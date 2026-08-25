@@ -195,6 +195,79 @@ class PartitionWalTest {
         }
     }
 
+    /// #634-3: the observability surface. Every value here is read from a counter the append/truncate
+    /// path already maintained — the point of the assertions is that the snapshot reports what the file
+    /// and the watermark ACTUALLY are, since an accounting-only counter that drifts from disk is exactly
+    /// the lying sensor an operator would then act on.
+    @Nested
+    class Stats {
+
+        @Test
+        void stats_reportsSizeAndOffsets_afterAppends() throws IOException {
+            var wal = open("stats-size.wal");
+
+            assertThat(wal.stats().sizeBytes()).as("a fresh WAL holds no bytes").isZero();
+            assertThat(wal.stats().lastOffset()).isEqualTo(-1L);
+
+            IntStream.range(0, 5).forEach(i -> appendSync(wal, i, payload(i), 1L));
+
+            var stats = wal.stats();
+
+            assertThat(stats.sizeBytes()).as("sizeBytes is the write position — with no compaction yet that IS the file length")
+                                         .isEqualTo(Files.size(file("stats-size.wal")));
+            assertThat(stats.sizeBytes()).isPositive();
+            assertThat(stats.lastOffset()).isEqualTo(4L);
+            assertThat(stats.truncatedUpto()).isEqualTo(-1L);
+            assertThat(stats.lastCompactedUpto()).isEqualTo(-1L);
+            wal.close();
+        }
+
+        // Each append is AWAITED before the next fires, so no two can share a group commit and the
+        // count is exact rather than merely non-zero.
+        @Test
+        void stats_countsFsyncs_andAccumulatesLatency() {
+            var wal = open("stats-fsync.wal");
+
+            assertThat(wal.stats().fsyncCount()).as("nothing has been forced yet").isZero();
+            assertThat(wal.stats().fsyncTotalNanos()).isZero();
+
+            IntStream.range(0, 4).forEach(i -> appendSync(wal, i, payload(i), 1L));
+
+            var stats = wal.stats();
+
+            assertThat(stats.fsyncCount()).isEqualTo(4L);
+            assertThat(stats.fsyncTotalNanos()).as("a real force() spans at least one nanoTime tick")
+                                               .isPositive();
+            assertThat(stats.fsyncMaxNanos() * stats.fsyncCount())
+                .as("max must dominate the mean the reader derives as total/count")
+                .isGreaterThanOrEqualTo(stats.fsyncTotalNanos());
+            wal.close();
+        }
+
+        @Test
+        void stats_reflectsTruncationWatermark() throws IOException {
+            var wal = open("stats-truncate.wal");
+
+            IntStream.range(0, 5).forEach(i -> appendSync(wal, i, payload(i), 1L));
+
+            var sizeBefore = wal.stats().sizeBytes();
+
+            assertThat(wal.stats().truncatedUpto()).as("nothing truncated yet — else the bump below proves nothing")
+                                                   .isEqualTo(-1L);
+            wal.truncate(2L).onFailure(c -> fail(c.message()));
+
+            var stats = wal.stats();
+
+            assertThat(stats.truncatedUpto()).isEqualTo(2L);
+            assertThat(stats.sizeBytes()).as("below the compaction threshold a truncate is a watermark bump; bytes are NOT"
+                                             + " reclaimed, and reporting a shrunken size would hide real disk usage")
+                                         .isEqualTo(sizeBefore);
+            assertThat(Files.size(file("stats-truncate.wal"))).isEqualTo(sizeBefore);
+            assertThat(stats.lastCompactedUpto()).as("no physical compaction ran").isEqualTo(-1L);
+            wal.close();
+        }
+    }
+
     @Nested
     class Concurrency {
 
