@@ -109,14 +109,17 @@ public final class RetentionRoutes implements RouteSource {
                                   String violation) {}
 
     /// WAL counters in operator units: sizes in bytes, latencies in microseconds (mean derived from
-    /// the raw accumulators at read time — the WAL reports raw count/total/max).
+    /// the raw accumulators at read time — the WAL reports raw count/total/max). `failStopped` is
+    /// the #634-7 fail-stop state: this partition's WAL refused further appends after a failed
+    /// fsync, publishes fail until the node restarts.
     record WalDetail(long sizeBytes,
                      long lastOffset,
                      long truncatedUpto,
                      long lastCompactedUpto,
                      long fsyncCount,
                      double fsyncMeanMicros,
-                     double fsyncMaxMicros) {}
+                     double fsyncMaxMicros,
+                     boolean failStopped) {}
 
     record RetentionResponse(long walTotalBytes, List<RetentionPartitionView> partitions) {}
 
@@ -292,7 +295,8 @@ public final class RetentionRoutes implements RouteSource {
                              stats.lastCompactedUpto(),
                              stats.fsyncCount(),
                              meanMicros(stats.fsyncTotalNanos(), stats.fsyncCount()),
-                             stats.fsyncMaxNanos() / 1_000.0);
+                             stats.fsyncMaxNanos() / 1_000.0,
+                             stats.failStopped());
     }
 
     private static double meanMicros(long totalNanos, long count) {

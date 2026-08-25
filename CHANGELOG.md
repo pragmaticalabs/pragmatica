@@ -6,6 +6,51 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Added/Fixed (2026-08-25 — #634-7 remainder: WAL fsync-failure injection + crash-mid-compaction, closing the ticket's test-gap list)
+- **The WAL fail-stops on a failed fsync (found by writing the owed injection test).** Before this,
+  a failed group-commit `force` failed only the covered appends — the next append RETRIED the fsync
+  itself. After one fsync failure the OS may drop the covered dirty pages while clearing the error,
+  so the retried force can falsely report durability; acking on it leaves a silent mid-file hole,
+  and recovery's contiguous scan then discards every ACKED record past the hole. Same defect class
+  the ticket's item 1 closed at the manager layer ("a later success after a mid-chain failure would
+  leave a hole"), one layer down. `PartitionWal` now records the failure once (loud ERROR) and
+  refuses every later append with typed `WalError.FailStopped` — no write, no force — while reads
+  still serve; reopen (node restart) is the recovery action and trims to the valid prefix, losing
+  nothing acked. A compaction I/O failure deliberately does NOT fail-stop: reclamation failure is
+  not a durability failure. Also fixed: a close-time fsync failure no longer leaks the channel (the
+  old `force→flatMap→close` chain skipped `close()` on force failure). `[verified: PartitionWalTest
+  FsyncFailure 5/5 — no ack over a failed fsync, force attempted exactly ONCE across a pipelined
+  group, refusal with the channel deliberately RESTORED so a retry would have succeeded, reopen
+  recovers acked records, compaction failure loud with the live file intact]`
+- **Crash-mid-compaction pinned across every window of the temp+rename dance.** Each test
+  constructs the exact post-crash disk state a SIGKILL would leave (a live JVM can't be killed
+  inside `truncate`): a complete VALID decoy temp is ignored by recovery; a torn temp is ignored; a
+  stale temp from a crashed run is overwritten and consumed by the next compaction; and survivors
+  are durable immediately after the rename WITHOUT the instance's `close()` — proven by an
+  independent reader on the same file — because the temp is `force(true)`'d before the rename. The
+  rename now passes `ATOMIC_MOVE` (enforcing what the doc already claimed), and the class doc
+  records why no directory fsync is issued, honestly tagged `[mechanism: the superset argument
+  covers the undone-rename case; the no-neither-file case rests on ordered metadata journaling, not
+  POSIX]`. `[verified: PartitionWalTest CrashMidCompaction 4/4]` `guarantees.md` §4 `stream.append`
+  now states the fail-stop failure mode with the operator recovery action.
+- **Review-hardened (2 MAJOR + 1 MAJOR surface, 4 MINOR, 1 NIT — all fixed).** (1) Compaction could
+  UN-FREEZE the fail-stop: `installCompacted` republishes `syncedSeq = writtenSeq`, so a
+  threshold-crossing truncate after a fsync failure would let an in-flight append ack over bytes
+  the failed fsync may have dropped — truncate is now refused while fail-stopped (entry check plus
+  an in-lock check in `compact()`, race-free because fail-stop is only recorded under the same
+  lock). (2) The single-force-attempt test passed without ever reaching the in-lock guard it named
+  (the refusal usually lands at the append entry check) — rebuilt with a GATED injected channel
+  that parks the first append inside `force` while holding the sync lock, making the second
+  append's entry-check pass deterministic and its refusal attributable ONLY to the in-lock guard.
+  (3) Fail-stop had no operator surface (one ERROR log — log-scraping): now `WalStats.failStopped`
+  → `wal.failStopped` on `GET /api/storage/retention` + CLI passthrough + docs; the dashboard slot
+  inherits the retention view's recorded dormant-slot decision on #494. Also: fail-stopped `close()`
+  skips the close-time force (the forbidden retry — pinned by force-call count); a failed
+  post-compaction reopen fail-stops instead of leaving a zombie with a closed channel; refusal
+  asserts on `Files.size` (disk), not the accounting; the unacked-record resurrection on reopen is
+  pinned with `containsExactly` and documented as at-least-once territory; `syncFailure` is
+  `Option<Cause>`, not a null sentinel.
+
 ### Added/Fixed (2026-08-25 — #634 structural follow-ups: the silences that hid the #492 class are closed)
 - **Boot refuses a routed wire type with no codec (the #492-class killer).** Twice a generated codec
   registry existed but was never aggregated into `NodeCodecs`, and every message of the orphaned

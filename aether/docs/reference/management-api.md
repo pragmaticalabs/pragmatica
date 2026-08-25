@@ -2077,7 +2077,8 @@ the view actionable (see recovery below).
         "lastCompactedUpto": 1502,
         "fsyncCount": 1901,
         "fsyncMeanMicros": 84.3,
-        "fsyncMaxMicros": 2210.5
+        "fsyncMaxMicros": 2210.5,
+        "failStopped": false
       },
       "ringTail": 1650,
       "sealedThrough": 1502,
@@ -2103,6 +2104,7 @@ the view actionable (see recovery below).
 | `wal.lastCompactedUpto` | Last offset physically reclaimed by a compaction rewrite (`-1` when the file was never compacted) |
 | `wal.fsyncCount` | Group commits completed since the WAL was opened |
 | `wal.fsyncMeanMicros` / `fsyncMaxMicros` | Mean / slowest single fsync since open, in microseconds |
+| `wal.failStopped` | `true` when this partition's WAL refused further appends after a failed fsync (#634-7 fail-stop — a retried fsync can falsely succeed after the OS drops the dirty pages, so the WAL stops instead). Every publish on the partition fails until the recovery action: **restart the node** — reopen re-scans the file and trims to the valid prefix; nothing acked is lost |
 | `ringTail` | Earliest offset still in the in-memory ring (`-1` when the materialized ring is EMPTY — has never held a record, e.g. right after a restart; a partition with no ring at all appears only as a segment-only row or not at all) |
 | `sealedThrough` | The durable sealed bound — what WAL truncation chases (`-1` when nothing is sealed) |
 | `earliestSegment` | Earliest sealed-segment start offset still retained (`-1` when no segments are retained) |

@@ -182,6 +182,9 @@ class RetentionRoutesTest {
                 .as("raw nanos become operator microseconds at read time: 8000ns over 4 forces is 2us")
                 .isEqualTo(2.0);
             assertThat(detailOf(walRow).fsyncMaxMicros()).isEqualTo(3.0);
+            assertThat(detailOf(walRow).failStopped())
+                .as("the #634-7 fail-stop state reaches the operator row (source stats say TRUE)")
+                .isTrue();
         }
 
         @Test
@@ -430,12 +433,14 @@ class RetentionRoutesTest {
     }
 
     private static WalStats walStats(long truncatedUpto, long lastOffset) {
-        return new WalStats(1_024L, lastOffset, truncatedUpto, -1L, 1L, 1_000L, 1_000L);
+        return new WalStats(1_024L, lastOffset, truncatedUpto, -1L, 1L, 1_000L, 1_000L, false);
     }
 
-    /// 8000ns across 4 forces, slowest 3000ns — the numbers the microsecond conversion is pinned against.
+    /// 8000ns across 4 forces, slowest 3000ns — the numbers the microsecond conversion is pinned
+    /// against. Fail-stopped TRUE so the pass-through is armed (a `false` here would pass with the
+    /// field never mapped).
     private static WalStats detailedStats() {
-        return new WalStats(1_024L, 300L, 299L, -1L, 4L, 8_000L, 3_000L);
+        return new WalStats(1_024L, 300L, 299L, -1L, 4L, 8_000L, 3_000L, true);
     }
 
     private static WalSnapshot snapshot(String stream, int partition, Option<WalStats> wal, long ringTail) {
@@ -452,7 +457,7 @@ class RetentionRoutesTest {
 
     private static PartitionWalView sizedPartition(int partition, long sizeBytes) {
         return new PartitionWalView(partition,
-                                    Option.some(new WalStats(sizeBytes, 0L, -1L, -1L, 1L, 1_000L, 1_000L)),
+                                    Option.some(new WalStats(sizeBytes, 0L, -1L, -1L, 1L, 1_000L, 1_000L, false)),
                                     0L,
                                     -1L);
     }
