@@ -6,6 +6,60 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Added/Fixed (2026-08-25 — #634 structural follow-ups: the silences that hid the #492 class are closed)
+- **Boot refuses a routed wire type with no codec (the #492-class killer).** Twice a generated codec
+  registry existed but was never aggregated into `NodeCodecs`, and every message of the orphaned
+  types silently vanished at the transport — runs 2–5 burned on exactly this with zero log lines.
+  `AetherNode.verifyRoutedTypesEncodable` now runs before the router is wired: every ROUTED
+  `Message.Wired` type must have a codec or the node refuses to start, naming ALL missing types and
+  the probable cause (an unaggregated `*CodecsNode` registry). `Message.Local` types are structurally
+  exempt — the sealed hierarchy is the discriminator, so no exemption list can rot. Recorded limit:
+  the guard sees types this node ROUTES; a wired type only ever SENT is covered by the loud-encode
+  net below. `[verified: VerifyRoutedTypesEncodableTest 5/5 — missing type named with the
+  aggregation hint, Local-vs-Wired discrimination armed, multi-miss accumulation]`
+- **Encode failures are LOUD.** There was no catch anywhere — an encode throw escaped the send path,
+  killing the caller's promise chain unresolved (synchronous sends) or silently cancelling periodic
+  broadcast tasks. Both transport encode sites now produce a typed `WriteOutcome.EncodeFailed` plus
+  one ERROR naming the message class; the two outcome-consuming call sites
+  (`DistributedDHTClient`, `EntityForwardService`) fail fast on it, while fire-and-forget
+  send/broadcast paths are LOG-ONLY by design — there is no caller to tell (and the worker-side DHT
+  network's default `sendOutcome` reports `Sent` unconditionally: a pre-existing blindness, now
+  recorded at the default). The
+  adjacent same-class silence — the wired router override bypassing `dispatchOne`'s try/catch, so a
+  HANDLER throw was equally unlogged — gets the same treatment: one handler's throw is logged and no
+  longer kills the dispatch of the rest. `[verified: QuicClusterNetworkEncodeFailureTest 2/2 (typed
+  outcome naming the class, registered-type arming); RabiaNodeRouterDispatchTest 3/3 (thrower
+  provably invoked, remaining handlers still run, no propagation)]`
+- **The entity-forward wire carries the budget (stage-2 propagation, mirroring the HTTP forward
+  pair).** The three request records gained `remainingMillis`; the sender stamps its remaining
+  budget, and the OWNER refuses an arrived-expired command with the typed `ForwardBudgetExhausted`
+  before touching the entity — applying a non-idempotent write whose ack nobody collects is the
+  zombie-dispatch amplification 02w measured. Wire note: same-version clusters only, rc-internal
+  (positional codec). `[verified: EntityForwardServiceTest 14/14 — arrived-expired refusal without
+  touching the entity (armed by the NO_BUDGET counterpart), wire stamp bounded/unbounded]`
+- **Invoke-layer waits are capped by the ambient budget — caller-side live, receiver-side a ready
+  mechanism.** `InvocationHandler`'s dispatch timeout reads the budget at its synchronous arm site
+  (inert today, see the tag below); `SliceInvoker`'s two correlation waits CANNOT read there — the
+  arm sits behind encode/endpoint continuations on threads where the ScopedValue is unbound, and the
+  first cut read `Deadline.current()` there: the new pin measured 60,015ms elapsed under a 300ms
+  budget, the cap silently inert. The budget is therefore captured ONCE at each chain entry on the
+  caller's thread (a parameter through the request/response chain; a `FailoverContext` component on
+  the retry chain). A call under a client deadline gets at most what remains; with no ambient budget
+  the configured value is unchanged. Wire propagation on `InvokeRequest` stays the recorded next
+  step (`TimeoutsConfig` docs). Caller-side cap `[verified: InvocationDeadlineCapTest — bounded
+  327ms vs the 60s ceiling, armed by a 2s still-waiting unbounded counterpart]`. Receiver-side cap
+  (`InvocationHandler`): `[design intent — unverified]` on the LIVE path — the mechanism is pinned
+  (a bound budget caps at 304ms in-process), but the only production caller is the inbound network
+  dispatch and `InvokeRequest` carries no budget yet, so the read is always unbounded until the wire
+  step lands (review catch: the first wording claimed both halves verified). Batch gate: build.sh
+  clean, 3,933 tests / 0 failures across ten modules.
+- **The "1:4254 generation-counter anomaly" is not one.** The counter is a LEADERSHIP-TENURE TICK —
+  bumped once per `pingInterval` (1s default) while leader — so 1:4254 means rabiaTerm 1 with ~71
+  minutes of uninterrupted leadership: the signature of a STABLE cluster. The per-interval semantics
+  were written down nowhere and the value was investigated as an anomaly once; they are now
+  documented at the increment site and on the generation surface. Deliberately no per-bump log.
+  `[mechanism: counter increments only in bumpGenerationIfLeader, scheduled at pingInterval]`
+
 ### Added (2026-08-25 — #634-3+4: the tri-floor retention operator surface; WAL joins the storage subsystem)
 - **`GET /api/storage/retention` + `aether storage retention` — the tri-floor view and the joint
   invariant (#634-4, rescoped into #634-3 per the ticket ruling: the operator surface is the only
