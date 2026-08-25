@@ -7,6 +7,7 @@ package org.pragmatica.aether.node.entityforward;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -100,7 +101,7 @@ class EntityForwardServiceTest {
     void onEntityCreateForward_registeredKeyspace_appliesAndAnswersSuccess() {
         service.register("orders", echoTarget());
 
-        service.onEntityCreateForward(EntityCreateForward.entityCreateForward(OWNER, "corr-1", "orders", bytes("k1"), bytes("5")));
+        service.onEntityCreateForward(EntityCreateForward.entityCreateForward(OWNER, "corr-1", "orders", bytes("k1"), bytes("5"), Deadline.NO_BUDGET));
 
         var response = (EntityUpdateForwardResponse) sender.lastMessage();
 
@@ -110,7 +111,7 @@ class EntityForwardServiceTest {
 
     @Test
     void onEntityCreateForward_unknownKeyspace_answersFailure_neverSilence() {
-        service.onEntityCreateForward(EntityCreateForward.entityCreateForward(OWNER, "corr-2", "ghosts", bytes("k1"), bytes("5")));
+        service.onEntityCreateForward(EntityCreateForward.entityCreateForward(OWNER, "corr-2", "ghosts", bytes("k1"), bytes("5"), Deadline.NO_BUDGET));
 
         var response = (EntityUpdateForwardResponse) sender.lastMessage();
 
@@ -126,14 +127,14 @@ class EntityForwardServiceTest {
     @Test
     void onEntityCreateForward_afterUnregister_refusesWithTheUnknownKeyspaceCause() {
         service.register("orders", echoTarget());
-        service.onEntityCreateForward(EntityCreateForward.entityCreateForward(OWNER, "corr-3", "orders", bytes("k1"), bytes("5")));
+        service.onEntityCreateForward(EntityCreateForward.entityCreateForward(OWNER, "corr-3", "orders", bytes("k1"), bytes("5"), Deadline.NO_BUDGET));
 
         assertThat(((EntityUpdateForwardResponse) sender.lastMessage()).success())
             .as("registered keyspace must serve the forward — else the refusal below proves nothing")
             .isTrue();
 
         service.unregister("orders");
-        service.onEntityCreateForward(EntityCreateForward.entityCreateForward(OWNER, "corr-4", "orders", bytes("k1"), bytes("5")));
+        service.onEntityCreateForward(EntityCreateForward.entityCreateForward(OWNER, "corr-4", "orders", bytes("k1"), bytes("5"), Deadline.NO_BUDGET));
 
         assertRefusedAsUnknownKeyspace((EntityUpdateForwardResponse) sender.lastMessage());
     }
@@ -141,14 +142,14 @@ class EntityForwardServiceTest {
     @Test
     void onEntityUpdateForward_afterUnregister_refusesWithTheUnknownKeyspaceCause() {
         service.register("orders", echoTarget());
-        service.onEntityUpdateForward(EntityUpdateForward.entityUpdateForward(OWNER, "corr-5", "orders", bytes("k1"), bytes("Add:5")));
+        service.onEntityUpdateForward(EntityUpdateForward.entityUpdateForward(OWNER, "corr-5", "orders", bytes("k1"), bytes("Add:5"), Deadline.NO_BUDGET));
 
         assertThat(((EntityUpdateForwardResponse) sender.lastMessage()).success())
             .as("registered keyspace must serve the forward — else the refusal below proves nothing")
             .isTrue();
 
         service.unregister("orders");
-        service.onEntityUpdateForward(EntityUpdateForward.entityUpdateForward(OWNER, "corr-6", "orders", bytes("k1"), bytes("Add:5")));
+        service.onEntityUpdateForward(EntityUpdateForward.entityUpdateForward(OWNER, "corr-6", "orders", bytes("k1"), bytes("Add:5"), Deadline.NO_BUDGET));
 
         assertRefusedAsUnknownKeyspace((EntityUpdateForwardResponse) sender.lastMessage());
     }
@@ -161,7 +162,7 @@ class EntityForwardServiceTest {
 
         service.unregister("ghosts");
 
-        service.onEntityCreateForward(EntityCreateForward.entityCreateForward(OWNER, "corr-7", "orders", bytes("k1"), bytes("5")));
+        service.onEntityCreateForward(EntityCreateForward.entityCreateForward(OWNER, "corr-7", "orders", bytes("k1"), bytes("5"), Deadline.NO_BUDGET));
 
         var response = (EntityUpdateForwardResponse) sender.lastMessage();
 
@@ -222,8 +223,111 @@ class EntityForwardServiceTest {
         assertThat(cause).contains("timed out");
     }
 
+    /// Stage 2 of deadline propagation, RECEIVER half (#634 follow-up): a command that arrived with its
+    /// budget already spent must be refused WITHOUT touching the entity. The sender's hop timeout has
+    /// already fired, so applying would be a non-idempotent write whose ack nobody collects — the
+    /// zombie-dispatch amplification 02w measured. Armed by the second half: the identical command with
+    /// budget applies and reaches the entity, so the refusal is the budget and not a broken fixture.
+    @Test
+    void onEntityUpdateForward_arrivedExpired_refusesWithoutTouchingTheEntity() {
+        var applications = new AtomicInteger();
+
+        service.register("orders", countingTarget(applications));
+        service.onEntityUpdateForward(EntityUpdateForward.entityUpdateForward(OWNER, "corr-expired", "orders",
+                                                                              bytes("k1"), bytes("Add:5"), 1L));
+
+        var refusal = (EntityUpdateForwardResponse) sender.lastMessage();
+
+        assertThat(refusal.success()).isFalse();
+        assertThat(refusal.failureType())
+            .as("the sender reconstructs a cause from failureType — an untyped refusal reaches the caller"
+                + " as an unexplained generic error")
+            .isEqualTo("ForwardBudgetExhausted");
+        assertThat(applications.get())
+            .as("the entity must NEVER be touched: the ack has no collector, and the write is not idempotent")
+            .isZero();
+
+        service.onEntityUpdateForward(EntityUpdateForward.entityUpdateForward(OWNER, "corr-live", "orders",
+                                                                              bytes("k1"), bytes("Add:5"),
+                                                                              Deadline.NO_BUDGET));
+
+        assertThat(((EntityUpdateForwardResponse) sender.lastMessage()).success())
+            .as("the same command WITH budget applies — else the refusal above is a broken fixture")
+            .isTrue();
+        assertThat(applications.get()).isEqualTo(1);
+    }
+
+    /// The floor is 50ms, not zero: a budget that is positive but too small to complete a round trip is
+    /// refused for the same reason an expired one is.
+    @Test
+    void onEntityCreateForward_arrivedBelowTheBudgetFloor_refusesWithoutTouchingTheEntity() {
+        var applications = new AtomicInteger();
+
+        service.register("orders", countingTarget(applications));
+        service.onEntityCreateForward(EntityCreateForward.entityCreateForward(OWNER, "corr-floor", "orders",
+                                                                               bytes("k1"), bytes("5"), 30L));
+
+        assertThat(((EntityUpdateForwardResponse) sender.lastMessage()).failureType()).isEqualTo("ForwardBudgetExhausted");
+        assertThat(applications.get()).as("a sub-floor budget must not buy a doomed apply").isZero();
+    }
+
+    /// Stage 2, SENDER half: the remaining budget is stamped ONTO THE WIRE, which is the only way the
+    /// owner can make the refusal decision above. Both directions are pinned in one test — a bounded
+    /// caller ships what is left of its budget, an unbounded one ships NO_BUDGET — because a stamp that
+    /// is always present or always absent would satisfy either half alone.
+    ///
+    /// Driven through a SHORT-timeout service so both forwards resolve (unanswered, at their own
+    /// timeout) inside the test rather than lingering as scheduled work after it.
+    @Test
+    void forwardUpdate_stampsTheRemainingBudgetOnTheWire_andNoBudgetWhenUnbounded() {
+        var shortService = entityForwardService(SELF, sender, TimeSpan.timeSpan(200).millis());
+
+        Deadline.runWith(Deadline.fromWireMillis(5_000),
+                         () -> shortService.forwardUpdate(OWNER, "orders", bytes("k1"), bytes("Add:5")))
+                .await();
+
+        assertThat(((EntityUpdateForward) sender.lastMessage()).remainingMillis())
+            .as("the owner must receive what is LEFT of the caller's budget, never more than it started with")
+            .isPositive()
+            .isLessThanOrEqualTo(5_000L);
+
+        shortService.forwardUpdate(OWNER, "orders", bytes("k2"), bytes("Add:6")).await();
+
+        assertThat(((EntityUpdateForward) sender.lastMessage()).remainingMillis())
+            .as("an unbounded caller must ship NO_BUDGET — a fabricated number would make the receiver"
+                + " refuse work that had all the time it needed")
+            .isEqualTo(Deadline.NO_BUDGET);
+    }
+
     private static byte[] bytes(String text) {
         return text.getBytes(StandardCharsets.UTF_8);
+    }
+
+    /// A forward target that counts how many times the entity was actually reached — the difference
+    /// between "refused before dispatch" and "applied then failed" is invisible from the response alone.
+    private static EntityForwardRegistry.ForwardTarget countingTarget(AtomicInteger applications) {
+        return new EntityForwardRegistry.ForwardTarget() {
+            @Override
+            public Promise<byte[]> applyForwarded(byte[] key, byte[] command) {
+                applications.incrementAndGet();
+
+                return Promise.success(bytes("updated"));
+            }
+
+            @Override
+            public Promise<byte[]> createForwarded(byte[] key, byte[] initial) {
+                applications.incrementAndGet();
+
+                return Promise.success(bytes("created"));
+            }
+
+            @Override
+            public Promise<byte[]> deleteForwarded(byte[] key) {
+                applications.incrementAndGet();
+
+                return Promise.success(new byte[0]);
+            }
+        };
     }
 
     /// A live keyspace's forward target: it echoes what it was handed, so a successful response proves

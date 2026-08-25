@@ -54,4 +54,12 @@ public sealed interface WriteOutcome {
     record ConnectionDead(NodeId peerId) implements WriteOutcome {}
 
     record NoPeerState(NodeId peerId) implements WriteOutcome {}
+
+    /// The message could not be ENCODED — nothing was written and nothing will ever answer. The #492
+    /// orphaned-codec class produced exactly this shape SILENTLY: the encode throw escaped the send
+    /// path, so the caller's promise died unresolved (synchronous sends) or the periodic task was
+    /// cancelled (broadcasts), with zero log lines across four cloud runs. This outcome plus the
+    /// transport's ERROR log are what make it loud; every existing non-`Sent` handler (`isSent()`)
+    /// already fails fast on it. `messageType` names the class whose codec was missing or broken.
+    record EncodeFailed(NodeId peerId, String messageType) implements WriteOutcome {}
 }

@@ -691,7 +691,25 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                 var handlers = routingTable.get(message.getClass());
 
                 if (handlers != null) {
-                    handlers.forEach(h -> h.accept(message));
+                    handlers.forEach(h -> dispatchLoudly(h, message));
+                }
+            }
+
+            /// This override BYPASSES `MessageRouter.dispatchOne` and its try/catch + slow-handler
+            /// logging, so a handler throw here previously escaped to the transport's dispatch thread
+            /// with no log — the same silence class as the #492 encode swallow, one hop later.
+            /// Adapter-boundary lift: log with the message class named, never let one handler's throw
+            /// kill the dispatch of the rest.
+            @SuppressWarnings({"rawtypes", "unchecked"})
+            @Contract
+            private static void dispatchLoudly(Consumer handler, Message message) {
+                try {
+                    handler.accept(message);
+                } catch (RuntimeException e) {
+                    log.error("Handler for {} threw — message dropped by this handler: {}",
+                              message.getClass().getName(),
+                              e.toString(),
+                              e);
                 }
             }
         }

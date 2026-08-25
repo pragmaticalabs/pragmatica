@@ -26,6 +26,7 @@ import java.util.function.IntSupplier;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import java.net.InetSocketAddress;
 
 import org.pragmatica.aether.worker.isolation.CoreAbsenceSnapshot;
@@ -869,6 +870,58 @@ public interface AetherNode extends ManageableNode {
         return decideWalAvailability(walDir,
                                      FileOps.createDirectories(walDir).mapToUnit(),
                                      nonDurableStreamsAllowed()).mapToUnit();
+    }
+
+    /// The #492-class killer (#634 structural follow-up): every ROUTED `Message.Wired` type must have
+    /// a codec at boot, or the node REFUSES to start — the alternative, lived twice, is a generated
+    /// codec registry that exists but was never aggregated, so every message of that type silently
+    /// vanishes at the transport (runs 2–5 burned on exactly this, with zero log lines until the
+    /// encode path was made loud). `Message.Local` types are structurally exempt — the sealed
+    /// hierarchy is the discriminator, so no exemption list can rot. The check accepts a
+    /// supertype-fallback resolution (`hasCodecFor` semantics), so it proves "SOME codec resolves",
+    /// not "this type's own generated codec is aggregated" — the realistic #492 shape (a whole
+    /// unaggregated registry) is caught because the family's types vanish together, while a NEW
+    /// subtype of an already-aggregated family would boot and encode through a registered supertype:
+    /// a narrower residual, recorded here. Accumulates ALL missing types so
+    /// one boot failure reports the whole set. Known limit, recorded deliberately: this covers types
+    /// this node ROUTES (receives); a Wired type only ever SENT and never routed locally is not seen
+    /// here — the transport-side loud encode failure is the net under that gap.
+    static Result<Unit> verifyRoutedTypesEncodable(List<? extends MessageRouter.Entry<?>> entries, SliceCodec codec) {
+        var missing = entries.stream()
+                             .flatMap(AetherNode::routedClasses)
+                             .distinct()
+                             .filter(Message.Wired.class::isAssignableFrom)
+                             .filter(type -> !codec.hasCodecFor(type))
+                             .map(Class::getName)
+                             .sorted()
+                             .toList();
+
+        return missing.isEmpty()
+               ? Result.unitResult()
+               : Causes.cause("routed wire type(s) have NO registered codec — messages of these types would"
+                             + " silently vanish at the transport (the #492 class): " + String.join(", ", missing)
+                             + ". A generated *CodecsNode registry probably exists but is not aggregated into"
+                             + " NodeCodecs.").result();
+    }
+
+    /// Failed-boot-guard cleanup for single-JVM hosts: cancel the periodic tasks this assembly armed
+    /// and stop the started samplers, so a refused node leaves nothing ticking on the JVM-global
+    /// scheduler (the #499 zombie class). Mirrors the head of `stop()`; `cancel(false)` lets an
+    /// in-flight tick finish benignly.
+    @Contract
+    private static void cancelArmedWork(List<ScheduledFuture<?>> periodicTasks,
+                                        PresenceSampler presenceSampler,
+                                        CoreAbsenceDetector coreAbsenceDetector) {
+        periodicTasks.forEach(task -> task.cancel(false));
+        presenceSampler.stop();
+        coreAbsenceDetector.stop();
+    }
+
+    /// Typed extraction (a raw `Entry` here erases `entries()` to a raw Stream and the tuple to
+    /// `Object`): each route entry's registered message classes, widened to `Class<?>`.
+    private static Stream<Class<?>> routedClasses(MessageRouter.Entry<?> entry) {
+        return entry.entries()
+                    .map(tuple -> (Class<?>) tuple.first());
     }
 
     /// The decision, separated from the probe and the abort so the gate is directly testable: the boot
@@ -2036,10 +2089,14 @@ public interface AetherNode extends ManageableNode {
                                                               config.timeouts().cluster().pingInterval()));
         Supplier<Long> rabiaTermSupplier = leaderTerm::get;
         // #114 W1: the cluster-sync ping carries a monotonic generation counter. Each node bumps its
-        // OWN counter only while it is leader (leader-gated, per-ping-interval). The supplier merely
-        // READS it (it is consumed in four contexts; incrementing inside would over-count). No reset
-        // is needed: Epoch ordering is term-dominant, so on a leader change leaderTerm increments and
-        // a new leader's lower local counter still orders strictly after the prior epoch via the term.
+        // OWN counter only while it is leader — ONCE PER pingInterval (1s default), so the counter is
+        // a LEADERSHIP-TENURE TICK, not an event count: "1:4254" means rabiaTerm 1 with ~71 minutes of
+        // uninterrupted leadership, which is ordinary (#634 follow-up — this exact value was once
+        // investigated as an anomaly because the per-interval semantics were written down nowhere).
+        // The supplier merely READS it (it is consumed in four contexts; incrementing inside would
+        // over-count). No reset is needed: Epoch ordering is term-dominant, so on a leader change
+        // leaderTerm increments and a new leader's lower local counter still orders strictly after
+        // the prior epoch via the term.
         var generationCounter = new AtomicLong(0L);
         Supplier<Epoch> leaderEpochSupplier = () -> Epoch.epoch(leaderTerm.get(), generationCounter.get());
 
@@ -3920,137 +3977,150 @@ public interface AetherNode extends ManageableNode {
                                                                                             nodeDeploymentManager),
                                                               NDM_ACTIVATION_RECONCILE_INTERVAL));
         nodeLifecycle.subsystemsReady();
+        // Review catch (#634 batch): the guard cannot run MEANINGFULLY earlier — `aetherEntries`
+        // ACCUMULATES across
+        // the whole assembly, so the routed set is only complete here, after the periodic tasks are
+        // armed — and a guard placed at any earlier point would silently see a PARTIAL set and pass
+        // against it, with every future entry insertion after that point narrowing its view further. The hazard that ordering creates is real though: on a guard failure nothing calls
+        // stop(), and in a single-JVM host (Forge/Ember) the armed timers would keep firing against
+        // half-built state — the #499 zombie class. So a failed guard CANCELS what this assembly
+        // armed before the failure propagates; production's exit makes it moot, in-JVM hosts need it.
+        return verifyRoutedTypesEncodable(allEntries, nodeCodec).onFailure(_ -> cancelArmedWork(periodicTasks,
+                                                                                                presenceSampler,
+                                                                                                coreAbsenceDetector))
+                                         .flatMap(_ -> RabiaNode.buildAndWireRouter(delegateRouter, allEntries))
+                                         .map(_ -> {
+                                                  if (config.managementPort() > 0) {
+                                                  var mgmtSecurityEnabled = config.appHttp()
+                                                                                  .securityEnabled();
+                                                  // #573: the false arm must DENY, not permit-all. It previously used the validator now
+                                                  // named `permitAllValidator`, which grants ADMIN + SERVICE to every caller — so a node
+                                                  // whose `[app-http] enabled` was false (the DEFAULT) served an unauthenticated,
+                                                  // fully-privileged Management API. `denyUnlessPublicValidator` refuses anything but a
+                                                  // Public route, and by FAILING rather than succeeding it also lets the
+                                                  // `kvStoreAwareValidator` below consult the cluster's bootstrap admin keys, which the
+                                                  // unconditionally-succeeding grant short-circuited entirely.
+                                                  var configValidator = mgmtSecurityEnabled
+                                                                        ? SecurityValidator.apiKeyValidator(config.appHttp()
+                                                                                                                  .apiKeys())
+                                                                        : SecurityValidator.denyUnlessPublicValidator();
 
-        return RabiaNode.buildAndWireRouter(delegateRouter, allEntries).map(_ -> {
-            if (config.managementPort() > 0) {
-                var mgmtSecurityEnabled = config.appHttp()
-                                                .securityEnabled();
-                // #573: the false arm must DENY, not permit-all. It previously used the validator now
-                // named `permitAllValidator`, which grants ADMIN + SERVICE to every caller — so a node
-                // whose `[app-http] enabled` was false (the DEFAULT) served an unauthenticated,
-                // fully-privileged Management API. `denyUnlessPublicValidator` refuses anything but a
-                // Public route, and by FAILING rather than succeeding it also lets the
-                // `kvStoreAwareValidator` below consult the cluster's bootstrap admin keys, which the
-                // unconditionally-succeeding grant short-circuited entirely.
-                var configValidator = mgmtSecurityEnabled
-                                      ? SecurityValidator.apiKeyValidator(config.appHttp().apiKeys())
-                                      : SecurityValidator.denyUnlessPublicValidator();
+                                                  if (!mgmtSecurityEnabled) {
+                                                  LOG.warn("Management API on port {} has NO configured credentials — non-public routes will be"
+                                                          + " REFUSED unless a cluster bootstrap admin key is present in KV. Set [app-http] enabled"
+                                                          + " = true with [app-http.api-keys.<key>] to authenticate operators (#573).",
+                                                           config.managementPort());
+                                              }
 
-                if (!mgmtSecurityEnabled) {
-                    LOG.warn("Management API on port {} has NO configured credentials — non-public routes will be"
-                            + " REFUSED unless a cluster bootstrap admin key is present in KV. Set [app-http] enabled"
-                            + " = true with [app-http.api-keys.<key>] to authenticate operators (#573).",
-                             config.managementPort());
-                }
+                                                  var mgmtSecurityValidator = SecurityValidator.kvStoreAwareValidator(configValidator,
+                                                                                                                      () -> node.kvStore());
+                                                  var managementServer = ManagementServer.managementServer(config.managementPort(),
+                                                                                                           () -> node,
+                                                                                                           entityCheckpointDriver,
+                                                                                                           alertManager,
+                                                                                                           configRegistry,
+                                                                                                           traceStore,
+                                                                                                           logLevelRegistry,
+                                                                                                           dynamicConfigManager,
+                                                                                                           scheduledTaskRegistry,
+                                                                                                           scheduledTaskManager,
+                                                                                                           sliceInvoker,
+                                                                                                           scheduledTaskStateRegistry,
+                                                                                                           config.tls(),
+                                                                                                           mgmtSecurityValidator,
+                                                                                                           mgmtSecurityEnabled,
+                                                                                                           serverBossGroup,
+                                                                                                           serverWorkerGroup,
+                                                                                                           config.managementHttpProtocol(),
+                                                                                                           config.timeouts()
+                                                                                                                 .forwarding(),
+                                                                                                           Option.some(clusterNode.network()),
+                                                                                                           Option.some(serializer),
+                                                                                                           Option.some(deserializer),
+                                                                                                           target -> requestDrainThroughFsm(drainCommandRegistry,
+                                                                                                                                            membershipFsmRef,
+                                                                                                                                            target),
+                                                                                                           drainCommandRegistry::drainTargets);
 
-                var mgmtSecurityValidator = SecurityValidator.kvStoreAwareValidator(configValidator,
-                                                                                    () -> node.kvStore());
-                var managementServer = ManagementServer.managementServer(config.managementPort(),
-                                                                         () -> node,
-                                                                         entityCheckpointDriver,
-                                                                         alertManager,
-                                                                         configRegistry,
-                                                                         traceStore,
-                                                                         logLevelRegistry,
-                                                                         dynamicConfigManager,
-                                                                         scheduledTaskRegistry,
-                                                                         scheduledTaskManager,
-                                                                         sliceInvoker,
-                                                                         scheduledTaskStateRegistry,
-                                                                         config.tls(),
-                                                                         mgmtSecurityValidator,
-                                                                         mgmtSecurityEnabled,
-                                                                         serverBossGroup,
-                                                                         serverWorkerGroup,
-                                                                         config.managementHttpProtocol(),
-                                                                         config.timeouts().forwarding(),
-                                                                         Option.some(clusterNode.network()),
-                                                                         Option.some(serializer),
-                                                                         Option.some(deserializer),
-                                                                         target -> requestDrainThroughFsm(drainCommandRegistry,
-                                                                                                          membershipFsmRef,
-                                                                                                          target),
-                                                                         drainCommandRegistry::drainTargets);
+                                                  managementServerRef.set(Option.some(managementServer));
 
-                managementServerRef.set(Option.some(managementServer));
+                                                  return new aetherNode(config,
+                                                                        delegateRouter,
+                                                                        kvStore,
+                                                                        ownershipEpochHighWater,
+                                                                        sliceRegistry,
+                                                                        sliceStore,
+                                                                        clusterNode,
+                                                                        taskGroupOwnerResolver,
+                                                                        switchableCluster,
+                                                                        nodeDeploymentManager,
+                                                                        clusterDeploymentManager,
+                                                                        endpointRegistry,
+                                                                        httpRouteRegistry,
+                                                                        metricsCollector,
+                                                                        metricsScheduler,
+                                                                        deploymentMetricsCollector,
+                                                                        deploymentMetricsScheduler,
+                                                                        controlLoop,
+                                                                        workerMetricsAggregator,
+                                                                        sliceInvoker,
+                                                                        invocationHandler,
+                                                                        blueprintService,
+                                                                        mavenProtocolHandler,
+                                                                        artifactStore,
+                                                                        invocationMetrics,
+                                                                        controller,
+                                                                        deploymentManager,
+                                                                        abTestManager,
+                                                                        alertManager,
+                                                                        traceStore,
+                                                                        logLevelRegistry,
+                                                                        dynamicConfigManager,
+                                                                        appHttpServer,
+                                                                        ttmManager,
+                                                                        rollbackManager,
+                                                                        scheduledTaskManager,
+                                                                        snapshotCollector,
+                                                                        artifactMetricsCollector,
+                                                                        deploymentMap,
+                                                                        eventAggregator,
+                                                                        BackupService.disabled(),
+                                                                        streamPartitionManager,
+                                                                        streamSegmentIndex,
+                                                                        streamReadRouter,
+                                                                        streamWriteRouter,
+                                                                        consumerGroupCoordinator,
+                                                                        consumerGroupRegistry,
+                                                                        streamConsumerManager,
+                                                                        streamNamespacesService,
+                                                                        storageSetups,
+                                                                        clusterTopologyManager,
+                                                                        eventLoopMetricsCollector,
+                                                                        swimHealthDetector,
+                                                                        presenceSampler,
+                                                                        leaderReconciler,
+                                                                        membershipFsm,
+                                                                        quorumLossDetector,
+                                                                        coreAbsenceDetector,
+                                                                        transitionJournal,
+                                                                        startSwimTrigger,
+                                                                        Option.some(managementServer),
+                                                                        discoveryProvider,
+                                                                        certRenewalScheduler,
+                                                                        stableHealthSink,
+                                                                        inFlightTrackerForDrain,
+                                                                        nodeLifecycle,
+                                                                        hlcClock,
+                                                                        dhtClientOption,
+                                                                        Option.some(dhtNode),
+                                                                        effectivePhaseSupplier,
+                                                                        currentGenerationEpochSupplier,
+                                                                        startTimeMs,
+                                                                        periodicTasks);
+                                              }
 
-                return new aetherNode(config,
-                                      delegateRouter,
-                                      kvStore,
-                                      ownershipEpochHighWater,
-                                      sliceRegistry,
-                                      sliceStore,
-                                      clusterNode,
-                                      taskGroupOwnerResolver,
-                                      switchableCluster,
-                                      nodeDeploymentManager,
-                                      clusterDeploymentManager,
-                                      endpointRegistry,
-                                      httpRouteRegistry,
-                                      metricsCollector,
-                                      metricsScheduler,
-                                      deploymentMetricsCollector,
-                                      deploymentMetricsScheduler,
-                                      controlLoop,
-                                      workerMetricsAggregator,
-                                      sliceInvoker,
-                                      invocationHandler,
-                                      blueprintService,
-                                      mavenProtocolHandler,
-                                      artifactStore,
-                                      invocationMetrics,
-                                      controller,
-                                      deploymentManager,
-                                      abTestManager,
-                                      alertManager,
-                                      traceStore,
-                                      logLevelRegistry,
-                                      dynamicConfigManager,
-                                      appHttpServer,
-                                      ttmManager,
-                                      rollbackManager,
-                                      scheduledTaskManager,
-                                      snapshotCollector,
-                                      artifactMetricsCollector,
-                                      deploymentMap,
-                                      eventAggregator,
-                                      BackupService.disabled(),
-                                      streamPartitionManager,
-                                      streamSegmentIndex,
-                                      streamReadRouter,
-                                      streamWriteRouter,
-                                      consumerGroupCoordinator,
-                                      consumerGroupRegistry,
-                                      streamConsumerManager,
-                                      streamNamespacesService,
-                                      storageSetups,
-                                      clusterTopologyManager,
-                                      eventLoopMetricsCollector,
-                                      swimHealthDetector,
-                                      presenceSampler,
-                                      leaderReconciler,
-                                      membershipFsm,
-                                      quorumLossDetector,
-                                      coreAbsenceDetector,
-                                      transitionJournal,
-                                      startSwimTrigger,
-                                      Option.some(managementServer),
-                                      discoveryProvider,
-                                      certRenewalScheduler,
-                                      stableHealthSink,
-                                      inFlightTrackerForDrain,
-                                      nodeLifecycle,
-                                      hlcClock,
-                                      dhtClientOption,
-                                      Option.some(dhtNode),
-                                      effectivePhaseSupplier,
-                                      currentGenerationEpochSupplier,
-                                      startTimeMs,
-                                      periodicTasks);
-            }
-
-            return node;
-        });
+                                                  return node;
+                                              });
     }
 
     TimeSpan PHASE_WATCH_INTERVAL = TimeSpan.timeSpan(1).seconds();
@@ -4228,6 +4298,9 @@ public interface AetherNode extends ManageableNode {
         }
     }
 
+    /// One LEADERSHIP-TENURE TICK: fired once per `pingInterval` (1s default), so the counter's value
+    /// is elapsed leadership time in ping intervals — never an event count. Deliberately unlogged
+    /// (1 Hz per leader forever, for a value readable on demand from `/api/cluster/generation`).
     @Contract
     private static void bumpGenerationIfLeader(BooleanSupplier isLeader, AtomicLong generationCounter) {
         if (isLeader.getAsBoolean()) {

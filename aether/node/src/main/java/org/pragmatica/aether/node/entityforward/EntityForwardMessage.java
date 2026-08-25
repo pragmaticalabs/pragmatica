@@ -30,7 +30,19 @@ public sealed interface EntityForwardMessage extends ProtocolMessage {
     ///
     /// Both byte arrays are defensively copied: a record component that aliases a caller's buffer is a
     /// mutable field with extra steps, and these cross a thread boundary on arrival.
-    record EntityUpdateForward(NodeId sender, String correlationId, String keyspace, byte[] key, byte[] command) implements EntityForwardMessage {
+    ///
+    /// `remainingMillis` (#634 follow-up — the entity half of stage-2 deadline propagation, mirroring
+    /// `HttpForwardRequest`): the sender's remaining budget at send time (`Deadline.toWireMillis`).
+    /// The receiver rebinds it and REFUSES an arrived-expired command instead of applying work whose
+    /// ack nobody collects — the zombie-dispatch amplification 02w measured behind abandoned hops.
+    /// Wire note: adding this component changes the encoded shape of all three request records —
+    /// same-version clusters only, rc-internal, the same policy as every positional-codec change.
+    record EntityUpdateForward(NodeId sender,
+                               String correlationId,
+                               String keyspace,
+                               byte[] key,
+                               byte[] command,
+                               long remainingMillis) implements EntityForwardMessage {
         public EntityUpdateForward {
             key = key.clone();
             command = command.clone();
@@ -40,8 +52,9 @@ public sealed interface EntityForwardMessage extends ProtocolMessage {
                                                               String correlationId,
                                                               String keyspace,
                                                               byte[] key,
-                                                              byte[] command) {
-            return new EntityUpdateForward(sender, correlationId, keyspace, key, command);
+                                                              byte[] command,
+                                                              long remainingMillis) {
+            return new EntityUpdateForward(sender, correlationId, keyspace, key, command, remainingMillis);
         }
     }
 
@@ -50,7 +63,12 @@ public sealed interface EntityForwardMessage extends ProtocolMessage {
     /// A DISTINCT record rather than a flag on [EntityUpdateForward]: adding a component to a shipped
     /// record changes its encoded shape, whereas a new permitted subclass of a sealed `@Codec` interface
     /// gets its own tag and leaves every existing message on the wire untouched.
-    record EntityCreateForward(NodeId sender, String correlationId, String keyspace, byte[] key, byte[] initial) implements EntityForwardMessage {
+    record EntityCreateForward(NodeId sender,
+                               String correlationId,
+                               String keyspace,
+                               byte[] key,
+                               byte[] initial,
+                               long remainingMillis) implements EntityForwardMessage {
         public EntityCreateForward {
             key = key.clone();
             initial = initial.clone();
@@ -60,13 +78,14 @@ public sealed interface EntityForwardMessage extends ProtocolMessage {
                                                               String correlationId,
                                                               String keyspace,
                                                               byte[] key,
-                                                              byte[] initial) {
-            return new EntityCreateForward(sender, correlationId, keyspace, key, initial);
+                                                              byte[] initial,
+                                                              long remainingMillis) {
+            return new EntityCreateForward(sender, correlationId, keyspace, key, initial, remainingMillis);
         }
     }
 
     /// Delete `key` in `keyspace`, on this node. No payload beyond the key — a delete carries no state.
-    record EntityDeleteForward(NodeId sender, String correlationId, String keyspace, byte[] key) implements EntityForwardMessage {
+    record EntityDeleteForward(NodeId sender, String correlationId, String keyspace, byte[] key, long remainingMillis) implements EntityForwardMessage {
         public EntityDeleteForward {
             key = key.clone();
         }
@@ -74,8 +93,9 @@ public sealed interface EntityForwardMessage extends ProtocolMessage {
         public static EntityDeleteForward entityDeleteForward(NodeId sender,
                                                               String correlationId,
                                                               String keyspace,
-                                                              byte[] key) {
-            return new EntityDeleteForward(sender, correlationId, keyspace, key);
+                                                              byte[] key,
+                                                              long remainingMillis) {
+            return new EntityDeleteForward(sender, correlationId, keyspace, key, remainingMillis);
         }
     }
 

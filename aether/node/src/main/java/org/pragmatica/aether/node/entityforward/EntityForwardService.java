@@ -20,6 +20,7 @@ import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -94,32 +95,35 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
     public Promise<byte[]> forwardUpdate(NodeId owner, String keyspace, byte[] key, byte[] command) {
         return dispatch(owner,
                         keyspace,
-                        correlationId -> EntityUpdateForward.entityUpdateForward(selfNodeId,
-                                                                                 correlationId,
-                                                                                 keyspace,
-                                                                                 key,
-                                                                                 command));
+                        (correlationId, wireBudget) -> EntityUpdateForward.entityUpdateForward(selfNodeId,
+                                                                                               correlationId,
+                                                                                               keyspace,
+                                                                                               key,
+                                                                                               command,
+                                                                                               wireBudget));
     }
 
     @Override
     public Promise<byte[]> forwardCreate(NodeId owner, String keyspace, byte[] key, byte[] initial) {
         return dispatch(owner,
                         keyspace,
-                        correlationId -> EntityCreateForward.entityCreateForward(selfNodeId,
-                                                                                 correlationId,
-                                                                                 keyspace,
-                                                                                 key,
-                                                                                 initial));
+                        (correlationId, wireBudget) -> EntityCreateForward.entityCreateForward(selfNodeId,
+                                                                                               correlationId,
+                                                                                               keyspace,
+                                                                                               key,
+                                                                                               initial,
+                                                                                               wireBudget));
     }
 
     @Override
     public Promise<byte[]> forwardDelete(NodeId owner, String keyspace, byte[] key) {
         return dispatch(owner,
                         keyspace,
-                        correlationId -> EntityDeleteForward.entityDeleteForward(selfNodeId,
-                                                                                 correlationId,
-                                                                                 keyspace,
-                                                                                 key));
+                        (correlationId, wireBudget) -> EntityDeleteForward.entityDeleteForward(selfNodeId,
+                                                                                               correlationId,
+                                                                                               keyspace,
+                                                                                               key,
+                                                                                               wireBudget));
     }
 
     /// One correlation protocol for all three operations: the pending map, the timeout and the response
@@ -131,7 +135,7 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
     /// the send: the round trip cannot complete in time, and a command whose ack has no collector
     /// widens the unknown-outcome window on a non-idempotent write for nothing (caller-retry dedup
     /// is the open S3 idempotency decision).
-    private Promise<byte[]> dispatch(NodeId owner, String keyspace, Fn1<EntityForwardMessage, String> message) {
+    private Promise<byte[]> dispatch(NodeId owner, String keyspace, Fn2<EntityForwardMessage, String, Long> message) {
         var deadline = Deadline.current();
 
         if (deadline.expired(BUDGET_FLOOR)) {
@@ -155,8 +159,12 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
         pending.put(correlationId, promise);
         SharedScheduler.schedule(() -> timeoutRequest(correlationId, owner, keyspace, effectiveTimeout),
                                  effectiveTimeout);
+        // #634 follow-up, the entity half of stage-2 propagation: stamp the remaining budget onto the
+        // wire so the OWNER can refuse an arrived-expired command instead of applying work whose ack
+        // nobody collects.
         sender.send(owner,
-                    message.apply(correlationId))
+                    message.apply(correlationId,
+                                  deadline.toWireMillis()))
               .onSuccess(outcome -> failFastOnRefusedSend(correlationId, owner, keyspace, outcome));
         log.trace("Sent entity owner-forward to {} for keyspace '{}' correlationId={}", owner, keyspace, correlationId);
 
@@ -211,6 +219,7 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
         applyAndAnswer(request.sender(),
                        request.correlationId(),
                        request.keyspace(),
+                       request.remainingMillis(),
                        target -> target.applyForwarded(request.key(), request.command()));
     }
 
@@ -219,6 +228,7 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
         applyAndAnswer(request.sender(),
                        request.correlationId(),
                        request.keyspace(),
+                       request.remainingMillis(),
                        target -> target.createForwarded(request.key(), request.initial()));
     }
 
@@ -227,6 +237,7 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
         applyAndAnswer(request.sender(),
                        request.correlationId(),
                        request.keyspace(),
+                       request.remainingMillis(),
                        target -> target.deleteForwarded(request.key()));
     }
 
@@ -237,7 +248,38 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
     private void applyAndAnswer(NodeId requester,
                                 String correlationId,
                                 String keyspace,
+                                long remainingMillis,
                                 Fn1<Promise<byte[]>, ForwardTarget> operation) {
+        // Stage 2 of deadline propagation (#634 follow-up), mirroring AppHttpServer's receiver: rebind
+        // the sender's wire budget, and REFUSE an arrived-expired command without touching the entity —
+        // the sender's hop timeout has already fired, so applying would be a non-idempotent write whose
+        // ack nobody collects (the zombie-dispatch amplification 02w measured).
+        var deadline = Deadline.fromWireMillis(remainingMillis);
+
+        if (deadline.expired(BUDGET_FLOOR)) {
+            log.warn("Entity owner-forward arrived with {} budget remaining for keyspace '{}' — refusing"
+                    + " without dispatch (correlationId={})",
+                     deadline.remaining(),
+                     keyspace,
+                     correlationId);
+            answer(requester,
+                   correlationId,
+                   EntityUpdateForwardResponse.failureResponse(selfNodeId,
+                                                               correlationId,
+                                                               "ForwardBudgetExhausted",
+                                                               "arrived with " + deadline.remaining()
+                                                              + " remaining — the sender has already timed out"));
+
+            return;
+        }
+
+        Deadline.runWith(deadline, () -> applyWithinBudget(requester, correlationId, keyspace, operation));
+    }
+
+    private void applyWithinBudget(NodeId requester,
+                                   String correlationId,
+                                   String keyspace,
+                                   Fn1<Promise<byte[]>, ForwardTarget> operation) {
         var target = targets.get(keyspace);
 
         if (target == null) {

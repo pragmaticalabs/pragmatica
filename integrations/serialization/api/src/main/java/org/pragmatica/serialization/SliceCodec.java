@@ -313,6 +313,14 @@ public interface SliceCodec extends Serializer, Deserializer {
         }
     }
 
+    /// True when a codec (exact or supertype-fallback) is registered for `type` — the QUERY form of
+    /// [#lookupByClass], which throws on a miss. Public for the node's boot-time routed-type
+    /// verification (the #492-class killer): a routed `Message.Wired` type without a codec must
+    /// refuse boot, not vanish at the transport.
+    default boolean hasCodecFor(Class<?> type) {
+        return hasCodecFor(this, type);
+    }
+
     private static boolean hasCodecFor(SliceCodec codec, Class<?> type) {
         try {
             codec.lookupByClass(type);

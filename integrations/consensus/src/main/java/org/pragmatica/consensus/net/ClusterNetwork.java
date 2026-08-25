@@ -139,7 +139,11 @@ public interface ClusterNetwork {
     /// this to short-circuit waiting on a clearly-unreachable replica.
     ///
     /// Default implementation falls back to `send` and returns [WriteOutcome.Sent] —
-    /// transports without per-write outcome tracking remain backward-compatible.
+    /// transports without per-write outcome tracking remain backward-compatible. That
+    /// unconditional `Sent` means an inheritor (e.g. the worker-side DHT network) reports
+    /// success for EVERY refusal class, [WriteOutcome.EncodeFailed] included — a caller's
+    /// fast-fail is blind there until the transport overrides this (recorded #634 review,
+    /// pre-existing).
     ///
     /// See `aether/docs/specs/dht-resilience-spec.md` Layer 1.
     default <M extends ProtocolMessage> Promise<WriteOutcome> sendOutcome(NodeId nodeId, M message) {

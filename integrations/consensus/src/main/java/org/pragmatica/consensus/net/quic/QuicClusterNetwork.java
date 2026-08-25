@@ -1766,7 +1766,25 @@ public class QuicClusterNetwork implements ClusterNetwork {
             return lazyOpenLaneAndWrite(peerId, message, lane, connection);
         }
         // Sole serialization site: encode only once a writable lane stream is confirmed.
-        return writeIfWritable(stream.unwrap(), serializer.encode(message), peerId, lane);
+        return encodeLoudly(message, peerId).fold(_ -> encodeFailedOutcome(peerId, message),
+                                                  bytes -> writeIfWritable(stream.unwrap(), bytes, peerId, lane));
+    }
+
+    /// Encode with the failure made LOUD (the #492 orphaned-codec class): an encode throw previously
+    /// ESCAPED the send path — the caller's promise chain died unresolved on synchronous sends, and
+    /// periodic broadcast tasks were silently cancelled — producing ZERO log lines across four cloud
+    /// runs while every entity forward vanished. One ERROR naming the message class, and a typed
+    /// [WriteOutcome.EncodeFailed] the existing non-`Sent` handling already fails fast on.
+    private Result<byte[]> encodeLoudly(Message.Wired message, NodeId peerId) {
+        return Result.lift(() -> serializer.encode(message))
+                     .onFailure(cause -> log.error("Message encode FAILED for {} to {} — message dropped: {}",
+                                                   message.getClass().getName(),
+                                                   peerId,
+                                                   cause.message()));
+    }
+
+    private static WriteOutcome encodeFailedOutcome(NodeId peerId, Message.Wired message) {
+        return new WriteOutcome.EncodeFailed(peerId, message.getClass().getName());
     }
 
     /// PRIMARY stream-zombie heal: serialize the message once, then ask the connection to lazily
@@ -1782,8 +1800,15 @@ public class QuicClusterNetwork implements ClusterNetwork {
                                               QuicPeerConnection connection) {
         quicMetrics.onStreamZombieLazyOpen();
         log.warn("No {} stream for CONNECTED peer {} — lazily (re)opening the lane (stream-zombie heal)", lane, peerId);
-        var bytes = serializer.encode(message);
 
+        return encodeLoudly(message, peerId).fold(_ -> encodeFailedOutcome(peerId, message),
+                                                  bytes -> openLaneAndDeliver(peerId, lane, connection, bytes));
+    }
+
+    private WriteOutcome openLaneAndDeliver(NodeId peerId,
+                                            StreamType lane,
+                                            QuicPeerConnection connection,
+                                            byte[] bytes) {
         connection.openLane(lane, opened -> onLaneOpened(peerId, lane, connection, bytes, opened));
 
         return new WriteOutcome.Sent(peerId);

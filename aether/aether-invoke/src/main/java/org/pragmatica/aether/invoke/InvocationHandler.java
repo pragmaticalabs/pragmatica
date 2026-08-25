@@ -17,6 +17,7 @@ import org.pragmatica.aether.slice.ObservabilityCellRegistrar;
 import org.pragmatica.aether.slice.SliceBridge;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.utils.Deadline;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -230,6 +231,14 @@ class InvocationHandlerImpl implements InvocationHandler {
         }
     }
 
+    /// The invocation wait is capped by the ambient request budget (#634 follow-up — the invoke-layer
+    /// half of the deadline arc). HONEST STATUS (review catch): on the production path this cap is
+    /// INERT today — the only caller is the inbound network dispatch, `InvokeRequest` carries no
+    /// budget field, and ScopedValue bindings do not cross nodes, so `Deadline.current()` here is
+    /// always unbounded and `bounded` returns the configured timeout unchanged. The mechanism is
+    /// pinned by test (a bound budget DOES cap when present); it engages for real once the budget
+    /// travels on `InvokeRequest` — the recorded next step (`TimeoutsConfig` invocation-section
+    /// docs). Kept rather than removed so the wire step lands against a ready consumer.
     private void invokeSliceMethod(InvokeRequest request, SliceBridge bridge) {
         var startTime = System.nanoTime();
         var requestBytes = request.payload().length;
@@ -238,7 +247,7 @@ class InvocationHandlerImpl implements InvocationHandler {
         ObservabilityCells.around(bridge,
                                   request.method().name(),
                                   () -> invokeWithHttpRouting(request, bridge))
-                          .timeout(invocationTimeout)
+                          .timeout(Deadline.current().bounded(invocationTimeout))
                           .onSuccess(data -> handleInvocationSuccess(request, data, startTime, requestBytes))
                           .onFailure(cause -> handleInvocationFailure(request, cause, startTime, requestBytes));
     }
