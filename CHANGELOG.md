@@ -6,6 +6,70 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Added (2026-08-25 — #634-3+4: the tri-floor retention operator surface; WAL joins the storage subsystem)
+- **`GET /api/storage/retention` + `aether storage retention` — the tri-floor view and the joint
+  invariant (#634-4, rescoped into #634-3 per the ticket ruling: the operator surface is the only
+  honest home of a checker that must see all three floors).** Per `(stream, partition)`: the WAL's
+  live counters (size, replayable window, truncation watermark, per-group-commit fsync
+  count/mean/max), the in-memory ring tail, the durable sealed bound, the earliest retained segment,
+  and the entity checkpoint floor — joined into `coveredFrom` (earliest offset reachable from ANY
+  local source) and the invariant verdict: an entity partition with a committed checkpoint is
+  VIOLATED when no local source reaches back to `checkpoint + 1`, which is precisely the condition a
+  future fold refuses on; the surface says so before that refusal is the first symptom. A 5-minute
+  `RetentionInvariantWatch` WARN-logs and raises a `retention-invariant` critical alert once per
+  newly-violated partition (re-alerting after recovery+relapse) — the existing alert path evaluates
+  only while a dashboard client is connected, which is exactly the visibility gap the watch closes.
+  Review hardening (4 MAJORs caught and fixed): the alert severity literal was lowercase and the
+  validator is case-sensitive — the whole periodic half was INERT until the shared
+  `RetentionRoutes.ALERT_SEVERITY` constant + a real-validator pin closed it; an EMPTY materialized
+  ring reported tail `0`, permanently masking the restarted-empty case — now `-1`, and
+  nothing-local-under-a-checkpoint is itself violated; raises are debounced to two consecutive
+  violated ticks (the tri-floor join is a non-atomic cut); the invariant is documented as the
+  NECESSARY half of reachability (min-of-starts, holes not detected — reclamation is oldest-first).
+  `[verified: RetentionRoutesTest — coveredFrom source-preference incl. the WAL
+  (truncatedUpto, lastOffset] window, violation + armed non-violation incl. restarted-empty,
+  segment-only rows, entity-vs-bare-name discrimination, debounce once/transient/relapse/clean
+  pins; severity accepted by a real AlertManager]` End-to-end alert delivery in a live cluster
+  remains `[design intent — unverified]`. Operator recovery for a violated partition: backfill the
+  missing range from a replica that still holds it, or accept the documented loss and re-baseline
+  the checkpoint (docs carry the full action).
+- **The stream WAL is now part of the storage subsystem's config, capacity and observability
+  (#634-3).** `[storage.streams] wal_path` is a first-class TOML key (absent/empty = the exact
+  pre-existing derivation `<artifacts disk_path sibling>/stream-segments/<nodeId>/wal`; explicit
+  values still get the mandatory per-node suffix) `[verified: ConfigLoaderTest wal_path triple]`.
+  `GET /api/storage` reports the `streams` instance's live WAL bytes as a peer field (the WAL is a
+  sibling of the segment store, not a tier — the instance previously under-reported real disk by the
+  entire WAL), carried through the cluster rollup (`StorageStatusValue` gained `walBytes`; the
+  serializer arm — previously untested entirely, a gate finding — now has a full-field round-trip
+  pin, and the BINARY consensus codec for it gained its first round-trip pin too, a review finding:
+  the positional `@Codec` layout means the `walBytes` addition is a same-version-cluster wire change
+  — rc-internal, no mixed-version rolling upgrade across this boundary pre-GA, same policy as the
+  entity registration key change). Fsync latency is measured once per GROUP COMMIT (one nanoTime
+  pair per batch, not per append) `[verified: PartitionWalTest.Stats 3 pins; StreamPartitionManagerWalSnapshotTest 2 pins
+  incl. the no-WAL path]`.
+- **`GET /api/entity/keyspaces` + `aether entity keyspaces` — the hosting view (owner-ruled fold-in
+  of the 02w hosting-set observability).** Per keyspace: the sorted hosting node set (an upper bound
+  on the candidate set — the leader intersects it with live members; owners are always drawn from it
+  and nowhere else), the max partition count, and the
+  rolling-redeploy disagreement flag — assembled from replicated KV, so any caught-up node answers
+  identically. The 02w defect this surfaces was diagnosed from typed write refusals; now it is one
+  GET. The view is a pure projection over `EntityOwnershipReconciler.scanRegistrations` — the
+  single authority on the merge semantics (review catch: the first version re-implemented the
+  merge with no equivalence guarantee). `[verified: EntityCheckpointRoutesTest projection pins]`
+- Docs: full management-api.md + cli.md sections including the recovery actions; dashboard
+  dormant-slot decisions recorded per the #494 template for both new endpoints. Two pre-existing doc
+  defects fixed in passing (mis-titled entity-checkpoints section; `/api/entity/checkpoints` missing
+  from the route table) and one corrected (the CLI checkpoints doc showed a fabricated table
+  rendering — the command prints pretty JSON).
+  Gate evidence for the whole batch: `./build.sh` clean; 3,368 tests / 0 failures across
+  aether-config, aether-stream, slice, node, cli — RetentionRoutesTest 15,
+  StorageStatusValueCodecTest 6 (both codec halves of the family), StreamPartitionManagerWalSnapshotTest 3,
+  PartitionWalTest.Stats 3, ConfigLoaderTest wal_path triple, KVStoreSerializerTest 66;
+  ManagementRouteCoverageTest confirms both new routes have handlers. A test-registry detour en route
+  (the codec test first errored on every list-bearing value) documented a latent trap: value-codec
+  tests must layer the framework parent registry the way production does, or the first List component
+  fails with "No codec registered" — the requirement now lives in the test with the measurement.
+
 ### Verification (2026-08-24 — 02w run7, post hosting-set fix: THE SUITE IS FULLY GREEN, first ever)
 - **14/14 assertions across all 10 phases, 0 failures — every number the hosting-set defect suppressed
   is now at its ceiling.** Ownership converged across all partitions in **31s** (run6: FAILED at 989s

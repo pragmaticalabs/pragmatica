@@ -2470,10 +2470,38 @@ reads keep succeeding even when checkpointing has stopped, so a flat `writes` un
 act on. `failures` and `checkpointedThrough` say which partitions are stuck; a partition this node has
 never folded is absent rather than reported as offset 0.
 
+Output is the endpoint's JSON, pretty-printed:
+
+```json
+{
+  "keyspaces": [
+    {"keyspace": "orders", "partitionCount": 8, "writes": 214, "failures": 0,
+     "checkpointedThrough": {"0": 1841, "3": 990, "5": 1502}}
+  ]
+}
 ```
-KEYSPACE   PARTITIONS   WRITES   FAILURES   CHECKPOINTED THROUGH
-orders     8            214      0          0:1841 3:990 5:1502
+
+### `aether entity keyspaces`
+
+Show durable-entity keyspaces with their hosting node sets (#634-3).
+
+Reads [`GET /api/entity/keyspaces`](management-api.md#entity-keyspaces-hosting-view). Assembled from
+replicated KV, so any caught-up node answers identically — no need to sweep ports (unlike
+`checkpoints` above, which is per-node).
+
+```bash
+aether entity keyspaces
 ```
+
+Fields: `keyspace` — the entity keyspace (stream `entity:<keyspace>`); `hosts` — the nodes with a
+committed registration — an UPPER BOUND on the candidate set the leader mints entity-arc owners over
+(the 02w hosting-set fix): the leader intersects this set with live members before placing, so a
+departed-but-not-yet-pruned node appears here without being a candidate; owners are always drawn
+from this set and no others; `partitionCount` —
+declared partition count, the max across hosts during a rolling redeploy; `partitionCountsDisagree` —
+`true` while hosts declare different counts (rolling-redeploy window; arcs span the max until configs
+re-converge — persistent disagreement outside a deploy window means a stale slice version on some
+node). Full schema in the Management API section linked above.
 
 ## Storage
 
@@ -2521,6 +2549,36 @@ snapshot just taken. Routed to the `STORAGE` task-group owner.
 ```bash
 aether storage snapshot content
 ```
+
+### `aether storage retention`
+
+Show the per-partition tri-floor retention view (#634-3/4):
+[`GET /api/storage/retention`](management-api.md#get-apistorageretention). LOCAL — WAL, ring, and
+segment offsets describe the node you query; the `checkpointFloor` comes from replicated KV, so it
+agrees everywhere.
+
+```bash
+aether storage retention
+aether storage retention --format json
+```
+
+Per `(stream, partition)` row (offsets are `-1` when the source/floor is absent): `wal` — the live
+WAL counters (`sizeBytes`, replayable window `(truncatedUpto, lastOffset]`, fsync count/latency),
+`null` when the partition has no WAL; `ringTail` — earliest offset still in the in-memory ring;
+`sealedThrough` / `earliestSegment` — the durable sealed bound and the earliest retained sealed
+segment; `checkpointFloor` — the entity checkpoint; `coveredFrom` — earliest offset reachable from
+any local source; `violated` / `violation` — the tri-floor invariant verdict. `walTotalBytes` at the
+root is this node's total live WAL footprint. Full schema and the precise invariant in the
+Management API section linked above.
+
+**A `violated: true` row means this node cannot rebuild that partition from its checkpoint** — the
+records in `[checkpointFloor + 1, coveredFrom - 1]` are on no local source, so a fold here would
+refuse. Recovery: restore the missing range from a replica that still holds it (re-replication via
+partition backfill); if no replica holds it, accept the documented loss and re-baseline the
+checkpoint — see the [operator recovery action](management-api.md#get-apistorageretention). The flag
+clears on the next read after local sources again cover `checkpoint + 1`. A periodic watch re-checks
+every 5 minutes and raises the `retention-invariant` alert (severity `CRITICAL`) once per
+newly-violated partition — see `aether alerts active`.
 
 ---
 
