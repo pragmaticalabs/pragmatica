@@ -111,6 +111,35 @@ Slice endpoints are available on app HTTP ports:
 curl http://localhost:8070/api/v1/urls/abc123
 ```
 
+## Debugging
+
+Forge is **one plain JVM** — the whole 5-node cluster, every deployed slice included, runs in a single
+process. That means standard JDWP remote attach works today, with no Forge-specific machinery:
+
+```bash
+# Attach-when-ready (Forge starts immediately; connect the debugger whenever you like)
+FORGE_JVM_OPTS="-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005" ./run-forge.sh
+
+# Debug startup itself (JVM blocks until the debugger connects)
+FORGE_JVM_OPTS="-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=*:5005" ./run-forge.sh
+```
+
+Then attach from the IDE as a plain **Remote JVM Debug** configuration on `localhost:5005`
+(IntelliJ: Run → Edit Configurations → + → Remote JVM Debug; the default template already matches the
+flags above).
+
+Three things worth knowing:
+
+- **Breakpoints in slice code just work.** Slices load through per-slice classloaders, but JDWP is
+  classloader-agnostic — a breakpoint in your slice source binds when the slice's class is loaded,
+  whichever loader defines it. Keep the slice's source project open in the same IDE window so the
+  debugger maps frames to source.
+- **Breakpoints pause the whole cluster.** All five simulated nodes share the one JVM, so a hit
+  breakpoint freezes consensus, heartbeats and timers with it. Expect SWIM suspicion and timer noise
+  after long pauses — harmless in Forge, but worth knowing before you blame the runtime.
+- **Every `run-forge.sh` honors `FORGE_JVM_OPTS`** (word-split deliberately, so several flags work),
+  and the same flags work with a direct launch: `java $FORGE_JVM_OPTS -jar forge.jar ...`.
+
 ## Configuration
 
 ### forge.toml
