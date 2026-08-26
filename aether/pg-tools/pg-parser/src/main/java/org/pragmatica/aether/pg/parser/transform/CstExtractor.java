@@ -298,12 +298,25 @@ public final class CstExtractor {
                : dt;
     }
 
+    /// Names of a `ColumnList <- ColId (',' ColId)*`, selected by POSITION -- every leaf child that
+    /// is not a separator is a name. Reading them back by the rule name "ColId" silently returned a
+    /// SHORT list: under peglib 0.7.x identifier fallback a name spelling a keyword is lexed under
+    /// THAT keyword's kind, so `INSERT INTO t (id, version)` yielded only `id` and the dropped
+    /// column went unvalidated. See [#leadingIdentifier].
     public static List<Identifier> extractColumnList(CstNavigator nav) {
-        var colIds = nav.findAll("ColId");
+        var result = new ArrayList<Identifier>();
 
-        return colIds.stream()
-                     .map(CstExtractor::extractIdentifier)
-                     .toList();
+        for (var child : nav.children()) {
+            switch (child) {
+                case CstNode.Token tok -> result.add(classifyRawIdentifier(tok.span(), tok.text()));
+                case CstNode.Terminal term when!term.text().equals(",") -> result.add(classifyRawIdentifier(term.span(),
+                                                                                                            term.text()));
+                case CstNode.NonTerminal nt -> result.add(extractIdentifier(CstNavigator.of(nt)));
+                default -> {}
+            }
+        }
+
+        return result;
     }
 
     private static String extractScalarTypeName(CstNavigator scalarType) {
