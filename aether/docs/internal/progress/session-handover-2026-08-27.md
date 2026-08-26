@@ -75,10 +75,14 @@ Issue #642 filed, then corrected + retitled on-ticket; README correction history
 > counts self, sync ADOPTION does not. Production-relevant (rolling restart leaving a bare
 > majority = healthy-looking dead cluster). Fix direction on the ticket (count self once:
 > `responses+1 >= quorum`; preserve the intersection property; NEVER re-derive from live counts) +
-> TRACE→periodic-WARN promotion. **Owner consult on the fix is the pending item** — quorum
-> arithmetic on the consensus engine, and `integrations/consensus` is currently the clone stream's
-> lane (their PR #638) — coordinate before editing `RabiaEngine.java`.
-> Gate chain now: #660 fix → probe green end-to-end → close #642 AND #509 → candidate tag moves.
+> TRACE→periodic-WARN promotion. **#660 fix ownership is an OPEN OWNER DECISION — consulted
+> 2026-08-27, owner ruled "update handover and stop" (session ended before assigning).** Options
+> as consulted: this stream takes it with a lane heads-up to the clone (`RabiaEngine.java` is
+> file-disjoint from their PR #638); hand it to the clone (they hold `integrations/consensus`);
+> or prep-diff-then-owner-review before landing. Whoever takes it: it is quorum arithmetic —
+> jbct-review + ClusterFormation smoke + the probe as the live gate, and that same green run
+> closes #642 AND #509 per their on-ticket rulings.
+> Gate chain: #660 fix → probe green end-to-end → close #642 AND #509 → candidate tag moves.
 > Both probe-run JVMs had to be hand-killed — failsafe fork timeout failed to reap TWICE (unfiled).
 
 ## §4 I4 durable timers (#351) — Stage A COMPLETE + review-clean, deliberately uncommitted
