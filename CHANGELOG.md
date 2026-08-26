@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Verified (2026-08-26 — #596 CLOSED: the live entity gate, on the product's own routing)
+- **02w-entity-crash rerun with the per-node endpoint rotation REMOVED** (the ticket's own
+  instruction: the harness's owner-finding sweep masked the product's missing forwarding, so the
+  acceptance run had to drop it). `entity_post_any` now treats the FIRST REACHABLE endpoint's
+  answer as authoritative — transport failure moves on (the suite kills nodes; a dead port is the
+  harness's problem), a wrong answer from a live node FAILS. Result on a 5-node remote cluster:
+  **40/40 pre-kill creates acked via product forwarding** (the pre-#596 pinned-endpoint shape
+  scored 4/40), every acked value read back exactly through one endpoint (the read-forward's live
+  exercise), **37/40 acked ACROSS a SIGKILL** (the 3 are honest failover-gap refusals — a forward
+  aimed at the dying owner fails typed), **77/77 acked survived exact-valued** (0 missing, 0
+  corrupted, 0 unreachable), terminal convergence instant, suite 54s, and **zero `NotCurrentOwner`
+  anywhere in the run** — the refusal the ticket was filed about never fired. guarantees.md entity
+  tags upgraded from design-intent to `[verified]` accordingly.
+
 ### Added (2026-08-26 — #596 read half: BOUNDED_STALE entity reads forward from non-hosting nodes)
 - **A `BOUNDED_STALE` entity read on a node with no local log now forwards to the committed owner
   instead of refusing.** The write half (command-shaped mutations + owner-forwarding) landed
