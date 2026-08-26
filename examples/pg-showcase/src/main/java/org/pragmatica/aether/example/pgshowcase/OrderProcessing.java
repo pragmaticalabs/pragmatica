@@ -11,6 +11,15 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
 
 
+/// Slice wiring the two @PgSql persistence interfaces of the pg-showcase example.
+///
+/// Demonstrates: parse-don't-validate on the inbound request, an existence check against
+/// UserPersistence before inserting an order, and the two persistence styles side by side --
+/// explicit @Query SQL and CRUD derived from method names.
+///
+/// Does NOT demonstrate: transactions, and none of the SQL constructs README.md lists under
+/// "Validator notes" as deliberately avoided (CTEs, :record expansion, import-requiring @Query
+/// parameter types).
 @Slice
 public interface OrderProcessing {
     record PlaceOrderRequest(String userId, String total) {
