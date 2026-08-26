@@ -42,6 +42,10 @@ public sealed interface NodeCodecs {
         all.addAll(org.pragmatica.net.tcp.TcpCodecs.CODECS);
         all.addAll(org.pragmatica.cluster.state.kvstore.KvstoreCodecs.CODECS);
         all.addAll(org.pragmatica.cluster.metrics.MetricsCodecs.CODECS);
+        // #634-7 CI catch (the boot guard's first real find): ForwardApplyRequest/Response are routed
+        // wire types (ForwardingClusterNode sends them for command forwarding) but never had codecs —
+        // every forwarded command would have silently vanished at the transport (the #492 class).
+        all.addAll(org.pragmatica.cluster.node.forward.ForwardCodecs.CODECS);
         // #492: worker-community metrics wire types (CommunityMetricsSnapshot + per-slice/per-method
         // nested records) ride the core QUIC METRICS lane (routed to ControlLoop), but their generated
         // codecs lived only in the orphaned WorkerCodecs registry — every broadcast from a core node

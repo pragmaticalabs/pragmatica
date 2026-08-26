@@ -12,12 +12,15 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityCreateForward;
+import org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityGetForward;
+import org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityGetForwardResponse;
 import org.pragmatica.aether.resource.entity.EntityForwardRegistry;
 import org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityUpdateForward;
 import org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityUpdateForwardResponse;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Deadline;
@@ -271,6 +274,87 @@ class EntityForwardServiceTest {
         assertThat(applications.get()).as("a sub-floor budget must not buy a doomed apply").isZero();
     }
 
+    // === #596 read half: the get protocol ===
+
+    /// The full sender-side round trip: request out, PRESENT response in, promise resolves to the
+    /// explicit some — the `present` flag decides, never the state length.
+    @Test
+    void forwardGet_sent_thenPresentResponse_resolvesWithSomeState() {
+        var promise = service.forwardGet(OWNER, "orders", bytes("k1"));
+        var request = (EntityGetForward) sender.lastMessage();
+
+        service.onEntityGetForwardResponse(EntityGetForwardResponse.presentResponse(OWNER,
+                                                                                    request.correlationId(),
+                                                                                    bytes("41")));
+
+        var result = promise.await();
+
+        assertThat(result.isSuccess()).isTrue();
+        result.onSuccess(state -> {
+            assertThat(state.isPresent()).isTrue();
+            state.onPresent(bytes -> assertThat(new String(bytes, StandardCharsets.UTF_8)).isEqualTo("41"));
+        });
+    }
+
+    /// ABSENT is a SUCCESS with an explicit empty Option — never a failure, never inferred from
+    /// zero-length state bytes.
+    @Test
+    void forwardGet_absentResponse_resolvesWithEmptySuccess() {
+        var promise = service.forwardGet(OWNER, "orders", bytes("k1"));
+        var request = (EntityGetForward) sender.lastMessage();
+
+        service.onEntityGetForwardResponse(EntityGetForwardResponse.absentResponse(OWNER, request.correlationId()));
+
+        var result = promise.await();
+
+        assertThat(result.isSuccess()).isTrue();
+        result.onSuccess(state -> assertThat(state.isEmpty()).isTrue());
+    }
+
+    /// Receiver side: a registered keyspace serves both arms of the `present` flag through the
+    /// target's explicit Option — the echo target answers present only for the key "present".
+    @Test
+    void onEntityGetForward_registeredKeyspace_answersPresentAndAbsentExplicitly() {
+        service.register("orders", echoTarget());
+
+        service.onEntityGetForward(EntityGetForward.entityGetForward(OWNER, "corr-g1", "orders", bytes("present"), Deadline.NO_BUDGET));
+        var present = (EntityGetForwardResponse) sender.lastMessage();
+
+        service.onEntityGetForward(EntityGetForward.entityGetForward(OWNER, "corr-g2", "orders", bytes("missing"), Deadline.NO_BUDGET));
+        var absent = (EntityGetForwardResponse) sender.lastMessage();
+
+        assertThat(present.success()).isTrue();
+        assertThat(present.present()).isTrue();
+        assertThat(new String(present.state(), StandardCharsets.UTF_8)).isEqualTo("41");
+        assertThat(absent.success()).isTrue();
+        assertThat(absent.present()).as("absence is the explicit flag, not a failure").isFalse();
+    }
+
+    /// The read shares the mutation trio's budget discipline: an arrived-expired read is refused
+    /// without touching the entity — serving an answer nobody collects is wasted fold work.
+    @Test
+    void onEntityGetForward_arrivedExpired_refusesWithoutServing() {
+        service.register("orders", echoTarget());
+
+        service.onEntityGetForward(EntityGetForward.entityGetForward(OWNER, "corr-g3", "orders", bytes("present"), 30L));
+
+        var response = (EntityGetForwardResponse) sender.lastMessage();
+
+        assertThat(response.success()).isFalse();
+        assertThat(response.failureType()).isEqualTo("ForwardBudgetExhausted");
+    }
+
+    /// Unknown keyspace answers a typed failure, never silence — same contract as the writes.
+    @Test
+    void onEntityGetForward_unknownKeyspace_answersFailure() {
+        service.onEntityGetForward(EntityGetForward.entityGetForward(OWNER, "corr-g4", "ghosts", bytes("k"), Deadline.NO_BUDGET));
+
+        var response = (EntityGetForwardResponse) sender.lastMessage();
+
+        assertThat(response.success()).isFalse();
+        assertThat(response.errorMessage()).contains("ghosts");
+    }
+
     /// Stage 2, SENDER half: the remaining budget is stamped ONTO THE WIRE, which is the only way the
     /// owner can make the refusal decision above. Both directions are pinned in one test — a bounded
     /// caller ships what is left of its budget, an unbounded one ships NO_BUDGET — because a stamp that
@@ -327,6 +411,13 @@ class EntityForwardServiceTest {
 
                 return Promise.success(new byte[0]);
             }
+
+            @Override
+            public Promise<Option<byte[]>> getForwarded(byte[] key) {
+                applications.incrementAndGet();
+
+                return Promise.success(Option.some(bytes("41")));
+            }
         };
     }
 
@@ -347,6 +438,15 @@ class EntityForwardServiceTest {
             @Override
             public Promise<byte[]> deleteForwarded(byte[] key) {
                 return Promise.success(new byte[0]);
+            }
+
+            /// Present for the key literally named "present", explicit-absent for everything else —
+            /// so the response tests can drive BOTH arms of the `present` flag.
+            @Override
+            public Promise<Option<byte[]>> getForwarded(byte[] key) {
+                return "present".equals(new String(key, StandardCharsets.UTF_8))
+                       ? Promise.success(Option.some(bytes("41")))
+                       : Promise.success(Option.none());
             }
         };
     }

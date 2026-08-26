@@ -99,6 +99,61 @@ public sealed interface EntityForwardMessage extends ProtocolMessage {
         }
     }
 
+    /// The `BOUNDED_STALE` read half (#596): serve `key` from the receiving node's fold, through its
+    /// own ready/caught-up gates. No payload beyond the key, and the same wire budget discipline as
+    /// the mutation trio — an arrived-expired read is refused, not served to nobody.
+    record EntityGetForward(NodeId sender, String correlationId, String keyspace, byte[] key, long remainingMillis) implements EntityForwardMessage {
+        public EntityGetForward {
+            key = key.clone();
+        }
+
+        public static EntityGetForward entityGetForward(NodeId sender,
+                                                        String correlationId,
+                                                        String keyspace,
+                                                        byte[] key,
+                                                        long remainingMillis) {
+            return new EntityGetForward(sender, correlationId, keyspace, key, remainingMillis);
+        }
+    }
+
+    /// The read response — separate from [EntityUpdateForwardResponse] because absence must be an
+    /// EXPLICIT `present` flag, never a byte convention: `state` empty-on-delete works there because
+    /// the sender discards it by contract, but a read's caller DECODES the answer, and any future
+    /// zero-length encoding would silently read as ABSENT — the exact defect the read half removes.
+    /// `state` is meaningful only when `success && present`.
+    record EntityGetForwardResponse(NodeId sender,
+                                    String correlationId,
+                                    boolean success,
+                                    boolean present,
+                                    byte[] state,
+                                    String failureType,
+                                    String errorMessage) implements EntityForwardMessage {
+        public EntityGetForwardResponse {
+            state = state.clone();
+        }
+
+        public static EntityGetForwardResponse presentResponse(NodeId sender, String correlationId, byte[] state) {
+            return new EntityGetForwardResponse(sender, correlationId, true, true, state, "", "");
+        }
+
+        public static EntityGetForwardResponse absentResponse(NodeId sender, String correlationId) {
+            return new EntityGetForwardResponse(sender, correlationId, true, false, new byte[0], "", "");
+        }
+
+        public static EntityGetForwardResponse failureResponse(NodeId sender,
+                                                               String correlationId,
+                                                               String failureType,
+                                                               String errorMessage) {
+            return new EntityGetForwardResponse(sender,
+                                                correlationId,
+                                                false,
+                                                false,
+                                                new byte[0],
+                                                failureType,
+                                                errorMessage);
+        }
+    }
+
     /// The response for ALL THREE forwarded operations — update, create and delete. Deliberately NOT
     /// renamed to match: the name is a codec identity, and renaming a `@Codec` type re-derives its tag
     /// for a cosmetic gain. `state` carries the encoded post-mutation state for update and create, is

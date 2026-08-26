@@ -215,8 +215,16 @@ public record LintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
     // Null literal argument / defensive null comparison
     Map.entry("JBCT-RET-08", DiagnosticSeverity.WARNING),
 
-    // Cause variant style: enum vs record
-    Map.entry("JBCT-SEAL-02", DiagnosticSeverity.WARNING),
+    // Typed-error construction pack (typed-error-lint-spec §5.1): the whole pack lands at WARNING;
+    // severities freeze only after the track-A census and track-B pilot migration. CAUSE-01 absorbs
+    // the retired JBCT-SEAL-02.
+    Map.entry("JBCT-CAUSE-01", DiagnosticSeverity.WARNING),
+    Map.entry("JBCT-CAUSE-02", DiagnosticSeverity.WARNING),
+    Map.entry("JBCT-CAUSE-03", DiagnosticSeverity.WARNING),
+    Map.entry("JBCT-CAUSE-04", DiagnosticSeverity.WARNING),
+    Map.entry("JBCT-CAUSE-05", DiagnosticSeverity.WARNING),
+    Map.entry("JBCT-CAUSE-07", DiagnosticSeverity.WARNING),
+    Map.entry("JBCT-CAUSE-08", DiagnosticSeverity.WARNING),
 
     // File-type classifier + structural rules (#453). All provisional WARNING pending a corpus
     // calibration gate (design severity to be fixed after the aether corpus run); SIDE-01 ships at

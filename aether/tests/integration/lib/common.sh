@@ -813,6 +813,11 @@ wait_for() {
         _refresh_mgmt_entry_point >/dev/null 2>&1 || true
     fi
     while [ "$SECONDS" -lt "$deadline" ]; do
+        # #628: the deadline is only checked BETWEEN iterations, so a predicate that
+        # hangs on remote transport overruns arbitrarily (4596s observed against a
+        # 480s budget). Export the remaining budget so transport-touching predicates
+        # can bound themselves via remote_exec_bounded.
+        export WAIT_FOR_REMAINING=$((deadline - SECONDS))
         # Capture rc without tripping `set -e` from the caller — `eval` as a standalone
         # command would propagate its non-zero exit and abort the entire script when
         # the predicate is simply false. The `&& rc=0 || rc=$?` idiom swallows the exit
@@ -961,6 +966,20 @@ remote_exec() {
     # deliberately (verified — no heredoc, no pipe, no redirect into remote_exec anywhere in the tree).
     ssh -n -i "$AETHER_SSH_KEY" "${SSH_OPTS[@]}" \
         "${AETHER_SSH_USER}@${TARGET_HOST}" "$@"
+}
+
+# #628: bounded remote execution for POLL PREDICATES and probes. The REMOTE `timeout`
+# binary bounds the command itself (a hung `docker ps` on a contended daemon), which
+# SSH's ConnectTimeout cannot — that guards connection SETUP only, and the 2026-08-22
+# 02-chaos run overran its budgets exactly this way. Runs `timeout` on the Linux
+# docker host, so macOS runners need no coreutils. rc 124 = the command hit the bound;
+# every other rc passes through ssh's contract unchanged. Callers MUST check rc —
+# distinguishing empty-from-unreachable is the point.
+# Usage: remote_exec_bounded <seconds> "<command>"
+remote_exec_bounded() {
+    local secs="$1"
+    shift
+    remote_exec "timeout ${secs} $*"
 }
 
 # Copy a local file to a remote path on TARGET_HOST.

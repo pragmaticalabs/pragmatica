@@ -72,10 +72,16 @@ refresh_app_endpoints() {
     [ -n "$ENTITY_APP_ENDPOINTS" ]
 }
 
-# POST to each node in turn until `matcher` matches the body. Echoes the matching body.
-# Re-resolves once, mid-sweep, if nothing matched — that covers a kill landing between passes.
+# POST to the FIRST REACHABLE endpoint and treat ITS answer as authoritative (#596 acceptance
+# form). The pre-#596 shape swept every node until `matcher` matched the body — harness-side
+# owner-finding that masked the product's missing owner-forwarding, which is exactly what #596
+# closed. Now: a TRANSPORT failure moves to the next endpoint (this suite kills nodes — a dead
+# port is the harness's problem, and the 2026-08-14 measurement shows what pinning one costs),
+# but a WRONG answer from a live node is echoed and fails the caller's assertion: with product
+# forwarding, reaching ANY live node must be enough. Pass 2 re-resolves endpoints and retries
+# only when NOTHING was reachable (a kill landing mid-sweep).
 entity_post_any() {
-    local path="$1" payload="$2" matcher="$3" pass ep body last=""
+    local path="$1" payload="$2" matcher="$3" pass ep body
 
     [ -n "$ENTITY_APP_ENDPOINTS" ] || refresh_app_endpoints || return 1
 
@@ -83,16 +89,15 @@ entity_post_any() {
         while IFS= read -r ep; do
             [ -z "$ep" ] && continue
             body=$(_api_call POST "${ep}${path}" "$payload" 2>/dev/null) || continue
+            printf '%s' "$body"
             if printf '%s' "$body" | grep -qE "$matcher"; then
-                printf '%s' "$body"
                 return 0
             fi
-            last="$body"
+            return 1
         done <<< "$ENTITY_APP_ENDPOINTS"
         [ "$pass" -eq 1 ] && refresh_app_endpoints >/dev/null 2>&1
     done
 
-    [ -n "$last" ] && printf '%s' "$last"
     return 1
 }
 
