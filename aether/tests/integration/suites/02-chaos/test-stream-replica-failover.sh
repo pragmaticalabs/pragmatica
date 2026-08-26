@@ -533,8 +533,10 @@ test_replica_set_converged() {
 # not accumulate per-run streams. Runs on ANY exit path (incl. set -e abort).
 cleanup() {
     aether_failover streams delete "$STREAM_NAME" >/dev/null 2>&1 || true
-    restore_cluster_baseline || \
-        log_warn "cleanup: restore_cluster_baseline reported non-zero; subsequent suites may inherit cluster churn"
+    # #628: failure is FLAGGED to run_suite (marker), which captures evidence and
+    # quarantines the remaining test files — the old warn-and-continue let a broken
+    # cluster fail every downstream scenario on its own subject.
+    restore_cluster_baseline_or_flag
 }
 trap 'cleanup' EXIT
 

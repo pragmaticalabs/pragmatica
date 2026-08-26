@@ -1867,7 +1867,17 @@ readiness.
         {"level": "MEMORY",     "usedBytes": 1048576,  "maxBytes": 134217728,   "utilizationPct": 0.8},
         {"level": "LOCAL_DISK", "usedBytes": 52428800, "maxBytes": 10737418240, "utilizationPct": 0.5}
       ],
-      "readiness": {"state": "READY", "isReadReady": true, "isWriteReady": true}
+      "readiness": {"state": "READY", "isReadReady": true, "isWriteReady": true},
+      "wal": null
+    },
+    {
+      "name": "streams",
+      "tiers": [
+        {"level": "MEMORY",     "usedBytes": 2097152,  "maxBytes": 134217728,   "utilizationPct": 1.6},
+        {"level": "LOCAL_DISK", "usedBytes": 31457280, "maxBytes": 10737418240, "utilizationPct": 0.3}
+      ],
+      "readiness": {"state": "READY", "isReadReady": true, "isWriteReady": true},
+      "wal": {"totalBytes": 8388608, "walPartitions": 4}
     }
   ]
 }
@@ -1875,6 +1885,14 @@ readiness.
 
 - `utilizationPct`: `usedBytes / maxBytes` as a percentage rounded to one decimal (`0.0` when `maxBytes` is 0).
 - `readiness.isReadReady` / `isWriteReady`: whether the instance's `StorageReadinessGate` currently admits reads / writes.
+- `wal` (#634-3): live stream-WAL usage — non-`null` **only on the `streams` instance**. The WAL is a
+  sibling directory of the segment store, not a storage tier, so without this field the `streams`
+  instance under-reports its real disk footprint by the entire WAL. Every other instance reports
+  `null` rather than a zero that would read as "has a WAL, currently empty".
+- `wal.totalBytes`: sum of live WAL bytes across every stream partition on this node — derived from
+  the same snapshot as [`GET /api/storage/retention`](#get-apistorageretention)'s `walTotalBytes`,
+  so the two surfaces always agree.
+- `wal.walPartitions`: number of partitions on this node that currently have a WAL.
 
 ### GET /api/storage/{name}
 
@@ -1893,11 +1911,13 @@ exists on the node.
     {"level": "LOCAL_DISK", "usedBytes": 52428800, "maxBytes": 10737418240, "utilizationPct": 0.5}
   ],
   "snapshot": {"lastEpoch": 42, "lastTimestampMs": 1716280000000},
-  "readiness": {"state": "READY", "isReadReady": true, "isWriteReady": true}
+  "readiness": {"state": "READY", "isReadReady": true, "isWriteReady": true},
+  "wal": null
 }
 ```
 
 - `snapshot.lastEpoch` / `lastTimestampMs`: epoch and epoch-millis of the most recent metadata snapshot taken by the instance's `SnapshotManager` (`0` when none has been taken yet).
+- `wal`: same semantics as on `GET /api/storage` — non-`null` only when `{name}` is `streams`.
 
 ### POST /api/storage/snapshot/{name}
 
@@ -1935,6 +1955,7 @@ instance name and reports per-instance totals plus a per-node breakdown.
       "nodeCount": 3,
       "totalUsedBytes": 157286400,
       "totalMaxBytes": 32212254720,
+      "totalWalBytes": 0,
       "nodes": [
         {
           "nodeId": "node-1",
@@ -1942,7 +1963,8 @@ instance name and reports per-instance totals plus a per-node breakdown.
             {"level": "MEMORY",     "usedBytes": 1048576,  "maxBytes": 134217728,   "utilizationPct": 0.8},
             {"level": "LOCAL_DISK", "usedBytes": 52428800, "maxBytes": 10737418240, "utilizationPct": 0.5}
           ],
-          "readiness": {"state": "READY", "isReadReady": true, "isWriteReady": true}
+          "readiness": {"state": "READY", "isReadReady": true, "isWriteReady": true},
+          "walBytes": 0
         }
       ]
     }
@@ -1951,6 +1973,9 @@ instance name and reports per-instance totals plus a per-node breakdown.
 ```
 
 - `totalUsedBytes` / `totalMaxBytes`: sums across every tier of every node hosting the instance.
+- `walBytes` (#634-3): the node's live stream-WAL bytes as published with its storage status — non-zero
+  only on the `streams` instance rows (`0` everywhere else). `totalWalBytes` is the sum of `walBytes`
+  across the instance's nodes: on the `streams` instance it is the cluster's total WAL footprint.
 
 ### GET /api/cluster/storage/{name}
 
@@ -1963,23 +1988,157 @@ that name.
 **Response:**
 ```json
 {
-  "name": "content",
+  "name": "streams",
   "nodeCount": 3,
-  "totalUsedBytes": 157286400,
+  "totalUsedBytes": 94371840,
   "totalMaxBytes": 32212254720,
+  "totalWalBytes": 25165824,
   "nodes": [
     {
       "nodeId": "node-1",
       "tiers": [
-        {"level": "MEMORY",     "usedBytes": 1048576,  "maxBytes": 134217728,   "utilizationPct": 0.8},
-        {"level": "LOCAL_DISK", "usedBytes": 52428800, "maxBytes": 10737418240, "utilizationPct": 0.5}
+        {"level": "MEMORY",     "usedBytes": 2097152,  "maxBytes": 134217728,   "utilizationPct": 1.6},
+        {"level": "LOCAL_DISK", "usedBytes": 31457280, "maxBytes": 10737418240, "utilizationPct": 0.3}
       ],
       "snapshot": {"lastEpoch": 42, "lastTimestampMs": 1716280000000},
-      "readiness": {"state": "READY", "isReadReady": true, "isWriteReady": true}
+      "readiness": {"state": "READY", "isReadReady": true, "isWriteReady": true},
+      "walBytes": 8388608
     }
   ]
 }
 ```
+
+- `walBytes` / `totalWalBytes`: same semantics as on `GET /api/cluster/storage` — per-node live WAL
+  bytes and their sum; non-zero only for the `streams` instance.
+
+### WAL placement (`[storage.streams] wal_path`)
+
+The stream WAL's base directory is configurable per node via the `streams` storage instance's TOML
+section (#634-3):
+
+```toml
+[storage.streams]
+wal_path = "/data/aether/stream-wal"
+```
+
+- **Empty or absent (the default):** the WAL directory is DERIVED as
+  `<sibling of the artifacts instance's disk_path>/stream-segments/<nodeId>/wal` — the pre-#634-3
+  location, byte-identical, so existing deployments need no config change.
+- **Set:** the effective directory is `<wal_path>/<nodeId>`. The node-id suffix is appended
+  unconditionally — multiple nodes on one host (an in-JVM `EmberCluster`, co-located containers)
+  must never share a WAL directory, and the mandatory suffix keeps that invariant independent of
+  operator input.
+
+An unwritable WAL directory is a **boot error** (#634 item 2): a node that cannot honour the
+durability its streams declare refuses to start rather than silently acking publishes without fsync.
+
+### GET /api/storage/retention
+
+The tri-floor retention view (#634-3/4): for every `(stream, partition)` this node holds anything
+for, the local sources of history (WAL, in-memory ring, sealed segments) joined with the two
+retention floors that drive reclamation (the durable sealed bound and the entity checkpoint), plus
+the joint **tri-floor invariant** verdict evaluated over all of them.
+
+**Routing:** LOCAL (per-node view; not forwarded). **RBAC:** VIEWER.
+
+**The tri-floor invariant.** An entity partition with a committed checkpoint must have SOME local
+source starting at or below `checkpoint + 1` — `coveredFrom <= checkpointFloor + 1`, where
+`coveredFrom` is the MINIMUM of the sources' start offsets. This is deliberately the NECESSARY half
+of reachability, not the sufficient one: the check does not prove the union of sources is hole-free
+up to the head (reclamation is oldest-first on every mover, so an interior hole has no producer
+today — a clean verdict means "no source starts too late", not "every record is present"). The
+sources cover: sealed segments `[earliestSegment, sealedThrough]`, the in-memory ring
+`[ringTail, head]`, and the WAL's replayable window `(truncatedUpto, lastOffset]` (records at or
+below the truncation watermark are discarded on replay regardless of their physical presence). A
+MATERIALIZED partition holding nothing at all (`coveredFrom = -1`) under a committed checkpoint is
+also violated — the restarted-empty case. Either way a future fold cannot rebuild the partition
+without serving state that is missing committed writes — so it will REFUSE; this surface reports the
+condition BEFORE that refusal is the first symptom. The three sources are read as a NON-ATOMIC cut
+(WAL snapshot, then segment index, then KV), so a single read can show a transient phantom — the
+periodic watch therefore requires TWO consecutive violated observations before raising.
+
+**Scope: LOCAL.** WAL, ring, and segment offsets describe the node you query. `checkpointFloor` is
+read from replicated KV, so it agrees across nodes; the verdict does not — a partition can be
+violated on one node while a replica still holds the range. That per-node asymmetry is what makes
+the view actionable (see recovery below).
+
+**Response:**
+```json
+{
+  "walTotalBytes": 8388608,
+  "partitions": [
+    {
+      "stream": "entity:orders",
+      "partition": 0,
+      "wal": {
+        "sizeBytes": 2097152,
+        "lastOffset": 1900,
+        "truncatedUpto": 1502,
+        "lastCompactedUpto": 1502,
+        "fsyncCount": 1901,
+        "fsyncMeanMicros": 84.3,
+        "fsyncMaxMicros": 2210.5,
+        "failStopped": false
+      },
+      "ringTail": 1650,
+      "sealedThrough": 1502,
+      "earliestSegment": 0,
+      "checkpointFloor": 1502,
+      "coveredFrom": 0,
+      "violated": false,
+      "violation": ""
+    }
+  ]
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `walTotalBytes` | Total live WAL bytes across every partition on this node — the same number the `streams` storage instance reports as `wal.totalBytes` (both derive from one snapshot) |
+| `partitions[]` | One row per `(stream, partition)` this node holds anything for — materialized (ring/WAL) or held only as sealed segments — sorted by stream, then partition |
+| `stream` / `partition` | The partition coordinate (`entity:`-prefixed streams are durable-entity logs) |
+| `wal` | The partition's live WAL counters; `null` when it has no WAL (non-durable path, or a segment-only row) |
+| `wal.sizeBytes` | End of valid data in the WAL file (live bytes; lazily-truncated records still count until compaction reclaims them) |
+| `wal.lastOffset` | Last appended offset (`-1` when nothing appended yet) |
+| `wal.truncatedUpto` | Truncation watermark — records at or below it are discarded on replay regardless of physical presence, so the replayable window is `(truncatedUpto, lastOffset]`; resets on crash by design (a reclamation hint, not a durability fact) |
+| `wal.lastCompactedUpto` | Last offset physically reclaimed by a compaction rewrite (`-1` when the file was never compacted) |
+| `wal.fsyncCount` | Group commits completed since the WAL was opened |
+| `wal.fsyncMeanMicros` / `fsyncMaxMicros` | Mean / slowest single fsync since open, in microseconds |
+| `wal.failStopped` | `true` when this partition's WAL refused further appends after a failed fsync (#634-7 fail-stop — a retried fsync can falsely succeed after the OS drops the dirty pages, so the WAL stops instead). Every publish on the partition fails until the recovery action: **restart the node** — reopen re-scans the file and trims to the valid prefix; nothing acked is lost |
+| `ringTail` | Earliest offset still in the in-memory ring (`-1` when the materialized ring is EMPTY — has never held a record, e.g. right after a restart; a partition with no ring at all appears only as a segment-only row or not at all) |
+| `sealedThrough` | The durable sealed bound — what WAL truncation chases (`-1` when nothing is sealed) |
+| `earliestSegment` | Earliest sealed-segment start offset still retained (`-1` when no segments are retained) |
+| `checkpointFloor` | The entity checkpoint (`throughOffset`, from replicated KV); `-1` when no fold has ever checkpointed, or the stream is not an entity log |
+| `coveredFrom` | The MINIMUM start offset across local sources (`earliestSegment`, `ringTail`, WAL window start); `-1` when this node holds nothing replayable — which under a committed checkpoint is itself a violation (restarted-empty) |
+| `violated` | The tri-floor invariant failed: a checkpoint exists and either no local source reaches back to `checkpoint + 1` (`coveredFrom > checkpointFloor + 1`) or nothing local exists at all (`coveredFrom = -1`) |
+| `violation` | Human-readable gap description naming the missing offset range (`""` when not violated) |
+
+Absence is data here: `-1` per the table above, and a `null` `wal` on a partition of a durable stream
+means that partition is on the non-durable path on this node.
+
+**Periodic invariant watch.** The metrics-threshold alert path is evaluated only while a dashboard
+client is connected, so a violation nobody polls for would stay invisible. A periodic watch re-runs
+this same assembly **every 5 minutes** and, for each NEWLY violated partition, WARN-logs and raises
+one operator alert — name **`retention-invariant`**, severity **`CRITICAL`** — through the alert
+injection path (visible via `GET /api/alerts/active` and `aether alerts active`). A raise requires the
+SAME partition to be violated on TWO consecutive ticks (the tri-floor join is a non-atomic cut, so a
+truncate landing between reads can synthesize a one-tick phantom). No re-alert while the same
+violation persists; a partition that recovers and later relapses re-earns its two ticks and alerts
+again.
+
+**Operator recovery — what clears a `violated` row.** A violated partition means a fold from the
+checkpoint would refuse on this node: the records in `[checkpointFloor + 1, coveredFrom - 1]` are on
+no local source. Recovery is restoring the missing range from a replica that still holds it
+(re-replication via partition backfill). If no replica holds the range, the remaining option is
+accepting the documented loss and re-baselining the checkpoint. The flag is computed on read: it
+clears on the next read (and the next watch tick) after local sources again cover `checkpoint + 1`.
+
+**Dashboard: dormant slot, decided explicitly (QUAD invariant, #494).** No panel is added. This is a
+PER-NODE coverage diagnostic; per the 2026-07-20 owner ruling a dormant dimension must show a true
+degenerate value rather than a fabricated one, and a cluster aggregate of per-node coverage verdicts
+has no honest degenerate rendering (nodes legitimately differ — that difference is the signal). The
+periodic `retention-invariant` alert is the push-side surface; this endpoint and
+`aether storage retention` are the pull side.
 
 ---
 
@@ -3668,9 +3827,12 @@ Conclude the A/B test and promote the winning variant. Requires leader node.
 | POST | `/api/dht/inject` | DHT (dev-mode only) |
 | GET | `/api/storage` | Storage (per-node) |
 | GET | `/api/storage/{name}` | Storage (per-node) |
+| GET | `/api/storage/retention` | Storage (per-node) |
 | POST | `/api/storage/snapshot/{name}` | Storage |
 | GET | `/api/cluster/storage` | Storage (cluster-wide) |
 | GET | `/api/cluster/storage/{name}` | Storage (cluster-wide) |
+| GET | `/api/entity/checkpoints` | Durable Entities (per-node) |
+| GET | `/api/entity/keyspaces` | Durable Entities |
 | GET | `/api/logging/levels` | Log Level Management |
 | POST | `/api/logging/levels` | Log Level Management |
 | DELETE | `/api/logging/levels/{logger}` | Log Level Management |
@@ -4379,7 +4541,7 @@ GET /api/streams/replicas/local/{name}/{partition}
 | `replicas[].confirmedOffset` | The replica's acked confirmed watermark |
 | `replicas[].isHrwOwner` | Whether this replica is the resolved HRW owner |
 
-### Stream Hydration Snapshot
+### Entity Checkpoints
 
 ```
 GET /api/entity/checkpoints
@@ -4431,6 +4593,63 @@ Revisit if a cluster-wide "keyspaces with stalled checkpointing" alert is wanted
   ]
 }
 ```
+
+### Entity Keyspaces (hosting view)
+
+```
+GET /api/entity/keyspaces
+```
+
+**Auth:** ALL_AUTHENTICATED · **Routing:** LOCAL (any caught-up node answers identically)
+
+Per-keyspace HOSTING view (#634-3): which nodes hold a committed per-node registration for each
+durable-entity keyspace. **`hosts[]` IS the candidate set the leader mints entity-arc owners over**
+(the 02w hosting-set fix): a keyspace's partition arcs are owned by nodes from this set and no
+others — before the fix ownership was minted over ALL nodes, handing partitions to nodes that had
+never registered the keyspace, and the defect was diagnosed from typed write refusals instead of one
+GET. This endpoint is that missing surface.
+
+Unlike `/api/entity/checkpoints` above (per-node driver state), this view is assembled from the
+committed registration records in **replicated KV**, so any caught-up node answers identically — no
+need to sweep ports. An empty `keyspaces` list means no node in the cluster has registered a
+durable-entity keyspace.
+
+`partitionCountsDisagree: true` marks a rolling-redeploy window: hosts declared different partition
+counts for the keyspace, and `partitionCount` reports the MAX declared — arcs span the max until the
+configs re-converge (the merge mirrors the ownership reconciler's own, so what you read here is what
+the leader acts on). Persistent disagreement outside a deploy window means a node is running a stale
+slice version.
+
+Assembled ON REQUEST from committed records the runtime already maintains; no hot-path accounting.
+
+**Dashboard: dormant slot, decided explicitly (QUAD invariant, #494).** No panel is added. The
+hosting set changes only on deploy/unload/node-restart and is naturally read at those moments through
+this endpoint or `aether entity keyspaces`; a standing panel would show a static list. Per the
+2026-07-20 owner ruling the slot stays dormant with this decision recorded; the CLI plus this
+endpoint are the operator surface. Revisit if hosting-set churn becomes an alertable condition —
+that is a different (event-shaped) question and would earn a panel.
+
+**Response:**
+```json
+{
+  "keyspaces": [
+    {
+      "keyspace": "orders",
+      "partitionCount": 8,
+      "hosts": ["core-1", "core-2", "core-3"],
+      "partitionCountsDisagree": false
+    }
+  ]
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `keyspaces[]` | One row per registered durable-entity keyspace, sorted by keyspace name |
+| `keyspace` | The entity keyspace (its stream is `entity:<keyspace>`) |
+| `partitionCount` | Declared partition count — the max across hosts while a rolling redeploy is in flight |
+| `hosts[]` | Node ids with a committed registration for the keyspace, sorted — the exact candidate set entity-arc owners are minted over |
+| `partitionCountsDisagree` | `true` while hosts declare different partition counts (rolling-redeploy window; arcs span the max until configs re-converge) |
 
 ---
 

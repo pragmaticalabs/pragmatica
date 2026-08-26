@@ -4,13 +4,26 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.config;
 
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Verify;
+
+
+/// Per-instance storage configuration (`[storage.<instance>]` TOML sections).
+///
+/// `walPath` (#634-3) is the stream WAL's BASE directory and is read from the `streams` instance
+/// only. Empty (the default) means DERIVE: `<artifacts disk_path sibling>/stream-segments/<nodeId>/wal`
+/// — the pre-#634-3 behaviour, byte-identical, so existing deployments need no config change. When
+/// set, the effective directory is still suffixed with the node id (`<walPath>/<nodeId>`): multiple
+/// nodes on one host (EmberCluster, co-located containers) must never share a WAL directory, and the
+/// suffix is what keeps that invariant independent of operator input.
 public record StorageConfig(long memoryMaxBytes,
                             long diskMaxBytes,
                             String diskPath,
                             String snapshotPath,
                             int snapshotMutationThreshold,
                             String snapshotMaxInterval,
-                            int snapshotRetentionCount) {
+                            int snapshotRetentionCount,
+                            String walPath) {
     public static StorageConfig storageConfig() {
         return new StorageConfig(256 * 1024 * 1024,
                                  10L * 1024 * 1024 * 1024,
@@ -18,9 +31,12 @@ public record StorageConfig(long memoryMaxBytes,
                                  "/data/aether/metadata-snapshots",
                                  1000,
                                  "60s",
-                                 5);
+                                 5,
+                                 "");
     }
 
+    /// Pre-#634-3 shape, kept so existing callers (and the defaults they encode) stay source-compatible;
+    /// `walPath` defaults to DERIVE.
     public static StorageConfig storageConfig(long memoryMaxBytes,
                                               long diskMaxBytes,
                                               String diskPath,
@@ -34,6 +50,34 @@ public record StorageConfig(long memoryMaxBytes,
                                  snapshotPath,
                                  snapshotMutationThreshold,
                                  snapshotMaxInterval,
-                                 snapshotRetentionCount);
+                                 snapshotRetentionCount,
+                                 "");
+    }
+
+    public static StorageConfig storageConfig(long memoryMaxBytes,
+                                              long diskMaxBytes,
+                                              String diskPath,
+                                              String snapshotPath,
+                                              int snapshotMutationThreshold,
+                                              String snapshotMaxInterval,
+                                              int snapshotRetentionCount,
+                                              String walPath) {
+        return new StorageConfig(memoryMaxBytes,
+                                 diskMaxBytes,
+                                 diskPath,
+                                 snapshotPath,
+                                 snapshotMutationThreshold,
+                                 snapshotMaxInterval,
+                                 snapshotRetentionCount,
+                                 walPath);
+    }
+
+    /// True when an operator explicitly placed the WAL; false means derive the pre-#634-3 default.
+    /// Null-safe via [Option] rather than an inline null check (JBCT null policy): the loader
+    /// guarantees `""`, but the canonical constructor is public and a null must read as "derive".
+    public boolean hasExplicitWalPath() {
+        return Option.option(walPath)
+                     .filter(Verify.Is::notBlank)
+                     .isPresent();
     }
 }

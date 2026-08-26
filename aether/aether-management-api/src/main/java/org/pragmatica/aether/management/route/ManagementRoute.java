@@ -146,6 +146,7 @@ public enum ManagementRoute {
     STORAGE_LIST(GET, "/api/storage", List.of(), LOCAL),
     STORAGE_GET(GET, "/api/storage", List.of("name"), LOCAL),
     STORAGE_SNAPSHOT(POST, "/api/storage/snapshot", List.of("name"), taskGroup(STORAGE)),
+    STORAGE_RETENTION(GET, "/api/storage/retention", List.of(), LOCAL),
     CLUSTER_STORAGE_LIST(GET, "/api/cluster/storage", List.of(), LEADER),
     CLUSTER_STORAGE_GET(GET, "/api/cluster/storage", List.of("name"), LEADER),
     STREAM_CREATE(POST, "/api/streams", List.of(), taskGroup(STREAMING)),
@@ -177,6 +178,7 @@ public enum ManagementRoute {
     // indistinguishable from a working one — writes and reads keep succeeding, and the only symptom is an
     // entity log that is never reclaimed, surfacing hours later as disk growth.
     ENTITY_CHECKPOINTS(GET, "/api/entity/checkpoints", List.of(), LOCAL),
+    ENTITY_KEYSPACES(GET, "/api/entity/keyspaces", List.of(), LOCAL),
     // #265 increment 0 per-node hydration observability. Static prefix `/api/streams/hydration` (0
     // params) is matched before `/api/streams/{name}` (STREAM_GET, 1 param) by the longest-static-prefix
     // rule in RouteMatcher, so there is no collision. taskGroup(STREAMING) lands it on a STREAMING-capable

@@ -436,6 +436,14 @@ public interface SystemTags {
         pin(table, 1662, "org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityDeleteForward");
         pin(table, 1663, "org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityUpdateForwardResponse");
 
+        // cluster command forwarding (#634 boot-guard catch — the pair was routed but never encodable)  [base 1664]
+        pin(table, 1664, "org.pragmatica.cluster.node.forward.ForwardApplyRequest");
+        pin(table, 1665, "org.pragmatica.cluster.node.forward.ForwardApplyResponse");
+
+        // entity owner-forwarding, read half (#596)  [base 1666]
+        pin(table, 1666, "org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityGetForward");
+        pin(table, 1667, "org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityGetForwardResponse");
+
         // ---- 2112..16383 RESERVED ----
         rejectDuplicateTags(table);
 

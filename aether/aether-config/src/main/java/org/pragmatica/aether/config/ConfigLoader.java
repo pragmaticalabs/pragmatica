@@ -465,6 +465,9 @@ public final class ConfigLoader {
         var mutationThreshold = parseInt(doc, sectionName, "snapshot_mutation_threshold", 1000);
         var snapshotInterval = doc.getString(sectionName, "snapshot_max_interval").or("60s");
         var retentionCount = parseInt(doc, sectionName, "snapshot_retention_count", 5);
+        // #634-3: the stream WAL's base dir as a first-class storage key (read from the `streams`
+        // instance; empty = derive the pre-#634-3 sibling path, so absent keys change nothing).
+        var walPath = doc.getString(sectionName, "wal_path").or("");
 
         return StorageConfig.storageConfig(memoryMaxBytes,
                                            diskMaxBytes,
@@ -472,7 +475,8 @@ public final class ConfigLoader {
                                            snapshotPath,
                                            mutationThreshold,
                                            snapshotInterval,
-                                           retentionCount);
+                                           retentionCount,
+                                           walPath);
     }
 
     private static void populateEndpointsConfig(TomlDocument doc, AetherConfig.Builder builder) {

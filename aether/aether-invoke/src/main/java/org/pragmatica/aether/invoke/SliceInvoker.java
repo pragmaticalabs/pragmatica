@@ -26,6 +26,7 @@ import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.TransportObservation;
+import org.pragmatica.lang.utils.Deadline;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -372,6 +373,12 @@ class SliceInvokerImpl implements SliceInvoker {
         if (stopped.get()) {
             return INVOKER_STOPPED.promise();
         }
+        // The ambient budget is captured HERE, on the caller's thread (#634 follow-up): the arm site
+        // sits behind encode/endpoint continuations that may run on another thread, where the
+        // ScopedValue is unbound — reading Deadline.current() there silently reports UNBOUNDED and the
+        // wait falls back to the full configured timeout (measured: 60,015ms elapsed under a 300ms
+        // budget before this capture existed).
+        var deadline = Deadline.current();
 
         return selectEndpointWithAffinity(slice, method, request).flatMap(endpoint -> endpoint.nodeId()
                                                                                               .equals(self)
@@ -382,17 +389,23 @@ class SliceInvokerImpl implements SliceInvoker {
                                                                                       : sendRequestResponse(endpoint,
                                                                                                             slice,
                                                                                                             method,
-                                                                                                            request));
+                                                                                                            request,
+                                                                                                            deadline));
     }
 
-    private <R> Promise<R> sendRequestResponse(Endpoint endpoint, Artifact slice, MethodName method, Object request) {
+    private <R> Promise<R> sendRequestResponse(Endpoint endpoint,
+                                               Artifact slice,
+                                               MethodName method,
+                                               Object request,
+                                               Deadline deadline) {
         return findSenderBridge(slice, request).<Promise<R>> fold(() -> SENDER_BRIDGE_NOT_FOUND.promise(),
                                                                   senderBridge -> senderBridge.encode(request)
                                                                                               .flatMap(payload -> sendAndAwaitResponse(endpoint,
                                                                                                                                        slice,
                                                                                                                                        method,
                                                                                                                                        payload,
-                                                                                                                                       senderBridge)));
+                                                                                                                                       senderBridge,
+                                                                                                                                       deadline)));
     }
 
     @SuppressWarnings("unchecked")
@@ -400,7 +413,8 @@ class SliceInvokerImpl implements SliceInvoker {
                                                 Artifact slice,
                                                 MethodName method,
                                                 byte[] payload,
-                                                SliceBridge senderBridge) {
+                                                SliceBridge senderBridge,
+                                                Deadline deadline) {
         var correlationId = IdGenerator.generate();
 
         return Promise.promise(pendingPromise -> setupPendingInvocation((Promise<Object>)(Promise<?>) pendingPromise,
@@ -409,7 +423,8 @@ class SliceInvokerImpl implements SliceInvoker {
                                                                         slice,
                                                                         method,
                                                                         payload,
-                                                                        senderBridge));
+                                                                        senderBridge,
+                                                                        deadline));
     }
 
     private void setupPendingInvocation(Promise<Object> pendingPromise,
@@ -418,7 +433,8 @@ class SliceInvokerImpl implements SliceInvoker {
                                         Artifact slice,
                                         MethodName method,
                                         byte[] payload,
-                                        SliceBridge senderBridge) {
+                                        SliceBridge senderBridge,
+                                        Deadline deadline) {
         var requestId = InvocationContext.getOrGenerateRequestId();
         var targetNode = endpoint.nodeId();
         var pending = new PendingInvocation(pendingPromise,
@@ -429,7 +445,7 @@ class SliceInvokerImpl implements SliceInvoker {
 
         pendingInvocations.put(correlationId, pending);
         pendingInvocationsByNode.computeIfAbsent(targetNode, _ -> ConcurrentHashMap.newKeySet()).add(correlationId);
-        pendingPromise.timeout(timeSpan(timeoutMs).millis())
+        pendingPromise.timeout(deadline.bounded(timeSpan(timeoutMs).millis()))
                       .onResult(_ -> removePendingInvocation(correlationId, targetNode));
         var invokeRequest = InvokeRequest.invokeRequest(self,
                                                         correlationId,
@@ -464,6 +480,8 @@ class SliceInvokerImpl implements SliceInvoker {
         }
 
         var requestId = InvocationContext.getOrGenerateRequestId();
+        // Ambient budget captured at entry, same reasoning as invoke(): the failover arm sites run in
+        // continuations where the ScopedValue is not bound.
         var ctx = new FailoverContext<>(slice,
                                         method,
                                         request,
@@ -472,7 +490,8 @@ class SliceInvokerImpl implements SliceInvoker {
                                         requestId,
                                         Set.of(),
                                         List.of(),
-                                        Option.none());
+                                        Option.none(),
+                                        Deadline.current());
 
         return Promise.promise(promise -> executeWithFailover(promise, ctx));
     }
@@ -485,7 +504,8 @@ class SliceInvokerImpl implements SliceInvoker {
                                       String requestId,
                                       java.util.Set<NodeId> failedNodes,
                                       java.util.List<NodeId> attemptedNodes,
-                                      Option<Cause> lastError) {
+                                      Option<Cause> lastError,
+                                      Deadline deadline) {
         FailoverContext<R> withFailure(NodeId failedNode, Cause error) {
             var newFailed = new java.util.HashSet<>(failedNodes);
 
@@ -502,7 +522,8 @@ class SliceInvokerImpl implements SliceInvoker {
                                          requestId,
                                          Set.copyOf(newFailed),
                                          List.copyOf(newAttempted),
-                                         Option.some(error));
+                                         Option.some(error),
+                                         deadline);
         }
 
         int attemptCount() {
@@ -598,7 +619,7 @@ class SliceInvokerImpl implements SliceInvoker {
 
         pendingInvocations.put(correlationId, pending);
         pendingInvocationsByNode.computeIfAbsent(targetNode, _ -> ConcurrentHashMap.newKeySet()).add(correlationId);
-        pendingPromise.timeout(timeSpan(timeoutMs).millis())
+        pendingPromise.timeout(ctx.deadline().bounded(timeSpan(timeoutMs).millis()))
                       .onResult(_ -> removePendingInvocation(correlationId, targetNode));
         var invokeRequest = InvokeRequest.invokeRequest(self,
                                                         correlationId,

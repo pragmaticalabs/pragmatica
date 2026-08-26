@@ -339,6 +339,35 @@ class KVStoreSerializerTest {
                              });
         }
 
+        /// #634-3 gate finding: `StorageStatusValue` had NO serializer coverage at all when it gained
+        /// `walBytes` — the arms were being changed blind. The `storage-status` section is EPHEMERAL
+        /// (excluded from `toToml` by design — periodically re-published node status), so this drives
+        /// the package-visible arms DIRECTLY, the `activation` precedent. A dropped or reordered field
+        /// turns this red.
+        @Test
+        void roundTrip_storageStatus_preservesAllFieldsIncludingWalBytes() {
+            var key = StorageStatusKey.storageStatusKey(new NodeId("node-1"), "streams");
+            var value = new StorageStatusValue("streams",
+                                               List.of(StorageStatusValue.TierStatus.tierStatus("MEMORY", 10, 100),
+                                                       StorageStatusValue.TierStatus.tierStatus("LOCAL_DISK", 20, 200)),
+                                               "READY",
+                                               true,
+                                               true,
+                                               7L,
+                                               1234L,
+                                               4096L,
+                                               99L);
+            var identity = key.asString()
+                              .substring("storage-status/".length());
+
+            KVStoreSerializer.parseStorageStatusEntry(identity, KVStoreSerializer.serializeStorageStatus(value))
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(entry -> {
+                                 assertThat(entry.getKey()).isEqualTo(key);
+                                 assertThat(entry.getValue()).isEqualTo(value);
+                             });
+        }
+
         @Test
         void roundTrip_sliceTargetWithOverrides_preservesMaxInstancesAndThresholds() {
             var entries = new LinkedHashMap<AetherKey, AetherValue>();

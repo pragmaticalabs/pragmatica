@@ -7,6 +7,8 @@ package org.pragmatica.aether.node;
 import java.nio.file.Path;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.config.StorageConfig;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -49,5 +51,24 @@ class WalAvailabilityGateTest {
         assertThat(AetherNode.decideWalAvailability(WAL_DIR, UNWRITABLE, true).unwrap())
             .as("the explicit opt-in keeps the previous degrade so Forge/dev keep working")
             .isEqualTo(Option.none());
+    }
+
+    /// #634-3, review m10 (verdict: required): the node-id SUFFIX on an explicit `wal_path` is a
+    /// SAFETY invariant, not a convenience — two co-located nodes sharing one WAL directory is
+    /// corruption, and dropping the `.resolve(self.id())` would leave every other test green while an
+    /// EmberCluster quietly shared one dir. The derive branch is pinned as verbatim passthrough of the
+    /// pre-#634-3 path, so the default cannot silently gain a suffix either.
+    @Test
+    void effectiveWalBase_suffixesExplicitPathWithNodeId_andPassesDerivedThroughVerbatim() {
+        var self = new NodeId("node-7");
+        var derived = Path.of("/data/stream-segments/node-7/wal");
+        var explicit = StorageConfig.storageConfig(1, 1, "/d", "/s", 1, "60s", 1, "/mnt/fast-wal");
+
+        assertThat(AetherNode.effectiveWalBase(explicit, self, derived))
+            .as("an explicit wal_path is ALWAYS suffixed with the node id")
+            .isEqualTo(Path.of("/mnt/fast-wal/node-7"));
+        assertThat(AetherNode.effectiveWalBase(StorageConfig.storageConfig(), self, derived))
+            .as("the derive branch passes the pre-#634-3 path through untouched — no suffix added twice")
+            .isEqualTo(derived);
     }
 }

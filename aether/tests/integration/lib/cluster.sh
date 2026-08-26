@@ -2630,6 +2630,40 @@ reap_cloud_cluster() {
     return 1
 }
 
+## #598: idempotently ensure a database exists on the shared test-PG VM. Same SSH
+## docker-exec pattern as tools/provision-test-pg.sh's smoke test (the PG VM runs
+## postgres in the `aether-pg` container; no local psql required). Read-only against
+## the VM apart from the CREATE DATABASE itself; NEVER drops or alters anything.
+## Requires the PG firewall to be open (caller runs after pg-firewall.sh open) and
+## the ambient PG_HOST/PG_USER/PG_PASSWORD env vars run-tests.sh already relies on.
+ensure_cloud_pg_database() {
+    local dbname="$1"
+    local pg_ssh_user="${PG_VM_SSH_USER:-root}"
+    if [ -z "${PG_HOST:-}" ] || [ -z "${PG_USER:-}" ] || [ -z "${PG_PASSWORD:-}" ]; then
+        log_warn "ensure_cloud_pg_database(${dbname}): PG_HOST/PG_USER/PG_PASSWORD not set"
+        return 1
+    fi
+    local ssh_opts=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o LogLevel=ERROR -i "$AETHER_SSH_KEY")
+    local exists
+    exists=$(ssh "${ssh_opts[@]}" "${pg_ssh_user}@${PG_HOST}" \
+        "docker exec -e PGPASSWORD='${PG_PASSWORD}' aether-pg psql -U '${PG_USER}' -d postgres -tAc \"SELECT 1 FROM pg_database WHERE datname='${dbname}'\"" 2>&1) || {
+        log_warn "ensure_cloud_pg_database(${dbname}): existence probe failed: $(printf '%s' "$exists" | head -c 200)"
+        return 1
+    }
+    if [ "$(printf '%s' "$exists" | tr -d '[:space:]')" = "1" ]; then
+        log_info "ensure_cloud_pg_database(${dbname}): already present"
+        return 0
+    fi
+    local created
+    created=$(ssh "${ssh_opts[@]}" "${pg_ssh_user}@${PG_HOST}" \
+        "docker exec -e PGPASSWORD='${PG_PASSWORD}' aether-pg psql -U '${PG_USER}' -d postgres -c 'CREATE DATABASE ${dbname}'" 2>&1) || {
+        log_warn "ensure_cloud_pg_database(${dbname}): CREATE DATABASE failed: $(printf '%s' "$created" | head -c 200)"
+        return 1
+    }
+    log_info "ensure_cloud_pg_database(${dbname}): created"
+    return 0
+}
+
 ## #441 S20: cluster-scoped reap + fresh bootstrap — the cloud analog of the
 ## docker/compose branch's `docker compose down -v && up -d` full reset. This is
 ## the ONLY path capable of recovering a CONFIRMED FULL self-drain: every core
@@ -3491,6 +3525,29 @@ auto_heal_enabled() {
 # Steps 1-3 are best-effort (log_warn) — they are pre-conditions for the
 # hard barriers, and if those barriers pass anyway the cluster IS at
 # baseline regardless of which pre-condition was actually needed.
+## #628: the seven 02-chaos cleanups all downgraded a failed baseline restore to a
+## warning, and `run_suite` had no gate between test FILES — a broken cluster then
+## failed every downstream scenario on ITS subject, not the cluster's (rawReady=1
+## on 2026-08-21; "got 0 containers" on 2026-08-22). On failure this logs FAIL and
+## flags the suite runner via SUITE_RESTORE_FAILED_MARKER: run_suite aborts the
+## remaining files (the same quarantine semantics the between-suites gate applies)
+## and captures evidence IMMEDIATELY — the 2026-08-22 window was destroyed before
+## the once-per-suite capture ran. Returns 0 always: the flag is the signal, and a
+## nonzero rc from an EXIT trap would change the test file's own verdict.
+restore_cluster_baseline_or_flag() {
+    if restore_cluster_baseline; then
+        return 0
+    fi
+    log_fail "restore_cluster_baseline FAILED — cluster is NOT at baseline"
+    if [ -n "${SUITE_RESTORE_FAILED_MARKER:-}" ]; then
+        touch "$SUITE_RESTORE_FAILED_MARKER" 2>/dev/null \
+            || log_warn "could not flag the suite runner (marker write failed) — subsequent tests may inherit cluster churn"
+    else
+        log_warn "no suite runner to flag (standalone run) — subsequent tests may inherit cluster churn"
+    fi
+    return 0
+}
+
 restore_cluster_baseline() {
     local target="${NODE_COUNT:-5}"
     log_info "Restoring cluster to baseline (semantic): ${target} healthy cores, READY"

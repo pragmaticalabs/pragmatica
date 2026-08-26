@@ -1076,18 +1076,124 @@ final class RuleFixtures {
                 }
                 """),
 
-        // JBCT-SEAL-02: a fixed-message (zero-component) cause modelled as a record, not an enum.
-        fixture("JBCT-SEAL-02", 3,
+        // JBCT-CAUSE-01: a class as a cause variant (representation shape; absorbs SEAL-02).
+        fixture("JBCT-CAUSE-01", 3,
                 """
                 package org.example;
                 sealed interface RegError extends Cause {
-                    record TokenFailed() implements RegError {}
+                    class Broken implements RegError {}
                 }
                 """,
                 """
                 package org.example;
                 sealed interface RegError extends Cause {
-                    record HashingFailed(Throwable cause) implements RegError {}
+                    record HashingFailed(Throwable cause, String message) implements RegError {}
+                }
+                """),
+
+        // JBCT-CAUSE-02: hand-written message() body on a cause record.
+        fixture("JBCT-CAUSE-02", 4,
+                """
+                package org.example;
+                sealed interface RegError extends Cause {
+                    record Locked(String id, String message) implements RegError {
+                        public String message() { return "locked: " + id; }
+                    }
+                }
+                """,
+                """
+                package org.example;
+                sealed interface RegError extends Cause {
+                    record Locked(String id, String message) implements RegError {}
+                }
+                """),
+
+        // JBCT-CAUSE-03: message component not in the final position.
+        fixture("JBCT-CAUSE-03", 3,
+                """
+                package org.example;
+                sealed interface RegError extends Cause {
+                    record Locked(String message, String id) implements RegError {}
+                }
+                """,
+                """
+                package org.example;
+                sealed interface RegError extends Cause {
+                    record Locked(String id, String message) implements RegError {}
+                }
+                """),
+
+        // JBCT-CAUSE-04: template conversions differ from the factory's value arity.
+        fixture("JBCT-CAUSE-04", 4,
+                """
+                package org.example;
+                sealed interface RegError extends Cause {
+                    record Bad(String raw, String message) implements RegError {
+                        static final Fn1<Bad, String> FACTORY = Causes.forOneValue("Bad %s and %s", Bad::new);
+                    }
+                }
+                """,
+                """
+                package org.example;
+                sealed interface RegError extends Cause {
+                    record Bad(String raw, String message) implements RegError {
+                        static final Fn1<Bad, String> FACTORY = Causes.forOneValue("Bad %s", Bad::new);
+                    }
+                }
+                """),
+
+        // JBCT-CAUSE-05: hand-declared source() instead of the Cause.Wrapped mixin.
+        fixture("JBCT-CAUSE-05", 4,
+                """
+                package org.example;
+                sealed interface RegError extends Cause {
+                    record Failed(Cause origin, String message) implements RegError {
+                        public Option<Cause> source() { return Option.option(origin); }
+                    }
+                }
+                """,
+                """
+                package org.example;
+                sealed interface RegError extends Cause {
+                    record Failed(Cause origin, String message) implements RegError, Cause.Wrapped {}
+                }
+                """),
+
+        // JBCT-CAUSE-07: single-argument (anonymous, value-discarding) template in domain code.
+        fixture("JBCT-CAUSE-07", 3,
+                """
+                package org.example;
+                class Registration {
+                    static final Fn1<Cause, String> INVALID = Causes.forOneValue("Invalid email: %s");
+                }
+                """,
+                """
+                package org.example;
+                sealed interface RegError extends Cause {
+                    record InvalidEmail(String raw, String message) implements RegError {
+                        static final Fn1<InvalidEmail, String> FACTORY = Causes.forOneValue("Invalid email: %s", InvalidEmail::new);
+                    }
+                }
+                """),
+
+        // JBCT-CAUSE-08: direct construction of a cause record that DECLARES a FACTORY (the gate:
+        // a record without one is pre-idiom code, the pilot migration's business, not drift).
+        fixture("JBCT-CAUSE-08", 6,
+                """
+                package org.example;
+                sealed interface RegError extends Cause {
+                    record Locked(String id, String message) implements RegError {
+                        static final Fn1<Locked, String> FACTORY = Causes.forOneValue("Locked: %s", Locked::new);
+                    }
+                    static RegError locked() { return new Locked("a", "manual text"); }
+                }
+                """,
+                """
+                package org.example;
+                sealed interface RegError extends Cause {
+                    record Locked(String id, String message) implements RegError {
+                        static final Fn1<Locked, String> FACTORY = Causes.forOneValue("Locked: %s", Locked::new);
+                    }
                 }
                 """),
 

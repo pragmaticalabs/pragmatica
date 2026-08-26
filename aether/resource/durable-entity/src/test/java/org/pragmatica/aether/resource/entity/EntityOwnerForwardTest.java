@@ -359,8 +359,117 @@ class EntityOwnerForwardTest {
         });
     }
 
-    private record ForwardCall(String op, NodeId owner, String keyspace, byte[] key, byte[] command) {}
+    // === #596 read half: BOUNDED_STALE ===
 
+    /// A read on a node that HOLDS the partition is served locally — owner or NOT. Serving replicas
+    /// locally is BOUNDED_STALE's whole contract (the ready gates bound staleness in offsets);
+    /// forwarding them would turn every replica read into a hop and the owner into a read bottleneck.
+    @Test
+    void boundedStaleGet_servesLocally_whenHoldingThePartition_evenAsNonOwner() {
+        entityAs(SELF, SELF, Option.some(transport)).create("k1", 41).await();
+
+        var holdingNonOwner = entityAs(SELF, OTHER, Option.some(transport));
+        var result = holdingNonOwner.get("k1", ReadConsistency.BOUNDED_STALE).await();
+
+        assertThat(result.isSuccess()).isTrue();
+        result.onSuccess(state -> assertThat(state).isEqualTo(Option.some(41)));
+        assertThat(transport.calls).as("a holding node never forwards a bounded-stale read").isEmpty();
+    }
+
+    /// The read half's core: a node with NO local log for the partition forwards to the committed
+    /// owner instead of refusing (and instead of the pre-hosting-set ABSENT-from-a-void).
+    @Test
+    void boundedStaleGet_forwardsToOwner_whenNotHoldingThePartition() {
+        substrate.holds = false;
+
+        var result = entityAs(SELF, OTHER, Option.some(transport)).get("k1", ReadConsistency.BOUNDED_STALE).await();
+
+        assertThat(result.isSuccess()).isTrue();
+        result.onSuccess(state -> assertThat(state).isEqualTo(Option.some(107)));
+        assertThat(transport.calls).hasSize(1);
+        assertThat(transport.calls.getFirst().op()).isEqualTo("get");
+        assertThat(transport.calls.getFirst().owner()).isEqualTo(OTHER);
+    }
+
+    /// ABSENT crosses the wire as an explicit empty Option and stays a SUCCESS — the caller can tell
+    /// "the owner says the key does not exist" from every failure mode. Silently conflating the two
+    /// is this ticket's original defect.
+    @Test
+    void boundedStaleGet_absentOnTheOwner_readsAsEmptySuccess() {
+        substrate.holds = false;
+        transport.absentGets = true;
+
+        var result = entityAs(SELF, OTHER, Option.some(transport)).get("k1", ReadConsistency.BOUNDED_STALE).await();
+
+        assertThat(result.isSuccess()).isTrue();
+        result.onSuccess(state -> assertThat(state).isEqualTo(Option.none()));
+    }
+
+    /// Unwired must stay INERT for reads exactly as for writes: no transport means the honest TYPED
+    /// local refusal — pinned by cause text, because a bare isFailure() stays green if the refusal
+    /// mutates into a codec fault or an admission refusal (the trap this file documents above).
+    @Test
+    void boundedStaleGet_keepsLocalRefusal_whenNotHoldingAndNoTransport() {
+        substrate.holds = false;
+
+        var result = entityAs(SELF, OTHER, Option.none()).get("k1", ReadConsistency.BOUNDED_STALE).await();
+
+        assertThat(refusalOf(result)).contains("is not held by this node");
+        assertThat(transport.calls).isEmpty();
+    }
+
+    /// The owner side serves WITHOUT write admission — load-bearing per the ForwardTarget contract:
+    /// this instance's admission would REFUSE (committed owner is OTHER), yet the forwarded read is
+    /// served. Adding admitWrite to getForwarded turns this red.
+    @Test
+    void getForwarded_servesWithoutWriteAdmission() {
+        entityAs(SELF, SELF, Option.some(transport)).create("k1", 41).await();
+
+        var admissionWouldRefuse = entityAs(SELF, OTHER, Option.some(transport));
+        var result = ((EntityForwardRegistry.ForwardTarget) admissionWouldRefuse)
+                            .getForwarded("k1".getBytes(StandardCharsets.UTF_8))
+                            .await();
+
+        assertThat(result.isSuccess()).isTrue();
+        result.onSuccess(bytes -> assertThat(bytes.isPresent()).isTrue());
+    }
+
+    /// Loop safety + the serve-time holds re-check (review MAJOR): a forwarded read ARRIVING at a
+    /// node that does not hold the partition must FAIL with the typed refusal and must NOT bounce
+    /// onward — the receiver reads through the LOCAL path only. Also arms the ready()-level holds
+    /// check: routing-time holds is not enough once the fold has a memoized rebuild.
+    @Test
+    void getForwarded_onNonHoldingReceiver_refusesTyped_andNeverBouncesOnward() {
+        substrate.holds = false;
+
+        var receiver = entityAs(SELF, OTHER, Option.some(transport));
+        var result = ((EntityForwardRegistry.ForwardTarget) receiver)
+                            .getForwarded("k1".getBytes(StandardCharsets.UTF_8))
+                            .await();
+
+        assertThat(refusalOf(result)).contains("is not held by this node");
+        assertThat(transport.calls).as("the receiving side must never re-enter the forwarding decision").isEmpty();
+    }
+
+    /// The owner side of the hop: present state answers as bytes, a missing key as an explicit empty
+    /// Option — decoded with the same serializer the entity commits with.
+    @Test
+    void getForwarded_answersPresentBytes_andAbsentAsEmptyOption() {
+        var owner = entityAs(SELF, SELF, Option.some(transport));
+
+        owner.create("k1", 41).await();
+
+        var target = (EntityForwardRegistry.ForwardTarget) owner;
+        var present = target.getForwarded("k1".getBytes(StandardCharsets.UTF_8)).await();
+        var absent = target.getForwarded("missing".getBytes(StandardCharsets.UTF_8)).await();
+
+        assertThat(present.isSuccess()).isTrue();
+        present.onSuccess(bytes -> assertThat(bytes.isPresent()).as("existing key answers with state bytes").isTrue());
+        assertThat(absent.isSuccess()).isTrue();
+        absent.onSuccess(bytes -> assertThat(bytes.isEmpty()).as("missing key is an explicit empty Option, not a failure").isTrue());
+    }
+
+    private record ForwardCall(String op, NodeId owner, String keyspace, byte[] key, byte[] command) {}
     /// Answers every forward with state 107, so a successful result proves the value came back ACROSS
     /// the seam rather than from local state (which starts empty here).
     private static final class RecordingForward implements EntityOwnerForward {
@@ -391,6 +500,16 @@ class EntityOwnerForwardTest {
         public Promise<byte[]> forwardDelete(NodeId owner, String keyspace, byte[] key) {
             return record("delete", owner, keyspace, key, new byte[0]);
         }
+
+        @Override
+        public Promise<Option<byte[]>> forwardGet(NodeId owner, String keyspace, byte[] key) {
+            return record("get", owner, keyspace, key, new byte[0]).map(bytes -> absentGets
+                                                                                 ? Option.none()
+                                                                                 : Option.some(bytes));
+        }
+
+        /// When set, forwarded reads answer ABSENT — arming the explicit-Option path end to end.
+        boolean absentGets;
 
         private Promise<byte[]> record(String op, NodeId owner, String keyspace, byte[] key, byte[] body) {
             calls.add(new ForwardCall(op, owner, keyspace, key, body));
@@ -453,8 +572,12 @@ class EntityOwnerForwardTest {
 
         @Override
         public boolean holdsPartition(String keyspace, int partition) {
-            return true;
+            return holds;
         }
+
+        /// #596 read half: controllable so the read tests can model a node OUTSIDE the replica set.
+        /// Defaults to true — every write test runs in the holding configuration, as before.
+        boolean holds = true;
 
         @Override
         public Promise<Unit> saveCheckpoint(String keyspace, int partition, long throughOffset, byte[] snapshot) {

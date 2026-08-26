@@ -69,7 +69,7 @@ import org.slf4j.LoggerFactory;
 /// re-placing entity arcs onto non-hosting nodes after every catalog or membership edge until the next
 /// tick corrected them. [#withoutEntityArcs] is the boundary: the stream ownership driver filters
 /// entity arcs out, making this class the ONLY writer of `entity:*` ownership.
-final class EntityOwnershipReconciler implements EntityKeyspaceRegistrar {
+public final class EntityOwnershipReconciler implements EntityKeyspaceRegistrar {
     private static final Logger LOG = LoggerFactory.getLogger(EntityOwnershipReconciler.class);
 
     private final Map<String, Integer> entityKeyspaces = new ConcurrentHashMap<>();
@@ -110,7 +110,7 @@ final class EntityOwnershipReconciler implements EntityKeyspaceRegistrar {
     /// tick can WARN and a test can assert the surfacing, instead of a log line nobody can see).
     /// `partitionCount` is the MAX across hosts: extra arcs are harmless no-ops, while minting fewer
     /// than a host fences against would strand that host's writes forever.
-    record HostedKeyspace(int partitionCount, Set<NodeId> hosts, boolean countsDisagree) {
+    public record HostedKeyspace(int partitionCount, Set<NodeId> hosts, boolean countsDisagree) {
         static HostedKeyspace hostedKeyspace(int partitionCount, NodeId host) {
             return new HostedKeyspace(partitionCount, Set.of(host), false);
         }
@@ -224,10 +224,14 @@ final class EntityOwnershipReconciler implements EntityKeyspaceRegistrar {
     }
 
     /// Every committed registration record collapsed into a per-keyspace [HostedKeyspace] — ONE scan
+    /// per tick. PUBLIC because it is the single authority on the merge semantics: the operator surface
+    /// (`EntityCheckpointRoutes.assembleKeyspaces`) projects THIS, so the view can never drift from what
+    /// the leader acts on (review catch: a route-local re-implementation had no equivalence test).
+    /// Original per-tick rationale: ONE scan
     /// per tick, feeding both the arc expansion and the writer's per-arc owner asks. A keyspace whose
     /// hosts disagree on the partition count is WARNED here, once per tick, from the same flag the
     /// record carries for tests.
-    static Map<String, HostedKeyspace> scanRegistrations(KVStore<AetherKey, AetherValue> kvStore) {
+    public static Map<String, HostedKeyspace> scanRegistrations(KVStore<AetherKey, AetherValue> kvStore) {
         var scanned = new HashMap<String, HostedKeyspace>();
 
         kvStore.forEach(EntityKeyspaceRegistrationKey.class,

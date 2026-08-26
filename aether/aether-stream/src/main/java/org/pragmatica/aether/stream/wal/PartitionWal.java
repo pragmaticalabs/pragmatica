@@ -19,6 +19,7 @@ import java.util.zip.CRC32;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -64,22 +65,45 @@ import static org.pragmatica.lang.Unit.unit;
 /// concurrent appends typically costs far fewer than N fsyncs. `append` runs on the async executor
 /// (`Promise.promise`), so a pipelined publisher that fires without awaiting maximizes batching.
 ///
+/// ## Fail-stop on fsync failure (#634-7)
+/// A FAILED group-commit `force` fail-stops the WAL: the covered appends resolve failure, and every
+/// later append AND truncate is refused with [WalError.FailStopped] without writing or forcing
+/// anything. The OS may drop the dirty pages while clearing the error, so a RETRIED force can
+/// report success for bytes that never reached disk (the fsyncgate lesson); acking on such a
+/// success could leave a silent mid-file hole, and recovery's contiguous scan would then discard
+/// every ACKED record after it. Truncate is included because compaction re-reads the file through
+/// the same suspect page cache and republishes `syncedSeq`, which would un-freeze the fail-stop for
+/// an in-flight append. A failed post-compaction channel reopen fail-stops the same way (the
+/// alternative is a zombie with a closed channel). The state is operator-visible as
+/// `WalStats.failStopped`. Recovery action: reopen (node restart) — the scan trims to the valid
+/// prefix, and nothing acked is lost because refused appends were never acked.
+///
 /// ## Recovery (torn-write + CRC)
 /// `open` scans from byte 0, validating each record by length-frame + CRC, and positions further
 /// appends AFTER the last VALID record; a torn trailing record (fewer bytes than its frame needs)
 /// or a CRC mismatch ends the scan and the stray tail is physically truncated. `replay` applies
 /// the same scan, stopping cleanly at the first torn/CRC boundary and returning the valid prefix
 /// (a partial tail after a crash is expected, NOT a failure). Earlier records are never corrupted
-/// by a bad tail.
+/// by a bad tail. Recovery restores the valid prefix regardless of ACK status: a record whose
+/// append FAILED (bytes written, fsync failed) may legitimately reappear — it was never acked, so
+/// this is at-least-once territory the ring/seal floors above already tolerate, never invented
+/// durability.
 ///
 /// ## Truncate (threshold-lazy compaction)
 /// `truncate(uptoOffset)` advances an in-memory discard watermark (`truncatedUpto`) in O(1); it
 /// only rewrites the file (surviving records → temp + `force(true)` → atomic rename) once the file
-/// has grown past `COMPACTION_THRESHOLD_BYTES`, reclaiming disk in one pass. `replay` always
-/// filters by `max(afterOffset, truncatedUpto)`, so records discarded by a still-lazy truncate are
-/// never observed regardless of the caller's `afterOffset`. The watermark is in-memory: after a
-/// crash it resets and previously-truncated records reappear, but recovery filters them out via the
-/// durable last-sealed offset (W4), so no double-apply — the watermark is purely a reclamation hint.
+/// has grown past `COMPACTION_THRESHOLD_BYTES`, reclaiming disk in one pass. A crash in the
+/// temp+rename window is safe at every point: before the rename the live file is untouched (a stale
+/// temp is ignored by recovery and overwritten by the next compaction); the temp is fully synced
+/// BEFORE the rename, so after it the survivors are already durable; and a power-loss that undoes
+/// the un-fsynced rename resurfaces the OLD file, which is a superset of the survivors — so no
+/// directory fsync is issued. `[mechanism: the superset argument covers the undone-rename case; a
+/// non-durable directory entry not resolving to EITHER file rests on ordered metadata journaling
+/// (ext4/XFS/APFS defaults), not on POSIX]`. `replay` always filters by
+/// `max(afterOffset, truncatedUpto)`, so records discarded by a still-lazy truncate are never
+/// observed regardless of the caller's `afterOffset`. The watermark is in-memory: after a crash it
+/// resets and previously-truncated records reappear, but recovery filters them out via the durable
+/// last-sealed offset (W4), so no double-apply — the watermark is purely a reclamation hint.
 public final class PartitionWal implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(PartitionWal.class);
     /// Fixed framing header: u32 payloadLen + u64 offset + u64 timestampMillis + u32 crc32.
@@ -108,6 +132,10 @@ public final class PartitionWal implements AutoCloseable {
     private volatile long lastOffset;  // last appended offset (-1 when none)
     private volatile long truncatedUpto = -1;  // in-memory discard watermark
     private volatile long lastCompactedUpto = -1;  // last physical compaction point
+    private volatile long fsyncCount;  // group commits completed; guarded by syncLock
+    private volatile long fsyncTotalNanos;  // guarded by syncLock
+    private volatile long fsyncMaxNanos;  // guarded by syncLock
+    private volatile Option<Cause> syncFailure = Option.none();  // set once under syncLock on fail-stop; never cleared
     private volatile boolean closed;
 
     private PartitionWal(Path file, FileChannel channel, long writePosition, long lastOffset) {
@@ -124,11 +152,12 @@ public final class PartitionWal implements AutoCloseable {
     }
 
     /// Append a record and GROUP-COMMIT fsync. The returned `Promise` resolves ONLY after this
-    /// record's bytes are `force(false)`-durable; concurrent appends may share one fsync.
+    /// record's bytes are `force(false)`-durable; concurrent appends may share one fsync. Refused
+    /// once a fsync has failed (see the fail-stop section of the class doc).
     public Promise<Unit> append(long offset, byte[] payload, long timestampMillis) {
         return closed
                ? WalError.General.WAL_CLOSED.promise()
-               : promise(() -> appendDurably(offset, payload, timestampMillis));
+               : syncFailure.fold(() -> promise(() -> appendDurably(offset, payload, timestampMillis)), Cause::promise);
     }
 
     /// Replay records in file order, skipping `offset <= afterOffset` (and any discarded by a lazy
@@ -142,25 +171,40 @@ public final class PartitionWal implements AutoCloseable {
 
     /// Discard all records with `offset <= uptoOffset`; records with `offset > uptoOffset` remain
     /// replayable. Threshold-lazy: O(1) watermark bump until the file grows past the compaction
-    /// threshold, then a single survivors-rewrite reclaims disk.
+    /// threshold, then a single survivors-rewrite reclaims disk. Refused once fail-stopped:
+    /// compaction re-reads the file through a page cache the failed fsync may have desynchronized
+    /// from disk, and its `syncedSeq = writtenSeq` publication would un-freeze the fail-stop for an
+    /// in-flight append (the silent-hole ack the fail-stop exists to prevent).
     public Result<Unit> truncate(long uptoOffset) {
         return closed
                ? WalError.General.WAL_CLOSED.result()
-               : advanceWatermark(uptoOffset);
+               : syncFailure.fold(() -> advanceWatermark(uptoOffset), Cause::result);
     }
 
-    /// Flush + fsync + close the channel. Best-effort: a close-time I/O fault is logged, not thrown.
+    /// Flush + fsync + close the channel. Best-effort: a close-time I/O fault is logged, not
+    /// thrown — and the `force` and `close` are chained INDEPENDENTLY, so a failed close-time
+    /// fsync never leaks the channel. A fail-stopped WAL SKIPS the close-time force entirely —
+    /// that would be the retried fsync the fail-stop exists to prevent.
     @Contract
     @Override
     public void close() {
         closed = true;
+        syncFailure.fold(this::closeTimeSync, _ -> unit());
         Result.lift(CLOSE_FAILED,
-                    () -> channel.force(false))
-              .flatMap(_ -> Result.lift(CLOSE_FAILED,
-                                        () -> channel.close()))
+                    () -> channel.close())
               .onFailure(cause -> log.warn("PartitionWal close issue for {}: {}",
                                            file,
                                            cause.message()));
+    }
+
+    private Unit closeTimeSync() {
+        Result.lift(CLOSE_FAILED,
+                    () -> channel.force(false))
+              .onFailure(cause -> log.warn("PartitionWal close-time fsync issue for {}: {}",
+                                           file,
+                                           cause.message()));
+
+        return unit();
     }
 
     public Path path() {
@@ -171,6 +215,45 @@ public final class PartitionWal implements AutoCloseable {
     public long lastOffset() {
         return lastOffset;
     }
+
+    /// Point-in-time observability view (#634-3): live bytes on disk (the write position — a lazy
+    /// truncate does not shrink it until compaction), the truncation watermark, the last physical
+    /// compaction point, and the group-commit fsync counters. Reads of independently-published
+    /// volatiles — values are individually current but NOT one atomic cut, which is the right trade
+    /// for a snapshot surface that must add zero cost to the append path. Latency derivations
+    /// (mean = totalNanos/count) belong to the reader; this reports the raw accumulators.
+    public WalStats stats() {
+        return new WalStats(writePosition,
+                            lastOffset,
+                            truncatedUpto,
+                            lastCompactedUpto,
+                            fsyncCount,
+                            fsyncTotalNanos,
+                            fsyncMaxNanos,
+                            syncFailure.isPresent());
+    }
+
+    /// @param sizeBytes        end of valid data in the file (live bytes; lazy-truncated records
+    ///                         still count until compaction reclaims them)
+    /// @param lastOffset       last appended offset, `-1` when none
+    /// @param truncatedUpto    in-memory discard watermark (`-1` when nothing truncated); resets on
+    ///                         crash by design — a reclamation hint, not a durability fact
+    /// @param lastCompactedUpto last offset physically reclaimed by a compaction rewrite, `-1` when
+    ///                         the file was never compacted
+    /// @param fsyncCount       group commits completed since open
+    /// @param fsyncTotalNanos  total wall time spent inside `force` since open
+    /// @param fsyncMaxNanos    slowest single `force` since open
+    /// @param failStopped      the WAL refused further appends after a failed fsync (or a failed
+    ///                         post-compaction reopen); publishes on this partition fail until the
+    ///                         node restarts (#634-7 operator surface)
+    public record WalStats(long sizeBytes,
+                           long lastOffset,
+                           long truncatedUpto,
+                           long lastCompactedUpto,
+                           long fsyncCount,
+                           long fsyncTotalNanos,
+                           long fsyncMaxNanos,
+                           boolean failStopped) {}
 
     // === append path ===
     private Result<Unit> appendDurably(long offset, byte[] payload, long timestampMillis) {
@@ -215,20 +298,47 @@ public final class PartitionWal implements AutoCloseable {
                : forceUpTo(mySeq);
     }
 
+    /// The `syncedSeq` check comes FIRST: an in-flight append whose bytes were covered by an
+    /// earlier SUCCESSFUL force may still ack honestly even after a later force failed. Past that,
+    /// a recorded fsync failure refuses the commit WITHOUT retrying `force` — a retry can falsely
+    /// succeed after the OS dropped the dirty pages (see the fail-stop section of the class doc).
     private Result<Unit> forceUpTo(long mySeq) {
         synchronized (syncLock) {
             return syncedSeq >= mySeq
                    ? unitResult()
-                   : forceAndPublish();
+                   : syncFailure.fold(this::forceAndPublish, Cause::result);
         }
     }
 
     private Result<Unit> forceAndPublish() {
         var target = writtenSeq;
+        var startedAt = System.nanoTime();
 
         return Result.lift(APPEND_FAILED,
                            () -> channel.force(false))
-                     .onSuccess(_ -> syncedSeq = target);
+                     .onSuccess(_ -> publishSync(target,
+                                                 System.nanoTime() - startedAt))
+                     .onFailure(this::failStop);
+    }
+
+    /// Runs under `syncLock` (the only writer of `syncFailure`). Loud once at the moment of
+    /// failure; every later append (and truncate) is refused with the stored cause.
+    private void failStop(Cause cause) {
+        syncFailure = Option.some(new WalError.FailStopped(cause.message()));
+        log.error("PartitionWal fail-stopped for {} — appends refused; "
+                 + "reopen (node restart) recovers the valid prefix: {}",
+                  file,
+                  cause.message());
+    }
+
+    /// Runs under `syncLock` (the only writer of these fields). The timing wraps ONLY the
+    /// `force` call — one nanoTime pair per GROUP COMMIT, not per append, so a burst of N
+    /// pipelined appends still pays for one measurement (#634-3).
+    private void publishSync(long target, long elapsedNanos) {
+        syncedSeq = target;
+        fsyncCount = fsyncCount + 1;
+        fsyncTotalNanos = fsyncTotalNanos + elapsedNanos;
+        fsyncMaxNanos = Math.max(fsyncMaxNanos, elapsedNanos);
     }
 
     // === replay path ===
@@ -255,10 +365,13 @@ public final class PartitionWal implements AutoCloseable {
         return writePosition >= COMPACTION_THRESHOLD_BYTES && truncatedUpto > lastCompactedUpto;
     }
 
+    /// The in-lock `syncFailure` check (not just `truncate`'s entry check) is what closes the
+    /// race: fail-stop is only ever recorded under `syncLock`, so a poison landing after the entry
+    /// check but before these locks is still seen here — race-free by mutual exclusion.
     private Result<Unit> compact() {
         synchronized (writeLock) {
             synchronized (syncLock) {
-                return rewriteSurvivors(truncatedUpto);
+                return syncFailure.fold(() -> rewriteSurvivors(truncatedUpto), Cause::result);
             }
         }
     }
@@ -284,14 +397,19 @@ public final class PartitionWal implements AutoCloseable {
         return Result.lift(TRUNCATE_FAILED,
                            () -> Files.move(tempPath(),
                                             file,
-                                            StandardCopyOption.REPLACE_EXISTING))
+                                            StandardCopyOption.REPLACE_EXISTING,
+                                            StandardCopyOption.ATOMIC_MOVE))
                      .mapToUnit();
     }
 
+    /// Runs under `syncLock` (via `compact`). A failed reopen would otherwise leave a ZOMBIE — a
+    /// closed channel on an instance that is neither closed nor fail-stopped — so the reopen
+    /// failure fail-stops the instance immediately and loudly.
     private Result<Unit> reopenAfterCompaction(int newSize, long uptoOffset) {
         return Result.lift(TRUNCATE_FAILED,
                            () -> channel.close())
                      .flatMap(_ -> openChannel(file))
+                     .onFailure(this::failStop)
                      .map(reopened -> installCompacted(reopened, newSize, uptoOffset));
     }
 
@@ -470,6 +588,16 @@ public final class PartitionWal implements AutoCloseable {
             @Override
             public String message() {
                 return "WAL append failed: " + detail;
+            }
+        }
+
+        /// Permanent per-instance state after a failed group-commit fsync or a failed
+        /// post-compaction reopen (see the fail-stop section of the class doc). Clears on reopen:
+        /// recovery re-scans the file and trims the unacked tail.
+        record FailStopped(String detail) implements WalError {
+            @Override
+            public String message() {
+                return "WAL is fail-stopped, appends refused" + " (reopen recovers the valid prefix): " + detail;
             }
         }
 

@@ -55,6 +55,7 @@ import org.pragmatica.aether.api.routes.SchemaRoutes;
 import org.pragmatica.aether.api.routes.ProblemResponses;
 import org.pragmatica.aether.api.routes.SliceRoutes;
 import org.pragmatica.aether.api.routes.StatusRoutes;
+import org.pragmatica.aether.api.routes.RetentionRoutes;
 import org.pragmatica.aether.api.routes.StorageRoutes;
 import org.pragmatica.aether.api.routes.StreamRoutes;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardRequest;
@@ -311,7 +312,9 @@ class ManagementServerImpl implements ManagementServer {
         routeSources.add(ClusterTopologyRoutes.clusterTopologyRoutes(nodeSupplier));
         routeSources.add(ClusterJournalRoutes.clusterJournalRoutes(nodeSupplier));
         routeSources.add(ClusterGenerationRoutes.clusterGenerationRoutes(nodeSupplier));
-        routeSources.add(EntityCheckpointRoutes.entityCheckpointRoutes(entityCheckpointDriver));
+        routeSources.add(EntityCheckpointRoutes.entityCheckpointRoutes(entityCheckpointDriver,
+                                                                       () -> nodeSupplier.get()
+                                                                                         .kvStore()));
         routeSources.add(ClusterAwaitQuiescedRoute.clusterAwaitQuiescedRoute(nodeSupplier));
         routeSources.add(nodeSupplier.get()
                                      .clusterTopologyManager()
@@ -335,6 +338,7 @@ class ManagementServerImpl implements ManagementServer {
         routeSources.add(org.pragmatica.aether.api.routes.StreamNamespacesRoutes.streamNamespacesRoutes(nodeSupplier.get()
                                                                                                                     .streamNamespacesService()));
         routeSources.add(StorageRoutes.storageRoutes(nodeSupplier));
+        routeSources.add(RetentionRoutes.retentionRoutes(nodeSupplier));
         routeSources.add(ApiKeyRoutes.apiKeyRoutes(nodeSupplier));
         routeSources.add(DhtRoutes.dhtRoutes(nodeSupplier));
         routeSources.add(org.pragmatica.aether.api.routes.VersionRoutes.versionRoutes(nodeSupplier));

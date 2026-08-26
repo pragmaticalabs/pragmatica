@@ -9,6 +9,306 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Changed
 - Core: **`Promise` is now sealed** (`permits PromiseImpl`), matching `Result`'s `permits Success, Failure`. Verified before sealing: exactly one implementor exists (`PromiseImpl`, same file), no test doubles implement `Promise`, and no anonymous `new Promise<>()` anywhere in the repo — so nothing breaks. The driver is the typed-error-construction work (`core/docs/typed-error-construction.md`): its variance pass changes the generic signatures of `filter`/`mapError`/`failAsync`, which is source-compatible for callers but would break any external implementor overriding those defaults; with the interface sealed, "source-compatible" holds unconditionally. Pre-GA is the window where sealing costs nothing — an installed base could later make it a breaking change
 
+### Verified (2026-08-26 — #596 CLOSED: the live entity gate, on the product's own routing)
+- **02w-entity-crash rerun with the per-node endpoint rotation REMOVED** (the ticket's own
+  instruction: the harness's owner-finding sweep masked the product's missing forwarding, so the
+  acceptance run had to drop it). `entity_post_any` now treats the FIRST REACHABLE endpoint's
+  answer as authoritative — transport failure moves on (the suite kills nodes; a dead port is the
+  harness's problem), a wrong answer from a live node FAILS. Result on a 5-node remote cluster:
+  **40/40 pre-kill creates acked via product forwarding** (the pre-#596 pinned-endpoint shape
+  scored 4/40), every acked value read back exactly through one endpoint (the read-forward's live
+  exercise), **37/40 acked ACROSS a SIGKILL** (the 3 are honest failover-gap refusals — a forward
+  aimed at the dying owner fails typed), **77/77 acked survived exact-valued** (0 missing, 0
+  corrupted, 0 unreachable), terminal convergence instant, suite 54s, and **zero `NotCurrentOwner`
+  anywhere in the run** — the refusal the ticket was filed about never fired. guarantees.md entity
+  tags upgraded from design-intent to `[verified]` accordingly.
+
+### Added (2026-08-26 — #596 read half: BOUNDED_STALE entity reads forward from non-hosting nodes)
+- **A `BOUNDED_STALE` entity read on a node with no local log now forwards to the committed owner
+  instead of refusing.** The write half (command-shaped mutations + owner-forwarding) landed
+  earlier; the read half completes the surface. The decision is REPLICA-AWARE, not owner-aware: a
+  node that HOLDS the partition — owner or replica — serves locally (the fold's ready/caught-up
+  gates bound staleness in offsets, which is the consistency level's whole contract); only a node
+  with NO ring forwards, using the ticket's own primitive (`holdsPartition` = ring presence, never
+  a replica descriptor). Unwired transport or uncommitted ownership keeps the typed local refusal
+  (`PartitionNotHeld`) — never an invented hop. Validate-the-ticket note: the "returns EMPTY, reads
+  as ABSENT" defect had already been upgraded to that loud refusal by the hosting-set arc; this
+  change turns the refusal into a route. Wire: `EntityGetForward`/`EntityGetForwardResponse`
+  (SystemTags 1666/1667) with the mutation trio's budget discipline (arrived-expired reads are
+  refused, not served to nobody) and an EXPLICIT `present` flag — absence is never inferred from
+  state-byte length, because a zero-length-encoding edge silently reading as ABSENT is the
+  ticket's original defect. The service's correlation protocol is genericized over the answer type
+  (one implementation, two pending maps) so the read and write halves cannot drift.
+  Decision matrix + protocol `[verified: EntityOwnerForwardTest 28/28 incl. 7 bounded-stale/read
+  pins; EntityForwardServiceTest get protocol 5 new pins incl. budget refusal]`; live multi-node
+  LB-fronted path `[design intent — unverified]` until the cloud entity gate (the ticket's
+  acceptance bar) — #596 stays open for that.
+- **Review-hardened (2 MAJOR, both real).** (1) Holding is re-checked at SERVE time, not only at
+  routing time: the fold memoizes rebuild success forever, and a ring released AFTER the rebuild
+  leaves a frozen fold whose catch-up gate is vacuous (an empty ring reports headOffset −1) — a
+  read served from it, locally or via a forwarded hop during ownership-reconcile lag, had NO
+  staleness bound at all. `ready()` now refuses a non-held partition typed, armed by a
+  non-holding-receiver test that also pins loop safety (the receiver never re-enters the forwarding
+  decision). (2) Decoding a forwarded answer was a bare `map(this::decode)` — a codec-miss throw on
+  the response-dispatch thread left the caller's promise UNRESOLVED, a hang instead of a typed
+  failure; all three forward-decode sites (including the two pre-existing write-path ones) now go
+  through the lifted decode. Plus: the unwired-refusal test pins the CAUSE TEXT rather than bare
+  isFailure; a dedicated pin proves getForwarded serves WITHOUT write admission (load-bearing per
+  the ForwardTarget contract); the read-your-writes caveat of a replica-served BOUNDED_STALE read
+  is stated in guarantees.md.
+
+### Fixed (2026-08-26 — #628: a failed 02-chaos baseline restore is no longer structurally invisible)
+- **Intra-suite restore gate + honest transport sensors (owner scope call: full package).** All
+  seven 02-chaos test files downgraded a failed `restore_cluster_baseline` to a warning, and
+  `run_suite` had no gate between test FILES — the only restore gate lived between SUITES — so a
+  broken cluster failed every downstream scenario on its own subject: the 2026-08-21
+  `rawReady=1 EXCL-caller` shape and the 2026-08-22 `got 0 ()` shape are both downstream of one
+  warned-away restore. Now: the cleanups call `restore_cluster_baseline_or_flag` (FAIL log + a
+  marker to the suite runner; still exit-trap-safe), and `run_suite` on the marker captures node
+  logs IMMEDIATELY (the 2026-08-22 evidence window was destroyed before the once-per-suite capture
+  ran — the new capture lands in `failure-logs/<suite>-restore-failed/`) and quarantines the
+  remaining test files with the same semantics the between-suites gate applies. Sensors:
+  `running_core_containers` was rc-unchecked over `remote_exec`, so an SSH/daemon failure filtered
+  to "0 running containers" — verbatim the reported `got 0 ()`; it is now bounded
+  (`remote_exec_bounded`: the REMOTE `timeout` bounds a hung `docker ps`, which SSH ConnectTimeout
+  cannot — it guards setup only) and reports `UNREACHABLE(rc=N)` with rc=1, and the Pick_3
+  precondition distinguishes transport-failure from genuinely-empty (one semantic restore attempt
+  before failing, for standalone runs — parallel to the run_suite gate). `wait_for` exports
+  `WAIT_FOR_REMAINING` so transport-touching predicates can bound themselves (its deadline is only
+  checked between iterations — one hung predicate overran 4596s against a 480s budget; with the
+  seven full-budget failed restores this accounts for most of the 3× duration blow-up, alongside
+  the pre-`5ef0f822c` missing connect cap). `[mechanism-armed: stubbed failing restore writes the
+  marker and returns 0, standalone path warns and returns 0; harness lint 49/49 baseline, contract
+  tests green]` `[design intent — unverified on the live path until the next remote 02-chaos run:
+  the gate branch only fires when a real restore fails]`
+
+### Fixed (2026-08-26 — #598: parallel cluster-A suites no longer race for the cluster-global `database` datasource)
+- **test-persistence gets its own datasource name — and its own physical database.** Cluster-A
+  suites run in parallel, and both url-shortener (suite 06) and test-persistence (suites 06/08/10)
+  declared migrations under the default datasource name `database`; the #566 single-migrator gate
+  409'd whichever published second, and the loser's tests failed four steps later with empty
+  deployment IDs (owner direction 1, chosen 2026-08-26; direction 3 — abort on refused publish —
+  was already in-tree since `9b88911cd`, pre-dating the ticket's evidence run). The blueprint now
+  declares `database.testpersistence` via a blueprint-private `@TestPersistenceDb` qualifier
+  (pg-codegen honors custom `@ResourceQualifier(type = PgSqlConnector.class)` annotations by
+  design), migrations move to `schema/testpersistence/`, and the resources section points at a
+  SEPARATE physical database (`forge_testpersistence`) — required, not cosmetic: the schema
+  history/owner tables are fixed-name-per-physical-database, so a shared physical DB would re-create
+  the same collision one layer down (exactly the case `aether_schema_owner` exists to refuse).
+  Environments: compose-A mounts `pg-init/` (fresh `pgdata` every deploy — `deploy_docker` drops the
+  volume — so init always runs; a `--skip-deploy` run against a pre-change cluster needs one
+  redeploy), the remote branch ships the init dir alongside the compose file, and the cloud A-TOMLs
+  gain a `[database.testpersistence]` node_config section (the connector resolves config by EXACT
+  section name — the flat `[database]` override does not reach named sections) with
+  `ensure_cloud_pg_database` creating the PG-VM database idempotently after the firewall opens.
+  Discovery hardening in the same change: all four schema-suite scripts discovered "the tracked
+  datasource" as `head -1` of the CLUSTER-GLOBAL status list — with two tracked datasources that
+  grabs whichever blueprint published first, so suite 10's retry/baseline operations could target
+  url-shortener's datasource mid-suite-06; all four now select the `testpersistence` row.
+  `[verified: remote concurrent 06+10 run 2026-08-26 — 06-deployment 5/5 (blue-green start/promote/
+  complete/rollback, canary, rolling — the ticket's exact failing assertions), 10-database 3/3,
+  ZERO 409/already-migrated in the full log, every discovery resolved database.testpersistence,
+  forge_testpersistence confirmed present on the remote PG by direct inspection; blueprint jar
+  content-verified (database.testpersistence + schema/testpersistence/)]`
+- **`--suites` entries that match nothing now abort the run.** Found by the proof run itself:
+  `--suites 6,10` silently ran ONLY suite 10 and exited 0 (suites select by zero-padded prefix),
+  so the half-coverage read as a full green run — the silent-truncation shape. A selector typo is
+  a broken run, not a smaller one: `validate_selected_suites` fails loudly, naming the unmatched
+  entries and the available prefixes. `[verified: armed both ways against the real suites dir —
+  `6,10` rejected naming `6`, `06,10` accepted]`
+- **Post-push CI catch: the pg-init file is a `.sh`, not a `.sql`.** `CorpusParseTest` feeds EVERY
+  `.sql` in the repo through the MIGRATION grammar, and `CREATE DATABASE` / `GRANT ... ON DATABASE`
+  are admin DDL outside its domain — the corpus gate red-flagged the init file on `30a91eb85`, so
+  it now uses the standard docker-entrypoint shell form (`psql -c`), keeping the corpus premise
+  intact repo-wide. Same catch surfaced latent format debt: the test-persistence module sits
+  OUTSIDE the root reactor, so no gate ever ran jbct on it — 5 files (2 from this change, 3
+  pre-existing) formatted, module check now clean. And a latent corpus-walk defect: `sqlFiles`
+  matched `.sql` by NAME-SUFFIX alone, so the DIRECTORIES named `java.sql` in local JRE dist
+  output turned the walk into an IOException on any machine with a prior dist build —
+  `Files::isRegularFile` filter added, armed against the live dist output. `[verified:
+  CorpusParseTest green locally WITH aether/dist/output present; jbct:check clean on the module]`
+
+### Fixed (2026-08-25 — the boot codec guard's first real catch: the cluster forward-apply pair had NO codec)
+- **`ForwardApplyRequest`/`ForwardApplyResponse` were routed wire types with no registered codec.**
+  CI forge-tests went red on the first node boot after the #634 boot guard landed (`6c5ed495e`) —
+  the guard refused assembly naming exactly these two types. A true positive, not an over-strict
+  guard: `ForwardingClusterNode` really sends them (`network.send`, command forwarding to a core
+  node for consensus application), their `ProtocolMessage` siblings (the Rabia family) all carry
+  `@Codec`, and this pair simply never got the annotation — every forwarded command would have
+  silently vanished at the transport, the exact #492 class the guard exists to catch. Fix, in two
+  halves each demanded by its own guard: `@Codec` on both records (the cluster module already runs
+  the codec processor; generated `ForwardCodecs` verified by content) + aggregation into
+  `NodeCodecs`; then hand-assigned system tags 1664/1665 in `SystemTags` — the tag-space discipline
+  rejected the hash-fallback tags by name ("System types with no hand-assigned tag"), exactly as
+  designed after the codec-tag-collision hazard. Detection-gap note: the
+  branch was boot-refused from `6c5ed495e` until this fix and no local gate saw it — `./build.sh`
+  only BUILDS forge tests and the module test gates don't run them; forge CI was the first thing
+  to actually boot an assembly. `[verified: ClusterFormationTest (forge) — previously ERRORED at
+  assembly in 0.05s, now forms the cluster]`
+
+### Added/Fixed (2026-08-25 — #634-7 remainder: WAL fsync-failure injection + crash-mid-compaction, closing the ticket's test-gap list)
+- **The WAL fail-stops on a failed fsync (found by writing the owed injection test).** Before this,
+  a failed group-commit `force` failed only the covered appends — the next append RETRIED the fsync
+  itself. After one fsync failure the OS may drop the covered dirty pages while clearing the error,
+  so the retried force can falsely report durability; acking on it leaves a silent mid-file hole,
+  and recovery's contiguous scan then discards every ACKED record past the hole. Same defect class
+  the ticket's item 1 closed at the manager layer ("a later success after a mid-chain failure would
+  leave a hole"), one layer down. `PartitionWal` now records the failure once (loud ERROR) and
+  refuses every later append with typed `WalError.FailStopped` — no write, no force — while reads
+  still serve; reopen (node restart) is the recovery action and trims to the valid prefix, losing
+  nothing acked. A compaction I/O failure deliberately does NOT fail-stop: reclamation failure is
+  not a durability failure. Also fixed: a close-time fsync failure no longer leaks the channel (the
+  old `force→flatMap→close` chain skipped `close()` on force failure). `[verified: PartitionWalTest
+  FsyncFailure 5/5 — no ack over a failed fsync, force attempted exactly ONCE across a pipelined
+  group, refusal with the channel deliberately RESTORED so a retry would have succeeded, reopen
+  recovers acked records, compaction failure loud with the live file intact]`
+- **Crash-mid-compaction pinned across every window of the temp+rename dance.** Each test
+  constructs the exact post-crash disk state a SIGKILL would leave (a live JVM can't be killed
+  inside `truncate`): a complete VALID decoy temp is ignored by recovery; a torn temp is ignored; a
+  stale temp from a crashed run is overwritten and consumed by the next compaction; and survivors
+  are durable immediately after the rename WITHOUT the instance's `close()` — proven by an
+  independent reader on the same file — because the temp is `force(true)`'d before the rename. The
+  rename now passes `ATOMIC_MOVE` (enforcing what the doc already claimed), and the class doc
+  records why no directory fsync is issued, honestly tagged `[mechanism: the superset argument
+  covers the undone-rename case; the no-neither-file case rests on ordered metadata journaling, not
+  POSIX]`. `[verified: PartitionWalTest CrashMidCompaction 4/4]` `guarantees.md` §4 `stream.append`
+  now states the fail-stop failure mode with the operator recovery action.
+- **Review-hardened (2 MAJOR + 1 MAJOR surface, 4 MINOR, 1 NIT — all fixed).** (1) Compaction could
+  UN-FREEZE the fail-stop: `installCompacted` republishes `syncedSeq = writtenSeq`, so a
+  threshold-crossing truncate after a fsync failure would let an in-flight append ack over bytes
+  the failed fsync may have dropped — truncate is now refused while fail-stopped (entry check plus
+  an in-lock check in `compact()`, race-free because fail-stop is only recorded under the same
+  lock). (2) The single-force-attempt test passed without ever reaching the in-lock guard it named
+  (the refusal usually lands at the append entry check) — rebuilt with a GATED injected channel
+  that parks the first append inside `force` while holding the sync lock, making the second
+  append's entry-check pass deterministic and its refusal attributable ONLY to the in-lock guard.
+  (3) Fail-stop had no operator surface (one ERROR log — log-scraping): now `WalStats.failStopped`
+  → `wal.failStopped` on `GET /api/storage/retention` + CLI passthrough + docs; the dashboard slot
+  inherits the retention view's recorded dormant-slot decision on #494. Also: fail-stopped `close()`
+  skips the close-time force (the forbidden retry — pinned by force-call count); a failed
+  post-compaction reopen fail-stops instead of leaving a zombie with a closed channel; refusal
+  asserts on `Files.size` (disk), not the accounting; the unacked-record resurrection on reopen is
+  pinned with `containsExactly` and documented as at-least-once territory; `syncFailure` is
+  `Option<Cause>`, not a null sentinel.
+
+### Added/Fixed (2026-08-25 — #634 structural follow-ups: the silences that hid the #492 class are closed)
+- **Boot refuses a routed wire type with no codec (the #492-class killer).** Twice a generated codec
+  registry existed but was never aggregated into `NodeCodecs`, and every message of the orphaned
+  types silently vanished at the transport — runs 2–5 burned on exactly this with zero log lines.
+  `AetherNode.verifyRoutedTypesEncodable` now runs before the router is wired: every ROUTED
+  `Message.Wired` type must have a codec or the node refuses to start, naming ALL missing types and
+  the probable cause (an unaggregated `*CodecsNode` registry). `Message.Local` types are structurally
+  exempt — the sealed hierarchy is the discriminator, so no exemption list can rot. Recorded limit:
+  the guard sees types this node ROUTES; a wired type only ever SENT is covered by the loud-encode
+  net below. `[verified: VerifyRoutedTypesEncodableTest 5/5 — missing type named with the
+  aggregation hint, Local-vs-Wired discrimination armed, multi-miss accumulation]`
+- **Encode failures are LOUD.** There was no catch anywhere — an encode throw escaped the send path,
+  killing the caller's promise chain unresolved (synchronous sends) or silently cancelling periodic
+  broadcast tasks. Both transport encode sites now produce a typed `WriteOutcome.EncodeFailed` plus
+  one ERROR naming the message class; the two outcome-consuming call sites
+  (`DistributedDHTClient`, `EntityForwardService`) fail fast on it, while fire-and-forget
+  send/broadcast paths are LOG-ONLY by design — there is no caller to tell (and the worker-side DHT
+  network's default `sendOutcome` reports `Sent` unconditionally: a pre-existing blindness, now
+  recorded at the default). The
+  adjacent same-class silence — the wired router override bypassing `dispatchOne`'s try/catch, so a
+  HANDLER throw was equally unlogged — gets the same treatment: one handler's throw is logged and no
+  longer kills the dispatch of the rest. `[verified: QuicClusterNetworkEncodeFailureTest 2/2 (typed
+  outcome naming the class, registered-type arming); RabiaNodeRouterDispatchTest 3/3 (thrower
+  provably invoked, remaining handlers still run, no propagation)]`
+- **The entity-forward wire carries the budget (stage-2 propagation, mirroring the HTTP forward
+  pair).** The three request records gained `remainingMillis`; the sender stamps its remaining
+  budget, and the OWNER refuses an arrived-expired command with the typed `ForwardBudgetExhausted`
+  before touching the entity — applying a non-idempotent write whose ack nobody collects is the
+  zombie-dispatch amplification 02w measured. Wire note: same-version clusters only, rc-internal
+  (positional codec). `[verified: EntityForwardServiceTest 14/14 — arrived-expired refusal without
+  touching the entity (armed by the NO_BUDGET counterpart), wire stamp bounded/unbounded]`
+- **Invoke-layer waits are capped by the ambient budget — caller-side live, receiver-side a ready
+  mechanism.** `InvocationHandler`'s dispatch timeout reads the budget at its synchronous arm site
+  (inert today, see the tag below); `SliceInvoker`'s two correlation waits CANNOT read there — the
+  arm sits behind encode/endpoint continuations on threads where the ScopedValue is unbound, and the
+  first cut read `Deadline.current()` there: the new pin measured 60,015ms elapsed under a 300ms
+  budget, the cap silently inert. The budget is therefore captured ONCE at each chain entry on the
+  caller's thread (a parameter through the request/response chain; a `FailoverContext` component on
+  the retry chain). A call under a client deadline gets at most what remains; with no ambient budget
+  the configured value is unchanged. Wire propagation on `InvokeRequest` stays the recorded next
+  step (`TimeoutsConfig` docs). Caller-side cap `[verified: InvocationDeadlineCapTest — bounded
+  327ms vs the 60s ceiling, armed by a 2s still-waiting unbounded counterpart]`. Receiver-side cap
+  (`InvocationHandler`): `[design intent — unverified]` on the LIVE path — the mechanism is pinned
+  (a bound budget caps at 304ms in-process), but the only production caller is the inbound network
+  dispatch and `InvokeRequest` carries no budget yet, so the read is always unbounded until the wire
+  step lands (review catch: the first wording claimed both halves verified). Batch gate: build.sh
+  clean, 3,933 tests / 0 failures across ten modules.
+- **The "1:4254 generation-counter anomaly" is not one.** The counter is a LEADERSHIP-TENURE TICK —
+  bumped once per `pingInterval` (1s default) while leader — so 1:4254 means rabiaTerm 1 with ~71
+  minutes of uninterrupted leadership: the signature of a STABLE cluster. The per-interval semantics
+  were written down nowhere and the value was investigated as an anomaly once; they are now
+  documented at the increment site and on the generation surface. Deliberately no per-bump log.
+  `[mechanism: counter increments only in bumpGenerationIfLeader, scheduled at pingInterval]`
+
+### Added (2026-08-25 — #634-3+4: the tri-floor retention operator surface; WAL joins the storage subsystem)
+- **`GET /api/storage/retention` + `aether storage retention` — the tri-floor view and the joint
+  invariant (#634-4, rescoped into #634-3 per the ticket ruling: the operator surface is the only
+  honest home of a checker that must see all three floors).** Per `(stream, partition)`: the WAL's
+  live counters (size, replayable window, truncation watermark, per-group-commit fsync
+  count/mean/max), the in-memory ring tail, the durable sealed bound, the earliest retained segment,
+  and the entity checkpoint floor — joined into `coveredFrom` (earliest offset reachable from ANY
+  local source) and the invariant verdict: an entity partition with a committed checkpoint is
+  VIOLATED when no local source reaches back to `checkpoint + 1`, which is precisely the condition a
+  future fold refuses on; the surface says so before that refusal is the first symptom. A 5-minute
+  `RetentionInvariantWatch` WARN-logs and raises a `retention-invariant` critical alert once per
+  newly-violated partition (re-alerting after recovery+relapse) — the existing alert path evaluates
+  only while a dashboard client is connected, which is exactly the visibility gap the watch closes.
+  Review hardening (4 MAJORs caught and fixed): the alert severity literal was lowercase and the
+  validator is case-sensitive — the whole periodic half was INERT until the shared
+  `RetentionRoutes.ALERT_SEVERITY` constant + a real-validator pin closed it; an EMPTY materialized
+  ring reported tail `0`, permanently masking the restarted-empty case — now `-1`, and
+  nothing-local-under-a-checkpoint is itself violated; raises are debounced to two consecutive
+  violated ticks (the tri-floor join is a non-atomic cut); the invariant is documented as the
+  NECESSARY half of reachability (min-of-starts, holes not detected — reclamation is oldest-first).
+  `[verified: RetentionRoutesTest — coveredFrom source-preference incl. the WAL
+  (truncatedUpto, lastOffset] window, violation + armed non-violation incl. restarted-empty,
+  segment-only rows, entity-vs-bare-name discrimination, debounce once/transient/relapse/clean
+  pins; severity accepted by a real AlertManager]` End-to-end alert delivery in a live cluster
+  remains `[design intent — unverified]`. Operator recovery for a violated partition: backfill the
+  missing range from a replica that still holds it, or accept the documented loss and re-baseline
+  the checkpoint (docs carry the full action).
+- **The stream WAL is now part of the storage subsystem's config, capacity and observability
+  (#634-3).** `[storage.streams] wal_path` is a first-class TOML key (absent/empty = the exact
+  pre-existing derivation `<artifacts disk_path sibling>/stream-segments/<nodeId>/wal`; explicit
+  values still get the mandatory per-node suffix) `[verified: ConfigLoaderTest wal_path triple]`.
+  `GET /api/storage` reports the `streams` instance's live WAL bytes as a peer field (the WAL is a
+  sibling of the segment store, not a tier — the instance previously under-reported real disk by the
+  entire WAL), carried through the cluster rollup (`StorageStatusValue` gained `walBytes`; the
+  serializer arm — previously untested entirely, a gate finding — now has a full-field round-trip
+  pin, and the BINARY consensus codec for it gained its first round-trip pin too, a review finding:
+  the positional `@Codec` layout means the `walBytes` addition is a same-version-cluster wire change
+  — rc-internal, no mixed-version rolling upgrade across this boundary pre-GA, same policy as the
+  entity registration key change). Fsync latency is measured once per GROUP COMMIT (one nanoTime
+  pair per batch, not per append) `[verified: PartitionWalTest.Stats 3 pins; StreamPartitionManagerWalSnapshotTest 2 pins
+  incl. the no-WAL path]`.
+- **`GET /api/entity/keyspaces` + `aether entity keyspaces` — the hosting view (owner-ruled fold-in
+  of the 02w hosting-set observability).** Per keyspace: the sorted hosting node set (an upper bound
+  on the candidate set — the leader intersects it with live members; owners are always drawn from it
+  and nowhere else), the max partition count, and the
+  rolling-redeploy disagreement flag — assembled from replicated KV, so any caught-up node answers
+  identically. The 02w defect this surfaces was diagnosed from typed write refusals; now it is one
+  GET. The view is a pure projection over `EntityOwnershipReconciler.scanRegistrations` — the
+  single authority on the merge semantics (review catch: the first version re-implemented the
+  merge with no equivalence guarantee). `[verified: EntityCheckpointRoutesTest projection pins]`
+- Docs: full management-api.md + cli.md sections including the recovery actions; dashboard
+  dormant-slot decisions recorded per the #494 template for both new endpoints. Two pre-existing doc
+  defects fixed in passing (mis-titled entity-checkpoints section; `/api/entity/checkpoints` missing
+  from the route table) and one corrected (the CLI checkpoints doc showed a fabricated table
+  rendering — the command prints pretty JSON).
+  Gate evidence for the whole batch: `./build.sh` clean; 3,368 tests / 0 failures across
+  aether-config, aether-stream, slice, node, cli — RetentionRoutesTest 15,
+  StorageStatusValueCodecTest 6 (both codec halves of the family), StreamPartitionManagerWalSnapshotTest 3,
+  PartitionWalTest.Stats 3, ConfigLoaderTest wal_path triple, KVStoreSerializerTest 66;
+  ManagementRouteCoverageTest confirms both new routes have handlers. A test-registry detour en route
+  (the codec test first errored on every list-bearing value) documented a latent trap: value-codec
+  tests must layer the framework parent registry the way production does, or the first List component
+  fails with "No codec registered" — the requirement now lives in the test with the measurement.
+
 ### Verification (2026-08-24 — 02w run7, post hosting-set fix: THE SUITE IS FULLY GREEN, first ever)
 - **14/14 assertions across all 10 phases, 0 failures — every number the hosting-set defect suppressed
   is now at its ceiling.** Ownership converged across all partitions in **31s** (run6: FAILED at 989s

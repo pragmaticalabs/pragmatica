@@ -119,7 +119,9 @@ public record Main(String[] args) {
                                      .withAutoHeal(resolveAutoHeal(aetherConfig));
 
         enforceWalDurabilityBootable(config);
-        var node = AetherNode.aetherNode(config).expect("Failed to initialize Aether node at startup");
+        // Review catch (#634 batch): assembly failures — the routed-type codec guard included — get
+        // the same FATAL + exit shape as the other boot gates, not an uncaught-exception stack trace.
+        var node = AetherNode.aetherNode(config).onFailure(this::abortBoot).expect("unreachable: abortBoot exits");
 
         registerShutdownHook(node);
         startNodeAndWait(node, nodeId);

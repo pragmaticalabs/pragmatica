@@ -571,6 +571,7 @@ public final class DistributedDHTClient implements DHTClient {
             case WriteOutcome.BackpressureRefused refused -> DHTError.peerUnreachable(refused.peerId(), "backpressure");
             case WriteOutcome.ConnectionDead dead -> DHTError.peerUnreachable(dead.peerId(), "connection dead");
             case WriteOutcome.NoPeerState nope -> DHTError.peerUnreachable(nope.peerId(), "no peer state");
+            case WriteOutcome.EncodeFailed failed -> DHTError.peerUnreachable(failed.peerId(), "encode failed: " + failed.messageType());
         };
     }
 }

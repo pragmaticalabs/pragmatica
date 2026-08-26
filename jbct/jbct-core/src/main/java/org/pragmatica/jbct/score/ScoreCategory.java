@@ -31,6 +31,9 @@ public enum ScoreCategory {
     /// Style (advisory) - formatting, static-import, logging, member-ordering and zone-naming
     /// conventions. These rules belong to no principle category, so they are reported separately
     /// and excluded from the total density.
+    /// Typed-error construction conformance (the JBCT-CAUSE pack).
+    CAUSE(false),
+
     STYLE(true);
     private final boolean advisory;
     ScoreCategory(boolean advisory) {
