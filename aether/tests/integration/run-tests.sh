@@ -746,7 +746,7 @@ deploy_docker() {
         # docker-entrypoint-initdb.d — ship the dir alongside it or the mount is empty
         # and forge_testpersistence is never created.
         remote_exec "mkdir -p ~/pg-init"
-        remote_scp "${SCRIPT_DIR}/pg-init/10-forge-testpersistence.sql" "~/pg-init/10-forge-testpersistence.sql"
+        remote_scp "${SCRIPT_DIR}/pg-init/10-forge-testpersistence.sh" "~/pg-init/10-forge-testpersistence.sh"
         remote_exec "cd ~ && docker compose -f docker-compose-a.yml down -v 2>/dev/null || true; docker rm -f \$(docker ps -aq --filter name=aether-a-node-) 2>/dev/null || true; docker rm -f \$(docker ps -aq --filter name=aether-default-node-) 2>/dev/null || true; docker volume rm -f aether_pgdata 2>/dev/null || true"
         cleanup_cluster_zombies "a"
         remote_exec "cd ~ && docker compose -f docker-compose-a.yml up -d 2>&1 | tail -5"

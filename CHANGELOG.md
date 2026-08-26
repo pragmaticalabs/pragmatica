@@ -40,6 +40,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   a broken run, not a smaller one: `validate_selected_suites` fails loudly, naming the unmatched
   entries and the available prefixes. `[verified: armed both ways against the real suites dir —
   `6,10` rejected naming `6`, `06,10` accepted]`
+- **Post-push CI catch: the pg-init file is a `.sh`, not a `.sql`.** `CorpusParseTest` feeds EVERY
+  `.sql` in the repo through the MIGRATION grammar, and `CREATE DATABASE` / `GRANT ... ON DATABASE`
+  are admin DDL outside its domain — the corpus gate red-flagged the init file on `30a91eb85`, so
+  it now uses the standard docker-entrypoint shell form (`psql -c`), keeping the corpus premise
+  intact repo-wide. Same catch surfaced latent format debt: the test-persistence module sits
+  OUTSIDE the root reactor, so no gate ever ran jbct on it — 5 files (2 from this change, 3
+  pre-existing) formatted, module check now clean. And a latent corpus-walk defect: `sqlFiles`
+  matched `.sql` by NAME-SUFFIX alone, so the DIRECTORIES named `java.sql` in local JRE dist
+  output turned the walk into an IOException on any machine with a prior dist build —
+  `Files::isRegularFile` filter added, armed against the live dist output. `[verified:
+  CorpusParseTest green locally WITH aether/dist/output present; jbct:check clean on the module]`
 
 ### Fixed (2026-08-25 — the boot codec guard's first real catch: the cluster forward-apply pair had NO codec)
 - **`ForwardApplyRequest`/`ForwardApplyResponse` were routed wire types with no registered codec.**
