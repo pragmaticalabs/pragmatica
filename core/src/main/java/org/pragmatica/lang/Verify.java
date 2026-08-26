@@ -119,7 +119,7 @@ public sealed interface Verify {
     ///
     /// @return a success result containing the value if the predicate is satisfied,
     ///         or a failure result with the generated cause if not
-    static <T> Result<T> ensure(T value, Predicate<T> predicate, Fn1<Cause, T> causeProvider) {
+    static <T> Result<T> ensure(T value, Predicate<T> predicate, Fn1<? extends Cause, ? super T> causeProvider) {
         if (predicate.test(value)) {
             return Result.success(value);
         }
@@ -176,7 +176,7 @@ public sealed interface Verify {
     ///
     /// @return a success result containing the value if the predicate is satisfied,
     ///         or a failure result with the generated cause if not
-    static <T, P1> Result<T> ensure(T value, Fn2<Boolean, T, P1> predicate, P1 param1, Fn1<Cause, T> causeProvider) {
+    static <T, P1> Result<T> ensure(T value, Fn2<Boolean, T, P1> predicate, P1 param1, Fn1<? extends Cause, ? super T> causeProvider) {
         return ensure(value, v -> predicate.apply(v, param1), causeProvider);
     }
 
@@ -238,7 +238,7 @@ public sealed interface Verify {
                                         Fn3<Boolean, T, P1, P2> predicate,
                                         P1 param1,
                                         P2 param2,
-                                        Fn1<Cause, T> causeProvider) {
+                                        Fn1<? extends Cause, ? super T> causeProvider) {
         return ensure(value, v -> predicate.apply(v, param1, param2), causeProvider);
     }
 
@@ -311,7 +311,7 @@ public sealed interface Verify {
     ///
     /// @return success with Option.none() if empty, success with Option.some(value) if present and valid,
     ///         or failure with the generated cause if present and invalid
-    static <T> Result<Option<T>> ensureOption(Option<T> value, Predicate<T> predicate, Fn1<Cause, T> causeProvider) {
+    static <T> Result<Option<T>> ensureOption(Option<T> value, Predicate<T> predicate, Fn1<? extends Cause, ? super T> causeProvider) {
         return value.fold(() -> Result.success(Option.none()),
                           v -> ensure(v, predicate, causeProvider).map(Option::some));
     }
@@ -364,7 +364,7 @@ public sealed interface Verify {
     static <T, P1> Result<Option<T>> ensureOption(Option<T> value,
                                                   Fn2<Boolean, T, P1> predicate,
                                                   P1 param1,
-                                                  Fn1<Cause, T> causeProvider) {
+                                                  Fn1<? extends Cause, ? super T> causeProvider) {
         return value.fold(() -> Result.success(Option.none()),
                           v -> ensure(v, predicate, param1, causeProvider).map(Option::some));
     }
@@ -428,7 +428,7 @@ public sealed interface Verify {
                                                       Fn3<Boolean, T, P1, P2> predicate,
                                                       P1 param1,
                                                       P2 param2,
-                                                      Fn1<Cause, T> causeProvider) {
+                                                      Fn1<? extends Cause, ? super T> causeProvider) {
         return value.fold(() -> Result.success(Option.none()),
                           v -> ensure(v, predicate, param1, param2, causeProvider).map(Option::some));
     }

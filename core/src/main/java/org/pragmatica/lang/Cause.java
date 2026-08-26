@@ -79,4 +79,28 @@ public interface Cause {
     default Stream<Cause> stream() {
         return Stream.of(this);
     }
+
+    /// A cause reporting a settled condition: no retry of the failed operation can change the
+    /// outcome. Implementing this interface is the classification — no override needed.
+    interface Terminal extends Cause {
+        @Override
+        default boolean isTerminal() {
+            return true;
+        }
+    }
+
+    /// A cause wrapping an underlying cause. The `origin` component of the implementing record
+    /// supplies [#source()]; the component cannot be named `source`, because the record accessor's
+    /// return type (`Cause`) would clash with [#source()]'s (`Option<Cause>`).
+    ///
+    /// `source()` uses [Option#option] rather than [Option#some] deliberately: `some(null)` wraps a
+    /// null without complaint, and a present-but-null source is strictly worse than an absent one.
+    interface Wrapped extends Cause {
+        Cause origin();
+
+        @Override
+        default Option<Cause> source() {
+            return Option.option(origin());
+        }
+    }
 }

@@ -235,7 +235,7 @@ public sealed interface Result<T> permits Success, Failure {
     /// @param mapper Function to transform failure cause
     ///
     /// @return current instance (in case of success) or transformed instance (in case of failure)
-    default Result<T> mapError(Fn1<Cause, ? super Cause> mapper) {
+    default Result<T> mapError(Fn1<? extends Cause, ? super Cause> mapper) {
         return fold(cause -> mapper.apply(cause)
                                    .result(),
                     _ -> this);
@@ -368,7 +368,7 @@ public sealed interface Result<T> permits Success, Failure {
     /// @param predicate   predicate to invoke
     ///
     /// @return current instance if predicate returns `true` or [Failure] instance if predicate returns `false`
-    default Result<T> filter(Fn1<Cause, T> causeMapper, Predicate<T> predicate) {
+    default Result<T> filter(Fn1<? extends Cause, ? super T> causeMapper, Predicate<T> predicate) {
         return fold(_ -> this,
                     v -> predicate.test(v)
                          ? this

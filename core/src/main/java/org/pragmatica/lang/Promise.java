@@ -292,7 +292,7 @@ public sealed interface Promise<T> permits PromiseImpl {
     /// @param transformation Function to be applied to the failure value of the promise.
     ///
     /// @return New promise instance.
-    default Promise<T> mapError(Fn1<Cause, ? super Cause> transformation) {
+    default Promise<T> mapError(Fn1<? extends Cause, ? super Cause> transformation) {
         return replaceResult(result -> result.mapError(transformation));
     }
 
@@ -503,13 +503,13 @@ public sealed interface Promise<T> permits PromiseImpl {
     /// @param predicate   predicate to invoke
     ///
     /// @return current instance if predicate returns `true` or failure instance if predicate returns `false`
-    default Promise<T> filter(Fn1<Cause, T> causeMapper, Predicate<T> predicate) {
+    default Promise<T> filter(Fn1<? extends Cause, ? super T> causeMapper, Predicate<T> predicate) {
         return fold(result -> result.filter(causeMapper, predicate)
                                     .async());
     }
 
     /// **[Pure Transform]**
-    default Promise<T> filter(Fn1<Cause, T> causeMapper, Promise<Boolean> predicate) {
+    default Promise<T> filter(Fn1<? extends Cause, ? super T> causeMapper, Promise<Boolean> predicate) {
         return fold(result -> result.fold(Promise::failure,
                                           value -> predicate.flatMap(decision -> decision
                                                                                  ? Promise.this
@@ -598,7 +598,7 @@ public sealed interface Promise<T> permits PromiseImpl {
     /// @param supplier Supplier of the cause to resolve the promise with.
     ///
     /// @return Current promise instance.
-    default Promise<T> failAsync(Supplier<Cause> supplier) {
+    default Promise<T> failAsync(Supplier<? extends Cause> supplier) {
         return async(promise -> promise.fail(supplier.get()));
     }
 
