@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Changed
+- Core: **`Promise` is now sealed** (`permits PromiseImpl`), matching `Result`'s `permits Success, Failure`. Verified before sealing: exactly one implementor exists (`PromiseImpl`, same file), no test doubles implement `Promise`, and no anonymous `new Promise<>()` anywhere in the repo — so nothing breaks. The driver is the typed-error-construction work (`core/docs/typed-error-construction.md`): its variance pass changes the generic signatures of `filter`/`mapError`/`failAsync`, which is source-compatible for callers but would break any external implementor overriding those defaults; with the interface sealed, "source-compatible" holds unconditionally. Pre-GA is the window where sealing costs nothing — an installed base could later make it a breaking change
+
 ### Verified (2026-08-26 — #596 CLOSED: the live entity gate, on the product's own routing)
 - **02w-entity-crash rerun with the per-node endpoint rotation REMOVED** (the ticket's own
   instruction: the harness's owner-finding sweep masked the product's missing forwarding, so the

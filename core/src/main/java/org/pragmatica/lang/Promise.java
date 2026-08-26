@@ -101,7 +101,7 @@ This makes synchronization points in code more explicit, easier to write and rea
   and event handling methods are implemented in terms of these two methods.
  */
 @SuppressWarnings("unused")
-public interface Promise<T> {
+public sealed interface Promise<T> permits PromiseImpl {
     /// **[Pure Transform]**
     /// Underlying method for all dependent actions. It applies provided action to the result of the promise and returns new promise.
     ///
