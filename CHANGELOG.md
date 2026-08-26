@@ -6,6 +6,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Fixed (2026-08-27 — #642: ghost QuorumLossDetector self-fenced a node's next incarnation)
+- **`QuorumLossDetector` gains `stop()`** (terminal latch checked at every dispatch point + both
+  futures cancelled), called from `AetherNode.stop()` beside the #590 core-absence stop. The defect:
+  the detector had no stop, its timers live on the process-wide `SharedScheduler`, and
+  `presenceSampler.stop()` freezes its member count below threshold — so in a shared-JVM host
+  (forge/Ember) a stopped node's armed detector fired ~75s after the ORIGINAL boot and
+  `EmberCluster.handleSelfDrain`'s id-keyed registry lookup stopped the node's NEXT incarnation.
+  Third instance of the SharedScheduler-no-stop class (#499 backfill, #590 core-absence).
+  Production exposure LOW (`halt(2)` kills ghosts with the process) [design intent — unverified];
+  harness exposure HIGH (false-red generator). Live-gate rerun is BLOCKED on #660 (pre-existing
+  Rabia sync deadlock, surfaced by this batch's gate run); #642 stays open until that gate fires.
+- **SharedScheduler stop-hook audit** (45 sites): 8 node-scoped recurring tasks had no reachable
+  cancel path on node stop and kept acting for stopped nodes — CDM reconcile timer (via the
+  designed `deactivate()` path), governor announcer, retention enforcer (a DESTRUCTIVE sweep),
+  spokesman ping loop, consumer runtime (ordering-bound: now closed INSIDE the #488 window, before
+  the partition manager it reads through), replication batcher (via `StreamPartitionManager.close()`),
+  API-key sweep, adaptive sampler. Each individually reviewed for over-cancellation; all verdicted sound.
+- **Cold-boot convergence window is now anchored at `start()`**, not assembly: a node started >75s
+  after creation previously booted with ZERO quorum-loss suppression (the window had already
+  expired). The start()-re-stamp wiring is covered by the forge gate only; the predicate seam is
+  unit-pinned.
+- pg-parser: repo corpus walk consolidated into one shared `SqlCorpus` helper (`isRegularFile` at
+  the mechanism — the #598 fix had covered one caller and its sibling broke the next full local
+  build on directories named `*.sql`); `ZCstDumpTest` (a hand-run CST-diff instrument that asserts
+  nothing) now runs only when `-Dcstdump.out` is passed, per its own documented invocation.
+
+### Added (2026-08-27 — #642/#509 test infra)
+- `EmberCluster.start(heldBackNodeIds)` + `startHeldBackNodes()`: deterministic slow-rejoiner seam —
+  held nodes are created into every peer's configured topology but not started, producing the #509
+  "stable-id members merely slow to rejoin" shape without racing a real restart.
+- `PostRestartSlowRejoinDeficitFillProbeTest` (Heavy): full-restart-with-2-of-5-held probe with a
+  recording ComputeProvider, zero-provision assertion through a derived hold window, scale-up
+  positive control (via `POST /api/cluster/scale` — `setClusterSize()` alone is a vacuous control),
+  and fail-fast on any started node dying. Run 1 found #642; run 2 (ghosts fixed) surfaced #660.
+  Goes green only after #660's fix; #509 closes on that green per its on-ticket ruling.
+
 ### Added
 - Core: **typed-error construction** (`core/docs/typed-error-construction.md`) — the API half. `Causes.forOneValue/forTwoValues/forThreeValues` gain typed rungs: a message-only rung (`Fn1<C, String>` causeFactory) and a data-retaining rung whose causeFactory receives the values plus the formatted message in constructor order, so a data-carrying cause record's canonical constructor reference IS the factory (`record InvalidEmail(String raw, String message)` + `forOneValue("Invalid email: %s", InvalidEmail::new)`). Three is the ceiling by decision — zero corpus call sites exist at arity two and three. All rungs (existing single-arg ones included) now pin `Locale.ROOT` so numeric conversions render identically across JVMs. Two defaults-only mixins land nested in `Cause`: `Cause.Terminal` (isTerminal → true, the implementing IS the classification) and `Cause.Wrapped` (an `origin` component supplies `source()`; the component cannot be named `source` — the record accessor's return type would clash — and `Option.option` is deliberate, since `Option.some(null)` would wrap a null without complaint). One rendering fact worth knowing, pinned by test: `%s` renders a `Cause` argument through `toString()`, not `message()` — interfaces cannot default `toString()` — so a wrap template that wants the origin's message embedded formats `origin.message()` in a hand-rolled factory line
 - Core: **full-PECS variance on every cause-factory parameter** — `Result.filter`/`mapError`, `Promise.filter` (both overloads)/`mapError`/`failAsync`, and all six `Verify.ensure`/`ensureOption` causeProviders: producer position takes `? extends Cause`, value inputs take `? super T`. A fully-typed factory field now drops into every composition site with no widening and no `::apply` adaptation, and a factory generalised over a supertype serves narrower sites. Binary-compatible (erasure unchanged); source-compatible for callers, verified by a reactor-wide compile; with `Promise` sealed (#635) no external implementor can exist, so the claim holds unconditionally. Pre-GA is the window where this widening is free
