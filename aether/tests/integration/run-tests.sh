@@ -235,6 +235,27 @@ resolve_suite_dir() {
     ls -d "${SCRIPT_DIR}/suites/${prefix}-"* 2>/dev/null | head -1
 }
 
+# #598 harness catch: a --suites entry matching no suite directory used to be DROPPED
+# SILENTLY — `--suites 6,10` ran only suite 10 and exited 0, and the half-coverage read
+# as a full green run. A selector typo is a broken run, not a smaller one: fail loudly.
+validate_selected_suites() {
+    [ -z "$SELECTED_SUITES" ] && return 0
+    local selected bad=()
+    IFS=',' read -ra selected <<< "$SELECTED_SUITES"
+    local sel
+    for sel in "${selected[@]}"; do
+        if [ ! -d "${SCRIPT_DIR}/suites/${sel}" ] && [ -z "$(resolve_suite_dir "$sel")" ]; then
+            bad+=("$sel")
+        fi
+    done
+    if [ ${#bad[@]} -gt 0 ]; then
+        log_error "--suites entries match no suite directory: ${bad[*]} (select by zero-padded prefix, e.g. 06,10; available: $(ls "${SCRIPT_DIR}/suites" | cut -d- -f1 | tr '\n' ' '))"
+        return 1
+    fi
+    return 0
+}
+validate_selected_suites || exit 3
+
 # ---------------------------------------------------------------------------
 # Deploy blueprints to a cluster
 # ---------------------------------------------------------------------------
@@ -721,6 +742,11 @@ deploy_docker() {
         docker compose -f "$COMPOSE_A" up -d 2>&1 | tail -5
     else
         remote_scp "$COMPOSE_A" "~/docker-compose-a.yml"
+        # #598: the compose file mounts ./pg-init (relative to its own location) into
+        # docker-entrypoint-initdb.d — ship the dir alongside it or the mount is empty
+        # and forge_testpersistence is never created.
+        remote_exec "mkdir -p ~/pg-init"
+        remote_scp "${SCRIPT_DIR}/pg-init/10-forge-testpersistence.sql" "~/pg-init/10-forge-testpersistence.sql"
         remote_exec "cd ~ && docker compose -f docker-compose-a.yml down -v 2>/dev/null || true; docker rm -f \$(docker ps -aq --filter name=aether-a-node-) 2>/dev/null || true; docker rm -f \$(docker ps -aq --filter name=aether-default-node-) 2>/dev/null || true; docker volume rm -f aether_pgdata 2>/dev/null || true"
         cleanup_cluster_zombies "a"
         remote_exec "cd ~ && docker compose -f docker-compose-a.yml up -d 2>&1 | tail -5"
@@ -1052,6 +1078,14 @@ trap '[ "$SKIP_TEARDOWN" = false ] && teardown' EXIT
 # in-cluster forge-postgres container, not the shared Hetzner PG VM).
 if [ "$ENV_TYPE" = "cloud" ]; then
     "${REPO_ROOT}/../tools/pg-firewall.sh" open 2>&1 | tail -1
+    # #598: ensure test-persistence's own database exists on the PG VM (its named
+    # datasource must not share url-shortener's physical DB — the fixed-name schema
+    # history/owner tables are per-physical-database). Idempotent; same SSH
+    # docker-exec pattern as tools/provision-test-pg.sh's smoke test. Non-fatal on
+    # failure: suite 10 will surface it loudly, and a wedged SSH here must not kill
+    # runs that never touch PG.
+    ensure_cloud_pg_database "${PG_DB}_testpersistence" \
+        || log_warn "could not ensure PG database ${PG_DB}_testpersistence — suite 10 (test-persistence) will fail if it runs"
 fi
 
 # --- Step 1.5: CLI / node-image version-parity preflight (#440) ---

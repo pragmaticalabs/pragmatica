@@ -2630,6 +2630,40 @@ reap_cloud_cluster() {
     return 1
 }
 
+## #598: idempotently ensure a database exists on the shared test-PG VM. Same SSH
+## docker-exec pattern as tools/provision-test-pg.sh's smoke test (the PG VM runs
+## postgres in the `aether-pg` container; no local psql required). Read-only against
+## the VM apart from the CREATE DATABASE itself; NEVER drops or alters anything.
+## Requires the PG firewall to be open (caller runs after pg-firewall.sh open) and
+## the ambient PG_HOST/PG_USER/PG_PASSWORD env vars run-tests.sh already relies on.
+ensure_cloud_pg_database() {
+    local dbname="$1"
+    local pg_ssh_user="${PG_VM_SSH_USER:-root}"
+    if [ -z "${PG_HOST:-}" ] || [ -z "${PG_USER:-}" ] || [ -z "${PG_PASSWORD:-}" ]; then
+        log_warn "ensure_cloud_pg_database(${dbname}): PG_HOST/PG_USER/PG_PASSWORD not set"
+        return 1
+    fi
+    local ssh_opts=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o LogLevel=ERROR -i "$AETHER_SSH_KEY")
+    local exists
+    exists=$(ssh "${ssh_opts[@]}" "${pg_ssh_user}@${PG_HOST}" \
+        "docker exec -e PGPASSWORD='${PG_PASSWORD}' aether-pg psql -U '${PG_USER}' -d postgres -tAc \"SELECT 1 FROM pg_database WHERE datname='${dbname}'\"" 2>&1) || {
+        log_warn "ensure_cloud_pg_database(${dbname}): existence probe failed: $(printf '%s' "$exists" | head -c 200)"
+        return 1
+    }
+    if [ "$(printf '%s' "$exists" | tr -d '[:space:]')" = "1" ]; then
+        log_info "ensure_cloud_pg_database(${dbname}): already present"
+        return 0
+    fi
+    local created
+    created=$(ssh "${ssh_opts[@]}" "${pg_ssh_user}@${PG_HOST}" \
+        "docker exec -e PGPASSWORD='${PG_PASSWORD}' aether-pg psql -U '${PG_USER}' -d postgres -c 'CREATE DATABASE ${dbname}'" 2>&1) || {
+        log_warn "ensure_cloud_pg_database(${dbname}): CREATE DATABASE failed: $(printf '%s' "$created" | head -c 200)"
+        return 1
+    }
+    log_info "ensure_cloud_pg_database(${dbname}): created"
+    return 0
+}
+
 ## #441 S20: cluster-scoped reap + fresh bootstrap — the cloud analog of the
 ## docker/compose branch's `docker compose down -v && up -d` full reset. This is
 ## the ONLY path capable of recovering a CONFIRMED FULL self-drain: every core
