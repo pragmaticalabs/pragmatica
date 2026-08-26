@@ -5,11 +5,12 @@
 > Two streams write handovers here on the shared branch — check the banner before reading one as
 > your own state. This stream keeps the UNSUFFIXED name.
 
-**Branch:** `release-1.0.0-rc3` · pushed through `a4c6dcf77`. Candidate tag there. CI + Release
-green for every commit of the session (one transient exception, §3). Uncommitted residue:
-`core/.../utils/Causes.java` — **belongs to OPEN PR #636** (core typed-error half; do not commit
-directly, it lands with that PR) — and untracked `aether/tests/integration/failure-logs/`
-(evidence, on-disk only). The two typed-error SPECS are now committed (`538abd1ac`).
+**Branch:** `release-1.0.0-rc3` · pushed through `ec20a0dd2` (the #636 merge — see §8). Candidate
+tag there. CI + Release green for every commit of the session (one transient exception, §3).
+Uncommitted residue: only untracked `aether/tests/integration/failure-logs/` (evidence, on-disk —
+incl. `2026-08-26-gates-green/` with this session's three gate-run logs). The two typed-error
+SPECS are committed (`538abd1ac`) and the whole arc is merged (§8); the earlier `Causes.java`
+residue was the owner's temporary change, rolled back — no exclusion discipline needed anymore.
 
 **The 2026-08-24 owner queue finished this session, plus four follow-on arcs.** Full detail in
 memory (`project-queue-2026-08-owner-goal-arc.md`); the compressed ledger:
@@ -99,6 +100,7 @@ zero `NotCurrentOwner` in the whole run.** guarantees.md entity tags upgraded to
 
 ## §7 Next (queue empty — owner direction pending; candidates ranked risk-first)
 
+
 1. **#509 deficit-fill** — reconciler-under-load class, foundational (batch 5 of the pipeline
    view: #557 §3-gated, #610, #420 alongside).
 2. **#345 I4–I6** (timers #351, workflow #353, saga #354) — the rc3-blocking ladder; the
@@ -109,3 +111,21 @@ zero `NotCurrentOwner` in the whole run.** guarantees.md entity tags upgraded to
 5. Batch 6 (#604–#614 DX/correctness wave) — cheap parallel filler, batchable freely.
 Pipeline totals at session end: rc3 47 open (after #596 closed), rc4 81, v1.0.0 14, no-milestone
 57.
+
+## §8 Post-handover addendum (same session, after §1–§7 were written)
+
+- **The typed-error arc is FULLY LANDED.** PR #635 (seal `Promise`) merged `44298bad1`; PR #636
+  (typed `Causes` rungs, full PECS on the 12 enumerated sites, `Cause.Terminal`/`Wrapped`) merged
+  `ec20a0dd2` — its branch was updated onto the full session base FIRST and build+forge ran fresh
+  against everything above, both green. The changelog conflicts in both PRs were pure
+  section-stacking; `Promise.java` auto-merged. Sequence rationale: #635's sealing is what makes
+  #636's source-compatibility claim unconditional. §7 item 3 is therefore DONE. **Zero open PRs.**
+- **The `Causes.java` residue is GONE** — the owner rolled it back as a temporary change. Earlier
+  banner text about excluding it from commits is obsolete.
+- **Gate evidence preserved on disk** (the scratchpad is session-ephemeral):
+  `failure-logs/2026-08-26-gates-green/` holds the #598 concurrent 06+10 proof, the #628 02-chaos
+  no-regression run, and the #596 acceptance-gate run the issue comments cite.
+- Branch head at wrap-up: `ec20a0dd2`, candidate tag there, CI + Release green.
+
+Remaining §7 candidates unchanged minus item 3: #509 deficit-fill (risk-first), #345 I4–I6,
+#628 closure ruling, the #604–#614 DX batch.
