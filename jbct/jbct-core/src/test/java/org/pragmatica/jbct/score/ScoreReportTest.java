@@ -20,7 +20,7 @@ class ScoreReportTest {
     private static final ScoreResult.CategoryScore CLEAN = ScoreResult.CategoryScore.categoryScore(0.0, 0, 0, 0, 0);
 
     /// Uniform report: every category measured identically, so the shared rendering is exercised
-    /// once per category. Six counted categories × 11 violations = 66, at 4821 LOC = 13.7/KLOC.
+    /// once per category. Seven counted categories × 11 violations = 77, at 4821 LOC = 13.7/KLOC.
     private static ScoreResult uniformResult() {
         return ScoreResult.scoreResult(13.7, uniformBreakdown(), 38, 4_821);
     }
@@ -102,7 +102,7 @@ class ScoreReportTest {
             var lines = ScoreReport.terminalLines(uniformResult());
 
             assertThat(lineFor(lines, ScoreReport.TOTAL_LABEL)).contains("13.7" + ScoreReport.DENSITY_UNIT)
-                                                              .contains("(66 violations)");
+                                                              .contains("(77 violations)");
         }
 
         @Test
@@ -231,7 +231,7 @@ class ScoreReportTest {
                                          "  \"breakdown\": {");
             assertThat(lines).endsWith("  },",
                                        "  \"totalDensityPerKloc\": 13.7,",
-                                       "  \"totalViolations\": 66",
+                                       "  \"totalViolations\": 77",
                                        "}");
             assertThat(entries).hasSize(ScoreCategory.values().length);
             assertThat(entries.subList(0, entries.size() - 1)).allMatch(line -> line.endsWith(","));
