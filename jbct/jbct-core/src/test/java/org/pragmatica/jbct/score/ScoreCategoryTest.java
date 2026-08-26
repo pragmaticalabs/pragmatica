@@ -25,7 +25,8 @@ class ScoreCategoryTest {
                                                                       ScoreCategory.EXCEPTION_HYGIENE,
                                                                       ScoreCategory.PATTERN_PURITY,
                                                                       ScoreCategory.FACTORY_METHODS,
-                                                                      ScoreCategory.LAMBDA_COMPLIANCE);
+                                                                      ScoreCategory.LAMBDA_COMPLIANCE,
+                                                                      ScoreCategory.CAUSE);
     }
 
     @Test

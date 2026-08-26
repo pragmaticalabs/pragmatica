@@ -293,8 +293,15 @@ public class CstLinter {
         // Null literal argument / defensive null comparison (JBCT-RET-08)
         new CstNullLiteralRule(),
 
-        // Cause variant style: enum vs record (JBCT-SEAL-02)
-        new CstCauseVariantStyleRule(),
+        // Typed-error construction pack (JBCT-CAUSE, typed-error-lint-spec).
+        // JBCT-CAUSE-01 absorbs JBCT-SEAL-02; JBCT-CAUSE-06 awaits LintContext source-set awareness.
+        new CstCauseShapeRule(),
+        new CstCauseMessageBodyRule(),
+        new CstMessageComponentLastRule(),
+        new CstCauseFactoryArityRule(),
+        new CstWrappedCauseRule(),
+        new CstAnonymousTemplateRule(),
+        new CstCauseDirectConstructionRule(),
 
         // File-type classifier + structural rules (#453)
         // Use-case interface structure (JBCT-UC-02)

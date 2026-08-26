@@ -41,7 +41,13 @@ public sealed interface RuleCategoryMapping permits RuleCategoryMapping.unused {
     Map.entry("JBCT-EX-02", ScoreCategory.EXCEPTION_HYGIENE),  // no orElseThrow
     Map.entry("JBCT-STY-01", ScoreCategory.EXCEPTION_HYGIENE), // fluent failure (cause.result())
     Map.entry("JBCT-SEAL-01", ScoreCategory.EXCEPTION_HYGIENE),// sealed error interfaces
-    Map.entry("JBCT-SEAL-02", ScoreCategory.EXCEPTION_HYGIENE),// cause variant style (enum vs record)
+    Map.entry("JBCT-CAUSE-01", ScoreCategory.CAUSE),           // cause representation shape (absorbs SEAL-02)
+    Map.entry("JBCT-CAUSE-02", ScoreCategory.CAUSE),           // no hand-written message() bodies
+    Map.entry("JBCT-CAUSE-03", ScoreCategory.CAUSE),           // message component last
+    Map.entry("JBCT-CAUSE-04", ScoreCategory.CAUSE),           // factory arity equation
+    Map.entry("JBCT-CAUSE-05", ScoreCategory.CAUSE),           // wrapped causes use the mixin
+    Map.entry("JBCT-CAUSE-07", ScoreCategory.CAUSE),           // no anonymous templates in domain code
+    Map.entry("JBCT-CAUSE-08", ScoreCategory.CAUSE),           // no direct construction of cause records
     Map.entry("JBCT-UTIL-01", ScoreCategory.EXCEPTION_HYGIENE),// Result-returning parse utilities
     Map.entry("JBCT-TOT-01", ScoreCategory.EXCEPTION_HYGIENE), // partial op in mapper lambda throws
     Map.entry("JBCT-TOT-02", ScoreCategory.EXCEPTION_HYGIENE), // partial method reference in mapper throws
