@@ -173,6 +173,65 @@ class CstMemberOrderingRuleTest {
         }
 
         @Test
+        void clean_on_slice_idiom_record_inside_the_factory() {
+            // The slice contract mandates the implementation record INSIDE the static factory. It is
+            // lexically forced after the factory and cannot be moved before it, so ranking it as a
+            // member made the required order unsatisfiable for every slice (#645).
+            assertFalse(hasRule("""
+                    package org.example;
+                    public interface RegisterUser {
+                        record Request(String email) {}
+                        Result<Request> execute(Request request);
+                        static RegisterUser registerUser() {
+                            record registerUser() implements RegisterUser {
+                                @Override
+                                public Result<Request> execute(Request request) {
+                                    return Result.success(request);
+                                }
+                            }
+                            return new registerUser();
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void flags_member_record_declared_after_the_factory() {
+            // The rule's real target: a record in the interface's OWN member list, after the factory.
+            assertTrue(hasRule("""
+                    package org.example;
+                    public interface RegisterUser {
+                        Result<Request> execute(Request request);
+                        static RegisterUser registerUser() {
+                            return request -> null;
+                        }
+                        record Request(String email) {}
+                    }
+                    """));
+        }
+
+        @Test
+        void flags_member_record_after_the_factory_even_with_a_local_record() {
+            // Exempting the local record must not blanket-disable record ranking in the same file.
+            assertTrue(hasRule("""
+                    package org.example;
+                    public interface RegisterUser {
+                        Result<Request> execute(Request request);
+                        static RegisterUser registerUser() {
+                            record registerUser() implements RegisterUser {
+                                @Override
+                                public Result<Request> execute(Request request) {
+                                    return Result.success(request);
+                                }
+                            }
+                            return new registerUser();
+                        }
+                        record Request(String email) {}
+                    }
+                    """));
+        }
+
+        @Test
         void ignores_trailing_constant() {
             // Interface constants are absent from the use-case table — never order-breaking.
             assertFalse(hasRule("""

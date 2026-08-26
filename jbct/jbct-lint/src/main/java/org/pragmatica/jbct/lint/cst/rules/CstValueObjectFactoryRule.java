@@ -10,6 +10,7 @@ import java.util.stream.Stream;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
+import org.pragmatica.jbct.lint.cst.filetype.FileTypeClassifier;
 import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.jbct.parser.CstNodes;
 import org.pragmatica.jbct.parser.RuleKind;
@@ -26,14 +27,17 @@ public class CstValueObjectFactoryRule implements CstLintRule {
     private static final Pattern IDENTIFIER_PATTERN = Pattern.compile("\\b([A-Za-z_$][A-Za-z0-9_$]*)\\b");
     private static final Pattern METHOD_NAME_PATTERN = Pattern.compile("\\b([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*\\(");
 
-    private static final Pattern ANNOTATION_SIMPLE_NAME_PATTERN = Pattern.compile("@\\s*(?:[A-Za-z_$][\\w$]*\\s*\\.\\s*)*([A-Za-z_$][\\w$]*)");
-
     /// Records nested in an interface carrying one of these annotations are framework shapes,
     /// not domain value objects: @Slice transport/stage/fact records and @PgSql row records.
-    /// Both are factory-less by design. (@ResourceQualifier fact records that live in their own
-    /// top-level file carry no per-file marker tying them to the qualifier — that linkage is
-    /// cross-file — so they are not detectable here; nested-in-@Slice fact records are covered.)
+    /// Both are factory-less by design. (A fact record living in its OWN top-level file has no
+    /// annotation tying it to its @ResourceQualifier subscription — that linkage is cross-file —
+    /// but it does carry an in-file marker: a `Topic<Self>` constant, see [#declaresSelfTopic].)
     private static final Set<String> FRAMEWORK_SHAPE_ANNOTATIONS = Set.of("Slice", "PgSql");
+
+    /// A pub-sub fact record's marker constant: `static final Topic<Self> TOPIC = Topic.of(...)`.
+    /// Group 1 is the topic's payload type, which must be the DECLARING record — a `Topic<Other>`
+    /// constant makes the record a publisher's holder, not the fact itself, and is not exempt.
+    private static final Pattern TOPIC_TYPE_PATTERN = Pattern.compile("(?:[A-Za-z_$][\\w$]*\\s*\\.\\s*)*Topic\\s*<\\s*([A-Za-z_$][\\w$]*)\\s*>");
 
     @Override
     public String ruleId() {
@@ -68,6 +72,8 @@ public class CstValueObjectFactoryRule implements CstLintRule {
         // Skip records nested in a framework-shape interface — @Slice transport/stage/fact records
         // and @PgSql row records are factory-less by design.
         if (nestedInFrameworkShapeInterface(root, record)) return false;
+        // Skip pub-sub fact records — a Topic<Self> constant is the fact's own in-file marker.
+        if (declaresSelfTopic(root, record, recordName)) return false;
         // Skip builder-pattern records (have with*() methods returning Self)
         if (hasBuilderMethods(record, recordName)) return false;
         // Skip local records defined inside methods (implementation records, not value objects)
@@ -103,8 +109,31 @@ public class CstValueObjectFactoryRule implements CstLintRule {
     }
 
     private boolean isLocalRecord(Cursor root, Cursor record) {
-        return enclosingMethodMember(root, record).filter(CstNodes::isMethodMember)
-                           .isPresent();
+        return FileTypeClassifier.isLocalDeclaration(root, record);
+    }
+
+    /// Whether the record declares a `Topic` constant parameterized by ITSELF — the pub-sub fact
+    /// contract (`public static final Topic<SeatReleased> TOPIC = Topic.of(...)` inside
+    /// `SeatReleased`). Such a record is a message on a topic, published and consumed through the
+    /// slice runtime rather than constructed by a validating factory (#647). Only constants
+    /// declared DIRECTLY by the record count, so a nested type's topic does not exempt its outer.
+    private boolean declaresSelfTopic(Cursor root, Cursor record, String recordName) {
+        return findAll(record, CstNodes::isFieldDecl).stream()
+                     .filter(field -> FileTypeClassifier.directlyEncloses(root, record, field))
+                     .anyMatch(field -> isSelfTopicConstant(field, recordName));
+    }
+
+    private boolean isSelfTopicConstant(Cursor field, String recordName) {
+        return childByRule(field, RuleKind.TYPE).map(CstNodes::tokenText)
+                          .map(type -> isTopicOf(type, recordName))
+                          .or(false);
+    }
+
+    private boolean isTopicOf(String typeText, String recordName) {
+        var matcher = TOPIC_TYPE_PATTERN.matcher(typeText.trim());
+
+        return matcher.matches() && matcher.group(1)
+                                           .equals(recordName);
     }
 
     /// A record nested inside an interface annotated with a framework-shape annotation
@@ -133,18 +162,8 @@ public class CstValueObjectFactoryRule implements CstLintRule {
 
     private boolean declaresFrameworkShapeAnnotation(Cursor annotationHolder) {
         return childrenByRule(annotationHolder, RuleKind.ANNOTATION).stream()
-                             .map(this::annotationSimpleName)
+                             .map(CstNodes::annotationSimpleName)
                              .anyMatch(FRAMEWORK_SHAPE_ANNOTATIONS::contains);
-    }
-
-    /// Simple name of an annotation, robust to import vs FQN forms (`@Slice` and
-    /// `@org.pragmatica.aether.slice.annotation.Slice` both yield `Slice`).
-    private String annotationSimpleName(Cursor annotation) {
-        var matcher = ANNOTATION_SIMPLE_NAME_PATTERN.matcher(text(annotation));
-
-        return matcher.find()
-               ? matcher.group(1)
-               : "";
     }
 
     private boolean hasNoComponents(Cursor record) {

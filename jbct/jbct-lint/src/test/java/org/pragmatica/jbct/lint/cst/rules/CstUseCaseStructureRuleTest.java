@@ -67,6 +67,50 @@ class CstUseCaseStructureRuleTest {
         }
 
         @Test
+        void flags_two_business_entries_alongside_a_scheduled_hook() {
+            // Exempting the hook must not hide a genuinely dual-entry interface.
+            assertTrue(hasRule("""
+                    package org.example;
+                    public interface SweepHolds {
+                        record Request(String tenant) {}
+                        record Response(int swept) {}
+                        static SweepHolds sweepHolds() { return r -> null; }
+                        Promise<Response> execute(Request request);
+                        Promise<Response> executeAgain(Request request);
+                        @Heartbeat
+                        Promise<Unit> sweep();
+                    }
+                    """));
+        }
+
+        @Test
+        void flags_unqualified_zero_parameter_hook_as_a_second_entry() {
+            // Without a qualifier annotation the method is an ordinary second entry method.
+            assertTrue(hasRule("""
+                    package org.example;
+                    public interface SweepHolds {
+                        record Request(String tenant) {}
+                        record Response(int swept) {}
+                        static SweepHolds sweepHolds() { return r -> null; }
+                        Promise<Response> execute(Request request);
+                        Promise<Unit> sweep();
+                    }
+                    """));
+        }
+
+        @Test
+        void flags_missing_request_response_when_the_parameter_annotation_is_not_a_qualifier() {
+            // @Deprecated is not a subscription qualifier — the fact-consumer exemption must not fire.
+            assertTrue(hasRule("""
+                    package org.example;
+                    public interface ReleaseSeat {
+                        static ReleaseSeat releaseSeat() { return e -> null; }
+                        Promise<Unit> execute(@Deprecated SeatReleased event);
+                    }
+                    """));
+        }
+
+        @Test
         void flags_static_method_not_returning_use_case_type() {
             // A static method that does not return the interface's own type is not a factory.
             assertTrue(hasRule("""
@@ -94,6 +138,44 @@ class CstUseCaseStructureRuleTest {
                             return request -> null;
                         }
                         Result<Response> execute(Request request);
+                    }
+                    """));
+        }
+
+        @Test
+        void clean_on_fact_consumer_with_a_qualified_parameter() {
+            // The subscription contract IS the request type; a synthetic Request wrapper around the
+            // published fact would be pure indirection (#647).
+            assertFalse(hasRule("""
+                    package org.example;
+                    public interface ReleaseSeat {
+                        Promise<Unit> execute(@SeatEvents SeatReleased event);
+
+                        static ReleaseSeat releaseSeat() {
+                            return event -> Promise.unitPromise();
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void clean_on_scheduled_slice_with_an_entry_and_a_qualified_hook() {
+            // The zero-parameter Promise<Unit> hook is the Scheduled contract's shape, not a second
+            // entry method — splitting it out would fragment one use case into two deployables.
+            assertFalse(hasRule("""
+                    package org.example;
+                    public interface SweepHolds {
+                        record Request(String tenant) {}
+                        record Response(int swept) {}
+
+                        Promise<Response> execute(Request request);
+
+                        @Heartbeat
+                        Promise<Unit> sweep();
+
+                        static SweepHolds sweepHolds() {
+                            return request -> Promise.success(new Response(0));
+                        }
                     }
                     """));
         }
@@ -145,4 +227,22 @@ class CstUseCaseStructureRuleTest {
                      .onFailure(cause -> fail("Parse failed: " + cause.message()))
                      .or(List.of());
     }
+    /// Fail-closed gate on the fact-consumer exemption (pre-merge field review): an incidental
+    /// annotation on a parameter that IS the Request shape must not exempt the missing nested pair.
+    @org.junit.jupiter.api.Test
+    void annotatedRequestTypedParameter_isNotAFactConsumer() {
+        var diagnostics = lint("""
+                               package demo;
+                               import org.pragmatica.aether.slice.annotation.Slice;
+                               @Slice
+                               public interface RegisterUser {
+                                   Promise<Unit> execute(@Traced CreateRequest request);
+                                   static RegisterUser registerUser() { return request -> null; }
+                               }
+                               """);
+
+        org.assertj.core.api.Assertions.assertThat(diagnostics)
+                                       .anyMatch(d -> d.message().contains("no nested Request/Response"));
+    }
+
 }
