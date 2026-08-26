@@ -60,19 +60,26 @@ Issue #642 filed, then corrected + retitled on-ticket; README correction history
   parsing misreported counts twice this session) / aether-stream 705, all green; jbct green;
   `ClusterFormationTest` boot smoke 4/4 post-batch.
 
-## §3 ⛔ OPEN GATE-BLOCKER — run 2 sync stall (batch is the prime suspect)
+## §3 RESOLVED post-write (this section originally said the batch was the prime suspect — WRONG)
 
-Probe run 2 on the freshly-installed POST-batch artifacts: ghost fix WORKS (zero drain intents),
-trio links + SWIM healthy in 1s — but **Rabia synchronization never completes**: each engine logs
-`quorum connected. Starting synchronization attempts` once, then nothing for 2 hours; consensus
-never ACTIVE, `NodeDeploymentManager` never receives `ClusterStateNotification`, election never
-leaves Dormant, zero reconciler passes. Oddity: `SLOW-APPLY` engine lines at +14min. Run 1
-(PRE-batch artifacts) activated the same trio in ~50s → regression suspicion on the batch
-(integrations/consensus itself untouched). `sync-stall-investigator` was launched on the run1/run2
-delta (batch-caused vs pre-existing-flake verdict + separating experiment); **its report is the
-first thing to collect. Until then: do NOT commit the #642 batch, do NOT move the candidate tag.**
-Both runs' JVMs had to be hand-killed — the failsafe fork timeout (1800s) failed to reap TWICE
-(harness note, unfiled).
+> **Correction, same session.** The sync-stall investigator REFUTED this handover's original §3
+> premise: run 1's trio never activated either — the "run 1 activated in ~50s" claim rested on
+> reconciler passes that were FORMATION-1 GHOSTS (`peakMembershipCount=5` was the tell), and run
+> 1's stall was merely hidden by the ghost kills at +49s. **The #642 batch is EXONERATED and now
+> COMMITTED** (`3f5b1eceb` fix batch, `265401396` seam+probe, changelog in the fix commit).
+>
+> The real stall: **#660** — `RabiaEngine.syncQuorumSize()` = `clusterSize/2+1` but sync responses
+> only ever come from PEERS (self is never a peer), so a bare-majority cold start (3-of-5)
+> deadlocks silently in `Syncing` forever (retry loop logs at TRACE only). Introduced by
+> `36712ba5a` (2026-08-17) — the never-derive-threshold fix overshot by one: quorum ESTABLISHMENT
+> counts self, sync ADOPTION does not. Production-relevant (rolling restart leaving a bare
+> majority = healthy-looking dead cluster). Fix direction on the ticket (count self once:
+> `responses+1 >= quorum`; preserve the intersection property; NEVER re-derive from live counts) +
+> TRACE→periodic-WARN promotion. **Owner consult on the fix is the pending item** — quorum
+> arithmetic on the consensus engine, and `integrations/consensus` is currently the clone stream's
+> lane (their PR #638) — coordinate before editing `RabiaEngine.java`.
+> Gate chain now: #660 fix → probe green end-to-end → close #642 AND #509 → candidate tag moves.
+> Both probe-run JVMs had to be hand-killed — failsafe fork timeout failed to reap TWICE (unfiled).
 
 ## §4 I4 durable timers (#351) — Stage A COMPLETE + review-clean, deliberately uncommitted
 
