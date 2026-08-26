@@ -3525,6 +3525,29 @@ auto_heal_enabled() {
 # Steps 1-3 are best-effort (log_warn) — they are pre-conditions for the
 # hard barriers, and if those barriers pass anyway the cluster IS at
 # baseline regardless of which pre-condition was actually needed.
+## #628: the seven 02-chaos cleanups all downgraded a failed baseline restore to a
+## warning, and `run_suite` had no gate between test FILES — a broken cluster then
+## failed every downstream scenario on ITS subject, not the cluster's (rawReady=1
+## on 2026-08-21; "got 0 containers" on 2026-08-22). On failure this logs FAIL and
+## flags the suite runner via SUITE_RESTORE_FAILED_MARKER: run_suite aborts the
+## remaining files (the same quarantine semantics the between-suites gate applies)
+## and captures evidence IMMEDIATELY — the 2026-08-22 window was destroyed before
+## the once-per-suite capture ran. Returns 0 always: the flag is the signal, and a
+## nonzero rc from an EXIT trap would change the test file's own verdict.
+restore_cluster_baseline_or_flag() {
+    if restore_cluster_baseline; then
+        return 0
+    fi
+    log_fail "restore_cluster_baseline FAILED — cluster is NOT at baseline"
+    if [ -n "${SUITE_RESTORE_FAILED_MARKER:-}" ]; then
+        touch "$SUITE_RESTORE_FAILED_MARKER" 2>/dev/null \
+            || log_warn "could not flag the suite runner (marker write failed) — subsequent tests may inherit cluster churn"
+    else
+        log_warn "no suite runner to flag (standalone run) — subsequent tests may inherit cluster churn"
+    fi
+    return 0
+}
+
 restore_cluster_baseline() {
     local target="${NODE_COUNT:-5}"
     log_info "Restoring cluster to baseline (semantic): ${target} healthy cores, READY"

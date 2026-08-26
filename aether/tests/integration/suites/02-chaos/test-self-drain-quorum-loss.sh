@@ -167,8 +167,17 @@ running_core_containers() {
     fi
     local prefix
     prefix="aether-${CLUSTER_ID:-b}-node-"
-    local out names line
-    out=$(remote_exec "docker ps --filter name=${prefix} --filter status=running --format '{{.Names}}'" 2>&1)
+    local out rc names line
+    # #628 (shape B): the unbounded, rc-unchecked form let an SSH/daemon failure be
+    # filtered away and read as "0 running containers" — an emptiness verdict rendered
+    # over a dead transport, verbatim the reported `got 0 ()`. Bounded (a hung docker
+    # ps on a contended daemon is the case ConnectTimeout cannot guard) and rc-checked:
+    # unreachable prints a non-name marker and returns 1 so no caller can count it.
+    out=$(remote_exec_bounded 20 "docker ps --filter name=${prefix} --filter status=running --format '{{.Names}}'" 2>&1) && rc=0 || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        echo "UNREACHABLE(rc=${rc})"
+        return 1
+    fi
     names=$(printf '%s' "$out" | tr -d '\r')
     printf '%s\n' "$names" | while IFS= read -r line; do
         [ -z "$line" ] && continue
@@ -335,12 +344,31 @@ test_pick_victims_and_kill_three_simultaneously() {
     local running running_count settle_deadline
     settle_deadline=$((SECONDS + 120))
     while :; do
-        running=$(running_core_containers)
-        running_count=$(printf '%s\n' "$running" | grep -c '.' || true)
+        # #628: distinguish transport failure from a genuinely empty cluster — the
+        # old form counted an SSH failure's residue as a container tally.
+        if running=$(running_core_containers); then
+            running_count=$(printf '%s\n' "$running" | grep -c '.' || true)
+        else
+            running_count=-1
+        fi
         [ "$running_count" -eq 5 ] && break
         [ "$SECONDS" -ge "$settle_deadline" ] && break
         sleep 3
     done
+    if [ "$running_count" -eq -1 ]; then
+        log_fail "Pre-kill precondition: docker host UNREACHABLE (${running}) — this is a transport failure, NOT an empty cluster"
+        return 1
+    fi
+    if [ "$running_count" -eq 0 ]; then
+        # #628 fix 4: zero containers here means an earlier scenario's restore never
+        # brought the cluster back. run_suite now gates that, but standalone runs
+        # (single-file invocation) have no runner — one explicit restore attempt
+        # before failing, using the same semantic restore the cleanups use.
+        log_warn "Pre-kill precondition found 0 running cores — attempting one baseline restore before failing"
+        restore_cluster_baseline || true
+        running=$(running_core_containers) || running=""
+        running_count=$(printf '%s\n' "$running" | grep -c '.' || true)
+    fi
     if [ "$running_count" -ne 5 ]; then
         log_fail "Pre-kill precondition: expected 5 running core containers after 120s settle wait, got ${running_count} ($(printf '%s' "$running" | tr '\n' ' '))"
         return 1
@@ -1017,8 +1045,10 @@ cleanup() {
     # handles both: if the cluster is already healthy it's effectively a
     # no-op; if it's degraded it'll attempt restart + scale-back.
     # Idempotent.
-    restore_cluster_baseline || \
-        log_warn "cleanup: restore_cluster_baseline reported non-zero; subsequent suites may inherit cluster churn"
+    # #628: failure is FLAGGED to run_suite (marker), which captures evidence and
+    # quarantines the remaining test files — the old warn-and-continue let a broken
+    # cluster fail every downstream scenario on its own subject.
+    restore_cluster_baseline_or_flag
 }
 
 # Run cleanup on ANY exit path — including a `return 1` from inside a

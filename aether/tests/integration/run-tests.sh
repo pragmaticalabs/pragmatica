@@ -435,6 +435,15 @@ run_suite() {
     # multiple suites' stdout interleaves. Combined with TEST_TAG (set by run_test
     # in lib/common.sh) the format is `[suite-name/test_name]`.
     export SUITE_TAG="$suite_name"
+    # #628: gate between test FILES. A test file's cleanup flags a failed baseline
+    # restore through this marker (restore_cluster_baseline_or_flag); the loop then
+    # captures evidence IMMEDIATELY — before anything else destroys the window, which
+    # is exactly how the 2026-08-22 evidence died — and aborts the remaining files
+    # with the same quarantine semantics the between-suites gate below applies: a
+    # broken cluster fails every downstream test on its OWN subject (#628's shape).
+    local restore_marker="${TMPDIR:-/tmp}/aether-suite-${suite_name}-restore-failed"
+    rm -f "$restore_marker"
+    export SUITE_RESTORE_FAILED_MARKER="$restore_marker"
     local suite_pass=0 suite_fail=0
     for test_file in "$suite_dir"/test-*.sh; do
         [ -f "$test_file" ] || continue
@@ -444,7 +453,15 @@ run_suite() {
         else
             suite_fail=$((suite_fail + 1))
         fi
+        if [ -f "$restore_marker" ]; then
+            log_fail "${suite_name}: baseline restore failed after $(basename "$test_file") — capturing evidence and aborting the remaining test files (quarantine)"
+            capture_node_logs "${suite_name}-restore-failed" "$target_cluster" || true
+            suite_fail=$((suite_fail + 1))
+            break
+        fi
     done
+    rm -f "$restore_marker"
+    unset SUITE_RESTORE_FAILED_MARKER
     unset SUITE_TAG
 
     local duration=$(( $(date +%s) - start_time ))

@@ -129,8 +129,10 @@ cleanup() {
     # Semantic baseline restore — see test-kill-leader.sh:cleanup() for the
     # rationale. `restore_cluster_baseline` consumes the same operator-visible
     # signals (lifecycle, generation, phase) the next suite will read.
-    restore_cluster_baseline || \
-        log_warn "cleanup: restore_cluster_baseline reported non-zero; subsequent suites may inherit cluster churn"
+    # #628: failure is FLAGGED to run_suite (marker), which captures evidence and
+    # quarantines the remaining test files — the old warn-and-continue let a broken
+    # cluster fail every downstream scenario on its own subject.
+    restore_cluster_baseline_or_flag
 }
 
 # Run cleanup on ANY exit path — including a `return 1` from inside a test

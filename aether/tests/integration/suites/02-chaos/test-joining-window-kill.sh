@@ -447,8 +447,10 @@ cleanup() {
     # breaker if tripped, scales back to NODE_COUNT, waits for ON_DUTY healthy
     # parity + generation quiescence + phase=NORMAL. Subsequent suites inherit
     # a clean cluster.
-    restore_cluster_baseline || \
-        log_warn "cleanup: restore_cluster_baseline reported non-zero; subsequent suites may inherit cluster churn"
+    # #628: failure is FLAGGED to run_suite (marker), which captures evidence and
+    # quarantines the remaining test files — the old warn-and-continue let a broken
+    # cluster fail every downstream scenario on its own subject.
+    restore_cluster_baseline_or_flag
 }
 
 # Run cleanup on ANY exit path — including a `return 1` from inside a test

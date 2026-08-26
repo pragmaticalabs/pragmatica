@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Fixed (2026-08-26 — #628: a failed 02-chaos baseline restore is no longer structurally invisible)
+- **Intra-suite restore gate + honest transport sensors (owner scope call: full package).** All
+  seven 02-chaos test files downgraded a failed `restore_cluster_baseline` to a warning, and
+  `run_suite` had no gate between test FILES — the only restore gate lived between SUITES — so a
+  broken cluster failed every downstream scenario on its own subject: the 2026-08-21
+  `rawReady=1 EXCL-caller` shape and the 2026-08-22 `got 0 ()` shape are both downstream of one
+  warned-away restore. Now: the cleanups call `restore_cluster_baseline_or_flag` (FAIL log + a
+  marker to the suite runner; still exit-trap-safe), and `run_suite` on the marker captures node
+  logs IMMEDIATELY (the 2026-08-22 evidence window was destroyed before the once-per-suite capture
+  ran — the new capture lands in `failure-logs/<suite>-restore-failed/`) and quarantines the
+  remaining test files with the same semantics the between-suites gate applies. Sensors:
+  `running_core_containers` was rc-unchecked over `remote_exec`, so an SSH/daemon failure filtered
+  to "0 running containers" — verbatim the reported `got 0 ()`; it is now bounded
+  (`remote_exec_bounded`: the REMOTE `timeout` bounds a hung `docker ps`, which SSH ConnectTimeout
+  cannot — it guards setup only) and reports `UNREACHABLE(rc=N)` with rc=1, and the Pick_3
+  precondition distinguishes transport-failure from genuinely-empty (one semantic restore attempt
+  before failing, for standalone runs — parallel to the run_suite gate). `wait_for` exports
+  `WAIT_FOR_REMAINING` so transport-touching predicates can bound themselves (its deadline is only
+  checked between iterations — one hung predicate overran 4596s against a 480s budget; with the
+  seven full-budget failed restores this accounts for most of the 3× duration blow-up, alongside
+  the pre-`5ef0f822c` missing connect cap). `[mechanism-armed: stubbed failing restore writes the
+  marker and returns 0, standalone path warns and returns 0; harness lint 49/49 baseline, contract
+  tests green]` `[design intent — unverified on the live path until the next remote 02-chaos run:
+  the gate branch only fires when a real restore fails]`
+
 ### Fixed (2026-08-26 — #598: parallel cluster-A suites no longer race for the cluster-global `database` datasource)
 - **test-persistence gets its own datasource name — and its own physical database.** Cluster-A
   suites run in parallel, and both url-shortener (suite 06) and test-persistence (suites 06/08/10)
