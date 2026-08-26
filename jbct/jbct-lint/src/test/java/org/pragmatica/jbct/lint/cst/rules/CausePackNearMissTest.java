@@ -229,6 +229,55 @@ class CausePackNearMissTest {
                             """)).doesNotContain("JBCT-CAUSE-08");
     }
 
+    /// Spec 3.8's second sanctioned constructor use: instantiation inside the record's OWN
+    /// static factory member. A sentinel constant's initializer is not a bypass of the factory.
+    @Test
+    void directConstruction_insideStaticFieldInitializer_isExempt() {
+        assertThat(rulesFor("""
+                            package demo;
+                            sealed interface RegError extends Cause {
+                                record Locked(String id, String message) implements RegError {
+                                    static final Fn1<Locked, String> FACTORY = Causes.forOneValue("Locked: %s", Locked::new);
+                                    static final Locked UNKNOWN = new Locked("?", "Locked: ?");
+                                }
+                            }
+                            """)).doesNotContain("JBCT-CAUSE-08");
+    }
+
+    /// The hand-rolled static factory (record-typed static method) is the shape the companion
+    /// spec prescribes above the forXValues ceiling — there the instantiation IS the factory.
+    @Test
+    void directConstruction_insideHandRolledStaticFactory_isExempt() {
+        assertThat(rulesFor("""
+                            package demo;
+                            sealed interface RegError extends Cause {
+                                record Locked(String id, String message) implements RegError {
+                                    static final Fn1<Locked, String> FACTORY = Causes.forOneValue("Locked: %s", Locked::new);
+                                    static Locked locked(String id) {
+                                        return new Locked(id, "Locked: " + id);
+                                    }
+                                }
+                            }
+                            """)).doesNotContain("JBCT-CAUSE-08");
+    }
+
+    /// The exemption must not widen to the whole record body: a static member that does NOT
+    /// return the record type is not a factory, and construction there is still a bypass.
+    @Test
+    void directConstruction_inStaticHelperNotReturningRecordType_isFlagged() {
+        assertThat(rulesFor("""
+                            package demo;
+                            sealed interface RegError extends Cause {
+                                record Locked(String id, String message) implements RegError {
+                                    static final Fn1<Locked, String> FACTORY = Causes.forOneValue("Locked: %s", Locked::new);
+                                    static String describe(String id) {
+                                        return new Locked(id, "manual").message();
+                                    }
+                                }
+                            }
+                            """)).contains("JBCT-CAUSE-08");
+    }
+
     /// `Causes.cause(String)` is the sanctioned ad-hoc tier — deliberately never flagged.
     @Test
     void adHocCause_staysSanctioned() {
