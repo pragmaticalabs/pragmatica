@@ -11,6 +11,8 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityCreateForward;
 import org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityDeleteForward;
+import org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityGetForward;
+import org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityGetForwardResponse;
 import org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityUpdateForward;
 import org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityUpdateForwardResponse;
 import org.pragmatica.aether.resource.entity.EntityForwardRegistry;
@@ -53,6 +55,9 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
     private final TimeSpan timeout;
     private final Map<String, ForwardTarget> targets = new ConcurrentHashMap<>();
     private final Map<String, Promise<byte[]>> pending = new ConcurrentHashMap<>();
+    /// The read half's correlation map, distinct from [#pending] because a read's answer is an
+    /// EXPLICIT `Option<byte[]>` — absence is a flag on the wire, never a byte-length convention.
+    private final Map<String, Promise<Option<byte[]>>> pendingGets = new ConcurrentHashMap<>();
 
     /// Sending is a one-line seam so the node can supply its `ClusterNetwork` without this class
     /// depending on the whole network surface — and so a test can drive both halves in-process.
@@ -126,6 +131,20 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
                                                                                                wireBudget));
     }
 
+    /// The read half (#596): same protocol, its own correlation map — the answer is an explicit
+    /// `Option<byte[]>`, resolved by [#onEntityGetForwardResponse] from the wire's `present` flag.
+    @Override
+    public Promise<Option<byte[]>> forwardGet(NodeId owner, String keyspace, byte[] key) {
+        return dispatchInto(pendingGets,
+                            owner,
+                            keyspace,
+                            (correlationId, wireBudget) -> EntityGetForward.entityGetForward(selfNodeId,
+                                                                                             correlationId,
+                                                                                             keyspace,
+                                                                                             key,
+                                                                                             wireBudget));
+    }
+
     /// One correlation protocol for all three operations: the pending map, the timeout and the response
     /// handler are shared, so only the message built differs.
     ///
@@ -136,6 +155,17 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
     /// widens the unknown-outcome window on a non-idempotent write for nothing (caller-retry dedup
     /// is the open S3 idempotency decision).
     private Promise<byte[]> dispatch(NodeId owner, String keyspace, Fn2<EntityForwardMessage, String, Long> message) {
+        return dispatchInto(pending, owner, keyspace, message);
+    }
+
+    /// The ONE correlation protocol, generic over the answer type: the mutation trio correlates
+    /// `byte[]` post-state through [#pending], the read half an explicit `Option<byte[]>` through
+    /// [#pendingGets]. A single implementation so the two halves cannot drift — the same reason
+    /// sender and receiver share this class.
+    private <R> Promise<R> dispatchInto(Map<String, Promise<R>> pendingMap,
+                                        NodeId owner,
+                                        String keyspace,
+                                        Fn2<EntityForwardMessage, String, Long> message) {
         var deadline = Deadline.current();
 
         if (deadline.expired(BUDGET_FLOOR)) {
@@ -145,7 +175,7 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
         }
 
         var correlationId = UUID.randomUUID().toString();
-        Promise<byte[]> promise = Promise.promise();
+        Promise<R> promise = Promise.promise();
         var effectiveTimeout = deadline.bounded(timeout);
         // Debug, not trace: run5 burned 48 minutes on forwards whose waits left NO log line at all,
         // making "bounded to the client budget" and "unbounded 30s constant" indistinguishable
@@ -156,8 +186,8 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
                   effectiveTimeout,
                   deadline.isBounded(),
                   correlationId);
-        pending.put(correlationId, promise);
-        SharedScheduler.schedule(() -> timeoutRequest(correlationId, owner, keyspace, effectiveTimeout),
+        pendingMap.put(correlationId, promise);
+        SharedScheduler.schedule(() -> timeoutRequest(pendingMap, correlationId, owner, keyspace, effectiveTimeout),
                                  effectiveTimeout);
         // #634 follow-up, the entity half of stage-2 propagation: stamp the remaining budget onto the
         // wire so the OWNER can refuse an arrived-expired command instead of applying work whose ack
@@ -165,7 +195,7 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
         sender.send(owner,
                     message.apply(correlationId,
                                   deadline.toWireMillis()))
-              .onSuccess(outcome -> failFastOnRefusedSend(correlationId, owner, keyspace, outcome));
+              .onSuccess(outcome -> failFastOnRefusedSend(pendingMap, correlationId, owner, keyspace, outcome));
         log.trace("Sent entity owner-forward to {} for keyspace '{}' correlationId={}", owner, keyspace, correlationId);
 
         return promise;
@@ -174,12 +204,16 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
     /// A send the transport refused never left this node, so nothing can ever answer it — waiting out the
     /// correlation timeout would just convert a knowable failure into 30s of silence. The pending entry is
     /// removed first, so a raced timeout resolves nothing.
-    private void failFastOnRefusedSend(String correlationId, NodeId owner, String keyspace, WriteOutcome outcome) {
+    private <R> void failFastOnRefusedSend(Map<String, Promise<R>> pendingMap,
+                                           String correlationId,
+                                           NodeId owner,
+                                           String keyspace,
+                                           WriteOutcome outcome) {
         if (outcome.isSent()) {
             return;
         }
 
-        var promise = pending.remove(correlationId);
+        var promise = pendingMap.remove(correlationId);
 
         if (promise == null) {
             return;
@@ -195,8 +229,12 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
 
     /// A fired timeout WARNS with the wait it enforced: run5's forwards timed out for 48 minutes in
     /// total silence, leaving "bounded wait" vs "unbounded 30s constant" undecidable from the logs.
-    private void timeoutRequest(String correlationId, NodeId owner, String keyspace, TimeSpan waited) {
-        var promise = pending.remove(correlationId);
+    private <R> void timeoutRequest(Map<String, Promise<R>> pendingMap,
+                                    String correlationId,
+                                    NodeId owner,
+                                    String keyspace,
+                                    TimeSpan waited) {
+        var promise = pendingMap.remove(correlationId);
 
         if (promise != null) {
             log.warn("Entity owner-forward to {} for keyspace '{}' timed out after {} (correlationId={})",
@@ -239,6 +277,67 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
                        request.keyspace(),
                        request.remainingMillis(),
                        target -> target.deleteForwarded(request.key()));
+    }
+
+    /// The read half's receiver (#596). Same budget discipline as the mutation trio — an
+    /// arrived-expired read is refused without touching the entity: serving an answer nobody
+    /// collects is wasted fold work, and the refusal keeps read and write symmetric. Answers with
+    /// [EntityGetForwardResponse], whose `present` flag is the explicit absence carrier.
+    @Contract
+    public void onEntityGetForward(EntityGetForward request) {
+        var deadline = Deadline.fromWireMillis(request.remainingMillis());
+
+        if (deadline.expired(BUDGET_FLOOR)) {
+            log.warn("Entity owner-forward read arrived with {} budget remaining for keyspace '{}' — refusing"
+                    + " without dispatch (correlationId={})",
+                     deadline.remaining(),
+                     request.keyspace(),
+                     request.correlationId());
+            answer(request.sender(),
+                   request.correlationId(),
+                   EntityGetForwardResponse.failureResponse(selfNodeId,
+                                                            request.correlationId(),
+                                                            "ForwardBudgetExhausted",
+                                                            "arrived with " + deadline.remaining()
+                                                           + " remaining — the sender has already timed out"));
+
+            return;
+        }
+
+        Deadline.runWith(deadline, () -> serveGetWithinBudget(request));
+    }
+
+    private void serveGetWithinBudget(EntityGetForward request) {
+        var target = targets.get(request.keyspace());
+
+        if (target == null) {
+            log.warn("Entity owner-forward read: no target for keyspace '{}' (correlationId={})",
+                     request.keyspace(),
+                     request.correlationId());
+            answer(request.sender(),
+                   request.correlationId(),
+                   EntityGetForwardResponse.failureResponse(selfNodeId,
+                                                            request.correlationId(),
+                                                            "UnknownKeyspace",
+                                                            "no entity registered for keyspace " + request.keyspace()));
+
+            return;
+        }
+
+        target.getForwarded(request.key())
+              .onSuccess(state -> answer(request.sender(),
+                                         request.correlationId(),
+                                         state.fold(() -> EntityGetForwardResponse.absentResponse(selfNodeId,
+                                                                                                  request.correlationId()),
+                                                    bytes -> EntityGetForwardResponse.presentResponse(selfNodeId,
+                                                                                                      request.correlationId(),
+                                                                                                      bytes))))
+              .onFailure(cause -> answer(request.sender(),
+                                         request.correlationId(),
+                                         EntityGetForwardResponse.failureResponse(selfNodeId,
+                                                                                  request.correlationId(),
+                                                                                  cause.getClass().getSimpleName(),
+                                                                                  cause.message())));
     }
 
     /// Shared by all three operations: resolve the keyspace's live entity, run the operation, answer the
@@ -336,6 +435,26 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
 
         promise.resolve(response.success()
                         ? Result.success(response.state())
+                        : new EntityOwnerForward.ForwardRefused(response.failureType(), response.errorMessage()).result());
+    }
+
+    /// The read half's [#onEntityUpdateForwardResponse]: same late-answer drop, its own pending map,
+    /// and absence reconstructed from the EXPLICIT `present` flag — never from state length.
+    @Contract
+    public void onEntityGetForwardResponse(EntityGetForwardResponse response) {
+        var promise = pendingGets.remove(response.correlationId());
+
+        if (promise == null) {
+            log.trace("Entity owner-forward: read response for unknown correlationId={} (already timed out?)",
+                      response.correlationId());
+
+            return;
+        }
+
+        promise.resolve(response.success()
+                        ? Result.success(response.present()
+                                         ? Option.some(response.state())
+                                         : Option.none())
                         : new EntityOwnerForward.ForwardRefused(response.failureType(), response.errorMessage()).result());
     }
 

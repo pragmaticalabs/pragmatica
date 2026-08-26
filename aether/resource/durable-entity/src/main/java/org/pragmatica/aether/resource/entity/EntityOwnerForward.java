@@ -6,6 +6,7 @@ package org.pragmatica.aether.resource.entity;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 
 
@@ -60,6 +61,12 @@ public interface EntityOwnerForward {
     /// Delete `key` on the owner. Carries no payload beyond the key, and answers with no state — the
     /// outcome is the success or failure itself, so the response's state bytes are empty by contract.
     Promise<byte[]> forwardDelete(NodeId owner, String keyspace, byte[] key);
+    /// The `BOUNDED_STALE` read half (#596): serve `key` from the owner's fold, through the owner's own
+    /// ready/caught-up gates — the staleness bound is the OWNER's, which is at least as fresh as any
+    /// replica's. Absence travels as an explicit empty Option (a `present` flag on the wire), never as
+    /// an empty-bytes convention: a zero-length-encoding edge silently reading as ABSENT is the defect
+    /// this forward exists to remove.
+    Promise<Option<byte[]>> forwardGet(NodeId owner, String keyspace, byte[] key);
 
     /// A refusal that crossed the forward wire. `failureType` is the OWNER-side cause's simple class
     /// name, carried explicitly because the wire otherwise flattens causes to message strings — and a

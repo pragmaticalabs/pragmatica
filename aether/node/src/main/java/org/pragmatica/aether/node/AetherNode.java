@@ -3760,6 +3760,10 @@ public interface AetherNode extends ManageableNode {
                                                  entityForwardService::onEntityDeleteForward));
         allEntries.add(MessageRouter.Entry.route(EntityForwardMessage.EntityUpdateForwardResponse.class,
                                                  entityForwardService::onEntityUpdateForwardResponse));
+        allEntries.add(MessageRouter.Entry.route(EntityForwardMessage.EntityGetForward.class,
+                                                 entityForwardService::onEntityGetForward));
+        allEntries.add(MessageRouter.Entry.route(EntityForwardMessage.EntityGetForwardResponse.class,
+                                                 entityForwardService::onEntityGetForwardResponse));
         allEntries.add(MessageRouter.Entry.route(StreamForwardMessage.PublishForward.class,
                                                  streamForwardHandler::onPublishForward));
         allEntries.add(MessageRouter.Entry.route(StreamForwardMessage.PublishForwardResponse.class,

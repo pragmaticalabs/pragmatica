@@ -6,6 +6,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Added (2026-08-26 — #596 read half: BOUNDED_STALE entity reads forward from non-hosting nodes)
+- **A `BOUNDED_STALE` entity read on a node with no local log now forwards to the committed owner
+  instead of refusing.** The write half (command-shaped mutations + owner-forwarding) landed
+  earlier; the read half completes the surface. The decision is REPLICA-AWARE, not owner-aware: a
+  node that HOLDS the partition — owner or replica — serves locally (the fold's ready/caught-up
+  gates bound staleness in offsets, which is the consistency level's whole contract); only a node
+  with NO ring forwards, using the ticket's own primitive (`holdsPartition` = ring presence, never
+  a replica descriptor). Unwired transport or uncommitted ownership keeps the typed local refusal
+  (`PartitionNotHeld`) — never an invented hop. Validate-the-ticket note: the "returns EMPTY, reads
+  as ABSENT" defect had already been upgraded to that loud refusal by the hosting-set arc; this
+  change turns the refusal into a route. Wire: `EntityGetForward`/`EntityGetForwardResponse`
+  (SystemTags 1666/1667) with the mutation trio's budget discipline (arrived-expired reads are
+  refused, not served to nobody) and an EXPLICIT `present` flag — absence is never inferred from
+  state-byte length, because a zero-length-encoding edge silently reading as ABSENT is the
+  ticket's original defect. The service's correlation protocol is genericized over the answer type
+  (one implementation, two pending maps) so the read and write halves cannot drift.
+  Decision matrix + protocol `[verified: EntityOwnerForwardTest 28/28 incl. 7 bounded-stale/read
+  pins; EntityForwardServiceTest get protocol 5 new pins incl. budget refusal]`; live multi-node
+  LB-fronted path `[design intent — unverified]` until the cloud entity gate (the ticket's
+  acceptance bar) — #596 stays open for that.
+- **Review-hardened (2 MAJOR, both real).** (1) Holding is re-checked at SERVE time, not only at
+  routing time: the fold memoizes rebuild success forever, and a ring released AFTER the rebuild
+  leaves a frozen fold whose catch-up gate is vacuous (an empty ring reports headOffset −1) — a
+  read served from it, locally or via a forwarded hop during ownership-reconcile lag, had NO
+  staleness bound at all. `ready()` now refuses a non-held partition typed, armed by a
+  non-holding-receiver test that also pins loop safety (the receiver never re-enters the forwarding
+  decision). (2) Decoding a forwarded answer was a bare `map(this::decode)` — a codec-miss throw on
+  the response-dispatch thread left the caller's promise UNRESOLVED, a hang instead of a typed
+  failure; all three forward-decode sites (including the two pre-existing write-path ones) now go
+  through the lifted decode. Plus: the unwired-refusal test pins the CAUSE TEXT rather than bare
+  isFailure; a dedicated pin proves getForwarded serves WITHOUT write admission (load-bearing per
+  the ForwardTarget contract); the read-your-writes caveat of a replica-served BOUNDED_STALE read
+  is stated in guarantees.md.
+
 ### Fixed (2026-08-26 — #628: a failed 02-chaos baseline restore is no longer structurally invisible)
 - **Intra-suite restore gate + honest transport sensors (owner scope call: full package).** All
   seven 02-chaos test files downgraded a failed `restore_cluster_baseline` to a warning, and

@@ -172,6 +172,9 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
     }
 
     private Promise<Option<S>> readLinearizable(K key) {
+        // Unwired fallback note (#596 review): with no serve wired this degrades to the bounded-stale
+        // read — which may now FORWARD on a non-holding node. Unreachable in production wiring
+        // (DurableEntityFactory always provisions the serve); recorded, not defended.
         return linearizableServe.fold(() -> get(key), serve -> serve.serve(key));
     }
 
@@ -222,7 +225,33 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
     }
 
     private Promise<Option<S>> doGet(K key) {
+        return readForwardTarget(key).fold(() -> getLocal(key), owner -> forwardGet(owner, key));
+    }
+
+    private Promise<Option<S>> getLocal(K key) {
         return ready(key).flatMap(_ -> readState(key));
+    }
+
+    /// The `BOUNDED_STALE` read half of #596. A read is served LOCALLY by any node that HOLDS the
+    /// partition — owner or replica alike; the [#ready] gates bound its staleness in offsets, which
+    /// is the consistency level's whole contract. Only a node with NO local log forwards: its fold
+    /// would refuse with `PartitionNotHeld` (and before the hosting-set fix it answered ABSENT from
+    /// a void — the ticket's original defect). Holding is the ring-presence primitive, never
+    /// inferred from a replica descriptor (#345 I3). The destination reuses the write path's
+    /// positive-remote-owner-AND-wired-transport gate, so uncommitted ownership or an unwired
+    /// transport keeps the honest local refusal instead of inventing a hop.
+    private Option<NodeId> readForwardTarget(K key) {
+        return substrate.holdsPartition(keyspace, partitionOf(key))
+               ? Option.none()
+               : forwardTarget(key);
+    }
+
+    private Promise<Option<S>> forwardGet(NodeId owner, K key) {
+        return transport().flatMap(transport -> encodedKey(key).flatMap(encoded -> transport.forwardGet(owner,
+                                                                                                        keyspace,
+                                                                                                        encoded)))
+                        .mapError(cause -> retypeForwarded(cause, key))
+                        .flatMap(this::decodedOptionalState);
     }
 
     /// A remote committed owner is FORWARDED to rather than refused (#596) when a transport is wired.
@@ -258,9 +287,16 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
     /// path inherits both gates.
     private Promise<Unit> ready(K key) {
         var partition = partitionOf(key);
-
-        return fold.ready(partition)
-                   .flatMap(_ -> fold.caughtUp(partition));
+        // #596 review catch (MAJOR): holding is re-checked at SERVE time, not only at routing time.
+        // The fold memoizes rebuild SUCCESS forever, and a ring released AFTER that rebuild leaves a
+        // frozen fold whose catch-up gate is vacuous (an empty ring reports headOffset -1, so
+        // appliedThrough >= -1 passes trivially) — a read served from it has NO staleness bound at
+        // all, the answer-from-a-void class this ticket removes. Reachable both locally and through
+        // getForwarded during the ownership-reconcile lag after a release.
+        return substrate.holdsPartition(keyspace, partition)
+               ? fold.ready(partition)
+                     .flatMap(_ -> fold.caughtUp(partition))
+               : new EntityLogError.PartitionNotHeld(keyspace, partition).promise();
     }
 
     /// Owner admission, ahead of the read-modify-write and ahead of the log's epoch fence: only the
@@ -312,7 +348,7 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
                                                                                                                                          payload.key(),
                                                                                                                                          payload.body())))
                         .mapError(cause -> retypeForwarded(cause, key))
-                        .map(this::decode);
+                        .flatMap(this::decodedState);
     }
 
     private Promise<S> forwardCreate(NodeId owner, K key, S initial) {
@@ -322,7 +358,7 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
                                                                                                                                          payload.key(),
                                                                                                                                          payload.body())))
                         .mapError(cause -> retypeForwarded(cause, key))
-                        .map(this::decode);
+                        .flatMap(this::decodedState);
     }
 
     /// Answers with empty bytes by contract, so the result is discarded rather than decoded — decoding
@@ -414,6 +450,23 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
                                                         _ -> ready(key).flatMap(_ -> operation.get())));
     }
 
+    /// The read half, as [#applyForwarded] is update: the LOCAL bounded-stale path through this
+    /// instance's own per-key queue — never [#doGet], which would re-enter the forwarding decision and
+    /// let a stale ownership view bounce a read between two nodes. Deliberately WITHOUT the write
+    /// admission: a local bounded-stale read runs none either, and the answer claims a staleness
+    /// bound, not currency. Absence is an explicit empty Option end to end.
+    @Override
+    public Promise<Option<byte[]>> getForwarded(byte[] encodedKey) {
+        return decoded(encodedKey).flatMap(key -> submitWithDeadline(key,
+                                                                     () -> getLocal(key)))
+                      .flatMap(this::encodedOptionalState);
+    }
+
+    private Promise<Option<byte[]>> encodedOptionalState(Option<S> state) {
+        return state.fold(() -> Promise.success(Option.none()),
+                          present -> encodedState(present).map(Option::some));
+    }
+
     /// Decoding is LIFTED on arrival: [Deserializer] throws on a codec miss, and a throw escaping here
     /// would propagate into the message router instead of answering the sender — which turns a typed
     /// failure into the sender's 30s timeout.
@@ -436,6 +489,15 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
         return Result.lift(FORWARD_STATE_UNDECODABLE,
                            () -> (S) deserializer.decode(encodedState))
                      .async();
+    }
+
+    /// #596 review catch (MAJOR): decoding a forwarded answer must be LIFTED like every other
+    /// arrival-side decode in this file — `Deserializer.decode` throws on a codec miss, and a throw
+    /// escaping a bare `map` on the response-dispatch thread leaves the caller's promise UNRESOLVED:
+    /// a hang instead of a typed failure.
+    private Promise<Option<S>> decodedOptionalState(Option<byte[]> bytes) {
+        return bytes.fold(() -> Promise.success(Option.none()),
+                          present -> decodedState(present).map(Option::some));
     }
 
     private Promise<byte[]> encodedState(S state) {

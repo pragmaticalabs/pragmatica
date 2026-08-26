@@ -5,6 +5,7 @@
 package org.pragmatica.aether.resource.entity;
 
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 
 
@@ -43,5 +44,13 @@ public interface EntityForwardRegistry {
         /// Delete, as [#applyForwarded] is update. Answers with EMPTY bytes: a delete has no post-state,
         /// and the outcome the caller needs is the success or failure itself.
         Promise<byte[]> deleteForwarded(byte[] encodedKey);
+        /// The `BOUNDED_STALE` read half (#596): serve the key from THIS node's fold, through the same
+        /// ready/caught-up gates a local read runs — the answer's staleness bound is the serving node's,
+        /// exactly as if the caller had been here. Absence is an EXPLICIT empty Option, never a byte
+        /// convention: a zero-length-encoding edge reading as ABSENT is this ticket's original defect.
+        /// Deliberately NOT behind the write admission — a bounded-stale read on the owner runs none
+        /// locally either, and the answer stays honest under deposal (it claims a staleness bound, not
+        /// currency).
+        Promise<Option<byte[]>> getForwarded(byte[] encodedKey);
     }
 }
