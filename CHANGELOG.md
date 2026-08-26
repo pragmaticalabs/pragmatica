@@ -61,6 +61,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   the ForwardTarget contract); the read-your-writes caveat of a replica-served BOUNDED_STALE read
   is stated in guarantees.md.
 
+### Fixed (#613 — a slice can bundle its own `javax.*` third-party artifacts)
+- **`SliceClassLoader` no longer forces the whole `javax.` namespace parent-first.** `javax.inject`,
+  `javax.servlet`, `javax.annotation` are ordinary third-party artifacts, and the blanket prefix
+  meant a slice could not bundle its own copy — before the fix, a bundled `javax.inject` ended in
+  `ClassNotFoundException`, which is precisely the per-slice version independence the child-first
+  loader exists to provide. The issue's suggested explicit package list was deliberately not used:
+  it has sharp edges (`javax.annotation` is third-party while `javax.annotation.processing` is JDK;
+  `javax.transaction` vs `javax.transaction.xa`) and drifts across JDK releases. Instead the
+  predicate is the definition itself — a `javax.*` class is parent-first iff the **platform
+  classloader resolves it** — so JDK-shipped namespaces (`javax.xml`, `javax.crypto`, `javax.net`,
+  `javax.sql`, `javax.management`, ...) keep exactly their old routing and a slice-bundled shadow
+  of them is still ignored, closing the classic xml-apis split-namespace `ClassCastException`
+  before it can open. `java.` / `jdk.` / `sun.` are untouched. Three probe-class tests pin it
+  (compiled at test time, the shadows minted via `--patch-module` since vanilla javac refuses the
+  split package): a bundled `javax.inject.Named` resolves to the slice loader; a bundled
+  `javax.xml.parsers.DocumentBuilderFactory` shadow is ignored in favor of the platform class; a
+  bundled `java.lang.String` shadow is ignored in favor of bootstrap `String` — that last pin
+  shadows an EXISTING class deliberately, because a novel `java.lang` probe dies in the JDK's own
+  `defineClass` defense on correct code and mutant alike (`super.loadClass` is
+  parent-first-then-self), distinguishing nothing; measured, not assumed
+
 ### Fixed (2026-08-26 — #628: a failed 02-chaos baseline restore is no longer structurally invisible)
 - **Intra-suite restore gate + honest transport sensors (owner scope call: full package).** All
   seven 02-chaos test files downgraded a failed `restore_cluster_baseline` to a warning, and
