@@ -80,7 +80,11 @@ class CorpusParseTest {
 
     private static List<Path> sqlFiles(Path root) throws Exception {
         try (var walk = Files.walk(root)) {
-            return walk.filter(p -> p.toString().endsWith(".sql"))
+            // isRegularFile is load-bearing, not hygiene: JRE dist output contains DIRECTORIES
+            // named `java.sql` (package-shaped legal/ dirs), and a name-suffix match alone turns
+            // them into an IOException mid-corpus on any machine with a prior dist build.
+            return walk.filter(Files::isRegularFile)
+                       .filter(p -> p.toString().endsWith(".sql"))
                        .filter(p -> !p.toString().contains("/target/"))
                        .filter(p -> !p.toString().contains("/.git/"))
                        .sorted(Comparator.comparing(p -> root.relativize(p).toString()))

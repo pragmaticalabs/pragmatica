@@ -6,6 +6,70 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Fixed (2026-08-26 — #598: parallel cluster-A suites no longer race for the cluster-global `database` datasource)
+- **test-persistence gets its own datasource name — and its own physical database.** Cluster-A
+  suites run in parallel, and both url-shortener (suite 06) and test-persistence (suites 06/08/10)
+  declared migrations under the default datasource name `database`; the #566 single-migrator gate
+  409'd whichever published second, and the loser's tests failed four steps later with empty
+  deployment IDs (owner direction 1, chosen 2026-08-26; direction 3 — abort on refused publish —
+  was already in-tree since `9b88911cd`, pre-dating the ticket's evidence run). The blueprint now
+  declares `database.testpersistence` via a blueprint-private `@TestPersistenceDb` qualifier
+  (pg-codegen honors custom `@ResourceQualifier(type = PgSqlConnector.class)` annotations by
+  design), migrations move to `schema/testpersistence/`, and the resources section points at a
+  SEPARATE physical database (`forge_testpersistence`) — required, not cosmetic: the schema
+  history/owner tables are fixed-name-per-physical-database, so a shared physical DB would re-create
+  the same collision one layer down (exactly the case `aether_schema_owner` exists to refuse).
+  Environments: compose-A mounts `pg-init/` (fresh `pgdata` every deploy — `deploy_docker` drops the
+  volume — so init always runs; a `--skip-deploy` run against a pre-change cluster needs one
+  redeploy), the remote branch ships the init dir alongside the compose file, and the cloud A-TOMLs
+  gain a `[database.testpersistence]` node_config section (the connector resolves config by EXACT
+  section name — the flat `[database]` override does not reach named sections) with
+  `ensure_cloud_pg_database` creating the PG-VM database idempotently after the firewall opens.
+  Discovery hardening in the same change: all four schema-suite scripts discovered "the tracked
+  datasource" as `head -1` of the CLUSTER-GLOBAL status list — with two tracked datasources that
+  grabs whichever blueprint published first, so suite 10's retry/baseline operations could target
+  url-shortener's datasource mid-suite-06; all four now select the `testpersistence` row.
+  `[verified: remote concurrent 06+10 run 2026-08-26 — 06-deployment 5/5 (blue-green start/promote/
+  complete/rollback, canary, rolling — the ticket's exact failing assertions), 10-database 3/3,
+  ZERO 409/already-migrated in the full log, every discovery resolved database.testpersistence,
+  forge_testpersistence confirmed present on the remote PG by direct inspection; blueprint jar
+  content-verified (database.testpersistence + schema/testpersistence/)]`
+- **`--suites` entries that match nothing now abort the run.** Found by the proof run itself:
+  `--suites 6,10` silently ran ONLY suite 10 and exited 0 (suites select by zero-padded prefix),
+  so the half-coverage read as a full green run — the silent-truncation shape. A selector typo is
+  a broken run, not a smaller one: `validate_selected_suites` fails loudly, naming the unmatched
+  entries and the available prefixes. `[verified: armed both ways against the real suites dir —
+  `6,10` rejected naming `6`, `06,10` accepted]`
+- **Post-push CI catch: the pg-init file is a `.sh`, not a `.sql`.** `CorpusParseTest` feeds EVERY
+  `.sql` in the repo through the MIGRATION grammar, and `CREATE DATABASE` / `GRANT ... ON DATABASE`
+  are admin DDL outside its domain — the corpus gate red-flagged the init file on `30a91eb85`, so
+  it now uses the standard docker-entrypoint shell form (`psql -c`), keeping the corpus premise
+  intact repo-wide. Same catch surfaced latent format debt: the test-persistence module sits
+  OUTSIDE the root reactor, so no gate ever ran jbct on it — 5 files (2 from this change, 3
+  pre-existing) formatted, module check now clean. And a latent corpus-walk defect: `sqlFiles`
+  matched `.sql` by NAME-SUFFIX alone, so the DIRECTORIES named `java.sql` in local JRE dist
+  output turned the walk into an IOException on any machine with a prior dist build —
+  `Files::isRegularFile` filter added, armed against the live dist output. `[verified:
+  CorpusParseTest green locally WITH aether/dist/output present; jbct:check clean on the module]`
+
+### Fixed (2026-08-25 — the boot codec guard's first real catch: the cluster forward-apply pair had NO codec)
+- **`ForwardApplyRequest`/`ForwardApplyResponse` were routed wire types with no registered codec.**
+  CI forge-tests went red on the first node boot after the #634 boot guard landed (`6c5ed495e`) —
+  the guard refused assembly naming exactly these two types. A true positive, not an over-strict
+  guard: `ForwardingClusterNode` really sends them (`network.send`, command forwarding to a core
+  node for consensus application), their `ProtocolMessage` siblings (the Rabia family) all carry
+  `@Codec`, and this pair simply never got the annotation — every forwarded command would have
+  silently vanished at the transport, the exact #492 class the guard exists to catch. Fix, in two
+  halves each demanded by its own guard: `@Codec` on both records (the cluster module already runs
+  the codec processor; generated `ForwardCodecs` verified by content) + aggregation into
+  `NodeCodecs`; then hand-assigned system tags 1664/1665 in `SystemTags` — the tag-space discipline
+  rejected the hash-fallback tags by name ("System types with no hand-assigned tag"), exactly as
+  designed after the codec-tag-collision hazard. Detection-gap note: the
+  branch was boot-refused from `6c5ed495e` until this fix and no local gate saw it — `./build.sh`
+  only BUILDS forge tests and the module test gates don't run them; forge CI was the first thing
+  to actually boot an assembly. `[verified: ClusterFormationTest (forge) — previously ERRORED at
+  assembly in 0.05s, now forms the cluster]`
+
 ### Added/Fixed (2026-08-25 — #634-7 remainder: WAL fsync-failure injection + crash-mid-compaction, closing the ticket's test-gap list)
 - **The WAL fail-stops on a failed fsync (found by writing the owed injection test).** Before this,
   a failed group-commit `force` failed only the covered appends — the next append RETRIED the fsync
