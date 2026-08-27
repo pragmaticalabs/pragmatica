@@ -4,21 +4,29 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.view.MembershipView;
 import org.pragmatica.aether.metrics.ClusterSyncCollector;
 import org.pragmatica.aether.metrics.NodeReportedState;
 import org.pragmatica.aether.node.ManageableNode;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.http.HttpError;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Promise;
+import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.net.tcp.NodeAddress;
 
 import java.lang.reflect.Proxy;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -37,15 +45,48 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// threshold and the post-drain count shrank in lockstep and the guard could never reject sequential
 /// in-flight drains, admitting a quorum-losing cascade. The fix thresholds against a stable intended
 /// size (configured/peak core count) and subtracts the leader's commanded-but-not-departed drains.
+///
+/// A second, independent pre-fix defect: the count on both sides was role-blind
+/// (`presentMembers()` counts workers alongside cores) — an accidental worker-count floor made of
+/// miscounting, since workers carry no consensus weight. The `WorkerBypass` nested class pins the
+/// fix: a WORKER drain target bypasses this guard entirely (visibly, via `TransitionResult.message()`),
+/// and a CORE target's threshold is computed from `coreCountedMembers()` so a connected worker
+/// population never dilutes or inflates it.
 class NodeLifecycleRoutesDrainBudgetTest {
 
     private static final int INTENDED_SIZE = 5;
 
     private final Set<NodeId> pendingDrains = new LinkedHashSet<>();
-    private final java.util.List<String> routedEvents = new CopyOnWriteArrayList<>();
+    private final List<String> routedEvents = new CopyOnWriteArrayList<>();
+
+    private KVStore<AetherKey, AetherValue> kvStore;
+    private MembershipFsm fsm;
+    private Set<NodeId> allPresent;
+
+    @BeforeEach
+    void setUp() {
+        var router = MessageRouter.DelegateRouter.delegate();
+        router.quiesce();
+        kvStore = new KVStore<>(router, noopSerializer(), null);
+        fsm = fsmAllCore(presentMembers());
+        allPresent = presentMembers();
+    }
+
+    /// No-op serializer: this test seeds the KV store directly (not via consensus dedup), so
+    /// the content-based batch id is irrelevant — an empty encoding satisfies `createBatch`.
+    private static org.pragmatica.serialization.Serializer noopSerializer() {
+        return new org.pragmatica.serialization.Serializer() {
+            @Override
+            public <T> void write(io.netty.buffer.ByteBuf byteBuf, T object) {}
+        };
+    }
 
     private NodeId node(int index) {
         return new NodeId("node-" + index);
+    }
+
+    private NodeId worker(int index) {
+        return new NodeId("worker-" + index);
     }
 
     private Set<NodeId> presentMembers() {
@@ -61,9 +102,8 @@ class NodeLifecycleRoutesDrainBudgetTest {
     }
 
     private MembershipView membershipView() {
-        var present = presentMembers();
         var snapshot = new LinkedHashMap<NodeId, MembershipView.MemberView>();
-        present.forEach(peer -> snapshot.put(peer, new MembershipView.MemberView(peer, null)));
+        allPresent.forEach(peer -> snapshot.put(peer, new MembershipView.MemberView(peer, null)));
 
         return new MembershipView() {
             @Override
@@ -81,8 +121,8 @@ class NodeLifecycleRoutesDrainBudgetTest {
     /// All present members report READY so an admitted drain flows through the READY gate and
     /// succeeds — proving the budget guard did NOT reject (rather than being masked by a later guard).
     private ClusterSyncCollector metricsCollector() {
-        var states = presentMembers().stream()
-                                     .collect(Collectors.toMap(peer -> peer, _ -> NodeReportedState.READY));
+        var states = allPresent.stream()
+                               .collect(Collectors.toMap(peer -> peer, _ -> NodeReportedState.READY));
         return (ClusterSyncCollector) Proxy.newProxyInstance(
             ClusterSyncCollector.class.getClassLoader(),
             new Class[]{ClusterSyncCollector.class},
@@ -101,6 +141,8 @@ class NodeLifecycleRoutesDrainBudgetTest {
                 case "membershipView" -> membershipView();
                 case "metricsCollector" -> metricsCollector();
                 case "initialTopology" -> presentMembers().stream().toList();
+                case "membershipFsm" -> fsm;
+                case "kvStore" -> kvStore;
                 case "route" -> recordRoute(args);
                 default -> throw new UnsupportedOperationException("Not implemented in test proxy: " + method.getName());
             });
@@ -109,6 +151,36 @@ class NodeLifecycleRoutesDrainBudgetTest {
     private Object recordRoute(Object[] args) {
         routedEvents.add(String.valueOf(args[0]));
         return null;
+    }
+
+    private static MembershipFsm fsmAllCore(Set<NodeId> ids) {
+        var fsm = MembershipFsm.membershipFsm();
+
+        ids.forEach(id -> promoteCore(fsm, id));
+
+        return fsm;
+    }
+
+    private static MembershipFsm fsmWithWorkers(Set<NodeId> cores, Set<NodeId> workers) {
+        var fsm = fsmAllCore(cores);
+
+        workers.forEach(id -> promoteWorker(fsm, id));
+
+        return fsm;
+    }
+
+    private static void promoteCore(MembershipFsm fsm, NodeId id) {
+        fsm.onSwimHealthy(id, 1L);
+        fsm.onMemberDescriptor(labeledInfo(id, Map.of(NodeInfo.LABEL_ROLE, "core")));
+    }
+
+    private static void promoteWorker(MembershipFsm fsm, NodeId id) {
+        fsm.onSwimHealthy(id, 1L);
+        fsm.onMemberDescriptor(labeledInfo(id, Map.of(NodeInfo.LABEL_ROLE, "worker")));
+    }
+
+    private static NodeInfo labeledInfo(NodeId id, Map<String, String> labels) {
+        return NodeInfo.nodeInfo(id, NodeAddress.nodeAddress("host-x", 6000).unwrap(), labels);
     }
 
     @Nested
@@ -161,6 +233,81 @@ class NodeLifecycleRoutesDrainBudgetTest {
                                  .await();
 
             assertThat(result.isSuccess()).isTrue();
+        }
+    }
+
+    /// #<disruption-budget-issue>: workers carry no consensus weight, so the core-minimum guard
+    /// scopes to cores only. Fixture: 5 cores (`node-1..5`, matching `DisruptionBudget`'s baseline)
+    /// plus 4 workers (`worker-1..4`), all present and READY.
+    @Nested
+    class WorkerBypass {
+
+        private Set<NodeId> workers;
+
+        @BeforeEach
+        void seedWorkers() {
+            workers = IntStream.rangeClosed(1, 4)
+                               .mapToObj(NodeLifecycleRoutesDrainBudgetTest.this::worker)
+                               .collect(Collectors.toCollection(LinkedHashSet::new));
+            fsm = fsmWithWorkers(presentMembers(), workers);
+            allPresent = new LinkedHashSet<>(presentMembers());
+            allPresent.addAll(workers);
+        }
+
+        /// The reported repro: on a 5-core + 4-worker cluster, sequentially draining every worker
+        /// must never trip the guard — a role-blind guard treats worker headcount as consensus
+        /// capacity it doesn't protect, so enough sequential worker drains could wrongly exhaust it.
+        @Test
+        void drainNode_sequentialWorkerDrains_neverTripTheGuard_onFiveCoreFourWorkerCluster() {
+            workers.forEach(target -> {
+                var result = routes().drainNodeForTest(target.id())
+                                     .onFailure(cause -> fail("Worker " + target.id()
+                                                             + " drain must bypass the core-quorum guard entirely: "
+                                                             + cause.message()))
+                                     .await();
+
+                assertThat(result.isSuccess()).isTrue();
+                result.onSuccess(transition -> assertThat(transition.message()).contains("core-guard skipped (role=worker)"));
+
+                pendingDrains.add(target);
+            });
+        }
+
+        /// Core-side inverse: a connected worker population must not dilute or inflate the CORE
+        /// guard's math. Same two-in-flight-core-drains scenario as
+        /// `DisruptionBudget.drainNode_rejected_whenTwoDrainsAlreadyInFlight`, now with 4 workers
+        /// also present — the guard must still reject at the identical core-scoped threshold.
+        @Test
+        void drainNode_coreGuard_stillTripsAtCoreScopedThreshold_whenWorkersArePresent() {
+            pendingDrains.add(node(1));
+            pendingDrains.add(node(2));
+
+            var result = routes().drainNodeForTest(node(3).id())
+                                 .onSuccess(_ -> fail("Third core drain on a 5-core+4-worker cluster with two "
+                                                     + "in-flight core drains must still be rejected"))
+                                 .await();
+
+            assertThat(result.isFailure()).isTrue();
+            result.onFailure(cause -> assertThat(((HttpError) cause).status()).isEqualTo(HttpStatus.CONFLICT));
+            result.onFailure(cause -> assertThat(cause.message()).contains("Disruption budget exceeded"));
+            result.onFailure(cause -> assertThat(cause.message()).contains("core-scoped"));
+        }
+
+        /// A pending WORKER drain carries no core-quorum weight and must not deflate the CORE
+        /// availability count: with two worker drains pending but zero core drains pending, a core
+        /// drain must pass exactly as if nothing were pending (5 - 0 - 1 = 4 >= 3).
+        @Test
+        void drainNode_coreGuard_ignoresPendingWorkerDrains_whenCheckingCoreBudget() {
+            pendingDrains.add(workers.stream().findFirst().orElseThrow());
+            pendingDrains.add(workers.stream().skip(1).findFirst().orElseThrow());
+
+            var result = routes().drainNodeForTest(node(1).id())
+                                 .onFailure(cause -> fail("A pending WORKER drain must not count against the CORE budget: "
+                                                         + cause.message()))
+                                 .await();
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(transition -> assertThat(transition.message()).contains("core-guard applied (role=core"));
         }
     }
 }

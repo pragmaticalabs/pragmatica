@@ -3957,13 +3957,42 @@ Get membership + readiness for a specific node.
 
 Begin draining a node. The leader delivers a `DRAIN` command on the leader↔node heartbeat; the node self-drains (finishes in-flight requests) and reports `DRAINING` on its heartbeat. The CDM evacuates slices respecting the disruption budget. No node-state KV write happens on this path.
 
-**Response:**
+**Disruption-budget guard — core-scoped, workers bypass entirely.** Workers carry no consensus weight, so the guard applies only to CORE targets: draining a core is refused with `409 Conflict` when it would leave fewer than `coreCount / 2 + 1` core-scoped nodes operational, where `coreCount` and the post-drain count are both computed from `MembershipFsm.coreCountedMembers()` (never from raw presence, which would count workers alongside cores). A **worker** target bypasses this guard entirely rather than being checked against a narrowed worker-only threshold — there is no worker-capacity floor. If operational continuity for workers is ever needed, that is a distinct feature with its own semantics, not an implicit side effect of the core-quorum guard.
+`[mechanism: role resolved via MembershipFsm.memberDescriptor + ActivationDirective override (label-first, directive-overrides), quorum arithmetic in NodeLifecycleRoutes.checkDisruptionBudget]`
+
+Which guard applied — and why — is always visible in `message`, both on success and (implicitly, via `detail`) on rejection, rather than left for the operator to infer from silence:
+- `"...core-guard skipped (role=worker)"` — the target is a worker; the guard did not run.
+- `"...core-guard applied (role=core, available=<n>, min=<m>)"` — the target is core; the guard ran and passed.
+
+**Recovery when a core drain is rejected:** wait for an in-flight core drain to finish departing (it stops counting once membership no longer reports it), or grow core capacity, then retry. There is no override flag — the guard cannot be forced past for a core target.
+
+**Response (success):**
 ```json
 {
   "success": true,
   "nodeId": "node-1",
   "state": "DRAINING",
-  "message": "Node draining initiated"
+  "message": "Drain command enqueued; target will self-drain via heartbeat DRAIN command (core-guard applied (role=core, available=3, min=3))"
+}
+```
+
+**Response (worker target — guard bypassed):**
+```json
+{
+  "success": true,
+  "nodeId": "worker-2",
+  "state": "DRAINING",
+  "message": "Drain command enqueued; target will self-drain via heartbeat DRAIN command (core-guard skipped (role=worker))"
+}
+```
+
+**Response (core target — budget exceeded, 409 Conflict):**
+```json
+{
+  "type": "about:blank",
+  "title": "Conflict",
+  "status": 409,
+  "detail": "Disruption budget exceeded: draining node-3 would leave 2 core-scoped operational nodes, minimum is 3 (role=core; worker drains bypass this guard)"
 }
 ```
 
