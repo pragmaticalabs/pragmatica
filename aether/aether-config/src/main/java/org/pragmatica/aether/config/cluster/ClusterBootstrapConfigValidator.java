@@ -41,6 +41,7 @@ public final class ClusterBootstrapConfigValidator {
         validateCoreTopology(config, errors);
         validateSources(config, errors);
         validatePortDistinctness(config, errors);
+        validateAutoHealDisableHonesty(config, errors);
         if (errors.isEmpty()) {
             return success(config);
         }
@@ -60,6 +61,33 @@ public final class ClusterBootstrapConfigValidator {
                                                                            warnings));
 
         return List.copyOf(warnings);
+    }
+
+    /// #575: `[operations.auto_heal] enabled = false` (or the `[operations] auto_heal = false`
+    /// shortcut — both parse to the same [AutoHealSpec.enabled]) parses, validates, and diffs
+    /// cleanly, then changes nothing: the runtime reads a separately-hand-maintained
+    /// `AutoHealConfig` (`environment-integration`) that has no `enabled` field at all, so nothing
+    /// in the provisioning path ever consults the parsed value. An operator who sets this to stop
+    /// replacement provisioning during an incident gets silent no-op, not the suppression they
+    /// asked for. Mirrors [#checkIngressProviderSupport] (PF-23) — reject a declared knob loudly
+    /// rather than parse it and do nothing. `enabled = true` is NOT rejected: it matches the
+    /// runtime's actual always-on behavior, so it does not assert anything false, even though it is
+    /// equally inert.
+    ///
+    /// This does not leave auto-heal impossible to disable — [ClusterTopologyManager
+    /// #setAutoHealEnabled] (`aether cluster topology auto-heal disable`, #603) is a real,
+    /// already-wired runtime switch; it is simply a different mechanism (an imperative, per-leader
+    /// -term toggle) from this bootstrap-time declarative key.
+    private static void validateAutoHealDisableHonesty(ClusterBootstrapConfig config, List<String> errors) {
+        if (config.operations().autoHeal().enabled()) {
+            return;
+        }
+
+        errors.add("PF-25: [operations.auto_heal] enabled = false has no runtime effect — the parsed"
+                  + " value is never read by the cluster's provisioning path. Remove the key (or set"
+                  + " it to true, its only honest value) and use the live operator toggle instead:"
+                  + " `aether cluster topology auto-heal disable`, which actually suppresses"
+                  + " replacement provisioning for the current leader term.");
     }
 
     private static void validateClusterLevel(ClusterBootstrapConfig config, List<String> errors) {

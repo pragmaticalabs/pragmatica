@@ -333,6 +333,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   build on directories named `*.sql`); `ZCstDumpTest` (a hand-run CST-diff instrument that asserts
   nothing) now runs only when `-Dcstdump.out` is passed, per its own documented invocation.
 
+### Fixed (2026-08-27 — #575: `[operations.auto_heal] enabled` no longer parses into a silent no-op)
+- **A bootstrap-config key that changed nothing now fails validation instead of shipping.**
+  `[operations.auto_heal] enabled = false` (and its `[operations] auto_heal = false` shortcut —
+  both parse to the same `AutoHealSpec.enabled`) parsed, validated, and diffed cleanly, then never
+  reached the runtime: the code that actually gates provisioning reads a separately-hand-maintained
+  `AutoHealConfig` (`environment-integration`) that has no `enabled` field at all. An operator who
+  set this to stop replacement provisioning during an incident got silent no-op, not the suppression
+  they asked for. `ClusterBootstrapConfigValidator` now rejects `enabled = false` outright (`PF-25`),
+  mirroring `checkIngressProviderSupport` (`PF-23`, #574) — reject a declared knob loudly rather than
+  parse it and do nothing. `enabled = true` is left alone: it matches the runtime's actual always-on
+  behavior, so it does not assert anything false, even though it is equally inert. The `cluster init`
+  advanced-config scaffold no longer emits the misleading `enabled = true` line either
+  [verified: `ClusterBootstrapConfigValidatorTest.ClusterLevel.validate_autoHealDisabled_returnsPf25`].
+  Recovery action for an operator who wants to disable auto-heal: use the real, already-wired
+  runtime toggle instead — `aether cluster topology auto-heal disable` (#603) — a different
+  mechanism (an imperative, per-leader-term switch) from this bootstrap-time declarative key.
+- **Known, deferred gap (not fixed by this ticket):** the dead wiring is broader than the `enabled`
+  field. `Main.resolveAutoHeal` only ever applies `#298`'s `max_nodes` cap onto `AutoHealConfig`;
+  every other `[operations.auto_heal]` field (`retry_interval`, `startup_cooldown`,
+  `stale_observation_ttl`, `quic_miss_promotion_threshold`, `provisioning_timeout`,
+  `provision_stability_window`, `decommissioned_retention`, `swim_hints_ttl`) is parsed into
+  `AutoHealSpec` and then discarded — the whole section falls through to `AutoHealConfig.DEFAULT`
+  except for that one field. Collapsing the two duplicated types (`AutoHealSpec` vs `AutoHealConfig`,
+  which also disagree on `decommissionedRetention`'s default: 24h vs 60s) requires touching
+  `Main.java` / `AetherNodeConfig.java`, both outside this stream's territory — tracked as a
+  follow-up structural ticket candidate, not addressed here. Docs (`reference/bootstrap-config.md`,
+  `reference/timeout-configuration.md`) still describe these fields as operator-tunable and need a
+  correction pass; also out of this stream's territory (`aether/docs/**`).
+
 ### Fixed (2026-08-27 — #603: `auto-heal disable` now actually gates provisioning)
 - **The operator kill switch had exactly one reader.** `aether cluster topology auto-heal disable`
   flipped `ClusterTopologyManager.isAutoHealEnabled()` and the status route reported it disabled —
