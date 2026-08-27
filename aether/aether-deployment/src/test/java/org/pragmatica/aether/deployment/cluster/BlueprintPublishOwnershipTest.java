@@ -39,6 +39,8 @@ import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.config.ConfigurationProvider;
+import org.pragmatica.config.source.MapConfigSource;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.StateMachine.Batch;
 import org.pragmatica.consensus.topology.TopologyManager;
@@ -420,4 +422,156 @@ class BlueprintPublishOwnershipTest {
             };
         }
     }
+
+    /// #547 — deploy-time pre-flight for generic resource config sections. Reuses this class's
+    /// on-disk JAR-building harness (unrelated to the #542 migration-ownership scenarios above)
+    /// because it is the one fixture in this module that already builds a real slice jar readable
+    /// by `BlueprintExpander`/`TopologyParser` through a real `Repository`.
+    @Nested
+    class ConfigPreflight {
+        private static final String PREFLIGHT_COORDS = "org.example:preflight-app:1.0.0";
+
+        @Test
+        void publishFromArtifact_fails_whenDeclaredResourceSectionIsNotConfigured() throws IOException {
+            var jar = writeSliceJarWithResource("http", "payments");
+            var result = publishWithComposite(jar, Option.some(providerWithSections()));
+
+            result.onSuccess(_ -> Assertions.fail("Expected deploy to fail: [payments] section is not configured anywhere"))
+                  .onFailure(cause -> assertThat(cause.message()).contains("payments")
+                                                                  .contains("orders-api"));
+        }
+
+        @Test
+        void publishFromArtifact_succeeds_whenDeclaredResourceSectionIsConfigured() throws IOException {
+            var jar = writeSliceJarWithResource("http", "payments");
+            var result = publishWithComposite(jar, Option.some(providerWithSections("payments")));
+
+            result.onFailure(cause -> Assertions.fail("Expected deploy to succeed: " + cause.message()));
+        }
+
+        @Test
+        void publishFromArtifact_succeeds_whenNoConfigurationProviderIsWired() throws IOException {
+            var jar = writeSliceJarWithResource("http", "payments");
+            var result = publishWithComposite(jar, Option.none());
+
+            result.onFailure(cause -> Assertions.fail("Fail-open expected when no ConfigurationProvider is wired: " + cause.message()));
+        }
+
+        /// #547 condition (b): publish-topic sections stay invisible to the pre-flight even when a
+        /// REAL slice jar (parsed through `TopologyParser`/`BlueprintExpander`, not a hand-built
+        /// [org.pragmatica.aether.slice.topology.SliceTopology]) declares both a missing generic
+        /// resource AND a missing publish-topic section side by side. Only the generic resource is
+        /// named — proving the exclusion holds through the actual manifest-generation shape, not just
+        /// the validator's own unit tests.
+        @Test
+        void publishFromArtifact_namesOnlyTheMissingResourceSection_whenAMissingPublishTopicSectionCoexists() throws IOException {
+            var jar = writeSliceJarWithResourceAndPublishTopic("http", "payments", "order-placed");
+            var result = publishWithComposite(jar, Option.some(providerWithSections()));
+
+            result.onSuccess(_ -> Assertions.fail("Expected deploy to fail: [payments] section is not configured anywhere"))
+                  .onFailure(cause -> assertThat(cause.message()).contains("payments")
+                                                                  .doesNotContain("order-placed"));
+        }
+
+        private Result<ExpandedBlueprint> publishWithComposite(Path jar, Option<ConfigurationProvider> nodeComposite) {
+            Repository repository = artifact -> SLICE.equals(artifact)
+                                                 ? Result.lift(Causes::fromThrowable, () -> jar.toUri().toURL())
+                                                         .flatMap(url -> Location.location(artifact, url))
+                                                         .async()
+                                                 : NOT_IN_REPOSITORY.promise();
+
+            return BlueprintService.blueprintService(cluster, store, repository, artifactStore(withoutMigrations(PREFLIGHT_COORDS)), nodeComposite)
+                                   .publishFromArtifact(PREFLIGHT_COORDS + ":blueprint")
+                                   .await();
+        }
+
+        private ConfigurationProvider providerWithSections(String... sections) {
+            var values = new HashMap<String, String>();
+
+            for (var section : sections) {
+                values.put(section + ".present", "true");
+            }
+
+            var source = MapConfigSource.mapConfigSource("test", values).unwrap();
+
+            return ConfigurationProvider.builder().withSource(source).build();
+        }
+
+        /// Same manifest attributes as [BlueprintPublishOwnershipTest#writeSliceJar], plus one
+        /// `META-INF/slice/*.manifest` properties entry declaring a single generic resource
+        /// dependency, in the exact key format `TopologyParser.parseFromJar` expects.
+        private Path writeSliceJarWithResource(String resourceType, String resourceSection) throws IOException {
+            var manifest = new Manifest();
+            var attributes = manifest.getMainAttributes();
+
+            attributes.put(Attributes.Name.MANIFEST_VERSION, "1.0");
+            attributes.putValue(SliceManifest.SLICE_ARTIFACT_ATTR, SLICE.asString());
+            attributes.putValue(SliceManifest.SLICE_CLASS_ATTR, SLICE_CLASS);
+            attributes.putValue(SliceManifest.ENVELOPE_VERSION_ATTR, "1000");
+
+            var target = tempDir.resolve("orders-api-preflight-1.0.0.jar");
+            var topology = """
+                    slice.name=orders-api
+                    routes.count=0
+                    dependencies.count=0
+                    resources.count=1
+                    resource.0.type=%s
+                    resource.0.config=%s
+                    publish.topics.count=0
+                    reactive.count=0
+                    """.formatted(resourceType, resourceSection);
+
+            try (var out = new JarOutputStream(Files.newOutputStream(target), manifest)) {
+                out.putNextEntry(new ZipEntry("org/example/orders/"));
+                out.closeEntry();
+                writeEntry(out, "META-INF/slice/OrdersApi.manifest", topology);
+            }
+
+            return target;
+        }
+
+        /// Same as [#writeSliceJarWithResource] plus a publish-topic/subscription pair (config
+        /// section `topicConfigSection`, self-subscribed so `PubSubValidator`'s orphan-publisher
+        /// check does not fire and mask the assertion this test cares about) — proving the missing
+        /// generic-resource section is named while the co-present, equally-missing topic section is
+        /// not, through a real manifest rather than a hand-built [SliceTopology].
+        private Path writeSliceJarWithResourceAndPublishTopic(String resourceType,
+                                                              String resourceSection,
+                                                              String topicConfigSection) throws IOException {
+            var manifest = new Manifest();
+            var attributes = manifest.getMainAttributes();
+
+            attributes.put(Attributes.Name.MANIFEST_VERSION, "1.0");
+            attributes.putValue(SliceManifest.SLICE_ARTIFACT_ATTR, SLICE.asString());
+            attributes.putValue(SliceManifest.SLICE_CLASS_ATTR, SLICE_CLASS);
+            attributes.putValue(SliceManifest.ENVELOPE_VERSION_ATTR, "1000");
+
+            var target = tempDir.resolve("orders-api-preflight-topic-1.0.0.jar");
+            var topology = """
+                    slice.name=orders-api
+                    routes.count=0
+                    dependencies.count=0
+                    resources.count=1
+                    resource.0.type=%s
+                    resource.0.config=%s
+                    publish.topics.count=1
+                    publish.topic.0.config=%s
+                    publish.topic.0.messageType=com.example.OrderPlaced
+                    reactive.count=1
+                    reactive.0.category=subscription
+                    reactive.0.method=onOrderPlaced
+                    reactive.0.config=%s
+                    reactive.0.messageType=com.example.OrderPlaced
+                    """.formatted(resourceType, resourceSection, topicConfigSection, topicConfigSection);
+
+            try (var out = new JarOutputStream(Files.newOutputStream(target), manifest)) {
+                out.putNextEntry(new ZipEntry("org/example/orders/"));
+                out.closeEntry();
+                writeEntry(out, "META-INF/slice/OrdersApi.manifest", topology);
+            }
+
+            return target;
+        }
+    }
 }
+

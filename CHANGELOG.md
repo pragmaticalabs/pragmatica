@@ -65,6 +65,75 @@ measurably elapse (5,000 → 5,004-5,005ms).
 - `EntityCheckpointDriver.register` did check-then-add, so its documented idempotence held only for
   sequential re-provisioning. Now a single atomic `putIfAbsent`, matching `EntityTimerDriver`.
 - Pre-existing fold defects found here and deliberately left for their own review: #701.
+### Fixed (2026-08-27 — #547: no deploy-time validation for generic resource config sections)
+- **The gap.** A slice's generic resource dependencies (database/cache/HTTP-client/idempotency —
+  `SliceTopology.resources()`) had zero validation at deploy time. A missing `resources.toml`
+  section only surfaced later, one node at a time, as an `SpiResourceProvider.loadConfig` failure
+  during slice activation — after the deploy had already been accepted.
+- **Fix.** `BlueprintService.publish`/`expandAndStoreArtifact` now run a new
+  `ConfigSectionPreflightValidator` against every slice's `resources()` (not `publishes()`/
+  `subscribes()` — see scope note below), aggregating every missing section into one failure via
+  `Result.allOf` so the deploy fails once with a **complete list**, not stop-at-first
+  [verified: `ConfigSectionPreflightValidatorTest`, `BlueprintPublishOwnershipTest.ConfigPreflight`
+  — the latter exercises the real `BlueprintService.publishFromArtifact` path end-to-end with an
+  on-disk slice jar and a real `ConfigurationProvider`].
+- **Scope, deliberately narrow.** Only generic resources are gated. Pub-sub topics/streams already
+  have their own validation stage (`StreamResourceValidator`) with different, non-gating semantics —
+  folding them into this hard-fail check was considered and rejected as scope creep beyond this
+  ticket's acceptance criteria (`BlueprintService.java:340-345`'s own comment already documents the
+  stream-validation gate as a separate stage; `ManifestGenerator` structurally excludes stream
+  resources from the sections this check can see).
+- **Gap 1 (silent synthesis) resolved by documenting, not removing.** `TopicConfig` is the one
+  resource type that still derives its config from the manifest when its `resources.toml` section is
+  absent (`SpiResourceProvider.topicNameFallback`, #396) — there is nothing to synthesise, since the
+  topic name was never a value the operator was supposed to supply. Its javadoc and
+  `resource-reference.md` now say so explicitly; every other resource type has no such fallback.
+- **Honest limits, stated in code and docs.** The check verifies presence and shape against the
+  deploying node's composite view (KV-overlay ⊕ that node's own `aether.toml`), not environmental
+  correctness and not cross-node config homogeneity `[design intent — unverified]`. When no
+  `ConfigurationProvider` is wired on the node at all, the check fails **open** rather than
+  manufacture a false positive.
+- No false positives: a slice whose sections are all present deploys unchanged
+  [verified: `ConfigSectionPreflightValidatorTest.HappyPath`].
+- New: `MissingConfigSection` (Cause), `ConfigSectionPreflightValidator` in
+  `aether/aether-deployment/.../deployment/validation/`. Plumbing: `BlueprintService` gained a 5-arg
+  `blueprintService(...)` factory taking `Option<ConfigurationProvider>`; `AetherNode` wires it from
+  `resourceProviderSetup.nodeComposite()`. The existing 3-/4-arg factories are unchanged in behavior
+  (delegate with `Option.empty()`, i.e. fail-open) — no existing call site or test required updating.
+
+### Fixed (2026-08-27 — #269: slice-level `resources.toml` `${secrets:...}` placeholders not resolved)
+- **The gap.** Node-level `aether.toml`/KV secrets already resolved eagerly via
+  `ConfigurationProvider.withSecretResolution` (`AetherNode.createResourceProviderFacade`), but a
+  slice's own bundled `META-INF/resources.toml` was parsed as-is — a `${secrets:db/password}`
+  placeholder shipped as a literal string into any resource declared only at that layer.
+- **Fix.** `SliceStore` now threads the same node-configured resolver
+  (`Option<Fn1<Promise<String>, String>>` — the narrow functional shape `withSecretResolution`
+  itself already takes, chosen over threading a whole `SecretsProvider` so `aether/slice` doesn't
+  gain a new dependency on `aether/environment-integration`) through to a new
+  `resolveIntrinsicSecrets`, which wraps the slice-intrinsic provider the same way node.toml is
+  wrapped.
+- **All-or-nothing, deliberately.** One failed key drops the ENTIRE slice-intrinsic layer —
+  mirroring the file's own pre-existing malformed-TOML-parse-failure convention — rather than
+  silently keeping the other keys or failing the whole slice load. A resource declared only in the
+  slice's `resources.toml` then fails as not-configured at provision time; the node log names the
+  slice, the failed key, and this consequence (`intrinsicSecretsDroppedMessage`). A slice's
+  resource config that's also set in `aether.toml`/KV is unaffected. *Considered and rejected:*
+  failing the entire slice load on any secret failure — inconsistent with how a malformed
+  `resources.toml` already degrades, and a bigger blast radius than the gap being closed.
+- **R5 redaction, same pass.** `logShadowedKeys`'s INFO line was logging both the slice-intrinsic
+  and operator-override *values* when an operator config shadowed a slice default. It now logs key
+  names only (`shadowedKeys`); swept the rest of `SliceStore.java` for other value-logging sites —
+  this was the only one.
+- Tests pin the success path (placeholder resolved, non-secret keys pass through), the no-resolver
+  path (literal placeholder preserved, pre-#269 behavior), the failure path (entire layer dropped),
+  the consequence message (names the slice/key/secret-path/effect), and the redaction (returns key
+  names only, never a value, for any input) — via directly-testable pure functions rather than log
+  capture, since this codebase's log backend (log4j2) has no unit-test appender-capture utility.
+  [mechanism: `SliceStoreTest`, unit-level — not yet exercised end-to-end with a live secrets
+  backend across nodes]
+- Docs: `aether/docs/slice-developers/resource-reference.md` updated — it previously stated slice
+  secrets were unresolved and pointed at this ticket as future work.
+
 ### Fixed (2026-08-27 — #519 dead-config-accessor gate re-homed so it can pass a clean build)
 - **The gate could not pass a from-scratch reactor run, and had held the branch red for hours.** It
   scans every module in `aether/pom.xml`'s default `<modules>` list by reading each one's

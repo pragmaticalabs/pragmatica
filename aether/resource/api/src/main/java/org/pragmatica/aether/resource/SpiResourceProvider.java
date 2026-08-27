@@ -282,6 +282,13 @@ public final class SpiResourceProvider implements ResourceProvider {
     /// `Topic<T>` constant (the generated factory provisions the publisher by that name), so a missing
     /// resources.toml `[section]` — the author no longer writes `topic_name` — defaults to a topic
     /// named after the section instead of failing slice activation. Non-topic resources are unaffected.
+    ///
+    /// This is the intentional exception to #547's "no resource type silently synthesises
+    /// configuration" gate: `TopicConfig` is a single-field record whose value the runtime already
+    /// knows independently of `resources.toml` (the topic name), so there is nothing to synthesise —
+    /// declaring it here, by design, rather than removing it, is #547's Gap-1 resolution. It also
+    /// means `ConfigSectionPreflightValidator`'s deploy-time pre-flight deliberately does not check
+    /// topic/stream sections at all; only generic [SliceTopology.ResourceDep] resources are gated.
     private static Result<Object> topicNameFallback(String section, Class<?> configType, Result<Object> loaded) {
         return configType.equals(TopicConfig.class)
                ? loaded.recover(_ -> new TopicConfig(section))

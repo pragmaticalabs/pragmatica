@@ -1405,7 +1405,8 @@ public interface AetherNode extends ManageableNode {
                                                resourceProviderSetup.facade(),
                                                config.sliceAction(),
                                                resourceProviderSetup.nodeComposite(),
-                                               Option.some(nodeCodec));
+                                               Option.some(nodeCodec),
+                                               resourceProviderSetup.secretResolver());
         var dhtRebalancer = DHTRebalancer.dhtRebalancer(dhtNode, dhtNetwork, config.artifactRepo());
         var dhtTopologyListener = DHTTopologyListener.dhtTopologyListener(dhtNode, dhtRebalancer);
         var dhtAntiEntropy = DHTAntiEntropy.dhtAntiEntropy(dhtNode, dhtNetwork, config.artifactRepo());
@@ -2284,7 +2285,7 @@ public interface AetherNode extends ManageableNode {
         // NTT-side `LeaderReconciler` (wired below) is the sole provisioning driver.
         periodicTasks.add(schedulePhaseChangeWatcher(effectivePhaseSupplier, clusterTopologyManager));
         var controller = DecisionTreeController.decisionTreeController(config.controllerConfig());
-        var blueprintService = BlueprintService.blueprintService(clusterNode, kvStore, repository, artifactStore);
+        var blueprintService = BlueprintService.blueprintService(clusterNode, kvStore, repository, artifactStore, resourceProviderSetup.nodeComposite());
         var mavenProtocolHandler = MavenProtocolHandler.mavenProtocolHandler(artifactStore);
         var deploymentManager = DeploymentManager.deploymentManager(clusterNode, kvStore);
         var alertManager = AlertManager.alertManager(clusterNode, kvStore);
@@ -5660,7 +5661,8 @@ public interface AetherNode extends ManageableNode {
     record ResourceProviderSetup(ResourceProviderFacade facade,
                                  Option<DynamicConfigurationProvider> dynamicProvider,
                                  Option<ConfigurationProvider> nodeComposite,
-                                 Option<SpiResourceProvider> spiProvider) {}
+                                 Option<SpiResourceProvider> spiProvider,
+                                 Option<Fn1<Promise<String>, String>> secretResolver) {}
 
     private static ResourceProviderSetup createResourceProviderFacade(AetherNodeConfig config) {
         var log = LoggerFactory.getLogger(AetherNode.class);
@@ -5672,15 +5674,23 @@ public interface AetherNode extends ManageableNode {
                                return new ResourceProviderSetup(noOpResourceProviderFacade(),
                                                                 Option.empty(),
                                                                 Option.empty(),
+                                                                Option.empty(),
                                                                 Option.empty());
                            },
                            configProvider -> {
                                log.info("Creating ConfigService and ResourceProvider from configuration provider");
-                               var resolvedProvider = config.environment()
-                                                            .flatMap(EnvironmentIntegration::secrets)
-                                                            .fold(() -> Result.success(configProvider),
-                                                                  sp -> ConfigurationProvider.withSecretResolution(configProvider,
-                                                                                                                   sp::resolveSecret));
+                               // Captured once and reused both for node.toml's own resolution below AND
+                               // threaded down to SliceStore for the slice-intrinsic resources.toml layer
+                               // (#269) — the SAME environment-secrets capability, not a second one. This
+                               // stays valid even if node.toml's OWN secret fails to resolve below: that
+                               // failure is about one node.toml key, not about the SecretsProvider itself
+                               // being broken, so slice-level resolution is independent of it.
+                               var secretsProvider = config.environment()
+                                                           .flatMap(EnvironmentIntegration::secrets);
+                               var secretResolver = secretsProvider.map(sp -> (Fn1<Promise<String>, String>) sp::resolveSecret);
+                               var resolvedProvider = secretsProvider.fold(() -> Result.success(configProvider),
+                                                                           sp -> ConfigurationProvider.withSecretResolution(configProvider,
+                                                                                                                            sp::resolveSecret));
 
                                return resolvedProvider.fold(cause -> {
                                                                 log.error("Failed to resolve secrets in configuration: {}",
@@ -5689,7 +5699,8 @@ public interface AetherNode extends ManageableNode {
                                                                 return new ResourceProviderSetup(noOpResourceProviderFacade(),
                                                                                                  Option.empty(),
                                                                                                  Option.empty(),
-                                                                                                 Option.empty());
+                                                                                                 Option.empty(),
+                                                                                                 secretResolver);
                                                             },
                                                             provider -> {
                                                                 // KV-overlay layer: holds operator config puts only.
@@ -5731,7 +5742,8 @@ public interface AetherNode extends ManageableNode {
         },
                                                                                                  Option.some(dynamicProvider),
                                                                                                  Option.some(nodeComposite),
-                                                                                                 Option.some(resourceProvider));
+                                                                                                 Option.some(resourceProvider),
+                                                                                                 secretResolver);
                                                             });
                            });
     }

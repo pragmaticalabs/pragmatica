@@ -34,6 +34,7 @@ import org.pragmatica.aether.slice.stream.StreamResource;
 import org.pragmatica.aether.slice.stream.StreamVersionSpec;
 import org.pragmatica.aether.slice.blueprint.BlueprintNamespace;
 import org.pragmatica.aether.deployment.schema.SchemaError;
+import org.pragmatica.aether.deployment.validation.ConfigSectionPreflightValidator;
 import org.pragmatica.aether.deployment.validation.StreamResourceValidator;
 import org.pragmatica.aether.deployment.validation.ValidatedStreamResources;
 import org.pragmatica.aether.slice.repository.Location;
@@ -46,6 +47,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVCommand.Put;
 import org.pragmatica.cluster.state.kvstore.KVCommand.Remove;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -80,14 +82,22 @@ public interface BlueprintService {
     static BlueprintService blueprintService(ClusterNode<KVCommand<AetherKey>> cluster,
                                              KVStore<AetherKey, AetherValue> store,
                                              Repository repository,
+                                             ArtifactStore artifactStore,
+                                             Option<ConfigurationProvider> nodeComposite) {
+        return new BlueprintServiceInstance(cluster, store, repository, Option.some(artifactStore), nodeComposite);
+    }
+
+    static BlueprintService blueprintService(ClusterNode<KVCommand<AetherKey>> cluster,
+                                             KVStore<AetherKey, AetherValue> store,
+                                             Repository repository,
                                              ArtifactStore artifactStore) {
-        return new BlueprintServiceInstance(cluster, store, repository, Option.some(artifactStore));
+        return new BlueprintServiceInstance(cluster, store, repository, Option.some(artifactStore), Option.empty());
     }
 
     static BlueprintService blueprintService(ClusterNode<KVCommand<AetherKey>> cluster,
                                              KVStore<AetherKey, AetherValue> store,
                                              Repository repository) {
-        return new BlueprintServiceInstance(cluster, store, repository, Option.empty());
+        return new BlueprintServiceInstance(cluster, store, repository, Option.empty(), Option.empty());
     }
 
     static List<SliceTopology> flattenTopologyResults(List<Result<List<SliceTopology>>> results) {
@@ -118,15 +128,18 @@ class BlueprintServiceInstance implements BlueprintService {
     private final KVStore<AetherKey, AetherValue> store;
     private final Repository repository;
     private final Option<ArtifactStore> artifactStore;
+    private final Option<ConfigurationProvider> nodeComposite;
 
     BlueprintServiceInstance(ClusterNode<KVCommand<AetherKey>> cluster,
                              KVStore<AetherKey, AetherValue> store,
                              Repository repository,
-                             Option<ArtifactStore> artifactStore) {
+                             Option<ArtifactStore> artifactStore,
+                             Option<ConfigurationProvider> nodeComposite) {
         this.cluster = cluster;
         this.store = store;
         this.repository = repository;
         this.artifactStore = artifactStore;
+        this.nodeComposite = nodeComposite;
     }
 
     @Override
@@ -445,9 +458,38 @@ class BlueprintServiceInstance implements BlueprintService {
     }
 
     private Promise<ExpandedBlueprint> validatePubSub(ExpandedBlueprint expanded) {
-        return loadAllTopologies(expanded.loadOrder()).flatMap(topologies -> PubSubValidator.validate(topologies)
-                                                                                            .map(_ -> expanded)
-                                                                                            .async());
+        return loadAllTopologies(expanded.loadOrder()).flatMap(topologies -> {
+            noteConfigSectionPreflightSkipIfBlind(topologies);
+
+            return PubSubValidator.validate(topologies)
+                                  .flatMap(_ -> ConfigSectionPreflightValidator.validate(topologies, nodeComposite))
+                                  .map(_ -> expanded)
+                                  .async();
+        });
+    }
+
+    /// Fail-open is a quiet gate by construction (#547): with no [ConfigurationProvider] wired,
+    /// [ConfigSectionPreflightValidator] cannot distinguish a present section from an absent one, so
+    /// it must not manufacture false positives — but a successful deploy must not read as "checked
+    /// and passed" when it was actually "not checked". Same principle as the drain disruption-budget
+    /// guard's visible bypass note (`NodeLifecycleRoutes`): a gate that quietly doesn't gate is the
+    /// failure mode, so the skip is logged whenever there is at least one resource section it would
+    /// otherwise have checked.
+    private void noteConfigSectionPreflightSkipIfBlind(List<SliceTopology> topologies) {
+        if (nodeComposite.isPresent()) {
+            return;
+        }
+
+        var resourceCount = topologies.stream().mapToInt(t -> t.resources().size()).sum();
+
+        if (resourceCount > 0) {
+            log.warn("Config-section pre-flight (#547) SKIPPED for this deploy: no ConfigurationProvider "
+                    + "is wired on this node, so {} declared resource section(s) across {} slice(s) could not "
+                    + "be checked against the leader's composite configuration view. Deploy proceeds fail-open — "
+                    + "this is 'not checked', not 'checked and passed'.",
+                     resourceCount,
+                     topologies.size());
+        }
     }
 
     private Promise<List<SliceTopology>> loadAllTopologies(List<ResolvedSlice> slices) {

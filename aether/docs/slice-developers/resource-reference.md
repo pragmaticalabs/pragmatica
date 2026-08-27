@@ -141,11 +141,11 @@ The annotation processor classifies factory parameters automatically:
 ### Configuration Section Naming
 
 Resource configuration is layered, not single-file. A slice may bundle its own
-`META-INF/resources.toml` inside the JAR — **slice-intrinsic defaults**, parsed as-is by
-`SliceStore` with no secret resolution. The operator/node-level `aether.toml` (plus the KV-Store
-config overlay above it) is the **deployment layer**; it wins over the slice's intrinsic defaults
-when both define the same key [mechanism: first-wins `LayeredConfigProvider`, node-composite
-listed first].
+`META-INF/resources.toml` inside the JAR — **slice-intrinsic defaults**, parsed by `SliceStore`
+with `${secrets:...}` placeholders resolved (see [Secret Handling](#secret-handling) below). The
+operator/node-level `aether.toml` (plus the KV-Store config overlay above it) is the **deployment
+layer**; it wins over the slice's intrinsic defaults when both define the same key [mechanism:
+first-wins `LayeredConfigProvider`, node-composite listed first].
 
 Both layers use the same section pattern, `[type.qualifier]`:
 
@@ -161,14 +161,62 @@ database = "orders"
 
 The `type` prefix determines which `ResourceFactory` handles provisioning. The `qualifier` suffix distinguishes multiple instances of the same resource type.
 
+### Deploy-Time Validation
+
+Deploying a blueprint runs a pre-flight check over every slice's generic resource dependencies
+(`[type.qualifier]` sections — database, cache, HTTP client, idempotency store, and any other
+resource declared via `@ResourceQualifier`) before any node activates a slice. If one or more
+declared sections have no matching config anywhere in the target cluster, the deploy fails up front
+with the complete list of missing sections, naming the slice, the resource type, and the section —
+not one node at a time, discovered only when that node's `SpiResourceProvider` tries to load the
+resource [mechanism: `ConfigSectionPreflightValidator`, aggregated via `Result.allOf`].
+
+**Scope and honest limits:**
+- Only generic resources are checked. Pub-sub topics (publishers and subscribers) are exempt from
+  this pre-flight — see the fallback note below and [Pub-Sub Messaging](#pub-sub-messaging-subscriber).
+- The check verifies *presence*, not environmental correctness — a `[database.orders]` section that
+  resolves but points at an unreachable host still passes. It checks the **leader's** composite
+  configuration view (KV-Store operator overlay layered over the leader's own `aether.toml`),
+  checked once at deploy time — a section present there but absent from a *different* node's local
+  config file is not caught here `[design intent — unverified]`. A failing check's message names
+  this exact view so it is not mistaken for a cross-node homogeneity guarantee.
+- If the node has no configuration provider at all, the check fails **open** — deploy proceeds
+  unchanged, since absence of a provider means "not checkable," not "not configured." This is a
+  quiet gate by construction, so the skip itself is not: the node logs a warning naming how many
+  declared resource sections went unchecked, so a successful deploy's logs distinguish "checked and
+  passed" from "not checked" `[mechanism: BlueprintService.noteConfigSectionPreflightSkipIfBlind]`.
+- A slice whose declared sections are all present deploys unchanged; this check introduces no new
+  failure mode for a correctly-configured blueprint.
+
+**One resource type is exempt by design, not by omission.** A slice's publisher-side `TopicConfig`
+resource derives its topic name from the manifest (the generated factory already knows the `Topic<T>`
+constant it provisions), so a missing `resources.toml` section for it falls back to a topic named
+after the section instead of failing — there is nothing to synthesise, since the runtime never
+needed the operator to supply that value in the first place. See `SpiResourceProvider.topicNameFallback`
+for the mechanism. Every other resource type in this reference has no such fallback: a missing
+section is always a hard failure, either at this deploy-time pre-flight or, for pub-sub resources
+specifically, at slice activation.
+
 ### Secret Handling
 
 String values containing `${secrets:path/to/secret}` are resolved eagerly at load time by
 `SecretResolvingConfigurationProvider` [verified: `AetherNode.java` — eager resolution against the
-node-composite provider]. **This applies only to `aether.toml` and the KV-Store overlay** — a
-slice's bundled `resources.toml` is parsed raw, with no secret resolution at that layer today.
-Put secrets in the operator-level `aether.toml`, not in a slice-shipped `resources.toml`;
-extending resolution to the slice-intrinsic layer is tracked in #269.
+node-composite provider]. This applies to `aether.toml`, the KV-Store overlay, **and a slice's
+bundled `resources.toml`** — the slice-intrinsic layer is resolved with the same node-configured
+secrets resolver [mechanism: `SliceStore.resolveIntrinsicSecrets` wraps the slice-intrinsic
+provider in `ConfigurationProvider.withSecretResolution` using the same resolver `node.toml` uses].
+
+**Failure is all-or-nothing per layer.** If any `${secrets:...}` key in a slice's `resources.toml`
+fails to resolve, the **entire slice-intrinsic layer is dropped**, not just the failed key — the
+same convention already used for a malformed `resources.toml`. A resource declared *only* in the
+slice's `resources.toml` (not overridden by `aether.toml`/KV) then fails as not-configured at
+provision time; the node log names the slice, the failed key, and this consequence. Resources whose
+config also appears in `aether.toml`/KV are unaffected, since the deployment layer still wins over
+the (now-missing) slice-intrinsic layer.
+
+If no secrets resolver is configured on the node at all, a literal `${secrets:...}` placeholder in
+`resources.toml` passes through unresolved, as before — put secrets that must always resolve in the
+operator-level `aether.toml` if a node may run without a secrets integration configured.
 
 ```toml
 [database.orders]
@@ -771,10 +819,15 @@ Aspects are cross-cutting concerns applied to slice method invocations via confi
 | `backoff_strategy` | `BackoffStrategy` | exponential (3 attempts) | Backoff strategy between retries |
 
 `backoff_strategy` is a **discriminated sub-section**: `[retry.<name>.backoff_strategy]` with a
-`type` key selecting the shape. Omitting the whole `[retry.<name>]` section falls back to
-`RetryConfig.DEFAULT` (3 attempts, exponential); a *present* section that omits `backoff_strategy`
-fails to bind — the discriminator has no config-level default of its own
-[mechanism: `ProviderBasedConfigService.resolveBackoffStrategy`/`buildBackoffStrategy`, #278].
+`type` key selecting the shape. A **wholly absent** `[retry.<name>]` section fails loud
+(`ConfigError.sectionNotFound`) — the binder's `hasSection` gate runs before any per-field default
+and never consults `RetryConfig.DEFAULT`. A **present** section that omits `backoff_strategy`
+entirely instead falls back component-wise to `RetryConfig.DEFAULT.backoffStrategy()` (3 attempts,
+exponential) — the per-field fallback that `CircuitBreakerConfig`/`RetryConfig`'s public `DEFAULT`
+exists to serve. These are opposite outcomes for what looks like the same "nothing configured"
+intent; don't conflate them
+[verified: `RetryConfigTomlBindingTest#config_whollyAbsentSection_failsLoud_doesNotFallBackToDefault`,
+`RetryConfigTomlBindingTest#config_presentSectionOmittingBackoffStrategy_fallsBackToRetryConfigDefault`, #278].
 
 | `type` | Required fields | Optional fields (default) |
 |--------|-----------------|----------------------------|
@@ -893,14 +946,21 @@ extension is registered only when the node's management server starts, so a slic
 [design intent — unverified; open question, not yet resolved: fail-loud vs. a no-op fallback
 registry when management is disabled].
 
-`tags` binds as a comma-joined scalar (`tags = "region,tier"`), not a native TOML array — the
-generic binder now has a `List<String>` handler [mechanism: `ProviderBasedConfigService.collectListValue`, #278].
+`tags` binds as a comma-joined scalar, not a native TOML array — the generic binder now has a
+`List<String>` handler [mechanism: `ProviderBasedConfigService.collectListValue`, #278]. Each entry
+must be a **`"key=value"` pair** (`tags = "region=eu,tier=gold"`), not a bare label
+(`tags = "region"`) — `MetricsInterceptorFactory#parseTags` parses every entry once at provisioning
+time and hands the result to Micrometer's `MeterRegistry.timer(String, Tags)`, which requires named
+dimensions. A bare-label entry fails provisioning (a `Result`, not a thrown exception) with the
+offending value named, rather than surfacing on the interceptor's first invocation
+[verified: `MetricsConfigTomlBindingTest#metricsInterceptorFactory_failsProvisioning_whenTagMissingEqualsSign`, #278].
 
 ```toml
 [metrics.order-processing]
 name = "order.processing"
 record_timing = true
 record_counts = true
+tags = "region=eu,tier=gold"
 ```
 
 ### Logging
