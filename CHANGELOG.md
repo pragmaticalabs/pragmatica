@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Fixed (2026-08-27 — #657: guarantees.md/known-limitations.md denied shipped durable-entity capabilities)
+- `guarantees.md` and `known-limitations.md` still described durable-entity CRUD and reads as
+  "planned, not wired," despite `PartitionFencedDurableEntity` (via `DurableEntityFactory`) having
+  shipped as the production-wired implementation under #345/#352/#596: `aether/node` now depends
+  directly on `resource-durable-entity` (previously "a dependency of nothing but its own parent"),
+  `InMemoryDurableEntity` is package-private/unreachable from any deployed slice, writes are
+  RF=3-replicated by default with fsync-before-ack, and non-owner calls forward to the committed
+  owner instead of refusing. Rewrote the one-line orientation, summary-matrix rows for
+  create/update/delete and both `BOUNDED_STALE`/`LINEARIZABLE` reads, the §6 section header and
+  body, and the Known Gaps entry to reflect this; the `entity.timer`/`workflow.*`/`saga.*` row is
+  untouched — those remain genuinely planned.
+- Corrected a stale sub-clause inside a paragraph the ticket had marked "current, no correction
+  needed": it claimed `LINEARIZABLE` was still "production-DORMANT... until node-wired (#352)",
+  contradicting the rest of the page (that clause was written later than the ticket's baseline).
+  Fixed to state it is live since #352 shipped, with the per-call `EntityError
+  .LinearizableUnavailable` case explained as a freshness-vs-safety asymmetry, not dormancy. Same
+  duplicated clause fixed in the Known Gaps tracking note.
+- `known-limitations.md`'s durable-entity bullet (drifted to line 131, ticket cited 105) rewritten
+  to match: CRUD + both read consistencies wired, only timer/workflow/saga still planned.
+- Flagged, not fixed (outside docs territory): `ReadConsistency.java:20-27` still carries stale
+  javadoc referencing "#277" and "the current HA-only in-memory cut."
+
 ### Fixed (2026-08-27 — #283: stale @Notify/interceptor/qualifier/@Scheduled claims in resource-reference.md)
 - `slice-developers/resource-reference.md` had drifted further since the ticket's original
   2026-06-11 assessment. Fixed: built-in qualifier count (three → four); the config-layering/secret
