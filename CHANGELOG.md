@@ -55,6 +55,51 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   check, and `./forge.sh ci` (38 tests). The format gate caught two files a compile-green build did
   not — the same class that broke this branch once already.
 
+### Added (2026-08-27 — #519 phase 1: permanent dead-config-accessor CI gate)
+- New `aether/node` test-scoped gate, `ConfigKeyLivenessTest`, that scans compiled bytecode
+  (`BytecodeReachability`, ASM `INVOKE*`/`invokedynamic` edges, owner-qualified so same-named
+  accessors on unrelated types don't produce false matches) to catch a config record accessor
+  parsed from TOML but never called by any production code path — landed ahead of, or orphaned
+  behind, its own consumer. Reflective binding (e.g. Jackson) is treated as live via
+  `ReflectiveConfigExemptions`, not flagged. Baseline-and-ratchet, not instant-gate: the corpus was
+  triaged once (see below); the test only fails on a *new* unsuppressed dead accessor from here on.
+  A synthetic fixture (`selfTest_syntheticFixture_distinguishesLiveFromDeadAccessor`) is the
+  permanent positive/negative-control sensor validating the scanner itself, run on every build.
+- New `@ConfigKeyLive("<ticket>: <why>")` annotation (`aether-config`, `RUNTIME`-retention,
+  targets `METHOD` + `RECORD_COMPONENT`) suppresses one flagged accessor with a mandatory
+  ticket-backed justification, read reflectively by the gate — deliberately not
+  `@SuppressWarnings`, which is `SOURCE`-retention and invisible to a bytecode-only scanner.
+- Corpus discovery (`ReactorRoots`) reads the module list directly out of `aether/pom.xml`'s
+  default `<modules>` block, not this JVM's own classpath: a classpath read only sees
+  `aether/node`'s own dependency closure, which is blind to `aether/cli` (a sibling of `node` that
+  depends on `aether-config` directly, not through `node`) — every accessor whose only real caller
+  lived in `cli` was invisible to an earlier classpath-based draft and came back false-DEAD. Fails
+  loud (`missingProductionOutput()`, an explicit build instruction) rather than silently scanning
+  an incomplete corpus when a declared module was never compiled in the working copy.
+- Phase-1 triage of the full `ClusterBootstrapConfig` tree: 9 accessors initially flagged
+  (`SourceProfile.user/key/sshPort`, `FirewallRule.description`, `SshDeploymentConfig.publicKeyFiles`,
+  `TlsDeploymentConfig.clusterSecret`, `OperationsConfig.timeouts`,
+  `TimeoutsConfig.healthCheck/quorumFormation`) are genuinely live, called only from `aether/cli` —
+  correctly resolved once `ReactorRoots` closed the corpus gap above, no suppression needed. 7
+  accessors (`AutoHealSpec`'s 6 unwired fields, #675, prior entry) plus 6 more found this pass
+  (`ClusterBootstrapConfig.configVersion`, `RoleSubTable.role`, `RuntimeProfile.name`,
+  `InfrastructureConfig.networkingType`, `TlsDeploymentConfig.certTtl`,
+  `TimeoutsConfig.drain` in `config.cluster`) are genuinely dead, filed as
+  [#693](https://github.com/pragmaticalabs/pragmatica/issues/693) and suppressed with
+  `@ConfigKeyLive` citing the specific unrelated same-named accessor each one was almost confused
+  with (`ClusterConfigValue.configVersion()`, `NodeLifecycle`/`ReplicationBatcher`/CTM's `.drain()`,
+  `TlsConfig.clusterSecret()` on `Main.resolveClusterSecret`, etc.).
+- Phase 2 (status/health field liveness, deferred from this pass per scope) tracked as
+  [#690](https://github.com/pragmaticalabs/pragmatica/issues/690); #519 itself updated with the
+  phase-1 census.
+- [mechanism: `BytecodeReachability` walks ASM `MethodNode` instructions for `INVOKEVIRTUAL/
+  INVOKESTATIC/INVOKESPECIAL/INVOKEINTERFACE/INVOKEDYNAMIC`, matched by owner-qualified
+  `MethodRef`, over `ReactorRoots.productionRoots()`,
+  aether/node/src/test/java/org/pragmatica/aether/deadsurface/]
+- [verified: `org.pragmatica.aether.deadsurface.ConfigKeyLivenessTest` — both the synthetic
+  positive/negative-control fixture and the real `ClusterBootstrapConfig`-tree gate pass; full
+  `aether/node` test-source tree recompiles clean against the final `ReactorRoots`]
+
 ### Fixed (2026-08-27 — #678: replacement PEERS no longer seeded from discovered-but-dead peers)
 - `ClusterTopologyManagerRecord.buildProvisionContext` — the cold-path PEERS fallback used when the
   `LeaderReconciler`'s live `clusterMembers` set is empty — filtered candidate peers with

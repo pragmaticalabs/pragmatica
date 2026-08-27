@@ -910,3 +910,35 @@ No action needed — stream E landed the correction in `b0437829e`
 opened as a tracked ticket rather than a bare pointer. Verified on disk: both `bootstrap-config.md`
 and `timeout-configuration.md` mark all 8 fields "Parsed, discarded" with `#675` references
 throughout. Closing this handoff.
+
+## 2026-08-27 stream-c (operator surface) — #519 phase 1 landed: dead-config-accessor CI gate, `@ConfigKeyLive` convention now exists
+
+New permanent gate in `aether/node`: `ConfigKeyLivenessTest` (package
+`org.pragmatica.aether.deadsurface`) bytecode-scans every `ClusterBootstrapConfig` tree accessor
+and fails the build on a config record component that's parsed from TOML but never called by any
+production code path. Ratchet, not instant-gate — triaged once (see CHANGELOG `#519 phase 1`
+entry), only fails on a genuinely *new* dead accessor from here on.
+
+**If you add a new field to any `aether-config` record and it isn't read yet** (parsed-ahead-of-
+consumer, a legitimate WIP state), the gate will flag it. Two ways to clear it: wire a real caller,
+or suppress with `@ConfigKeyLive("#<ticket>: <why>")` on the record component — new annotation,
+`aether-config`'s main sources (`org.pragmatica.aether.config.ConfigKeyLive`), `RUNTIME`-retention
+so the scanner can read it reflectively (`@SuppressWarnings` won't work here — it's
+`SOURCE`-retention, invisible to a bytecode scanner). Don't add a suppression without a ticket;
+that's the whole point of the gate.
+
+**One gotcha worth knowing if you touch this corpus-discovery mechanism** (`ReactorRoots`,
+same package): it reads `aether/pom.xml`'s own `<modules>` list, not this JVM's classpath —
+deliberately, because a classpath read is blind to modules `aether/node` doesn't depend on
+(`aether/cli` is a sibling of `node`, not a dependency, and several accessors' only real callers
+lived there — a classpath-based first draft false-flagged all of them as dead). If you're
+extending this to phase 2 (#690, status/health fields — not started, different corpus shape
+likely), re-use `ReactorRoots`, don't re-derive a classpath sweep.
+
+New test dependency in `aether/node/pom.xml`: `org.ow2.asm:asm` (test scope only,
+`${asm.version}`, already defined at the repo root). No production dependency added anywhere.
+
+Six genuinely-dead accessors found and suppressed this pass, filed as
+[#693](https://github.com/pragmaticalabs/pragmatica/issues/693) (separate from #675, which this
+gate's design was validated against as its positive control). Not mine to fix — #693 owns wiring
+these six through or removing them; this gate only tracks the surface, doesn't reduce it.

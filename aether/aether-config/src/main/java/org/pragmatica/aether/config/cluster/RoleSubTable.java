@@ -7,9 +7,14 @@ package org.pragmatica.aether.config.cluster;
 import java.util.List;
 
 import org.pragmatica.lang.Option;
+import org.pragmatica.aether.config.ConfigKeyLive;
 
 
-public record RoleSubTable(NodeRole role,
+/// `role` is #693: parsed and stored in every `RoleSubTable`, but nothing reads this accessor — the
+/// map key it's grouped under (`SourceProfile.roles(): Map<NodeRole, RoleSubTable>`) carries the role
+/// identity for every real consumer instead. `@ConfigKeyLive`-suppressed rather than deleted: #693 owns
+/// the fix, not #519's dead-surface guard.
+public record RoleSubTable(@ConfigKeyLive("#693: parsed but never read — SourceProfile.roles() map key carries role instead") NodeRole role,
                            Option<Integer> count,
                            Option<List<String>> hosts,
                            Option<String> instanceType,

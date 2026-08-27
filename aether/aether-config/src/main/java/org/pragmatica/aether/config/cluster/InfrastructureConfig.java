@@ -5,9 +5,14 @@
 package org.pragmatica.aether.config.cluster;
 
 import org.pragmatica.lang.Option;
+import org.pragmatica.aether.config.ConfigKeyLive;
 
 
-public record InfrastructureConfig(NetworkingType networkingType, Option<SshDeploymentConfig> ssh) {
+/// `networkingType` is #693: parsed from `[infra.networking].type` (defaulting to `MANUAL`) by
+/// `ClusterBootstrapConfigParser.parseInfrastructure`, but no downstream code reads this accessor.
+/// `@ConfigKeyLive`-suppressed rather than deleted: #693 owns the fix, not #519's dead-surface guard.
+public record InfrastructureConfig(@ConfigKeyLive("#693: parsed but never read downstream") NetworkingType networkingType,
+                                   Option<SshDeploymentConfig> ssh) {
     public static InfrastructureConfig infrastructureConfig(NetworkingType networkingType) {
         return new InfrastructureConfig(networkingType, Option.empty());
     }
