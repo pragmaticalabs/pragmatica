@@ -261,6 +261,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   §6.4 boot future-history detector alive: folding self into the candidate makes `persisted > candidate`
   unsatisfiable and retires the mixed-wipe / `down -v` detector — and burns its one-shot latch — without
   deleting a line or failing a test. [mechanism: detector compares self against the CLUSTER-reported phase]
+- **D9 (`cluster-topology-overhaul-spec.md` §6.4) is SUPERSEDED IN PART, deliberately.** Detection is
+  unchanged — the WARN and the `onBootFutureHistory` journal feed still fire. The OUTCOME changes: D9 as
+  ratified restored anyway, regressing a node carrying future history onto the cluster's older state; the
+  adoption floor now refuses that candidate, so the node HOLDS its own history and installs nothing.
+  Committed state must not be discardable by sync adoption — the safety argument outranks detect-only.
+  Reachable only with durable persistence configured (`resolvePersistence` defaults to in-memory). The
+  spec entry carries a supersession note. Both halves are pinned.
+  [verified: integrations/consensus/src/test/java/org/pragmatica/consensus/rabia/RabiaSyncAdoptionQuorumTest.java]
+- **Operator consequence of that change, with its recovery action** (`aether/docs/operators/runbooks/backup-recovery.md`):
+  with backups enabled, a deliberately reset cluster plus one node that kept its old backup directory no
+  longer converges by silently discarding that node's history — the node activates on its own old state
+  and diverges. Recovery: clear each node's `[backup] path` before restarting into a reset cluster. The
+  `BOOT FUTURE-HISTORY` WARN names the condition, and it is now in the runbook's troubleshooting table.
 - **Adoption refuses outright at `clusterSize < 1`.** The requirement would be `0 / 2 == 0`, so a node
   would meet its own threshold with zero responses and activate alone; the previous `clusterSize <= 1 ? 1`
   blocked that by accident. [mechanism: explicit guard in adoptionThresholdMet]

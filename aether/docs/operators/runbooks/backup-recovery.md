@@ -44,6 +44,36 @@ remote = ""
 2. Set the `remote` field to the repository URL
 3. Ensure the Aether process has SSH/HTTPS credentials
 
+## Intentionally resetting a cluster — clear per-node persistence first
+
+**With `[backup] enabled = true`, wiping the cluster is not enough on its own.** Enabling backup
+gives each node durable consensus persistence, and a node that keeps its old backup directory across
+an intentional reset carries consensus history the reset cluster never had.
+
+Since #660, sync adoption refuses to install a state older than what the node already holds. That is
+the correct safety behaviour — committed state must not be discardable by a sync — but it means the
+old-disk node **no longer converges by silently discarding its history**. It activates on its own
+old state and diverges from the freshly-reset cluster. (Before #660 it regressed onto the cluster's
+state and the reset appeared to "just work", which was the same divergence hazard hidden behind a
+detect-only WARN — see D9 in `aether/docs/specs/cluster-topology-overhaul-spec.md`.)
+
+**The node names this condition itself.** Look for:
+
+```
+Node <id> BOOT FUTURE-HISTORY detected (§6.4, detect-only): persisted Rabia phase <N> exceeds
+cluster-reported sync phase <M> — this node carries history the joined cluster never saw
+```
+
+**Recovery action.** On every node, before restarting into the reset cluster, remove the backup
+directory configured as `[backup] path` (`./aether-backups`, `/data/backups`, or
+`/var/aether/backups` by default — see the table above). Then start the cluster. If the WARN above
+appears after a reset, that node's persistence was not cleared: stop it, clear its `[backup] path`,
+and restart it.
+
+This applies only to a DELIBERATE reset. Do not clear persistence to "fix" the warning during a
+genuine recovery — there the node's history is the thing you are trying to keep, and
+`Recovery from Total Cluster Loss` below is the correct procedure.
+
 ## Manual Backup
 
 ### Via CLI
@@ -101,3 +131,4 @@ cat state.toml             # Human-readable TOML
 | Push fails | Invalid remote or credentials | Verify remote URL and SSH keys |
 | Restore fails | Cluster still active | Stop all nodes before restoring |
 | Empty backup | KV-Store has no entries | Normal for fresh cluster |
+| `BOOT FUTURE-HISTORY` WARN after an intentional reset | Node kept its old `[backup] path` across the reset | Stop the node, clear its backup directory, restart — see "Intentionally resetting a cluster" above |

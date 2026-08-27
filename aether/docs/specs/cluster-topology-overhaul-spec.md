@@ -362,6 +362,17 @@ The user ratified the spine and all enrichments. The worker-hygiene wave was add
 - **D7 — RATIFIED AS SPEC'D.** `ReevaluateMembership` is **deleted** (Wave 4) — the FSM delta edge replaces the 2026-06-09 death-edge re-poke structurally.
 - **D8 — RATIFIED.** §6.5/M5 in scope: Wave 8.6 / §5.9 (rejoin-as-KV-convergence + the §5.8 activation-gated replay; AMENDED 2026-06-11 — consumer-side action log superseded by sync → activate → replay). Boot-epoch restart-distinction RC2.
 - **D9 — RATIFIED.** §6.4 mixed-wipe: Wave-1 boot-time detect-only WARN; recovery design RC2.
+  **SUPERSEDED IN PART, 2026-08-27 (#660).** Detection is unchanged — the candidate compared against
+  the persisted phase is still the max over peer sync RESPONSES, and the WARN plus the
+  `onBootFutureHistory` journal feed still fire. What changed is the OUTCOME: D9 as ratified restored
+  anyway, regressing the node onto the cluster's older state. #660's sync-adoption floor
+  (`RabiaEngine.ownStateFloor`) refuses a candidate behind the node's own state, so a node carrying
+  future history now HOLDS that history and installs nothing. Reason for the supersession: committed
+  state must not be discardable by sync adoption — the safety argument outranks detect-only. The
+  change is only reachable with durable persistence configured (`AetherNode.resolvePersistence`
+  defaults to in-memory). Operator consequence and recovery action are in
+  `aether/docs/operators/runbooks/backup-recovery.md` ("Intentionally resetting a cluster"); both
+  halves are pinned by `RabiaSyncAdoptionQuorumTest.BootFutureHistoryD9`.
 - **D10 — RATIFIED (2026-06-10, user: "LGTM"): worker accounting hygiene (Wave 2, W1–W6)** and the resulting wave renumber 2–9. W1–W6 are live correctness bugs (a single worker inflates quorum/heal/role-assignment) and the worker-tier echo of the already-approved audit item 6 (one quorum denominator); placing them early prevents W3-class role mis-assignment from polluting the #245 gate. Scope is deliberately narrow (Class 1 only; Class 2/3 and #241 explicitly out, §5.2).
 - **Enrichment A (ratified)** — per-node persistent transition journal (FSM + PeerState), bounded, dumpable, permanent (Wave 1, §5.1 item 1).
 - **Enrichment B (ratified)** — leader-canonical principle is invariant **A7** (§4.2). The role-correct-counting principle is the new invariant **A8** (from Wave 2 / D10).
