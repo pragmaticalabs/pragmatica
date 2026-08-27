@@ -36,6 +36,7 @@ Two things that may bite you independently of my diff:
   copy) leaves maven believing the source is older than the `.class` built from the patched
   version, so the NEXT build silently runs patched code. Cost me a chased "flake". Touch the file
   after restoring.
+
 ## 2026-08-27 stream-e (docs) — #315 Phase 1 structural cut landed; paths moved, check your links
 
 Aether docs restructure landed on this branch. If you link into `aether/docs/**` from
