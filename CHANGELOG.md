@@ -158,6 +158,66 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   pending a scope ruling; see MAILBOX.md.
 
 ### Fixed (2026-08-27 — #642: ghost QuorumLossDetector self-fenced a node's next incarnation)
+### Fixed (2026-08-27 — #660: Rabia sync adoption counted self twice over, deadlocking a bare-majority cold start)
+- **Sync adoption now requires `clusterSize / 2` PEER responses, with self completing the majority.**
+  The gate compared `clusterSize / 2 + 1` against a response count, but responses only ever arrive from
+  peers (`broadcastPayload` iterates `peers`; self is never one), so it silently demanded `quorum + 1`
+  LIVE nodes. A bare-majority cold start — 3 of 5, or a 3-node cluster with one node down — sat in
+  `Syncing` forever: consensus never reached ACTIVE, so no `QuorumEstablished` dispatched, no leader was
+  elected and no reconciler ran, while every link and every SWIM view stayed healthy. Introduced by
+  `36712ba5a`, whose never-derive-a-threshold-from-connectivity fix was correct and overshot by one:
+  quorum ESTABLISHMENT counts self, adoption did not. The threshold is still derived from `clusterSize`
+  ALONE — never from live, connected or reachable counts.
+  [verified: aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/PostRestartSlowRejoinDeficitFillProbeTest.java]
+- **The same off-by-one made the single-node threshold unsatisfiable.** `clusterSize <= 1` returned 1,
+  and a one-node cluster has zero peers to produce that one response, so it could never leave `Syncing`
+  either. Self alone is the majority of a 1-node cluster; the requirement is now zero.
+  [mechanism: clusterSize / 2 == 0 at clusterSize 1, and self is the whole majority]
+- **Self carries weight as a FLOOR, not as an adoption candidate** (`ownStateFloor`). Relaxing the
+  threshold makes the responder set a minority, so the intersection property that makes adoption safe
+  holds only over `{self} ∪ responders` — self must be able to REFUSE a response set that is behind it,
+  or a node holding a committed phase could adopt a state that lost it. The floor is the more advanced of
+  the persisted and the LIVE phase, because `persistence.save` runs at pause/reconfigure/stop/restore and
+  never on commit, so the persisted snapshot lags live state without bound. When no response beats the
+  floor the node activates on its own state and installs nothing, rather than calling `restoreSnapshot`
+  with a staler picture while advance-only `currentPhase` hides the loss. Refusal is on `<`, not `<=`: an
+  equal phase is an equal committed prefix. [mechanism: quorum intersection over {self} ∪ responders]
+- **The adoption candidate stays the max over peer responses only**, which is what keeps the ratified
+  §6.4 boot future-history detector alive: folding self into the candidate makes `persisted > candidate`
+  unsatisfiable and retires the mixed-wipe / `down -v` detector — and burns its one-shot latch — without
+  deleting a line or failing a test. [mechanism: detector compares self against the CLUSTER-reported phase]
+- **Adoption refuses outright at `clusterSize < 1`.** The requirement would be `0 / 2 == 0`, so a node
+  would meet its own threshold with zero responses and activate alone; the previous `clusterSize <= 1 ? 1`
+  blocked that by accident. [mechanism: explicit guard in adoptionThresholdMet]
+- **Silence killer: the `Syncing` retry loop logged only at TRACE**, so the deadlock produced tens of
+  megabytes of log with no INFO-level indication. It now emits a periodic WARN (every 6th unsatisfied
+  round, roughly every 30s at the default 5s retry) carrying the deciding arithmetic — responses
+  collected, responses required, responder ids, clusterSize — and the operator consequence. Operator
+  recovery: the state clears when a `clusterSize / 2` peer majority answers; a cluster stuck here needs
+  more members started, not a restart of the stuck node. [mechanism: warnIfSyncStuck]
+- Residual recorded as **#667** (rc4): adoption cannot tell a live-ACTIVE responder from a cold one, so
+  for a single node rejoining a still-live cluster with in-memory persistence the relaxed threshold is
+  weaker than the old bound. Sound for the cold-bootstrap case this fix targets; the principled closure
+  is carrying the responder's engine state in `SyncResponse`, which is protocol surface and deliberately
+  out of scope here. [design intent — unverified]
+
+### Fixed (2026-08-27 — #509 probe: the positive control never posted a valid scale request)
+- `PostRestartSlowRejoinDeficitFillProbeTest.postScale` sent `{"coreCount": N}`, a field
+  `ManagementApiResponses.ScaleRequest` has never had. The server rejected it with HTTP 500
+  (`Type mismatch: expected int, got unknown ... ["count"]`), so the configured core count was never
+  raised, the reconciler correctly reported `NO_DEFICIT`, and the control asserted zero provisions.
+  Now sends the documented `{"source":"","role":"core","count":N,"expectedVersion":V}` — the shape
+  `ScaleRequestContractTest` pins and `ClusterScaleCommand` sends.
+- **The control no longer swallows a failed trigger.** `postScale` rendered the response into a log
+  line and discarded the status, so a rejected request produced a confident "the deficit-fill path or
+  the recorder is INERT in this cluster" verdict — a positive control that ignores its own trigger
+  failing does not just miss defects, it manufactures a diagnosis of the wrong subsystem. Any non-2xx
+  now fails the scenario immediately with the status and body.
+- Note for anyone running this module: `mvn -pl aether/forge/forge-tests integration-test` reports
+  `BUILD SUCCESS` even with failing tests — failsafe enforces only at `verify`, which cannot be run
+  while `HCLOUD_TOKEN` is set. The failsafe XML is the only trustworthy verdict.
+
+
 - **`QuorumLossDetector` gains `stop()`** (terminal latch checked at every dispatch point + both
   futures cancelled), called from `AetherNode.stop()` beside the #590 core-absence stop. The defect:
   the detector had no stop, its timers live on the process-wide `SharedScheduler`, and
