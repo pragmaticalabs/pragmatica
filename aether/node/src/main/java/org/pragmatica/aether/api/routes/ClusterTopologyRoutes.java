@@ -51,7 +51,6 @@ import org.pragmatica.aether.slice.fence.OwnershipDomain;
 import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
-import org.pragmatica.consensus.topology.NodeHealth;
 import org.pragmatica.consensus.topology.NodeState;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.consensus.topology.TopologyObserver;
@@ -365,7 +364,7 @@ public final class ClusterTopologyRoutes implements RouteSource {
         var assignedRoles = assignedRoles(node);
         var coreNodeIds = allNodeIds.stream()
                                     .filter(id -> !topologyManager.isPassive(id))
-                                    .filter(id -> isHealthy(topologyManager, id))
+                                    .filter(id -> isDiscovered(topologyManager, id))
                                     .filter(id -> isLiveLifecycle(membershipView, id))
                                     .map(NodeId::id)
                                     .toList();
@@ -506,10 +505,16 @@ public final class ClusterTopologyRoutes implements RouteSource {
                : TopologyObserver.TopologyMode.NORMAL.name();
     }
 
-    private static boolean isHealthy(TopologyManager tm, NodeId id) {
+    /// Discovery, NOT health (#558). This read `state.health() == NodeHealth.HEALTHY`, which was
+    /// constant-true — nothing ever drove a node out of HEALTHY — so the filter was an identity
+    /// function and the name asserted a check that never happened. Removing the dead vocabulary makes
+    /// that explicit; behaviour is unchanged.
+    ///
+    /// The real liveness filtering at the call site is `isLiveLifecycle`, which reads the membership
+    /// view. This predicate only answers "does the observer know this id at all".
+    private static boolean isDiscovered(TopologyManager tm, NodeId id) {
         return tm.getState(id)
-                 .map(state -> state.health() == NodeHealth.HEALTHY)
-                 .or(false);
+                 .isPresent();
     }
 
     /// True when the peer is present in the membership view and keeps a place in the operational
@@ -528,9 +533,16 @@ public final class ClusterTopologyRoutes implements RouteSource {
         var state = tm.getState(nodeId);
         var role = info.flatMap(i -> Option.option(i.labels().get(NodeInfo.LABEL_ROLE))).or("UNKNOWN");
         var assignedRole = assignedRoles.getOrDefault(nodeId, UNASSIGNED_ROLE);
-        var health = state.map(NodeState::health).map(Enum::name).or(connected
-                                                                     ? "CONNECTED"
-                                                                     : "UNKNOWN");
+        // #558 — this reported `NodeState.health().name()`, i.e. literally "HEALTHY" for every node the
+        // observer had ever discovered, dead ones included: nothing ever drove a node out of HEALTHY.
+        // An operator-facing field asserting health it never checked is the same defect as the counts,
+        // with a wider blast radius, so the values are now what is actually known.
+        //   CONNECTED  — a live transport link is observed right now
+        //   DISCOVERED — the observer knows this id, but there is no live link
+        //   UNKNOWN    — not in the observer's map at all
+        var health = state.isPresent()
+                     ? (connected ? "CONNECTED" : "DISCOVERED")
+                     : "UNKNOWN";
         var hostname = info.flatMap(i -> Option.option(i.labels().get(NodeInfo.LABEL_HOSTNAME))).or("");
         var zone = info.flatMap(i -> Option.option(i.labels().get(NodeInfo.LABEL_ZONE))).or("");
         var address = info.map(i -> i.address()
