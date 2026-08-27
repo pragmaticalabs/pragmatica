@@ -115,9 +115,16 @@ import static org.awaitility.Awaitility.await;
 class PostRestartSlowRejoinDeficitFillProbeTest {
     private static final Logger log = LoggerFactory.getLogger(PostRestartSlowRejoinDeficitFillProbeTest.class);
     private static final int INITIAL_CORES = 5;
-    /// The positive control raises the configured core count by exactly one, so a single genuine
+    /// The positive control raises the configured core count to the next legal value, so a genuine
     /// deficit-fill is the only way to converge — the smallest change that proves the path is live.
-    private static final int RAISED_CORES = INITIAL_CORES + 1;
+    ///
+    /// It is +2, not +1: `POST /api/cluster/scale` refuses an even core count outright
+    /// (`HTTP 400 Invalid core count: 6. Must be an odd number >= 3`), because an even core count buys
+    /// no extra fault tolerance over the odd number below it while making a split quorum possible.
+    /// `INITIAL_CORES + 1` was the original value and could never have been accepted; the request was
+    /// malformed on a second axis besides its field names, and both were invisible while `postScale`
+    /// discarded the response status. Same 5→7 step the sibling `ScaleUpFiveToSevenProbeTest` uses.
+    private static final int RAISED_CORES = INITIAL_CORES + 2;
     private static final String NODE_PREFIX = "slowjoin";
     /// The two configured members held back across the restart. Ember names initial nodes
     /// `<prefix>-1..<prefix>-N` deterministically and regenerates the SAME ids after `stop()`, so
@@ -324,11 +331,11 @@ class PostRestartSlowRejoinDeficitFillProbeTest {
         var version = readConfigVersion(leaderPort);
         var response = postScale(leaderPort, RAISED_CORES, version);
 
-        log.info("SLOWJOIN-PROBE CONTROL: POST /api/cluster/scale {{coreCount:{}, expectedVersion:{}}} -> {}",
+        log.info("SLOWJOIN-PROBE CONTROL: POST /api/cluster/scale {{role:core, count:{}, expectedVersion:{}}} -> {}",
                  RAISED_CORES,
                  version,
                  response);
-        recordMilestone("CONTROL scale posted: coreCount=" + RAISED_CORES + " expectedVersion=" + version);
+        recordMilestone("CONTROL scale posted: count=" + RAISED_CORES + " expectedVersion=" + version);
         var t0 = System.nanoTime();
         var fill = new HoldObservation();
 
@@ -674,9 +681,22 @@ class PostRestartSlowRejoinDeficitFillProbeTest {
                : 0;
     }
 
+    /// Posts the documented `ScaleRequest` shape — `source` / `role` / `count` / `expectedVersion`
+    /// (`aether/docs/reference/management-api.md`, `POST /api/cluster/scale`). A blank `source` asks the
+    /// server to infer it, which succeeds here because the Ember cluster declares exactly one source
+    /// carrying `core`.
+    ///
+    /// This body previously sent `coreCount`, a field `ManagementApiResponses.ScaleRequest` has never
+    /// had. The server rejected it with HTTP 500 `Type mismatch: expected int, got unknown ... ["count"]`,
+    /// so the configured count stayed at 5, the reconciler correctly reported `NO_DEFICIT`, and the
+    /// control then asserted zero provisions and blamed the deficit-fill path for a request that never
+    /// landed. The status check below exists because of that run: a positive control that swallows a
+    /// failed trigger is worse than no control at all — it does not merely miss a defect, it manufactures
+    /// a confident diagnosis of the wrong subsystem.
     @TerminalOperation
     private String postScale(int port, int coreCount, int expectedVersion) {
-        var body = "{\"coreCount\":" + coreCount + ",\"expectedVersion\":" + expectedVersion + "}";
+        var body = "{\"source\":\"\",\"role\":\"core\",\"count\":" + coreCount
+                   + ",\"expectedVersion\":" + expectedVersion + "}";
         var request = HttpRequest.newBuilder()
                                  .uri(URI.create("http://localhost:" + port + "/api/cluster/scale"))
                                  .header("Content-Type", "application/json")
@@ -686,8 +706,22 @@ class PostRestartSlowRejoinDeficitFillProbeTest {
 
         return http.sendString(request)
                    .await()
-                   .map(PostRestartSlowRejoinDeficitFillProbeTest::renderResponse)
+                   .map(PostRestartSlowRejoinDeficitFillProbeTest::requireScaleAccepted)
                    .or("scale POST failed (no response)");
+    }
+
+    /// Fails the scenario immediately when the scale trigger itself was refused, so a rejected request
+    /// can never be mistaken for an inert provisioning path.
+    private static String requireScaleAccepted(HttpResult result) {
+        if (result.statusCode() / 100 != 2) {
+            throw new AssertionError("CONTROL TRIGGER REJECTED: POST /api/cluster/scale returned HTTP "
+                                     + result.statusCode()
+                                     + " — the configured core count was never raised, so any subsequent "
+                                     + "zero-provision observation says nothing about the deficit-fill path. "
+                                     + "Body: " + result.body());
+        }
+
+        return renderResponse(result);
     }
 
     private static String renderResponse(HttpResult result) {
