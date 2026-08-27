@@ -1002,7 +1002,8 @@ public class FactoryClassGenerator {
                                                                                    .contains(Modifier.DEFAULT)) {
                         extractPromiseTypeArg(method.getReturnType()).map(responseType -> toProxyMethodInfo(method,
                                                                                                             responseType))
-                                             .onPresent(methods::add);
+                                             .onPresent(methods::add)
+                                             .onEmpty(() -> reportNonPromiseDependencyMethod(dep, method));
                     }
                 }
             }
@@ -1481,8 +1482,17 @@ public class FactoryClassGenerator {
         return capitalize(method.name()) + "Request";
     }
 
+    private static final String PROMISE_QUALIFIED_NAME = "org.pragmatica.lang.Promise";
+
+    /// The erasure check is load-bearing (#612): without it, ANY generic return type yielded its
+    /// first type argument, so `Result<T>` and `Option<T>` were silently treated as `Promise<T>`
+    /// and generated a wrong-shaped proxy method, while non-generic returns vanished without a
+    /// diagnostic. Now only a genuine Promise extracts; everything else reports (see
+    /// [#reportNonPromiseDependencyMethod]).
     private Option<String> extractPromiseTypeArg(TypeMirror type) {
-        if (type instanceof DeclaredType dt) {
+        if (type instanceof DeclaredType dt
+            && dt.asElement() instanceof TypeElement typeElement
+            && typeElement.getQualifiedName().contentEquals(PROMISE_QUALIFIED_NAME)) {
             var typeArgs = dt.getTypeArguments();
 
             if (!typeArgs.isEmpty()) {
@@ -1491,6 +1501,19 @@ public class FactoryClassGenerator {
         }
 
         return Option.none();
+    }
+
+    /// #612: silence was the failure mode — a non-Promise method vanished from the generated
+    /// proxy (or, worse, a generic non-Promise one was misread as a Promise) and the caller found
+    /// out at runtime. Same policy as codec tag collisions and unregistered resources: refuse
+    /// loudly at compile time, anchored on the offending method element.
+    private void reportNonPromiseDependencyMethod(DependencyModel dep, ExecutableElement method) {
+        processingEnv.getMessager()
+                     .printMessage(Diagnostic.Kind.ERROR,
+                                   "Slice dependency method %s.%s returns %s; a slice dependency method must return Promise<T> — slice-to-slice calls are remote-capable, and local shapes (Result, Option, bare values) belong on a step or leaf".formatted(dep.interfaceQualifiedName(),
+                                                                                                                                                                                                                                                          method.getSimpleName(),
+                                                                                                                                                                                                                                                          method.getReturnType()),
+                                   method);
     }
 
     /// Escapes a string for safe embedding in Java string literals.

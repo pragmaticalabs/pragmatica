@@ -1,0 +1,10 @@
+prefix = "/api/factory"
+
+[routes]
+shorten = "POST /shorten"
+plain = "POST /plain"
+updateItem = "PUT /items/{id:Long}"
+lookup = "GET /lookup/{code}"
+
+[errors]
+default = 500

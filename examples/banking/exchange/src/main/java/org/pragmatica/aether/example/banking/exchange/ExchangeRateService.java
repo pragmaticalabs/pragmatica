@@ -19,6 +19,9 @@ import org.pragmatica.lang.Promise;
 ///   - 0-param method: listRates
 ///   - 2-param methods: getRate, convert
 ///   - No factory dependencies
+///
+/// Does NOT demonstrate: a real rate feed. The rate table is a hardcoded snapshot built once at
+/// factory time, so rates never move, never go stale, and no upstream lookup can fail or time out.
 @Slice
 public interface ExchangeRateService {
     // === Errors ===

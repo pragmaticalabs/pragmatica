@@ -12,6 +12,15 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.serialization.Codec;
 
 
+/// Notification intake slice -- the entry point of the notification-hub example.
+///
+/// Demonstrates: @Codec request/response records driving generated HTTP routes, and a
+/// @NotificationStream StreamPublisher fanning every accepted message out to the analytics and
+/// emailer slices, which consume it with @NotificationConsumer.
+///
+/// Does NOT demonstrate: persistence or delivery guarantees. Sent notifications are held in an
+/// in-process list that dies with the node, and nothing acknowledges, retries or de-duplicates a
+/// published event.
 @Slice
 public interface NotificationService {
     @Codec
