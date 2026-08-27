@@ -89,15 +89,20 @@ wire format itself — i.e. a design for *node-binary* version skew, as opposed 
 version skew. A search of the runtime's membership/handshake code turned up no version field, and
 an internal design-completeness review from 2026-06-11 flagged this by name as a real gap with no
 tracking issue: *"No node-version-skew design — `Hello` carries no version field; codecs have no
-evolution rules; no rolling node-binary-upgrade story, no ticket."* As of this writing (2026-08-27)
-that gap still has no visible spec or tracking issue in this repository.
+evolution rules; no rolling node-binary-upgrade story, no ticket."* **That gap is now tracked as
+#666** (filed 2026-08-27): a deliberately minimal, pre-GA scope — a version field on `Hello` plus a
+join-time mismatch policy (refuse-or-degrade, decision pending). Version negotiation, codec
+evolution rules, and mixed-node-binary rolling-upgrade support remain explicit non-goals of that
+ticket and stay unscheduled.
 
 One consequence: **there is currently no recorded decision on whether node-binary version-skew
 safety is a runtime-owned guarantee or an application-owned concern.** This page will not assert
-one — that is an architecture decision this doc can describe once made, not invent. If you are
-relying on the rolling-upgrade procedure across anything other than adjacent rc builds (i.e.
-skipping rc versions in one rolling upgrade), treat that as unverified and validate it yourself;
-the script's built-in canary-wait step is the best available safety net today.
+one — #666 scopes exactly that mismatch-policy decision without yet making it, so this remains a
+tracked-not-designed boundary rather than an invented one. If you are relying on the
+rolling-upgrade procedure across anything other than adjacent rc builds (i.e. skipping rc versions
+in one rolling upgrade), treat that as unverified and validate it yourself; the script's built-in
+canary-wait step is the best available safety net today. See also
+[`known-limitations.md`](known-limitations.md#node-binary-version-skew--no-join-time-version-check-yet).
 
 ## Reference material
 

@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Changed (2026-08-27 — #321 follow-through: node-binary version skew now tracked as #666)
+- `reference/versioning-and-compatibility.md` ("Rolling upgrades and node version skew"):
+  replaced the "no visible spec or tracking issue" language with a reference to #666 (filed
+  2026-08-27), stating its scope (a version field on `Hello` plus a join-time mismatch policy,
+  refuse-or-degrade, decision pending) and explicit non-goals (version negotiation, codec
+  evolution rules, mixed-node-binary rolling-upgrade support). The "no recorded decision on
+  runtime-owned vs. application-owned" sentence is kept but reframed as a **tracked-not-designed
+  boundary** — #666 scopes that mismatch-policy decision without yet making it; this page still
+  does not invent one. Added a cross-reference to the new `known-limitations.md` section.
+- `reference/known-limitations.md`: added a "Node-binary version skew" row to the "Scope at a
+  glance" table (tracking: #666) and a full section describing the gap, why the window to add a
+  `Hello` version field closes at GA (an old node can't parse an extended `Hello`), and the
+  operator-facing fallback (canary-wait rolling upgrade, no rc-skipping) until #666 lands.
+  Cross-links back to `versioning-and-compatibility.md` for the technical writeup.
+- No design/policy decision was made in either edit — both document that a tracking issue now
+  exists for a previously-untracked gap, per the ticket's actual (minimal, detection-only) scope.
+
 ### Fixed (2026-08-27 — #318 audit-trail: stale SecurityMode/security-default claims)
 - Swept `aether/docs/**` and top-level `*.md` for claims about the app-http `security_mode`
   default that predate #290 ("secure by default") and #573 (management-API deny-by-default).

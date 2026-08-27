@@ -9,6 +9,7 @@ Each entry below is a **deliberate boundary with a rationale**, not an apology. 
 | Boundary | Current state | Rationale | Tracking |
 |----------|---------------|-----------|----------|
 | Release maturity | rc series toward GA — **not production-ready** | GA is gated on the scale-validation epic | #365 |
+| Node-binary version skew | No version field on the join/handshake `Hello`; no mismatch policy; no rolling node-binary-upgrade design | Pre-GA gap — the window to add the field closes at GA (an old node can't parse an extended `Hello`) | #666 |
 | Trust model | Single trust domain (self-signed mTLS, shared cluster secret) | No federated identity yet; one operator, one cluster secret | — |
 | Geography | Single-region only | No cross-region data-plane DR designed | #303-class |
 | In-JVM slice isolation | Dependency versions only — no per-slice resource limits, no slice-to-node pinning | The fault boundary is the node; hard isolation is tier-level placement by construction | #614 |
@@ -19,6 +20,24 @@ Each entry below is a **deliberate boundary with a rationale**, not an apology. 
 ## Release maturity — rc series toward GA
 
 Aether is in its **release-candidate series moving toward GA**, and makes **no claim to be production-ready**. GA is not a calendar milestone here — it is gated on the performance-and-scale validation epic (#365), whose headline artifact is the multi-community barrier run (#367). Treat the rc series as suitable for evaluation, development, and controlled pilots, not unattended production traffic. This page shrinks as each rc closes a boundary below.
+
+## Node-binary version skew — no join-time version check yet
+
+The node-to-node membership handshake (`Hello`) carries no version field today, and there are no
+documented codec-evolution rules for the gossip/consensus wire format — a real gap an internal
+design-completeness review flagged by name on 2026-06-11, and which stayed untracked until now.
+**Tracked as #666**, deliberately scoped minimal and pre-GA: add a version field to `Hello` and a
+join-time mismatch policy (refuse or warn-and-degrade — the decision itself is part of the
+ticket; refuse is the conservative default candidate). Version *negotiation*, codec-evolution
+rules, and mixed-node-binary-version rolling-upgrade support are explicit non-goals of #666 and
+remain unscheduled. Timing is deliberate, not arbitrary: a version field cannot be retrofitted
+cleanly after GA, because an old node cannot parse an extended `Hello` — the window to add the
+field at all closes at GA, even if the policy stays detection-only. This is a
+**tracked-not-designed boundary**: #666 closes the detection gap, not the cross-version
+compatibility story. See
+[`versioning-and-compatibility.md`](versioning-and-compatibility.md#rolling-upgrades-and-node-version-skew)
+for the fuller technical writeup and the operator-facing fallback (canary-wait rolling upgrade,
+no rc-skipping) that applies until it lands.
 
 ## Single trust domain
 
