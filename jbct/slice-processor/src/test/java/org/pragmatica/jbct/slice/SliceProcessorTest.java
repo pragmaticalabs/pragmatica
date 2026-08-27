@@ -527,6 +527,106 @@ class SliceProcessorTest {
                   .contains("record inventoryService(MethodHandle<");
     }
 
+    /// #612: a non-Promise dependency method used to vanish silently from the generated proxy.
+    /// The default and static members on the same interface pin the exemption — only abstract
+    /// instance methods are proxy candidates, so only they are checked.
+    @Test
+    void should_fail_on_non_promise_dependency_method() {
+        var externalService = JavaFileObjects.forSourceString("external.InventoryService",
+                                                              """
+            package external;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface InventoryService {
+                Promise<Integer> checkStock(String productId);
+
+                String checkStockSync(String productId);
+
+                default String describe() { return "inventory"; }
+
+                static String version() { return "1"; }
+            }
+            """);
+
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import external.InventoryService;
+
+            @Slice
+            public interface OrderService {
+                Promise<String> placeOrder(String orderId);
+
+                static OrderService orderService(InventoryService inventory) {
+                    return null;
+                }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(externalService);
+        sources.add(source);
+
+        Compilation compilation = javac()
+                                       .withProcessors(new SliceProcessor())
+                                       .compile(sources);
+
+        assertCompilation(compilation).failed();
+        assertCompilation(compilation).hadErrorContaining("external.InventoryService.checkStockSync returns java.lang.String");
+        assertCompilation(compilation).hadErrorContaining("must return Promise<T>");
+    }
+
+    /// #612's nastier half: before the erasure check, ANY generic return extracted its first type
+    /// argument, so `Result<Integer>` was silently treated as `Promise<Integer>` and generated a
+    /// wrong-shaped proxy instead of an error.
+    @Test
+    void should_fail_on_result_returning_dependency_method() {
+        var externalService = JavaFileObjects.forSourceString("external.PricingService",
+                                                              """
+            package external;
+
+            import org.pragmatica.lang.Result;
+
+            public interface PricingService {
+                Result<Integer> quote(String productId);
+            }
+            """);
+
+        var source = JavaFileObjects.forSourceString("test.CheckoutService",
+                                                     """
+            package test;
+
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import external.PricingService;
+
+            @Slice
+            public interface CheckoutService {
+                Promise<String> checkout(String orderId);
+
+                static CheckoutService checkoutService(PricingService pricing) {
+                    return null;
+                }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(externalService);
+        sources.add(source);
+
+        Compilation compilation = javac()
+                                       .withProcessors(new SliceProcessor())
+                                       .compile(sources);
+
+        assertCompilation(compilation).failed();
+        assertCompilation(compilation).hadErrorContaining("external.PricingService.quote returns org.pragmatica.lang.Result<java.lang.Integer>");
+        assertCompilation(compilation).hadErrorContaining("must return Promise<T>");
+    }
+
     @Test
     void should_handle_multiple_dependencies() throws Exception {
         var paymentService = JavaFileObjects.forSourceString("payments.PaymentService",

@@ -11,6 +11,7 @@ Each entry below is a **deliberate boundary with a rationale**, not an apology. 
 | Release maturity | rc series toward GA — **not production-ready** | GA is gated on the scale-validation epic | #365 |
 | Trust model | Single trust domain (self-signed mTLS, shared cluster secret) | No federated identity yet; one operator, one cluster secret | — |
 | Geography | Single-region only | No cross-region data-plane DR designed | #303-class |
+| In-JVM slice isolation | Dependency versions only — no per-slice resource limits, no slice-to-node pinning | The fault boundary is the node; hard isolation is tier-level placement by construction | #614 |
 | Overload / backpressure | Not yet characterized; system-level rate limiting deferred | Deferred **pending performance numbers** — see below | #365, #200 |
 | Hierarchical scale | Multi-community barrier designed, **under validation** | The one barrier Aether has not yet crossed | #367 |
 | Performance numbers | Single-machine / simulated | Multi-node benchmark not yet run | #365 |
@@ -32,6 +33,12 @@ Aether runs within **one trust domain**:
 ## Single region
 
 Aether is **single-region**. There is **no cross-region data-plane disaster recovery** — no cross-region replication of the KV plane, streams, or DHT, and no cross-region failover. The core consensus tier assumes intra-region latencies (Rabia is all-to-all per round). Multi-region is not yet designed; run one cluster per region and handle cross-region concerns above Aether.
+
+## In-JVM slice isolation is version isolation, not a fault boundary
+
+Per-slice classloaders isolate **dependency versions**; the **cluster** isolates failures. Co-located slices share one JVM — heap, GC, native memory — so Aether does not enforce per-slice resource limits in-process, and **pinning a slice to a specific node is not supported**: the blueprint has no placement key, and `PlacementPolicy` (`CORE_ONLY`, `WORKERS_PREFERRED`, `WORKERS_ONLY`, `ALL`) is the entire slice-placement vocabulary. A slice needing hard resource isolation gets it **by construction** — a placement tier whose node pool contains exactly the nodes meant for it, with every other slice kept out of that tier. Mechanics and rationale: [`../architecture/15-resource-and-isolation-model.md`](../architecture/15-resource-and-isolation-model.md).
+
+**Rationale:** the node is already the unit the runtime replicates, retries, and rebalances around; duplicating a fault boundary inside the JVM buys little and costs a scheduler. A per-slice node pin is a possible future feature; #614 records it as explicitly out of scope today.
 
 ## Overload and backpressure not yet characterized
 

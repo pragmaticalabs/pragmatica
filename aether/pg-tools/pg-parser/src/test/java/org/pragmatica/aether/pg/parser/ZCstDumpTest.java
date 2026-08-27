@@ -6,28 +6,37 @@ package org.pragmatica.aether.pg.parser;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Comparator;
 import java.util.List;
 
 import org.junit.jupiter.api.Test;
 
-/// THROWAWAY sensor for the peglib 0.6.0 -> 0.7.2 migration. Delete before committing.
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
+
+/// HAND-RUN differential instrument, not a build-time sensor — it asserts nothing and only writes
+/// dump files. Kept (despite the original "throwaway" intent) because [CorpusParseTest]'s doc
+/// prescribes it for deep CST changes: dump before, dump after, diff. Gated on `cstdump.out` being
+/// set, exactly the way that doc invokes it, so the default surefire sweep skips it instead of
+/// re-walking the whole repo corpus on every build:
+///
+/// ```
+/// mvn -pl aether/pg-tools/pg-parser test -Dtest=ZCstDumpTest \
+///     -Dsurefire.failIfNoSpecifiedTests=false -Dcstdump.out=/abs/path/dump.txt
+/// ```
 ///
 /// Serialises the `PostgresParser.CstNode` tree — the facade's PUBLIC shape, which all 22
-/// consumers read — for every SQL file in the repo. Running this before and after the migration
+/// consumers read — for every SQL file in the repo. Running this before and after a migration
 /// and diffing the output proves the facade is preserved, which no unit test can do on its own.
 class ZCstDumpTest {
-    private static final Path OUT = Path.of(System.getProperty("cstdump.out", "/tmp/cst-dump.txt"));
+    private static final String OUT_PROPERTY = "cstdump.out";
+    private static final Path OUT = Path.of(System.getProperty(OUT_PROPERTY, "/tmp/cst-dump.txt"));
 
     @Test
     void dump_allSqlFiles() throws Exception {
-        var root = repoRoot();
-        var files = Files.walk(root)
-                         .filter(p -> p.toString().endsWith(".sql"))
-                         .filter(p -> !p.toString().contains("/target/"))
-                         .filter(p -> !p.toString().contains("/.git/"))
-                         .sorted(Comparator.comparing(p -> root.relativize(p).toString()))
-                         .toList();
+        assumeTrue(System.getProperty(OUT_PROPERTY) != null,
+                   "hand-run instrument: pass -D" + OUT_PROPERTY + "=/abs/path to run (see class doc)");
+
+        var root = SqlCorpus.repoRoot();
+        var files = SqlCorpus.sqlFiles(root);
         var parser = PostgresParser.create();
         var out = new StringBuilder();
 
@@ -69,18 +78,11 @@ class ZCstDumpTest {
         }
     }
 
-    private static Path repoRoot() {
-        var dir = Path.of("").toAbsolutePath();
-
-        while (dir != null && !Files.exists(dir.resolve("aether/pg-tools/pom.xml"))) {
-            dir = dir.getParent();
-        }
-
-        return dir;
-    }
-
     @Test
     void dump_errorShapes() throws Exception {
+        assumeTrue(System.getProperty(OUT_PROPERTY) != null,
+                   "hand-run instrument: pass -D" + OUT_PROPERTY + "=/abs/path to run (see class doc)");
+
         var parser = PostgresParser.create();
         var broken = List.of("SELECT FROM;",
                              "CREATE TABLE (;",

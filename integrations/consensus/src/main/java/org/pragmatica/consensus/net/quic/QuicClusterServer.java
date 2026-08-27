@@ -25,6 +25,7 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.StreamType;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.serialization.Deserializer;
@@ -72,7 +73,6 @@ public sealed interface QuicClusterServer {
     /// Get the UDP port the server is bound to.
     /// Returns empty if the server is not started.
     Option<Integer> boundPort();
-
     /// #487 self-loopback: one event loop from this server's group, for delivering a send-to-self on the
     /// same dispatch path (an event-loop thread) real inbound frames run on. Empty until the server has
     /// bound.
@@ -250,7 +250,8 @@ final class QuicClusterServerInstance implements QuicClusterServer {
             log.info("QUIC cluster server started on UDP port {}", actualPort);
             promise.succeed(unit());
         } else {
-            promise.fail(new QuicTransportError.BindFailed(port, future.cause()));
+            promise.fail(QuicTransportError.BindFailed.FACTORY.apply(port,
+                                                                     Causes.fromThrowable(future.cause())));
         }
     }
 
