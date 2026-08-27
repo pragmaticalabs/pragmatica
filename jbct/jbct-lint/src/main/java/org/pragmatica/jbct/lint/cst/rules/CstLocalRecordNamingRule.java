@@ -6,8 +6,8 @@ import java.util.stream.Stream;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
+import org.pragmatica.jbct.lint.cst.filetype.FileTypeClassifier;
 import org.pragmatica.jbct.parser.Cursor;
-import org.pragmatica.jbct.parser.CstNodes;
 import org.pragmatica.jbct.parser.RuleKind;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
@@ -48,8 +48,7 @@ public class CstLocalRecordNamingRule implements CstLintRule {
     }
 
     private boolean isLocalRecord(Cursor root, Cursor record) {
-        return enclosingMethodMember(root, record).filter(CstNodes::isMethodMember)
-                           .isPresent();
+        return FileTypeClassifier.isLocalDeclaration(root, record);
     }
 
     private boolean isPascalCase(String name) {

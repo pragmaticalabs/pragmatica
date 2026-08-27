@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
@@ -222,6 +223,21 @@ public final class CstNodes {
             case Cursor.Leaf leaf -> Option.some(leaf.text().toString());
             case Cursor.Branch _, Cursor.ErrorNode _ -> Option.none();
         };
+    }
+
+    // ===== Annotations =====
+    private static final Pattern ANNOTATION_SIMPLE_NAME = Pattern.compile("@\\s*(?:[A-Za-z_$][\\w$]*\\s*\\.\\s*)*([A-Za-z_$][\\w$]*)");
+
+    /// Simple name of an `Annotation` node, robust to the imported and fully-qualified spellings
+    /// (`@Slice` and `@org.pragmatica.aether.slice.annotation.Slice` both yield `Slice`). The name
+    /// is read from [#tokenText], so a trailing comment on the annotation's line cannot leak into
+    /// it. Returns `""` for a node that carries no annotation name.
+    public static String annotationSimpleName(Cursor annotation) {
+        var matcher = ANNOTATION_SIMPLE_NAME.matcher(tokenText(annotation));
+
+        return matcher.find()
+               ? matcher.group(1)
+               : "";
     }
 
     // ===== Spans =====

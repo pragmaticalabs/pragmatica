@@ -37,6 +37,11 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 /// declarations in a value object, constants in a use-case interface — are ignored entirely: never
 /// ranked, never counted, never treated as order-breaking. Other file types are not ordering-checked.
 ///
+/// A type declared inside a METHOD BODY is never a ranking subject. Member scoping is by nearest
+/// enclosing type, so a local record — the slice idiom's implementation record, declared inside the
+/// static factory — reads as a direct member of the interface and is lexically forced after that
+/// factory; ranking it made the required order unsatisfiable for every slice (#645).
+///
 /// The use-case order follows the manuscript's canonical `project-structure.md` list and every
 /// worked code example: the entry method (`execute`) comes early (right after the Request/Response
 /// records) and the static factory is last. (An earlier draft encoded the #453 ticket's inverted
@@ -137,7 +142,7 @@ public class CstMemberOrderingRule implements CstLintRule {
 
     private int useCaseRank(Cursor root, Cursor member, String ownName) {
         return switch (member.kind()) {
-            case TYPE_KIND -> useCaseTypeRank(member);
+            case TYPE_KIND -> useCaseTypeRank(root, member);
             case MEMBER, INTERFACE_MEMBER, RECORD_MEMBER -> memberRank(root, member, ownName, RANK_UC_FACTORY, RANK_UC_ENTRY);
             default -> IGNORED;
         };
@@ -156,7 +161,14 @@ public class CstMemberOrderingRule implements CstLintRule {
                : IGNORED;
     }
 
-    private int useCaseTypeRank(Cursor member) {
+    /// A type declared inside a method body is not a ranking subject: it cannot be moved before the
+    /// method that contains it, so ranking it would make the order unsatisfiable rather than
+    /// enforceable — see the file-level note on the slice idiom.
+    private int useCaseTypeRank(Cursor root, Cursor member) {
+        if (FileTypeClassifier.isLocalDeclaration(root, member)) {
+            return IGNORED;
+        }
+
         if (FileTypeClassifier.isRecord(member)) {
             return RANK_UC_RECORD;
         }

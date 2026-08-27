@@ -7,6 +7,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import org.pragmatica.jbct.parser.Cursor;
+import org.pragmatica.jbct.parser.CstNodes;
 import org.pragmatica.jbct.parser.RuleKind;
 import org.pragmatica.lang.Option;
 
@@ -50,7 +51,6 @@ public final class FileTypeClassifier {
 
     private static final Pattern HEADER_NAME = Pattern.compile("\\b(?:record|class|interface|enum)\\s+([A-Za-z_$][A-Za-z0-9_$]*)");
     private static final Pattern METHOD_NAME = Pattern.compile("\\b([A-Za-z_$][A-Za-z0-9_$]*)\\s*\\(");
-    private static final Pattern ANNOTATION_NAME = Pattern.compile("@\\s*([A-Za-z_$][A-Za-z0-9_$.]*)");
     private static final Pattern EXTENDS_CLAUSE = Pattern.compile("\\bextends\\b([\\s\\S]*?)(?=\\bimplements\\b|\\bpermits\\b|$)");
     private static final Pattern IMPLEMENTS_CLAUSE = Pattern.compile("\\bimplements\\b([\\s\\S]*?)(?=\\bpermits\\b|$)");
     private static final String CAUSE = "Cause";
@@ -107,6 +107,21 @@ public final class FileTypeClassifier {
         return findAll(typeKind, RuleKind.TYPE_KIND).stream()
                       .filter(nested -> nested.idx() != typeKind.idx() && directlyEncloses(root, typeKind, nested))
                       .toList();
+    }
+
+    /// Whether a TYPE node (a `TypeKind`) is declared inside a METHOD BODY — a local class or
+    /// record — rather than in a type's member list. Callers pass type nodes: a method member is its
+    /// own nearest method member and would trivially read as local.
+    ///
+    /// [#directlyEncloses] answers "which type encloses this node", NOT "is this node in that type's
+    /// member list": a method-local declaration has no `TypeKind` between it and the enclosing type,
+    /// so it passes that check and shows up in the enclosing type's member views. Member-ordering
+    /// and member-scanning rules must exclude it explicitly — the slice idiom declares its
+    /// implementation record inside the static factory, and ranking that record as a member made
+    /// JBCT-ORD-01 unsatisfiable for every slice (#645).
+    public static boolean isLocalDeclaration(Cursor root, Cursor node) {
+        return enclosingMethodMember(root, node).filter(CstNodes::isMethodMember)
+                            .isPresent();
     }
 
     /// Whether a method member carries the `static` modifier.
@@ -318,7 +333,7 @@ public final class FileTypeClassifier {
 
     private static boolean hasTestAnnotation(Cursor root) {
         return findAll(root, RuleKind.ANNOTATION).stream()
-                      .map(annotation -> annotationSimpleName(text(annotation)))
+                      .map(CstNodes::annotationSimpleName)
                       .anyMatch(TEST_ANNOTATIONS::contains);
     }
 
@@ -451,21 +466,6 @@ public final class FileTypeClassifier {
     private static String modifiersText(Cursor root, Cursor method) {
         return enclosingMember(root, method).map(wrapper -> text(wrapper))
                             .or(text(method));
-    }
-
-    private static String annotationSimpleName(String annotationText) {
-        var matcher = ANNOTATION_NAME.matcher(annotationText);
-
-        if (!matcher.find()) {
-            return "";
-        }
-
-        var name = matcher.group(1);
-        var dot = name.lastIndexOf('.');
-
-        return dot >= 0
-               ? name.substring(dot + 1)
-               : name;
     }
 
     private static boolean isPublic(Cursor typeDecl) {
