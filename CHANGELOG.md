@@ -100,6 +100,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   the ForwardTarget contract); the read-your-writes caveat of a replica-served BOUNDED_STALE read
   is stated in guarantees.md.
 
+### Fixed (#613 — a slice can bundle its own `javax.*` third-party artifacts)
+- **`SliceClassLoader` no longer forces the whole `javax.` namespace parent-first.** `javax.inject`,
+  `javax.servlet`, `javax.annotation` are ordinary third-party artifacts, and the blanket prefix
+  meant a slice could not bundle its own copy — before the fix, a bundled `javax.inject` ended in
+  `ClassNotFoundException`, which is precisely the per-slice version independence the child-first
+  loader exists to provide. The issue's suggested explicit package list was deliberately not used:
+  it has sharp edges (`javax.annotation` is third-party while `javax.annotation.processing` is JDK;
+  `javax.transaction` vs `javax.transaction.xa`) and drifts across JDK releases. Instead the
+  predicate is the definition itself — a `javax.*` class is parent-first iff the **platform
+  classloader resolves it** — so JDK-shipped namespaces (`javax.xml`, `javax.crypto`, `javax.net`,
+  `javax.sql`, `javax.management`, ...) keep exactly their old routing and a slice-bundled shadow
+  of them is still ignored, closing the classic xml-apis split-namespace `ClassCastException`
+  before it can open. `java.` / `jdk.` / `sun.` are untouched. Three probe-class tests pin it
+  (compiled at test time, the shadows minted via `--patch-module` since vanilla javac refuses the
+  split package): a bundled `javax.inject.Named` resolves to the slice loader; a bundled
+  `javax.xml.parsers.DocumentBuilderFactory` shadow is ignored in favor of the platform class; a
+  bundled `java.lang.String` shadow is ignored in favor of bootstrap `String` — that last pin
+  shadows an EXISTING class deliberately, because a novel `java.lang` probe dies in the JDK's own
+  `defineClass` defense on correct code and mutant alike (`super.loadClass` is
+  parent-first-then-self), distinguishing nothing; measured, not assumed
+
 ### Fixed (#649, #646 — pg validation resolves names by statement structure; upserts stop hard-failing and silent skips become real checks)
 - **#649, the build-blocker:** `INSERT … ON CONFLICT DO UPDATE` hard-failed validation ("Column 'excluded' not found", "Column 'reservations' not found in table 'reservations'") on the ticketing corpus's four monotonic version guards, with no semantics-preserving workaround. The traced mechanism was double mis-routing, not missing-feature-meets-new-code: `validateRoot`'s keyword-presence fallback (UpdateKW+SetKW anywhere, no UpdateStmt — true of every DO UPDATE) ran `validateUpdate` over the whole INSERT, and there `findAll("ColId").getFirst()` picked the wrong node because peglib 0.7.3 lexes `version` as `Token VersionKW` — the recorded "never dispatch on keyword kinds" hazard, in the validator's extractor. Pre-0.7.3 the same wrong path passed by accident (the SET target was still a ColId), which is exactly why the corpus was green until the Aug-24 toolchain. Fix: the fallback is gone; statement dispatch is structural; the DO UPDATE clause gets a real scope — target relation self-referencable by name, alias honored, and `EXCLUDED` registered as a pseudo-relation carrying the target's columns (scoped, not whitelisted: `EXCLUDED.nonexistent_col` errors); SET targets and column lists are read positionally (`CstExtractor.extractColumnList` no longer keys on the `ColId` rule name)
 - **#646:** `RETURNING` lists and UPDATE/DELETE `WHERE`/`USING`/`FROM` column refs now validate against the statement's target scope. Previously `selectOutputColumnNames` did `findAll("SelectCore")` over the whole statement demanding exactly one — so a subquery-free `UPDATE … RETURNING` was silently skipped (the "working" cases were never validated), one WHERE-subquery made RETURNING validate against the subquery's projection (the original three spurious warnings), and two subqueries skipped again. Ticketing's canary is now a test: a bogus RETURNING column on the expireHolds shape errors where it was silent. Subqueries still validate their own scopes
