@@ -2604,7 +2604,7 @@ Complete the deployment (finalize new version, decommission old). Requires leade
 
 Get live cluster topology with per-node details. Returns core/passive/worker counts from the actual connected topology (not static boot-time config).
 
-When a cluster generation snapshot is available the `coreCount` field is derived from the snapshot's `ON_DUTY`+`HEALTHY` core members, and the response additionally carries the current `epoch` string (`"rabiaTerm:localCounter"`). When no snapshot is available yet, `coreCount` falls back to `topologyManager.healthyActiveNodeCount()` and the `epoch` field is omitted.
+When a cluster generation snapshot is available the `coreCount` field is derived from the snapshot's `ON_DUTY`+`HEALTHY` core members, and the response additionally carries the current `epoch` string (`"rabiaTerm:localCounter"`). When no snapshot is available yet, `coreCount` falls back to `topologyManager.reportedActiveNodeCount()` and the `epoch` field is omitted.
 
 The `fsmMembers` array (Wave-1 diagnostic extension, cluster-topology-overhaul spec item 6) exposes the queried node's authoritative per-member `MembershipFsm` truth: lifecycle state (`Observed` / `Member` / `Suspect` / `Departing` / `Dead`), the SWIM incarnation high-water mark, and the last-known descriptor `role` / `source` labels. DEAD members are included (retained for incarnation-fenced rejoin), so a remote run reads membership truth without `docker logs`.
 
@@ -2625,7 +2625,7 @@ Each `nodeDetails` and `fsmMembers` entry carries BOTH `role` (the self-asserted
       "nodeId": "node-1",
       "role": "ACTIVE",
       "assignedRole": "CORE",
-      "health": "HEALTHY",
+      "health": "CONNECTED",
       "hostname": "aether-node-1",
       "zone": "",
       "address": "aether-node-1:6000"
@@ -2634,7 +2634,7 @@ Each `nodeDetails` and `fsmMembers` entry carries BOTH `role` (the self-asserted
       "nodeId": "lb-passive",
       "role": "PASSIVE",
       "assignedRole": "UNASSIGNED",
-      "health": "HEALTHY",
+      "health": "CONNECTED",
       "hostname": "aether-lb",
       "zone": "",
       "address": "0.0.0.0:7000"
@@ -3109,6 +3109,19 @@ is 3. Worker and spot counts carry no quorum constraint and are required only to
   A `VersionConflict` here means another writer — an operator or the auto-heal reconciler — advanced
   the config between this request's read and its commit. Recovery: re-read
   `GET /api/cluster/config` and re-issue the scale with the fresh `expectedVersion`.
+
+**`health` values (changed 2026-08-27, #558).** This field previously reported `NodeState.health`,
+which was `HEALTHY` for every node the observer had ever discovered — nothing ever drove a node out of
+that state, so a dead node still read `HEALTHY`. It now reports what is actually known:
+
+| Value | Meaning |
+|-------|---------|
+| `CONNECTED` | A live transport link to this node is observed right now |
+| `DISCOVERED` | The observer knows this node id, but there is no live link |
+| `UNKNOWN` | The node is not in the observer's map at all |
+
+Note that `DISCOVERED` is not a claim of ill health — it means no live link is currently observed, which
+during formation is routine. For a liveness judgement prefer the membership view's on-duty set.
 
 ### GET /api/cluster/topology/circuit-breaker
 

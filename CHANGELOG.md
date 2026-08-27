@@ -368,7 +368,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   is carrying the responder's engine state in `SyncResponse`, which is protocol surface and deliberately
   out of scope here. [design intent — unverified]
 
-### Changed (2026-08-27 — #558 follow-through: the public count renamed, pre-GA while it is free)
+### Fixed (2026-08-27 — #558 sweep miss: two `NodeHealth` sites broke the branch, and one was an operator-facing lie)
+- **`aether/node` stopped compiling for four commits.** The `NodeHealth` delete missed two sites in
+  `ClusterTopologyRoutes` because the enumerating grep was truncated with `| head -5` and only the
+  predicted downstream modules were built. Fixed in `ba1317723`; the sweep was re-run untruncated (zero
+  residual references) and every downstream module compiled. Both failure modes are now repo build
+  conventions.
+- **`GET /api/cluster/topology` reported `"health": "HEALTHY"` for every node it had ever discovered,
+  dead ones included** — it read `NodeState.health`, which nothing ever mutated. The field now reports
+  what is actually known: `CONNECTED` (live transport link observed), `DISCOVERED` (known id, no live
+  link), `UNKNOWN` (not in the observer's map). **This is a response-VALUE change on a management
+  endpoint**, documented in `management-api.md` with the value table and a caution that `DISCOVERED` is
+  not a claim of ill health. Same defect class as #678, on the surface an operator consults to decide
+  whether a node is alive.
+- `management-api.md`'s `coreCount` fallback reference updated to `reportedActiveNodeCount()`.
+
+
 - **`TopologyManager.healthyActiveNodeCount()` → `reportedActiveNodeCount()`** (public default +
   `TopologyObserver` override + both production callers + 13 count-asserting test sites). Post-delete
   the method performs no health filtering, so the old name asserted a check that does not happen — on
