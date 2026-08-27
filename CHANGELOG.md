@@ -430,6 +430,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   is carrying the responder's engine state in `SyncResponse`, which is protocol surface and deliberately
   out of scope here. [design intent — unverified]
 
+### Fixed (2026-08-27 — #590 follow-up: the PROVISIONED path now carries the role it was provisioned with)
+- **`EmberComputeProvider.createFrom` dropped `ProvisionContext.role` and called the bare `addNode()`,
+  so every node the CTM minted in-JVM — auto-heal replacement or worker-reconcile worker — came up
+  advertising NO role and therefore classifying as a CORE** (`isCoreRole(role) = !"worker".equals(role)`;
+  blank counts as core). `addWorkerNode()` fixed the paths a test controls; this is the path no test can
+  opt out of. Every production provider translates that same field into `AETHER_ROLE` / `aether-role`,
+  which the booting node re-asserts as its SWIM `LABEL_ROLE`, so propagating it is fidelity restoration,
+  not new behaviour. The label is stamped VERBATIM — normalising it here would mask exactly the mislabel
+  a harness exists to expose — and a blank role stamps NO label, mirroring a node booted without
+  `AETHER_ROLE` (`Main.collectNodeLabels` puts the key only when the env var is present).
+  [verified: `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/EmberAddNodeRoleLabelTest.java`]
+- **The equivalence that keeps existing core provisioning unchanged is asserted, not assumed.** `core`
+  and blank are both non-`worker`, so both classify as core — pinned directly against
+  `MemberDescriptor.isCoreRole`, and confirmed end-to-end: the three probes that drive CTM provisioning
+  (`MembershipChaosCycleTest`, `ProvisioningRecoveryAfterFailureBurstProbeTest`,
+  `PostRestartSlowRejoinDeficitFillProbeTest`, 4 tests) stay green while their provisioned replacements
+  now advertise `labels={role=core}` where they previously advertised `{}`.
+- Guard extended to six tests, driving `ComputeProvider.provision(spec)` rather than `createFrom`
+  directly so the static `ProvisionRequest.resolve` choke sits inside the assertion. Both mutations go
+  red on exactly the right tests: dropping the propagation fails the two provisioned cases with
+  `Saw labels={}`; stamping blank unconditionally fails the blank case with `Saw labels={role=}`.
+- **Fragility recorded, not silently absorbed — #689 (rc4).** The role is a SELF-ASSERTED label, and its
+  unknown case fails toward NOT acting: a node intended as a worker whose label never arrives classifies
+  as core, suppresses the core-absence fence, and nothing reports it. The suppressor default is
+  deliberate and unchanged; #689 asks for the leader-side WARN and operator surface for the divergence
+  between intended and advertised role, both of which the leader already holds.
+
 ### Added (2026-08-27 — #590: the community fence's no-double-active ordering, MEASURED)
 - **`CoreAbsenceFenceOrderingTest`** (forge, Heavy, 5 cores + 1 worker) proves the #590 ordering under
   TOTAL isolation: a black-holed worker fences ITSELF via `DrainReason.CORE_ABSENCE`, locally, with no

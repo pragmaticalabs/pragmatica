@@ -57,6 +57,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.concurrent.CancellableTask;
 import org.pragmatica.aether.slice.SliceActionConfig;
@@ -155,9 +156,24 @@ public final class EmberCluster {
             return ProviderDefaults.providerDefaults("in-jvm", "", "", "", Option.none(), false);
         }
 
+        /// Provisions an in-JVM node advertising the role the request ALREADY carries (#590).
+        ///
+        /// Every production provider translates [ProvisionContext#role] into its native encoding
+        /// (`-e AETHER_ROLE=` / `-l aether-role=`), which the booting node then re-asserts as its SWIM
+        /// [NodeInfo#LABEL_ROLE] via `Main.collectNodeLabels`. This provider used to drop that field on
+        /// the floor and call the bare [#addNode], so a CTM-minted worker came up in-JVM classifying as
+        /// a CORE — the same infidelity [#addWorkerNode] documents, on the path that no test can opt out
+        /// of. Faithful-by-construction is the fix: the role rides the request, so it rides the node.
+        ///
+        /// The label is stamped VERBATIM — no normalisation, no mapping. `MemberDescriptor.isCoreRole`
+        /// compares against the literal `worker`, so normalising here would mask exactly the mislabel a
+        /// harness exists to expose. A blank role stamps NO label, mirroring a production node booted
+        /// without `AETHER_ROLE` (`collectNodeLabels` only puts the key when the env var is present);
+        /// blank and `core` are equivalent through `isCoreRole`, which is what keeps every existing
+        /// core-provisioning path unchanged — pinned, not assumed, by `EmberAddNodeRoleLabelTest`.
         @Override
         public Promise<InstanceInfo> createFrom(ProvisionRequest request) {
-            return addNode().map(nodeId -> toInstanceInfo(nodeId.id()));
+            return addNode(roleLabels(request.context().role())).map(nodeId -> toInstanceInfo(nodeId.id()));
         }
 
         @Override
@@ -607,6 +623,16 @@ public final class EmberCluster {
     /// left the label — the thing production actually keys on — still absent.
     public Promise<NodeId> addWorkerNode() {
         return addNode(Map.of(NodeInfo.LABEL_ROLE, WORKER_ROLE));
+    }
+
+    /// The one place a provisioning role becomes a SWIM label. `Verify.Is.present` is non-null AND
+    /// non-blank, so an unset role yields an EMPTY map rather than `role=""` — a node advertising a
+    /// blank role and a node advertising none are indistinguishable to `isCoreRole` today, but only
+    /// the empty map matches what production actually puts on the wire.
+    private static Map<String, String> roleLabels(String role) {
+        return Verify.Is.present(role)
+               ? Map.of(NodeInfo.LABEL_ROLE, role)
+               : Map.of();
     }
 
     /// Shared implementation. `labels` are attached to the node's advertised `NodeInfo`, which is what
