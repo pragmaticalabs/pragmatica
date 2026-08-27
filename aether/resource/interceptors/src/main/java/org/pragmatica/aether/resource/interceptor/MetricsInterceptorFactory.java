@@ -5,7 +5,10 @@
 package org.pragmatica.aether.resource.interceptor;
 
 import org.pragmatica.aether.resource.ResourceFactory;
+import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.lang.Promise;
+
+import io.micrometer.core.instrument.MeterRegistry;
 
 
 public final class MetricsInterceptorFactory implements ResourceFactory<MetricsMethodInterceptor, MetricsConfig> {
@@ -21,6 +24,13 @@ public final class MetricsInterceptorFactory implements ResourceFactory<MetricsM
 
     @Override
     public Promise<MetricsMethodInterceptor> provision(MetricsConfig config) {
-        return Promise.success(new MetricsMethodInterceptor(config));
+        return provision(config, ProvisioningContext.provisioningContext());
+    }
+
+    @Override
+    public Promise<MetricsMethodInterceptor> provision(MetricsConfig config, ProvisioningContext context) {
+        return context.extension(MeterRegistry.class)
+                      .map(registry -> new MetricsMethodInterceptor(config, registry))
+                      .async();
     }
 }

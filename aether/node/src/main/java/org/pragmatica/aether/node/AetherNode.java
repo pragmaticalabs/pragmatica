@@ -319,6 +319,7 @@ import org.pragmatica.cluster.state.kvstore.KVNotificationRouter;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -4096,6 +4097,13 @@ public interface AetherNode extends ManageableNode {
                                                                                                            drainCommandRegistry::drainTargets);
 
                                                   managementServerRef.set(Option.some(managementServer));
+                                                  // #278: expose the node's real MeterRegistry to slice-facing resource
+                                                  // provisioning so MetricsInterceptorFactory records into the SAME
+                                                  // registry the Management API scrapes, instead of each interceptor
+                                                  // fabricating its own disconnected one.
+                                                  resourceProviderSetup.spiProvider()
+                                                                       .onPresent(spi -> spi.registerExtension(MeterRegistry.class,
+                                                                                                               managementServer.meterRegistry()));
 
                                                   return new aetherNode(config,
                                                                         delegateRouter,

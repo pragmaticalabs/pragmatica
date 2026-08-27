@@ -10,17 +10,20 @@ import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 
+import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 
 
-public record MetricsMethodInterceptor(MetricsConfig config) implements MethodInterceptor {
+// #278: registry is resolved by MetricsInterceptorFactory from ProvisioningContext, not carried on
+// MetricsConfig — see MetricsConfig's header comment.
+public record MetricsMethodInterceptor(MetricsConfig config, MeterRegistry registry) implements MethodInterceptor {
     @Override
     public <R, T> Fn1<Promise<R>, T> intercept(Fn1<Promise<R>, T> method) {
         return request -> invokeWithMetrics(method, request);
     }
 
     private <R, T> Promise<R> invokeWithMetrics(Fn1<Promise<R>, T> method, T request) {
-        var sample = Timer.start(config.registry());
+        var sample = Timer.start(registry);
 
         return method.apply(request)
                      .onResult(result -> recordMetrics(sample, result));
@@ -33,6 +36,6 @@ public record MetricsMethodInterceptor(MetricsConfig config) implements MethodIn
                      : ".failure";
         var tagsArray = config.tags().toArray(new String[0]);
 
-        sample.stop(config.registry().timer(config.name() + suffix, tagsArray));
+        sample.stop(registry.timer(config.name() + suffix, tagsArray));
     }
 }

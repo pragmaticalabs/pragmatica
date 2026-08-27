@@ -113,6 +113,7 @@ import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.Deadline;
 import org.pragmatica.net.tcp.TlsConfig;
 
+import io.micrometer.core.instrument.MeterRegistry;
 import io.netty.channel.EventLoopGroup;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -124,6 +125,10 @@ public interface ManagementServer {
     Promise<Unit> start();
     Promise<Unit> stop();
     Promise<Unit> rotateCertificate(org.pragmatica.net.tcp.security.CertificateBundle newBundle);
+    /// The real (Prometheus-backed) meter registry this server publishes `/metrics` from.
+    /// Exposed so resource provisioning (#278) can inject the node's actual `MeterRegistry` into
+    /// slice-facing interceptors instead of each factory fabricating its own disconnected one.
+    MeterRegistry meterRegistry();
 
     @SuppressWarnings("JBCT-RET-01")
     void onHttpForwardRequest(HttpForwardRequest request);
@@ -378,6 +383,11 @@ class ManagementServerImpl implements ManagementServer {
                     .appHttpServer()
                     .httpRoutePublisher()
                     .onPresent(publisher -> publisher.setVersioningMetricsSink(sink));
+    }
+
+    @Override
+    public MeterRegistry meterRegistry() {
+        return observability.registry();
     }
 
     @Override

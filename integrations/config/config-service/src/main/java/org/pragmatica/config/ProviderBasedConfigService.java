@@ -10,6 +10,8 @@ import java.lang.reflect.Type;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.stream.IntStream;
 
@@ -20,6 +22,7 @@ import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.parse.Text;
 import org.pragmatica.lang.parse.TimeSpan;
+import org.pragmatica.lang.utils.Retry.BackoffStrategy;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
@@ -252,6 +255,8 @@ public final class ProviderBasedConfigService implements ConfigService {
         var simpleResult = lookupPrimitive(fullKey, type).orElse(() -> lookupEnum(fullKey, type))
                                           .orElse(() -> lookupNestedRecord(section, key, type));
         var extendedResult = simpleResult.orElse(() -> lookupMap(fullKey, type))
+                                         .orElse(() -> lookupList(type, genericType, fullKey))
+                                         .orElse(() -> lookupBackoffStrategy(fullKey, type))
                                          .orElse(() -> lookupOption(section, key, type, genericType));
 
         return extendedResult.or(typeMismatchError(fullKey, type));
@@ -330,9 +335,13 @@ public final class ProviderBasedConfigService implements ConfigService {
     }
 
     private static Option<Object> parseIoTimeSpanAsObject(String v) {
+        return parseIoTimeSpan(v).map(Object.class::cast);
+    }
+
+    private static Option<org.pragmatica.lang.io.TimeSpan> parseIoTimeSpan(String v) {
         return TimeSpan.timeSpan(v)
                        .option()
-                       .map(ts -> (Object) org.pragmatica.lang.io.TimeSpan.fromDuration(ts.duration()));
+                       .map(ts -> org.pragmatica.lang.io.TimeSpan.fromDuration(ts.duration()));
     }
 
     // --- Type-specific resolvers ---
@@ -396,6 +405,28 @@ public final class ProviderBasedConfigService implements ConfigService {
         return some(extractOptionValue(section, toSnakeCase(key), genericType));
     }
 
+    private Option<Result<Object>> lookupList(Class<?> type, Type genericType, String fullKey) {
+        if (type != List.class || !isStringListType(genericType)) {
+            return none();
+        }
+
+        return some(collectListValue(fullKey));
+    }
+
+    private static boolean isStringListType(Type genericType) {
+        return genericType instanceof ParameterizedType paramType
+            && paramType.getActualTypeArguments().length == 1
+            && paramType.getActualTypeArguments()[0] == String.class;
+    }
+
+    private Option<Result<Object>> lookupBackoffStrategy(String fullKey, Class<?> type) {
+        if (type != BackoffStrategy.class) {
+            return none();
+        }
+
+        return some(resolveBackoffStrategy(fullKey));
+    }
+
     // --- Primitive parsers ---
     private static Option<Integer> safeParseInt(String value) {
         return Number.parseInt(value).option();
@@ -426,6 +457,94 @@ public final class ProviderBasedConfigService implements ConfigService {
         var subKey = mapKey.substring(prefix.length());
 
         provider.getString(mapKey).onPresent(v -> map.put(subKey, v));
+    }
+
+    // --- List<String> value collection ---
+    // Values are comma-joined scalars, not native TOML arrays: TomlDocument#getSection flattens
+    // every value via toString() before ProviderBasedConfigService ever sees it, so a native array
+    // would arrive as Java's accidental "[a, b]" format. This mirrors the repo's established
+    // comma-joined-scalar convention (e.g. HetznerEnvironmentIntegrationFactory#ssh_key_ids).
+    // Absent key defaults to an empty list, matching collectMapValue's zero-matches behavior.
+    private Result<Object> collectListValue(String fullKey) {
+        return success(provider.getString(fullKey)
+                               .map(ProviderBasedConfigService::splitCommaList)
+                               .or(List.of()));
+    }
+
+    private static List<String> splitCommaList(String raw) {
+        return Arrays.stream(raw.split(","))
+                     .map(String::trim)
+                     .filter(s -> !s.isEmpty())
+                     .toList();
+    }
+
+    // --- BackoffStrategy value resolution ---
+    // BackoffStrategy is a closed core value type (fixed/exponential/linear factories on
+    // Retry.BackoffStrategy) - not a record, so it can't go through lookupNestedRecord. A
+    // discriminated [section.field] sub-section with a `type` key selects the strategy; the
+    // exponential branch reuses the same fallback numbers RetryConfig itself already applies
+    // when a caller asks for a strategy without specifying details. fixed/linear have no such
+    // precedent default, so their per-strategy fields are required and fail loud when absent.
+    private Result<Object> resolveBackoffStrategy(String fullKey) {
+        return provider.getString(fullKey + ".type")
+                       .toResult(ConfigError.sectionNotFound(fullKey))
+                       .flatMap(kind -> buildBackoffStrategy(fullKey, kind));
+    }
+
+    private Result<Object> buildBackoffStrategy(String fullKey, String kind) {
+        return switch (kind.toLowerCase(Locale.ROOT)) {
+            case "fixed" -> fixedBackoffStrategy(fullKey);
+            case "exponential" -> exponentialBackoffStrategy(fullKey);
+            case "linear" -> linearBackoffStrategy(fullKey);
+            default -> ConfigError.typeMismatch(fullKey + ".type", "fixed|exponential|linear", kind).result();
+        };
+    }
+
+    private Result<Object> fixedBackoffStrategy(String fullKey) {
+        return requiredIoTimeSpan(fullKey + ".interval").map(interval -> BackoffStrategy.fixed().interval(interval));
+    }
+
+    private Result<Object> exponentialBackoffStrategy(String fullKey) {
+        var initialDelay = optionalIoTimeSpan(fullKey + ".initial_delay", org.pragmatica.lang.io.TimeSpan.timeSpan(100).millis());
+        var maxDelay = optionalIoTimeSpan(fullKey + ".max_delay", org.pragmatica.lang.io.TimeSpan.timeSpan(10).seconds());
+        var factor = optionalDouble(fullKey + ".factor", 2.0);
+        var withJitter = optionalBoolean(fullKey + ".with_jitter", false);
+
+        return success(BackoffStrategy.exponential()
+                                      .initialDelay(initialDelay)
+                                      .maxDelay(maxDelay)
+                                      .factor(factor)
+                                      .jitter(withJitter));
+    }
+
+    private Result<Object> linearBackoffStrategy(String fullKey) {
+        return Result.all(requiredIoTimeSpan(fullKey + ".initial_delay"),
+                          requiredIoTimeSpan(fullKey + ".increment"),
+                          requiredIoTimeSpan(fullKey + ".max_delay"))
+                     .map((initialDelay, increment, maxDelay) -> BackoffStrategy.linear()
+                                                                                .initialDelay(initialDelay)
+                                                                                .increment(increment)
+                                                                                .maxDelay(maxDelay));
+    }
+
+    private Result<org.pragmatica.lang.io.TimeSpan> requiredIoTimeSpan(String fullKey) {
+        return provider.getString(fullKey)
+                       .flatMap(ProviderBasedConfigService::parseIoTimeSpan)
+                       .toResult(ConfigError.sectionNotFound(fullKey));
+    }
+
+    private org.pragmatica.lang.io.TimeSpan optionalIoTimeSpan(String fullKey, org.pragmatica.lang.io.TimeSpan fallback) {
+        return provider.getString(fullKey)
+                       .flatMap(ProviderBasedConfigService::parseIoTimeSpan)
+                       .or(fallback);
+    }
+
+    private double optionalDouble(String fullKey, double fallback) {
+        return provider.getString(fullKey).flatMap(ProviderBasedConfigService::safeParseDouble).or(fallback);
+    }
+
+    private boolean optionalBoolean(String fullKey, boolean fallback) {
+        return provider.getString(fullKey).map(Boolean::parseBoolean).or(fallback);
     }
 
     // --- DEFAULT field lookup ---

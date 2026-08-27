@@ -40,6 +40,11 @@
         </dependency>
         <!-- slice-api, slice-annotations, core inherited from parent with provided scope -->
         <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>config-service</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
             <scope>test</scope>

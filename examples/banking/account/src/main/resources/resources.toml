@@ -16,3 +16,33 @@ connection_timeout = "5s"
 max_lifetime = "30m"
 leak_detection_timeout = "0s"
 io_threads = 0
+
+# #278: CacheConfig has no binder-visible DEFAULT (cacheName is identity-bearing - see
+# CacheConfig's header comment), so every field below is required; a missing one fails loud
+# with ConfigError.sectionNotFound rather than silently collapsing onto a shared "default"
+# namespace. All three sections below share cache_name = "account-balance" DELIBERATELY:
+# @WithCache (getBalance) populates that namespace and @InvalidateBalanceOnCredit /
+# @InvalidateBalanceOnDebit must evict from the SAME one, or a credit/debit would leave a
+# stale balance cached forever (CacheInterceptorFactory keys its shared-backend registry by
+# cacheName, so a mismatched name here would silently give each method its own disconnected
+# cache instead of one shared namespace).
+[cache.account.getBalance]
+cache_name = "account-balance"
+strategy = "CACHE_ASIDE"
+ttl_seconds = 300
+max_entries = 10000
+mode = "LOCAL"
+
+[cache.account.credit]
+cache_name = "account-balance"
+strategy = "WRITE_AROUND"
+ttl_seconds = 300
+max_entries = 10000
+mode = "LOCAL"
+
+[cache.account.debit]
+cache_name = "account-balance"
+strategy = "WRITE_AROUND"
+ttl_seconds = 300
+max_entries = 10000
+mode = "LOCAL"

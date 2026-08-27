@@ -7,8 +7,10 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.lang.utils.Retry.BackoffStrategy;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -34,6 +36,10 @@ class ProviderBasedConfigServiceTest {
     record OptionalTimeSpanConfig(String name, Option<TimeSpan> timeout) {}
 
     record PropsConfig(String name, Map<String, String> properties) {}
+
+    record TagsConfig(String name, List<String> tags) {}
+
+    record RetryStrategyConfig(int maxAttempts, BackoffStrategy backoffStrategy) {}
 
     record InnerConfig(int minConnections, int maxConnections) {
         public static final InnerConfig DEFAULT = new InnerConfig(2, 10);
@@ -214,6 +220,178 @@ class ProviderBasedConfigServiceTest {
 
             assertThat(result.isSuccess()).isTrue();
             assertThat(result.unwrap().properties()).isEmpty();
+        }
+    }
+
+    @Nested
+    class ListFieldBinding {
+
+        @Test
+        void config_listField_splitsCommaJoinedValue() {
+            var service = serviceFrom(Map.of(
+                "test.name", "svc",
+                "test.tags", "a, b,c"
+            ));
+
+            var result = service.config("test", TagsConfig.class);
+
+            assertThat(result.isSuccess()).isTrue();
+            assertThat(result.unwrap().tags()).containsExactly("a", "b", "c");
+        }
+
+        @Test
+        void config_listField_singleValue_singleElementList() {
+            var service = serviceFrom(Map.of(
+                "test.name", "svc",
+                "test.tags", "solo"
+            ));
+
+            var result = service.config("test", TagsConfig.class);
+
+            assertThat(result.isSuccess()).isTrue();
+            assertThat(result.unwrap().tags()).containsExactly("solo");
+        }
+
+        @Test
+        void config_listField_emptyWhenAbsent() {
+            var service = serviceFrom(Map.of(
+                "test.name", "svc"
+            ));
+
+            var result = service.config("test", TagsConfig.class);
+
+            assertThat(result.isSuccess()).isTrue();
+            assertThat(result.unwrap().tags()).isEmpty();
+        }
+    }
+
+    @Nested
+    class BackoffStrategyFieldBinding {
+
+        @Test
+        void config_fixedBackoffStrategy_bindsFromDiscriminatedSection() {
+            var service = serviceFrom(Map.of(
+                "test.max_attempts", "3",
+                "test.backoff_strategy.type", "fixed",
+                "test.backoff_strategy.interval", "500ms"
+            ));
+
+            var result = service.config("test", RetryStrategyConfig.class);
+
+            assertThat(result.isSuccess()).isTrue();
+            var config = result.unwrap();
+            assertThat(config.maxAttempts()).isEqualTo(3);
+            assertThat(config.backoffStrategy()).isEqualTo(BackoffStrategy.fixed()
+                                                                          .interval(TimeSpan.timeSpan(500).millis()));
+        }
+
+        @Test
+        void config_exponentialBackoffStrategy_bindsExplicitValues() {
+            var service = serviceFrom(Map.of(
+                "test.max_attempts", "5",
+                "test.backoff_strategy.type", "exponential",
+                "test.backoff_strategy.initial_delay", "200ms",
+                "test.backoff_strategy.max_delay", "20s",
+                "test.backoff_strategy.factor", "3.0",
+                "test.backoff_strategy.with_jitter", "true"
+            ));
+
+            var result = service.config("test", RetryStrategyConfig.class);
+
+            assertThat(result.isSuccess()).isTrue();
+            assertThat(result.unwrap().backoffStrategy()).isEqualTo(BackoffStrategy.exponential()
+                                                                                    .initialDelay(TimeSpan.timeSpan(200).millis())
+                                                                                    .maxDelay(TimeSpan.timeSpan(20).seconds())
+                                                                                    .factor(3.0)
+                                                                                    .jitter(true));
+        }
+
+        @Test
+        void config_exponentialBackoffStrategy_fallsBackToRetryConfigDefaults_whenSubFieldsOmitted() {
+            var service = serviceFrom(Map.of(
+                "test.max_attempts", "3",
+                "test.backoff_strategy.type", "exponential"
+            ));
+
+            var result = service.config("test", RetryStrategyConfig.class);
+
+            assertThat(result.isSuccess()).isTrue();
+            // Same fallback numbers RetryConfig.withExponentialBackoff already applies (100ms/10s/2.0/no jitter).
+            assertThat(result.unwrap().backoffStrategy()).isEqualTo(BackoffStrategy.exponential()
+                                                                                    .initialDelay(TimeSpan.timeSpan(100).millis())
+                                                                                    .maxDelay(TimeSpan.timeSpan(10).seconds())
+                                                                                    .factor(2.0)
+                                                                                    .jitter(false));
+        }
+
+        @Test
+        void config_linearBackoffStrategy_bindsRequiredValues() {
+            var service = serviceFrom(Map.of(
+                "test.max_attempts", "4",
+                "test.backoff_strategy.type", "linear",
+                "test.backoff_strategy.initial_delay", "1s",
+                "test.backoff_strategy.increment", "2s",
+                "test.backoff_strategy.max_delay", "30s"
+            ));
+
+            var result = service.config("test", RetryStrategyConfig.class);
+
+            assertThat(result.isSuccess()).isTrue();
+            assertThat(result.unwrap().backoffStrategy()).isEqualTo(BackoffStrategy.linear()
+                                                                                    .initialDelay(TimeSpan.timeSpan(1).seconds())
+                                                                                    .increment(TimeSpan.timeSpan(2).seconds())
+                                                                                    .maxDelay(TimeSpan.timeSpan(30).seconds()));
+        }
+
+        @Test
+        void config_fixedBackoffStrategy_missingInterval_returnsFailure() {
+            var service = serviceFrom(Map.of(
+                "test.max_attempts", "3",
+                "test.backoff_strategy.type", "fixed"
+                // missing "test.backoff_strategy.interval" - no precedent default exists to fall back to.
+            ));
+
+            var result = service.config("test", RetryStrategyConfig.class);
+
+            assertThat(result.isFailure()).isTrue();
+        }
+
+        @Test
+        void config_linearBackoffStrategy_missingRequiredField_returnsFailure() {
+            var service = serviceFrom(Map.of(
+                "test.max_attempts", "3",
+                "test.backoff_strategy.type", "linear",
+                "test.backoff_strategy.initial_delay", "1s"
+                // missing "increment" and "max_delay".
+            ));
+
+            var result = service.config("test", RetryStrategyConfig.class);
+
+            assertThat(result.isFailure()).isTrue();
+        }
+
+        @Test
+        void config_backoffStrategy_unknownType_returnsFailure() {
+            var service = serviceFrom(Map.of(
+                "test.max_attempts", "3",
+                "test.backoff_strategy.type", "bogus"
+            ));
+
+            var result = service.config("test", RetryStrategyConfig.class);
+
+            assertThat(result.isFailure()).isTrue();
+        }
+
+        @Test
+        void config_backoffStrategy_missingSection_returnsFailure() {
+            var service = serviceFrom(Map.of(
+                "test.max_attempts", "3"
+                // no "test.backoff_strategy.*" keys at all.
+            ));
+
+            var result = service.config("test", RetryStrategyConfig.class);
+
+            assertThat(result.isFailure()).isTrue();
         }
     }
 

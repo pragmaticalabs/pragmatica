@@ -6,6 +6,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Fixed (2026-08-27 — #278: interceptor config silent-default corruption for retry/metrics provisioning)
+- `CircuitBreakerConfig`'s private `DEFAULTS` renamed to public `DEFAULT`; `RetryConfig` gained a
+  TOML-bindable `BackoffStrategy` (binder resolver) plus a public `DEFAULT`. Before this, an
+  otherwise-present `[retry.*]`/`[circuit_breaker.*]` TOML section with an omitted field silently
+  fell back to a private, binder-invisible default, and `RetryConfig`'s backoff strategy could not
+  be configured from TOML at all.
+- New reflective regression-gate test (`InterceptorConfigDefaultAllowlistTest`) pins which
+  interceptor configs may expose a public static final `DEFAULT` (pure tunables:
+  `CircuitBreakerConfig`, `RetryConfig`) and which must NOT (identity-bearing name fields:
+  `CacheConfig`, `IdempotencyConfig`, `MetricsConfig` — a shared public default would let unrelated
+  TOML call sites silently collapse onto the same cache/store/metrics namespace). Adversarially
+  verified (mutation testing in both directions) to actually catch a regression, not pass vacuously.
+- `MetricsInterceptorFactory` now resolves the node's real `MeterRegistry` from
+  `ProvisioningContext` (registered by `AetherNode` from `ManagementServer.meterRegistry()`)
+  instead of each `MetricsMethodInterceptor` fabricating its own disconnected registry — metrics
+  now land in the SAME registry the Management API `/metrics` endpoint scrapes.
+  **Tradeoff, not yet resolved:** the registry registration only runs when
+  `config.managementPort() > 0` (`AetherNode.java`, inside the management-server startup branch).
+  A node with the management port disabled will now fail to PROVISION any slice using a metrics
+  interceptor, rather than silently recording into a black-hole registry as before.
+  [design intent — unverified] whether fail-loud is the right outcome for management-disabled
+  nodes, versus falling back to a no-op registry, is an open question for the issue owner.
+- Fixed a live bug in the banking example: `examples/banking/account`'s `resources.toml` had zero
+  `[cache.*]` sections (would fail hard at deployment with `ConfigError.sectionNotFound`), and its
+  three cache-touching methods (`getBalance`/`credit`/`debit`) pointed at three different TOML
+  addresses that needed an identical explicit `cache_name` to share one `CacheBackend` instance —
+  without it, `credit`/`debit`'s invalidation silently targeted a disconnected cache, leaving a
+  stale balance served forever. New `CacheInvalidationTest`
+  [verified: examples/banking/account/src/test/java/org/pragmatica/aether/example/banking/account/CacheInvalidationTest.java]
+  proves the fix end-to-end through the real TOML-binder -> `CacheInterceptorFactory` ->
+  `CacheMethodInterceptor` path — not the plain-record construction `AccountServiceTest` uses,
+  which bypasses interceptor wiring entirely — including an adversarial case proving the staleness
+  failure mode actually manifests when `cache_name` diverges.
+
 ### Removed (2026-08-27 — #560: orphaned `aether-lb` Dockerfile deleted, cloud-testing-spec.md marked historical)
 - `aether/docker/aether-lb/Dockerfile` deleted (with its now-empty parent directory). It built
   against `aether/lb/target/aether-lb.jar`, a path nothing in the repo produces — `aether/lb` isn't

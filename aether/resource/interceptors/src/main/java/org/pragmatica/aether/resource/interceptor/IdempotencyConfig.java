@@ -11,6 +11,10 @@ import static org.pragmatica.lang.Verify.ensure;
 
 
 public record IdempotencyConfig(String storeName, int retentionSeconds, int maxEntries, CacheMode mode) {
+    // Deliberately named DEFAULTS, not DEFAULT: storeName is identity-bearing. Exposing this as a
+    // binder-visible DEFAULT would let multiple TOML-configured call sites silently collapse onto
+    // the same idempotency store ("default") when storeName is omitted (#278). Callers MUST supply
+    // an explicit storeName; a missing [idempotency.*] section fails loud via ConfigError.sectionNotFound.
     private static final IdempotencyConfig DEFAULTS = new IdempotencyConfig("default", 3600, 10_000, CacheMode.LOCAL);
 
     public static IdempotencyConfig idempotencyConfig() {
