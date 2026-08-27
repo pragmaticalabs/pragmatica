@@ -20,6 +20,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSlotValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
@@ -131,6 +132,31 @@ class ClusterTopologyManagerActuatorTest {
                     .as("each PEERS entry is a 3-part id:host:port tuple")
                     .hasSize(3);
         }
+    }
+
+    /// #678 — the cold-path fallback (`clusterMembers` empty) must not seed a discovered-but-dead
+    /// peer into PEERS. PEER_A and PEER_B are both discovered (SWIM gossip added them to the dial
+    /// set), but the latched snapshot's `coreMemberIds` — the observed-reachability projection
+    /// (`MembershipFsm.coreObservedMembers` in production) — only carries SELF and PEER_A. PEER_B
+    /// models a just-killed host that stays "discovered" forever but never completed a QUIC
+    /// handshake / SWIM ALIVE: before the fix, `isDiscoveredPeer` alone would have let it into the
+    /// replacement's PEERS list regardless.
+    @Test
+    void provisionReplacement_coldPath_excludesDiscoveredButUnreachablePeer() {
+        ctm.activate();
+        observer.handleDiscoveredNodes(new NetworkMessage.DiscoveredNodes(SELF, List.of(INFO_A, INFO_B)));
+        snapshotSource.setCoreMembers(Set.of(SELF, PEER_A));
+
+        var result = ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), Set.of(), NodeRole.CORE).await();
+
+        assertThat(result.isSuccess()).isTrue();
+        var peers = lifecycleManager.lastSpec().context().peers().or("");
+        assertThat(peers)
+                .as("cold-path PEERS includes self and the reachable peer")
+                .contains(SELF.id(), PEER_A.id());
+        assertThat(peers)
+                .as("cold-path PEERS excludes a discovered peer with no observed reachability")
+                .doesNotContain(PEER_B.id());
     }
 
     /// Wave 2 / W4 (cluster-topology-overhaul spec): the intended role passed to
@@ -449,6 +475,27 @@ class ClusterTopologyManagerActuatorTest {
 
         @Override public long observedRabiaTerm() {
             return term.get();
+        }
+
+        /// #678 test hook — latches a snapshot whose `coreMemberIds()` is exactly the given set,
+        /// simulating the production `PresenceGenerationSnapshotSource` wiring where that set is
+        /// `MembershipFsm.coreObservedMembers` (discovered peers narrowed to observed reachability).
+        void setCoreMembers(Set<NodeId> coreMemberIds) {
+            view.set(Option.some(new FixedMembershipView(coreMemberIds)));
+        }
+    }
+
+    private record FixedMembershipView(Set<NodeId> coreMemberIds) implements MembershipView {
+        @Override public Set<NodeId> onDutyMemberIds() {
+            return coreMemberIds;
+        }
+
+        @Override public int healthyOnDutyCount() {
+            return coreMemberIds.size();
+        }
+
+        @Override public int desiredCoreSize() {
+            return coreMemberIds.size();
         }
     }
 

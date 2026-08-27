@@ -19,6 +19,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -536,7 +537,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// live set — instead of `observer.topology()` ∩ `isDiscoveredPeer` — keeps just-killed
     /// hostnames out of the PEERS list, preventing DOA replacements (dead-host PEERS →
     /// QUIC NPE). If `clusterMembers` is empty (cold paths), the seed falls back to
-    /// `buildProvisionContext`'s topology-derived peers. `failedPeer` is observability-only.
+    /// `buildProvisionContext`'s topology-derived peers, which additionally intersects with
+    /// `liveObservedPeer` (#678) so the cold-path fallback keeps the same dead-host protection
+    /// this live-set path gets for free from `clusterMembers` itself. `failedPeer` is
+    /// observability-only.
     ///
     /// The source profile name is resolved here from the persisted cluster config
     /// ([#replacementSourceName]) rather than hardcoded, so a core replacement is stamped with the
@@ -1382,9 +1386,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         // preflightCheck` would defensively reject it. Including self guarantees the replacement
         // can always reach at least one live consensus peer.
         var selfEntry = formatPeerEntry(observer.self());
+        var isDiscoveredAndLive = ((Predicate<NodeId>) this::isDiscoveredPeer).and(liveObservedPeer());
         var remoteEntries = observer.topology()
                                     .stream()
-                                    .filter(this::isDiscoveredPeer)
+                                    .filter(isDiscoveredAndLive)
                                     .flatMap(nodeId -> observer.get(nodeId)
                                                                .stream())
                                     .map(ClusterTopologyManagerRecord::formatPeerEntry)
@@ -1406,21 +1411,44 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                snapshotDesiredCoreSize());
     }
 
-    /// Discovery, NOT liveness — and the name now says so (#558/#678).
+    /// Discovery, NOT liveness — and the name now says so (#558).
     ///
     /// This was `isHealthyPeer`, reading `state.health() == NodeHealth.HEALTHY`. Nothing ever drove
     /// a node out of HEALTHY, so the predicate was constant-true for every discovered node and the
     /// filter at its call site was an identity function. Deleting the dead health vocabulary makes
-    /// that explicit rather than changing it: the behaviour here is unchanged.
-    ///
-    /// **That is a defect, tracked as #678, not something this rename fixes.** The call site filters
-    /// a provisioned replacement's PEERS list, and a neighbouring docstring asserts the intersection
-    /// keeps dead hosts out — it never did. Fixing it means sourcing real liveness
-    /// (`PresenceSampler.currentMembers`, `MembershipFsm.coreObservedMembers`, or the observer's
-    /// `observedConnections`), which is a provisioning behaviour change and belongs in its own review.
+    /// that explicit rather than changing it: the behaviour here is unchanged. Liveness is now a
+    /// SEPARATE filter — see [#liveObservedPeer] — applied alongside this one at the call site
+    /// (#678), not folded into this predicate's meaning.
     private boolean isDiscoveredPeer(NodeId nodeId) {
         return observer.getState(nodeId)
                        .isPresent();
+    }
+
+    /// #678 — the real liveness gate `isDiscoveredPeer` never was. `buildProvisionContext` is the
+    /// COLD-PATH PEERS fallback used when the reconciler's live `clusterMembers` set is empty (see
+    /// [#provisionReplacement]'s class docstring); before this, its only filter was discovery
+    /// (`isDiscoveredPeer`), which admits a peer the instant SWIM gossip first mentions it and never
+    /// removes it — a just-killed host stays "discovered" forever, so a cold-path replacement could
+    /// be seeded with a dead peer, contradicting the class docstring's claim that seeding from a live
+    /// set "keeps just-killed hostnames out of the PEERS list."
+    ///
+    /// Sources the SAME observed-reachability projection the observer's own quorum arithmetic
+    /// trusts: `snapshotSource.currentMembershipView()` is, in production
+    /// (`PresenceGenerationSnapshotSource`), backed by `MembershipFsm.coreObservedMembers` — core
+    /// members narrowed to first-hand reachability evidence (a completed QUIC handshake or a SWIM
+    /// ALIVE observation), plus self. `coreMemberIds()` on that view IS that projection (`#557`,
+    /// see the docstring on `TopologyObserver.Manager.knownCorePeerCount`). No new dependency: this
+    /// module already holds `snapshotSource` for `resolveClusterName` reads elsewhere.
+    ///
+    /// Before any snapshot exists (BOOTING — no reachability evidence has been latched yet, e.g. a
+    /// fresh leader that has not completed a single QUIC handshake), there is nothing to narrow by;
+    /// this returns "everyone discovered passes", matching every other BOOTING/NORMAL fallback in
+    /// this file (`resolveClusterName`, `healthyActivePeerCount`) rather than inventing a stricter
+    /// cold-start behaviour nothing else in the class uses.
+    private Predicate<NodeId> liveObservedPeer() {
+        return snapshotSource.currentMembershipView()
+                             .map(view -> (Predicate<NodeId>) view.coreMemberIds()::contains)
+                             .or(() -> _ -> true);
     }
 
     private static String formatPeerEntry(NodeInfo info) {

@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Fixed (2026-08-27 — #678: replacement PEERS no longer seeded from discovered-but-dead peers)
+- `ClusterTopologyManagerRecord.buildProvisionContext` — the cold-path PEERS fallback used when the
+  `LeaderReconciler`'s live `clusterMembers` set is empty — filtered candidate peers with
+  `isDiscoveredPeer` only. Discovery is one-way and permanent (SWIM gossip adds a peer once; nothing
+  ever removes it from the dial set on death), so a just-killed host stayed eligible for a
+  replacement's PEERS list forever, contradicting the neighbouring class docstring's claim that
+  seeding from a live set "keeps just-killed hostnames out of the PEERS list" — that claim held for
+  the live-member-set path but never for this fallback.
+- Added `liveObservedPeer()`, filtering on `snapshotSource.currentMembershipView().map(MembershipView::coreMemberIds)`
+  — in production (`PresenceGenerationSnapshotSource`) backed by `MembershipFsm.coreObservedMembers`,
+  core members narrowed to first-hand reachability evidence (a completed QUIC handshake or a SWIM
+  ALIVE observation), plus self. No new dependency: `snapshotSource` was already wired into this
+  record. Before any snapshot exists (BOOTING, no reachability evidence latched yet) the filter is a
+  no-op passthrough, matching the BOOTING/NORMAL fallback idiom already used elsewhere in this class
+  (`resolveClusterName`, `healthyActivePeerCount`).
+  [mechanism: `ClusterTopologyManagerRecord.buildProvisionContext` + `liveObservedPeer`,
+  aether/aether-deployment/src/main/java/org/pragmatica/aether/deployment/cluster/ClusterTopologyManagerRecord.java]
+- [verified: `ClusterTopologyManagerActuatorTest.provisionReplacement_coldPath_excludesDiscoveredButUnreachablePeer`]
+  — a peer discovered via SWIM gossip but absent from the latched snapshot's `coreMemberIds` is
+  excluded from the cold-path PEERS list; a peer present in both is included.
+- Not a rename: the constant-true `isHealthyPeer` predicate this call site used before was already
+  renamed to `isDiscoveredPeer` (#558, prior commit) to stop the name from claiming a health check
+  that never happened. That rename was explicit that it did not fix the underlying defect — this
+  entry is that fix, landed separately as its own review per that rename's docstring.
+
 ### Fixed (2026-08-27 — #578 follow-up: cli.md corrected to match the plan-classify-then-actuate fix)
 - `cli.md`'s `aether cluster apply` description claimed every apply computes a terraform-style plan
   and executes it in waves (additions → modifications → removals, `maxUnavailable`-respecting
