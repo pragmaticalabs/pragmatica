@@ -324,7 +324,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   is carrying the responder's engine state in `SyncResponse`, which is protocol surface and deliberately
   out of scope here. [design intent — unverified]
 
-### Added (2026-08-27 — #232: in-process membership chaos cycle, built rather than revived)
+### Fixed (2026-08-27 — #557: the boot-quorum fix was real but undefended, and its own docstring described the old behaviour)
+- **Premise validation first**: #557's three reported defects are all already fixed — the discovery-based
+  boot count by `dc24377a7`, the `syncQuorumSize` collapse by `36712ba5a` plus #660, and the
+  MembershipView path by the rewire of `AetherNode.presenceMemberSupplier` to
+  `MembershipFsm.coreObservedMembers(self)`, which admits a peer only on `PeerConnected` or
+  `SwimHealthy`. The quorum numerator IS observed reachability.
+- **`PresenceGenerationSnapshotSource`'s class docstring still claimed `coreCountedMembers()`**, which
+  is not harmless: #557's own diagnosis comment concluded the path used "health assumed, not observed"
+  — reasoning from the stale description rather than the wiring. Corrected, with the distinction and
+  its consequence stated where the next reader meets it.
+- **`PresenceGenerationSnapshotSourceQuorumCompositionTest`** closes the coverage gap between the two
+  layers that were already tested: the FSM projection below and the BOOTING/legacy path above, with
+  nothing exercising the seam that actually decides boot quorum. A seed-only FSM must publish NO view;
+  the same source wired to `coreCountedMembers` publishes one immediately with a full quorum numerator
+  and zero peers reachable, which is #557 itself — kept as a permanent discriminator so the test cannot
+  pass vacuously. Mutation-checked.
+  [verified: aether/aether-deployment/src/test/java/org/pragmatica/aether/deployment/generation/PresenceGenerationSnapshotSourceQuorumCompositionTest.java]
+- Stated limit, not implied coverage: the test MIRRORS `AetherNode.presenceMemberSupplier` rather than
+  reading it — that supplier is a local inside a 5000-line assembly method with no seam — so a rewire of
+  `AetherNode` itself would leave it green. Recorded in the class rather than glossed.
+
+
 - `MembershipChaosCycleTest` (forge, Heavy, 5 nodes) drives **kill → detect → decommission → heal**
   against the current SWIM + MembershipFsm stack: a hard-killed core must leave counted membership,
   auto-heal must reach the real `ComputeProvider` path, and the replacement must boot, join and be
