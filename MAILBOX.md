@@ -739,3 +739,28 @@ then #451/#452/#453/#448, #443. All inside `jbct/`. Committing directly to
 `release-1.0.0-rc3`, pulling before each work block. Starting with #449
 (ScoreCalculator retired rule IDs). Will take #462 landscape-apply triad and
 autoscaler #435–#437 only if capacity remains, and will signal here first.
+
+## 2026-08-27 stream-c (operator surface) — #575 landed; docs correction handoff for `aether/docs/**` owner (stream E)
+
+`ClusterBootstrapConfigValidator` now rejects `[operations.auto_heal] enabled = false` (and its
+`[operations] auto_heal = false` shortcut) at bootstrap validation (`PF-25`) instead of parsing it
+into a silent no-op — see the CHANGELOG `#575` entry (commit `ad7107d6a`) for the full mechanism,
+the `enabled = true` asymmetry (left alone: matches the runtime's actual always-on behavior, so it
+doesn't assert anything false), and the recovery path (`aether cluster topology auto-heal disable`,
+#603, a different imperative per-leader-term mechanism from this declarative bootstrap key).
+
+**Not mine to touch — `aether/docs/**` correction needed:** that same commit's message flags a
+broader, deliberately-deferred gap: every other `[operations.auto_heal]` field
+(`retry_interval`, `startup_cooldown`, `stale_observation_ttl`, `quic_miss_promotion_threshold`,
+`provisioning_timeout`, `provision_stability_window`, `decommissioned_retention`,
+`swim_hints_ttl` — 8 fields total) is parsed into `AutoHealSpec` and then silently discarded;
+`Main.resolveAutoHeal` only ever applies `#298`'s `max_nodes` cap, everything else falls through
+to `AutoHealConfig.DEFAULT`. `reference/bootstrap-config.md` and `reference/timeout-configuration.md`
+both still document these 8 fields as operator-tunable, which is no longer (and per the commit,
+was never) true. Collapsing the two duplicated types (`AutoHealSpec` vs `AutoHealConfig`, which
+also disagree on `decommissionedRetention`'s default — 24h vs 60s) is a structural fix touching
+`Main.java`/`AetherNodeConfig.java`, outside this stream's territory — flagging as a follow-up
+ticket candidate, not claiming it. The docs correction itself just needs the 8 fields' entries
+marked non-functional (or removed) with a pointer to this note/#575/the CHANGELOG entry; happy to
+take that half myself if `aether/docs/**` ownership prefers a small textual PR over doing it
+in-lane, just say so here.
