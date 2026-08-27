@@ -2355,7 +2355,21 @@ aether cluster apply <config-file> [--dry-run] [--yes] [--resume] [--rollback] [
 | `--rollback` | Rollback completed waves to pre-apply state |
 | `--full-check` | Run full network pre-flight checks |
 
-Computes diff against stored config, presents terraform-style plan (`[+]`/`[~]`/`[-]`), then executes in waves: additions → modifications → removals. Rolling restart respects `maxUnavailable` budget for core nodes.
+**Plain `apply` (no `--resume`/`--rollback`) actuates scale changes only.** It diffs the config
+file against what's stored and classifies every change: a role's worker/core count going up or
+down is applied immediately as a fenced desired-count write, for which the worker reconciler then
+provisions or drains nodes. Any other kind of change in the same file — adding/removing a source
+or role, changing a source's type, or an immutable field like the cluster name — is rejected
+before anything is actuated, either as a typed `UnsupportedApplyAction` error naming the
+unsupported action, or (for an immutable field) a validation error naming the field. A plan mixing
+a valid scale with an unsupported action is rejected in full; the scale is not applied on its own.
+Recovery: split the file so scale changes go through plain `apply` and everything else is handled
+separately, or wait for the change to be supported.
+
+**The terraform-style plan (`[+]`/`[~]`/`[-]`) and wave-based rollout (additions → modifications →
+removals, respecting `maxUnavailable` for core nodes) is the `--resume`/`--rollback` path**
+(`ApplyOrchestrator` → `WaveExecutor`), not plain `apply` — reachable only by first halting an
+apply and then resuming or rolling it back.
 
 ### `aether cluster rotate-key`
 

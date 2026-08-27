@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Fixed (2026-08-27 — #578 follow-up: cli.md corrected to match the plan-classify-then-actuate fix)
+- `cli.md`'s `aether cluster apply` description claimed every apply computes a terraform-style plan
+  and executes it in waves (additions → modifications → removals, `maxUnavailable`-respecting
+  rolling restart). That description is only true of the `--resume`/`--rollback` path
+  (`ApplyOrchestrator` → `WaveExecutor`). Plain `apply` (no flags) actuates **scale changes only** —
+  `ClusterConfigApplierRecord.classify` accepts `ScaleUp`/`ScaleDown` and rejects every other
+  `DiffAction` variant (`AddSource`, `RemoveSource`, `AddRole`, `RemoveRole`, `RuntimeChange`,
+  `SourceFieldChange`, `ClusterLevelChange`) with a typed `UnsupportedApplyAction`, whole-plan,
+  before-any-actuation (`ClusterConfigApplier.java:72-96`); `ImmutableFieldChange` is caught one
+  layer up at the route (`ClusterConfigRoutes.executeDiff:433-435`). Corrected the doc to describe
+  the two paths separately rather than presenting the wave-execution description as what plain
+  `apply` does [verified: `aether/aether-deployment/.../ClusterConfigApplier.java`,
+  `aether/node/.../ClusterConfigRoutes.java`, `aether/cli/.../ApplyOrchestrator.java:172`]. No code
+  changed — doc-only, no restructuring beyond the one inaccurate paragraph.
+
 ### Fixed (2026-08-27 — #381: application-config runtime notification catalog claim corrected)
 - **Catalog row 176 claimed "Runtime notification via single-threaded executor with record diff";
   the runtime push half of that claim is dead code.** `ConfigNotificationManager.notifyInitial`
