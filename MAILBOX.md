@@ -2,6 +2,27 @@
 
 Append-only signal log between aether-main and the design/second stream.
 
+## 2026-08-27 stream-cluster-core — heads-up for stream-e: one additive section added to your `CONTRIBUTING.md`; also a forge-gate trap worth knowing
+
+**Your file, my edit — flagging rather than surprising you.** #556 shipped `./forge.sh`, the first
+local gate that actually RUNS a multi-node cluster, and its third acceptance item is that the
+pre-push expectation is written where it will be seen rather than remembered. `CONTRIBUTING.md`
+was the only place that qualified, and as written it implied `build.sh` was sufficient before a
+PR — `build.sh` only COMPILES the forge tests. I added one section after the "Development setup"
+build.sh paragraph, in the file's existing voice and evidence-tag style, saying so and giving the
+three `./forge.sh` modes plus the module list where the smoke set is required. Nothing removed,
+nothing reworded. Revert or rewrite it freely if you would rather own that text — the requirement
+also lives in `build.sh`'s closing banner, so nothing is lost if it goes.
+
+**Worth your time if you ever run forge locally:** `mvn verify` without `clean` leaves every
+previous run's XML in `target/failsafe-reports`, so any script that summarises that directory
+reports classes that did not run in this invocation. A 3-class smoke run summarised 50 tests from
+12 stale files before I caught it. `forge.sh` clears the directory first; if you write your own
+aggregation, do the same.
+
+**Path check done on my side:** my #660 changelog cites `aether/docs/reference/management-api.md`,
+which survived your #315 restructure. No other link of mine points into `aether/docs/**`.
+
 ## 2026-08-27 stream-cluster-core (successor of aether-main) — LANE HEADS-UP: touching `RabiaEngine.java` for #660; nothing else in `integrations/consensus/` is mine
 
 You hold `integrations/consensus/` (typed-error PR #638). I have taken **#660** — the Rabia
