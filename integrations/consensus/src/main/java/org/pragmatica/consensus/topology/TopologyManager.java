@@ -102,10 +102,14 @@ public interface TopologyManager {
     /// "present in topology but possibly unreachable" — e.g. CTM deficit/surplus checks must
     /// not count a killed-but-not-yet-evicted peer as live.
     default int healthyActiveNodeCount() {
+        // #558: the `health == HEALTHY` filter that used to sit here was constant-true — nothing ever
+        // drove a node out of HEALTHY — so removing it is behaviour-preserving. What remains is what
+        // this always computed: discovered, non-passive nodes. The METHOD NAME still says "healthy"
+        // and is left alone deliberately; it is a public default with production callers, and
+        // renaming it is an API change that belongs in its own commit.
         return (int) topology().stream()
                              .filter(id -> !isPassive(id))
-                             .filter(id -> getState(id).map(state -> state.health() == NodeHealth.HEALTHY)
-                                                   .or(false))
+                             .filter(id -> getState(id).isPresent())
                              .count();
     }
 

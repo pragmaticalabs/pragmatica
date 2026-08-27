@@ -80,7 +80,7 @@ public interface TopologyObserver extends TopologyManager {
     /// The two fallbacks are NOT the same read (#557). `healthyActiveNodeCount` /
     /// `readyNodeCount` still count the raw discovery-derived map. The quorum-eval
     /// fallback `healthyActivePeerCount` counts only the map entries that the transport
-    /// has ALSO reported as connected — see `legacyHealthyActivePeerCount`. Quorum is a
+    /// has ALSO reported as connected — see `connectedPeerCount`. Quorum is a
     /// reachability claim and must not be satisfiable by discovery alone; a readiness
     /// count is not.
     ///
@@ -410,7 +410,7 @@ public interface TopologyObserver extends TopologyManager {
                     // `ListConnectedNodes` runs `QuicClusterNetwork.listNodes` →
                     // `ConnectedNodesList` → this observer's `reconcile` before returning, so
                     // `observedConnections` is CURRENT by the time `evaluateQuorumState` reads
-                    // it through `legacyHealthyActivePeerCount`. With the previous
+                    // it through `connectedPeerCount`. With the previous
                     // evaluate-then-refresh order the boot-time quorum decision would always be
                     // taken on a one-interval-stale observation, which both doubles the
                     // worst-case time to establish quorum and delays detecting its loss by the
@@ -486,7 +486,6 @@ public interface TopologyObserver extends TopologyManager {
 
             private void requestConnectionIfEligible(NodeId id) {
                 Option.option(nodeStatesById.get(id))
-                      .filter(state -> state.canAttemptConnection(now()))
                       .onPresent(_ -> requestConnection(id));
             }
 
@@ -515,7 +514,7 @@ public interface TopologyObserver extends TopologyManager {
 
             private void addNode(NodeInfo nodeInfo) {
                 var now = now();
-                var initialState = NodeState.healthy(nodeInfo, now);
+                var initialState = NodeState.discovered(nodeInfo, now);
                 // To avoid reliance on the networking layer behavior, adding is done
                 // atomically and the command to establish the connection is sent only once.
                 Option.option(nodeStatesById().putIfAbsent(nodeInfo.id(), initialState)).onEmpty(() -> {
@@ -647,7 +646,7 @@ public interface TopologyObserver extends TopologyManager {
                 }
 
                 if (mode.get() == TopologyMode.BOOTING) {
-                    return legacyHealthyActiveNodeCount();
+                    return discoveredNodeCount();
                 }
 
                 return 0;
@@ -675,7 +674,7 @@ public interface TopologyObserver extends TopologyManager {
             }
 
             /// Legacy active-node count for `readyNodeCount` BOOTING fallback. Counts
-            /// non-passive entries in `nodeStatesById` regardless of `NodeHealth` because
+            /// non-passive entries in `nodeStatesById` — discovery is all that map records, because
             /// the early-bootstrap path needs to count provisionally-joined peers before
             /// any successful Ack establishes their HEALTHY edge.
             private int legacyActiveNodeCount() {
@@ -687,10 +686,9 @@ public interface TopologyObserver extends TopologyManager {
             /// Legacy healthy-active-node count for `healthyActiveNodeCount` BOOTING
             /// fallback. INCLUDES self (matching the snapshot-derived
             /// `healthyOnDutyCount` shape used by `NORMAL`-mode callers).
-            private int legacyHealthyActiveNodeCount() {
+            private int discoveredNodeCount() {
                 return (int) nodeStatesById.values()
                                            .stream()
-                                           .filter(state -> state.health() == NodeHealth.HEALTHY)
                                            .count();
             }
 
@@ -775,10 +773,10 @@ public interface TopologyObserver extends TopologyManager {
             /// tracker's `healthyOnDutyCount` already includes self when self is `ON_DUTY`.
             ///
             /// When the view is absent (no tracker injected yet / very early boot) this falls
-            /// back to the legacy `nodeStatesById` peer count (`legacyHealthyActivePeerCount()
+            /// back to the legacy `nodeStatesById` peer count (`connectedPeerCount()
             /// + 1 >= quorumSize()`) so construction and view-less tests still cold-start.
             /// Since #557 that fallback is gated on OBSERVED transport connectivity, not on
-            /// discovery — see `legacyHealthyActivePeerCount`. It stays satisfiable without any
+            /// discovery — see `connectedPeerCount`. It stays satisfiable without any
             /// consensus commit, so the bootstrap catch-22 the fallback exists to break is
             /// preserved.
             private boolean haveQuorum() {
@@ -796,7 +794,7 @@ public interface TopologyObserver extends TopologyManager {
                     return healthyOnDuty >= quorum;
                 }
 
-                var peers = legacyHealthyActivePeerCount();
+                var peers = connectedPeerCount();
                 var quorum = quorumSize();
 
                 log.debug("Quorum evaluation (legacy fallback): healthyActivePeers+1={} threshold={}", peers + 1, quorum);
@@ -826,27 +824,34 @@ public interface TopologyObserver extends TopologyManager {
                 if (view.isPresent()) {
                     maybeTransitionToNormal(view.unwrap());
 
-                    return swimHealthyCorePeerCount(view.unwrap().coreMemberIds());
+                    return knownCorePeerCount(view.unwrap().coreMemberIds());
                 }
 
                 if (mode.get() == TopologyMode.BOOTING) {
-                    return legacyHealthyActivePeerCount();
+                    return connectedPeerCount();
                 }
 
                 return 0;
             }
 
-            /// Count peers that are both in the authoritative core-member set (from the
-            /// snapshot) and HEALTHY in the live SWIM `nodeStatesById` map, excluding self.
-            /// This is the NORMAL-mode quorum count that bridges the JOINING lag window
-            /// while respecting minority-partition safety.
-            private int swimHealthyCorePeerCount(Set<NodeId> coreMembers) {
+            /// Count peers that are both in the authoritative core-member set (from the snapshot)
+            /// and KNOWN to this observer, excluding self. The NORMAL-mode quorum count that
+            /// bridges the JOINING lag window while respecting minority-partition safety: a node
+            /// absent from the snapshot's `coreMemberIds` is not counted, which is what preserves
+            /// the minority-partition invariant.
+            ///
+            /// #558 — this docstring previously said "HEALTHY in the live SWIM `nodeStatesById`
+            /// map". That was never true: `nodeStatesById` carried no SWIM-driven health, the
+            /// `health == HEALTHY` filter it referred to was constant-true, and the name said
+            /// `swimHealthyCorePeerCount`. Membership of `coreMemberIds` is doing all the work
+            /// here; the observed-reachability guarantee for the NORMAL path lives upstream in
+            /// `MembershipFsm.coreObservedMembers`, which is what feeds that snapshot (#557).
+            private int knownCorePeerCount(Set<NodeId> coreMembers) {
                 return (int) nodeStatesById.values()
                                            .stream()
                                            .filter(state -> !state.info()
                                                                   .id()
                                                                   .equals(config.self()))
-                                           .filter(state -> state.health() == NodeHealth.HEALTHY)
                                            .filter(state -> coreMembers.contains(state.info().id()))
                                            .count();
             }
@@ -882,8 +887,8 @@ public interface TopologyObserver extends TopologyManager {
             ///
             /// Callers: `haveQuorum` and `healthyActivePeerCount` (the bootstrap quorum publish)
             /// ONLY. The public `healthyActiveNodeCount` / `readyNodeCount` reads go through
-            /// `legacyHealthyActiveNodeCount` / `legacyActiveNodeCount` and are unaffected.
-            private int legacyHealthyActivePeerCount() {
+            /// `discoveredNodeCount` / `legacyActiveNodeCount` and are unaffected.
+            private int connectedPeerCount() {
                 // Read the observation once — a concurrent `reconcile` must not split the count.
                 var connected = observedConnections.get();
 
@@ -892,7 +897,6 @@ public interface TopologyObserver extends TopologyManager {
                                            .filter(state -> !state.info()
                                                                   .id()
                                                                   .equals(config.self()))
-                                           .filter(state -> state.health() == NodeHealth.HEALTHY)
                                            .filter(state -> connected.contains(state.info()
                                                                                     .id()))
                                            .count();

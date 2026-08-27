@@ -324,7 +324,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   is carrying the responder's engine state in `SyncResponse`, which is protocol surface and deliberately
   out of scope here. [design intent — unverified]
 
-### Fixed (2026-08-27 — #557: the boot-quorum fix was real but undefended, and its own docstring described the old behaviour)
+### Removed (2026-08-27 — #558: the `NodeState` health/backoff vocabulary, which nothing ever drove)
+- **Deleted** `NodeHealth`, `NodeState.suspected(...)`, `NodeState.canAttemptConnection(...)`, the
+  `health` / `failedAttempts` / `nextAttemptAfter` components, and the now-unfed
+  `BackoffConfig.shouldDisable(...)` (zero callers). `NodeState` is now `(info, firstSeen)` with a
+  `discovered(...)` factory — discovery is all that map ever recorded.
+- **Driver: there is exactly ONE re-dial authority, and it was never this one.** The transport layer
+  owns re-dial policy (QUIC peer-phase dedup, the in-flight CONNECTING guard, the per-attempt dial
+  timeout) and SWIM owns suspicion. Wiring this backoff would have installed a SECOND authority that
+  nothing exercises, and two mechanisms disagreeing about when to re-dial is worse than one. A
+  vestigial gate is a standing invitation to wire it someday and create that disagreement.
+- Behaviour-preserving by construction: `suspected(...)` had zero callers and the map's only mutations
+  were `putIfAbsent(healthy)` / `remove`, so `health == HEALTHY` was constant-true and
+  `canAttemptConnection` a constant-true gate. Removing a constant-true filter cannot change a result.
+- **Counts renamed to what they actually count**, which is NOT what #558 proposed. The ticket said
+  rename to `discoveredPeerCount`; after `dc24377a7` that would have been a fresh lie. The three
+  methods carrying the vacuous filter each counted something different:
+  `legacyHealthyActiveNodeCount` → `discoveredNodeCount` (all known nodes — a genuine discovery
+  count), `swimHealthyCorePeerCount` → `knownCorePeerCount` (known peers ∩ authoritative core set),
+  `legacyHealthyActivePeerCount` → `connectedPeerCount` (peers observed CONNECTED — a reachability
+  count, not discovery). `TopologyManager.healthyActiveNodeCount()` keeps its name for now: public
+  default, production callers, and renaming it is an API change that belongs in its own commit.
+- **Stale surfaces swept, per the closing-comment convention.** `swimHealthyCorePeerCount`'s docstring
+  claimed peers were filtered "HEALTHY in the live SWIM `nodeStatesById` map" — never true, and the
+  name asserted it too. Corrected, along with the `NodeHealth` reference in the node-count docstring.
+- **The dead filter was NOT correctness-neutral — see #678.** `ClusterTopologyManagerRecord` filtered a
+  provisioned replacement's PEERS list through the same constant-true predicate (`isHealthyPeer`, now
+  `isDiscoveredPeer`), while a neighbouring docstring asserted the intersection kept dead hosts out.
+  It never did. Renaming makes today's behaviour explicit; fixing it needs a real liveness source and
+  is a provisioning change deliberately left to #678 rather than ridden in on a naming cleanup.
+
+
 - **Premise validation first**: #557's three reported defects are all already fixed — the discovery-based
   boot count by `dc24377a7`, the `syncQuorumSize` collapse by `36712ba5a` plus #660, and the
   MembershipView path by the rewire of `AetherNode.presenceMemberSupplier` to

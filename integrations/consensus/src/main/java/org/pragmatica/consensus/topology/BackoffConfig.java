@@ -33,8 +33,4 @@ public record BackoffConfig(int maxAttempts, BackoffStrategy backoffStrategy) {
                                                                                  .factor(1.5)
                                                                                  .withJitter());
 
-    /// Checks if a node should be disabled based on the number of failed attempts.
-    public boolean shouldDisable(int failedAttempts) {
-        return failedAttempts >= maxAttempts;
-    }
 }

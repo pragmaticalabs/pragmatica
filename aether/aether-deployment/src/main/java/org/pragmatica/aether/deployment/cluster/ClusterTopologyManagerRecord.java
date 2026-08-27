@@ -57,7 +57,6 @@ import org.pragmatica.consensus.topology.MembershipDecision.NodeDecommissioned;
 import org.pragmatica.consensus.topology.MembershipDecision.NodeJoined;
 import org.pragmatica.consensus.topology.MembershipDecision.NodeRemoved;
 import org.pragmatica.consensus.topology.MembershipView;
-import org.pragmatica.consensus.topology.NodeHealth;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.consensus.topology.NodeState;
@@ -534,7 +533,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// `nodeId:host:port` entry via the same `observer.get(id)` → `formatPeerEntry` mechanism
     /// `buildProvisionContext` uses; ids that do not resolve are dropped, and `self` is always
     /// included (the CTM runs on the leader, which is alive by definition). Seeding from the
-    /// live set — instead of `observer.topology()` ∩ `isHealthyPeer` — keeps just-killed
+    /// live set — instead of `observer.topology()` ∩ `isDiscoveredPeer` — keeps just-killed
     /// hostnames out of the PEERS list, preventing DOA replacements (dead-host PEERS →
     /// QUIC NPE). If `clusterMembers` is empty (cold paths), the seed falls back to
     /// `buildProvisionContext`'s topology-derived peers. `failedPeer` is observability-only.
@@ -1385,7 +1384,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         var selfEntry = formatPeerEntry(observer.self());
         var remoteEntries = observer.topology()
                                     .stream()
-                                    .filter(this::isHealthyPeer)
+                                    .filter(this::isDiscoveredPeer)
                                     .flatMap(nodeId -> observer.get(nodeId)
                                                                .stream())
                                     .map(ClusterTopologyManagerRecord::formatPeerEntry)
@@ -1407,10 +1406,21 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                snapshotDesiredCoreSize());
     }
 
-    private boolean isHealthyPeer(NodeId nodeId) {
+    /// Discovery, NOT liveness — and the name now says so (#558/#678).
+    ///
+    /// This was `isHealthyPeer`, reading `state.health() == NodeHealth.HEALTHY`. Nothing ever drove
+    /// a node out of HEALTHY, so the predicate was constant-true for every discovered node and the
+    /// filter at its call site was an identity function. Deleting the dead health vocabulary makes
+    /// that explicit rather than changing it: the behaviour here is unchanged.
+    ///
+    /// **That is a defect, tracked as #678, not something this rename fixes.** The call site filters
+    /// a provisioned replacement's PEERS list, and a neighbouring docstring asserts the intersection
+    /// keeps dead hosts out — it never did. Fixing it means sourcing real liveness
+    /// (`PresenceSampler.currentMembers`, `MembershipFsm.coreObservedMembers`, or the observer's
+    /// `observedConnections`), which is a provisioning behaviour change and belongs in its own review.
+    private boolean isDiscoveredPeer(NodeId nodeId) {
         return observer.getState(nodeId)
-                       .map(state -> state.health() == NodeHealth.HEALTHY)
-                       .or(false);
+                       .isPresent();
     }
 
     private static String formatPeerEntry(NodeInfo info) {
