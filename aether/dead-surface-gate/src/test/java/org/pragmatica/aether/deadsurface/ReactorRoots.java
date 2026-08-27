@@ -25,6 +25,12 @@ import java.util.regex.Pattern;
 /// Reading `aether/pom.xml`'s own module list has no such blind spot: it is the actual reactor
 /// definition, not a proxy for it.
 ///
+/// (That paragraph was written when the gate was mounted in `aether/node`. Since the move to
+/// `aether/dead-surface-gate` this module test-depends on every module it scans, so its classpath no
+/// longer has the blind spot — but the classpath still must not be the corpus, for a second reason
+/// the commissioning test's positive controls depend on: it carries test classes and third-party jars,
+/// and "called only from a test" has to read as DEAD.)
+///
 /// Deliberately scoped to that one `<modules>` block (the first in the file, before any `<profile>`) —
 /// not a filesystem walk under `aether/`, and not the whole monorepo. Two things outside that list are
 /// NOT modules of the default reactor and must not be treated as ones: profile-gated modules further
@@ -45,8 +51,11 @@ final class ReactorRoots {
     private ReactorRoots() {}
 
     /// This class's own `target/test-classes` directory is three path segments below the `aether/`
-    /// reactor root (`<root>/aether/node/target/test-classes`) — walking up from it is deterministic
-    /// regardless of the working directory `mvn` was invoked from, unlike `user.dir`.
+    /// reactor root (`<root>/aether/dead-surface-gate/target/test-classes`) — walking up from it is
+    /// deterministic regardless of the working directory `mvn` was invoked from, unlike `user.dir`.
+    /// The count survived the move from `aether/node` unchanged because the gate's module, like every
+    /// module of this reactor, is a direct child directory of `aether/`; mount it any deeper and this
+    /// self-check fires.
     static Path aetherRoot() {
         var testClasses = codeSourceLocation();
         var root = testClasses.getParent().getParent().getParent();
@@ -54,8 +63,8 @@ final class ReactorRoots {
         if (root == null || !"aether".equals(String.valueOf(root.getFileName()))) {
             throw new IllegalStateException("ReactorRoots.aetherRoot() computed " + root +
                                              " from " + testClasses + ", whose name is not \"aether\" — " +
-                                             "the three-levels-up assumption (target/test-classes -> node -> " +
-                                             "aether) no longer holds; fix the walk-up count.");
+                                             "the three-levels-up assumption (target/test-classes -> " +
+                                             "dead-surface-gate -> aether) no longer holds; fix the walk-up count.");
         }
 
         return root;

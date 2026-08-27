@@ -10,8 +10,8 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
 
-/// Suppresses the #519 dead-config-accessor gate (`aether/node`'s `ConfigKeyLivenessTest`) for one
-/// record component, with a mandatory justification — a ticket reference, e.g.
+/// Suppresses the #519 dead-config-accessor gate (`aether/dead-surface-gate`'s `ConfigKeyLivenessTest`)
+/// for one record component, with a mandatory justification — a ticket reference, e.g.
 /// `"#675: parsed but never applied by Main.resolveAutoHeal"`.
 ///
 /// Placed here in `aether-config`'s main sources, not test-scoped: it annotates production record

@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Fixed (2026-08-27 — #519 dead-config-accessor gate re-homed so it can pass a clean build)
+- **The gate could not pass a from-scratch reactor run, and had held the branch red for hours.** It
+  scans every module in `aether/pom.xml`'s default `<modules>` list by reading each one's
+  `target/classes`, but lived in `aether/node`'s test suite — and modules such as `aether/ember` depend
+  on `node`, so they are built strictly AFTER it. On a clean build their output does not yet exist when
+  node's tests run, and the gate's corpus precondition correctly refused. It passed locally only where
+  leftover `target/` output happened to be present.
+- **Moved, not redesigned.** The whole `deadsurface` package now lives in a dedicated
+  `aether/dead-surface-gate` module placed LAST in the default `<modules>` list, with **test-scoped
+  dependencies on all 30 scanned modules** — so corpus completeness is enforced by Maven's own
+  ordering, in any build order, rather than by luck. Six of the seven files are byte-identical to their
+  previous versions; `ReactorRoots` differs only in comments and one diagnostic string.
+- **The loud precondition is deliberately untouched.** The instrument was well built — it detects its
+  own incomplete corpus and refuses rather than reporting false DEAD accessors, which is why this
+  surfaced as a red build instead of as a silently under-reporting gate. Softening it would have
+  destroyed the property that made the defect visible.
+- Verified from a genuinely clean tree (zero `target/` directories beforehand), so the local run
+  reproduces CI's from-scratch ordering: BUILD SUCCESS, `ConfigKeyLivenessTest` 2 run / 0 failures.
+  Adversarial check: deleting `aether/ember`'s output turns the gate red with its original
+  corpus-incomplete message, and restoring it turns it green — the pass is not vacuous.
+- A gate that only passes on a dirty tree is the inverted form of the stale-artifact trap: local green
+  *because* leftovers were present, CI red *because* it was clean.
+
 ### Fixed (2026-08-27 — #278: interceptor config silent-default corruption for retry/metrics provisioning)
 - `CircuitBreakerConfig`'s private `DEFAULTS` renamed to public `DEFAULT`; `RetryConfig` gained a
   TOML-bindable `BackoffStrategy` (binder resolver) plus a public `DEFAULT`. Before this, an
