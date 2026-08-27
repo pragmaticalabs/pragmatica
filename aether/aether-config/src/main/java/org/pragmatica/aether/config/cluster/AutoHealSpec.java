@@ -6,6 +6,7 @@ package org.pragmatica.aether.config.cluster;
 
 import org.pragmatica.aether.config.ConfigKeyLive;
 
+
 /// #675 tracks a duplicated-type gap: `Main.resolveAutoHeal` builds the runtime `AutoHealConfig` from
 /// `AutoHealConfig.DEFAULT` plus a `max_nodes` cap, and never reads this parsed spec at all — so six of
 /// this record's nine fields have no consumer anywhere outside `enabled()` (read by
