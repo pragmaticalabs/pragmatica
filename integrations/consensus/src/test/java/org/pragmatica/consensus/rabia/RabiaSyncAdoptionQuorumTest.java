@@ -38,6 +38,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
@@ -254,6 +255,61 @@ class RabiaSyncAdoptionQuorumTest {
             assertThat(stateMachine.lastRestored())
                 .as("an equal phase is an equal committed prefix — adopting it loses nothing and is not a regression")
                 .isEqualTo(PEER_SNAPSHOT);
+        }
+    }
+
+    /// The §6.4 / D9 boot future-history interaction — the one place #660's floor changes a RATIFIED
+    /// behaviour, pinned in both halves because only one of them changed.
+    ///
+    /// D9 as ratified: "Wave-1 boot-time detect-only WARN; recovery design RC2." A node whose PERSISTED
+    /// phase exceeds the cluster-reported phase carries history the cluster never saw (the mixed-wipe /
+    /// `down -v` hazard). It warned, notified the journal feed, and then **restored anyway** — regressing
+    /// onto the cluster's older state.
+    ///
+    /// After #660 the detection is UNCHANGED (the candidate handed to `detectBootFutureHistory` is still
+    /// the max over peer RESPONSES, deliberately not folded with self — folding self in would make
+    /// `persisted > candidate` unsatisfiable and retire the detector while burning its one-shot latch),
+    /// but the OUTCOME changes: `ownStateFloor` refuses a candidate behind the node's own state, so the
+    /// node now holds its own history instead of discarding it. Safety wins over detect-only: committed
+    /// state must not be discardable by sync adoption.
+    ///
+    /// Operator consequence, which is why this is documented and not just tested: a deliberately wiped
+    /// cluster plus one node that kept its old disk no longer converges by silently regressing that node.
+    /// It activates on its own old state and the cluster diverges. Intentional cluster reset with durable
+    /// persistence requires clearing per-node persistence — see the backup/persistence operator docs. The
+    /// WARN this test pins is what names the condition.
+    @Nested
+    class BootFutureHistoryD9 {
+
+        @Test
+        void futureHistory_stillDetected_butNoLongerRegressesOntoTheOlderClusterState() {
+            var stateMachine = new RecordingStateMachine();
+            var engine = coldStarted(5, stateMachine, persistedAt(Phase.phase(42), SELF_SNAPSHOT));
+            var detected = new AtomicReference<String>();
+
+            engine.onBootFutureHistory((persisted, clusterReported) -> detected.set(persisted + "/" + clusterReported));
+
+            var stale = SavedState.<TestCommand>savedState(PEER_SNAPSHOT, Phase.phase(10), List.of());
+
+            engine.processSyncResponse(new SyncResponse<>(NODE_2, stale));
+            engine.processSyncResponse(new SyncResponse<>(NODE_3, stale));
+
+            assertThat(awaitActive(engine))
+                .as("the node must still ACTIVATE — holding its own history is not a reason to stay dead")
+                .isTrue();
+
+            // HALF ONE — UNCHANGED by #660. The detector still fires, so the mixed-wipe WARN and the
+            // onBootFutureHistory journal feed still reach the operator. This is the half that would
+            // have gone silent had self been folded into the adoption candidate.
+            assertThat(detected.get())
+                .as("D9 detection must survive #660: persisted phase 42 exceeds the cluster-reported 10")
+                .isEqualTo("42/10");
+
+            // HALF TWO — CHANGED by #660. D9 previously restored anyway, discarding the node's own
+            // committed history. It now holds that history and installs nothing.
+            assertThat(stateMachine.lastRestored())
+                .as("the node must NOT regress onto the cluster's older state — that is the ratified behaviour #660 supersedes")
+                .isNull();
         }
     }
 
