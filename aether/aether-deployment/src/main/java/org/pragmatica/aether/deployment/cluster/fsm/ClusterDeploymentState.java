@@ -566,6 +566,9 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                       expanded.loadOrder().size(),
                       registerOnly);
             buildDependencyMap(expanded);
+            // Loop-invariant: same as handleAppBlueprintChange, resolve once rather than per slice.
+            var schemaRequired = resolveSchemaRequired(expanded.id());
+
             for (var slice : expanded.loadOrder()) {
                 var artifact = slice.artifact();
 
@@ -580,7 +583,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                Blueprint.blueprint(artifact,
                                                    slice.instances(),
                                                    slice.minAvailable(),
-                                                   Option.some(expanded.id())));
+                                                   Option.some(expanded.id()),
+                                                   schemaRequired));
             }
         }
 
@@ -588,9 +592,12 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             var artifact = sliceTargetKey.artifactBase().withVersion(sliceTargetValue.currentVersion());
             var instances = sliceTargetValue.targetInstances();
             var minInstances = sliceTargetValue.effectiveMinInstances();
+            var owner = sliceTargetValue.owningBlueprint();
+            // Unowned slices keep the historical default (true, preserving prior behavior); owned
+            // slices resolve schemaRequired via their blueprint, same as handleAppBlueprintChange.
+            boolean schemaRequired = owner.map(this::resolveSchemaRequired).or(true);
 
-            blueprints.put(artifact,
-                           Blueprint.blueprint(artifact, instances, minInstances, sliceTargetValue.owningBlueprint()));
+            blueprints.put(artifact, Blueprint.blueprint(artifact, instances, minInstances, owner, schemaRequired));
             log.trace("Restored slice target: {} with {} instances (min: {})", artifact, instances, minInstances);
         }
 
@@ -1019,10 +1026,15 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             }
 
             var minInstances = value.effectiveMinInstances();
+            var owner = value.owningBlueprint();
+            // Unowned slices keep the historical default (true, preserving prior behavior); owned
+            // slices resolve schemaRequired via their blueprint, same as handleAppBlueprintChange.
+            // Without this, schemaRequired reverted to true on every scale event for owned slices.
+            boolean schemaRequired = owner.map(this::resolveSchemaRequired).or(true);
 
             log.info("Slice target changed for {}: {} instances (min: {})", newArtifact, desiredInstances, minInstances);
             blueprints.put(newArtifact,
-                           Blueprint.blueprint(newArtifact, desiredInstances, minInstances, value.owningBlueprint()));
+                           Blueprint.blueprint(newArtifact, desiredInstances, minInstances, owner, schemaRequired));
             issueAllocationCommandsWithPlacement(newArtifact, desiredInstances, value.effectivePlacement());
         }
 
@@ -1143,6 +1155,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                       .flatMap(toml -> BlueprintParser.parse(toml).option())
                       .flatMap(org.pragmatica.aether.slice.blueprint.Blueprint::deploymentConfig)
                       .map(DeploymentConfig::schemaRequired)
+                      .onEmpty(() -> log.debug("schemaRequired unresolved for {}, defaulting to true (missing blueprint entry, resourcesConfig, or unparsable/incomplete resources.toml)",
+                                               blueprintId))
                       .or(true);
         }
 
