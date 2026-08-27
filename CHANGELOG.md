@@ -405,6 +405,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   is carrying the responder's engine state in `SyncResponse`, which is protocol surface and deliberately
   out of scope here. [design intent — unverified]
 
+### Added (2026-08-27 — #590: the community fence's no-double-active ordering, MEASURED)
+- **`CoreAbsenceFenceOrderingTest`** (forge, Heavy, 5 cores + 1 worker) proves the #590 ordering under
+  TOTAL isolation: a black-holed worker fences ITSELF via `DrainReason.CORE_ABSENCE`, locally, with no
+  consensus write reachable, and does so strictly before `community_absence`. Six runs: fence
+  9673–9704ms against a 10000ms window, margin 10296–10327ms before the core would re-place — a 31ms
+  spread. The invariant graduates from `[mechanism: core_absence < community_absence refused at config
+  load]` to measured, **for the total-isolation case only**.
+  [verified: aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/CoreAbsenceFenceOrderingTest.java]
+- **Explicitly NOT proven**: partial partition (a community reaching its own members but not the core —
+  `blackhole` is per-node and total) and real-network severance. Both inherit to #367 output 1; this
+  class must not be cited as full CP-contract proof.
+- **`EmberCluster.addWorkerNode()`** — harness FIDELITY restoration, not a new capability. Community-tier
+  mechanisms gate on `MemberDescriptor.isCoreRole(role) = !"worker".equals(role)`, where blank counts as
+  CORE. Production nodes self-assert that label (`AETHER_ROLE` → `NodeInfo.LABEL_ROLE`); Ember set none,
+  so every in-JVM node read as a core and the fence was structurally suppressed. `addNode()` is
+  byte-identical and still advertises no label; both halves pinned by `EmberAddNodeRoleLabelTest`.
+- **Four runs failed first, and none of them meant what they looked like.** Suppressed-by-design read as
+  "the fence is broken" (armed=true, sinceLastPingMs=40922, remainingMs=0, fenced=false) until a
+  precondition assertion showed the node self-identified as a core. Then the fence fired but the
+  observer vanished with it — the drain removes its own node — so the watch now also accepts
+  deregistration as evidence and polls at 20ms to catch the direct flag. **Without the precondition,
+  those runs would have shipped as a confident false defect against working code.**
+
 ### Fixed (2026-08-27 — #558 sweep miss: two `NodeHealth` sites broke the branch, and one was an operator-facing lie)
 - **`aether/node` stopped compiling for four commits.** The `NodeHealth` delete missed two sites in
   `ClusterTopologyRoutes` because the enumerating grep was truncated with `| head -5` and only the

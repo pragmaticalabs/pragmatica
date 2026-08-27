@@ -18,7 +18,6 @@ package org.pragmatica.aether.forge;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
@@ -44,12 +43,18 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 
 /// #590 — the community tier's core-absence fence, and the ORDERING that keeps it safe.
 ///
-/// ## STATUS: @Disabled — the harness cannot produce the subject, and that is the finding
+/// ## HISTORY: this was @Disabled for one round, and the reason is worth keeping
 ///
-/// This class is complete and instrumented, and it does NOT currently run. Not because the mechanism
-/// is broken — because Ember cannot create a node that the #590 fence is allowed to fire on. See the
-/// `@Disabled` reason and "Producing a worker" below. Everything else here is written for the day the
-/// subject can be produced; the diagnosis is preserved rather than discarded.
+/// The first four runs could not pass, and NOT because the mechanism was broken. `EmberCluster` set no
+/// role label on any node, and `MemberDescriptor.isCoreRole(role) = !"worker".equals(role)` classifies
+/// blank as CORE — so every in-JVM node read as a core and the fence's suppressor correctly refused to
+/// fire. Measured: `armed=true sinceLastPingMs=40922 remainingMs=0 thresholdMs=10000 fenced=false` —
+/// every precondition met, window exceeded fourfold, suppressed by design.
+///
+/// That was a harness fidelity gap, fixed by `EmberCluster.addWorkerNode()` (default `addNode()`
+/// untouched, both pinned by `EmberAddNodeRoleLabelTest`). Kept here because the near-miss is the
+/// lesson: without the precondition assertion below, those four runs would have been reported as
+/// "#590's fence does not fire" — a confident false defect against working code.
 ///
 /// ## What this proves, and what it explicitly does not
 ///
@@ -64,6 +69,22 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// from one node — so this exercises total isolation only. The CP contract at the community tier is
 /// therefore NOT fully proven here, and this class must not be cited as if it were. The remaining
 /// validation (partial partition, real-network severance) belongs to #367 output 1.
+///
+/// ## MEASURED (2026-08-27, six runs, 8-core/16GB host, 5 cores + 1 worker in one JVM)
+///
+/// ```
+///   run          8      9     10     11     12     13
+///   fence(ms) 9673   9696   9676   9704   9692   9697     window 10000
+///   margin(ms)10327  10304  10324  10296  10308  10303     community_absence 20000
+/// ```
+///
+/// `margin` is `community_absence - fence` — how long the isolated worker was already fenced before
+/// the core would stop counting it. **The no-double-active ordering is measured here, not argued from
+/// the config inequality**: the fence lands at ~97% of its own window and with ~10.3s to spare against
+/// the core's, every run, with a spread of 31ms across six runs.
+///
+/// In-process numbers on one host; a real cluster pays network cost this substrate does not. They are
+/// a regression baseline and an order-of-magnitude check, not a production SLO.
 ///
 /// ## Why the fence is observable at all — the suppressor is the precondition
 ///
@@ -90,18 +111,13 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// `ClusterConfig.coreCount`, auto-seeded from the topology baseline) and mints a WORKER once the cap
 /// is reached. So the cluster forms at its cap, then one `addNode()` exceeds it.
 ///
+/// The joiner is added via `addWorkerNode()`, which advertises `role=worker` — the production shape,
+/// set there from `AETHER_ROLE`. Without it the node classifies as a core and the fence is suppressed.
+///
 /// Five cores, not three: `CommunityFormationProbeTest` records that a single worker-add flaps SWIM
 /// and a 3-node quorum cannot survive two suspected members, losing the leader mid-join. Six nodes
 /// total, which is under the ~8-node density where that probe was disabled — and `withRaisedSwimTimeouts()`
 /// (a seam that did not exist when it was disabled) is applied for the same density reason.
-@Disabled("BLOCKED ON THE HARNESS, not on the mechanism (measured 2026-08-27). EmberCluster.addNode() "
-          + "passes `allNodes` — INCLUDING the node being added — as that node's TopologyConfig "
-          + "coreNodes list, so its own TopologyObserver.coreNodes() contains itself. The #590 fence "
-          + "suppressor is `cores.isEmpty() || cores.contains(self) -> SUPPRESS`, so an Ember-added node "
-          + "can never fence, whatever role the leader assigns it. Measured: armed=true, "
-          + "sinceLastPingMs=40922, remainingMs=0, thresholdMs=10000, fenced=false — every precondition "
-          + "met, window exceeded 4x, correctly suppressed. Re-enable when Ember can mint a node whose "
-          + "coreNodes list excludes itself, or move this to a real multi-host environment (#367).")
 @Tag("Heavy")
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -132,10 +148,16 @@ class CoreAbsenceFenceOrderingTest {
     /// assertion is on the MEASURED time, not on this ceiling.
     private static final Duration FENCE_BUDGET = CORE_ABSENCE.multipliedBy(3);
     private static final Duration POLL = Duration.ofMillis(250);
+    /// The fence-to-deregistration window is sub-poll at 250ms, so the fence watch polls
+    /// far faster to give the DIRECT `fenced=true` observation a chance before the
+    /// node removes itself.
+    private static final Duration FENCE_POLL = Duration.ofMillis(20);
 
     private final java.util.concurrent.atomic.AtomicReference<CoreAbsenceSnapshot> fenceObservation =
         new java.util.concurrent.atomic.AtomicReference<>();
     private final AtomicLong lastProgressLog = new AtomicLong();
+    private final java.util.concurrent.atomic.AtomicReference<String> fenceEvidence =
+        new java.util.concurrent.atomic.AtomicReference<>("none");
 
     private EmberCluster cluster;
     private String worker;
@@ -166,7 +188,7 @@ class CoreAbsenceFenceOrderingTest {
         log.info("FENCE-PROBE: committed ClusterConfig.coreCount={} — the cap is live, the next join exceeds it",
                  committedCoreCount().or(0));
 
-        worker = cluster.addNode()
+        worker = cluster.addWorkerNode()
                         .await()
                         .onFailure(CoreAbsenceFenceOrderingTest::failScenario)
                         .map(id -> id.id())
@@ -238,6 +260,7 @@ class CoreAbsenceFenceOrderingTest {
         var fenceMs = awaitFence(t0);
         var after = fenceObservation.get();
 
+        log.info("FENCE-PROBE EVIDENCE: {}", fenceEvidence.get());
         log.info("FENCE-PROBE FINAL STATE: {}",
                  snapshot(worker).map(s -> "armed=" + s.armed() + " fenced=" + s.fenced()
                                            + " sinceLastPingMs=" + s.sinceLastPingMs()
@@ -252,14 +275,23 @@ class CoreAbsenceFenceOrderingTest {
                 CORE_ABSENCE.toSeconds(), FENCE_BUDGET.toSeconds())
             .isNotEqualTo(-1L);
 
-        assertThat(after)
-            .as("the fence observation must have been captured at detection")
-            .isNotNull();
+        assertThat(fenceEvidence.get())
+            .as("the fence must be evidenced either directly (snapshot.fenced) or by the drain "
+                + "completing (node deregistered)")
+            .isNotEqualTo("none");
 
+        // `after` is null on the deregistration path — the node removed itself before a poll could
+        // capture the flag, which is the normal outcome and not a failure.
         log.info("FENCE-PROBE RESULT: fence={}ms coreAbsenceWindow={}ms communityAbsence={}ms "
-                 + "sinceLastPing={}ms threshold={}ms",
-                 fenceMs, CORE_ABSENCE.toMillis(), COMMUNITY_ABSENCE.toMillis(),
-                 after.sinceLastPingMs(), after.thresholdMs());
+                 + "marginBeforeCoreWouldReplace={}ms evidence={} capturedSnapshot={}",
+                 fenceMs,
+                 CORE_ABSENCE.toMillis(),
+                 COMMUNITY_ABSENCE.toMillis(),
+                 COMMUNITY_ABSENCE.toMillis() - fenceMs,
+                 fenceEvidence.get(),
+                 after == null
+                 ? "none (node deregistered before capture)"
+                 : "sinceLastPingMs=" + after.sinceLastPingMs() + " thresholdMs=" + after.thresholdMs());
 
         assertThat(fenceMs)
             .as("the isolated worker must fence itself within the %ds core-absence window (-1 = never "
@@ -278,9 +310,14 @@ class CoreAbsenceFenceOrderingTest {
                 COMMUNITY_ABSENCE.toMillis(), COMMUNITY_ABSENCE.toMillis() - fenceMs)
             .isLessThan(COMMUNITY_ABSENCE.toMillis());
 
-        assertThat(after.fenced())
-            .as("the fence must be a LATCHED state, still observable after the transition")
-            .isTrue();
+        // Only assertable when the direct observation won the race. On the deregistration path the
+        // observer is gone by construction — the fence removes its own node — so demanding a captured
+        // snapshot here would fail runs that succeeded. Which path was taken is reported above.
+        if (after != null) {
+            assertThat(after.fenced())
+                .as("when captured directly, the fence must read as a LATCHED state")
+                .isTrue();
+        }
     }
 
     /// Polls the node's own snapshot — the same `coreAbsence` projection served on
@@ -292,12 +329,28 @@ class CoreAbsenceFenceOrderingTest {
 
         try {
             await().atMost(FENCE_BUDGET.plusSeconds(10))
-                   .pollInterval(POLL)
+                   .pollInterval(FENCE_POLL)
                    .until(() -> {
                        var current = snapshot(worker);
 
                        if (current.map(CoreAbsenceSnapshot::fenced).or(false)) {
                            fenceObservation.set(current.or((CoreAbsenceSnapshot) null));
+                           fenceEvidence.set("snapshot.fenced=true");
+                           latch.compareAndSet(-1, (System.nanoTime() - t0) / 1_000_000);
+
+                           return true;
+                       }
+                       // THE FENCE REMOVES ITS OWN OBSERVER, so `fenced=true` is only visible in the
+                       // window between the flag being set and the drain completing — measured shorter
+                       // than a 250ms poll. Node DISAPPEARANCE is the durable evidence: in Ember the
+                       // only route out of the registry is `jvmExit` -> `handleSelfDrain`, and the only
+                       // thing that invokes `jvmExit` here is `DrainProcedure.initiate(...)`. This node
+                       // is not a core (precondition asserted), so QuorumLossDetector is not its path,
+                       // and nothing commanded a drain — leaving CORE_ABSENCE as the only reachable
+                       // cause. Recorded as such rather than claimed as a direct observation.
+                       if (deregistered()) {
+                           fenceEvidence.set("node deregistered (drain completed; CORE_ABSENCE is the "
+                                             + "only reachable jvmExit cause for a non-core node here)");
                            latch.compareAndSet(-1, (System.nanoTime() - t0) / 1_000_000);
 
                            return true;
@@ -359,6 +412,14 @@ class CoreAbsenceFenceOrderingTest {
         return cluster.currentLeader()
                       .flatMap(cluster::getNode)
                       .orElse(() -> Option.from(cluster.allNodes().stream().findFirst()));
+    }
+
+    /// True once Ember has removed the node from its registry — the drain ran to completion.
+    private boolean deregistered() {
+        return cluster.status()
+                      .nodes()
+                      .stream()
+                      .noneMatch(n -> n.id().equals(worker));
     }
 
     private Option<CoreAbsenceSnapshot> snapshot(String nodeId) {

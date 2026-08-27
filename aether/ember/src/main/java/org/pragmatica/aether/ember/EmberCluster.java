@@ -113,6 +113,12 @@ public final class EmberCluster {
     private final AtomicInteger effectiveSize;
     private final Option<ConfigurationProvider> configProvider;
     private final ObservabilityConfig observability;
+
+    /// The literal `MemberDescriptor.isCoreRole` tests against — anything else, including blank,
+    /// classifies as CORE. Duplicated here because that constant is private to the FSM module; if it
+    /// ever moves, `EmberAddNodeRoleLabelTest` fails rather than this drifting silently.
+    private static final String WORKER_ROLE = "worker";
+
     private final int coreMax;
 
     /// TEST SEAM (#336 probe) — decorator applied to the base [EmberComputeProvider] before the
@@ -573,7 +579,39 @@ public final class EmberCluster {
         log.info("Ember cluster stopped");
     }
 
+    /// Adds a node with NO role label — production-default shape, and byte-identical to the behaviour
+    /// every existing forge test relies on. Pinned by `EmberAddNodeRoleLabelTest`.
     public Promise<NodeId> addNode() {
+        return addNode(Map.of());
+    }
+
+    /// Adds a node advertising `role=worker` (#590 fidelity restoration).
+    ///
+    /// ## Why this exists, and why it is the ROLE LABEL rather than a peer-list tweak
+    ///
+    /// Community-tier mechanisms are gated on a node being positively known NOT to be a core. The
+    /// chain is `TopologyObserver.coreNodes()` → `MembershipFsm.coreObservedMembers` →
+    /// `isCoreCountedMember()` → `MemberDescriptor.isCore()` → `isCoreRole(role) = !"worker".equals(role)`
+    /// — so **a blank or unknown role counts as CORE**, deliberately (fencing on an unresolved view is
+    /// the dangerous direction).
+    ///
+    /// In production that role is the self-asserted SWIM label `NodeInfo.LABEL_ROLE`, set from
+    /// `AETHER_ROLE` (`Main.collectNodeLabels`) or the cloud providers' `aether-role`. **Ember set no
+    /// label at all**, so every in-JVM node read as a core and the #590 core-absence fence was
+    /// structurally suppressed — measured on a live 6-node cluster as `armed=true sinceLastPingMs=40922
+    /// remainingMs=0 thresholdMs=10000 fenced=false`: every precondition met, window exceeded fourfold,
+    /// correctly suppressed.
+    ///
+    /// That is a harness INFIDELITY, not a product defect, and this restores the production shape at
+    /// its cause. Excluding the joiner from its own `coreNodes` list would have treated a symptom and
+    /// left the label — the thing production actually keys on — still absent.
+    public Promise<NodeId> addWorkerNode() {
+        return addNode(Map.of(NodeInfo.LABEL_ROLE, WORKER_ROLE));
+    }
+
+    /// Shared implementation. `labels` are attached to the node's advertised `NodeInfo`, which is what
+    /// peers and its own `MemberDescriptor` classify from — the same field production populates.
+    public Promise<NodeId> addNode(Map<String, String> labels) {
         var slotOpt = Option.option(availableSlots.poll());
 
         if (slotOpt.isEmpty()) {
@@ -588,9 +626,11 @@ public final class EmberCluster {
         var port = basePort + slot;
         var mgmtPort = baseMgmtPort + slot;
         var appHttpPort = baseAppHttpPort + slot;
-        var info = NodeInfo.nodeInfo(nodeId, nodeAddress("localhost", port).unwrap());
+        var info = labels.isEmpty()
+                   ? NodeInfo.nodeInfo(nodeId, nodeAddress("localhost", port).unwrap())
+                   : NodeInfo.nodeInfo(nodeId, nodeAddress("localhost", port).unwrap(), labels);
 
-        log.info("Adding new node {} on port {}", nodeId.id(), port);
+        log.info("Adding new node {} on port {} labels={}", nodeId.id(), port, labels);
         slotsByNodeId.put(nodeId.id(), slot);
         nodeInfos.put(nodeId.id(), info);
         var allNodes = new ArrayList<>(nodeInfos.values());
