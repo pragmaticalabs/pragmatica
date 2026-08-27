@@ -477,6 +477,49 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `reference/timeout-configuration.md`) still describe these fields as operator-tunable and need a
   correction pass; also out of this stream's territory (`aether/docs/**`).
 
+### Fixed (2026-08-27 — #576: dead stream/consumer TOML keys now rejected at blueprint validation)
+- **A blueprint's `[streams.X]` and `[streams.X.consumers.Y]` config diffed cleanly against what the
+  operator asked for, then most of it never reached the runtime.** `StreamResourceValidator` now
+  rejects the keys that are structurally inert instead of accepting them:
+  - `encryption-key-id` — every stream is written through one shared segment sink with no encryptor
+    ever wired to it; the 5-arg encryptor-accepting overload has no production caller. Real fix is
+    tracked as `#253` (`BlockEncryptor` has no production key source) — a different stream's
+    territory, not addressed here.
+  - `compression` (`lz4`/`zstd`) — the same shared sink hardcodes `CompressionCodec.NONE`; segments
+    are always written uncompressed regardless of this key.
+  - `batch-size`, `processing`, `on-failure`, `checkpoint-interval`, `max-retries`, `dead-letter`,
+    `read-preference` under `[streams.X.consumers.Y]` — `StreamConfigParser#parseConsumers` (the
+    parser that reads these) has no production caller anywhere in the repo; every declarative
+    consumer runs through `StreamConsumerManager`'s 1-arg `ConsumerConfig` construction, which is
+    permanently pinned at defaults.
+  Only **non-default** values trip the new `inert-stream-config-key` / `inert-consumer-config-key`
+  rules — a key that happens to already equal the hardcoded default does not assert anything false,
+  even though it is equally inert, so it is left alone
+  [verified: `StreamResourceValidatorTest.InertConfigRejection`, 7 new cases covering all affected
+  keys plus an explicit-defaults positive control].
+  Recovery action for an operator hitting one of these rejections: remove the key (it was never
+  doing anything) or wait for the runtime wiring fix to land before reintroducing it.
+- **`auto-offset-reset`'s parsed *default* was itself dishonest, separately from the explicit-value
+  case above.** The parser defaulted an omitted key to `"latest"`, but a never-committed consumer has
+  always started at offset 0 (earliest) per the settled `#478` ruling, permanently — not a gap to be
+  closed later. Blanket-rejecting the field's near-universal default would have been disruptive to
+  every existing blueprint for no operator benefit, so the parser default is corrected to `"earliest"`
+  instead (zero runtime behavior change — the field has zero behavioral readers; only
+  `KVStoreSerializer` round-trips the string)
+  [verified: `StreamConfigParserTest.ResourcesParsing.autoOffsetResetDefaultsToEarliest`].
+  An explicit non-`"earliest"` value is now unambiguous and rejected under `inert-stream-config-key`
+  alongside `encryption-key-id`/`compression`.
+- **Known, deferred gap (not fixed by this ticket):** rejecting the dead keys is a validation-time
+  fix, not the structural one. A full wiring fix — making these keys actually take effect — spans
+  `aether/slice-api` (`ConsumerConfig`/`StreamConfig` plumbing), `aether/aether-stream`
+  (`StorageSegmentSink`'s single shared, unencrypted sink), and most of `aether/node`
+  (`AetherNode`/`StreamConsumerManager`'s hardcoded construction sites) — all outside this stream's
+  territory, tracked as a follow-up structural ticket candidate. A second, independent TOML parsing
+  path for the same `[streams.X]` shape exists at `NodeDeploymentState.java` (`aether-deployment`,
+  via a generic `ConfigService.config(section, StreamConfig.class)` binder) — in-territory but out of
+  this fix's scope, and likely part of the real root cause (two divergent parsers for one config
+  shape) rather than something this validation-time guard addresses.
+
 ### Fixed (2026-08-27 — #603: `auto-heal disable` now actually gates provisioning)
 - **The operator kill switch had exactly one reader.** `aether cluster topology auto-heal disable`
   flipped `ClusterTopologyManager.isAutoHealEnabled()` and the status route reported it disabled —
