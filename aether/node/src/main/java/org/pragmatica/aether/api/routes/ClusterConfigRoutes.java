@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Predicate;
@@ -44,13 +45,16 @@ import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.node.ProvisioningDiagnostics;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.TopologyEntry;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
@@ -204,7 +208,7 @@ public final class ClusterConfigRoutes implements RouteSource {
         return new ClusterStatusResponse(config.clusterName(),
                                          config.version(),
                                          config.coreCount(),
-                                         node.connectedNodeCount() + 1,
+                                         actualCoreCount(node),
                                          reconcilerStateName(node),
                                          leaderId,
                                          nodeInfos,
@@ -226,9 +230,22 @@ public final class ClusterConfigRoutes implements RouteSource {
                    .sum();
     }
 
+    /// #583: core-scoped count shared by `assembleStatus`'s `actualCoreCount` and
+    /// `reconcilerStateName` — `connectedNodeCount()+1` counted every connected peer regardless
+    /// of role, so worker nodes could push both the reported core count and the convergence
+    /// state past a role-blind threshold while genuinely below the configured core minimum.
+    /// `coreCountedMembers()` already includes self when self is core.
+    private static int actualCoreCount(ManageableNode node) {
+        return node.membershipFsm()
+                   .coreCountedMembers()
+                   .size();
+    }
+
     private static List<ClusterStatusNodeInfo> buildNodeInfos(ManageableNode node, String leaderId) {
         var leaderOpt = node.leader();
         var view = node.membershipView();
+        var topology = node.topologyManager();
+        var roleOverrides = collectRoleOverrides(node);
         // RC1 membership-v2: per-peer state sourced from the NTT-derived generation
         // snapshot's
         // `coreMembers` lifecycle enum (mirrors StatusRoutes.lifecycleStateMap). Empty when no
@@ -242,14 +259,32 @@ public final class ClusterConfigRoutes implements RouteSource {
                    .map(nid -> toStatusNodeInfo(nid,
                                                 leaderOpt,
                                                 view,
+                                                topology,
+                                                roleOverrides,
                                                 kvStateMap.getOrDefault(nid, ""),
                                                 leaderId))
                    .toList();
     }
 
+    /// #583: demotion/manual-promotion overrides ONLY, mirrors StatusRoutes.collectRoleOverrides
+    /// (same KV table, same "not a general role map" caveat — see that method's doc).
+    private static Map<String, String> collectRoleOverrides(ManageableNode node) {
+        var roleMap = new HashMap<String, String>();
+
+        node.kvStore()
+            .forEach(ActivationDirectiveKey.class,
+                     ActivationDirectiveValue.class,
+                     (key, value) -> roleMap.put(key.nodeId().id(),
+                                                 value.role()));
+
+        return roleMap;
+    }
+
     private static ClusterStatusNodeInfo toStatusNodeInfo(NodeId nid,
                                                           Option<NodeId> leaderOpt,
                                                           MembershipView view,
+                                                          TopologyManager topology,
+                                                          Map<String, String> roleOverrides,
                                                           String kvState,
                                                           String leaderId) {
         // derivedStatus — operator-visible projection, mirrors StatusRoutes.toNodeInfo:
@@ -258,14 +293,29 @@ public final class ClusterConfigRoutes implements RouteSource {
         var derivedStatus = view.isPresent(nid)
                             ? presentDisplay(kvState)
                             : "UNKNOWN";
-        // TODO (follow-up): role is still hardcoded "core" — should read from ActivationDirectiveValue
-        // in kvStore (see StatusRoutes.collectNodeRoles). Out of scope for the state-authority split.
+        var role = resolveNodeRole(nid, topology, roleOverrides);
+
         return new ClusterStatusNodeInfo(nid.id(),
-                                         "core",
+                                         role,
                                          kvState,
                                          derivedStatus,
                                          AetherNode.VERSION,
                                          nid.id().equals(leaderId));
+    }
+
+    /// #583: label first (present for every node, including cluster-minted workers that never
+    /// receive an override), the override map on top for an operator's explicit
+    /// demotion/promotion. Lowercase per this endpoint's documented contract
+    /// (management-api.md `/api/cluster/status`) — deliberately NOT `TopologyEntry.CORE_ROLE`,
+    /// which names an unrelated concept (`ClusterConfigValue.desiredTopology`'s declared shape,
+    /// not this runtime `NodeInfo` label).
+    private static String resolveNodeRole(NodeId nid, TopologyManager topology, Map<String, String> roleOverrides) {
+        var override = Option.option(roleOverrides.get(nid.id()));
+        var label = topology.get(nid).flatMap(info -> Option.option(info.labels().get(NodeInfo.LABEL_ROLE)));
+
+        return override.orElse(label)
+                       .map(String::toLowerCase)
+                       .or("core");
     }
 
     private static String presentDisplay(String reportedState) {
@@ -288,10 +338,8 @@ public final class ClusterConfigRoutes implements RouteSource {
     }
 
     private static String reconcilerStateName(ManageableNode node) {
-        var actualCount = node.connectedNodeCount() + 1;
-
-        return actualCount >= node.topologyConfig()
-                                  .clusterSize()
+        return actualCoreCount(node) >= node.topologyConfig()
+                                            .clusterSize()
                ? "CONVERGED"
                : "RECONCILING";
     }

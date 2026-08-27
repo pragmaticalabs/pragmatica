@@ -396,8 +396,13 @@ public final class StatusRoutes implements RouteSource {
         var swimAlive = view.isPresent(nodeId);
         var address = info.map(i -> i.address()
                                      .asString());
+        // #583 case-mismatch bonus: the label is stored lowercase ("core"/"worker"/"spot", set
+        // from AETHER_ROLE at process start) but this endpoint documents uppercase values
+        // (management-api.md `/api/nodes/live`) — normalize so a labeled node's role matches its
+        // own doc instead of only the no-label default happening to already be uppercase.
         var role = info.map(i -> i.labels()
                                   .getOrDefault(ROLE_LABEL, ActivationDirectiveValue.CORE))
+                       .map(String::toUpperCase)
                        .or(ActivationDirectiveValue.CORE);
 
         return new LiveNodeEntry(nodeId.id(), address, role, swimAlive, reportedState);
@@ -406,6 +411,7 @@ public final class StatusRoutes implements RouteSource {
     private NodesResponse buildNodesResponse() {
         var node = nodeSupplier.get();
         var metrics = node.metricsCollector().allMetrics();
+        var topology = node.topologyManager();
         var nodeIds = new LinkedHashSet<String>();
 
         nodeIds.add(node.self().id());
@@ -417,14 +423,22 @@ public final class StatusRoutes implements RouteSource {
         node.kvStore().forEach(SliceNodeKey.class,
                                SliceNodeValue.class,
                                (key, _) -> nodeIds.add(key.nodeId().id()));
-        var roleMap = collectNodeRoles(node);
+        var roleOverrides = collectRoleOverrides(node);
         var leaderId = node.leader().map(NodeId::id);
-        var enrichedNodes = nodeIds.stream().map(id -> toEnrichedNodeInfo(id, roleMap, leaderId)).toList();
+        var enrichedNodes = nodeIds.stream()
+                                   .map(id -> toEnrichedNodeInfo(id, topology, roleOverrides, leaderId))
+                                   .toList();
 
         return new NodesResponse(enrichedNodes);
     }
 
-    private static Map<String, String> collectNodeRoles(ManageableNode node) {
+    /// #583: demotion/manual-promotion overrides ONLY — not a general role map. The only
+    /// production writers are `ClusterDeploymentState.assignNodeRole`'s demotion path and the
+    /// operator-initiated `NodeLifecycleRoutes.promoteNode`; cluster-minted workers (RFC-0017
+    /// stage 5) never appear here because `MembershipDeltaProjector`'s Wave-2 JOINED filter never
+    /// issues them an `ActivationDirective` by design. `toEnrichedNodeInfo` treats an entry here as
+    /// an override on top of the node's self-reported `role` label, not the primary source.
+    private static Map<String, String> collectRoleOverrides(ManageableNode node) {
         var roleMap = new HashMap<String, String>();
 
         node.kvStore()
@@ -436,10 +450,20 @@ public final class StatusRoutes implements RouteSource {
         return roleMap;
     }
 
+    /// #583: label first (present for every node, including cluster-minted workers that
+    /// structurally never receive an override), the override map on top for an operator's
+    /// explicit demotion/promotion. Uppercase per this endpoint's documented contract
+    /// (management-api.md `/api/nodes`).
     private static EnrichedNodeInfo toEnrichedNodeInfo(String id,
-                                                       Map<String, String> roleMap,
+                                                       TopologyManager topology,
+                                                       Map<String, String> roleOverrides,
                                                        Option<String> leaderId) {
-        var role = roleMap.getOrDefault(id, ActivationDirectiveValue.CORE);
+        var override = Option.option(roleOverrides.get(id));
+        var label = NodeId.nodeId(id)
+                          .option()
+                          .flatMap(topology::get)
+                          .flatMap(info -> Option.option(info.labels().get(ROLE_LABEL)));
+        var role = override.orElse(label).map(String::toUpperCase).or(ActivationDirectiveValue.CORE);
         var isLeader = leaderId.map(id::equals).or(false);
 
         return new EnrichedNodeInfo(id, role, isLeader);

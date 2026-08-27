@@ -459,9 +459,15 @@ public final class ClusterTopologyRoutes implements RouteSource {
     /// `MembershipView` supplies the per-occupant lifecycle+health classification input.
     ///
     /// **Cold-start fallback.** Before CTM seeds the durable slot map (very-early bootstrap,
-    /// self-only formation), there are no slots in KV. Counting zero would under-report the
-    /// freshly-bootstrapped leader; fall back to the SWIM-derived `reachableOnDutyCount` so
-    /// self-bootstrap still converges. Once slots exist, the slot map is authoritative.
+    /// self-only formation), there are no slots in KV. Falls back to the FSM's core-scoped
+    /// observed-member count (mirrors `StatusRoutes.fallbackQuorumStatus`) so self-bootstrap
+    /// still converges. #583: this previously fell back to the SWIM-derived `reachableOnDutyCount`
+    /// (`presentMembers().size()`), which counted every present member regardless of role — a
+    /// worker present before slots exist would inflate this "core" count. That role-blindness also
+    /// made the caller's `viewCount > 0 ? viewCount : coreCountedMembers()` backstop in
+    /// `assembleTopologyStatus` unreachable in practice, since self is always present and this
+    /// method's fallback therefore never returned 0. Once slots exist, the slot map is
+    /// authoritative.
     static int slotDerivedCoreCount(ManageableNode node, MembershipView view) {
         var occupants = new ArrayList<NodeId>();
 
@@ -471,7 +477,9 @@ public final class ClusterTopologyRoutes implements RouteSource {
                      (_, value) -> value.assignedNodeId()
                                         .onPresent(occupants::add));
         if (occupants.isEmpty()) {
-            return reachableOnDutyCount(view);
+            return node.membershipFsm()
+                       .coreObservedMembers(node.self())
+                       .size();
         }
 
         int count = 0;
@@ -489,13 +497,6 @@ public final class ClusterTopologyRoutes implements RouteSource {
     /// present in the membership view (MembershipView input).
     private static boolean isHealthyOccupant(MembershipView view, NodeId occupant) {
         return view.isPresent(occupant);
-    }
-
-    /// Cluster-canonical reachable-and-present count. Reads `MembershipView.presentMembers()`
-    /// (KV-canonical); self is always included (SWIM does not observe self locally).
-    private static int reachableOnDutyCount(MembershipView view) {
-        return view.presentMembers()
-                   .size();
     }
 
     private static String topologyMode(TopologyManager tm) {
