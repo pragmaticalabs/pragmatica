@@ -942,3 +942,38 @@ Six genuinely-dead accessors found and suppressed this pass, filed as
 [#693](https://github.com/pragmaticalabs/pragmatica/issues/693) (separate from #675, which this
 gate's design was validated against as its positive control). Not mine to fix — #693 owns wiring
 these six through or removing them; this gate only tracks the surface, doesn't reduce it.
+
+## 2026-08-27 stream-c (operator surface) — #560 option 2: orphaned aether-lb Dockerfile deleted, cloud-testing-spec.md's LB sections marked historical
+
+Posting here (not `aether/docs/**`'s usual lane) because stream E is currently parked — flag if
+that changes and this should move.
+
+**Deleted:** `aether/docker/aether-lb/Dockerfile` (and the now-empty `aether/docker/aether-lb/`
+directory). It referenced `${JAR_PATH:-lb/target/aether-lb.jar}`, a path nothing in the repo
+produces — `aether/lb` isn't a module, no workflow builds an `aether-lb` image, and
+`ghcr.io/pragmaticalabs/aether-lb` doesn't exist on GHCR. Unbuildable since it landed; zero
+references anywhere else in the repo (`docker-compose.yml` included) before or after removal.
+
+**Docs alignment:** `aether/tests/cloud/docs/cloud-testing-spec.md` already carried a "Superseded
+in part" banner (added rc3, 2026-07-30) explaining that the in-house `aether-lb` deployable never
+shipped and describing current actual routing (management direct to a core node's port 8080; app
+traffic via the Hetzner managed LB alone; `cloud-test-lb` now a bare SSH bastion). What the banner
+admitted but never followed through on: the sections below it were never actually flagged, so a
+reader landing mid-document via search would hit ~150 lines of Phase 6/8 provisioning detail for a
+VM+container pair that doesn't exist, with no local signal it's stale. Fixed by (a) finalizing the
+banner's closing paragraph — the retirement is now a decided fact, not "tracked separately," and it
+enumerates exactly which sections downstream carry the retired framing — and (b) adding inline
+**Historical** callouts at the six heaviest clusters: §1.3's architecture diagram, Phase 6
+("Provision Aether LB VM"), Phase 8 ("Create Hetzner Managed Load Balancer," including a second
+staleness layer inside its own "Revised Design" fallback — even *that* still assumed management
+routed to the LB VM's 8081, which current `deploy-cloud.sh` doesn't do either), §5's REQ-A02/A03/
+A05/A09 bastion-as-LB framing, §9's sequence diagram, and Open Question Q4 (now moot). This is a
+documentation-hygiene pass, not a rewrite — the ~50 scattered inline mentions elsewhere in the
+document are left as-is, covered by the banner's blanket notice, consistent with how much of §3-§9
+was written around the same retired design throughout.
+
+**Left alone, deliberately:** whether an LB should return as a *mode* of `aether-node` on
+`PassiveNode` (confirmed dead code today — nothing instantiates it; worker-mode self-demotion
+actually goes through a `DelegateRouter`/`switchTo()` path instead) stays an open question gated on
+the owner confirming ingress AB/canary routing is actually roadmapped. Deploy-side canary
+(`aether deploy --canary`) ships today and doesn't need it. See #560 for the full brief.

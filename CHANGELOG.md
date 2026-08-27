@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Removed (2026-08-27 — #560: orphaned `aether-lb` Dockerfile deleted, cloud-testing-spec.md marked historical)
+- `aether/docker/aether-lb/Dockerfile` deleted (with its now-empty parent directory). It built
+  against `aether/lb/target/aether-lb.jar`, a path nothing in the repo produces — `aether/lb` isn't
+  a module, no workflow builds an `aether-lb` image, `ghcr.io/pragmaticalabs/aether-lb` was never
+  published. Unbuildable since it landed; zero other references anywhere in the repo.
+- `aether/tests/cloud/docs/cloud-testing-spec.md`'s existing "Superseded in part" banner (rc3,
+  2026-07-30) explained current routing but never flagged the ~150 lines of Phase 6/8 provisioning
+  detail below it that still describe the retired VM+container design as live. Banner finalized
+  (retirement is now a decided fact, not "tracked separately") and inline **Historical** markers
+  added at the six heaviest clusters (§1.3 architecture diagram, Phase 6, Phase 8, §5's bastion-as-
+  LB framing, §9's sequence diagram, Open Question Q4). Whether an LB returns as a mode of
+  `aether-node` on `PassiveNode` (dead code today) stays gated on the owner's roadmap answer on
+  ingress AB/canary routing — see #560, [MAILBOX.md](MAILBOX.md).
+
 ### Removed (2026-08-27 — #571: `HealthSignal` / `HealthSignalSink` deleted repo-wide)
 - **The whole signal channel is gone: 2 types, ~64 main-code sites across 5 modules, 116 test
   references across 20 files, landed as one atomic commit.** Splitting it was never an option — an
