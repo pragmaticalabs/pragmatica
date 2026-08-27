@@ -1,5 +1,7 @@
 # Control Plane Task Delegation Specification
 
+> ⚠️ **NOT IN RC1 — design only.** This is a design specification with no shipped implementation. It describes intended future work, not current Aether behavior — do not use it as a reference for what RC1 actually does. The `Status` field below reflects design maturity, not build status.
+
 **Status:** Implementation-Ready
 **Issue:** [#102](https://github.com/pragmatica-io/pragmatica/issues/102)
 **Branch:** release-1.0.0-rc1
@@ -899,5 +901,5 @@ Every existing integration test suite (12 suites, 183+ tests) MUST pass with del
 
 - [Architecture Overview](../architecture/00-overview.md)
 - [Consensus Architecture](../architecture/01-consensus.md) --- Rabia protocol, no leader check on proposals
-- [Hierarchical Storage Spec](../specs/hierarchical-storage-spec.md) --- AHSE storage tiers
+- [Hierarchical Storage Spec](hierarchical-storage-spec.md) --- AHSE storage tiers
 - [Streaming Spec](../specs/streaming-spec.md) --- streaming subsystem

@@ -50,7 +50,7 @@ Aether already has a pub/sub resource (`Publisher<T>` / `Subscriber`) for fire-a
 
 **Phase 1 (this spec):** In-memory ring buffer, standard consistency (governor-local sequencing), consumer groups, partition assignment via consensus, annotation processor integration, CDC adapter.
 
-**Phase 2:** Replication (governor-push), persistent storage via AHSE (sealed segments → local disk → S3), strong consistency (Rabia path), log compaction. These are explicitly out of scope for Phase 1 but the Phase 1 design must not preclude them (see Section 17 of the exploratory spec and [AHSE spec](hierarchical-storage-spec.md) §8.1 for constraints).
+**Phase 2:** Replication (governor-push), persistent storage via AHSE (sealed segments → local disk → S3), strong consistency (Rabia path), log compaction. These are explicitly out of scope for Phase 1 but the Phase 1 design must not preclude them (see Section 17 of the exploratory spec and [AHSE spec](future/hierarchical-storage-spec.md) §8.1 for constraints).
 
 **Phase 3:** Transactional cursor commits (PostgreSQL), exactly-once consumer semantics, compound retention policies.
 
@@ -390,7 +390,7 @@ on-failure = "stall"             # Stall on failure — manual intervention requ
 | `max-event-size` | string | `"1MB"` | Maximum serialized event size. Events exceeding this are rejected at publish. |
 | `backpressure` | string | `"drop-oldest"` | Behavior when ring buffer is full: `"block"`, `"drop-oldest"`, `"reject"`. |
 | `storage` | string | `"memory"` | Storage mode: `"memory"` (Phase 1, in-memory only) or `"persistent"` (AHSE-backed, Phase 2+). |
-| `storage-instance` | string | auto | AHSE storage instance name. Default: `storage.{streamName}`. Only applies when `storage = "persistent"`. See [AHSE spec](hierarchical-storage-spec.md). |
+| `storage-instance` | string | auto | AHSE storage instance name. Default: `storage.{streamName}`. Only applies when `storage = "persistent"`. See [AHSE spec](future/hierarchical-storage-spec.md). |
 
 #### Consumer-Level Properties
 
@@ -1070,7 +1070,7 @@ The ring buffer interface must support a `sealAndEvict` operation that:
 3. Writes the block to AHSE via `StorageInstance.put()`
 4. Only then advances `tailOffset`
 
-This is a Phase 2 concern, but the Phase 1 eviction path must be replaceable (interface, not hardcoded) to enable this swap. See: [hierarchical-storage-spec.md](hierarchical-storage-spec.md) §8.1
+This is a Phase 2 concern, but the Phase 1 eviction path must be replaceable (interface, not hardcoded) to enable this swap. See: [hierarchical-storage-spec.md](future/hierarchical-storage-spec.md) §8.1
 
 ### 6.7 Time-Based Retention
 
@@ -1845,7 +1845,7 @@ aether-stream (runtime implementation)
 
 ### Internal
 - [In-Memory Streams Exploratory Spec](in-memory-streams-spec.md) -- full design exploration and decision rationale
-- [Hierarchical Storage Engine (AHSE) Spec](hierarchical-storage-spec.md) -- tiered storage for streaming persistence, content store, and artifact storage
+- [Hierarchical Storage Engine (AHSE) Spec](future/hierarchical-storage-spec.md) -- tiered storage for streaming persistence, content store, and artifact storage
 - [KV-Store Scalability Analysis](../internal/kv-store-scalability.md) -- consensus data budget
 - [Slice API Reference](../reference/slice-api.md) -- `@ResourceQualifier`, manifest format, factory generation
 - [Envelope Versioning](../contributors/envelope-versioning.md) -- `ENVELOPE_FORMAT_VERSION` policy

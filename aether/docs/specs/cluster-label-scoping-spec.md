@@ -148,7 +148,7 @@ Implementation: `DockerComposeTemplate` (plain `StringBuilder`, no template engi
 
 Files:
 - `docs/rfc/RFC-NNNN-cluster-label-scoping.md` — new RFC explaining the orthogonal-label design + non-goal of cluster-scoping NodeId.
-- `aether/docs/operator/multi-cluster-deployment.md` — operator guide for running multiple clusters on shared infrastructure.
+- `aether/docs/operators/multi-cluster-deployment.md` — operator guide for running multiple clusters on shared infrastructure.
 - `aether/docs/reference/cli.md` — document the `cluster scaffold` subcommand.
 
 ---

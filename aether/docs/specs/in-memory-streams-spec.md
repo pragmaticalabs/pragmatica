@@ -75,7 +75,7 @@ This covers a large class of use cases:
 - Sensor/telemetry ingestion with downstream processors
 - Stream processing (map/filter/join/window operations)
 
-Use cases requiring unbounded retention, log compaction, or durable replay from epoch zero are out of scope **for Phase 1**. Phase 2 adds these capabilities via AHSE integration (see §18 and [hierarchical-storage-spec.md](hierarchical-storage-spec.md)), eliminating the need for external streaming infrastructure.
+Use cases requiring unbounded retention, log compaction, or durable replay from epoch zero are out of scope **for Phase 1**. Phase 2 adds these capabilities via AHSE integration (see §18 and [hierarchical-storage-spec.md](future/hierarchical-storage-spec.md)), eliminating the need for external streaming infrastructure.
 
 ---
 
@@ -97,7 +97,7 @@ The two-layer DHT already assigns governors to positions on the hash ring. Strea
 
 Streams are bounded ring buffers. Retention is by time, by entry count, or by memory size. There is no unbounded growth, no disk spill, no compaction. This keeps the implementation simple and memory behavior predictable.
 
-Phase 2 lifts the "bounded" constraint via AHSE integration: sealed segments spill to disk and S3, enabling unbounded retention with the ring buffer serving as a read cache. See [AHSE spec](hierarchical-storage-spec.md) §8.1.
+Phase 2 lifts the "bounded" constraint via AHSE integration: sealed segments spill to disk and S3, enabling unbounded retention with the ring buffer serving as a read cache. See [AHSE spec](future/hierarchical-storage-spec.md) §8.1.
 
 ---
 
@@ -1028,7 +1028,7 @@ In this model:
 
 ### 17.2 AHSE as Persistent Backend
 
-Aether's Hierarchical Storage Engine (AHSE) provides tiered, content-addressable block storage. Stream partitions map naturally to AHSE storage instances — sealed ring buffer segments become immutable blocks stored through the tiered hierarchy (memory → local disk → S3). See [hierarchical-storage-spec.md](hierarchical-storage-spec.md) for the full AHSE specification.
+Aether's Hierarchical Storage Engine (AHSE) provides tiered, content-addressable block storage. Stream partitions map naturally to AHSE storage instances — sealed ring buffer segments become immutable blocks stored through the tiered hierarchy (memory → local disk → S3). See [hierarchical-storage-spec.md](future/hierarchical-storage-spec.md) for the full AHSE specification.
 
 The governor writes sealed segments to AHSE after eviction. AHSE handles replication (per-tier RF), demotion (age-based for streaming), and durability (local disk + S3). No external database is needed for the stream data path.
 
@@ -1075,7 +1075,7 @@ The in-memory Phase 1 design must not preclude the persistence path. Key constra
 ## References
 
 ### Internal
-- [Hierarchical Storage Engine (AHSE) Spec](hierarchical-storage-spec.md) — Tiered storage for streaming persistence, content store, and artifact storage
+- [Hierarchical Storage Engine (AHSE) Spec](future/hierarchical-storage-spec.md) — Tiered storage for streaming persistence, content store, and artifact storage
 - [KV-Store Scalability Analysis](../internal/kv-store-scalability.md) — Consensus data budget analysis
 
 ### External

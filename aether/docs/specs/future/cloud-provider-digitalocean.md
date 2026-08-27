@@ -1,5 +1,7 @@
 # DigitalOcean Cloud Provider Implementation Sheet
 
+> ⚠️ **NOT IN RC1 — design only.** This is a design specification with no shipped implementation. DigitalOcean is not among RC1's supported cloud providers (AWS, Azure, GCP, Hetzner) — do not use this document as a reference for what RC1 actually supports.
+
 ## Overview
 
 DigitalOcean is a **Tier 2** cloud provider targeting developers and small-to-medium workloads.

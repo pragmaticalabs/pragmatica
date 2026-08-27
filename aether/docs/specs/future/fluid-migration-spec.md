@@ -1,5 +1,7 @@
 # Cross-Environment Fluid Migration Specification
 
+> ⚠️ **NOT IN RC1 — design only.** This is a design specification with no shipped implementation. It describes intended future work, not current Aether behavior — do not use it as a reference for what RC1 actually does. The `Status` field below reflects design maturity, not build status.
+
 **Version:** 1.0
 **Status:** Implementation-Ready
 **Target Release:** 0.23.0+

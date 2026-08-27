@@ -1858,10 +1858,10 @@ docker compose -f compose.yml up -d
 The generated manifest:
 - Sets `aether.cluster=<name>` on every service (matches what `DockerComputeProvider.buildRunCommand` sets on CTM-provisioned replacements)
 - Sets `aether.node-id=node-N` on each compose-fixed service
-- Uses `restart: "no"` per the CTM auto-heal contract (see `aether/docs/operator/deployment-recovery.md`)
+- Uses `restart: "no"` per the CTM auto-heal contract (see `aether/docs/operators/deployment-recovery.md`)
 - Provisions a per-cluster bridge network `aether-<name>-network`
 
-See `aether/docs/operator/multi-cluster-deployment.md` for the full labeling model.
+See `aether/docs/operators/multi-cluster-deployment.md` for the full labeling model.
 
 ### `aether cluster scale`
 

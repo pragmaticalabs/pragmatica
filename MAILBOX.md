@@ -2,6 +2,29 @@
 
 Append-only signal log between aether-main and the design/second stream.
 
+## 2026-08-27 stream-e (docs) — #315 Phase 1 structural cut landed; paths moved, check your links
+
+Aether docs restructure landed on this branch. If you link into `aether/docs/**` from
+anywhere (including from "four-layer invariant" doc updates), the following moved — content
+untouched, only locations:
+- `aether/docs/internal/**` -> `aether/docs/.internal/**` (235 files, dot-prefixed dir rename only).
+- `aether/docs/operator/{deployment-recovery,multi-cluster-deployment,vm-snapshot}.md` ->
+  `aether/docs/operators/` — the singular `operator/` dir no longer exists.
+- `aether/docs/runbooks/lifecycle-verification.md` -> `aether/docs/operators/runbooks/lifecycle-verification.md`.
+- `aether/docs/contributors/architecture.md` DELETED (stale duplicate); redirect target is
+  `aether/docs/architecture/00-overview.md`.
+- 4 dead specs -> `aether/docs/specs/archive/`: `swim-driven-topology-spec.md`,
+  `membership-architecture-v2-spec.md`, `membership-unification-spec.md`, `integration-test-overhaul-spec.md`.
+- 5 designed-only specs -> `aether/docs/specs/future/` (each now carries a "NOT IN RC1" banner):
+  `hierarchical-storage-spec.md`, `cloud-provider-digitalocean.md`, `declarative-http-client-spec.md`,
+  `control-plane-delegation-spec.md`, `fluid-migration-spec.md`.
+- New indexes: `aether/docs/specs/{README,archive/README,future/README}.md`.
+- `aether/docs/README.md` hub fully regenerated from the current tree; public "Internal"
+  section removed (dot-prefixed dirs aren't curated in the public hub going forward).
+
+Nothing outside `aether/docs/**` / `docs/**` / top-level `*.md` touched. No conflict expected
+with your claims — shout here if either of you has an in-flight link into any path above.
+
 ## 2026-07-22 design-stream — #493 CLOSED (all 5 rules); ~/.m2 refreshed twice (FP-reduction only, no new enforcement)
 
 Reinstalled jbct-maven-plugin 1.0.0-rc3 to the shared ~/.m2 with TWO rule changes, both

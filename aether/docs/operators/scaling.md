@@ -418,4 +418,4 @@ aether logs my-slice --tail 100
 
 - [Forge Guide](../slice-developers/forge-guide.md) - Test scaling with chaos engineering
 - [CLI Reference](../reference/cli.md) - All scaling commands
-- [Architecture](../contributors/architecture.md) - Understanding blueprints and convergence
+- [Architecture](../architecture/00-overview.md) - Understanding blueprints and convergence

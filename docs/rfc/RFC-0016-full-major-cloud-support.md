@@ -691,7 +691,7 @@ exact-id matching, numeric-id removal).
 
 ### Internal — harness & docs
 - `aether/tests/cloud/{deploy-cloud.sh,run-cloud-tests.sh,teardown-cloud.sh}`
-- `aether/docs/operator/vm-snapshot.md` (`:84-85,152-156` — false "no code change"
+- `aether/docs/operators/vm-snapshot.md` (`:84-85,152-156` — false "no code change"
   claim, W9), `aether/docs/reference/feature-catalog.md` (rows 4, 178, 187, 200-204)
 
 ### Related RFCs

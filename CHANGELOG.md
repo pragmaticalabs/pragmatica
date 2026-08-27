@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Changed (2026-08-27 — #315: docs Phase 1 structural cut)
+- `aether/docs/internal/` renamed to `aether/docs/.internal/` (235 files, dot-prefixed so a
+  future mkdocs build excludes it by convention; contents untouched).
+- `aether/docs/operator/` merged into the existing `aether/docs/operators/`; `runbooks/lifecycle-verification.md`
+  moved under `operators/runbooks/`. The singular `operator/` directory no longer exists.
+- `aether/docs/contributors/architecture.md` deleted — stale duplicate overview citing archived
+  vision docs; all inbound links now point to `aether/docs/architecture/00-overview.md`.
+- 4 dead specs archived to `aether/docs/specs/archive/` (each self-declared superseded by
+  `cluster-topology-overhaul-spec.md` or its own v2): `swim-driven-topology-spec.md`,
+  `membership-architecture-v2-spec.md`, `membership-unification-spec.md`, `integration-test-overhaul-spec.md`.
+- 5 designed-only, zero-implementation specs moved to `aether/docs/specs/future/` with a
+  "NOT IN RC1 — design only" banner added: `hierarchical-storage-spec.md`,
+  `cloud-provider-digitalocean.md`, `declarative-http-client-spec.md`,
+  `control-plane-delegation-spec.md`, `fluid-migration-spec.md`.
+- New `aether/docs/specs/README.md`, `specs/archive/README.md`, `specs/future/README.md` indexes.
+- `aether/docs/README.md` hub index regenerated from the current tree (previously ~2.5 months
+  stale, missing the entire `architecture/` series and half of `reference/`/`operators/`);
+  two pre-existing dead links from a March 2026 reorg (`slice-developers/development-guide.md`,
+  `slice-developers/infra-services.md`, both already archived) fixed at their 4 remaining
+  referring sites. Public "Internal" hub section removed — dot-prefixed dirs are engineering
+  scratch, not curated navigation.
+
 ### Fixed (2026-08-27 — #642: ghost QuorumLossDetector self-fenced a node's next incarnation)
 - **`QuorumLossDetector` gains `stop()`** (terminal latch checked at every dispatch point + both
   futures cancelled), called from `AetherNode.stop()` beside the #590 core-absence stop. The defect:

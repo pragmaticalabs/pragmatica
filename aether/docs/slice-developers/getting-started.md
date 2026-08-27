@@ -1002,8 +1002,8 @@ for full security configuration details.
 You've built, tested, modified, deployed, and connected an Aether slice to infrastructure.
 Here's where to go next:
 
-- **[Development Guide](development-guide.md)** — adding dependencies on other slices,
-  creating multiple slices in one module, request/response design
+- **[Resource Reference](resource-reference.md)** — adding dependencies on other slices,
+  resource provisioning and configuration
 - **[Slice Patterns](slice-patterns.md)** — advanced patterns for real-world slices
 - **[Testing Slices](testing-slices.md)** — unit testing, integration testing, mocking dependencies
 - **[Forge Guide](forge-guide.md)** — running Forge, dashboard, load testing

@@ -18,6 +18,8 @@ Contains design documents and references from earlier development phases. Use fo
 | [cluster-deployment-manager.md](cluster-deployment-manager.md) | Superseded | Implementation evolved significantly |
 | [kv-schema-simplified.md](kv-schema-simplified.md) | Reference | KV schema design notes |
 | [infrastructure-slices-design.md](infrastructure-slices-design.md) | Reference | Design rationale for infra slices |
+| [development-guide.md](development-guide.md) | Superseded | [Resource Reference](../slice-developers/resource-reference.md) |
+| [infra-services.md](infra-services.md) | Superseded | [Slice Patterns](../slice-developers/slice-patterns.md) |
 
 ## Key Changes Since Archive
 

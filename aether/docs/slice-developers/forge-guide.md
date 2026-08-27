@@ -443,4 +443,4 @@ The following features are planned but not yet implemented:
 ## Next Steps
 
 - [Scaling Guide](../operators/scaling.md) - Understand what Forge tests
-- [Architecture](../contributors/architecture.md) - How Aether handles failures
+- [Architecture](../architecture/00-overview.md) - How Aether handles failures
