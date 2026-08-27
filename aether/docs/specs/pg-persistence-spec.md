@@ -1,5 +1,7 @@
 # Aether Persistence (AEP) — PostgreSQL Persistence Adapter Specification
 
+**Status:** Implemented — [mechanism: `aether/pg-tools/` (pg-parser, pg-codegen, pg-schema, pg-maven-plugin modules implement the pipeline described below)]
+
 ## Overview
 
 Type-safe PostgreSQL persistence adapters for Aether slices with compile-time SQL validation. Queries are validated against the schema derived from migration files. If the code compiles, the queries work.

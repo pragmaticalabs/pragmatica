@@ -1,5 +1,7 @@
 # Landscape — versioned application-set template (spec v0.1, embedded)
 
+**Status:** Draft — [design intent — unverified]. Design landed via #462 (2026-07-17); no matching implementation found in this codebase as of this writing.
+
 > Landed from #462 (spec v0.1, 2026-07-17); this file is the living document, the ticket tracks implementation.
 
 ## 1. Motivation
