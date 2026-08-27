@@ -215,6 +215,13 @@ Three is the ceiling (decided 2026-08-25): the corpus has zero call sites at ari
 so higher rungs have no demand behind them; an error carrying more than three values hand-rolls
 its factory — one line, no helper.
 
+Custom value rendering is the second reason to hand-roll, found by the pilot migration (PR #638):
+a `%s` template renders a component through `toString()`, so a message that needs any other
+projection of the value — `QuicTransportError.IdentityMismatch` renders `NodeId.id()`, not the
+record's `NodeId[id=...]` — cannot be expressed as a template at any arity. The hand-rolled
+factory line formats the projection explicitly; CAUSE-08's exemption for the record's own static
+factory member covers it.
+
 ### 2. Cause-factory variance (full PECS)
 
 Generics are invariant: `Fn1<ExceededLimit, T>` is not a `Fn1<Cause, T>`, so a fully-typed factory
@@ -365,7 +372,8 @@ and the mixin turns the workaround into the idiom.
 2. **The variance pass adopts full PECS** (2026-08-25) — proven by the compilation probe; pre-GA
    is the window where the widening is free.
 3. **Three is the `forXValues` ceiling** (2026-08-25) — the corpus has zero call sites at arity
-   two and three; larger errors hand-roll the factory line.
+   two and three; larger errors hand-roll the factory line. Custom value rendering (a projection
+   `%s`/`toString()` cannot express) is the second hand-roll reason — pilot finding, 2026-08-26.
 
 ## Open Items
 
