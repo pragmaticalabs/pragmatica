@@ -17,6 +17,9 @@ import static org.pragmatica.lang.Verify.ensure;
 // registry (never wired to the Management API's real one). The interceptor factory now resolves
 // the node's actual MeterRegistry from ProvisioningContext (mirrors CacheInterceptorFactory's
 // DHTClient/Serializer/Deserializer extensions) and hands it to MetricsMethodInterceptor directly.
+// tags: each entry is a "key=value" pair (e.g. "region=eu", not a bare "region") -
+// MetricsMethodInterceptor#tags() splits on '=' and hands the result to Micrometer's
+// MeterRegistry#timer(String, Tags), which requires named dimensions, not bare labels.
 public record MetricsConfig(String name, boolean recordTiming, boolean recordCounts, List<String> tags) {
     public static Result<MetricsConfig> metricsConfig(String name) {
         return ensure(name, Verify.Is::notBlank).map(n -> new MetricsConfig(n, true, true, List.of()));

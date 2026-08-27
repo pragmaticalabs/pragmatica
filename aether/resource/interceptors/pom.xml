@@ -54,6 +54,13 @@
             <artifactId>slf4j-api</artifactId>
         </dependency>
 
+        <!-- #278: real TOML-binding tests for RetryConfig/MetricsConfig -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>config-service</artifactId>
+            <scope>test</scope>
+        </dependency>
+
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter-api</artifactId>
