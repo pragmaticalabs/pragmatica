@@ -8,6 +8,7 @@ package org.pragmatica.aether.forge;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
@@ -36,6 +37,10 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 ///   - Status consistency
 ///   - Metrics availability
 ///
+/// #556 forge SMOKE set (formation leg): one of three classes `./forge.sh` runs by default, so a
+/// developer gets a real multi-node cluster signal before pushing instead of discovering a
+/// cluster-level regression in CI. Keep this set small — its value is that people actually run it.
+@Tag("Smoke")
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class ClusterFormationTest {
