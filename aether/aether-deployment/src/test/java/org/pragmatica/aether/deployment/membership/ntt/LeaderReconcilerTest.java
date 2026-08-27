@@ -46,6 +46,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Delayed;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -1515,6 +1516,50 @@ class LeaderReconcilerTest {
             assertThat(ctm.provisionReplacementCalls()).hasSize(1);
         }
 
+        /// #603 — the operator's `aether cluster topology auto-heal disable` (`ClusterTopologyManager
+        /// .setAutoHealEnabled`) must suppress replacement provisioning, not just flip the status
+        /// route's response. Same genuine-departure-past-debounce setup as the row above (every other
+        /// gate open), but with auto-heal turned off: no provision, ever — advancing time further
+        /// doesn't unstick it, unlike the debounce cases, because this is an operator override, not a
+        /// timer.
+        @Test
+        void autoHealDisabled_suppressesProvisioning_evenPastDebounceWithGenuineDeparture() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            assertThat(reconciler.isReachedFullMembership()).isTrue();
+            ctm.setAutoHealEnabled(false, "test: operator disabled during incident");
+            listener.clear();
+
+            removePeers(PEER_D);
+            triggerAndFireReconcile();
+            assertThat(ctm.provisionReplacementCalls()).isEmpty();
+            // #603 review Warning 10 — at this point BOTH gates are closed: auto-heal is disabled AND
+            // the debounce window has not yet elapsed. Asserting AUTO_HEAL_DISABLED here, not only
+            // after the debounce advance below, is what actually pins the evaluation order —
+            // suppressionReason() must check the operator override before the debounce timer, or this
+            // would read WITHIN_DEBOUNCE instead and the later assertion would still pass by
+            // coincidence (debounce is the only gate left closed there).
+            assertThat(reconciler.lastProvisioningDecision().unwrap().reason()).isEqualTo("AUTO_HEAL_DISABLED");
+            timeSource.advanceTimeMillis(EXPECTED_DEBOUNCE_WINDOW.millis() + 1);
+            listener.clear();
+            triggerAndFireReconcile();
+
+            assertThat(listener.events().getLast().provisionCount()).isZero();
+            assertThat(ctm.provisionReplacementCalls()).isEmpty();
+            // #603 review Gap 3 — the #336 management-API surface must attribute this suppression
+            // to the operator override, not to the debounce timer it just outlasted.
+            assertThat(reconciler.lastProvisioningDecision().unwrap().reason()).isEqualTo("AUTO_HEAL_DISABLED");
+
+            // Re-enabling clears the override immediately — no relatch, no re-debounce needed since
+            // the deficit is still the same aged run.
+            ctm.setAutoHealEnabled(true, "test: operator re-enabled");
+            listener.clear();
+            triggerAndFireReconcile();
+            assertThat(ctm.provisionReplacementCalls()).hasSize(1);
+        }
+
         /// Row 4 — after the latch, a departure whose debounce has NOT elapsed is suppressed
         /// (`WITHIN_DEBOUNCE`) AND a single re-evaluation follow-up reconcile is scheduled so the
         /// deficit is acted on when the gate clears, without any further presence sampler event.
@@ -2311,14 +2356,19 @@ class LeaderReconcilerTest {
             return 0;
         }
 
+        // #603 — real mutable state (default enabled, matching production's construction-time
+        // default) so a test can flip it and assert the reconciler actually honours the flag,
+        // rather than a fake that always reports enabled regardless of what was set.
+        private final AtomicBoolean autoHealEnabled = new AtomicBoolean(true);
+
         @Override
         public boolean isAutoHealEnabled() {
-            return true;
+            return autoHealEnabled.get();
         }
 
         @Override
         public boolean setAutoHealEnabled(boolean enabled, String reason) {
-            return true;
+            return autoHealEnabled.getAndSet(enabled);
         }
 
         @Override

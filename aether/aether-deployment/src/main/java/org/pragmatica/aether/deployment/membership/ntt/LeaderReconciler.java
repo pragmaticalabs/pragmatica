@@ -760,8 +760,17 @@ public final class LeaderReconciler {
         // appears, clear it the moment the deficit resolves. A transient reconnect dip clears the
         // anchor; a genuine departure lets it age.
         updateDeficitAnchor(now, effective, configuredCoreCount);
+        // #578-review Issue 9: read the operator's kill switch ONCE per pass and thread it through —
+        // it is the one flippable input to this decision (the two latches below are monotonic, so
+        // re-reading them can't disagree with themselves mid-pass). Re-querying ctm.isAutoHealEnabled()
+        // separately at each of the three sites below let a same-pass toggle make the decision, the
+        // log line, and the #336 snapshot disagree about why a deficit went unfilled.
+        var autoHealEnabled = ctm.isAutoHealEnabled();
         var quorumSafe = clusterMembershipCount >= quorumThreshold(configuredCoreCount);
-        var provisioningPermitted = quorumSafe && provisioningAllowed(now, effective, configuredCoreCount);
+        var provisioningPermitted = quorumSafe && provisioningAllowed(now,
+                                                                      effective,
+                                                                      configuredCoreCount,
+                                                                      autoHealEnabled);
 
         logProvisioningDecision(now,
                                 trigger,
@@ -769,8 +778,15 @@ public final class LeaderReconciler {
                                 effective,
                                 configuredCoreCount,
                                 quorumSafe,
-                                provisioningPermitted);
-        captureProvisioningDecision(now, trigger, effective, configuredCoreCount, quorumSafe, provisioningPermitted);
+                                provisioningPermitted,
+                                autoHealEnabled);
+        captureProvisioningDecision(now,
+                                    trigger,
+                                    effective,
+                                    configuredCoreCount,
+                                    quorumSafe,
+                                    provisioningPermitted,
+                                    autoHealEnabled);
         var peersToProvision = provisioningPermitted
                                ? computePeersToProvision(configuredCoreCount, effective)
                                : Set.<NodeId> of();
@@ -836,7 +852,11 @@ public final class LeaderReconciler {
         }
     }
 
-    /// Provisioning gate (three AND-ed conditions; provisioning fires only when ALL hold):
+    /// Provisioning gate (four AND-ed conditions; provisioning fires only when ALL hold):
+    /// (0) the operator has not disabled auto-heal ([`ClusterTopologyManager#isAutoHealEnabled`]) —
+    /// #603: this used to have exactly one reader (the status route), so `aether cluster topology
+    /// auto-heal disable` reported success and changed nothing here. Checked first because it is
+    /// the operator's explicit kill switch and should short-circuit ahead of the formation latches;
     /// (1) the arm-after-first-quorum latch has armed (Bug C — never provision for a configured
     /// peer still joining during formation); (2) the cluster has been OBSERVED at full configured
     /// membership ([`#reachedFullMembership`]) — the cold-start-over signal is a FACT, not a timer.
@@ -848,8 +868,9 @@ public final class LeaderReconciler {
     /// never provisions, only a sustained deficit (a real departure) does. The latch is one-time
     /// (never reset within a leader term); debounce is per-deficit-run (reset on recovery), so
     /// genuine later auto-heal is never permanently suppressed.
-    private boolean provisioningAllowed(long now, int effective, int configuredCoreCount) {
-        return armedForProvisioning.get()
+    private boolean provisioningAllowed(long now, int effective, int configuredCoreCount, boolean autoHealEnabled) {
+        return autoHealEnabled
+               && armedForProvisioning.get()
                && reachedFullMembership.get()
                && deficitDebounced(now, effective, configuredCoreCount);
     }
@@ -879,7 +900,8 @@ public final class LeaderReconciler {
                                          int effective,
                                          int configuredCoreCount,
                                          boolean quorumSafe,
-                                         boolean provisioningPermitted) {
+                                         boolean provisioningPermitted,
+                                         boolean autoHealEnabled) {
         var hasDeficit = effective < configuredCoreCount;
         var alwaysLoggedTrigger = trigger == ReconcileTrigger.CONFIG_CHANGE || trigger == ReconcileTrigger.DEFICIT_FOLLOW_UP || trigger == ReconcileTrigger.SURPLUS_FOLLOW_UP;
 
@@ -898,7 +920,7 @@ public final class LeaderReconciler {
                  reachedFullMembership.get(),
                  deficitAgeMs(now),
                  quorumSafe,
-                 suppressionReason(effective, configuredCoreCount, quorumSafe, provisioningPermitted));
+                 suppressionReason(effective, configuredCoreCount, quorumSafe, provisioningPermitted, autoHealEnabled));
     }
 
     /// Age in milliseconds of the current deficit run (`now - deficitSinceNanos`), or `-1` when no
@@ -913,10 +935,14 @@ public final class LeaderReconciler {
 
     /// Precise suppression reason for the decision log. `NONE_PROVISIONING` when a provision is
     /// permitted; otherwise the first failing gate in evaluation order. Pure logging computation.
+    /// `autoHealEnabled` is the caller's single per-pass read of [`ClusterTopologyManager
+    /// #isAutoHealEnabled`] (#578-review Issue 9) — never re-queried here, so this always agrees
+    /// with the actual gate decision even if the operator flips the flag mid-pass.
     private String suppressionReason(int effective,
                                      int configuredCoreCount,
                                      boolean quorumSafe,
-                                     boolean provisioningPermitted) {
+                                     boolean provisioningPermitted,
+                                     boolean autoHealEnabled) {
         if (provisioningPermitted) {
             return "NONE_PROVISIONING";
         }
@@ -927,6 +953,10 @@ public final class LeaderReconciler {
 
         if (!quorumSafe) {
             return "NOT_QUORUM_SAFE";
+        }
+
+        if (!autoHealEnabled) {
+            return "AUTO_HEAL_DISABLED";
         }
 
         if (!armedForProvisioning.get()) {
@@ -953,7 +983,8 @@ public final class LeaderReconciler {
                                              int effective,
                                              int configuredCoreCount,
                                              boolean quorumSafe,
-                                             boolean provisioningPermitted) {
+                                             boolean provisioningPermitted,
+                                             boolean autoHealEnabled) {
         lastProvisioningDecision = new ProvisioningDecisionSnapshot(trigger,
                                                                     configuredCoreCount,
                                                                     membershipFsm.coreCountedMembers().size(),
@@ -965,7 +996,8 @@ public final class LeaderReconciler {
                                                                     suppressionReason(effective,
                                                                                       configuredCoreCount,
                                                                                       quorumSafe,
-                                                                                      provisioningPermitted));
+                                                                                      provisioningPermitted,
+                                                                                      autoHealEnabled));
     }
 
     /// Effective cluster capacity = the size of the UNION of confirmed members and in-flight

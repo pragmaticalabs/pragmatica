@@ -300,6 +300,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   build on directories named `*.sql`); `ZCstDumpTest` (a hand-run CST-diff instrument that asserts
   nothing) now runs only when `-Dcstdump.out` is passed, per its own documented invocation.
 
+### Fixed (2026-08-27 — #603: `auto-heal disable` now actually gates provisioning)
+- **The operator kill switch had exactly one reader.** `aether cluster topology auto-heal disable`
+  flipped `ClusterTopologyManager.isAutoHealEnabled()` and the status route reported it disabled —
+  but `LeaderReconciler.provisioningAllowed` never read the flag, so a real member departure was
+  auto-healed regardless. `autoHealEnabled` is now read once per reconcile pass and threaded through
+  the gate, the decision log, and the `#336` snapshot, so all three agree even if the operator
+  flips the flag mid-pass. Checked first in the four-condition gate, ahead of the formation
+  latches, as the operator's explicit override. **Suppresses provisioning for the current leader
+  term only** — the flag is an in-memory field on the current leader, not a committed value, so it
+  does not survive a leader failover [mechanism: field lives on `LeaderReconciler`, no persistence
+  or replication path]. Recovery action for an operator who needs the suppression to hold across a
+  failover: none yet — re-disable on the new leader after failover, or track the gap as its own
+  ticket. `LeaderReconcilerTest` pins the evaluation order directly: with both auto-heal disabled
+  and the debounce window still open, `suppressionReason()` reports `AUTO_HEAL_DISABLED`, not
+  `WITHIN_DEBOUNCE` — asserted before the debounce window is advanced, the only point where the two
+  reasons actually diverge [verified: `LeaderReconcilerTest.autoHealDisabled_suppressesProvisioning_evenPastDebounceWithGenuineDeparture`]
+
 ### Added (2026-08-27 — #642/#509 test infra)
 - `EmberCluster.start(heldBackNodeIds)` + `startHeldBackNodes()`: deterministic slow-rejoiner seam —
   held nodes are created into every peer's configured topology but not started, producing the #509
