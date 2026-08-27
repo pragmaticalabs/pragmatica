@@ -35,6 +35,7 @@ even with large per-method offsets (e.g., ManagementApiTest has offsets up to 38
 | MultiPartitionCrashDurabilityTest | 17500 | 17600          | 0          | 5 nodes (shared cluster, app-http 17700; #431 multi-partition WAL crash-durability, per-partition replay) |
 | DeclarativeStreamConsumerTest | 18000     | 18100          | 0          | 5 nodes (shared cluster, app-http 18200; #488 declarative consumer delivery + #526 app-typed round trip) |
 | DeclarativeConsumerPlacementTest | 18500  | 18600          | 0          | 5 nodes (shared cluster, app-http 18700; #535 delivery when the partition owner does not host the slice) |
+| CoordinationSlopeInstrumentTest | 20000  | 20100          | 0          | 3 nodes (shared cluster, app-http 20200; #591 validates the coordination-load sampler against live endpoints) |
 
 ## Per-Method Offset Pattern
 

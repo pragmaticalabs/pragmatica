@@ -289,7 +289,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   is carrying the responder's engine state in `SyncResponse`, which is protocol surface and deliberately
   out of scope here. [design intent — unverified]
 
-### Added (2026-08-27 — #556: a local forge gate, so cluster regressions stop being a CI-only discovery)
+### Added (2026-08-27 — #591: the coordination-load instrument, validated before its output is trusted)
+- `aether/tests/integration/coordination_slope.py` — samples QUIC protocol-message rate per CORE node
+  (`quic_messages_sent_total` + `quic_messages_received_total`, differenced) plus `cpu.usage` /
+  `heap.used`, for the re-scoped #591 worker-count sweep. It reports a **worker-count** slope with
+  community count pinned at 1, never a community-count slope: group splitting is dead code (#673), so
+  that axis is a property the shipping system does not have.
+- `CoordinationSlopeInstrumentTest` (forge, 3 nodes) validates the sampler against a LIVE cluster —
+  the endpoint contract on every core, counter cumulativeness, and the sampler itself end to end.
+  The remote sweep is expensive and infrequent, so a sampler that silently reported zeros would not
+  surface until the numbers were already in the book.
+- **That validation immediately earned its keep, catching two defects in the instrument:**
+  `GET /api/metrics` returns a CLUSTER-WIDE load map (every node answers for every node) although the
+  route is declared LOCAL — the sampler had assumed per-node and could not disambiguate; and the
+  per-core sampling was SEQUENTIAL, so with three cores and a 60s window each core was measured over a
+  different minute and the "slope" summed rates that never coexisted. Cores are now differenced over
+  one shared window, and `--node-ids` is required so worker entries can never be folded into the core
+  mean. [verified: aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/CoordinationSlopeInstrumentTest.java]
+- Missing counters raise rather than returning zero, a backwards-going counter voids the sample, and
+  backpressure/write-failure deltas are reported as saturation guards — a slope measured while those
+  climb is measuring congestion, not coordination cost.
+
+
 - **`./forge.sh`** — the first local gate that actually RUNS a multi-node cluster. `./forge.sh`
   (smoke), `ci` (everything except `@Tag("Heavy")`, exactly what CI runs), `full`, or a single class
   name. Until now nothing local executed forge: `build.sh` compiles the tests and says so in its own

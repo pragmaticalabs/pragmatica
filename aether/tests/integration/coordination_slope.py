@@ -30,8 +30,8 @@ SELF-TEST
 
 Usage:
   ./coordination_slope.py --selftest
-  ./coordination_slope.py --cores http://h:8080,http://h:8081,http://h:8082 \
-                          --workers 4 --window 60 --out results.json
+  ./coordination_slope.py --cores http://h:20100,http://h:20101,http://h:20102 \
+                          --node-ids core-1,core-2,core-3 --workers 4 --window 60 --out results.json
 """
 import argparse
 import json
@@ -43,10 +43,12 @@ import urllib.request
 TRANSPORT_PATH = "/api/metrics/transport"
 METRICS_PATH = "/api/metrics"
 
-# Both routes are declared LOCAL in ManagementRoute (`:243` METRICS, `:248` METRICS_TRANSPORT) —
-# each node answers for ITSELF rather than forwarding to the leader. That is what makes per-core
-# sampling possible, and it is also why every core's own management port must be polled: hitting
-# one node repeatedly would report that node's load three times, not the cluster's.
+# The two routes behave DIFFERENTLY despite both being declared LOCAL in ManagementRoute
+# (`:243` METRICS, `:248` METRICS_TRANSPORT), and the difference is easy to get backwards:
+#   /api/metrics/transport — genuinely per-node. Each core must be polled for its own counters.
+#   /api/metrics          — CLUSTER-WIDE `load` map. Any node returns an entry for every node it
+#                           knows, so it is fetched once and the cores are selected by id.
+# Assuming the second was per-node is what the live 3-node validation caught.
 
 MSG_KEYS = ("quic_messages_sent_total", "quic_messages_received_total")
 GUARD_KEYS = ("quic_backpressure_drops_total", "quic_backpressure_retries_total",
@@ -76,56 +78,71 @@ def guards(transport):
     return {k: int(transport.get(k, 0)) for k in GUARD_KEYS}
 
 
-def load_for(metrics, node_hint):
+def load_map(base):
     """`GET /api/metrics` returns {"load": {"<nodeId>": {"cpu.usage": .., "heap.used": ..}}, ...}.
 
-    One node's endpoint reports that node's own id, so with a single entry take it; with several,
-    match on the hint. Returns (nodeId, cpu, heapUsed).
+    IMPORTANT, and not what this script first assumed: the load map is CLUSTER-WIDE. Although the
+    route is declared LOCAL, the payload carries an entry for every node the collector knows, not
+    just the node being polled. Confirmed against a live 3-node cluster, where every node answered
+    with all three ids. So this is fetched ONCE, and the core entries are selected by id — polling
+    it per core would return the same cluster-wide map N times.
     """
+    metrics = fetch(base, METRICS_PATH)
     load = metrics.get("load") or {}
+
     if not load:
         raise KeyError("metrics payload carries no 'load' map")
 
-    key = node_hint if node_hint in load else (list(load)[0] if len(load) == 1 else None)
-    if key is None:
-        raise KeyError(f"cannot disambiguate node in load map {sorted(load)}; pass --node-ids")
-
-    entry = load[key]
-
-    return key, float(entry.get("cpu.usage", 0.0)), float(entry.get("heap.used", 0.0))
+    return load
 
 
-def sample_core(base, window, node_hint=None):
+def core_load(load, node_id):
+    if node_id not in load:
+        raise KeyError(f"node id {node_id!r} absent from load map {sorted(load)}; "
+                       "--node-ids must name the CORE nodes as the cluster knows them")
+
+    entry = load[node_id]
+
+    return float(entry.get("cpu.usage", 0.0)), float(entry.get("heap.used", 0.0))
+
+
+def sample_cores(bases, window):
+    """Differences every core's counters over ONE SHARED window.
+
+    The first version sampled each core in turn, sleeping per core — so with three cores and a 60s
+    window each core was measured over a DIFFERENT minute, and the "slope" summed rates that never
+    coexisted. A coordination-load figure is only meaningful if the cores are observed
+    simultaneously, so all `before` reads happen, then one sleep, then all `after` reads.
+    """
     t0 = time.monotonic()
-    before = fetch(base, TRANSPORT_PATH)
-    start_total = message_total(before)
+    before = {b: fetch(b, TRANSPORT_PATH) for b in bases}
+    start = {b: message_total(before[b]) for b in bases}
 
     time.sleep(window)
 
-    after = fetch(base, TRANSPORT_PATH)
+    after = {b: fetch(b, TRANSPORT_PATH) for b in bases}
     elapsed = time.monotonic() - t0
-    delta = message_total(after) - start_total
 
-    if delta < 0:
-        raise ValueError(f"{base}: message counter went BACKWARDS ({delta}) — the node restarted "
-                         "mid-window; this sample is void, re-run it rather than reporting it")
+    out = []
+    for b in bases:
+        delta = message_total(after[b]) - start[b]
 
-    metrics = fetch(base, METRICS_PATH)
-    node_id, cpu, heap = load_for(metrics, node_hint)
-    before_guards, after_guards = guards(before), guards(after)
-    guard_delta = {k: after_guards[k] - before_guards[k] for k in GUARD_KEYS}
+        if delta < 0:
+            raise ValueError(f"{b}: message counter went BACKWARDS ({delta}) — the node restarted "
+                             "mid-window; this sample is void, re-run it rather than reporting it")
 
-    return {
-        "endpoint": base,
-        "nodeId": node_id,
-        "windowSeconds": round(elapsed, 2),
-        "messages": delta,
-        "messagesPerSecond": round(delta / elapsed, 2) if elapsed > 0 else 0.0,
-        "cpuUsage": round(cpu, 4),
-        "heapUsedBytes": int(heap),
-        "guardDeltas": guard_delta,
-        "saturated": any(v > 0 for k, v in guard_delta.items() if k != "quic_backpressure_queue_depth"),
-    }
+        gd = {k: guards(after[b])[k] - guards(before[b])[k] for k in GUARD_KEYS}
+        out.append({
+            "endpoint": b,
+            "windowSeconds": round(elapsed, 2),
+            "messages": delta,
+            "messagesPerSecond": round(delta / elapsed, 2) if elapsed > 0 else 0.0,
+            "guardDeltas": gd,
+            "saturated": any(v > 0 for k, v in gd.items() if k != "quic_backpressure_queue_depth"),
+        })
+
+    return out
+
 
 
 def selftest():
@@ -148,17 +165,16 @@ def selftest():
     except KeyError:
         check("missing counters raise rather than returning a silent zero", True)
 
-    metrics = {"load": {"core-1": {"cpu.usage": 0.42, "heap.used": 268435456.0}}}
-    node, cpu, heap = load_for(metrics, None)
-    check("single-node load map resolves without a hint", node == "core-1" and cpu == 0.42 and heap == 268435456.0)
+    metrics_load = {"core-1": {"cpu.usage": 0.42, "heap.used": 268435456.0},
+                    "worker-9": {"cpu.usage": 0.9, "heap.used": 1.0}}
+    cpu, heap = core_load(metrics_load, "core-1")
+    check("selects the named core from a CLUSTER-WIDE load map", cpu == 0.42 and heap == 268435456.0)
 
-    multi = {"load": {"core-1": {"cpu.usage": 0.1}, "core-2": {"cpu.usage": 0.2}}}
-    check("ambiguous load map resolves via hint", load_for(multi, "core-2")[1] == 0.2)
     try:
-        load_for(multi, None)
-        check("ambiguous load map without a hint raises", False)
+        core_load(metrics_load, "core-absent")
+        check("an unknown node id raises rather than silently picking another node", False)
     except KeyError:
-        check("ambiguous load map without a hint raises", True)
+        check("an unknown node id raises rather than silently picking another node", True)
 
     g = guards({"quic_backpressure_drops_total": 3})
     check("absent guard keys default to 0 without masking present ones",
@@ -173,7 +189,7 @@ def main():
     ap = argparse.ArgumentParser(description="#591 coordination-load slope sampler")
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--cores", help="comma-separated CORE node management base URLs")
-    ap.add_argument("--node-ids", help="comma-separated node ids, aligned with --cores")
+    ap.add_argument("--node-ids", help="CORE node ids as the cluster knows them, aligned 1:1 with --cores. Required: the load map is cluster-wide, so the cores must be named.")
     ap.add_argument("--workers", type=int, help="worker count this sample is labelled with")
     ap.add_argument("--window", type=int, default=60, help="sampling window, seconds")
     ap.add_argument("--out", help="append the row to this JSON-lines file")
@@ -186,11 +202,28 @@ def main():
         ap.error("--cores and --workers are required unless --selftest")
 
     bases = [b.strip() for b in args.cores.split(",") if b.strip()]
-    hints = [h.strip() for h in (args.node_ids or "").split(",")] if args.node_ids else [None] * len(bases)
-    if len(hints) != len(bases):
+
+    if not args.node_ids:
+        ap.error("--node-ids is required: the load map is cluster-wide, so the CORE nodes must be "
+                 "named explicitly. Averaging every entry would fold workers into the core mean and "
+                 "silently understate per-core load.")
+
+    ids = [h.strip() for h in args.node_ids.split(",") if h.strip()]
+    if len(ids) != len(bases):
         ap.error("--node-ids must align 1:1 with --cores")
 
-    samples = [sample_core(b, args.window, h) for b, h in zip(bases, hints)]
+    samples = sample_cores(bases, args.window)
+    load = load_map(bases[0])
+    cpus, heaps = [], []
+
+    for sample, node_id in zip(samples, ids):
+        cpu, heap = core_load(load, node_id)
+        sample["nodeId"] = node_id
+        sample["cpuUsage"] = round(cpu, 4)
+        sample["heapUsedBytes"] = int(heap)
+        cpus.append(cpu)
+        heaps.append(heap)
+
     total_rate = sum(s["messagesPerSecond"] for s in samples)
     row = {
         "workers": args.workers,
@@ -198,8 +231,8 @@ def main():
         "communities": 1,
         "totalCoreMessagesPerSecond": round(total_rate, 2),
         "perCoreMessagesPerSecond": round(total_rate / len(samples), 2),
-        "meanCoreCpuUsage": round(sum(s["cpuUsage"] for s in samples) / len(samples), 4),
-        "meanCoreHeapUsedBytes": int(sum(s["heapUsedBytes"] for s in samples) / len(samples)),
+        "meanCoreCpuUsage": round(sum(cpus) / len(cpus), 4),
+        "meanCoreHeapUsedBytes": int(sum(heaps) / len(heaps)),
         "anyCoreSaturated": any(s["saturated"] for s in samples),
         "samples": samples,
     }
