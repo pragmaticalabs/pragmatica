@@ -36,8 +36,22 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 
+/// Order placement orchestrator -- the entry slice of the e-commerce example.
+///
+/// Demonstrates: a Sequencer across four sibling slices (inventory, pricing, payment, fulfillment),
+/// Fork-Join for the independent price and shipping quotes, and parse-don't-validate on the inbound
+/// request via ValidOrder.
+///
+/// Compensation (BER): when payment fails after stock was reserved, the releasing call is composed
+/// into the chain, so the order does not resolve until the release has finished and a release that
+/// itself fails is reported rather than swallowed -- see [#releaseStock].
+///
+/// Does NOT demonstrate: durable saga state. The whole order lives in one in-process promise chain,
+/// so a node that dies between reserving stock and releasing it strands the reservation until it
+/// expires on its own; a production saga needs a persisted log to drive the release on restart.
 @Slice
 public interface PlaceOrder {
     record PlaceOrderRequest(String customerId,
@@ -177,6 +191,17 @@ public interface PlaceOrder {
             }
         }
 
+        /// Payment failed AND the compensating stock release failed. Both causes are named because
+        /// neither alone explains the state the order is in: the customer was not charged, but the
+        /// reservation is stranded until it expires.
+        record StockReleaseFailed(Cause paymentFailure, Cause releaseFailure) implements OrderError {
+            @Override
+            public String message() {
+                return "Payment failed and the reserved stock could not be released: payment failed: " + paymentFailure.message()
+                     + "; stock release ALSO failed: " + releaseFailure.message();
+            }
+        }
+
         record ProcessingFailed(Throwable cause) implements OrderError {
             @Override
             public String message() {
@@ -306,14 +331,39 @@ public interface PlaceOrder {
                                                                                         .paymentMethod());
 
                 return payment.processPayment(paymentRequest)
-                              .map(result -> new OrderWithPayment(context, result))
-                              .onFailure(cause -> releaseStockOnFailure(context));
+                              .fold(result -> settlePayment(context, result));
             }
 
-            private void releaseStockOnFailure(OrderWithReservation context) {
+            private Promise<OrderWithPayment> settlePayment(OrderWithReservation context,
+                                                            Result<PaymentResult> result) {
+                return result.fold(cause -> releaseStock(context, cause),
+                                   paid -> Promise.success(new OrderWithPayment(context, paid)));
+            }
+
+            /// BER -- compensate-by-inverse. Stock was already reserved when payment failed, so the
+            /// reservation has to go back.
+            ///
+            /// `onFailure` cannot express this: it is an independent side effect, started on
+            /// resolution and never awaited, so the order would resolve while the release was still
+            /// in flight and a failed release would be invisible. `fold` is Promise's error-path
+            /// branch -- the primitive `flatMap` is built from -- and the only combinator here that
+            /// lets the failure path do more asynchronous work before the chain resolves.
+            ///
+            /// Guarantee earned: the caller never sees a failed order whose stock is still held
+            /// without being told. Mechanism: one in-process releasing call -- no retry and no
+            /// durable log, so a crash before it runs leaves the reservation to expire on its own.
+            private Promise<OrderWithPayment> releaseStock(OrderWithReservation context, Cause paymentFailure) {
                 var releaseRequest = ReleaseStockRequest.releaseStockRequest(context.reservation().reservationId());
 
-                inventory.releaseStock(releaseRequest);
+                return inventory.releaseStock(releaseRequest)
+                                .fold(release -> reportRelease(paymentFailure, release));
+            }
+
+            /// Propagates the ORIGINAL payment failure when the release worked -- that is what the
+            /// caller asked about -- and a cause naming both when it did not.
+            private static Promise<OrderWithPayment> reportRelease(Cause paymentFailure, Result<Unit> release) {
+                return release.fold(releaseFailure -> new OrderError.StockReleaseFailed(paymentFailure, releaseFailure).promise(),
+                                    _ -> paymentFailure.promise());
             }
 
             private Promise<OrderComplete> createShipment(OrderWithPayment context) {

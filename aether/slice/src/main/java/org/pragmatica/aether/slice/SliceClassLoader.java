@@ -15,6 +15,7 @@ public class SliceClassLoader extends URLClassLoader {
     private static final String JAVAX_PREFIX = "javax.";
     private static final String JDK_PREFIX = "jdk.";
     private static final String SUN_PREFIX = "sun.";
+    private static final ClassLoader PLATFORM = ClassLoader.getPlatformClassLoader();
 
     public SliceClassLoader(URL[] urls, ClassLoader parent) {
         super(urls, parent);
@@ -48,8 +49,35 @@ public class SliceClassLoader extends URLClassLoader {
         }
     }
 
+    /// `java.` / `jdk.` / `sun.` are JDK namespaces wholesale. `javax.` is NOT (#613):
+    /// `javax.inject`, `javax.servlet`, `javax.annotation` are ordinary third-party artifacts a
+    /// slice must be able to bundle — that per-slice version independence is what the child-first
+    /// loader exists for. But parts of `javax.` ARE shipped by JDK modules (`javax.xml` JAXP,
+    /// `javax.crypto`, `javax.net`, `javax.sql`, `javax.management`, ...), and loading those
+    /// child-first splits one namespace across two loaders — the classic xml-apis
+    /// ClassCastException. A hand-maintained package list has sharp edges (`javax.annotation` is
+    /// third-party while `javax.annotation.processing` is JDK) and drifts across releases, so the
+    /// predicate is the definition itself: parent-first iff the platform loader resolves the class.
     private boolean isJdkClass(String name) {
-        return name.startsWith(JAVA_PREFIX) || name.startsWith(JAVAX_PREFIX) || name.startsWith(JDK_PREFIX) || name.startsWith(SUN_PREFIX);
+        if (name.startsWith(JAVA_PREFIX) || name.startsWith(JDK_PREFIX) || name.startsWith(SUN_PREFIX)) {
+            return true;
+        }
+
+        return name.startsWith(JAVAX_PREFIX) && platformResolves(name);
+    }
+
+    /// Probe, not list: the JVM caches negative lookups poorly but each class is asked once per
+    /// slice loader and the answer is then held by `findLoadedClass`, so the cost is one probe
+    /// per distinct `javax.*` class per slice.
+    @SuppressWarnings("JBCT-EX-01")
+    private boolean platformResolves(String name) {
+        try {
+            Class.forName(name, false, PLATFORM);
+
+            return true;
+        } catch (ClassNotFoundException | LinkageError e) {
+            return false;
+        }
     }
 
     @SuppressWarnings("JBCT-RET-01")

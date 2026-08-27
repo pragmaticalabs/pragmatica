@@ -6,12 +6,50 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Fixed (2026-08-27 — #642: ghost QuorumLossDetector self-fenced a node's next incarnation)
+- **`QuorumLossDetector` gains `stop()`** (terminal latch checked at every dispatch point + both
+  futures cancelled), called from `AetherNode.stop()` beside the #590 core-absence stop. The defect:
+  the detector had no stop, its timers live on the process-wide `SharedScheduler`, and
+  `presenceSampler.stop()` freezes its member count below threshold — so in a shared-JVM host
+  (forge/Ember) a stopped node's armed detector fired ~75s after the ORIGINAL boot and
+  `EmberCluster.handleSelfDrain`'s id-keyed registry lookup stopped the node's NEXT incarnation.
+  Third instance of the SharedScheduler-no-stop class (#499 backfill, #590 core-absence).
+  Production exposure LOW (`halt(2)` kills ghosts with the process) [design intent — unverified];
+  harness exposure HIGH (false-red generator). Live-gate rerun is BLOCKED on #660 (pre-existing
+  Rabia sync deadlock, surfaced by this batch's gate run); #642 stays open until that gate fires.
+- **SharedScheduler stop-hook audit** (45 sites): 8 node-scoped recurring tasks had no reachable
+  cancel path on node stop and kept acting for stopped nodes — CDM reconcile timer (via the
+  designed `deactivate()` path), governor announcer, retention enforcer (a DESTRUCTIVE sweep),
+  spokesman ping loop, consumer runtime (ordering-bound: now closed INSIDE the #488 window, before
+  the partition manager it reads through), replication batcher (via `StreamPartitionManager.close()`),
+  API-key sweep, adaptive sampler. Each individually reviewed for over-cancellation; all verdicted sound.
+- **Cold-boot convergence window is now anchored at `start()`**, not assembly: a node started >75s
+  after creation previously booted with ZERO quorum-loss suppression (the window had already
+  expired). The start()-re-stamp wiring is covered by the forge gate only; the predicate seam is
+  unit-pinned.
+- pg-parser: repo corpus walk consolidated into one shared `SqlCorpus` helper (`isRegularFile` at
+  the mechanism — the #598 fix had covered one caller and its sibling broke the next full local
+  build on directories named `*.sql`); `ZCstDumpTest` (a hand-run CST-diff instrument that asserts
+  nothing) now runs only when `-Dcstdump.out` is passed, per its own documented invocation.
+
+### Added (2026-08-27 — #642/#509 test infra)
+- `EmberCluster.start(heldBackNodeIds)` + `startHeldBackNodes()`: deterministic slow-rejoiner seam —
+  held nodes are created into every peer's configured topology but not started, producing the #509
+  "stable-id members merely slow to rejoin" shape without racing a real restart.
+- `PostRestartSlowRejoinDeficitFillProbeTest` (Heavy): full-restart-with-2-of-5-held probe with a
+  recording ComputeProvider, zero-provision assertion through a derived hold window, scale-up
+  positive control (via `POST /api/cluster/scale` — `setClusterSize()` alone is a vacuous control),
+  and fail-fast on any started node dying. Run 1 found #642; run 2 (ghosts fixed) surfaced #660.
+  Goes green only after #660's fix; #509 closes on that green per its on-ticket ruling.
+
 ### Added
 - Core: **typed-error construction** (`core/docs/typed-error-construction.md`) — the API half. `Causes.forOneValue/forTwoValues/forThreeValues` gain typed rungs: a message-only rung (`Fn1<C, String>` causeFactory) and a data-retaining rung whose causeFactory receives the values plus the formatted message in constructor order, so a data-carrying cause record's canonical constructor reference IS the factory (`record InvalidEmail(String raw, String message)` + `forOneValue("Invalid email: %s", InvalidEmail::new)`). Three is the ceiling by decision — zero corpus call sites exist at arity two and three. All rungs (existing single-arg ones included) now pin `Locale.ROOT` so numeric conversions render identically across JVMs. Two defaults-only mixins land nested in `Cause`: `Cause.Terminal` (isTerminal → true, the implementing IS the classification) and `Cause.Wrapped` (an `origin` component supplies `source()`; the component cannot be named `source` — the record accessor's return type would clash — and `Option.option` is deliberate, since `Option.some(null)` would wrap a null without complaint). One rendering fact worth knowing, pinned by test: `%s` renders a `Cause` argument through `toString()`, not `message()` — interfaces cannot default `toString()` — so a wrap template that wants the origin's message embedded formats `origin.message()` in a hand-rolled factory line
 - Core: **full-PECS variance on every cause-factory parameter** — `Result.filter`/`mapError`, `Promise.filter` (both overloads)/`mapError`/`failAsync`, and all six `Verify.ensure`/`ensureOption` causeProviders: producer position takes `? extends Cause`, value inputs take `? super T`. A fully-typed factory field now drops into every composition site with no widening and no `::apply` adaptation, and a factory generalised over a supertype serves narrower sites. Binary-compatible (erasure unchanged); source-compatible for callers, verified by a reactor-wide compile; with `Promise` sealed (#635) no external implementor can exist, so the claim holds unconditionally. Pre-GA is the window where this widening is free
 
 ### Changed
 - DX: **the Forge debug workflow is documented, and every `run-forge.sh` honors `FORGE_JVM_OPTS`** (#608, the issue's own "cheapest half first"). Forge is one plain JVM, so standard JDWP remote attach has always worked — nobody was told. `forge-guide.md` gains a Debugging section with the exact flags (attach-when-ready and suspend-on-startup variants), the IDE attach recipe, and the two facts worth knowing before blaming the runtime: breakpoints in slice code bind normally (JDWP is classloader-agnostic — keep the slice source project open for frame mapping), and a hit breakpoint freezes all five simulated nodes with it, so expect SWIM suspicion noise after long pauses. All six example `run-forge.sh` scripts pass `FORGE_JVM_OPTS` through (deliberately unquoted — several flags must word-split). The issue's other half — watch mode without the mvn-install round trip — is a real feature and stays open on #608
+- Docs: **the two boundaries named precisely** (#614). Everywhere slice isolation is *described* (overview, feature-catalog row 5, slice-container, slice-loading, resource-and-isolation model), the claim now carries its scope: classloaders isolate **dependency versions**, the **cluster** isolates failures — co-located slices share one JVM, the fault boundary is the node. **Slice-to-node pinning is documented as explicitly not supported** (a `known-limitations.md` scope row + section): the blueprint has no placement key and `PlacementPolicy`'s four tiers are the whole slice-placement vocabulary, so sole occupancy is achieved by tier construction, not per-node constraint — and `15-resource-and-isolation-model.md`'s claim that placement hints express slice co-location is corrected (they are provisioning-time node-shape controls in `ProvisionSpec`, catalog row 187). The overview's Rabia section now reconciles leaderless consensus with the coordination leader instead of leaving the contradiction to the reader: the leader lease is a value IN the ordered store, so re-election is a write rather than a protocol — which is where the ~2ms leader-replacement figure comes from, and what Raft cannot do by construction
+- Consensus: **QUIC transport errors migrated to the typed-error construction idiom** — the pilot migration the lint spec's rollout plan calls for (`jbct/docs/typed-error-lint-spec.md` §5.3). `QuicTransportError`'s eight data-carrying records gain a trailing `message` component and a declared `FACTORY`; the four variants wrapping an underlying failure (`ConnectionCloseFailed`, `BindFailed`, `ConnectFailed`, `StreamCreationFailed`) now implement `Cause.Wrapped` with a `Cause origin` component, so the wrapped failure survives into `source()` instead of being flattened into message text (rendering is unchanged — both the old string concatenation and the new `%s` template go through the same `Causes.fromThrowable(...)` value's `toString()`). `General`'s field renamed `text` → `message` to the prescribed fixed-text shape — caught by the pack, not by eye. `IdentityMismatch` hand-rolls its factory: its message renders `NodeId.id()`, not `NodeId.toString()`, and a `%s` template cannot express that — custom value rendering is a second legitimate reason to hand-roll alongside the spec's above-the-ceiling case, worth its sentence in the companion spec. `TlsContextCreationFailed` deleted — zero references repo-wide (pre-GA, no compat hold). All 11 construction sites across the four QUIC files now construct through the factories. Calibration evidence per §5.3: pre-migration the pack reports 10 findings on the file (1×CAUSE-01, 9×CAUSE-02); a deliberately broken intermediate fires the two track-B rules (CAUSE-04 on a template/arity mismatch, CAUSE-08 on a stray `new` bypassing a declared factory); the final state is pack-silent — 0 CAUSE findings across all 15 QUIC files. integrations/consensus: 709 tests green, including the reconnect test that pins `IdentityMismatch`'s components
 
 ### Changed
 - Core: **`Promise` is now sealed** (`permits PromiseImpl`), matching `Result`'s `permits Success, Failure`. Verified before sealing: exactly one implementor exists (`PromiseImpl`, same file), no test doubles implement `Promise`, and no anonymous `new Promise<>()` anywhere in the repo — so nothing breaks. The driver is the typed-error-construction work (`core/docs/typed-error-construction.md`): its variance pass changes the generic signatures of `filter`/`mapError`/`failAsync`, which is source-compatible for callers but would break any external implementor overriding those defaults; with the interface sealed, "source-compatible" holds unconditionally. Pre-GA is the window where sealing costs nothing — an installed base could later make it a breaking change
@@ -63,6 +101,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   isFailure; a dedicated pin proves getForwarded serves WITHOUT write admission (load-bearing per
   the ForwardTarget contract); the read-your-writes caveat of a replica-served BOUNDED_STALE read
   is stated in guarantees.md.
+
+### Fixed (#606 — examples teach what actually runs)
+- **Banking persists for real** (owner decision): `AccountService` no longer injects a `SqlConnector` it never touches while storing state in ConcurrentHashMaps — it delegates to a new `@PgSql AccountPersistence` whose every statement is compile-time-validated against `schema/V001__create_tables.sql`. Credit/debit are single conditional `UPDATE … WHERE … RETURNING` statements, so insufficient-funds is decided by the row match, atomically, not by a read-then-write; rejected updates map to the existing typed errors (`NotFound`/`InsufficientFunds`/`CurrencyMismatch`). One honest boundary recorded at the declaration instead of hidden: the processor rejects data-modifying CTEs and exposes no transaction surface, so `openAccount` is two statements and a crash between them orphans an account row
+- **Transfer compensation no longer discards its own Promise.** `compensateDebit` fired `accounts.credit(...)` and recorded `COMPENSATED` unconditionally — compensation failure was swallowed and the status lied. Now the whole failure path composes through `fold` (Promise's error-path primitive — `onFailure` is an unawaited side effect and cannot gate a chain; `orElse` would drop the original cause and turn a successful compensation into a successful transfer): the original failure still propagates after the compensating credit completes, `COMPENSATED` is recorded only on success, and a new `TransferStatus.COMPENSATION_FAILED` carries both causes in `TransferSummary.failureDetail`. Mutation-proven both ways: recording COMPENSATED unconditionally turns 2 tests red; restoring the original fire-and-forget turns 3 red
+- **The same bug found and fixed in ecommerce** while meeting the issue's "no example discards a Promise/Result" acceptance: `PlaceOrder`'s `releaseStockOnFailure` dropped the release Promise identically; now composed via `fold` with `OrderError.StockReleaseFailed(paymentFailure, releaseFailure)` naming both causes — mutation-checked (restoring the drop turns 2 tests red)
+- **Every slice example now opens with a teach-header** stating what it demonstrates and what it deliberately does not. Examples reactor: 25 → 60 tests (14 account, 15 transfer, 6 place-order compensation among the new), `jbct:check` clean
+
+### Fixed (#613 — a slice can bundle its own `javax.*` third-party artifacts)
+- **`SliceClassLoader` no longer forces the whole `javax.` namespace parent-first.** `javax.inject`,
+  `javax.servlet`, `javax.annotation` are ordinary third-party artifacts, and the blanket prefix
+  meant a slice could not bundle its own copy — before the fix, a bundled `javax.inject` ended in
+  `ClassNotFoundException`, which is precisely the per-slice version independence the child-first
+  loader exists to provide. The issue's suggested explicit package list was deliberately not used:
+  it has sharp edges (`javax.annotation` is third-party while `javax.annotation.processing` is JDK;
+  `javax.transaction` vs `javax.transaction.xa`) and drifts across JDK releases. Instead the
+  predicate is the definition itself — a `javax.*` class is parent-first iff the **platform
+  classloader resolves it** — so JDK-shipped namespaces (`javax.xml`, `javax.crypto`, `javax.net`,
+  `javax.sql`, `javax.management`, ...) keep exactly their old routing and a slice-bundled shadow
+  of them is still ignored, closing the classic xml-apis split-namespace `ClassCastException`
+  before it can open. `java.` / `jdk.` / `sun.` are untouched. Three probe-class tests pin it
+  (compiled at test time, the shadows minted via `--patch-module` since vanilla javac refuses the
+  split package): a bundled `javax.inject.Named` resolves to the slice loader; a bundled
+  `javax.xml.parsers.DocumentBuilderFactory` shadow is ignored in favor of the platform class; a
+  bundled `java.lang.String` shadow is ignored in favor of bootstrap `String` — that last pin
+  shadows an EXISTING class deliberately, because a novel `java.lang` probe dies in the JDK's own
+  `defineClass` defense on correct code and mutant alike (`super.loadClass` is
+  parent-first-then-self), distinguishing nothing; measured, not assumed
+
+### Fixed (#649, #646 — pg validation resolves names by statement structure; upserts stop hard-failing and silent skips become real checks)
+- **#649, the build-blocker:** `INSERT … ON CONFLICT DO UPDATE` hard-failed validation ("Column 'excluded' not found", "Column 'reservations' not found in table 'reservations'") on the ticketing corpus's four monotonic version guards, with no semantics-preserving workaround. The traced mechanism was double mis-routing, not missing-feature-meets-new-code: `validateRoot`'s keyword-presence fallback (UpdateKW+SetKW anywhere, no UpdateStmt — true of every DO UPDATE) ran `validateUpdate` over the whole INSERT, and there `findAll("ColId").getFirst()` picked the wrong node because peglib 0.7.3 lexes `version` as `Token VersionKW` — the recorded "never dispatch on keyword kinds" hazard, in the validator's extractor. Pre-0.7.3 the same wrong path passed by accident (the SET target was still a ColId), which is exactly why the corpus was green until the Aug-24 toolchain. Fix: the fallback is gone; statement dispatch is structural; the DO UPDATE clause gets a real scope — target relation self-referencable by name, alias honored, and `EXCLUDED` registered as a pseudo-relation carrying the target's columns (scoped, not whitelisted: `EXCLUDED.nonexistent_col` errors); SET targets and column lists are read positionally (`CstExtractor.extractColumnList` no longer keys on the `ColId` rule name)
+- **#646:** `RETURNING` lists and UPDATE/DELETE `WHERE`/`USING`/`FROM` column refs now validate against the statement's target scope. Previously `selectOutputColumnNames` did `findAll("SelectCore")` over the whole statement demanding exactly one — so a subquery-free `UPDATE … RETURNING` was silently skipped (the "working" cases were never validated), one WHERE-subquery made RETURNING validate against the subquery's projection (the original three spurious warnings), and two subqueries skipped again. Ticketing's canary is now a test: a bogus RETURNING column on the expireHolds shape errors where it was silent. Subqueries still validate their own scopes
+- **Latent defects the newly-real validation surfaced, all fixed in the same pass:** `WITH … AS (…) UPDATE` reported "Table not found: id"; schema-qualified `public.reservations` reported "Table or alias not found: public"; and the test-persistence blueprint's `INSERT INTO kv_store (key, value)` was validated on neither column (its own upsert reproduced the #649 error verbatim). One pre-existing defect found and deliberately NOT bundled: correlated subqueries cannot see the outer scope — filed as #651
+- Evidence: pg-tools 832 → **858 tests green** (+26; QueryValidatorTest now 50 across 8 nested classes), independently re-run; three mutation checks each turn their tests red (drop EXCLUDED registration → 4, stub validateReturning → 2, revert to whole-tree SelectCore discovery → 4); the four #649 upsert shapes and the #646 A/B pair are in the parser corpus so the next parser bump cannot silently regress them
 
 ### Fixed (2026-08-26 — #628: a failed 02-chaos baseline restore is no longer structurally invisible)
 - **Intra-suite restore gate + honest transport sensors (owner scope call: full package).** All

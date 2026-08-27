@@ -9,6 +9,7 @@ import java.util.List;
 import org.pragmatica.aether.slice.ConsumerConfig;
 import org.pragmatica.aether.stream.consumer.TransactionalCursorCommit;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -19,6 +20,29 @@ import static org.pragmatica.lang.Option.some;
 
 
 public interface StreamConsumerRuntime extends AutoCloseable {
+    /// Narrowed from [`AutoCloseable#close`] so callers need no exception handling (#642) — the
+    /// implementation signals nothing through exceptions, and `AetherNode.stop()` has to be able to
+    /// call it from a plain statement. `void` is the JDK's contract here, not a choice, hence
+    /// [`Contract`].
+    ///
+    /// **This is NOT an infallible operation, and the narrowed signature hides that.** Closing flushes
+    /// every consumer cursor before removing push listeners, and that flush is
+    /// `ConsumerCursorStore.commit(...)` — a `Promise<Unit>` consensus write that can fail. The flush
+    /// site does not absorb the failure so much as never look at it: the returned `Promise` is
+    /// discarded unobserved, so a failed final commit is silent — no log, no retry, no signal here.
+    /// Effect: shutdown always completes, cursor durability is not guaranteed, and a consumer whose
+    /// final flush failed resumes from its last committed offset and redelivers the gap. Consumers
+    /// must therefore be idempotent [design intent — unverified]. Making that dropped failure
+    /// deliberate rather than incidental is worth its own ticket; this doc only stops the signature
+    /// from lying about it.
+    ///
+    /// Ordering is load-bearing (#488): call this while the partition manager is still open and the
+    /// cluster node still up, or the cursor write races shutdown and the listener removal — which
+    /// resolves through `partitionBuffer` — silently no-ops.
+    @Contract
+    @Override
+    void close();
+
     /// Client-driven subscription: reaped once idle past the consumer timeout.
     /// Equivalent to [#subscribe] with [IdlePolicy#REAP_WHEN_IDLE].
     Result<Unit> subscribe(String streamName, int partition, ConsumerConfig config, ConsumerCallback callback);

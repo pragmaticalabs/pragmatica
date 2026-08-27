@@ -130,7 +130,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// Per-peer rate-limit gate so a dead-or-never-connected peer cannot flood the log with the
     /// "no peer state — dropping" WARN: at most one WARN per peer per [#DROP_WARN_INTERVAL_NANOS].
     private final Map<NodeId, Long> lastDropWarnNanos = new ConcurrentHashMap<>();
+
     private static final long DROP_WARN_INTERVAL_NANOS = 30_000_000_000L;
+
     private final AtomicBoolean isRunning = new AtomicBoolean(false);
     private final QuicTransportMetrics quicMetrics = QuicTransportMetrics.quicTransportMetrics();
     /// Transport-ready callbacks (registered via [#whenReady(Runnable)]) and the latch that
@@ -668,11 +670,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
         if (!isRunning.compareAndSet(true, false)) {
             return Promise.unitPromise();
         }
-
         // #487: unpin the loopback loop before the server's event loop group shuts down, so a post-stop
         // self-send takes the drop path rather than executing on a terminating loop.
         loopbackLoop = Option.empty();
-
         log.debug("Stopping QuicClusterNetwork: notifying view change");
         reconcilerTask.cancel();
         keepaliveTask.cancel();
@@ -759,7 +759,6 @@ public class QuicClusterNetwork implements ClusterNetwork {
         if (connectNode.node().equals(self.id())) {
             return;
         }
-
         // #491 Q3: never dial a peer whose PeerState is REMOVED — a killed/decommissioned node is a
         // terminal departure, and retrying it forever spammed "NOT dialing <dead peer>" every second (the
         // sof-3 case). A genuine transient-partition survivor is readmitted REMOVED->INIT by the
@@ -1012,7 +1011,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// Existing connections drain naturally; peers reconnect automatically.
     @SuppressWarnings("JBCT-PAT-01")  // Lifecycle: stop old server, update contexts, start new
     public Promise<Unit> rotateCertificate(QuicSslContext newServerSsl, QuicSslContext newClientSsl) {
-        return boundPort().async(new QuicTransportError.CertificateRotationFailed("Server not running"))
+        return boundPort().async(QuicTransportError.CertificateRotationFailed.FACTORY.apply("Server not running"))
                         .flatMap(port -> stopAndRestartServer(port, newServerSsl, newClientSsl));
     }
 
@@ -1667,7 +1666,6 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// double-WARN is acceptable).
     private void warnDroppedToUnknownPeer(NodeId peerId) {
         quicMetrics.onDropToUnknownPeer();
-
         var now = System.nanoTime();
         var last = lastDropWarnNanos.get(peerId);
 
@@ -1776,15 +1774,15 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// runs while every entity forward vanished. One ERROR naming the message class, and a typed
     /// [WriteOutcome.EncodeFailed] the existing non-`Sent` handling already fails fast on.
     private Result<byte[]> encodeLoudly(Message.Wired message, NodeId peerId) {
-        return Result.lift(() -> serializer.encode(message))
-                     .onFailure(cause -> log.error("Message encode FAILED for {} to {} — message dropped: {}",
-                                                   message.getClass().getName(),
-                                                   peerId,
-                                                   cause.message()));
+        return Result.lift(() -> serializer.encode(message)).onFailure(cause -> log.error("Message encode FAILED for {} to {} — message dropped: {}",
+                                                                                          message.getClass().getName(),
+                                                                                          peerId,
+                                                                                          cause.message()));
     }
 
     private static WriteOutcome encodeFailedOutcome(NodeId peerId, Message.Wired message) {
-        return new WriteOutcome.EncodeFailed(peerId, message.getClass().getName());
+        return new WriteOutcome.EncodeFailed(peerId,
+                                             message.getClass().getName());
     }
 
     /// PRIMARY stream-zombie heal: serialize the message once, then ask the connection to lazily
@@ -2642,7 +2640,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// no state). Lets the #491 unicast-buffering tests assert a message landed in the offline buffer
     /// (the exact `Queued` path `broadcast` uses) rather than being hard-dropped.
     int offlineBufferSizeForTests(NodeId peerId) {
-        return Option.option(peers.get(peerId)).map(PeerState::offlineBufferSize).or(0);
+        return Option.option(peers.get(peerId))
+                     .map(PeerState::offlineBufferSize)
+                     .or(0);
     }
 
     /// Package-private test seam — drives the inbound funnel `onMessageReceived` directly so tests

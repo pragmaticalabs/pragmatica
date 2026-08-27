@@ -18,6 +18,10 @@ import org.pragmatica.lang.Promise;
 ///   - 0-param method: getStats
 ///   - 3-param method: assessTransfer
 ///   - No factory dependencies
+///
+/// Does NOT demonstrate: real fraud detection. Scoring is three fixed amount thresholds plus a
+/// self-transfer check, with no account history, velocity or device context, and the counters are
+/// static so every instance in a JVM shares them.
 @Slice
 public interface FraudDetectionService {
     // === Operations ===

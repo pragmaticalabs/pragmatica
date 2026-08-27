@@ -6,8 +6,13 @@ package org.pragmatica.jbct.slice.routing;
 
 import javax.annotation.processing.Filer;
 import javax.annotation.processing.Messager;
+import javax.lang.model.element.ElementKind;
+import javax.lang.model.element.ExecutableElement;
+import javax.lang.model.element.Modifier;
 import javax.lang.model.element.TypeElement;
+import javax.lang.model.type.DeclaredType;
 import javax.lang.model.type.TypeMirror;
+import javax.lang.model.util.ElementFilter;
 import javax.lang.model.util.Elements;
 import javax.tools.Diagnostic;
 import javax.tools.JavaFileObject;
@@ -19,6 +24,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -122,6 +128,9 @@ public class RouteSourceGenerator {
                                                                                     Map.entry("Duration", "aDuration"),
                                                                                     Map.entry("java.time.Duration",
                                                                                               "aDuration"));
+
+    /// Qualified name of the carrier a validating factory must return: `Result<Self>` (#605).
+    private static final String RESULT_TYPE = "org.pragmatica.lang.Result";
 
     private static final Map<Integer, String> HTTP_STATUS_NAMES = Map.ofEntries(Map.entry(200, "OK"),
                                                                                 Map.entry(201, "CREATED"),
@@ -871,6 +880,161 @@ public class RouteSourceGenerator {
                      .toString();
     }
 
+    /// A request record's declared validating factory: the factory method name plus the record's
+    /// component accessors in declaration order (the arguments a pure-body route decomposes into).
+    private record BodyFactory(String name, List<String> accessors) {}
+
+    /// The request-record construction rule (#605).
+    ///
+    /// Wherever a generated route constructs the slice's request record, it constructs through the
+    /// record's own declared validating factory when one exists, mapping a validation failure to a
+    /// typed 400 (`HttpStatus.BAD_REQUEST.with(cause)`) so the delegate is never reached with an
+    /// unvalidated value. When no such factory is declared, the canonical-constructor path stands
+    /// byte-identical to what this generator emitted before. Pure-body routes are the same rule seen
+    /// from the other side: Jackson has already built the record through its canonical constructor,
+    /// so the route re-validates by decomposing the record through its accessors back into the
+    /// factory.
+    ///
+    /// A validating factory is a `static Result<Self> anyName(components...)` declared on the record
+    /// itself, whose parameter types equal the record components' types in declaration order. The
+    /// first match in declaration order wins; a second equally-shaped match is reported as a warning
+    /// and ignored, because choosing between two of them is the slice author's call, not ours.
+    ///
+    /// Non-JSON bodies never reach the accessor decomposition: [MediaTypeTypeChecker] already
+    /// constrains a text, binary or multipart `consumes` to `String`/`byte[]`/`MultipartRequest`,
+    /// none of which is a record, so detection returns none for them.
+    private Option<BodyFactory> validatingFactory(String parameterType) {
+        return Option.option(elements.getTypeElement(erasedTypeName(parameterType)))
+                     .filter(element -> element.getKind() == ElementKind.RECORD)
+                     .flatMap(this::declaredFactory);
+    }
+
+    /// Strip generic arguments so `Foo<Bar>` resolves to the `Foo` type element.
+    private String erasedTypeName(String parameterType) {
+        var index = parameterType.indexOf('<');
+
+        return index < 0
+               ? parameterType
+               : parameterType.substring(0, index);
+    }
+
+    private Option<BodyFactory> declaredFactory(TypeElement record) {
+        var components = record.getRecordComponents();
+        var componentTypes = components.stream()
+                                       .map(component -> component.asType().toString())
+                                       .toList();
+        var recordName = record.getQualifiedName().toString();
+        var candidates = ElementFilter.methodsIn(record.getEnclosedElements())
+                                      .stream()
+                                      .filter(method -> isValidatingFactory(method, recordName, componentTypes))
+                                      .toList();
+
+        if (candidates.isEmpty()) {
+            return Option.none();
+        }
+
+        if (candidates.size() > 1) {
+            messager.printMessage(Diagnostic.Kind.WARNING,
+                                  "Record " + recordName
+                                 + " declares more than one validating factory ('"
+                                 + candidates.getFirst().getSimpleName()
+                                 + "' and '" + candidates.get(1).getSimpleName()
+                                 + "'); route generation uses '" + candidates.getFirst().getSimpleName()
+                                 + "'.",
+                                  record);
+        }
+
+        var accessors = components.stream()
+                                  .map(component -> component.getSimpleName().toString())
+                                  .toList();
+
+        return Option.some(new BodyFactory(candidates.getFirst()
+                                                     .getSimpleName()
+                                                     .toString(),
+                                           accessors));
+    }
+
+    private boolean isValidatingFactory(ExecutableElement method, String recordName, List<String> componentTypes) {
+        return method.getModifiers().contains(Modifier.STATIC)
+              && returnsResultOf(method.getReturnType(), recordName)
+              && parameterTypeNames(method).equals(componentTypes);
+    }
+
+    private List<String> parameterTypeNames(ExecutableElement method) {
+        return method.getParameters()
+                     .stream()
+                     .map(parameter -> parameter.asType().toString())
+                     .toList();
+    }
+
+    private boolean returnsResultOf(TypeMirror returnType, String recordName) {
+        return returnType instanceof DeclaredType declared
+              && declared.asElement() instanceof TypeElement erasure
+              && RESULT_TYPE.equals(erasure.getQualifiedName().toString())
+              && declared.getTypeArguments().size() == 1
+              && recordName.equals(declared.getTypeArguments()
+                                           .getFirst()
+                                           .toString());
+    }
+
+    /// Emit the delegate call for a route that builds the request record from path/query arguments.
+    /// With a validating factory the record is parsed, a failure becomes a typed 400 and the delegate
+    /// runs only on the validated value; without one the canonical constructor is used unchanged.
+    /// `delegateCallFor` maps the constructed-record expression to the full delegate call.
+    private String constructAndDelegate(String parameterType, String args, Function<String, String> delegateCallFor) {
+        return validatingFactory(parameterType).map(factory -> validatedChain(parameterType,
+                                                                             factory.name(),
+                                                                             args,
+                                                                             delegateCallFor))
+                                               .or(() -> delegateCallFor.apply("new " + parameterType
+                                                                              + "(" + args
+                                                                              + ")"));
+    }
+
+    /// Emit the delegate call for a pure-body route. Jackson has already built the record, so a
+    /// validating factory re-validates it by decomposing through the record accessors; without one
+    /// the deserialized value is handed to the delegate untouched -- no reconstruction.
+    private String bodyHandlerExpr(String parameterType, Function<String, String> delegateCallFor) {
+        return validatingFactory(parameterType).map(factory -> validatedChain(parameterType,
+                                                                             factory.name(),
+                                                                             accessorArgs(factory),
+                                                                             delegateCallFor))
+                                               .or(() -> delegateCallFor.apply("request"));
+    }
+
+    private String validatedChain(String parameterType,
+                                  String factoryName,
+                                  String args,
+                                  Function<String, String> delegateCallFor) {
+        return parameterType + "." + factoryName
+              + "(" + args
+              + ").mapError(cause -> HttpStatus.BAD_REQUEST.with(cause)).async().flatMap(__validated -> "
+              + delegateCallFor.apply("__validated") + ")";
+    }
+
+    private String accessorArgs(BodyFactory factory) {
+        return factory.accessors()
+                      .stream()
+                      .map(accessor -> "request." + accessor + "()")
+                      .collect(Collectors.joining(", "));
+    }
+
+    /// Emit the delegate call for a route whose record merges path/query arguments with body fields.
+    /// Falls back to passing the body through when the parameter type is not a record.
+    private String mergedConstructAndDelegate(String parameterType,
+                                              MethodModel method,
+                                              List<String> pathParamNames,
+                                              List<String> queryParamNames,
+                                              Function<String, String> delegateCallFor) {
+        return buildMergedConstructorArgs(parameterType,
+                                          method,
+                                          pathParamNames,
+                                          queryParamNames).map(args -> constructAndDelegate(parameterType,
+                                                                                            args,
+                                                                                            delegateCallFor))
+                                                          .or(() -> delegateCallFor.apply("body"));
+    }
+
     /// Build the delegate method call with security params injected in the correct positions.
     /// For non-security methods, returns a simple delegate call.
     /// For security methods, inserts __ctx.principal() or __ctx for security params.
@@ -937,9 +1101,11 @@ public class RouteSourceGenerator {
         } else if (method.parameters().isEmpty()) {
             out.println("                 .to(_ -> delegate." + method.name() + "())");
         } else {
-            out.println("                 .to(_ -> delegate." + method.name()
-                       + "(new " + method.parameterType()
-                       + "()))");
+            out.println("                 .to(_ -> "
+                       + constructAndDelegate(method.parameterType().toString(),
+                                              "",
+                                              expr -> "delegate." + method.name() + "(" + expr + ")")
+                       + ")");
         }
 
         out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ")" + trailer);
@@ -970,18 +1136,19 @@ public class RouteSourceGenerator {
                       : "(" + String.join(", ", lambdaNames) + ") -> ";
 
         if (method.hasSecurityParams()) {
-            var constructorExpr = "new " + parameterType + "(" + constructorArgs + ")";
             var bizParam = method.businessParameters().getFirst();
-            var delegateCall = delegateCallWithSecurity(method,
-                                                        Map.of(bizParam.name(), constructorExpr));
+            var delegateCall = constructAndDelegate(parameterType,
+                                                    constructorArgs,
+                                                    expr -> delegateCallWithSecurity(method,
+                                                                                     Map.of(bizParam.name(), expr)));
 
             generateSecurityLambda(out, handler, delegateCall);
         } else {
             out.println("                 .to(" + handler
-                       + "delegate." + method.name()
-                       + "(new " + parameterType
-                       + "(" + constructorArgs
-                       + ")))");
+                       + constructAndDelegate(parameterType,
+                                              constructorArgs,
+                                              expr -> "delegate." + method.name() + "(" + expr + ")")
+                       + ")");
         }
 
         out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ")" + trailer);
@@ -1012,18 +1179,19 @@ public class RouteSourceGenerator {
                       : "(" + handlerParams + ") -> ";
 
         if (method.hasSecurityParams()) {
-            var constructorExpr = "new " + parameterType + "(" + constructorArgs + ")";
             var bizParam = method.businessParameters().getFirst();
-            var delegateCall = delegateCallWithSecurity(method,
-                                                        Map.of(bizParam.name(), constructorExpr));
+            var delegateCall = constructAndDelegate(parameterType,
+                                                    constructorArgs,
+                                                    expr -> delegateCallWithSecurity(method,
+                                                                                     Map.of(bizParam.name(), expr)));
 
             generateSecurityLambda(out, handler, delegateCall);
         } else {
             out.println("                 .to(" + handler
-                       + "delegate." + method.name()
-                       + "(new " + parameterType
-                       + "(" + constructorArgs
-                       + ")))");
+                       + constructAndDelegate(parameterType,
+                                              constructorArgs,
+                                              expr -> "delegate." + method.name() + "(" + expr + ")")
+                       + ")");
         }
 
         out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ")" + trailer);
@@ -1042,12 +1210,16 @@ public class RouteSourceGenerator {
         out.println("                 " + bodyBindingCall(routeDsl, parameterType));
         if (method.hasSecurityParams()) {
             var bizParam = method.businessParameters().getFirst();
-            var delegateCall = delegateCallWithSecurity(method,
-                                                        Map.of(bizParam.name(), "request"));
+            var delegateCall = bodyHandlerExpr(parameterType,
+                                               expr -> delegateCallWithSecurity(method,
+                                                                                Map.of(bizParam.name(), expr)));
 
             generateSecurityLambda(out, "request ->", delegateCall);
         } else {
-            out.println("                 .to(request -> delegate." + method.name() + "(request))");
+            out.println("                 .to(request -> "
+                       + bodyHandlerExpr(parameterType,
+                                         expr -> "delegate." + method.name() + "(" + expr + ")")
+                       + ")");
         }
 
         out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ")" + trailer);
@@ -1075,19 +1247,27 @@ public class RouteSourceGenerator {
 
         lambdaArgs.add("body");
         var handlerParams = String.join(", ", lambdaArgs);
-        var constructorExpr = buildMergedConstructorExpr(parameterType, method, pathParamNames, List.of());
 
         if (method.hasSecurityParams()) {
             var bizParam = method.businessParameters().getFirst();
-            var delegateCall = delegateCallWithSecurity(method,
-                                                        Map.of(bizParam.name(), constructorExpr));
+            var delegateCall = mergedConstructAndDelegate(parameterType,
+                                                          method,
+                                                          pathParamNames,
+                                                          List.of(),
+                                                          expr -> delegateCallWithSecurity(method,
+                                                                                           Map.of(bizParam.name(),
+                                                                                                  expr)));
 
             generateSecurityLambda(out, "(" + handlerParams + ") ->", delegateCall);
         } else {
             out.println("                 .to((" + handlerParams
-                       + ") -> delegate." + method.name()
-                       + "(" + constructorExpr
-                       + "))");
+                       + ") -> "
+                       + mergedConstructAndDelegate(parameterType,
+                                                    method,
+                                                    pathParamNames,
+                                                    List.of(),
+                                                    expr -> "delegate." + method.name() + "(" + expr + ")")
+                       + ")");
         }
 
         out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ")" + trailer);
@@ -1114,19 +1294,27 @@ public class RouteSourceGenerator {
 
         allParams.add("body");
         var handlerParams = String.join(", ", allParams);
-        var constructorExpr = buildMergedConstructorExpr(parameterType, method, List.of(), queryParamNames);
 
         if (method.hasSecurityParams()) {
             var bizParam = method.businessParameters().getFirst();
-            var delegateCall = delegateCallWithSecurity(method,
-                                                        Map.of(bizParam.name(), constructorExpr));
+            var delegateCall = mergedConstructAndDelegate(parameterType,
+                                                          method,
+                                                          List.of(),
+                                                          queryParamNames,
+                                                          expr -> delegateCallWithSecurity(method,
+                                                                                           Map.of(bizParam.name(),
+                                                                                                  expr)));
 
             generateSecurityLambda(out, "(" + handlerParams + ") ->", delegateCall);
         } else {
             out.println("                 .to((" + handlerParams
-                       + ") -> delegate." + method.name()
-                       + "(" + constructorExpr
-                       + "))");
+                       + ") -> "
+                       + mergedConstructAndDelegate(parameterType,
+                                                    method,
+                                                    List.of(),
+                                                    queryParamNames,
+                                                    expr -> "delegate." + method.name() + "(" + expr + ")")
+                       + ")");
         }
 
         out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ")" + trailer);
@@ -1165,18 +1353,20 @@ public class RouteSourceGenerator {
         var constructorArgs = String.join(", ", constructorBindings);
 
         if (method.hasSecurityParams()) {
-            var constructorExpr = "new " + parameterType + "(" + constructorArgs + ")";
             var bizParam = method.businessParameters().getFirst();
-            var delegateCall = delegateCallWithSecurity(method,
-                                                        Map.of(bizParam.name(), constructorExpr));
+            var delegateCall = constructAndDelegate(parameterType,
+                                                    constructorArgs,
+                                                    expr -> delegateCallWithSecurity(method,
+                                                                                     Map.of(bizParam.name(), expr)));
 
             generateSecurityLambda(out, "(" + handlerParams + ") ->", delegateCall);
         } else {
             out.println("                 .to((" + handlerParams
-                       + ") -> delegate." + method.name()
-                       + "(new " + parameterType
-                       + "(" + constructorArgs
-                       + ")))");
+                       + ") -> "
+                       + constructAndDelegate(parameterType,
+                                              constructorArgs,
+                                              expr -> "delegate." + method.name() + "(" + expr + ")")
+                       + ")");
         }
 
         out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ")" + trailer);
@@ -1208,42 +1398,54 @@ public class RouteSourceGenerator {
         lambdaArgs.addAll(queryParamNames);
         lambdaArgs.add("body");
         var handlerParams = String.join(", ", lambdaArgs);
-        var constructorExpr = buildMergedConstructorExpr(parameterType, method, pathParamNames, queryParamNames);
 
         if (method.hasSecurityParams()) {
             var bizParam = method.businessParameters().getFirst();
-            var delegateCall = delegateCallWithSecurity(method,
-                                                        Map.of(bizParam.name(), constructorExpr));
+            var delegateCall = mergedConstructAndDelegate(parameterType,
+                                                          method,
+                                                          pathParamNames,
+                                                          queryParamNames,
+                                                          expr -> delegateCallWithSecurity(method,
+                                                                                           Map.of(bizParam.name(),
+                                                                                                  expr)));
 
             generateSecurityLambda(out, "(" + handlerParams + ") ->", delegateCall);
         } else {
             out.println("                 .to((" + handlerParams
-                       + ") -> delegate." + method.name()
-                       + "(" + constructorExpr
-                       + "))");
+                       + ") -> "
+                       + mergedConstructAndDelegate(parameterType,
+                                                    method,
+                                                    pathParamNames,
+                                                    queryParamNames,
+                                                    expr -> "delegate." + method.name() + "(" + expr + ")")
+                       + ")");
         }
 
         out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ")" + trailer);
     }
 
-    /// Build a constructor expression that merges path/query lambda args with body record fields.
+    /// Build the argument list that merges path/query lambda args with body record fields.
     /// Walks the slice param record's components in declaration order:
     ///   - if the component name matches a path or query param → use the lambda var of the same name;
     ///   - otherwise the component must come from body → emit `body.<componentName>()`.
-    /// Falls back to `body` when the param type is not a record (caller passes the body straight through),
-    /// preserving prior behaviour for non-record params.
+    /// Returns none when the param type is not a record, so the caller passes the body straight
+    /// through — preserving prior behaviour for non-record params.
     /// Reports an error via the messager when a path/query name has no matching record component.
-    private String buildMergedConstructorExpr(String parameterType,
-                                              MethodModel method,
-                                              List<String> pathParamNames,
-                                              List<String> queryParamNames) {
+    ///
+    /// Only the arguments are built here: whether they feed the canonical constructor or the record's
+    /// validating factory is decided in [#constructAndDelegate], so both merged and non-merged routes
+    /// obey one rule.
+    private Option<String> buildMergedConstructorArgs(String parameterType,
+                                                      MethodModel method,
+                                                      List<String> pathParamNames,
+                                                      List<String> queryParamNames) {
         var paramTypeMirror = method.hasSecurityParams()
                               ? method.businessParameterType()
                               : method.parameterType();
         var components = MethodModel.recordComponents(paramTypeMirror);
 
         if (components.isEmpty()) {
-            return "body";
+            return Option.none();
         }
 
         var componentNames = components.stream().map(MethodModel.RecordComponent::name).collect(Collectors.toSet());
@@ -1271,18 +1473,22 @@ public class RouteSourceGenerator {
         }
 
         var args = components.stream()
-                             .map(c -> {
-                                      var n = c.name();
-
-                                      if (pathParamNames.contains(n) || queryParamNames.contains(n)) {
-                                      return n;
-                                  }
-
-                                      return "body." + n + "()";
-                                  })
+                             .map(component -> mergedArg(component, pathParamNames, queryParamNames))
                              .collect(Collectors.joining(", "));
 
-        return "new " + parameterType + "(" + args + ")";
+        return Option.some(args);
+    }
+
+    /// One merged argument: a path/query component takes the lambda var of the same name, anything
+    /// else is read off the deserialized body.
+    private String mergedArg(MethodModel.RecordComponent component,
+                             List<String> pathParamNames,
+                             List<String> queryParamNames) {
+        var name = component.name();
+
+        return pathParamNames.contains(name) || queryParamNames.contains(name)
+               ? name
+               : "body." + name + "()";
     }
 
     /// Emit the `.withPath(...)` argument list interleaving real path parameters with static
