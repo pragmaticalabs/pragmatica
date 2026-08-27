@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Fixed (2026-08-27 — #381: application-config runtime notification catalog claim corrected)
+- **Catalog row 176 claimed "Runtime notification via single-threaded executor with record diff";
+  the runtime push half of that claim is dead code.** `ConfigNotificationManager.notifyInitial`
+  delivers a slice's merged config exactly once, at ACTIVATE
+  [verified: `NodeDeploymentState.registerSliceForConfigUpdates`]. `notifyChange` — the entry point
+  for pushing a config change to an already-running slice — has **zero callers repo-wide**; a
+  KV-Store `ConfigKey` write is picked up only by the separate, unrelated
+  `DynamicConfigManager`/`DynamicConfigurationProvider` flat-string overlay
+  (`aether/node/.../api/DynamicConfigManager.java`), which never calls back into
+  `ConfigNotificationManager`. The two config-update systems were built independently and never
+  bridged. Row 176 downgraded **Complete → Partial**; recovery action for an operator who needs a
+  changed config section picked up: redeploy/restart the affected slice.
+  [design intent — unverified] whether wiring `notifyChange` is still wanted: the
+  `lastParsedConfig` field it would support a diff from is itself dead (write-only, never
+  populated), and `control-plane-delegation-spec.md` (`aether/docs/specs/future/`) already lists
+  `ConfigNotificationManager` as a per-node, not-leader-only component in a planned future
+  architecture — left in place rather than deleted for that reason, pending a decision by whoever
+  owns that spec. **No functional/production code changed** — this is a claim-only correction
+  (`guarantees-corrections-needed.md` C4 already tracked this exact gap and named the two options,
+  "wire it or remove it"; wiring needs a KV-router registration in `AetherNode.java`, out of this
+  fix's territory).
+
 ### Fixed (2026-08-27 — #616 follow-up: GossipKeyRotationKey security-operations gap, #616 closed)
 - Filed **#683**: `GossipKeyRotationKey`'s consumer path (`GossipKeyRotationHandler`, wired as the
   design comment's "sole delivery path" for gossip-key rotation) has zero production writer and no
