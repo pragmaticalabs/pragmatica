@@ -79,6 +79,18 @@ once accepted"; the actual suppressor input is the core-node set sampled at firi
 proxy instead of the real input nearly shipped "the fence is broken" as a finding. **Assert the
 predicate's own inputs, never a neighbouring status flag that sounds like them.**
 
+**A gate that fails at the first module has not checked the rest — and the exit code cannot tell you
+which.** (From #571.) A 142-module `mvn clean install` with 12,365 tests went fully green, and
+`jbct-maven-plugin:check` then failed on two files in `aether-metrics`. That much is the familiar
+compile-green-is-not-lint-green lesson. The subtle half is what happens next: the check FAILS THE
+REACTOR at the first offending module, so every module ordered after `aether-metrics` was never
+examined at all. Formatting the two files and re-running only that module would have produced a green
+exit code covering a fraction of the tree, and nothing in that output would have said so — the
+`-rf :module` resume hint maven prints is an invitation to make exactly this mistake. Rule: after any
+gate aborts mid-reactor, re-run the WHOLE gate, never the module that failed. Same family as the
+parallel-reactor `-rf` hole already in this list, and same tell: a success that is silent about its
+own coverage.
+
 ## 2026-08-27 stream-c (operator surface) — #571 FULL PACKAGE handoff: `HealthSignal`/`HealthSignalSink` deletion, ruled GO, whole thing needs one owner
 
 Ruling (aether-main): delete `HealthSignal`/`HealthSignalSink` entirely rather than fragment the
