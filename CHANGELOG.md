@@ -368,7 +368,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   is carrying the responder's engine state in `SyncResponse`, which is protocol surface and deliberately
   out of scope here. [design intent — unverified]
 
-### Removed (2026-08-27 — #558: the `NodeState` health/backoff vocabulary, which nothing ever drove)
+### Changed (2026-08-27 — #558 follow-through: the public count renamed, pre-GA while it is free)
+- **`TopologyManager.healthyActiveNodeCount()` → `observedActiveNodeCount()`** (public default +
+  `TopologyObserver` override + both production callers + 13 count-asserting test sites). Post-delete
+  the method performs no health filtering, so the old name asserted a check that does not happen — on
+  a PUBLIC interface, which is where that defect class mints the next #678.
+- **No deprecation alias.** Aether is not published (#668) and the two callers in
+  `ClusterTopologyManagerRecord` are the entire consumer set; pre-GA is when an API rename is free.
+- **The docstring now states the two modes**, because the honest name depends on which one you are in:
+  `TopologyObserver` returns the membership view's on-duty count in NORMAL, which post-#557 requires
+  OBSERVED reachability (completed QUIC handshake or SWIM ALIVE) — the name is fully earned there — and
+  falls back to a DISCOVERY count in BOOTING, deliberately, to break the cold-start catch-22 where the
+  snapshot only exists after consensus commits. During that window the number is not an observation,
+  and the docstring says so rather than letting the name imply otherwise.
+  [mechanism: TopologyObserver.observedActiveNodeCount mode split; PresenceMembershipView.healthyOnDutyCount]
+
+
 - **Deleted** `NodeHealth`, `NodeState.suspected(...)`, `NodeState.canAttemptConnection(...)`, the
   `health` / `failedAttempts` / `nextAttemptAfter` components, and the now-unfed
   `BackoffConfig.shouldDisable(...)` (zero callers). `NodeState` is now `(info, firstSeen)` with a

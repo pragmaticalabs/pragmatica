@@ -72,12 +72,12 @@ public interface TopologyObserver extends TopologyManager {
     ///
     /// `BOOTING` — the cluster has never observed a `MembershipView` whose projected
     /// `coreMemberIds` reaches quorum (`clusterSize/2 + 1`). During this window
-    /// `healthyActiveNodeCount`, `readyNodeCount`, and the private quorum-eval
+    /// `observedActiveNodeCount`, `readyNodeCount`, and the private quorum-eval
     /// `healthyActivePeerCount` fall back to the in-memory `nodeStatesById` map so
     /// `/health/ready` does not stall waiting on a snapshot that itself requires
     /// quorum to be published.
     ///
-    /// The two fallbacks are NOT the same read (#557). `healthyActiveNodeCount` /
+    /// The two fallbacks are NOT the same read (#557). `observedActiveNodeCount` /
     /// `readyNodeCount` still count the raw discovery-derived map. The quorum-eval
     /// fallback `healthyActivePeerCount` counts only the map entries that the transport
     /// has ALSO reported as connected — see `connectedPeerCount`. Quorum is a
@@ -631,7 +631,7 @@ public interface TopologyObserver extends TopologyManager {
             }
 
             @Override
-            public int healthyActiveNodeCount() {
+            public int observedActiveNodeCount() {
                 // BOOTING vs NORMAL semantics (audit Step 5, R1):
                 //   BOOTING — fall back to legacy in-memory map (defaults to HEALTHY on
                 //     add) so the bootstrap path can advance before the first snapshot.
@@ -683,7 +683,7 @@ public interface TopologyObserver extends TopologyManager {
                                            .count();
             }
 
-            /// Legacy healthy-active-node count for `healthyActiveNodeCount` BOOTING
+            /// Legacy healthy-active-node count for `observedActiveNodeCount` BOOTING
             /// fallback. INCLUDES self (matching the snapshot-derived
             /// `healthyOnDutyCount` shape used by `NORMAL`-mode callers).
             private int discoveredNodeCount() {
@@ -886,7 +886,7 @@ public interface TopologyObserver extends TopologyManager {
             /// on `haveQuorum`.
             ///
             /// Callers: `haveQuorum` and `healthyActivePeerCount` (the bootstrap quorum publish)
-            /// ONLY. The public `healthyActiveNodeCount` / `readyNodeCount` reads go through
+            /// ONLY. The public `observedActiveNodeCount` / `readyNodeCount` reads go through
             /// `discoveredNodeCount` / `legacyActiveNodeCount` and are unaffected.
             private int connectedPeerCount() {
                 // Read the observation once — a concurrent `reconcile` must not split the count.

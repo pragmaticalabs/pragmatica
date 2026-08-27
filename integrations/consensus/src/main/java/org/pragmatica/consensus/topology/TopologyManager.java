@@ -97,16 +97,27 @@ public interface TopologyManager {
                              .count();
     }
 
-    /// Returns the count of currently-healthy active (non-passive) nodes.
-    /// Used by reconciliation decisions that must distinguish "reachable right now" from
-    /// "present in topology but possibly unreachable" — e.g. CTM deficit/surplus checks must
-    /// not count a killed-but-not-yet-evicted peer as live.
-    default int healthyActiveNodeCount() {
-        // #558: the `health == HEALTHY` filter that used to sit here was constant-true — nothing ever
-        // drove a node out of HEALTHY — so removing it is behaviour-preserving. What remains is what
-        // this always computed: discovered, non-passive nodes. The METHOD NAME still says "healthy"
-        // and is left alone deliberately; it is a public default with production callers, and
-        // renaming it is an API change that belongs in its own commit.
+    /// Active (non-passive) nodes the current authority reports, for reconciliation decisions that
+    /// must distinguish "contributing right now" from "present in topology but possibly unreachable"
+    /// — e.g. CTM deficit/surplus checks must not count a killed-but-not-yet-evicted peer as live.
+    ///
+    /// **Renamed from `healthyActiveNodeCount` (#558).** Nothing ever drove a node out of
+    /// `NodeHealth.HEALTHY`, so the health filter this name advertised was constant-true and the name
+    /// asserted a check that did not happen — the defect class that had already minted a false
+    /// docstring elsewhere (#678). No deprecation alias: Aether is not published (#668) and the two
+    /// production callers are the entire consumer set.
+    ///
+    /// **Read the two modes before trusting the number.** `TopologyObserver` overrides this: in NORMAL
+    /// it returns the membership view's on-duty count, which post-#557 requires OBSERVED reachability
+    /// (completed QUIC handshake or SWIM ALIVE) — the name is fully earned there. In BOOTING it falls
+    /// back to a DISCOVERY count, deliberately, to break the cold-start catch-22 where the snapshot
+    /// only exists after consensus commits. During that window the number is not an observation.
+    ///
+    /// This default is the discovery-only shape for implementations without a membership view.
+    default int observedActiveNodeCount() {
+        // The `health == HEALTHY` filter removed here was constant-true, so this is behaviour-
+        // preserving. `topology()` is derived from the same map `getState` reads, so the presence
+        // check is total — kept only to make the discovery semantics explicit at the call site.
         return (int) topology().stream()
                              .filter(id -> !isPassive(id))
                              .filter(id -> getState(id).isPresent())

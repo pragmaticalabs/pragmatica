@@ -104,7 +104,7 @@ class TopologyObserverSnapshotDualModeTest {
     @Nested
     class HealthyActiveCount {
         @Test
-        void healthyActiveNodeCount_bootingMode_noSnapshot_usesLegacyFallback() {
+        void observedActiveNodeCount_bootingMode_noSnapshot_usesLegacyFallback() {
             // Audit Step 5/6 (2026-05-07 explicit BOOTING/NORMAL): the observer starts
             // in BOOTING and falls back to the in-memory `nodeStatesById` count when
             // no snapshot is available, so `/health/ready` does not stall waiting on a
@@ -115,11 +115,11 @@ class TopologyObserverSnapshotDualModeTest {
             discoverAllPeers(observer);
 
             assertThat(observer.topologyMode()).isEqualTo(TopologyObserver.TopologyMode.BOOTING);
-            assertThat(observer.healthyActiveNodeCount()).isEqualTo(3);
+            assertThat(observer.observedActiveNodeCount()).isEqualTo(3);
         }
 
         @Test
-        void healthyActiveNodeCount_withSnapshot_readsFromSnapshot() {
+        void observedActiveNodeCount_withSnapshot_readsFromSnapshot() {
             var source = new StubSource();
             source.set(new StubView(Set.of(SELF, PEER_A, PEER_B, PEER_C),
                                     Set.of(SELF, PEER_A, PEER_B, PEER_C),
@@ -127,18 +127,18 @@ class TopologyObserverSnapshotDualModeTest {
                                     4));
             var observer = observerWith(source);
 
-            assertThat(observer.healthyActiveNodeCount()).isEqualTo(4);
+            assertThat(observer.observedActiveNodeCount()).isEqualTo(4);
         }
 
         @Test
-        void healthyActiveNodeCount_withSnapshot_alwaysWinsOverInMemory() {
+        void observedActiveNodeCount_withSnapshot_alwaysWinsOverInMemory() {
             // RC1-9 audit Step 5: snapshot is the SOLE source. Even when the in-memory
             // map disagrees, the snapshot determines the count.
             var source = new StubSource();
             source.set(new StubView(Set.of(SELF), Set.of(SELF), 1, 3));
             var observer = observerWith(source);
 
-            assertThat(observer.healthyActiveNodeCount()).isEqualTo(1);
+            assertThat(observer.observedActiveNodeCount()).isEqualTo(1);
         }
     }
 
