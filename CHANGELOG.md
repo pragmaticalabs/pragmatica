@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Added (2026-08-27 — #320: repo-root CONTRIBUTING.md)
+- New `CONTRIBUTING.md`: license implications of contributing by directory (BSL-1.1 under
+  `aether/` and `jbct/slice-processor{,-tests}/` is not OSI-approved open source; Apache-2.0
+  elsewhere), the SPDX header each path needs, verified build/test expectations sourced directly
+  from `build.sh` and `.github/workflows/ci.yml` (including why `build.sh`'s mutating format/lint
+  goal should be run locally rather than relying on CI's non-mutating check), fork/branch/PR
+  workflow targeting `main`, a requested-but-not-enforced DCO sign-off convention (verified no
+  DCO/CLA bot exists in `.github/` today), and an inline code-of-conduct section.
+
 ### Added (2026-08-27 — #319: repo-root SECURITY.md)
 - New `SECURITY.md`: GitHub private-vulnerability-reporting as the disclosure channel; Aether's
   single-trust-domain threat model; verified default management-API posture (`SecurityMode.API_KEY`
