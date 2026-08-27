@@ -975,12 +975,15 @@ for full details on operator security overrides.
 
 ## Securing Your Endpoints
 
-By default, the app HTTP server runs without authentication. For production deployments,
-configure a security mode in `aether.toml`:
+The app HTTP server defaults to `api-key` mode when `security_mode` is omitted from `aether.toml`
+(issue #290, "secure by default"). If no key is provisioned, the first elected leader generates one
+random ADMIN key on first startup and prints it once, prominently, to its log:
 
-- **`none`** -- no authentication (default, suitable for development)
-- **`api-key`** -- authenticate via `X-API-Key` header, reuses management API keys
+- **`api-key`** -- authenticate via `X-API-Key` header, reuses management API keys (**default**)
 - **`jwt`** -- authenticate via `Authorization: Bearer` header with JWKS validation (RS256/ES256)
+- **`none`** -- no authentication; must be set explicitly, dev/eval only, never for anything
+  reachable over an untrusted network (Forge/Ember's in-JVM dev harness hardcodes this for local
+  iteration, which is a separate, unrelated default from a real node's `aether.toml`)
 
 Example with API key security:
 

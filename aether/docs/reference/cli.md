@@ -2599,17 +2599,20 @@ The app HTTP server supports three security modes configured in `aether.toml`:
 
 | Mode | Value | Description |
 |------|-------|-------------|
-| None | `security_mode = "none"` | No authentication (default) |
-| API Key | `security_mode = "api-key"` | Reuses management API keys via `X-API-Key` header |
+| None | `security_mode = "none"` | No authentication — dev/eval only, see [Bootstrap Config Reference](bootstrap-config.md#a-security_mode--none--why-deveval-bootstrap-needs-it) |
+| API Key | `security_mode = "api-key"` | Reuses management API keys via `X-API-Key` header (**default** when `security_mode` is omitted — issue #290, "secure by default"; if no key is provisioned, a fresh cluster auto-generates one ADMIN key on first leadership and prints it once, see [SECURITY.md](../../../SECURITY.md#default-security-posture-management-api)) |
 | JWT | `security_mode = "jwt"` | Bearer token auth with JWKS validation (RS256/ES256) |
 
 ### Example Configurations
 
-**No security (default):**
+**Default (API key, auto-provisioned):**
 ```toml
 [app-http]
 enabled = true
 port = 8070
+# security_mode omitted -> defaults to "api-key"; capture the auto-generated
+# ADMIN key from the leader's log on first boot, or pre-provision one — see
+# the Bootstrap Config Reference link above.
 ```
 
 **API key security:**

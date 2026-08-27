@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Fixed (2026-08-27 — #318 audit-trail: stale SecurityMode/security-default claims)
+- Swept `aether/docs/**` and top-level `*.md` for claims about the app-http `security_mode`
+  default that predate #290 ("secure by default") and #573 (management-API deny-by-default).
+  Verified current behavior against source: `ConfigLoader.populateAppHttpConfig` defaults
+  `security_mode` to `API_KEY` when omitted (`aether-default.toml`, the shipped Layer-1 config,
+  sets no explicit `security_mode`), and `BootstrapAdminKeyRegistrar` auto-generates one ADMIN
+  key on first leadership when none was provisioned, printing it once. Fixed 3 docs that
+  understated this (stated or implied `NONE`/no-auth as the default): `reference/cli.md`
+  (Security Modes table + example), `reference/management-api.md` (Security Modes table +
+  per-mode config sections, including a stale "auto-upgrade only when keys present" claim that
+  no longer matches the unconditional `explicitMode.or(API_KEY)` default), and
+  `slice-developers/getting-started.md` ("Securing Your Endpoints"). Added a narrow
+  design-intent-vs-current-behavior note to `specs/rbac-spec.md` §7 (a 2026-02-23 DRAFT Tier-1
+  proposal predating both fixes, whose "no security configured → Public" framing for the
+  management API is no longer accurate) rather than rewriting the spec — flagged for #318 to
+  decide whether to correct in place or point at SECURITY.md. Confirmed by source read that the
+  Ember/Forge in-JVM harness factories (`AppHttpConfig.appHttpConfig(int, ...)` etc., used by
+  `ForgeServer`) are a separate, hardcoded `NONE` default unrelated to the node/`ConfigLoader`
+  path — `getting-started.md`'s existing description of that as current dev-harness behavior
+  was already accurate and left unchanged, per instruction not to characterize it as final or
+  transitional. `SECURITY.md` was already correct (checked in an earlier pass this session).
+
 ### Changed (2026-08-27 — #317: Status field on architecture docs)
 - Added `**Status:** Current` (no fabricated last-reviewed date) to the 16 header-less docs in
   `aether/docs/architecture/` (`00-overview.md` through `15-resource-and-isolation-model.md`).

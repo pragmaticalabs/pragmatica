@@ -5152,9 +5152,9 @@ The app HTTP server (serving slice-generated endpoints) supports configurable au
 
 | Mode | Header | Description |
 |------|--------|-------------|
-| `none` | -- | No authentication (default, backward compatible) |
-| `api-key` | `X-API-Key` | Reuses management API key infrastructure |
+| `api-key` | `X-API-Key` | Reuses management API key infrastructure (**default** when `security_mode` is omitted — issue #290, "secure by default"; a fresh cluster with no provisioned key auto-generates one ADMIN key on first leadership and prints it once, see [SECURITY.md](../../../SECURITY.md#default-security-posture-management-api)) |
 | `jwt` | `Authorization: Bearer <token>` | JWT with JWKS validation (RS256/ES256) |
+| `none` | -- | No authentication — must be set explicitly; dev/eval only, never for anything reachable over an untrusted network |
 
 ### Health Endpoint Bypass
 
@@ -5174,26 +5174,19 @@ Slice handlers can access the security context to make authorization decisions.
 
 ### Configuration
 
-#### Mode: None (Default)
+#### Mode: API Key (Default)
 
-No authentication. All requests are allowed with a system principal.
-
-```toml
-[app-http]
-enabled = true
-port = 8070
-# security_mode defaults to "none" when omitted
-```
-
-#### Mode: API Key
-
-Reuses the same `api-keys` configuration as the management API. Requests must include `X-API-Key` header.
+Reuses the same `api-keys` configuration as the management API. Requests must include an
+`X-API-Key` header. `security_mode` defaults to `api-key` when omitted (issue #290). If no key is
+provisioned, the first elected leader generates one random ADMIN key on first startup and prints
+it once, prominently, to its log -- capture it, since it is not retrievable afterward except by
+rotating it via `/api/cluster/keys`.
 
 ```toml
 [app-http]
 enabled = true
 port = 8070
-security_mode = "api-key"
+# security_mode omitted -> defaults to "api-key"
 
 # Simple key list (all keys get ADMIN authorization)
 api_keys = ["my-secret-key-1", "my-secret-key-2"]
@@ -5218,8 +5211,6 @@ roles = ["service"]
 authorization_role = "VIEWER"
 ```
 
-When `security_mode` is omitted but API keys are present, the mode is automatically upgraded to `api-key` for backward compatibility.
-
 #### Mode: JWT
 
 Token-based authentication using JWKS (JSON Web Key Set) for public key validation. Supports RS256 and ES256 algorithms using JDK crypto (no external libraries).
@@ -5234,6 +5225,21 @@ issuer = "https://auth.example.com/"
 audience = "my-api"
 role_claim = "role"
 jwks_cache_ttl_seconds = 3600
+```
+
+#### Mode: None
+
+No authentication -- all requests are allowed with a system principal. Must be set explicitly
+(`security_mode = "none"`); it is never the default. Appropriate only for a single-node local/dev
+instance, never for anything reachable over an untrusted network -- see the
+[Bootstrap Config Reference](bootstrap-config.md#a-security_mode--none--why-deveval-bootstrap-needs-it)
+for why the dev/eval bootstrap path uses it and what it gives up.
+
+```toml
+[app-http]
+enabled = true
+port = 8070
+security_mode = "none"
 ```
 
 | Field | Required | Default | Description |

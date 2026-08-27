@@ -653,6 +653,15 @@ InvocationContext.runWithContext(requestId, 1, false, principal, originNode, () 
 
 ## 7. Default Security Policies per Route Category
 
+> **This section predates #290 ("secure by default").** The binary "no security configured" /
+> "security enabled" framing below reflects the original 0.18.0 Tier-1 design (2026-02-23) and is
+> not the current runtime model, which has three `SecurityMode` states (`NONE`/`API_KEY`/`JWT`)
+> with `API_KEY` as the default when unset. In particular, an unconfigured management API is no
+> longer `Public` — see [SECURITY.md](../../../SECURITY.md#default-security-posture-management-api)
+> for the verified current default and the #573 fix that closed exactly this gap. Left as a
+> design-intent record rather than rewritten; #318's audit pass should decide whether this section
+> is corrected in place or superseded by a pointer to SECURITY.md.
+
 ### 7.1 Route Categories
 
 | Category | Path Pattern | Default Policy (no security configured) | Default Policy (security enabled) |
