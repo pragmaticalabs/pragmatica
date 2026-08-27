@@ -289,7 +289,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   is carrying the responder's engine state in `SyncResponse`, which is protocol surface and deliberately
   out of scope here. [design intent — unverified]
 
-### Added (2026-08-27 — #591: the coordination-load instrument, validated before its output is trusted)
+### Added (2026-08-27 — #232: in-process membership chaos cycle, built rather than revived)
+- `MembershipChaosCycleTest` (forge, Heavy, 5 nodes) drives **kill → detect → decommission → heal**
+  against the current SWIM + MembershipFsm stack: a hard-killed core must leave counted membership,
+  auto-heal must reach the real `ComputeProvider` path, and the replacement must boot, join and be
+  counted. A recording provider makes the heal leg provable — counted membership returning to five
+  could otherwise be a rejoin rather than the cluster healing itself.
+- **Not a revive.** `MembershipChaosSpikeTest` was deleted in `c0c4e6444` as part of the deliberate v2
+  membership migration, not for flakiness; it still imports `PhiAccrualDetector`, a class that no
+  longer exists, so restoring it would not compile. Its published timeline was measured against a
+  detector since replaced, so those numbers are recorded as history and deliberately not asserted.
+- Budgets are DERIVED from shipping constants (auto-heal startup cooldown 15s, SWIM suspicion 10s +
+  NTT departure 15s, auto-heal retry 10s, provisioning timeout 60s), and the timeline is **measured**
+  across three runs and recorded in the class: decommission 5.6–8.1s, heal 21.3–23.8s, leader recovery
+  22.3–24.8s, exactly one provision every run. In-process numbers on one host — a regression baseline
+  and order-of-magnitude check, explicitly not a production SLO.
+  [verified: aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/MembershipChaosCycleTest.java]
+- The first run failed on an assertion of mine, not on the system: leader presence was sampled at the
+  instant heal completed, while a re-election was legitimately in flight as the replacement joined.
+  Leadership is a convergence property, so it is now awaited — and how long recovery takes became a
+  reported number rather than a hidden assumption.
+- Complements `MembershipBlackHoleSpikeTest` rather than duplicating it: that covers the harder
+  detection case (silent but connected) and stops at terminal removal; this covers the ordinary kill
+  and carries it through heal.
+
+
 - `aether/tests/integration/coordination_slope.py` — samples QUIC protocol-message rate per CORE node
   (`quic_messages_sent_total` + `quic_messages_received_total`, differenced) plus `cpu.usage` /
   `heap.used`, for the re-scoped #591 worker-count sweep. It reports a **worker-count** slope with
