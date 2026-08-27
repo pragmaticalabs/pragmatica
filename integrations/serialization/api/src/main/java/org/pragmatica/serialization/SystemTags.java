@@ -278,6 +278,14 @@ public interface SystemTags {
         pin(table, 520, "org.pragmatica.aether.http.handler.security.SecurityContext");
 
         // slice invocation  [base 640]
+        // RETIRED 2026-08-27 (#571): `DHTNotification` was deleted — it had zero senders and zero
+        // receivers. These two pins STAY, and deleting them would be the bug: the table is what makes
+        // "never reuse" enforceable, so a freed tag could be silently reclaimed by a new type and two
+        // node versions would then disagree about a payload on the wire. The names are unresolvable
+        // today, which is harmless — `pin` records STRINGS, never class literals.
+        //
+        // Do not renumber around them, and do not "tidy" them away. Take the next free slot instead,
+        // per this file's Rules section.
         pin(table, 640, "org.pragmatica.aether.dht.DHTNotification.Put");
         pin(table, 641, "org.pragmatica.aether.dht.DHTNotification.Removed");
         pin(table, 642, "org.pragmatica.aether.invoke.InvocationMessage.InvokeRequest");
