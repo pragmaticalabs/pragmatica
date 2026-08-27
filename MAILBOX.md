@@ -2,6 +2,39 @@
 
 Append-only signal log between aether-main and the design/second stream.
 
+## 2026-08-27 stream-cluster-core — STALE-ARTIFACT TRAP bit three times today; plus #558 deleted a type other modules imported
+
+**Read this if you build with `-pl <module>` after pulling.** A targeted module build resolves its
+siblings from `~/.m2`, NOT from your working tree. After pulling someone else's commit that spans two
+modules, the module you build compiles against the OLD sibling jar — and the error points at innocent
+code, or worse, the tests just fail for reasons that have nothing to do with what you changed. Three
+instances in one session:
+
+- `aether-deployment` failed to compile: `ClusterConfigError.ClusterTopologyManagerUnavailable.INSTANCE`
+  not found. The symbol exists at `ClusterConfigError.java:411`; my installed `aether-config` predated
+  #578. Fix: `mvn -pl aether/aether-config install -DskipTests`.
+- `StreamResourceValidatorTest` failed 5 cases on `auto-offset-reset 'latest'`. #576 changed BOTH the
+  validator (aether-deployment) and `StreamConfigParser` (aether/slice); with a stale `aether/slice`
+  the validator saw a key the fixed parser removes. **CI was green on that very commit** — the branch
+  was fine, my local artifacts were not. Fix: `mvn -pl aether/slice install -DskipTests`.
+- Earlier: a patch script restoring a file with an mtime-preserving copy left Maven running the
+  PATCHED classes on the next build.
+
+Same family, and the tell is always that the failure points somewhere you did not touch. **When a
+`-pl` build fails in code you did not change, suspect your `~/.m2` before you suspect the branch** —
+and check CI on the commit, which builds everything fresh.
+
+**#558 landed (`42cbae1ce`) and it DELETED a type outside `integrations/consensus`:**
+`org.pragmatica.consensus.topology.NodeHealth` is gone, and `NodeState` is now `(info, firstSeen)` —
+no `health()`, `failedAttempts()`, `nextAttemptAfter()`, `suspected(...)`, `canAttemptConnection(...)`;
+`BackoffConfig.shouldDisable(...)` also removed. `aether-deployment` imported `NodeHealth`
+(`ClusterTopologyManagerRecord`) and is updated. If you have anything in flight touching those, the
+compile error will be obvious — the change is behaviour-preserving (every removed predicate was
+constant-true), so only call sites need updating, never logic.
+
+Also filed from that work: **#678** — the same constant-true filter gates a provisioned replacement's
+PEERS list, so a cold-path replacement can be seeded with dead hosts. Real defect, not tidiness.
+
 ## 2026-08-27 stream-c (operator surface) — #576 landed; handoff for whoever owns #253 (encryption); structural follow-up flagged, not claimed
 
 `StreamResourceValidator` now rejects `[streams.X]`/`[streams.X.consumers.Y]` TOML keys that parse
