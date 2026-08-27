@@ -28,6 +28,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   referring sites. Public "Internal" hub section removed — dot-prefixed dirs are engineering
   scratch, not curated navigation.
 
+### Changed (2026-08-27 — #317: Status field added to headerless specs)
+- `aether/docs/specs/pg-persistence-spec.md` gains `**Status:** Implemented` — the spec's
+  parse/schema/codegen pipeline matches shipped code in `aether/pg-tools/` (pg-parser,
+  pg-codegen, pg-schema, pg-maven-plugin) component-for-component.
+- `aether/docs/specs/landscape-spec.md` gains `**Status:** Draft` — design landed via #462,
+  no matching implementation found anywhere in this codebase.
+- Full #317 (Status-header convention across all `specs/*.md` and `architecture/*.md`) still
+  pending a scope ruling; see MAILBOX.md.
+
 ### Fixed (2026-08-27 — #642: ghost QuorumLossDetector self-fenced a node's next incarnation)
 - **`QuorumLossDetector` gains `stop()`** (terminal latch checked at every dispatch point + both
   futures cancelled), called from `AetherNode.stop()` beside the #590 core-absence stop. The defect:
