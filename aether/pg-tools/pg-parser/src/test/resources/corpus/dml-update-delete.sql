@@ -27,3 +27,10 @@ UPDATE users SET name = 'Bob', email = 'bob@test.com', updated_at = now() WHERE 
 UPDATE users SET nonexistent = 'x' WHERE id = 1;
 UPDATE users SET rank = (SELECT count(*) FROM orders WHERE orders.user_id = users.id);
 UPDATE users SET score = DEFAULT WHERE id = 1;
+
+-- The #646 A/B pair. Byte-identical apart from the NOT IN subquery, which is what made the
+-- RETURNING list validate against the subquery's projection in one case and against nothing
+-- at all in the other. Both must parse, and both must keep the pair adjacent so a future
+-- differential shows them together.
+UPDATE reservations SET state = 'expired' WHERE state = 'held' AND expires_at < now() RETURNING seat_id, event_id, version;
+UPDATE reservations SET state = 'expired' WHERE state = 'held' AND expires_at < now() AND claim_id NOT IN (SELECT reservation_claim_id FROM bookings WHERE status = 'void') RETURNING seat_id, event_id, version;

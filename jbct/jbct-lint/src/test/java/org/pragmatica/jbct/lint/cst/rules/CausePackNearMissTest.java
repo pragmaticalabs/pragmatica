@@ -278,6 +278,46 @@ class CausePackNearMissTest {
                             """)).contains("JBCT-CAUSE-08");
     }
 
+    /// Pilot-migration catch: a nested record's static FACTORY made the enclosing sealed sum type
+    /// a "utility interface" under STY-04's old whole-body text scan, demanding an 'unused'
+    /// placeholder record — the subtree-attribution bug class, fourth occurrence. A sum type
+    /// already has permitted subtypes; the demand never applies to it.
+    @Test
+    void migratedCauseHierarchy_isNotASealedUtilityInterface() {
+        assertThat(rulesFor("""
+                            package demo;
+                            public sealed interface RegError extends Cause {
+                                record Locked(String id, String message) implements RegError {
+                                    static final Fn1<Locked, String> FACTORY = Causes.forOneValue("Locked: %s", Locked::new);
+                                }
+                            }
+                            """)).doesNotContain("JBCT-STY-04");
+    }
+
+    /// An explicit permits clause satisfies the sealed-permit requirement by definition —
+    /// `Promise permits PromiseImpl` was drawing the 'unused' demand.
+    @Test
+    void sealedInterface_withExplicitPermits_isNotAUtilityInterface() {
+        assertThat(rulesFor("""
+                            package demo;
+                            public sealed interface Api permits ApiImpl {
+                                static Api api() { return new ApiImpl(); }
+                            }
+                            """)).doesNotContain("JBCT-STY-04");
+    }
+
+    /// The regression guard for the narrowed predicate: a genuine sealed utility interface —
+    /// direct static method, no variants, no 'unused' record — is still flagged.
+    @Test
+    void sealedUtilityInterface_missingUnused_isStillFlagged() {
+        assertThat(rulesFor("""
+                            package demo;
+                            public sealed interface Utils {
+                                static String process(String x) { return x; }
+                            }
+                            """)).contains("JBCT-STY-04");
+    }
+
     /// `Causes.cause(String)` is the sanctioned ad-hoc tier — deliberately never flagged.
     @Test
     void adHocCause_staysSanctioned() {

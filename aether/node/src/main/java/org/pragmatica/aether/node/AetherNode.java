@@ -220,6 +220,7 @@ import org.pragmatica.aether.worker.isolation.CoreAbsenceDetector;
 import org.pragmatica.aether.worker.governor.GovernorMesh;
 import org.pragmatica.aether.worker.group.GroupMembershipTracker;
 import org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot;
+import org.pragmatica.aether.worker.metrics.SpokesmanPingLoop;
 import org.pragmatica.aether.worker.metrics.WorkerMetricsAggregator;
 import org.pragmatica.aether.worker.mutation.MutationForwarder;
 import org.pragmatica.aether.config.AppHttpConfig;
@@ -1476,7 +1477,18 @@ public interface AetherNode extends ManageableNode {
                           Option<DHTNode> dhtNode,
                           Supplier<AetherValue.ClusterPhase> clusterPhaseSupplier,
                           Supplier<Epoch> currentGenerationEpochSupplier,
+                          // #642 stop-hook audit: components that arm work on the process-wide
+                          // SharedScheduler on behalf of THIS node and had no reachable cancel path.
+                          // They are carried here for the sole purpose of being quiesced in stop() —
+                          // an uncancelled one keeps acting for a node that no longer exists, and in a
+                          // shared JVM its effects land on the next incarnation of the same id.
+                          ObservabilityBaseline observabilityBaseline,
+                          SpokesmanPingLoop spokesmanPingLoop,
+                          AtomicReference<GovernorAnnouncer> governorAnnouncerHolder,
+                          RetentionEnforcer streamRetentionEnforcer,
+                          StreamConsumerRuntime streamConsumerRuntime,
                           long startTimeMs,
+                          AtomicLong swimBootAt,
                           List<ScheduledFuture<?>> periodicTasks) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNode.class);
 
@@ -1504,6 +1516,11 @@ public interface AetherNode extends ManageableNode {
             @Override
             public Promise<Unit> start() {
                 log.info("Starting Aether node {}", self());
+                // #642: anchor the SWIM cold-boot convergence window HERE, so it measures this node's
+                // RUNNING life. Assembly-anchored, a node held back and started later than
+                // COLD_BOOT_CONVERGENCE_WINDOW_MS after construction began with the window already
+                // expired and no cold-boot FAULTY-suppression at all.
+                swimBootAt.set(System.currentTimeMillis());
                 snapshotCollector.start();
                 workerMetricsAggregator.start();
                 SliceRuntime.setSliceInvoker(sliceInvoker);
@@ -1546,6 +1563,12 @@ public interface AetherNode extends ManageableNode {
                 // #488: detach declarative stream consumers BEFORE the partition manager closes, so
                 // each one flushes its cursor while its ring buffer and cursor store are still alive.
                 streamConsumerManager.stop();
+                // #642, bound by that SAME #488 ordering constraint. close() flushes every consumer
+                // cursor (a consensus write) and then removes push listeners through
+                // partitionManager.partitionBuffer(...) lookups. Run after streamPartitionManager.close()
+                // those lookups resolve empty — the listener removal is silently inert — and the cursor
+                // write races clusterNode.stop() at the tail of this method.
+                streamConsumerRuntime.close();
                 streamPartitionManager.close();
                 certRenewalScheduler.onPresent(CertificateRenewalScheduler::stop);
                 swimHealthDetector.stop();
@@ -1553,15 +1576,39 @@ public interface AetherNode extends ManageableNode {
                 // #590: cancel the core-absence tick. Forge runs many nodes in ONE JVM on a shared
                 // scheduler, so a tick left armed after stop() outlives its node.
                 coreAbsenceDetector.stop();
+                // #642, same hazard one component over: the quorum-loss timers are on the same shared
+                // scheduler, and presenceSampler.stop() above freezes the member count below threshold,
+                // so an unstopped detector re-arms off that frozen count until its cold-boot window
+                // expires and then drains — by node id, against the LIVE registry, i.e. this node's NEXT
+                // incarnation.
+                quorumLossDetector.stop();
+                // #642 stop-hook audit — the rest of the SharedScheduler-armed, node-scoped work that
+                // had no reachable cancel path. Each of these was still acting on behalf of a stopped
+                // node: re-announcing a governor roster into consensus, pinging as spokesman, sweeping
+                // retention (a DESTRUCTIVE sweep), recomputing a sampling rate. (The consumer runtime
+                // belongs to this audit too, but its cancel is ordering-bound and sits above.)
+                spokesmanPingLoop.stop();
+                Option.option(governorAnnouncerHolder.get()).onPresent(GovernorAnnouncer::stop);
+                streamRetentionEnforcer.close();
+                observabilityBaseline.sampler().onPresent(AdaptiveSampler::stop);
                 discoveryProvider.onPresent(this::deregisterFromDiscovery);
-
-                return managementServer.map(ManagementServer::stop)
-                                       .or(Promise.unitPromise())
-                                       .flatMap(_ -> appHttpServer.stop())
-                                       .flatMap(_ -> sliceInvoker.stop())
-                                       .flatMap(_ -> clusterNode.stop())
-                                       .onSuccess(_ -> log.info("Aether node {} stopped",
-                                                                self()));
+                // #642: the cluster-deployment FSM's fixed-rate reconcile timer is cancelled only by
+                // Active.onExit, which nothing reached at shutdown — a stopped node kept running full
+                // deployment reconciles. deactivate() is the same designed path a leader loss takes.
+                //
+                // It heads the chain, so the rest of the shutdown DEPENDS on it staying infallible: it
+                // currently dispatches an FSM event and returns unitPromise(), never a failure. Should
+                // it ever gain a failure path, every stop below — management server, app HTTP, slice
+                // invoker, cluster node — would be skipped by flatMap short-circuit. Recover here at
+                // that point rather than leaving the node half-stopped.
+                return clusterDeploymentManager.deactivate()
+                                               .flatMap(_ -> managementServer.map(ManagementServer::stop)
+                                                                             .or(Promise.unitPromise()))
+                                               .flatMap(_ -> appHttpServer.stop())
+                                               .flatMap(_ -> sliceInvoker.stop())
+                                               .flatMap(_ -> clusterNode.stop())
+                                               .onSuccess(_ -> log.info("Aether node {} stopped",
+                                                                        self()));
             }
 
             private Promise<Unit> startClusterAsync() {
@@ -2585,6 +2632,10 @@ public interface AetherNode extends ManageableNode {
         // read time. A holder (not a reorder) keeps the router-build / replay-burst ordering
         // documented below intact.
         var swimHealthDetectorHolder = new AtomicReference<CoreSwimHealthDetector>();
+        // #642: worker-mode subsystems are created lazily, when a WORKER activation directive arrives —
+        // long after assembly — so the announcer cannot be a plain local. The holder is how stop()
+        // reaches it to cancel the re-announce tick; empty on a node that never became a worker.
+        var governorAnnouncerHolder = new AtomicReference<GovernorAnnouncer>();
         var activationKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
                                                      .onPut(AetherKey.ActivationDirectiveKey.class,
                                                             (ValuePut<AetherKey.ActivationDirectiveKey, AetherValue.ActivationDirectiveValue> put) -> handleActivationDirective(put,
@@ -2598,6 +2649,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                                 sliceStore,
                                                                                                                                                                                 sliceInvoker,
                                                                                                                                                                                 swimHealthDetectorHolder::get,
+                                                                                                                                                                                governorAnnouncerHolder,
                                                                                                                                                                                 growthLog))
                                                      .onPut(AetherKey.GossipKeyRotationKey.class,
                                                             gossipKeyRotationHandler::onGossipKeyRotationPut)
@@ -2646,9 +2698,16 @@ public interface AetherNode extends ManageableNode {
         // tested COLD_BOOT suppression branch — no tombstone, formation-safe) until the transport has
         // exhausted its dial attempts. Proven-HEALTHY peers are unaffected: every suppression branch
         // short-circuits on everSeenHealthy, so a real death still FAULTYs immediately regardless.
-        long swimBootAtMs = System.currentTimeMillis();
+        //
+        // #642: "boot" is the instant this node STARTS, not the instant it was assembled. The holder is
+        // seeded here so an assembled-but-never-started node behaves exactly as before, and re-stamped
+        // by start() (`swimBootAt` record component) so the window always covers the node's first
+        // COLD_BOOT_CONVERGENCE_WINDOW_MS of RUNNING life. Anchoring at assembly meant a node started
+        // more than that window after construction — routine in a staggered-restart harness — booted
+        // with the suppression already expired, i.e. zero cold-boot protection.
+        var swimBootAtMs = new AtomicLong(System.currentTimeMillis());
         BooleanSupplier swimIsBootingSupplier = () -> coldBootConvergenceActive(effectivePhaseSupplier.get() == AetherValue.ClusterPhase.COLD_BOOT,
-                                                                                swimBootAtMs,
+                                                                                swimBootAtMs.get(),
                                                                                 System.currentTimeMillis(),
                                                                                 COLD_BOOT_CONVERGENCE_WINDOW_MS);
         // Leader-faulty evictor (2026-05-09): bridges SWIM-FAULTY → QUIC disconnect when
@@ -3201,16 +3260,13 @@ public interface AetherNode extends ManageableNode {
                                                  .build();
 
         allEntries.addAll(healthKvRouter.asRouteEntries());
-        var spokesmanPingLoop = org.pragmatica.aether.worker.metrics.SpokesmanPingLoop.spokesmanPingLoop(config.self(),
-                                                                                                         clusterNode.network(),
-                                                                                                         config.timeouts()
-                                                                                                               .cluster()
-                                                                                                               .pingInterval(),
-                                                                                                         rabiaTermSupplier,
-                                                                                                         metricsCollector::allMetrics,
-                                                                                                         communityId -> lookupGovernor(kvStore,
-                                                                                                                                       communityId),
-                                                                                                         org.pragmatica.aether.worker.metrics.SpokesmanPingLoop.SpokesmanStatusWriter.fromCluster(clusterNode));
+        var spokesmanPingLoop = SpokesmanPingLoop.spokesmanPingLoop(config.self(),
+                                                                    clusterNode.network(),
+                                                                    config.timeouts().cluster().pingInterval(),
+                                                                    rabiaTermSupplier,
+                                                                    metricsCollector::allMetrics,
+                                                                    communityId -> lookupGovernor(kvStore, communityId),
+                                                                    SpokesmanPingLoop.SpokesmanStatusWriter.fromCluster(clusterNode));
 
         spokesmanPingLoop.start();
         metricsCollector.setCommunityReportSupplier(spokesmanPingLoop::currentReports);
@@ -3948,7 +4004,13 @@ public interface AetherNode extends ManageableNode {
                                   Option.some(dhtNode),
                                   effectivePhaseSupplier,
                                   currentGenerationEpochSupplier,
+                                  observabilityBaseline,
+                                  spokesmanPingLoop,
+                                  governorAnnouncerHolder,
+                                  streamRetentionEnforcer,
+                                  streamConsumerRuntime,
                                   startTimeMs,
+                                  swimBootAtMs,
                                   periodicTasks);
 
         nodeDeploymentManager.setShutdownCallback(node::stop);
@@ -4119,7 +4181,13 @@ public interface AetherNode extends ManageableNode {
                                                                         Option.some(dhtNode),
                                                                         effectivePhaseSupplier,
                                                                         currentGenerationEpochSupplier,
+                                                                        observabilityBaseline,
+                                                                        spokesmanPingLoop,
+                                                                        governorAnnouncerHolder,
+                                                                        streamRetentionEnforcer,
+                                                                        streamConsumerRuntime,
                                                                         startTimeMs,
+                                                                        swimBootAtMs,
                                                                         periodicTasks);
                                               }
 
@@ -4778,6 +4846,7 @@ public interface AetherNode extends ManageableNode {
                                                   SliceStore sliceStore,
                                                   SliceInvoker sliceInvoker,
                                                   Supplier<CoreSwimHealthDetector> swimHealthDetectorSupplier,
+                                                  AtomicReference<GovernorAnnouncer> governorAnnouncerHolder,
                                                   Logger growthLog) {
         if (!put.cause().key().nodeId().equals(selfId)) {
             return;
@@ -4802,6 +4871,7 @@ public interface AetherNode extends ManageableNode {
                                sliceInvoker,
                                communityId,
                                swimHealthDetectorSupplier.get(),
+                               governorAnnouncerHolder,
                                growthLog);
         }
     }
@@ -4818,6 +4888,7 @@ public interface AetherNode extends ManageableNode {
                                            SliceInvoker sliceInvoker,
                                            String communityId,
                                            CoreSwimHealthDetector swimHealthDetector,
+                                           AtomicReference<GovernorAnnouncer> governorAnnouncerHolder,
                                            Logger log) {
         clusterNode.authorizeObservation();
         switchableCluster.switchTo(forwardingClusterNode);
@@ -4853,6 +4924,9 @@ public interface AetherNode extends ManageableNode {
                                                                     () -> Epoch.ZERO);
 
         governorAnnouncer.start();
+        // #642: publish the handle so AetherNode.stop() can cancel the re-announce tick. Without it a
+        // stopped worker kept writing GovernorAnnouncementKey through consensus on its own behalf.
+        governorAnnouncerHolder.set(governorAnnouncer);
         // GAP 2 (SWIM → governor): SWIM observations are edge-triggered, so on every edge we
         // re-read the full ALIVE set and hand the community-filtered slice to the announcer.
         // CommunityMembershipFilter scopes by the committed ActivationDirectiveValue.communityId
@@ -5685,16 +5759,20 @@ public interface AetherNode extends ManageableNode {
         spi.registerExtension(StorageInstance.class, contentStorage);
     }
 
-    /// A6 cold-boot convergence window: how long after THIS node's boot the SWIM cold-boot
+    /// A6 cold-boot convergence window: how long after THIS node's `start()` the SWIM cold-boot
     /// FAULTY-suppression stays active even after the cluster phase has flipped out of COLD_BOOT
     /// (which happens at first quorum, e.g. 3/5). Sized to cover the transport single-dialer
     /// force-dial grace (`QuicClusterNetwork.RECONCILE_BACKOFF_CAP_MS` = 60s) + one reconcile tick
     /// (~5s) + a suspect margin (~10s), so a straggler whose QUIC link forms only via the 60s
     /// force-dial is not FAULTY-evicted before it can connect on a simultaneous full-cluster restart.
+    ///
+    /// The anchor is the START instant, not the assembly instant (#642): the window has to cover the
+    /// node's first moments of RUNNING life, which is when SWIM is converging. Anchored at assembly it
+    /// could be fully expired before SWIM ever ran.
     long COLD_BOOT_CONVERGENCE_WINDOW_MS = 75_000L;
 
     /// Pure predicate for the SWIM cold-boot suppression gate (A6): cold-boot convergence is still
-    /// active iff the cluster phase is COLD_BOOT, OR this node booted within the convergence window.
+    /// active iff the cluster phase is COLD_BOOT, OR this node started within the convergence window.
     /// Extracted as a static pure function so the window logic is unit-testable without standing up a
     /// node. See `swimIsBootingSupplier` wiring for the rationale.
     static boolean coldBootConvergenceActive(boolean phaseIsColdBoot, long bootAtMs, long nowMs, long windowMs) {

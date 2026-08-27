@@ -222,6 +222,10 @@ class ManagementServerImpl implements ManagementServer {
 
     private final AtomicReference<HttpServer> serverRef = new AtomicReference<>();
     private final AtomicReference<HttpServer> h3ServerRef = new AtomicReference<>();
+    /// #642: the only route source that arms a periodic task. Held so stop() can cancel its sweep —
+    /// route sources are otherwise fire-and-forget, and this one outlived its node on the shared
+    /// scheduler.
+    private final AtomicReference<ApiKeyRoutes> apiKeyRoutesRef = new AtomicReference<>();
     private final StaticFileHandler staticFileHandler;
     private final ManagementRouter router;
     private final StatusRoutes statusRoutes;
@@ -339,7 +343,10 @@ class ManagementServerImpl implements ManagementServer {
                                                                                                                     .streamNamespacesService()));
         routeSources.add(StorageRoutes.storageRoutes(nodeSupplier));
         routeSources.add(RetentionRoutes.retentionRoutes(nodeSupplier));
-        routeSources.add(ApiKeyRoutes.apiKeyRoutes(nodeSupplier));
+        var apiKeyRoutes = ApiKeyRoutes.apiKeyRoutes(nodeSupplier);
+
+        apiKeyRoutesRef.set(apiKeyRoutes);
+        routeSources.add(apiKeyRoutes);
         routeSources.add(DhtRoutes.dhtRoutes(nodeSupplier));
         routeSources.add(org.pragmatica.aether.api.routes.VersionRoutes.versionRoutes(nodeSupplier));
         routeSources.add(org.pragmatica.aether.api.routes.WorkerRoutes.workerRoutes(nodeSupplier));
@@ -464,6 +471,7 @@ class ManagementServerImpl implements ManagementServer {
         metricsPublisher.stop();
         statusWsPublisher.stop();
         eventWsPublisher.stop();
+        Option.option(apiKeyRoutesRef.get()).onPresent(ApiKeyRoutes::stop);
         var h1Stop = Option.option(serverRef.get())
                            .map(server -> server.stop()
                                                 .onSuccessRun(() -> log.info("Management HTTP/1.1 server stopped")))

@@ -1633,6 +1633,10 @@ public final class StreamPartitionManager implements AutoCloseable {
         appMaterializeQueue.clear();
         queuedMaterializations.clear();
         releaseCandidacy.clear();
+        // #642: this manager owns the replication manager, and the batcher underneath it arms a
+        // fixed-rate flush on the process-wide SharedScheduler. Nothing else called its close(), so a
+        // stopped node kept flushing replication batches at its peers.
+        replicationManager.close();
     }
 
     private Result<StreamEntry> resolveStreamEntry(String streamName) {

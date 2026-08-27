@@ -25,6 +25,11 @@ import org.pragmatica.lang.Option;
 
 public final class QueryValidator {
     private static final PgType UNKNOWN_TYPE = new PgType.BuiltinType("unknown", PgType.TypeCategory.STRING);
+    /// PostgreSQL exposes the row that failed to insert under this name inside `ON CONFLICT DO
+    /// UPDATE`. It is registered as a real relation carrying the target's columns rather than
+    /// whitelisted, so `EXCLUDED.nonexistent_col` stays an error.
+    private static final String EXCLUDED_RELATION = "excluded";
+    private static final Set<String> ALIAS_KEYWORDS = Set.of("as");
 
     private final Schema schema;
 
@@ -69,25 +74,59 @@ public final class QueryValidator {
                     .isEmpty();
     }
 
-    /// Resolves the list of output column NAMES produced by the query's single top-level SELECT.
-    /// All-or-nothing: the result is present only when the query has exactly one `SelectCore` and
-    /// every one of its target-list entries resolves to a column name — an explicit alias
-    /// (`col AS name`), a qualified reference (`t.col`), or a bare column (`col`). It is absent when
-    /// any target is `*` (a `StarExpr`) or a compound expression (operator, cast, function call,
-    /// literal), or when the query has zero or multiple `SelectCore` nodes (subqueries or set
-    /// operations such as `UNION`). Schema-independent: it inspects only the CST structure. Intended
-    /// for callers that map a return-row record's fields to SELECT output columns and want to skip
-    /// the check rather than warn spuriously when the output set cannot be determined precisely.
+    /// Resolves the list of output column NAMES the query produces: the `RETURNING` list of an
+    /// `INSERT`/`UPDATE`/`DELETE`, or the target list of a `SELECT`'s statement-level core.
+    /// All-or-nothing: the result is present only when every target-list entry resolves to a column
+    /// name — an explicit alias (`col AS name`), a qualified reference (`t.col`), or a bare column
+    /// (`col`). It is absent when any target is `*` (a `StarExpr`) or a compound expression
+    /// (operator, cast, function call, literal), when the text does not hold exactly one statement,
+    /// or when a `SELECT` has multiple cores (a set operation such as `UNION`).
+    /// Schema-independent: it inspects only the CST structure. Intended for callers that map a
+    /// return-row record's fields to output columns and want to skip the check rather than warn
+    /// spuriously when the output set cannot be determined precisely.
+    ///
+    /// The statement is reached by POSITION. The previous `findAll("SelectCore")` walked the WHOLE
+    /// tree, so a single subquery anywhere made that subquery's projection "the query's output"
+    /// and a `RETURNING` list was validated against it — three spurious warnings per row component
+    /// on the reporting corpus — while zero or two subqueries skipped the check entirely (#646).
     public static Option<List<String>> selectOutputColumnNames(CstNavigator queryRoot) {
-        var cores = queryRoot.findAll("SelectCore");
+        var bodyOpt = singleStatementBody(queryRoot);
+
+        if (bodyOpt.isEmpty()) return Option.empty();
+
+        var body = bodyOpt.unwrap();
+        var returning = body.child("ReturningClause");
+
+        if (returning.isPresent()) {
+            return outputColumnNames(returning.unwrap());
+        }
+
+        var cores = ownedSelectCores(body);
 
         if (cores.size() != 1) return Option.empty();
 
         return outputColumnNames(cores.getFirst());
     }
 
-    private static Option<List<String>> outputColumnNames(CstNavigator selectCore) {
-        var targetListOpt = selectCore.child("TargetList");
+    /// The body of the query's single statement, reached by descending the fixed spine
+    /// `_ROOT -> Input -> Statement -> DmlStatement -> <body>`. Absent when the text holds anything
+    /// other than exactly one statement, so a script never has one statement's shape attributed to
+    /// another.
+    private static Option<CstNavigator> singleStatementBody(CstNavigator queryRoot) {
+        var input = queryRoot.child("Input").or(queryRoot);
+        var statements = input.allChildren("Statement");
+
+        if (statements.size() != 1) return Option.empty();
+
+        return statements.getFirst()
+                         .child("DmlStatement")
+                         .flatMap(CstNavigator::firstChild);
+    }
+
+    /// Names of the `TargetList` owned by `targetListOwner` — a `SelectCore` or a
+    /// `ReturningClause`, which carry the same target-list shape.
+    private static Option<List<String>> outputColumnNames(CstNavigator targetListOwner) {
+        var targetListOpt = targetListOwner.child("TargetList");
 
         if (targetListOpt.isEmpty()) return Option.empty();
 
@@ -149,6 +188,11 @@ public final class QueryValidator {
         return validateRoot(nav.unwrap());
     }
 
+    /// Each statement node is validated as itself. There is deliberately NO keyword-presence
+    /// fallback: `InsertKW`/`UpdateKW`/`SetKW` are not statement identity, and
+    /// `INSERT ... ON CONFLICT DO UPDATE SET` contains all three. The old fallback therefore ran the
+    /// UPDATE rules over the whole INSERT — resolving its `SET` items against a target picked
+    /// lexically and with no `EXCLUDED` in scope, which is how #649's four hard errors were emitted.
     private ValidationResult validateRoot(CstNavigator nav) {
         var errors = new ArrayList<ValidationError>();
         var cteScopeIndex = buildCteScopeIndex(nav);
@@ -159,34 +203,16 @@ public final class QueryValidator {
             validateSelect(select, preScope, errors);
         }
 
-        var insertStmts = nav.findAll("InsertStmt");
-
-        if (insertStmts.isEmpty() && !nav.findAll("InsertKW").isEmpty()) {
-            validateInsert(nav, errors);
-        } else {
-            for (var insert : insertStmts) {
-                validateInsert(insert, errors);
-            }
+        for (var insert : nav.findAll("InsertStmt")) {
+            validateInsert(insert, errors);
         }
 
-        var updateStmts = nav.findAll("UpdateStmt");
-
-        if (updateStmts.isEmpty() && !nav.findAll("UpdateKW").isEmpty() && !nav.findAll("SetKW").isEmpty()) {
-            validateUpdate(nav, errors);
-        } else {
-            for (var update : updateStmts) {
-                validateUpdate(update, errors);
-            }
+        for (var update : nav.findAll("UpdateStmt")) {
+            validateUpdate(update, errors);
         }
 
-        var deleteStmts = nav.findAll("DeleteStmt");
-
-        if (deleteStmts.isEmpty() && !nav.findAll("DeleteKW").isEmpty()) {
-            validateDelete(nav, errors);
-        } else {
-            for (var delete : deleteStmts) {
-                validateDelete(delete, errors);
-            }
+        for (var delete : nav.findAll("DeleteStmt")) {
+            validateDelete(delete, errors);
         }
 
         return new ValidationResult(errors);
@@ -240,7 +266,7 @@ public final class QueryValidator {
         }
     }
 
-    private List<CstNavigator> ownedSelectCores(CstNavigator parent) {
+    private static List<CstNavigator> ownedSelectCores(CstNavigator parent) {
         var cores = new ArrayList<CstNavigator>();
 
         for (var child : parent.children()) {
@@ -368,75 +394,215 @@ public final class QueryValidator {
             resolveFromClause(from, scope, errors);
         }
 
-        validateColumnRefs(select, scope, errors);
+        validateColumnRefs(select, scope, BareRefPolicy.SKIP, errors);
     }
 
     private void validateInsert(CstNavigator insert, List<ValidationError> errors) {
-        var qnames = insert.findAll("QualifiedName");
+        var tableNameOpt = targetTableName(insert);
 
-        if (qnames.isEmpty()) return;
+        if (tableNameOpt.isEmpty()) return;
 
-        var tableName = CstExtractor.extractQualifiedName(qnames.getFirst()).normalized();
-        var table = resolveTable(tableName);
+        var tableName = tableNameOpt.unwrap();
+        var tableOpt = resolveTable(tableName);
 
-        if (table.isEmpty()) {
+        if (tableOpt.isEmpty()) {
             errors.add(ValidationError.tableNotFound(tableName, insert.span()));
 
             return;
         }
 
-        var columnLists = insert.findAll("ColumnList");
+        var table = tableOpt.unwrap();
+        var scope = targetScope(insert, tableName, table);
 
-        if (!columnLists.isEmpty()) {
-            var cols = CstExtractor.extractColumnList(columnLists.getFirst());
-
-            for (var col : cols) {
-                if (table.unwrap().column(col.normalized()).isEmpty()) {
-                    errors.add(ValidationError.columnNotFound(col.normalized(), tableName, insert.span()));
-                }
-            }
-        }
+        validateColumnList(insert.child("ColumnList"), tableName, table, insert.span(), errors);
+        validateOnConflict(insert, tableName, table, scope, errors);
+        validateReturning(insert, scope, errors);
     }
 
     private void validateUpdate(CstNavigator update, List<ValidationError> errors) {
-        var qnames = update.findAll("QualifiedName");
+        var tableNameOpt = targetTableName(update);
 
-        if (qnames.isEmpty()) return;
+        if (tableNameOpt.isEmpty()) return;
 
-        var tableName = CstExtractor.extractQualifiedName(qnames.getFirst()).normalized();
-        var table = resolveTable(tableName);
+        var tableName = tableNameOpt.unwrap();
+        var tableOpt = resolveTable(tableName);
 
-        if (table.isEmpty()) {
+        if (tableOpt.isEmpty()) {
             errors.add(ValidationError.tableNotFound(tableName, update.span()));
 
             return;
         }
 
-        var setItems = update.findAll("UpdateSetItem");
+        var table = tableOpt.unwrap();
+        var scope = targetScope(update, tableName, table);
 
-        for (var item : setItems) {
-            var colIds = item.findAll("ColId");
-
-            if (!colIds.isEmpty()) {
-                var colName = CstExtractor.extractIdentifier(colIds.getFirst()).normalized();
-
-                if (table.unwrap().column(colName).isEmpty()) {
-                    errors.add(ValidationError.columnNotFound(colName, tableName, item.span()));
-                }
-            }
-        }
+        resolveJoinedTables(update.child("FromClause"), scope, errors);
+        validateSetItems(update, tableName, table, errors);
+        validateColumnRefsIn(update.child("WhereClause"), scope, errors);
+        validateReturning(update, scope, errors);
     }
 
     private void validateDelete(CstNavigator delete, List<ValidationError> errors) {
-        var qnames = delete.findAll("QualifiedName");
+        var tableNameOpt = targetTableName(delete);
 
-        if (qnames.isEmpty()) return;
+        if (tableNameOpt.isEmpty()) return;
 
-        var tableName = CstExtractor.extractQualifiedName(qnames.getFirst()).normalized();
+        var tableName = tableNameOpt.unwrap();
+        var tableOpt = resolveTable(tableName);
 
-        if (resolveTable(tableName).isEmpty()) {
+        if (tableOpt.isEmpty()) {
             errors.add(ValidationError.tableNotFound(tableName, delete.span()));
+
+            return;
         }
+
+        var scope = targetScope(delete, tableName, tableOpt.unwrap());
+
+        resolveJoinedTables(delete.child("UsingClauseDelete"), scope, errors);
+        validateColumnRefsIn(delete.child("WhereClause"), scope, errors);
+        validateReturning(delete, scope, errors);
+    }
+
+    /// The relation a DML statement targets, taken from the statement's OWN structure — the
+    /// `QualifiedName` that is a direct child of `InsertStmt`/`UpdateStmt`/`DeleteStmt`. The previous
+    /// `findAll("QualifiedName").getFirst()` was lexical-first over the whole subtree: it happened to
+    /// agree because the target precedes every other name, which is the select-by-position lesson
+    /// waiting to be re-learned rather than a property anything guaranteed.
+    private static Option<String> targetTableName(CstNavigator stmt) {
+        return stmt.child("QualifiedName")
+                   .map(qname -> CstExtractor.extractQualifiedName(qname).normalized());
+    }
+
+    /// The scope a DML statement's own clauses resolve against: the target relation under its
+    /// written name, under its bare name when written schema-qualified, and under its alias.
+    /// Parented by the statement's own `WITH` names so a `FROM`/`USING` reference to a CTE resolves
+    /// instead of reporting a missing table.
+    private Scope targetScope(CstNavigator stmt, String tableName, Table table) {
+        var cteScope = new Scope();
+        var withClause = stmt.child("WithClause");
+
+        if (withClause.isPresent()) {
+            registerCtes(withClause.unwrap(), cteScope);
+        }
+
+        var scope = new Scope(cteScope);
+
+        scope.registerTable(tableName, table);
+        scope.registerTable(tableName.substring(tableName.lastIndexOf('.') + 1),
+                            table);
+        var alias = aliasOf(stmt);
+
+        if (alias.isPresent()) {
+            scope.registerTable(alias.unwrap(), table);
+        }
+
+        return scope;
+    }
+
+    /// Validates the `ON CONFLICT` clause against the scope PostgreSQL gives it: the target relation
+    /// — self-referencable by name, which is what `WHERE current_price.version < EXCLUDED.version`
+    /// needs — plus `EXCLUDED`, the pseudo-relation carrying the row that failed to insert. The
+    /// conflict target (an index predicate) sees the target only; `EXCLUDED` is legal solely inside
+    /// `DO UPDATE`.
+    private void validateOnConflict(CstNavigator insert,
+                                    String tableName,
+                                    Table table,
+                                    Scope targetScope,
+                                    List<ValidationError> errors) {
+        var onConflictOpt = insert.child("OnConflictClause");
+
+        if (onConflictOpt.isEmpty()) return;
+
+        var onConflict = onConflictOpt.unwrap();
+
+        validateColumnRefsIn(onConflict.child("ConflictTarget"), targetScope, errors);
+        var actionOpt = onConflict.child("ConflictAction");
+
+        if (actionOpt.isEmpty()) return;
+
+        var action = actionOpt.unwrap();
+        var scope = new Scope(targetScope);
+
+        scope.registerTable(EXCLUDED_RELATION, table);
+        validateSetItems(action, tableName, table, errors);
+        validateColumnRefsIn(actionOpt, scope, errors);
+    }
+
+    private void validateSetItems(CstNavigator owner, String tableName, Table table, List<ValidationError> errors) {
+        var setList = owner.child("UpdateSetList");
+
+        if (setList.isEmpty()) return;
+
+        for (var item : setList.unwrap().allChildren("UpdateSetItem")) {
+            validateSetItem(item, tableName, table, errors);
+        }
+    }
+
+    /// The assigned column of `UpdateSetItem <- ColId '=' ExprOrDefault` is its FIRST LEAF, taken by
+    /// position. Reading it back as `findAll("ColId").getFirst()` was #649's build-blocker: under
+    /// peglib 0.7.x identifier fallback `version` lexes as `Token VersionKW`, so the name-based
+    /// lookup skipped the assignment target entirely and returned the first identifier of the
+    /// RIGHT-hand side instead — reporting `EXCLUDED`, or a self-qualifier such as `reservations`,
+    /// as a missing column of the target table.
+    private void validateSetItem(CstNavigator item, String tableName, Table table, List<ValidationError> errors) {
+        var columnList = item.child("ColumnList");
+
+        if (columnList.isPresent()) {
+            validateColumnList(columnList, tableName, table, item.span(), errors);
+
+            return;
+        }
+
+        var target = CstExtractor.leadingIdentifier(item);
+
+        if (target.isEmpty()) return;
+
+        checkColumn(target.unwrap().normalized(),
+                    tableName,
+                    table,
+                    item.span(),
+                    errors);
+    }
+
+    private void validateColumnList(Option<CstNavigator> columnList,
+                                    String tableName,
+                                    Table table,
+                                    SourceSpan span,
+                                    List<ValidationError> errors) {
+        if (columnList.isEmpty()) return;
+
+        for (var col : CstExtractor.extractColumnList(columnList.unwrap())) {
+            checkColumn(col.normalized(), tableName, table, span, errors);
+        }
+    }
+
+    private void checkColumn(String colName,
+                             String tableName,
+                             Table table,
+                             SourceSpan span,
+                             List<ValidationError> errors) {
+        if (table.column(colName).isPresent()) return;
+
+        errors.add(ValidationError.columnNotFound(colName, tableName, span));
+    }
+
+    /// `RETURNING` projects columns of the statement's TARGET relation, so it resolves in the
+    /// statement scope — never against a `SelectCore` discovered somewhere in the tree (#646).
+    /// This also closes the silent-skip: a bogus `RETURNING` column used to be reported by nothing.
+    private void validateReturning(CstNavigator stmt, Scope scope, List<ValidationError> errors) {
+        validateColumnRefsIn(stmt.child("ReturningClause"), scope, errors);
+    }
+
+    private void resolveJoinedTables(Option<CstNavigator> clause, Scope scope, List<ValidationError> errors) {
+        if (clause.isEmpty()) return;
+
+        resolveFromClause(clause.unwrap(), scope, errors);
+    }
+
+    private void validateColumnRefsIn(Option<CstNavigator> clause, Scope scope, List<ValidationError> errors) {
+        if (clause.isEmpty()) return;
+
+        validateColumnRefs(clause.unwrap(), scope, BareRefPolicy.CHECK, errors);
     }
 
     private void resolveFromClause(CstNavigator from, Scope scope, List<ValidationError> errors) {
@@ -477,7 +643,7 @@ public final class QueryValidator {
         var tableName = CstExtractor.extractQualifiedName(qnames.getFirst()).normalized();
 
         if (scope.isKnownCte(tableName)) {
-            var alias = extractAlias(ref, qnames.getFirst());
+            var alias = extractAlias(ref);
             var scopeName = alias.or(tableName);
 
             scope.registerFromCte(scopeName, tableName);
@@ -493,56 +659,118 @@ public final class QueryValidator {
             return;
         }
 
-        var alias = extractAlias(ref, qnames.getFirst());
+        var alias = extractAlias(ref);
         var scopeName = alias.or(tableName);
 
         scope.registerTable(scopeName, table.unwrap());
     }
 
-    private Option<String> extractAlias(CstNavigator ref, CstNavigator tableQname) {
-        var qnameColIds = tableQname.findAll("ColId").stream().map(CstNavigator::span).toList();
-        var allColIds = ref.findAll("ColId");
+    /// The alias is read off the `Alias` NODE rather than reconstructed by subtracting the table
+    /// name's `ColId` spans from every `ColId` under the reference. The subtraction missed an alias
+    /// spelling a keyword — it never arrives under the kind "ColId" — and then silently registered
+    /// the table under its own name only, so every `alias.column` in the statement reported a
+    /// missing alias.
+    private Option<String> extractAlias(CstNavigator ref) {
+        var aliases = ref.findAll("Alias");
 
-        for (var colId : allColIds) {
-            if (!qnameColIds.contains(colId.span())) {
-                return Option.present(CstExtractor.extractIdentifier(colId).normalized());
-            }
-        }
+        if (aliases.isEmpty()) return Option.empty();
 
-        return Option.empty();
+        return aliasName(aliases.getFirst());
     }
 
-    private void validateColumnRefs(CstNavigator nav, Scope scope, List<ValidationError> errors) {
-        for (var qnav : nav.findAll("QualifiedName")) {
-            var qname = CstExtractor.extractQualifiedName(qnav);
+    /// The statement-level alias of `UPDATE reservations r ...` / `DELETE FROM reservations r ...`.
+    private static Option<String> aliasOf(CstNavigator stmt) {
+        var alias = stmt.child("Alias");
 
-            if (qname.parts().size() >= 2) {
-                var tableOrAlias = qname.parts().getFirst().normalized();
-                var colName = qname.parts().getLast().normalized();
+        if (alias.isEmpty()) return Option.empty();
 
-                if ("*".equals(colName)) continue;
+        return aliasName(alias.unwrap());
+    }
 
-                validateQualifiedRef(tableOrAlias, colName, qnav.span(), scope, errors);
-            }
+    private static Option<String> aliasName(CstNavigator alias) {
+        var names = CstExtractor.leafIdentifiers(alias, ALIAS_KEYWORDS);
+
+        if (names.isEmpty()) return Option.empty();
+
+        return Option.present(names.getFirst().normalized());
+    }
+
+    /// Whether a bare, unqualified name may be resolved against `scope`. Only a statement scope
+    /// that owns every relation it can see says CHECK: a `SELECT` reaches names through joins,
+    /// set operations and permissive CTEs that this validator does not model, so resolving bare
+    /// names there would report absences it cannot actually establish.
+    private enum BareRefPolicy {
+        CHECK,
+        SKIP
+    }
+
+    private void validateColumnRefs(CstNavigator nav, Scope scope, BareRefPolicy policy, List<ValidationError> errors) {
+        var refs = new ArrayList<CstNavigator>();
+
+        collectOwnedColRefs(nav.node(), refs);
+        for (var ref : refs) {
+            validateColRef(ref, scope, policy, errors);
+        }
+    }
+
+    /// Column references OWNED by `node` — the walk stops at a nested `SelectStmt`, so a subquery's
+    /// names are never resolved against the ENCLOSING statement's scope. Subqueries keep validating
+    /// their own scopes: `validateRoot` reaches every `SelectCore` independently.
+    ///
+    /// Only `ColRef` counts as a column reference. The previous walk resolved every `QualifiedName`
+    /// in the subtree, which also swept up the FROM clause's table names and function names — so a
+    /// schema-qualified `public.users` or `pg_catalog.now()` was resolved as if `public` were a
+    /// table alias.
+    ///
+    /// KNOWN GAP, deliberately not closed here: a column whose name is a RESERVED word reaches the
+    /// CST as `PostfixExpr -> ColRef(alias) + PostfixOp('.' ColLabel)`, because `ColId` excludes
+    /// reserved words. Its `ColRef` carries only the alias, so `u.end` is skipped rather than
+    /// resolved. Closing it means resolving through `PostfixOp`, which also covers JSON and array
+    /// operators — new false-positive surface neither #649 nor #646 asks for.
+    private static void collectOwnedColRefs(CstNode node, List<CstNavigator> refs) {
+        if (! (node instanceof CstNode.NonTerminal nt)) return;
+
+        if ("SelectStmt".equals(nt.ruleName())) return;
+
+        if ("ColRef".equals(nt.ruleName())) {
+            refs.add(CstNavigator.of(nt));
+
+            return;
         }
 
-        for (var primary : nav.findAll("PrimaryExpr")) {
-            var colIds = primary.allChildren("ColId");
-            var qnameContinuations = primary.allChildren("QualifiedName");
-
-            if (!colIds.isEmpty() && !qnameContinuations.isEmpty()) {
-                var tableOrAlias = CstExtractor.extractIdentifier(colIds.getFirst()).normalized();
-                var contColIds = qnameContinuations.getFirst().findAll("ColId");
-
-                if (!contColIds.isEmpty()) {
-                    var colName = CstExtractor.extractIdentifier(contColIds.getFirst()).normalized();
-
-                    if (!"*".equals(colName)) {
-                        validateQualifiedRef(tableOrAlias, colName, primary.span(), scope, errors);
-                    }
-                }
-            }
+        for (var child : nt.children()) {
+            collectOwnedColRefs(child, refs);
         }
+    }
+
+    private void validateColRef(CstNavigator colRef, Scope scope, BareRefPolicy policy, List<ValidationError> errors) {
+        var qnameOpt = colRef.child("QualifiedName");
+
+        if (qnameOpt.isEmpty()) return;
+
+        var qnav = qnameOpt.unwrap();
+        // `t.*` drops its star during extraction and would otherwise read as the bare name `t`.
+        if (CstExtractor.hasLeafText(qnav, "*")) return;
+
+        var parts = CstExtractor.extractQualifiedName(qnav).parts();
+
+        if (parts.isEmpty()) return;
+
+        var colName = parts.getLast().normalized();
+
+        if (parts.size() >= 2) {
+            validateQualifiedRef(parts.getFirst().normalized(),
+                                 colName,
+                                 qnav.span(),
+                                 scope,
+                                 errors);
+
+            return;
+        }
+
+        if (policy == BareRefPolicy.SKIP || !scope.resolvesBareColumns() || scope.hasColumn(colName)) return;
+
+        errors.add(ValidationError.columnNotResolved(colName, qnav.span()));
     }
 
     private void validateQualifiedRef(String tableOrAlias,
@@ -652,6 +880,18 @@ public final class QueryValidator {
         boolean hasAnyTables() {
             return ! tables.isEmpty() || parent.isPresent() && parent.unwrap()
                                                                      .hasAnyTables();
+        }
+
+        /// A bare name can only be reported as absent when the scope knows every relation in it.
+        /// A permissive CTE — one whose output columns could not be inferred — makes any name
+        /// potentially valid, so the scope declines rather than guesses.
+        boolean resolvesBareColumns() {
+            return hasAnyTables() && !hasPermissiveNames();
+        }
+
+        private boolean hasPermissiveNames() {
+            return ! permissiveNames.isEmpty() || parent.isPresent() && parent.unwrap()
+                                                                              .hasPermissiveNames();
         }
     }
 }
