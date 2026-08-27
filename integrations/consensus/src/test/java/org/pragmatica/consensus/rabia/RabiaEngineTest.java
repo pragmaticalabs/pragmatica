@@ -223,6 +223,13 @@ class RabiaEngineTest {
     /// compute `min(connectedNodeCount(), clusterSize) / 2 + 1`, and this test network reports
     /// `connectedNodeCount() == 0`, so the gate collapsed to **1**: a single response could restore
     /// state, precisely when a node is least likely to be on the majority side of a partition.
+    ///
+    /// #660 then corrected the OTHER direction. Responses arrive only from PEERS, so a threshold of
+    /// `clusterSize / 2 + 1` RESPONSES silently demanded `quorum + 1` live nodes and this 3-node cluster
+    /// deadlocked whenever one node was down. Self is a member of its own cluster and is counted exactly
+    /// once, so one response plus self is a genuine majority of three. The minority case moved to
+    /// [RabiaSyncAdoptionQuorumTest], where a 5-node cluster makes one response an actual minority and
+    /// the discrimination is meaningful — at `clusterSize == 3` there is no "too few but non-zero".
     @Nested
     class SyncQuorum {
 
@@ -250,45 +257,22 @@ class RabiaEngineTest {
         }
 
         @Test
-        void singleSyncResponse_isAMinority_andMustNotActivate() {
+        void onePeerResponse_completesAMajorityWithSelf_andActivates() {
             engine.clusterState(ClusterStateNotification.active());
             awaitSyncRequestBroadcast();
 
             engine.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty()));
 
-            assertThat(staysInactive())
-                .as("one response is a minority of a %d-node cluster — adopting state on it is the bug", CLUSTER_SIZE)
-                .isTrue();
-
-            // Discriminating half: the gate must still OPEN for a genuine majority, or this test would
-            // pass just as well against an engine that never activates at all.
-            engine.processSyncResponse(new SyncResponse<>(NODE_3, RabiaPersistence.SavedState.empty()));
-
             assertThat(awaitActive())
-                .as("a majority (2 of %d) must still activate — the gate is stricter, not shut", CLUSTER_SIZE)
+                .as("1 response + self = 2 of %d = a majority; demanding a 2nd response demanded the whole cluster",
+                    CLUSTER_SIZE)
                 .isTrue();
         }
 
-        /// Activation is asynchronous (`safeExecute` hands the work to the engine's executor), so the
-        /// positive half polls for the state rather than assuming a fixed delay is enough.
+        /// Activation is asynchronous (`safeExecute` hands the work to the engine's executor), so this
+        /// polls for the state rather than assuming a fixed delay is enough.
         private boolean awaitActive() {
             return awaitCondition(engine::isActive);
-        }
-
-        /// The negative half cannot be polled — "never activates" has no moment of arrival — so it is a
-        /// bounded observation window. Kept short: activation here would be a correctness failure, not a
-        /// slow success, so a longer window buys nothing.
-        private boolean staysInactive() {
-            var deadline = System.nanoTime() + MILLISECONDS.toNanos(200);
-
-            while (System.nanoTime() < deadline) {
-                if (engine.isActive()) {
-                    return false;
-                }
-                Thread.onSpinWait();
-            }
-
-            return true;
         }
 
         private void awaitSyncRequestBroadcast() {
@@ -409,11 +393,12 @@ class RabiaEngineTest {
                                             timeSpan(50).millis());
             stallEngine.clusterState(ClusterStateNotification.active());
             Thread.sleep(150);
-            // A MAJORITY of the 5-node cluster (3 of 5). Two responses used to be enough only because
-            // `syncQuorumSize()` derived its threshold from `connectedNodeCount()`, which this test
-            // network reports as 0 — collapsing the gate to 1 and letting a minority activate the engine.
             // These tests are about the stall detector, so the engine just needs to be ACTIVE; it should
-            // get there the legitimate way rather than through the hole that was closed.
+            // get there the legitimate way rather than through the hole that was closed when
+            // `syncQuorumSize()` derived its threshold from `connectedNodeCount()` (reported as 0 by this
+            // test network, which collapsed the gate to 1 and let a minority activate the engine).
+            // Two responses plus self is already the majority of five that #660 settled on; the third is
+            // harmless surplus, ignored once the engine is active.
             stallEngine.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty()));
             stallEngine.processSyncResponse(new SyncResponse<>(NODE_3, RabiaPersistence.SavedState.empty()));
             stallEngine.processSyncResponse(new SyncResponse<>(NODE_4, RabiaPersistence.SavedState.empty()));

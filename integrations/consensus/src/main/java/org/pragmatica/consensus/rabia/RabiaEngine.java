@@ -28,6 +28,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
@@ -89,6 +90,10 @@ public class RabiaEngine<C extends Command> {
     /// the single consensus apply worker are logged as `SLOW-APPLY` with the executor queue depth.
     private static final long SLOW_APPLY_THRESHOLD_NANOS = 5_000_000L;
 
+    /// One stuck-in-`Syncing` WARN per this many unsatisfied sync rounds (#660) — roughly every 30s at
+    /// the default 5s `syncRetryInterval`.
+    private static final int WARN_EVERY_N_SYNC_ROUNDS = 6;
+
     private final NodeId self;
     private final TopologyManager topologyManager;
     private final ClusterNetwork network;
@@ -123,6 +128,11 @@ public class RabiaEngine<C extends Command> {
     private final ConcurrentNavigableMap<Id, Batch<C>> pendingBatches = new ConcurrentSkipListMap<>();
     private final Map<NodeId, SavedState<C>> syncResponses = new ConcurrentHashMap<>();
     private final RabiaPersistence<C> persistence;
+
+    /// Consecutive sync rounds that failed to reach the response threshold, driving the periodic
+    /// stuck-in-`Syncing` WARN (#660). Reset when a sync round starts fresh, when state is adopted, and
+    /// when the engine activates, so the reported count is the length of the current stall.
+    private final AtomicInteger syncRounds = new AtomicInteger();
 
     @SuppressWarnings("rawtypes")
     private final Map<CorrelationId, Promise> correlationMap = new ConcurrentHashMap<>();
@@ -465,6 +475,7 @@ public class RabiaEngine<C extends Command> {
 
     private void doClusterConnected() {
         syncResponses.clear();
+        syncRounds.set(0);
         // Catch-up race fix: broadcast the first SyncRequest IMMEDIATELY instead of waiting a full
         // syncRetryInterval for the timer below. A replacement that joins a cluster hundreds of
         // phases ahead must start its snapshot-install round at once — otherwise it sits silently in
@@ -997,12 +1008,13 @@ public class RabiaEngine<C extends Command> {
             return;
         }
         // Check if we already have enough responses from previous attempt
-        if (syncResponses.size() >= syncQuorumSize()) {
+        if (adoptionThresholdMet()) {
             // Process immediately instead of clearing
-            processAccumulatedSyncResponses();
+            adoptCollectedState();
 
             return;
         }
+        warnIfSyncStuck();
         // Only clear and restart if we don't have enough responses
         syncResponses.clear();
         var request = new SyncRequest(self);
@@ -1017,22 +1029,121 @@ public class RabiaEngine<C extends Command> {
         notifyConsensusStateTransition();
     }
 
-    private void processAccumulatedSyncResponses() {
+    /// #660 observability half: the retry loop logged only at TRACE, so a node deadlocked in `Syncing`
+    /// produced tens of megabytes of log with no indication at INFO that anything was wrong. A cluster
+    /// that cannot adopt state is dead — no leader, no reconciler — while every link and SWIM view looks
+    /// healthy, which is exactly the silent failure the silence-killer doctrine exists to prevent. The
+    /// line carries the arithmetic that decides the gate so an operator can tell "waiting for peers"
+    /// from "threshold can never be met".
+    ///
+    /// Periodic rather than per-round: at the default 5s `syncRetryInterval` this is roughly every 30s.
+    /// The counter resets whenever a sync round starts fresh or the engine activates, so the round number
+    /// in the line is the length of the CURRENT stall, not a process-lifetime total.
+    private void warnIfSyncStuck() {
+        var round = syncRounds.incrementAndGet();
+
+        if (round % WARN_EVERY_N_SYNC_ROUNDS != 0) {
+            return;
+        }
+
+        log.warn("Node {} still SYNCING after {} rounds: {} of {} required peer responses, from {} "
+                 + "(clusterSize={}). Adoption needs clusterSize/2 peers to answer — self completes the "
+                 + "majority. This node has no leader and runs no reconciler while this persists.",
+                 self,
+                 round,
+                 syncResponses.size(),
+                 syncPeerResponsesRequired(),
+                 syncResponses.keySet(),
+                 topologyManager.clusterSize());
+    }
+
+    /// The state this node adopts: the most advanced state among the peer sync responses AND this
+    /// The phase below which this node must never be pulled — self's weight in the adoption decision.
+    ///
+    /// [#syncPeerResponsesRequired] counts self toward the majority, so the responses by themselves are a
+    /// minority (`clusterSize / 2`) and the intersection argument that makes adoption safe holds only
+    /// over `{self} ∪ responders`. Self therefore has to be able to REFUSE a response set that is behind
+    /// it: if this node is the only member of the majority that witnessed a commit, adopting a staler
+    /// state would silently discard it. Self participates as a FLOOR rather than as an adoption
+    /// candidate — see [#activateWithoutAdoption] for why the distinction matters.
+    ///
+    /// The floor is the more advanced of the persisted and the LIVE phase. `persistence.save` runs only
+    /// at pause, reconfigure, stop and restore — never on commit — so the persisted snapshot lags the
+    /// live state machine by an unbounded amount, and a resync triggered from an ACTIVE engine
+    /// ([#triggerResync], reachable from a far-future Propose or Decision) has live state that the
+    /// persisted snapshot does not describe.
+    private Phase ownStateFloor(Option<SavedState<C>> persisted) {
+        var persistedPhase = persisted.map(SavedState::lastCommittedPhase)
+                                      .or(Phase.ZERO);
+        var livePhase = currentPhase.get();
+
+        return persistedPhase.compareTo(livePhase) > 0
+               ? persistedPhase
+               : livePhase;
+    }
+
+    /// Adopts the collected state once the response threshold is met. Shared by the retry path
+    /// ([#doSynchronize]) and the arrival path ([#handleSyncResponse]), which previously carried
+    /// separate copies of the candidate selection.
+    ///
+    /// The candidate is the most advanced state the PEERS report, which is deliberately a different
+    /// quantity from what this node ends up holding: [#detectBootFutureHistory] compares self against
+    /// what the CLUSTER reports, and folding self into the candidate would make its predicate
+    /// unfireable and silently retire the §6.4 mixed-wipe detector.
+    private void adoptCollectedState() {
+        var persisted = persistence.load();
         var responses = syncResponses.values()
                                      .stream()
                                      .sorted(Comparator.comparing(SavedState::lastCommittedPhase))
                                      .toList();
 
+        syncRounds.set(0);
+
         if (responses.isEmpty()) {
-            log.warn("Node {} has no sync responses to process", self);
+            // Only reachable at clusterSize 1, where the requirement is zero responses: self is the
+            // whole majority and there is no peer to adopt from.
+            activateWithoutAdoption("no peers to adopt from");
 
             return;
         }
 
         var candidate = responses.getLast();
 
-        log.trace("Node {} uses {} as synchronization candidate out of {}", self, candidate, syncResponses.size());
+        detectBootFutureHistory(persisted, candidate);
+
+        if (candidate.lastCommittedPhase().compareTo(ownStateFloor(persisted)) < 0) {
+            activateWithoutAdoption("every response is behind this node's own state");
+
+            return;
+        }
+
+        log.trace("Node {} uses {} as synchronization candidate out of {} responses",
+                  self,
+                  candidate,
+                  responses.size());
         restoreState(candidate);
+    }
+
+    /// Activates on this node's OWN state, installing nothing.
+    ///
+    /// Reached when the response threshold is met but no response carries a state more advanced than
+    /// this node already holds. Self is part of the majority, so the majority's most advanced state is
+    /// already here and there is nothing to fetch.
+    ///
+    /// This deliberately does NOT route through [#restoreState]: that would call
+    /// `stateMachine.restoreSnapshot` with a state that is BEHIND the live one, overwriting a live state
+    /// machine with a staler snapshot while `applyRestoredState`'s advance-only `currentPhase` kept the
+    /// counter where it was — committed writes gone with no phase to indicate it. That is precisely the
+    /// state loss this gate exists to prevent, so self is a floor and never an adopted candidate.
+    ///
+    /// Mirrors the tail of [#restoreState]'s empty-snapshot branch — activate, then replay, then notify —
+    /// so post-restore listeners still fire exactly once, as they did when an empty response was adopted.
+    private void activateWithoutAdoption(String reason) {
+        log.debug("Node {} activating on its own state ({}); own phase {}", self, reason, currentPhase.get());
+        syncResponses.clear();
+        activate();
+        replayStateNotifications();
+        notifyStateRestored();
     }
 
     /// Handles a synchronization response from another node.
@@ -1044,30 +1155,21 @@ public class RabiaEngine<C extends Command> {
         }
 
         syncResponses.put(response.sender(), response.state());
-        if (syncResponses.size() < syncQuorumSize()) {
-            log.trace("Node {} received {} responses {}, not enough to proceed (quorum size = {})",
+        if (!adoptionThresholdMet()) {
+            log.trace("Node {} received {} responses {}, not enough to proceed (required = {})",
                       self,
                       syncResponses.size(),
                       syncResponses.keySet(),
-                      syncQuorumSize());
+                      syncPeerResponsesRequired());
 
             return;
         }
 
         log.trace("Node {} received {} responses, collected: {}", self, syncResponses.size(), syncResponses);
-        // Use the latest known state among received responses
-        var candidate = syncResponses.values()
-                                     .stream()
-                                     .sorted(Comparator.comparing(SavedState::lastCommittedPhase))
-                                     .toList()
-                                     .getLast();
-
-        log.trace("Node {} uses {} as synchronization candidate out of {}", self, candidate, syncResponses.size());
-        restoreState(candidate);
+        adoptCollectedState();
     }
 
     private void restoreState(SavedState<C> state) {
-        detectBootFutureHistory(state);
         observeClusterPhase(state.lastCommittedPhase());
         syncResponses.clear();
         // Always carry forward the source's lastCommittedPhase + pendingBatches even when
@@ -1114,17 +1216,21 @@ public class RabiaEngine<C extends Command> {
     /// there is no separate persisted term, so the phase pair is precisely what is comparable.
     /// With the in-memory persistence (no snapshot survives restart) `load()` is empty and the
     /// check is trivially silent.
+    ///
+    /// The candidate passed here MUST be the max over peer RESPONSES ONLY. Comparing self against a
+    /// candidate that already includes self makes `persisted > candidate` unsatisfiable, which retires
+    /// this detector without removing it — and burns its one-shot latch while doing so. The persisted
+    /// state is passed in rather than re-loaded because `gitBacked` persistence shells out to `git`, and
+    /// the adoption path must not pay that twice on the consensus apply thread.
     @Contract
-    private void detectBootFutureHistory(SavedState<C> candidate) {
+    private void detectBootFutureHistory(Option<SavedState<C>> persisted, SavedState<C> candidate) {
         if (!bootFutureHistoryChecked.compareAndSet(false, true)) {
             return;
         }
 
-        persistence.load()
-                   .map(SavedState::lastCommittedPhase)
-                   .filter(persisted -> persisted.compareTo(candidate.lastCommittedPhase()) > 0)
-                   .onPresent(persisted -> warnBootFutureHistory(persisted,
-                                                                 candidate.lastCommittedPhase()));
+        persisted.map(SavedState::lastCommittedPhase)
+                 .filter(phase -> phase.compareTo(candidate.lastCommittedPhase()) > 0)
+                 .onPresent(phase -> warnBootFutureHistory(phase, candidate.lastCommittedPhase()));
     }
 
     @Contract
@@ -1207,6 +1313,7 @@ public class RabiaEngine<C extends Command> {
         notifyConsensusStateTransition();
         startPromise.get().succeed(Unit.unit());
         syncResponses.clear();
+        syncRounds.set(0);
         metrics.recordSyncAttempt(self, true);
         log.info("Node {} activated in phase {}", self, currentPhase.get());
         // Drain any Decisions that were buffered while the engine was Stopped/Syncing.
@@ -1223,6 +1330,7 @@ public class RabiaEngine<C extends Command> {
         notifyConsensusStateTransition();
         startPromise.get().succeed(Unit.unit());
         syncResponses.clear();
+        syncRounds.set(0);
         metrics.recordSyncAttempt(self, true);
         log.info("Node {} activated in observer mode at phase {}", self, currentPhase.get());
     }
@@ -1381,31 +1489,49 @@ public class RabiaEngine<C extends Command> {
         }
     }
 
-    /// Quorum required before this node will adopt another node's consensus state via sync.
+    /// Peer sync responses required before this node will adopt cluster state.
     ///
-    /// This gate MUST be a majority of the CLUSTER, never a majority of whoever this node currently
-    /// happens to reach. It previously computed `min(connectedNodeCount, clusterSize) / 2 + 1`, which
+    /// The gate MUST be a majority of the CLUSTER, never a majority of whoever this node currently
+    /// happens to reach. It once computed `min(connectedNodeCount, clusterSize) / 2 + 1`, which
     /// evaluates to **1** at connectivity 0 or 1 — so a node that could reach exactly one peer would
     /// `restoreState` from a SINGLE response, adopting consensus state on the word of one other node,
     /// precisely when it is least likely to be talking to the majority side of a partition. The old
     /// docstring justified this as "adapts to actual connectivity", which is the defect stated as a
     /// feature: connectivity is what a partition manipulates, so deriving a safety threshold from it
     /// means the threshold collapses exactly when it is needed. Same class as #557, where cluster-start
-    /// quorum was declared from discovery rather than reachability.
+    /// quorum was declared from discovery rather than reachability. The threshold is therefore derived
+    /// from `clusterSize` ALONE — never from live, connected, or reachable counts.
     ///
-    /// Direction of the change is one-way: this can only ever make the gate STRICTER, so it cannot admit
-    /// a sync that was previously refused. The cost is liveness, and it is deliberate — a node that
-    /// cannot reach a cluster majority now stays inactive instead of syncing from a minority. Refusing to
-    /// adopt state is the recoverable failure; adopting the wrong state is not.
+    /// #660: the replacement then counted self twice over. Sync responses arrive only from PEERS
+    /// (`broadcastPayload` iterates `peers`; self is never a peer), so demanding `clusterSize / 2 + 1`
+    /// RESPONSES silently required `quorum + 1` live nodes. A bare-majority cold start — 3 of 5, or a
+    /// 3-node cluster with one node down — sat in `Syncing` forever: consensus never reached ACTIVE, so
+    /// no `QuorumEstablished` dispatched, no leader was elected and no reconciler ran, while every link
+    /// and every SWIM view stayed healthy. Quorum ESTABLISHMENT counts self, so adoption must count it
+    /// exactly once too: `clusterSize / 2` peer responses, and self completes the majority.
     ///
-    /// `clusterSize <= 1` yields 1: a single-node cluster has no peers to adopt from, and demanding more
-    /// would deadlock its sync path for no safety gain.
-    private int syncQuorumSize() {
-        var clusterSize = topologyManager.clusterSize();
+    /// This is safe ONLY because self carries weight in the adoption decision — see [#ownStateFloor].
+    /// The responses by themselves are a minority, so the intersection property that makes adoption safe
+    /// rests on self's own history being able to REFUSE a response set that is behind it. **The two must
+    /// change together**; relaxing this threshold while adopting the best response unconditionally would
+    /// trade this deadlock for silent state loss.
+    ///
+    /// `clusterSize <= 1` yields 0: a single-node cluster has no peers and self alone is its majority.
+    /// The previous `1` was unsatisfiable there — a one-node cluster could never leave `Syncing` either.
+    private int syncPeerResponsesRequired() {
+        return topologyManager.clusterSize() / 2;
+    }
 
-        return clusterSize <= 1
-               ? 1
-               : clusterSize / 2 + 1;
+    /// True when this node has heard from enough peers that self completes a cluster majority.
+    ///
+    /// The `clusterSize >= 1` arm is not defensive noise. `clusterSize()` is a derived cell fed from the
+    /// KV `coreCount`, and at 0 the requirement would be `0 / 2 == 0`: a node would meet its own
+    /// adoption threshold with ZERO responses and activate alone. The previous `clusterSize <= 1 ? 1`
+    /// made that unsatisfiable by accident; here it is refused on purpose, and the periodic WARN reports
+    /// `clusterSize=0` so the real fault is visible rather than masked by a node that quietly came up.
+    private boolean adoptionThresholdMet() {
+        return topologyManager.clusterSize() >= 1
+               && syncResponses.size() >= syncPeerResponsesRequired();
     }
 
     /// Cleans up old phase data to prevent memory leaks.
