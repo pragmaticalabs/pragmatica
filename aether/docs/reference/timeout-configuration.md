@@ -167,8 +167,15 @@ All configurable timeouts in a single table, grouped by TOML section.
 | `warmup_period` | `30s` | Suppression period after slice activation before scaling decisions |
 | `slice_cooldown` | `10s` | Minimum time between scaling actions for a single slice |
 | `community_cooldown` | `60s` | Minimum time between scaling actions for a worker community |
-| `auto_heal_retry` | `10s` | Delay between auto-heal retry attempts |
-| `auto_heal_startup_cooldown` | `15s` | Grace period after node startup before auto-heal activates |
+| `auto_heal_retry` | `10s` | Parsed, discarded — no code path reads this field's accessor outside `ConfigLoader`. Tracked in #675. |
+| `auto_heal_startup_cooldown` | `15s` | Parsed, discarded — no code path reads this field's accessor outside `ConfigLoader`. Tracked in #675. |
+
+**`auto_heal_retry` / `auto_heal_startup_cooldown` are dead tunables.** They parse
+(`TimeoutsConfig.java`) and validate cleanly, but nothing calls their accessors outside the parser
+itself — a distinct config surface from, and the same underlying defect as, the eight discarded
+`[operations.auto_heal]` bootstrap fields (see [Bootstrap Config Reference](bootstrap-config.md), Traps
+section). **Tracked as #675**, which scopes collapsing all three duplicated auto-heal config surfaces
+into one live one. Setting either field currently has no observable effect.
 
 ### Other Timeout-Related Configuration
 
@@ -298,8 +305,8 @@ If any transition exceeds its timeout, the slice transitions to FAILED. The `max
 | `warmup_period` (30s) | Suppresses scaling decisions for newly activated slices |
 | `slice_cooldown` (10s) | Prevents rapid scale up/down oscillation per slice |
 | `community_cooldown` (60s) | Prevents rapid scaling across a worker community |
-| `auto_heal_retry` (10s) | Delay between attempts to reconcile desired vs actual state |
-| `auto_heal_startup_cooldown` (15s) | Prevents auto-heal from firing before the node is fully initialized |
+| `auto_heal_retry` (10s) | Parsed, discarded — see `[timeouts.scaling]` above. Tracked in #675. |
+| `auto_heal_startup_cooldown` (15s) | Parsed, discarded — see `[timeouts.scaling]` above. Tracked in #675. |
 
 ## Data Layer
 
@@ -460,6 +467,8 @@ probe_timeout = "1s"
 suspect_timeout = "15s"
 
 [timeouts.scaling]
+# Both fields below parse but are currently discarded — no effect on runtime behavior. See
+# "Other Timeout-Related Configuration" above and #675.
 auto_heal_retry = "30s"
 auto_heal_startup_cooldown = "30s"
 

@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Fixed (2026-08-27 — #675: bootstrap-config.md/timeout-configuration.md advertised dead auto-heal tunables)
+- `bootstrap-config.md`'s `[operations.*]` schema table and Traps callout described all nine
+  `[operations.auto_heal]` fields as operator-tunable. Verified reality: only `enabled` and the
+  `[cluster] max_nodes` fleet cap (a different key entirely) reach a running node —
+  `Main.resolveAutoHeal` always builds from `AutoHealConfig.DEFAULT`, overriding only `maxNodes`.
+  The other eight fields (`retry_interval`, `startup_cooldown`, `stale_observation_ttl`,
+  `quic_miss_promotion_threshold`, `provisioning_timeout`, `provision_stability_window`,
+  `decommissioned_retention`, `swim_hints_ttl`) parse and validate but are discarded. Annotated
+  every dead row, added the PF-25 bootstrap-rejection note for `enabled = false`, and rewrote the
+  Traps callout to enumerate all eight fields and cite #675 instead of naming only two.
+- `timeout-configuration.md`'s `[timeouts.scaling] auto_heal_retry` / `auto_heal_startup_cooldown`
+  rows (a third, distinct config surface — `TimeoutsConfig.java`, no call sites outside
+  `ConfigLoader`) were presented as live with no caveat. Annotated both table occurrences and the
+  full example config, citing #675.
+- Both fixes are current-truth-plus-tracked-gap, matching the #666 citation style: no promise about
+  which way #675's wire-or-reject decision lands.
+
 ### Fixed (2026-08-27 — #657: guarantees.md/known-limitations.md denied shipped durable-entity capabilities)
 - `guarantees.md` and `known-limitations.md` still described durable-entity CRUD and reads as
   "planned, not wired," despite `PartitionFencedDurableEntity` (via `DurableEntityFactory`) having
