@@ -115,7 +115,10 @@ class ClusterDeploymentStateRebalanceOnScaleUpTest {
     }
 
     private void seedBlueprint(Artifact artifact, int instances) {
-        activeState().blueprints().put(artifact, Blueprint.blueprint(artifact, instances, 1));
+        // #699: unowned blueprint, so schemaRequired stays at the historical default (true) —
+        // this test class exercises rebalancing, not schema gating, and the value is orthogonal
+        // to every assertion below.
+        activeState().blueprints().put(artifact, Blueprint.blueprint(artifact, instances, 1, Option.empty(), true));
     }
 
     private void seedSliceActive(Artifact artifact, NodeId node) {

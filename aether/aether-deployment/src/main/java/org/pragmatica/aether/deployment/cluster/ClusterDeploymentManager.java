@@ -162,6 +162,12 @@ public interface ClusterDeploymentManager {
         }
     }
 
+    /// #699 — the 2/3/4-arg `blueprint(...)` overloads that used to live here all hardcoded
+    /// `schemaRequired = true`, silently, with no call site able to see the default being applied.
+    /// That silent default was the exact mechanism behind #555 (three of four production call
+    /// sites reverted an owned slice's `schemaRequired` to `true` because they used a short
+    /// overload instead of resolving it from the owning blueprint). Only the 5-arg canonical form
+    /// remains: every call site now states its intended `schemaRequired` explicitly.
     record Blueprint(Artifact artifact,
                      int instances,
                      int minInstances,
@@ -170,24 +176,9 @@ public interface ClusterDeploymentManager {
         public static Blueprint blueprint(Artifact artifact,
                                           int instances,
                                           int minInstances,
-                                          Option<BlueprintId> owner) {
-            return new Blueprint(artifact, instances, minInstances, owner, true);
-        }
-
-        public static Blueprint blueprint(Artifact artifact,
-                                          int instances,
-                                          int minInstances,
                                           Option<BlueprintId> owner,
                                           boolean schemaRequired) {
             return new Blueprint(artifact, instances, minInstances, owner, schemaRequired);
-        }
-
-        public static Blueprint blueprint(Artifact artifact, int instances, int minInstances) {
-            return new Blueprint(artifact, instances, minInstances, Option.empty(), true);
-        }
-
-        public static Blueprint blueprint(Artifact artifact, int instances) {
-            return new Blueprint(artifact, instances, 1, Option.empty(), true);
         }
     }
 

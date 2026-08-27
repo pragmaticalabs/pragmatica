@@ -122,7 +122,9 @@ class ClusterDeploymentStateTransactionalTest {
         @Test
         void hasConflictingOwnership_sameNameDifferentVersion_noConflict() {
             var existing = blueprint("app", V1, "slice-a");
-            var ownedSlice = Blueprint.blueprint(artifact("slice-a", V1), 3, 1, Option.some(existing.id()));
+            // #699: schemaRequired is orthogonal to ownership-conflict detection; true preserves
+            // this test's pre-existing behavior.
+            var ownedSlice = Blueprint.blueprint(artifact("slice-a", V1), 3, 1, Option.some(existing.id()), true);
             activeState().blueprints().put(ownedSlice.artifact(), ownedSlice);
 
             var upgrade = blueprint("app", V2, "slice-a");
@@ -133,7 +135,9 @@ class ClusterDeploymentStateTransactionalTest {
         @Test
         void hasConflictingOwnership_differentNameSharedSliceBase_stillConflicts() {
             var owner = blueprint("owner-app", V1, "slice-a");
-            var ownedSlice = Blueprint.blueprint(artifact("slice-a", V1), 3, 1, Option.some(owner.id()));
+            // #699: schemaRequired is orthogonal to ownership-conflict detection; true preserves
+            // this test's pre-existing behavior.
+            var ownedSlice = Blueprint.blueprint(artifact("slice-a", V1), 3, 1, Option.some(owner.id()), true);
             activeState().blueprints().put(ownedSlice.artifact(), ownedSlice);
 
             var intruder = blueprint("other-app", V1, "slice-a");
