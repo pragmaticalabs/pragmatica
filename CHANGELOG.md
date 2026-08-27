@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Added (2026-08-27 — #319: repo-root SECURITY.md)
+- New `SECURITY.md`: GitHub private-vulnerability-reporting as the disclosure channel; Aether's
+  single-trust-domain threat model; verified default management-API posture (`SecurityMode.API_KEY`
+  by default since #290, not `NONE` as originally assumed — the bootstrap admin key flow, printed
+  once on first leadership); how to assign `authorization_role` per API key; the still-open
+  `cluster_secret` Docker-Compose env-var exposure (#287 residual, verified still present); a
+  checklist for recognizing an untrusted-network deployment; and an explicit note that the
+  runtime/slice boundary is not a JPMS-hardened sandbox today (no `module-info.java` exists anywhere
+  under `aether/`) — corrects the security-subsystem-spec's forward-looking framing against current
+  code.
+
 ### Changed (2026-08-27 — #315: docs Phase 1 structural cut)
 - `aether/docs/internal/` renamed to `aether/docs/.internal/` (235 files, dot-prefixed so a
   future mkdocs build excludes it by convention; contents untouched).
