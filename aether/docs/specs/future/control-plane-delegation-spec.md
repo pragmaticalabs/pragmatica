@@ -1,6 +1,6 @@
 # Control Plane Task Delegation Specification
 
-> ⚠️ **NOT IN RC1 — design only.** This is a design specification with no shipped implementation. It describes intended future work, not current Aether behavior — do not use it as a reference for what RC1 actually does. The `Status` field below reflects design maturity, not build status.
+> ⚠️ **Design only — not implemented in the 1.0.0 line.** This is a design specification with no shipped implementation. It describes intended future work, not current Aether behavior — do not use it as a reference for what currently-shipping Aether does. The `Status` field below reflects design maturity, not build status.
 
 **Status:** Implementation-Ready
 **Issue:** [#102](https://github.com/pragmatica-io/pragmatica/issues/102)

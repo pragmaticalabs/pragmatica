@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Fixed (2026-08-27 — #315 follow-up: "NOT IN RC1" banner wording)
+- The 5 designed-only specs under `aether/docs/specs/future/` (`hierarchical-storage-spec.md`,
+  `cloud-provider-digitalocean.md`, `declarative-http-client-spec.md`, `control-plane-delegation-spec.md`,
+  `fluid-migration-spec.md`) plus `future/README.md` had their "NOT IN RC1 — design only" banners
+  reworded to "Design only — not implemented in the 1.0.0 line." The RC1-specific wording predated
+  the current rc3 line and risked misreading — a reader could take "not in RC1" as already resolved
+  by rc2/rc3 rather than as a standing statement that none of these 5 are implemented in the 1.0.0
+  release line at all. No implementation-status claim changed, only which version label backs it.
+  Historical narrative in `CHANGELOG.md`, `MAILBOX.md`, and `.internal/documentation-overhaul-plan-2026-06-11.md`
+  left as-is (dated records of what was decided/done at the time).
+
+### Fixed (2026-08-27 — #315 follow-up: archive index hygiene)
+- `aether/docs/archive/README.md` had 3 dead links (`mcp-integration.md`, `ai-integration.md`,
+  `kv-schema-simplified.md` — all three deleted from the tree back on 2026-02-16) and 7 files present
+  in the directory but missing from the index (`aether-high-level-overview.md`, `canary-blue-green-spec.md`,
+  `clusterdeploymentmanager-implementation-guide.md`, `dependency-injection-summary.md`,
+  `implementation-plan.md`, `nodedeploymentmanager-implementation-guide.md`, `typed-slice-api-design.md`).
+  Removed the 3 dead rows and added the 7 missing ones with a status and, where a current-doc
+  successor exists, a pointer to it. All 14 files in the directory are now indexed; 0 dead links remain.
+
 ### Fixed (2026-08-27 — #315 follow-up: stale `aether/docs/internal/` path references)
 - Repo-wide sweep for references to the pre-#315 path `aether/docs/internal/` left dangling
   by the dot-prefix rename to `aether/docs/.internal/`. Fixed 20 references across 9 files

@@ -1,6 +1,6 @@
-# Future Specs — Not In RC1
+# Future Specs — Not In The 1.0.0 Line
 
-Designed-only specs with no shipped implementation. Each carries a "NOT IN RC1 — design only" banner at the top; treat these as design intent, not a description of current runtime behavior.
+Designed-only specs with no shipped implementation. Each carries a "Design only — not implemented in the 1.0.0 line" banner at the top; treat these as design intent, not a description of current runtime behavior.
 
 | Document | Scope |
 |----------|-------|

@@ -1,6 +1,6 @@
 # Aether Hierarchical Storage Engine (AHSE): Implementation Specification
 
-> ⚠️ **NOT IN RC1 — design only.** This is a design specification with no shipped implementation. It describes intended future work, not current Aether behavior — do not use it as a reference for what RC1 actually does. The `Status: Implementation-Ready` field below reflects design maturity, not build status.
+> ⚠️ **Design only — not implemented in the 1.0.0 line.** This is a design specification with no shipped implementation. It describes intended future work, not current Aether behavior — do not use it as a reference for what currently-shipping Aether does. The `Status: Implementation-Ready` field below reflects design maturity, not build status.
 
 ## Version: 1.1
 ## Status: Implementation-Ready
