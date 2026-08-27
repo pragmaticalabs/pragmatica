@@ -13,12 +13,12 @@ This document describes the CLI, Management API, Forge simulator, and web dashbo
 ```mermaid
 graph TB
     subgraph CLI["aether CLI"]
-        Deploy["Deployment<br/>blueprint apply/delete<br/>slice deploy/undeploy"]
+        Deploy["Deployment<br/>blueprints apply/delete<br/>slice deploy/undeploy"]
         Scale["Scaling<br/>scale set/get<br/>instances adjust"]
         Update["Updates<br/>update start/routing/<br/>complete/rollback"]
         Artifact["Artifacts<br/>upload/download/<br/>list/info"]
         Observe["Observability<br/>status/metrics/<br/>events/alerts"]
-        Control["Control<br/>controller config<br/>aspects toggle"]
+        Control["Control<br/>controller config<br/>observability config"]
         Cluster["Cluster<br/>nodes list<br/>leader info"]
     end
 
@@ -35,16 +35,16 @@ graph TB
 
 | Command | Description |
 |---------|-------------|
-| `aether blueprint apply <file>` | Deploy blueprint from TOML |
-| `aether blueprint delete <id>` | Remove blueprint and undeploy slices |
+| `aether blueprints apply <file>` | Deploy blueprint from TOML |
+| `aether blueprints delete <id>` | Remove blueprint and undeploy slices |
 | `aether status` | Cluster status: nodes, slices, health |
 | `aether metrics` | Current metrics snapshot |
 | `aether scale <artifact> --min N --max M` | Configure auto-scaling |
 | `aether deploy <coords> --rolling` | Begin rolling deployment |
 | `aether deploy promote <id>` | Advance deployment |
-| `aether upload <jar>` | Upload artifact to cluster DHT |
+| `aether artifacts push <group:artifact:version>` | Push local artifact to cluster repository |
 | `aether alerts list` | View active alerts |
-| `aether aspects set <artifact> <method> METRICS` | Toggle dynamic aspects |
+| `aether observability depth set <artifact>#<method> <threshold>` | Set per-method observability depth |
 
 ### REPL Mode
 
@@ -61,23 +61,26 @@ aether> exit
 
 ## Management API
 
-30+ REST endpoints covering all cluster operations.
+190+ REST endpoints covering all cluster operations
+[verified: `aether/aether-management-api/.../route/ManagementRoute.java` — direct enum count].
+None of them carry a `/v1` (or any version) path segment; the table below reflects the actual
+route prefixes, not a versioned scheme the code does not implement.
 
 ### Endpoint Categories
 
 | Category | Base Path | Endpoints |
 |----------|-----------|-----------|
-| **Cluster** | `/api/v1/cluster` | status, nodes, leader |
-| **Blueprints** | `/api/v1/blueprints` | CRUD operations |
-| **Slices** | `/api/v1/slices` | list, status, deploy, undeploy |
-| **Metrics** | `/api/v1/metrics` | snapshot, per-node, per-slice |
-| **Scaling** | `/api/v1/scale` | get/set scaling config |
-| **Updates** | `/api/v1/updates` | start, routing, complete, rollback |
-| **Artifacts** | `/api/v1/artifacts` | upload, download, list |
-| **Alerts** | `/api/v1/alerts` | thresholds, active alerts |
-| **Controller** | `/api/v1/controller` | config, mode |
-| **Aspects** | `/api/aspects` | get/set per-method modes |
-| **Prometheus** | `/metrics/prometheus` | Prometheus scrape endpoint |
+| **Cluster** | `/api/cluster` | topology, status, generation, scale, config, provisioning, membership |
+| **Blueprints** | `/api/blueprints` | CRUD operations |
+| **Slices** | `/api/slices` | list, status, topology, config |
+| **Metrics** | `/api/metrics` | snapshot, per-node, per-slice, transport, timeouts |
+| **Scaling** | `/api/scale` | set scaling config |
+| **Deploy** | `/api/deploy` | start (canary/blue-green/rolling), promote, rollback, complete |
+| **Artifacts** | `/repository` | upload, download, list, info, delete (metrics under `/api/artifacts/metrics`) |
+| **Alerts** | `/api/alerts` | thresholds, active alerts, history |
+| **Controller** | `/api/controller` | config, status, scaling decisions |
+| **Observability** | `/api/observability` | per-method depth and config, get/set/delete |
+| **Prometheus** | `/api/metrics/prometheus` | Prometheus scrape endpoint |
 
 ### WebSocket Endpoints
 

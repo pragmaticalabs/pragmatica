@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Fixed (2026-08-27 — #310: 12-management.md base paths, /api/aspects, CLI typos)
+- `architecture/12-management.md`'s "Endpoint Categories" table listed every management-API
+  category under a fictional `/api/v1/...` prefix; the real `ManagementRoute` enum has no version
+  segment anywhere [verified: `aether/aether-management-api/.../route/ManagementRoute.java`].
+  Stripped the prefix, and fixed two categories whose base path was wrong outright: "Updates" (the
+  real feature is the deploy lifecycle at `/api/deploy`) and "Artifacts" (upload/download/list live
+  under `/repository`, not `/api/artifacts`, which serves only `/api/artifacts/metrics`).
+- `/api/aspects` and `aether aspects set <artifact> <method> METRICS` do not exist anywhere in the
+  codebase; the real feature is per-method observability depth/config. Replaced with
+  `/api/observability` and `aether observability depth set <artifact>#<method> <threshold>`
+  [verified: `ObservabilityCommand`, `OBSERVABILITY_DEPTH_*`/`OBSERVABILITY_CONFIG_*` routes].
+- Fixed the Prometheus scrape path (`/metrics/prometheus` → `/api/metrics/prometheus`) and two CLI
+  typos (`aether blueprint apply/delete` → plural `blueprints`; `aether upload <jar>`, not a real
+  command, → `aether artifacts push <group:artifact:version>`). Corrected the endpoint count ("30+"
+  → "190+", counted directly from the enum). Left the REPL and WebSocket sections untouched — both
+  verified accurate against `AetherCli.java` / `ManagementServer.java`.
+
 ### Fixed (2026-08-27 — #316: stale SecurityMode.NONE-default premise in 10-security.md)
 - `architecture/10-security.md`'s "API Key Authentication" section predated #290 and described a
   stale 4-field `AppHttpConfig` (including a nonexistent `forwardTimeoutMs` field, no
