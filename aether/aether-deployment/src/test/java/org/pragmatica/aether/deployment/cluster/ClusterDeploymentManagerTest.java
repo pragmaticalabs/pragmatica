@@ -113,12 +113,21 @@ class ClusterDeploymentManagerTest {
         }
 
         @Test
-        void completeDrain_emitsDrainCompletedSignal() throws InterruptedException {
-            // Spec §8 single-writer rule: CDM MUST NOT write the membership atom directly on drain
-            // completion. Instead it emits a DrainCompleted signal.
+        void completeDrain_writesNoKvCommand() throws InterruptedException {
+            // #571: this used to assert completeDrain emits HealthSignal.DrainCompleted, pinning
+            // the (still-true) "Spec §8 single-writer rule: CDM MUST NOT write the membership atom
+            // directly on drain completion" via its OLD mechanism — signal a dedicated writer
+            // (LifecycleWriter) instead of writing itself. That writer, and the NodeLifecycleKey
+            // atom it owned, were deleted during the membership-v2 migration; membership is now
+            // FSM/SWIM-derived, so there is no atom for CDM to write, directly or otherwise, and
+            // the signal has no live consumer [confirmed via aether-investigator: DrainProcedure
+            // (membership/ntt, the current §8.2 implementation) runs on the victim node, not the
+            // leader where CDM runs, and has no CDM/slice/KV seam — the old in-JVM signal could
+            // never have carried this information across that boundary even before deletion].
+            // Rewritten to pin the surviving property directly: drain completion issues no KV
+            // command at all.
             cdm.activate().await();
 
-            // Membership-v2: the target now reports DRAINING via the real pong-readiness source.
             drainingRef.set(Set.of(DRAINING_NODE));
             cdm.onMembershipDecision(MembershipDecision.nodeDraining(
                     DRAINING_NODE,
@@ -127,13 +136,7 @@ class ClusterDeploymentManagerTest {
             // Give async operations time to complete
             Thread.sleep(500);
 
-            // DrainCompleted MUST be emitted via the health sink
-            var drainCompletedSignals = capturedSignals.stream()
-                .filter(HealthSignal.DrainCompleted.class::isInstance)
-                .map(HealthSignal.DrainCompleted.class::cast)
-                .toList();
-            assertThat(drainCompletedSignals).hasSize(1);
-            assertThat(drainCompletedSignals.getFirst().nodeId()).isEqualTo(DRAINING_NODE);
+            assertThat(capturedCommands).isEmpty();
         }
     }
 

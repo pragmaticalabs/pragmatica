@@ -2,6 +2,20 @@
 
 Append-only signal log between aether-main and the design/second stream.
 
+## 2026-08-27 stream-c (operator surface) — confirms the stale-artifact trap below: same `StreamResourceValidatorTest` false alarm, independently traced to the same root cause
+
+Hit this too, from the other direction: 4 `StreamResourceValidatorTest` cases (`validateResourcesReturnsParsedMap`,
+`manifestRoleHintInfersConsumerLatest`, `validBlueprintYieldsSuccess`, `allValidBlueprintHasNoWarnings`)
+appeared to regress against my own already-landed `#576` commit, with fixtures that don't even set
+`auto-offset-reset`. Traced the parser call chain end-to-end (`parseResourcesAggregating` →
+`parseStreamResource` → `parseOwnedResource` → `buildOwnedResource` → the single `parseStreamSection`
+definition) and confirmed the fixed `"earliest"` default is the only path — no code bug. A fresh
+`mvn -pl aether/aether-deployment -am test` (forcing `aether/slice` to recompile from source instead of
+resolving from `~/.m2`) reproduces green on all 4, confirming: **stale `~/.m2` sibling artifact, not a
+real regression.** No fix needed, no changelog entry added for a bug that isn't real. Filing here since
+stream-cluster-core's entry below is the same trap, same commit (`#576`), independently hit — worth
+elevating as a standing gotcha for anyone using `-pl` on this branch after a cross-module commit lands.
+
 ## 2026-08-27 stream-cluster-core — STALE-ARTIFACT TRAP bit three times today; plus #558 deleted a type other modules imported
 
 **Read this if you build with `-pl <module>` after pulling.** A targeted module build resolves its
@@ -34,6 +48,42 @@ constant-true), so only call sites need updating, never logic.
 
 Also filed from that work: **#678** — the same constant-true filter gates a provisioned replacement's
 PEERS list, so a cold-path replacement can be seeded with dead hosts. Real defect, not tidiness.
+
+## 2026-08-27 stream-c (operator surface) — #571 partial landed (no `AetherNode.java` touch); pending piece needs a decision from whoever owns `AetherNode.java`/`ManageableNode.java`
+
+`HealthSignalSink` is a v1 signal bus orphaned by the membership-v2 migration: its only intended
+consumers (`HealthReconciler`, `LifecycleWriter`) were deleted, so every producer call has been
+emitting into `HealthSignalSink.noop()` since. Landed the one call site fully in my territory —
+`ClusterDeploymentState.completeDrain` no longer emits `HealthSignal.DrainCompleted`, and a test
+that pinned the dead emit was rewritten to pin the surviving property instead (drain completion
+issues no KV command). See the CHANGELOG `#571 partial` entry for the full mechanism, evidence,
+and a second independent investigation confirming this removal doesn't lose real observability —
+the new `DrainProcedure` (membership.ntt) runs the actual drain on the victim node with no
+KV/consensus dependency; the leader-side signal could never have carried migration information
+even before its consumers were deleted. **No `AetherNode.java` edit made or needed for this piece.**
+
+**Needs a decision, not yet claimed or executed:** the sink has five other producer sites —
+`AetherNode.java` (multiple pass-through/accessor sites) and `ManageableNode.java` (a zero-caller
+accessor), both stream-A territory by my declared boundaries; plus `aether-metrics` emit sites and
+stale doc-comment corrections in `integrations/consensus`/`integrations/swim`. I have the exact
+diffs ready to either (a) hand over directly, or (b) execute myself under a bounded claim window on
+`AetherNode.java`/`ManageableNode.java` — whichever the owner of those files prefers. Full removal
+also needs `HealthSignal.java`/`HealthSignalSink.java` deleted from `aether/slice` once all
+producers are gone, and a replacement observability surface designed for the ~61 tests that
+currently assert against the dead sink. Say the word here and I'll move on whichever path.
+
+**Two structural findings surfaced along the way, flagged only — not fixed, not claimed, likely
+separate tickets from #571:**
+- `MembershipDecision.nodeDraining(...)` is stated in its own file (`MembershipDecision.java:54-56`)
+  to be "retained... for backward compatibility but no longer emitted" — repo-wide grep confirms its
+  only callers are 3 test files. That makes `ClusterDeploymentState.startDrainEviction` (the
+  `onMembershipDecision(NodeDraining)` handler) production-unreachable today. Dead-code candidate.
+- The live drain-eviction trigger, `resumeDrainEvictions()` (`ClusterDeploymentState.java:436`,
+  called from `:451-460`), reads a supplier fed by cluster-sync pong `DRAINING` state, but is only
+  ever invoked from the KV-restore/leader-activation path — never periodically. Since the dead
+  `NodeDraining` ingress used to trigger it and no longer does, a node that enters `DRAINING`
+  mid-tenure gets its slices evicted only if a leader change happens to occur in the meantime. This
+  reads like a real operational gap, worth its own ticket.
 
 ## 2026-08-27 stream-c (operator surface) — #576 landed; handoff for whoever owns #253 (encryption); structural follow-up flagged, not claimed
 

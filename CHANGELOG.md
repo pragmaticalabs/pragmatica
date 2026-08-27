@@ -667,6 +667,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `WITHIN_DEBOUNCE` — asserted before the debounce window is advanced, the only point where the two
   reasons actually diverge [verified: `LeaderReconcilerTest.autoHealDisabled_suppressesProvisioning_evenPastDebounceWithGenuineDeparture`]
 
+### Fixed (2026-08-27 — #571 partial: dead `completeDrain` emit removed; stale `DHTNotification` deleted)
+- **`ClusterDeploymentState.completeDrain` no longer emits to a permanently-noop sink.** It called
+  `ctx.healthSignalSink().emit(new HealthSignal.DrainCompleted(...))`, but `HealthSignalSink`'s only
+  wiring point (`AetherNode.healthSinkRef`) has been bound to `HealthSignalSink.noop()` unconditionally
+  since the membership-v2 migration deleted the two intended consumers, `HealthReconciler` and
+  `LifecycleWriter` — the log message this method printed ("...emitting DrainCompleted signal to
+  LifecycleWriter") named a class that no longer exists in the codebase. Removed the emit and
+  corrected the log line; this is a self-contained no-op removal (the call went nowhere before and
+  after) [mechanism: `HealthSignalSink.noop()` has no side effect by construction]. This is the one
+  producer call site the ticket's own line citations correctly identified; the sink's five other
+  producer sites live in `AetherNode.java`/`ManageableNode.java` (stream-A territory), `aether-metrics`,
+  and `integrations/consensus`/`integrations/swim` (stale doc comments only) — tracked separately,
+  not fixed by this entry. See `MAILBOX.md` for the cross-stream coordination note.
+- **`ClusterDeploymentManagerTest$DrainCompletionTests.completeDrain_emitsDrainCompletedSignal` rewritten
+  as `completeDrain_writesNoKvCommand`.** The old test pinned the now-removed `HealthSignal.DrainCompleted`
+  emit. Before deleting it outright, a dedicated investigation confirmed the property it stood in for —
+  "drain completion is observable via the leader's spec §8 path" — is genuinely dead, not a coverage gap:
+  the new membership-v2 drain procedure (`DrainProcedure.java`, `membership.ntt`) runs on the *victim*
+  node with "No KV / consensus dependency" (its own doc, lines 54-55), while `completeDrain` runs on the
+  *leader* — a structural mismatch meaning the old in-JVM signal could never have carried this information
+  even before its consumers were deleted; slice migration is explicitly out of that spec's scope. The
+  rewritten test instead pins the surviving property: `completeDrain` issues no KV command (it never did,
+  and now visibly doesn't route through the dead sink either) [verified:
+  `ClusterDeploymentManagerTest$DrainCompletionTests.completeDrain_writesNoKvCommand`].
+- **Deleted `DHTNotification.java`** (`aether/aether-invoke`) — a `@Codec`-annotated sealed protocol
+  message (`Put`/`Removed`) with zero senders and zero receivers repo-wide, confirmed independently by
+  two separate greps of `.java`/`.md`/`.toml`/`.yml` sources: its only references were its own
+  declaration, two tag pins in `SystemTags.java` (`640`/`641`, now retired — never renumbered or reused
+  per that file's own rule), and this changelog's now-stale claim below. Not a placeholder: no
+  TODO/planned marker in the file or its git history. `StreamType.DHT` is unaffected — it has live
+  readers elsewhere (`DHTRelayMessage`, `integrations/dht/DHTMessage`) — and `ProtocolMessage` is not
+  sealed, so no switch loses exhaustiveness from this deletion.
+- **Correction to a prior entry:** the "DHT notification broadcasting" bullet under `### Changed`
+  earlier in this file (originally dated before the 1.0.0-rc3 unreleased section existed) describes
+  `DHTNotification` as an active, in-use broadcast mechanism. That was true when written; it is not
+  true today — the mechanism above supersedes it. Left the original entry unedited (historical record)
+  rather than rewritten.
+
 ### Fixed (2026-08-27 — #578: cluster-config apply no longer silently no-ops or partially mutates)
 - **A rejected apply plan is now guaranteed zero side effects.** `ClusterConfigApplier.apply`
   previously actuated actions as it walked them — a diff mixing a valid scale with an unsupported

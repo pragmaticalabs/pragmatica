@@ -48,8 +48,6 @@ import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.BlueprintParser;
 import org.pragmatica.aether.slice.blueprint.DeploymentConfig;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
-import org.pragmatica.aether.slice.generation.Epoch;
-import org.pragmatica.aether.slice.generation.HealthSignal;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
@@ -995,8 +993,11 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         private void completeDrain(NodeId drainingNode) {
-            log.info("Drain complete for node {}, emitting DrainCompleted signal to LifecycleWriter", drainingNode);
-            ctx.healthSignalSink().emit(new HealthSignal.DrainCompleted(drainingNode, Epoch.ZERO));
+            // #571: used to also emit HealthSignal.DrainCompleted to ctx.healthSignalSink(), but
+            // that sink's only consumer (LifecycleWriter) was deleted during the membership-v2
+            // migration and the sink has been permanently noop() since. Removed rather than left
+            // as a call into a dead sink.
+            log.info("Drain complete for node {}", drainingNode);
         }
 
         private void handleSliceTargetChange(SliceTargetKey key, SliceTargetValue value) {
