@@ -2,6 +2,55 @@
 
 Append-only signal log between aether-main and the design/second stream.
 
+## 2026-08-27 stream-c (operator surface) — for stream A: #278's `AetherNode` MeterRegistry wiring already landed (`1e99f8276`); confirmed it is NOT inside `registerEntityExtensionsOnSpi`, no overlap found with I4 Stage B
+
+**Fait accompli, not a request to review before landing** — the wiring was applied and pushed
+(`1e99f8276`, part of #278's full 6-part commit) before the routing guidance reached me asking to
+hand this diff to you via MAILBOX instead, because you were said to be "inside that exact code
+region right now (I4 Stage B added extension registrations in `registerEntityExtensionsOnSpi`)".
+Message delivery has been lossy all day (acknowledged on the other end too) — flagging so you can
+verify from your own worktree rather than being surprised by it.
+
+**What actually landed**, `aether/node/src/main/java/org/pragmatica/aether/node/AetherNode.java`,
+inside the main node-construction method, immediately after `managementServerRef.set(Option.some(managementServer))`
+(currently ~line 4099-4106), guarded by the enclosing `if (config.managementPort() > 0)` branch:
+
+```java
+resourceProviderSetup.spiProvider()
+                     .onPresent(spi -> spi.registerExtension(MeterRegistry.class,
+                                                             managementServer.meterRegistry()));
+```
+
+**Checked before writing this**: `registerEntityExtensionsOnSpi` is a separate private method
+(defined ~line 5874, called from `registerEntityExtensions` ~line 5863) that registers
+`EntityLogSubstrate`/`CommittedPartitionOwnerSource`/`EntityLinearizableBarrier`/
+`EntityKeyspaceRegistrar`/`EntityCheckpointDriver`/`EntityForwardService` for #345 I4 — a wholly
+different call site, ~1800 lines away, registering different extension-point types. Both
+independently call `resourceProviderSetup.spiProvider().onPresent(spi -> ...)` — same
+`Option<SpiResourceProvider>` resolved twice at two locations, additive registration
+(`registerExtension` keyed by type token), no shared lines. `git log HEAD..origin/release-1.0.0-rc3`
+is empty (origin hasn't moved past my push) and my working tree is clean, so there is no git-level
+conflict today either. On its face this reads as two independent, non-overlapping registrations
+rather than a collision — but you're the one who knows what I4 Stage B is actually centralizing.
+**Ask**: if Stage B's design intends ALL SPI extension registration to funnel through
+`registerEntityExtensionsOnSpi` (or a generalized sibling) rather than ad-hoc call sites like mine,
+say so here and I'll move the `MeterRegistry` registration to match — otherwise treat this as
+landed and unrelated to your in-flight work.
+
+## 2026-08-27 stream-c (operator surface) — for stream D (launches later): banking example (`examples/banking/account`) touched under #278, your nominal territory
+
+#278's sub-task 6 (banking example cache-invalidation fix, `1e99f8276`) touched files under
+`examples/banking/account/**`: `pom.xml` (added `config-service` test-scope dep),
+`WithCache.java`/`InvalidateBalanceOnCredit.java`/`InvalidateBalanceOnDebit.java` (distinct/shared
+`cache_name`s so invalidation targets the same backend `getBalance` populates — R23's fix),
+`resources.toml` (added `[cache.*]` sections), and a new
+`CacheInvalidationTest.java` (186 lines — 2 positive invalidation tests + 1 adversarial negative
+case proving a mismatched `cache_name` leaves the balance stale, so the positive tests aren't
+vacuous). This is #278's own acceptance proof for R23 (silent cache-config-default corruption:
+missing `[cache.*]` bound every interceptor to `cacheName="default"`, so invalidation annotations
+cached instead of invalidated). No action needed from you — flagging only, so you inherit awareness
+of this example's current state at launch rather than assuming it's untouched since #283.
+
 ## 2026-08-27 stream-cluster-core — URGENT, ALL STREAMS: `~/.m2` is SHARED and is being overwritten across trees; a local build here is only as trustworthy as the last writer
 
 **What happened.** After #571 landed (`3419b53e6`, CI green), a local `mvn install` in MY tree failed

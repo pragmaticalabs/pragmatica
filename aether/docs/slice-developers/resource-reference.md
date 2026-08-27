@@ -768,20 +768,30 @@ Aspects are cross-cutting concerns applied to slice method invocations via confi
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `max_attempts` | `int` | required | Maximum retry attempts (must be positive) |
-| `backoff_strategy` | `BackoffStrategy` | exponential | Backoff strategy between retries |
+| `backoff_strategy` | `BackoffStrategy` | exponential (3 attempts) | Backoff strategy between retries |
 
-Built-in backoff strategies:
-- **Exponential:** initial delay 100ms, max delay 10s, factor 2.0, no jitter
-- **Fixed:** constant interval between retries
+`backoff_strategy` is a **discriminated sub-section**: `[retry.<name>.backoff_strategy]` with a
+`type` key selecting the shape. Omitting the whole `[retry.<name>]` section falls back to
+`RetryConfig.DEFAULT` (3 attempts, exponential); a *present* section that omits `backoff_strategy`
+fails to bind — the discriminator has no config-level default of its own
+[mechanism: `ProviderBasedConfigService.resolveBackoffStrategy`/`buildBackoffStrategy`, #278].
+
+| `type` | Required fields | Optional fields (default) |
+|--------|-----------------|----------------------------|
+| `fixed` | `interval` (duration) | — |
+| `exponential` | — | `initial_delay` (`100ms`), `max_delay` (`10s`), `factor` (`2.0`), `with_jitter` (`false`) |
+| `linear` | `initial_delay`, `increment`, `max_delay` (all durations) | — |
 
 ```toml
 [retry.payment-calls]
 max_attempts = 3
-```
 
-> **Gap:** this minimal example does not fully provision through the generic config binder today
-> — `backoff_strategy` has no config-level default (`RetryConfig` declares none), so a section
-> that omits it fails to bind rather than falling back to exponential backoff. Tracked in #278.
+[retry.payment-calls.backoff_strategy]
+type = "exponential"
+initial_delay = "200ms"
+max_delay = "5s"
+factor = 2.0
+```
 
 ### Circuit Breaker
 
@@ -874,10 +884,17 @@ Provisioned by `RateGuardFactory` (`ResourceFactory<RateGuard, RateGuardConfig>`
 | `record_counts` | `boolean` | `true` | Record success/failure counts |
 | `tags` | `List<String>` | empty | Additional metric tags (key-value pairs) |
 
-The `registry` field (Micrometer `MeterRegistry`) is injected programmatically, not via TOML.
+The `MeterRegistry` is not a config field — it is resolved from the node's real, Management-API-backed
+registry via `ProvisioningContext.extension(MeterRegistry.class)` at provision time, so metrics
+recorded by a slice interceptor land in the same registry `/metrics` scrapes
+[mechanism: `MetricsInterceptorFactory.provision`, #278]. **Requires `management_port > 0`**: the
+extension is registered only when the node's management server starts, so a slice declaring
+`[metrics.*]` on a node with the management port disabled fails to provision that interceptor today
+[design intent — unverified; open question, not yet resolved: fail-loud vs. a no-op fallback
+registry when management is disabled].
 
-> **Gap:** the generic config binder has no handler for bare `List<String>` fields, so `tags` cannot
-> actually be provisioned through TOML today despite appearing in this table. Tracked in #278.
+`tags` binds as a comma-joined scalar (`tags = "region,tier"`), not a native TOML array — the
+generic binder now has a `List<String>` handler [mechanism: `ProviderBasedConfigService.collectListValue`, #278].
 
 ```toml
 [metrics.order-processing]
