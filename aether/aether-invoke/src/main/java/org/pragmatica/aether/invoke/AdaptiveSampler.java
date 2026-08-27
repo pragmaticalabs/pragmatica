@@ -4,9 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.invoke;
 
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicLong;
 
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.utils.SharedScheduler;
 
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -17,15 +19,29 @@ public final class AdaptiveSampler {
 
     private final int targetTracesPerSec;
     private final AtomicLong invocationCount = new AtomicLong();
+    /// Retained so the owning node can cancel it (#642). [`SharedScheduler`] is process-wide, so a
+    /// discarded handle here left one recalculation tick per node ever assembled running for the
+    /// lifetime of the JVM.
+    private final ScheduledFuture<?> recalculationTask;
     private volatile double effectiveRate = 1.0;
 
     private AdaptiveSampler(int targetTracesPerSec) {
         this.targetTracesPerSec = targetTracesPerSec;
-        SharedScheduler.scheduleAtFixedRate(this::recalculate, timeSpan(RECALCULATION_INTERVAL_SEC).seconds());
+        this.recalculationTask = SharedScheduler.scheduleAtFixedRate(this::recalculate,
+                                                                     timeSpan(RECALCULATION_INTERVAL_SEC).seconds());
     }
 
     public static AdaptiveSampler adaptiveSampler(int targetTracesPerSec) {
         return new AdaptiveSampler(targetTracesPerSec);
+    }
+
+    /// Cancel the recalculation tick. Called from `AetherNode.stop()` via the node's
+    /// `ObservabilityBaseline` (#642). The sampler stays usable afterwards — `shouldSample()` simply
+    /// keeps returning decisions at the last computed rate — because sampling is read-only local
+    /// state, and a torn-down node has nothing left to sample anyway.
+    @Contract
+    public void stop() {
+        recalculationTask.cancel(false);
     }
 
     @SuppressWarnings("JBCT-RET-01")

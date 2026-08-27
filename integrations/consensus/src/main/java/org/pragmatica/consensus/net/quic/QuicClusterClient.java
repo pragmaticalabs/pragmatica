@@ -29,6 +29,7 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.StreamType;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.serialization.Deserializer;
@@ -230,7 +231,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
         if (future.isSuccess()) {
             promise.succeed((InetAddress) future.getNow());
         } else {
-            promise.fail(new QuicTransportError.UnresolvedAddress(host));
+            promise.fail(QuicTransportError.UnresolvedAddress.FACTORY.apply(host));
         }
     }
 
@@ -268,7 +269,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
         // a later tick.
         if (address == null || address.isUnresolved() || address.getAddress() == null) {
             log.debug("Skipping QUIC dial to peer {}: unresolved address {}", peerId, address);
-            promise.fail(new QuicTransportError.UnresolvedAddress(String.valueOf(address)));
+            promise.fail(QuicTransportError.UnresolvedAddress.FACTORY.apply(String.valueOf(address)));
 
             return;
         }
@@ -298,7 +299,8 @@ final class QuicClusterClientInstance implements QuicClusterClient {
                             Promise<QuicPeerConnection> promise,
                             io.netty.util.concurrent.Future<? super Void> future) {
         if (!future.isSuccess()) {
-            promise.fail(new QuicTransportError.ConnectFailed(address.toString(), future.cause()));
+            promise.fail(QuicTransportError.ConnectFailed.FACTORY.apply(address.toString(),
+                                                                        Causes.fromThrowable(future.cause())));
 
             return;
         }
@@ -337,7 +339,8 @@ final class QuicClusterClientInstance implements QuicClusterClient {
                                    Promise<QuicPeerConnection> promise,
                                    io.netty.util.concurrent.Future<?> future) {
         if (!future.isSuccess()) {
-            promise.fail(new QuicTransportError.ConnectFailed(address.toString(), future.cause()));
+            promise.fail(QuicTransportError.ConnectFailed.FACTORY.apply(address.toString(),
+                                                                        Causes.fromThrowable(future.cause())));
 
             return;
         }
@@ -370,7 +373,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
                                      Promise<QuicPeerConnection> promise,
                                      io.netty.util.concurrent.Future<?> future) {
         if (!future.isSuccess()) {
-            promise.fail(new QuicTransportError.StreamCreationFailed(future.cause()));
+            promise.fail(QuicTransportError.StreamCreationFailed.FACTORY.apply(Causes.fromThrowable(future.cause())));
 
             return;
         }
@@ -510,7 +513,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
         @Contract
         public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
             log.error("Error in QUIC client Hello handler for peer {}", peerId, cause);
-            promise.fail(new QuicTransportError.ConnectFailed(peerId.id(), cause));
+            promise.fail(QuicTransportError.ConnectFailed.FACTORY.apply(peerId.id(), Causes.fromThrowable(cause)));
             ctx.close();
         }
 
@@ -534,7 +537,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
                 message = decodeMessage(buf);
             } catch (Exception e) {
                 log.error("Failed to deserialize Hello response from peer {}", peerId, e);
-                promise.fail(new QuicTransportError.ConnectFailed(peerId.id(), e));
+                promise.fail(QuicTransportError.ConnectFailed.FACTORY.apply(peerId.id(), Causes.fromThrowable(e)));
                 ctx.close();
 
                 return;
@@ -577,9 +580,9 @@ final class QuicClusterClientInstance implements QuicClusterClient {
                          peerId,
                          hello.sender(),
                          quicChannel.remoteSocketAddress());
-                promise.fail(new QuicTransportError.IdentityMismatch(peerId,
-                                                                     hello.sender(),
-                                                                     String.valueOf(quicChannel.remoteSocketAddress())));
+                promise.fail(QuicTransportError.IdentityMismatch.identityMismatch(peerId,
+                                                                                  hello.sender(),
+                                                                                  String.valueOf(quicChannel.remoteSocketAddress())));
                 quicChannel.close();
 
                 return;
@@ -642,7 +645,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
                                            io.netty.util.concurrent.Future<?> future) {
             if (!future.isSuccess()) {
                 log.warn("Failed to open {} lane stream to peer {} — failing connect", lane, peerNodeId, future.cause());
-                promise.fail(new QuicTransportError.StreamCreationFailed(future.cause()));
+                promise.fail(QuicTransportError.StreamCreationFailed.FACTORY.apply(Causes.fromThrowable(future.cause())));
                 quicChannel.close();
 
                 return;

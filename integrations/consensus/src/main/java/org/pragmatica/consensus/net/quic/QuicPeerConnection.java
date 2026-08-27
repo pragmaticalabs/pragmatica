@@ -22,6 +22,7 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.StreamType;
 
 import io.netty.channel.WriteBufferWaterMark;
@@ -153,7 +154,8 @@ public final class QuicPeerConnection {
 
     /// Close all streams and the underlying connection.
     public Promise<Unit> close() {
-        return Promise.lift(QuicTransportError.ConnectionCloseFailed::new, this::closeSync);
+        return Promise.lift(cause -> QuicTransportError.ConnectionCloseFailed.FACTORY.apply(Causes.fromThrowable(cause)),
+                            this::closeSync);
     }
 
     @Contract

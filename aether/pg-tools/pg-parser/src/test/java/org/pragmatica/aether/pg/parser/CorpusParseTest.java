@@ -7,7 +7,6 @@ package org.pragmatica.aether.pg.parser;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 
 import org.junit.jupiter.api.Test;
@@ -38,9 +37,9 @@ class CorpusParseTest {
 
     @Test
     void everySqlFileInTheRepoParses() throws Exception {
-        var root = repoRoot();
+        var root = SqlCorpus.repoRoot();
         var failures = new ArrayList<String>();
-        var files = sqlFiles(root);
+        var files = SqlCorpus.sqlFiles(root);
 
         assertThat(files).as("no .sql files found under %s", root).isNotEmpty();
 
@@ -78,29 +77,4 @@ class CorpusParseTest {
         }
     }
 
-    private static List<Path> sqlFiles(Path root) throws Exception {
-        try (var walk = Files.walk(root)) {
-            // isRegularFile is load-bearing, not hygiene: JRE dist output contains DIRECTORIES
-            // named `java.sql` (package-shaped legal/ dirs), and a name-suffix match alone turns
-            // them into an IOException mid-corpus on any machine with a prior dist build.
-            return walk.filter(Files::isRegularFile)
-                       .filter(p -> p.toString().endsWith(".sql"))
-                       .filter(p -> !p.toString().contains("/target/"))
-                       .filter(p -> !p.toString().contains("/.git/"))
-                       .sorted(Comparator.comparing(p -> root.relativize(p).toString()))
-                       .toList();
-        }
-    }
-
-    private static Path repoRoot() {
-        var dir = Path.of("").toAbsolutePath();
-
-        while (dir != null && !Files.exists(dir.resolve(".git"))) {
-            dir = dir.getParent();
-        }
-
-        return dir == null
-               ? Path.of("").toAbsolutePath()
-               : dir;
-    }
 }

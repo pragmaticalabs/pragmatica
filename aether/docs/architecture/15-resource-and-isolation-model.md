@@ -30,11 +30,11 @@ Soft isolation makes a resource hog **survivable and visible**, not impossible.
 
 When a slice needs **guaranteed resources** or **must not be GC-coupled** to a noisy neighbor, give it **its own node / JVM**. A slice placed alone on a node has that node's entire heap, GC, and scheduler to itself — genuine isolation, because the isolation boundary is the JVM process, which Aether already controls through placement:
 
-- **`PlacementPolicy`** — `CORE_ONLY`, `WORKERS_PREFERRED`, `WORKERS_ONLY`, `ALL` — steers where a slice's instances land.
-- **Placement hints** — `ZoneHint`, `HostGroupHint`, `AffinityHint`, `AntiAffinityHint` (feature-catalog row 187) — express co-location and anti-co-location constraints.
+- **`PlacementPolicy`** — `CORE_ONLY`, `WORKERS_PREFERRED`, `WORKERS_ONLY`, `ALL` — steers a slice's instances at **tier granularity**: which pool of nodes may host it, not which node does.
+- **Placement hints** — `ZoneHint`, `HostGroupHint`, `AffinityHint`, `AntiAffinityHint` (feature-catalog row 187) — are **provisioning-time** controls: they shape where *nodes* are created (zones, host groups), not where slices land on them.
 - **Per-slice `min`/`max` instances** and **dedicated worker communities** let an operator carve out capacity a noisy slice cannot touch.
 
-Hard isolation is a **placement decision the operator already has the tools to make** — not a feature that must be built.
+The granularity, stated precisely: **pinning a slice to a specific node is not supported.** The blueprint has no placement key — `SliceSpec` carries the artifact, instance counts and scaling thresholds only — and the tier enum above is the entire slice-placement vocabulary. Sole occupancy is therefore achieved **by construction, not by constraint**: give the slice a placement tier whose node pool contains exactly the nodes meant for it, and keep every other slice out of that tier. Within that granularity, hard isolation is a placement decision the operator can already make; a per-slice node pin would be a new feature (#614 records it as explicitly unsupported today).
 
 ## This is a recommendation, not a runtime feature
 

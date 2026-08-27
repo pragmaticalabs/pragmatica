@@ -6,6 +6,7 @@ import java.util.stream.Stream;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
+import org.pragmatica.jbct.lint.cst.filetype.FileTypeClassifier;
 import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.jbct.parser.RuleKind;
 
@@ -40,7 +41,7 @@ public class CstUtilityClassRule implements CstLintRule {
                                              .map(td -> createUtilityClassDiagnostic(td, ctx));
         var missingUnusedDiagnostics = findAll(root, RuleKind.TYPE_DECL).stream()
                                               .filter(td -> containsInterface(td))
-                                              .filter(td -> isSealedUtilityInterface(td))
+                                              .filter(td -> isSealedUtilityInterface(root, td))
                                               .filter(td -> !hasUnusedRecord(td))
                                               .map(td -> createMissingUnusedDiagnostic(td, ctx));
 
@@ -107,7 +108,12 @@ public class CstUtilityClassRule implements CstLintRule {
         return true;
     }
 
-    private boolean isSealedUtilityInterface(Cursor typeDecl) {
+    /// Structural, not textual: the old `declText.contains("static ")` read the WHOLE body, so a
+    /// nested record's static member (e.g. a cause record's FACTORY) made the enclosing sealed
+    /// SUM TYPE a "utility interface" — the subtree-attribution bug class again. Utility means:
+    /// static methods declared directly ON the interface, and no nested variant implementing it —
+    /// a sum type already has permitted subtypes, so the 'unused' placeholder demand never applies.
+    private boolean isSealedUtilityInterface(Cursor root, Cursor typeDecl) {
         var declText = text(typeDecl);
         // Restrict 'sealed' check to the declaration head (before first '{') so a nested
         // sealed type inside a non-sealed outer doesn't falsely flag the outer.
@@ -117,8 +123,31 @@ public class CstUtilityClassRule implements CstLintRule {
                    : declText;
 
         if (!Pattern.compile("\\bsealed\\b").matcher(head).find()) return false;
-        // Must have static methods (utility interface pattern)
-        return declText.contains("static ") && declText.contains("(");
+        // An explicit permits clause names the subtypes — the "sealed permit requirement" the
+        // 'unused' record exists to satisfy is met by definition (Promise's `permits PromiseImpl`
+        // was flagged without this).
+        if (Pattern.compile("\\bpermits\\b").matcher(head).find()) return false;
+
+        var typeKind = childByRule(typeDecl, RuleKind.TYPE_KIND).or(typeDecl);
+        var hasDirectStaticMethod = FileTypeClassifier.directMethods(root, typeKind)
+                                                      .stream()
+                                                      .anyMatch(method -> FileTypeClassifier.isStatic(root, method));
+
+        if (!hasDirectStaticMethod) {
+            return false;
+        }
+
+        var nameMatcher = INTERFACE_NAME_PATTERN.matcher(head);
+
+        if (!nameMatcher.find()) {
+            return false;
+        }
+
+        var ifaceName = nameMatcher.group(1);
+
+        return FileTypeClassifier.directNestedTypes(root, typeKind)
+                                 .stream()
+                                 .noneMatch(nested -> DeclSupport.implementedHeadNames(nested).contains(ifaceName));
     }
 
     private boolean hasUnusedRecord(Cursor iface) {

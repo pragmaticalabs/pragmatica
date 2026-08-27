@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Queue;
 import java.util.Random;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.Executors;
@@ -79,6 +80,14 @@ public final class EmberCluster {
     private static final long ROLLING_RESTART_DELAY_MS = 5_000;
 
     private final Map<String, AetherNode> nodes = new ConcurrentHashMap<>();
+    /// TEST SEAM (#509 probe) — nodes CREATED by [#start] with the full configured topology but whose
+    /// `start()` was DEFERRED, keyed by their stable node id. Held instances keep their identity, port
+    /// and slot, so [#startHeldBackNodes] brings the SAME node up later. They are deliberately absent
+    /// from [#nodes] while held: `nodes` is the RUNNING-node registry every accessor reads
+    /// ([#currentLeader], [#allNodes], [#setClusterSize], [#stop]), and an unstarted entry there would
+    /// let a leader lookup answer from a node that has no consensus state. Empty in every production
+    /// and existing-test path (plain [#start] holds nothing back).
+    private final Map<String, AetherNode> heldBackNodes = new ConcurrentHashMap<>();
     private final Map<String, NodeInfo> nodeInfos = new ConcurrentHashMap<>();
     private final AtomicInteger nodeCounter = new AtomicInteger(0);
     private final Queue<Integer> availableSlots = new ConcurrentLinkedQueue<>();
@@ -361,10 +370,29 @@ public final class EmberCluster {
     }
 
     public Promise<Unit> start() {
-        log.info("Starting Ember cluster with {} nodes on ports {}-{}",
+        return start(Set.of());
+    }
+
+    /// TEST SEAM (#509 probe) — start the cluster with `heldBackNodeIds` CREATED but NOT started.
+    /// Every node, held or started, is created with the SAME complete `initialNodes` topology list, so
+    /// each started node's configured core set (and therefore its `MembershipFsm` config seed) names
+    /// all [#initialClusterSize] members while the held ones are physically absent. That is exactly
+    /// the "configured stable-id members are merely SLOW to rejoin" shape, produced deterministically
+    /// instead of by racing a real restart. [#startHeldBackNodes] brings them up afterwards, on their
+    /// original identities, ports and slots. An id naming no member of the initial set is ignored.
+    ///
+    /// Failure semantics for the STARTED subset are unchanged (all-or-nothing: any failure stops the
+    /// successfully-started nodes and clears cluster state). Held-back nodes take no part in that
+    /// cleanup beyond being dropped — they were never started, so there is nothing to stop.
+    ///
+    /// @param heldBackNodeIds ids of initial nodes whose `start()` is deferred; empty = plain [#start]
+    public Promise<Unit> start(Set<String> heldBackNodeIds) {
+        log.info("Starting Ember cluster with {} nodes on ports {}-{} ({} held back: {})",
                  initialClusterSize,
                  basePort,
-                 basePort + initialClusterSize - 1);
+                 basePort + initialClusterSize - 1,
+                 heldBackNodeIds.size(),
+                 heldBackNodeIds);
         int poolSize = 2 * targetClusterSize;
 
         availableSlots.clear();
@@ -397,6 +425,12 @@ public final class EmberCluster {
             var appHttpPort = baseAppHttpPort + slot;
             var node = createNode(nodeInfo.id(), port, mgmtPort, appHttpPort, initialNodes, false);
 
+            if (heldBackNodeIds.contains(nodeIdStr)) {
+                heldBackNodes.put(nodeIdStr, node);
+                log.info("Node {} created on port {} but HELD BACK (start deferred)", nodeIdStr, port);
+                continue;
+            }
+
             nodes.put(nodeIdStr, node);
             startPromises.add(node.start()
                                   .map(_ -> NodeStartResult.nodeStartResult(nodeIdStr,
@@ -410,6 +444,46 @@ public final class EmberCluster {
         }
 
         return Promise.allOf(startPromises).flatMap(this::handleStartResults);
+    }
+
+    /// TEST SEAM (#509 probe) — start the instances [#start] created and held back, in their original
+    /// identities/ports/slots, registering each in [#nodes] only once its `start()` has SUCCEEDED (so a
+    /// concurrent [#currentLeader] never answers from a node that is still coming up). Succeeds
+    /// trivially when nothing was held back. Failures are accumulated and propagated; unlike [#start]
+    /// no cleanup of the already-running cluster is attempted, because a held-back start failure is a
+    /// probe-setup failure, not a formation failure.
+    public Promise<Unit> startHeldBackNodes() {
+        var heldIds = List.copyOf(heldBackNodes.keySet());
+
+        if (heldIds.isEmpty()) {
+            return Promise.success(Unit.unit());
+        }
+
+        log.info("Starting {} held-back node(s): {}", heldIds.size(), heldIds);
+        var startPromises = heldIds.stream().map(this::startHeldBackNode).toList();
+
+        return Promise.allOf(startPromises).flatMap(EmberCluster::allHeldBackStartedOrFail);
+    }
+
+    private Promise<Unit> startHeldBackNode(String nodeIdStr) {
+        return Option.option(heldBackNodes.remove(nodeIdStr))
+                     .map(node -> startHeldBackInstance(nodeIdStr, node))
+                     .or(() -> nodeNotFound(nodeIdStr));
+    }
+
+    private Promise<Unit> startHeldBackInstance(String nodeIdStr, AetherNode node) {
+        return node.start()
+                   .onSuccess(_ -> nodes.put(nodeIdStr, node))
+                   .onSuccess(_ -> log.info("Held-back node {} started and rejoined the cluster", nodeIdStr))
+                   .onFailure(cause -> log.error("Held-back node {} failed to start: {}",
+                                                 nodeIdStr,
+                                                 cause.message()));
+    }
+
+    private static Promise<Unit> allHeldBackStartedOrFail(List<Result<Unit>> results) {
+        return Result.allOf(results)
+                     .mapToUnit()
+                     .async();
     }
 
     private record NodeStartResult(String nodeId, int port, int mgmtPort, Option<Cause> failure) {
@@ -426,13 +500,18 @@ public final class EmberCluster {
         var nodeResults = results.stream().flatMap(Result::stream).toList();
         var failed = nodeResults.stream().filter(r -> !r.succeeded()).toList();
         var succeeded = nodeResults.stream().filter(NodeStartResult::succeeded).toList();
+        // Nodes ATTEMPTED, not configured: with the #509 held-back seam these differ.
+        var attempted = nodeResults.size();
 
         if (failed.isEmpty()) {
             log.info("All nodes started, waiting for cluster stabilization...");
 
             return Promise.promise(timeSpan(2).seconds(),
                                    () -> Result.success(Unit.unit()))
-                          .onSuccess(_ -> log.info("Ember cluster started with {} nodes", initialClusterSize));
+                          .onSuccess(_ -> log.info("Ember cluster started with {} of {} nodes ({} held back)",
+                                                   attempted,
+                                                   initialClusterSize,
+                                                   heldBackNodes.size()));
         }
 
         for (var f : failed) {
@@ -444,7 +523,7 @@ public final class EmberCluster {
                                            cause.message()));
         }
 
-        log.error("Cluster startup failed: {} of {} nodes failed to start", failed.size(), initialClusterSize);
+        log.error("Cluster startup failed: {} of {} nodes failed to start", failed.size(), attempted);
         var stopPromises = succeeded.stream()
                                     .map(r -> Option.option(nodes.get(r.nodeId()))
                                                     .map(node -> node.stop()
@@ -464,6 +543,8 @@ public final class EmberCluster {
 
     private void clearClusterStateOnFailure(Unit unit) {
         nodes.clear();
+        // Held-back instances were never started, so dropping the references disposes them fully.
+        heldBackNodes.clear();
         nodeInfos.clear();
         slotsByNodeId.clear();
         availableSlots.clear();
@@ -484,6 +565,8 @@ public final class EmberCluster {
 
     private void clearClusterState(Unit unit) {
         nodes.clear();
+        // Still-held instances were never started — nothing to stop, dropping them disposes them.
+        heldBackNodes.clear();
         nodeInfos.clear();
         slotsByNodeId.clear();
         availableSlots.clear();

@@ -34,3 +34,16 @@ INSERT INTO users (name, email) VALUES ('Alice', 'alice@test.com') RETURNING id,
 INSERT INTO users (name, email) VALUES ($2, $3);
 INSERT INTO users (name) VALUES ('Alice') RETURNING id;
 INSERT INTO users (name) VALUES ($1);
+
+-- Upsert shapes reported in #649, where ON CONFLICT DO UPDATE hard-failed validation: EXCLUDED
+-- read as a column and the target-table qualifier consumed as one. These are the system's
+-- monotonic version guards -- `WHERE target.version < EXCLUDED.version` -- so the shape is
+-- load-bearing, not incidental. Presence of INSERT in a corpus is not coverage of ON CONFLICT
+-- DO UPDATE (the #618 lesson), which is why they were never exercised. The current_price
+-- statement is verbatim from the report; the other three are the reporter's described
+-- identical-shape sites (claimSeat, upsertStatus, upsertPrice) with their named parameters
+-- lowered to positional, as pg-codegen rewrites them before parsing.
+INSERT INTO current_price (scope_key, event_id, tier, amount_minor, currency, version, updated_at) VALUES ($1, $2, $3, $4, $5, $6, now()) ON CONFLICT (scope_key) DO UPDATE SET amount_minor = EXCLUDED.amount_minor, currency = EXCLUDED.currency, version = EXCLUDED.version, updated_at = now() WHERE current_price.version < EXCLUDED.version;
+INSERT INTO price_projection (scope_key, tier, amount_minor, currency, version, updated_at) VALUES ($1, $2, $3, $4, $5, now()) ON CONFLICT (scope_key, tier) DO UPDATE SET amount_minor = EXCLUDED.amount_minor, currency = EXCLUDED.currency, version = EXCLUDED.version, updated_at = EXCLUDED.updated_at WHERE price_projection.version < EXCLUDED.version;
+INSERT INTO reservations (event_id, seat_id, claim_id, customer_id, state, version, expires_at) VALUES ($1, $2, $3, $4, 'held', 1, now()) ON CONFLICT (event_id, seat_id) DO UPDATE SET claim_id = EXCLUDED.claim_id, customer_id = CASE WHEN reservations.state = 'free' THEN EXCLUDED.customer_id ELSE reservations.customer_id END, state = 'held', version = reservations.version + 1, expires_at = EXCLUDED.expires_at WHERE reservations.state IN ('free', 'expired') RETURNING seat_id, event_id, version;
+INSERT INTO seat_status (event_id, seat_id, status, version, updated_at) VALUES ($1, $2, $3, $4, now()) ON CONFLICT (event_id, seat_id) DO UPDATE SET status = EXCLUDED.status, version = EXCLUDED.version, updated_at = EXCLUDED.updated_at WHERE seat_status.version < EXCLUDED.version;
