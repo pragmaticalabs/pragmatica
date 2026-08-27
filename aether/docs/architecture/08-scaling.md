@@ -1,5 +1,7 @@
 # Auto-Scaling
 
+**Status:** Current
+
 This document describes the two-tier scaling system: reactive (decision tree) and predictive (TTM).
 
 ## Scaling Architecture

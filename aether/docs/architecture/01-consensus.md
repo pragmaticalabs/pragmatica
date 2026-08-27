@@ -1,5 +1,7 @@
 # Consensus and KV-Store
 
+**Status:** Current
+
 This document describes the Rabia consensus protocol implementation, the KV-Store state machine, and leader election.
 
 ## Rabia Protocol

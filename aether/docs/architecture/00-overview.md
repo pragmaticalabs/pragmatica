@@ -1,5 +1,7 @@
 # Aether Architecture Overview
 
+**Status:** Current
+
 This document is the entry point for the Aether architecture documentation. It describes the system at a high level and links to detailed documents for each subsystem.
 
 ## What is Aether?

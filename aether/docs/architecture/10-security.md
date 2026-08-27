@@ -1,5 +1,7 @@
 # Security
 
+**Status:** Current
+
 This document describes the security architecture: mTLS, gossip encryption, RBAC, and API key authentication.
 
 ## Security Layers

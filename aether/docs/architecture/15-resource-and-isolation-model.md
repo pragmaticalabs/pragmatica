@@ -1,5 +1,7 @@
 # Resource and Isolation Model
 
+**Status:** Current
+
 An Aether node is a **single JVM**. Slices co-located on a node share one heap, one garbage collector, and one scheduler / event loop. The consequence is sharp and deliberate: **hard per-slice resource isolation is impossible in-process** — a heavy-allocating slice's GC pauses land on *every* slice sharing that node. This page states the isolation model as an operator contract so that consequence is read up front, not discovered under load.
 
 The neighboring [11-slice-container.md](11-slice-container.md) covers isolation of *code* (per-slice ClassLoaders, dependency materialization). This page covers isolation of *runtime resources* (heap, GC, threads) — a different axis with a different, weaker guarantee.

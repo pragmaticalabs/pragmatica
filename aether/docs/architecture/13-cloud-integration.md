@@ -1,5 +1,7 @@
 # Cloud Integration
 
+**Status:** Current
+
 This document describes how Aether integrates with cloud providers for automated infrastructure management.
 
 ## Architecture

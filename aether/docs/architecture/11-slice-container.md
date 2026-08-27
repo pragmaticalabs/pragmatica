@@ -1,5 +1,7 @@
 # Slice Container
 
+**Status:** Current
+
 This document describes ClassLoader isolation, dependency materialization, and slice lifecycle hooks.
 
 One framing sentence before the mechanics: classloaders isolate **dependency versions**; the **cluster** isolates failures. The boundary this hierarchy draws — and the one it deliberately does not — is spelled out in [15-resource-and-isolation-model](15-resource-and-isolation-model.md).

@@ -1,5 +1,7 @@
 # Networking and Transport
 
+**Status:** Current
+
 This document describes the cluster transport layer, topology management, and message routing.
 
 ## Network Architecture

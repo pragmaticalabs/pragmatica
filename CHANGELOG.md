@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Changed (2026-08-27 — #317: Status field on architecture docs)
+- Added `**Status:** Current` (no fabricated last-reviewed date) to the 16 header-less docs in
+  `aether/docs/architecture/` (`00-overview.md` through `15-resource-and-isolation-model.md`).
+  `resilience-operability-principles.md`, the 17th file in that directory, already carried a
+  specific dated status (`Adopted (design-stream, 2026-07-07)` with `Feeds:`/`Sources:`
+  provenance) and was left untouched rather than downgraded to the generic placeholder.
+  Reformatting the ~47 specs that already have some form of status header in an inconsistent
+  format is deliberately deferred to #318's cross-check audit, so each doc is only touched once
+  (format + verification together) instead of twice. "Current" is a pre-audit placeholder with
+  a documented upgrade path: #318 should promote it to "Current — verified against <release>"
+  once each doc is individually checked against the shipping codebase. Closing note on #317,
+  cross-referenced on #318: https://github.com/pragmaticalabs/pragmatica/issues/317#issuecomment-5435597489
+
 ### Fixed (2026-08-27 — #315 follow-up: "NOT IN RC1" banner wording)
 - The 5 designed-only specs under `aether/docs/specs/future/` (`hierarchical-storage-spec.md`,
   `cloud-provider-digitalocean.md`, `declarative-http-client-spec.md`, `control-plane-delegation-spec.md`,

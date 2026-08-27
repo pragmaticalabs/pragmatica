@@ -1,5 +1,7 @@
 # Consistency and Partition Behavior
 
+**Status:** Current
+
 This document states Aether's consistency and partition-behavior model **as a contract**: what each operation guarantees during normal operation and during a partition, and the mechanism that earns each guarantee. The model is decided, not aspirational — this page names it so a distributed-systems evaluator finds it where they look first.
 
 Per-operation authority lives in [`../reference/guarantees.md`](../reference/guarantees.md) (the single source of truth for guarantees, traced to `file:line`). This page is the architecture-level companion: it explains the partition contract each tier honors and anchors every claim to the chaos/partition test that proves it. Scope boundaries — what is deliberately *not* yet guaranteed — live on [`../reference/known-limitations.md`](../reference/known-limitations.md); the two pages share terminology and cross-link each other.

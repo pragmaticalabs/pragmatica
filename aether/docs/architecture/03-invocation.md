@@ -1,5 +1,7 @@
 # Slice Invocation and Routing
 
+**Status:** Current
+
 This document describes how slice methods are invoked, how requests are routed, and how pub/sub and scheduled tasks work.
 
 ## Invocation Architecture

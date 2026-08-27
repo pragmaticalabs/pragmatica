@@ -1,5 +1,7 @@
 # Management and Tooling
 
+**Status:** Current
+
 This document describes the CLI, Management API, Forge simulator, and web dashboard.
 
 ## CLI

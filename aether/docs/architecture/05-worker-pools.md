@@ -1,5 +1,7 @@
 # Worker Pools and Two-Layer Topology
 
+**Status:** Current
+
 This document describes how Aether scales beyond the Rabia consensus limit of 5-9 nodes to support 10,000+ nodes.
 
 ## Problem

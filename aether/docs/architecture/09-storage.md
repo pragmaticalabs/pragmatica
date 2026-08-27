@@ -1,5 +1,7 @@
 # Distributed Storage (DHT)
 
+**Status:** Current
+
 This document describes the distributed hash table used for artifact storage and caching.
 
 ## DHT Architecture
