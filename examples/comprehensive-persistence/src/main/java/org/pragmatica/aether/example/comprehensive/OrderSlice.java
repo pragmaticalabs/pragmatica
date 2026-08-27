@@ -13,6 +13,14 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 
 
+/// Thin slice over three @PgSql persistence interfaces spanning two datasources.
+///
+/// Demonstrates: composing generated persistence adapters -- @Query with JOIN, GROUP BY, subquery,
+/// CTE, array and JSONB columns; CRUD auto-generated from method names; and a second datasource
+/// reached through a custom @ResourceQualifier with its own `schema/analytics` migration directory.
+///
+/// Does NOT demonstrate: business logic. Every method is a straight delegation, deliberately, so the
+/// example stays about the generated SQL surface rather than about a domain.
 @Slice
 public interface OrderSlice {
     Promise<List<CustomerOrder>> customerOrders(String status);
