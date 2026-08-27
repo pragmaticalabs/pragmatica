@@ -12,6 +12,7 @@ import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.BiConsumer;
 import java.util.jar.Attributes;
 import java.util.jar.JarOutputStream;
@@ -53,6 +54,18 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
+import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.core.Filter;
+import org.apache.logging.log4j.core.Layout;
+import org.apache.logging.log4j.core.LogEvent;
+import org.apache.logging.log4j.core.LoggerContext;
+import org.apache.logging.log4j.core.appender.AbstractAppender;
+import org.apache.logging.log4j.core.config.Configuration;
+import org.apache.logging.log4j.core.config.LoggerConfig;
+import org.apache.logging.log4j.core.config.Property;
+import org.apache.logging.log4j.core.layout.PatternLayout;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
@@ -430,6 +443,20 @@ class BlueprintPublishOwnershipTest {
     @Nested
     class ConfigPreflight {
         private static final String PREFLIGHT_COORDS = "org.example:preflight-app:1.0.0";
+        private static final String BLUEPRINT_SERVICE_LOGGER_NAME =
+                "org.pragmatica.aether.deployment.cluster.BlueprintServiceInstance";
+
+        private FailOpenLogCapture failOpenLogCapture;
+
+        @BeforeEach
+        void captureBlueprintServiceLog() {
+            failOpenLogCapture = FailOpenLogCapture.attach(BLUEPRINT_SERVICE_LOGGER_NAME);
+        }
+
+        @AfterEach
+        void detachBlueprintServiceLog() {
+            failOpenLogCapture.detach();
+        }
 
         @Test
         void publishFromArtifact_fails_whenDeclaredResourceSectionIsNotConfigured() throws IOException {
@@ -455,6 +482,26 @@ class BlueprintPublishOwnershipTest {
             var result = publishWithComposite(jar, Option.none());
 
             result.onFailure(cause -> Assertions.fail("Fail-open expected when no ConfigurationProvider is wired: " + cause.message()));
+        }
+
+        /// #547 fail-open visibility (team-lead's added condition, mirroring the drain
+        /// disruption-budget guard's visible bypass note in `NodeLifecycleRoutes`): a quiet gate
+        /// that doesn't gate is itself a failure mode, so the fail-open path in
+        /// `noteConfigSectionPreflightSkipIfBlind` must not be silent. Drives the SAME real
+        /// end-to-end jar/deploy path as the fail-open success test above, but also captures the
+        /// production logger to prove the skip is actually observable, not just successful.
+        @Test
+        void publishFromArtifact_logsVisibleSkipWarning_whenNoConfigurationProviderIsWired() throws IOException {
+            var jar = writeSliceJarWithResource("http", "payments");
+            var result = publishWithComposite(jar, Option.none());
+
+            result.onFailure(cause -> Assertions.fail("Fail-open expected when no ConfigurationProvider is wired: " + cause.message()));
+            assertThat(failOpenLogCapture.capturedWarns())
+                    .as("fail-open skip must be logged, not silent")
+                    .anyMatch(msg -> msg.contains("Config-section pre-flight (#547) SKIPPED")
+                                   && msg.contains("1 declared resource section(s)")
+                                   && msg.contains("across 1 slice(s)")
+                                   && msg.contains("not checked"));
         }
 
         /// #547 condition (b): publish-topic sections stay invisible to the pre-flight even when a
@@ -571,6 +618,68 @@ class BlueprintPublishOwnershipTest {
             }
 
             return target;
+        }
+
+        /// Log4j2 programmatic appender capturing WARN-and-above messages from a named logger for
+        /// assertions — same wiring approach as `ClusterTopologyManagerCasLossLoggingTest` in this
+        /// module, adapted to attach/detach around a single test via `@BeforeEach`/`@AfterEach`
+        /// rather than a standalone test class.
+        private static final class FailOpenLogCapture extends AbstractAppender {
+            private final List<String> messages = new CopyOnWriteArrayList<>();
+            private final LoggerConfig loggerConfig;
+            private final Level originalLevel;
+
+            private FailOpenLogCapture(String name, Layout<?> layout, LoggerConfig loggerConfig, Level originalLevel) {
+                super(name, (Filter) null, layout, true, Property.EMPTY_ARRAY);
+                this.loggerConfig = loggerConfig;
+                this.originalLevel = originalLevel;
+            }
+
+            static FailOpenLogCapture attach(String loggerName) {
+                var ctx = (LoggerContext) LogManager.getContext(false);
+                var configuration = ctx.getConfiguration();
+                var loggerConfig = getOrCreateLoggerConfig(configuration, loggerName);
+                var originalLevel = loggerConfig.getLevel();
+                var capture = new FailOpenLogCapture(loggerName + "-capture", PatternLayout.createDefaultLayout(), loggerConfig, originalLevel);
+
+                capture.start();
+                loggerConfig.addAppender(capture, Level.WARN, null);
+                loggerConfig.setLevel(Level.WARN);
+                ctx.updateLoggers();
+
+                return capture;
+            }
+
+            void detach() {
+                var ctx = (LoggerContext) LogManager.getContext(false);
+
+                loggerConfig.removeAppender(getName());
+                loggerConfig.setLevel(originalLevel);
+                ctx.updateLoggers();
+                stop();
+            }
+
+            List<String> capturedWarns() {
+                return List.copyOf(messages);
+            }
+
+            @Override public void append(LogEvent event) {
+                if (event.getLevel().isMoreSpecificThan(Level.WARN)) {
+                    messages.add(event.getMessage().getFormattedMessage());
+                }
+            }
+
+            private static LoggerConfig getOrCreateLoggerConfig(Configuration configuration, String loggerName) {
+                var existing = configuration.getLoggerConfig(loggerName);
+
+                if (loggerName.equals(existing.getName())) {
+                    return existing;
+                }
+
+                var fresh = new LoggerConfig(loggerName, Level.WARN, false);
+                configuration.addLogger(loggerName, fresh);
+                return fresh;
+            }
         }
     }
 }

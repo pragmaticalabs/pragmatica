@@ -184,7 +184,8 @@ resource [mechanism: `ConfigSectionPreflightValidator`, aggregated via `Result.a
   unchanged, since absence of a provider means "not checkable," not "not configured." This is a
   quiet gate by construction, so the skip itself is not: the node logs a warning naming how many
   declared resource sections went unchecked, so a successful deploy's logs distinguish "checked and
-  passed" from "not checked" `[mechanism: BlueprintService.noteConfigSectionPreflightSkipIfBlind]`.
+  passed" from "not checked"
+  [verified: `BlueprintPublishOwnershipTest.ConfigPreflight.publishFromArtifact_logsVisibleSkipWarning_whenNoConfigurationProviderIsWired`].
 - A slice whose declared sections are all present deploys unchanged; this check introduces no new
   failure mode for a correctly-configured blueprint.
 

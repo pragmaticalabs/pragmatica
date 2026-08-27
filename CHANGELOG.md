@@ -89,12 +89,25 @@ measurably elapse (5,000 → 5,004-5,005ms).
   topic name was never a value the operator was supposed to supply. Its javadoc and
   `resource-reference.md` now say so explicitly; every other resource type has no such fallback.
 - **Honest limits, stated in code and docs.** The check verifies presence and shape against the
-  deploying node's composite view (KV-overlay ⊕ that node's own `aether.toml`), not environmental
-  correctness and not cross-node config homogeneity `[design intent — unverified]`. When no
-  `ConfigurationProvider` is wired on the node at all, the check fails **open** rather than
-  manufacture a false positive.
+  leader's composite configuration view (KV-overlay ⊕ the leader's own `aether.toml`), checked once
+  at deploy time — not environmental correctness and not cross-node config homogeneity
+  `[design intent — unverified]`. The failure message names this exact view so it is not mistaken
+  for a cross-node guarantee. When no `ConfigurationProvider` is wired on the node at all, the check
+  fails **open** rather than manufacture a false positive — and because a quiet gate that doesn't
+  gate is itself a failure mode, the skip is now logged (WARN) whenever it would have had at least
+  one resource section to check, naming the count of sections and slices that went unchecked
+  [verified: `BlueprintPublishOwnershipTest.ConfigPreflight.publishFromArtifact_logsVisibleSkipWarning_whenNoConfigurationProviderIsWired`
+  — captures the real logger via a log4j2 programmatic appender against the live `publishFromArtifact` path].
 - No false positives: a slice whose sections are all present deploys unchanged
   [verified: `ConfigSectionPreflightValidatorTest.HappyPath`].
+- **Scope pinned by tests, not just by comment.** A missing publish-topic config section can never
+  fail this check — `publishes()` is a list the validator never inspects, unlike a missing
+  generic-resource section which hard-fails
+  [verified: `ConfigSectionPreflightValidatorTest.HappyPath.validate_missingPublishTopicSection_isInvisibleToTheCheck`].
+  Proven on the real manifest-generation/parsing path too: a slice jar with both a missing generic
+  resource section and a co-present missing publish-topic section fails naming only the resource
+  section, never the topic
+  [verified: `BlueprintPublishOwnershipTest.ConfigPreflight.publishFromArtifact_namesOnlyTheMissingResourceSection_whenAMissingPublishTopicSectionCoexists`].
 - New: `MissingConfigSection` (Cause), `ConfigSectionPreflightValidator` in
   `aether/aether-deployment/.../deployment/validation/`. Plumbing: `BlueprintService` gained a 5-arg
   `blueprintService(...)` factory taking `Option<ConfigurationProvider>`; `AetherNode` wires it from
