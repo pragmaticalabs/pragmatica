@@ -13,6 +13,7 @@ import org.pragmatica.aether.slice.annotation.Slice;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Verify;
 
 
 /// Durable-entity fixture (#345 increment I0) — the first slice in the repository that DECLARES a
@@ -32,10 +33,20 @@ import org.pragmatica.lang.Promise;
 /// ([EntityResponse#failureType]) rather than thrown or swallowed. A test can then assert on the
 /// entity's real behavior instead of on the absence of an exception.
 ///
-/// [#scheduleTimer] exists for exactly this reason. Durable timers are unimplemented in every
-/// current implementation (spec §4.5, plan Phase 2c), so the honest fixture calls the method and
-/// reports the `TimerNotSupported` refusal, rather than omitting the call and leaving the reader to
-/// assume timers work.
+/// [#scheduleTimer] exists for exactly this reason. Durable timers are real on the fenced-log backing a
+/// node provisions (#345 I4): the call answers with a token, the pending timer is a record in the entity's
+/// own log, and the fire applies [OrderCommand.Expire] to the state through the same path an external
+/// update takes. `DurableEntityFactory` provisions only that backing, so `TimerNotSupported` — the answer
+/// of the HA-only in-memory cut (`InMemoryDurableEntity`, `FencedDurableEntity`), which unit tests
+/// construct directly — cannot arrive here. The fixture reports whatever answer it receives as data, so a
+/// test that ever saw one would name it rather than hang waiting for a fire.
+///
+/// ## Timer effects are COUNTED, not merely stamped
+///
+/// [OrderState#expiries] counts applications of [OrderCommand.Expire]. A status flip alone would be
+/// idempotent — "expired" set twice reads exactly like "expired" set once — so it could not tell a timer
+/// that fired once from one that fired twice, which is the whole question a re-sent schedule asks. The
+/// counter is what makes exactly-once an assertion instead of a hope.
 ///
 /// ## Instance identity is load-bearing
 ///
@@ -44,17 +55,21 @@ import org.pragmatica.lang.Promise;
 /// holds no shared state ONLY if that answer demonstrably came from a DIFFERENT slice instance.
 /// Without it, a routing quirk that sent both requests to the same node would read identically.
 ///
-/// ## Baseline this pins down
+/// ## What the fixture makes measurable
 ///
-/// The provisioned entity is today's `DurableEntityFactory` product: a bare in-process map, no
-/// ownership fence, no replication, `DurableEntityConfig.replicationFactor` accepted and ignored.
-/// The fixture makes that measurable — same key creatable on every node at once, state invisible
-/// across nodes — so I1 (fenced entity) and I3 (restart-durable state) have a baseline to flip.
+/// The provisioned entity is `DurableEntityFactory`'s product: the fenced-log
+/// `PartitionFencedDurableEntity`. The factory REFUSES to provision without every fence collaborator, so
+/// a slice that loads got a fully wired fenced entity and there is no unfenced shape to degrade into.
+/// `DurableEntityConfig.replicationFactor` reaches the log substrate's `ensureLog`, so the blueprint's
+/// declared `replication_factor` buys that many copies of each partition. What a cross-node test can
+/// therefore observe through this fixture: one create for a key is admitted cluster-wide while every
+/// other node relays and surfaces the owner's typed refusal, a read is served by more nodes than the
+/// owner alone, and state outlives the node that owned it.
 @Slice
 public interface EntitySlice {
     record CreateRequest(String orderId, String status, int amount) {
         OrderState initialState() {
-            return new OrderState(status, amount);
+            return new OrderState(status, amount, 0);
         }
     }
 
@@ -62,9 +77,48 @@ public interface EntitySlice {
 
     record UpdateRequest(String orderId, int amount) {}
 
-    /// The entity state. Deliberately never crosses the HTTP boundary — [EntityResponse] carries its
-    /// fields flattened — so this fixture measures the ENTITY, never the slice codec. A codec defect
-    /// would otherwise be indistinguishable from an entity defect.
+    /// The schedule-timer request, with BOTH knobs a durability gate needs and neither of them mandatory.
+    ///
+    /// `delayMillis` is caller-controlled because a hardcoded delay serves exactly one of the two audiences
+    /// this fixture has. The five-minute default is long enough that an ordinary API-surface test cannot
+    /// have its timer fire underneath it; a gate that must watch a timer survive a handover or a restart
+    /// needs a delay tuned to the disruption it is testing, and no single constant is both. Absent or
+    /// non-positive falls back to [#DEFAULT_DELAY], so a caller that says nothing gets exactly the old
+    /// behaviour.
+    ///
+    /// `token` is caller-controlled because it is the ONLY way to present the same schedule twice. Left
+    /// empty, the entity mints one per call — which is what an ordinary caller wants, and what makes each
+    /// node's schedule its own. Supplied, the same token re-sent is the same schedule: the owner recognises
+    /// it as already pending, appends nothing, and answers with it, so the effect lands once however many
+    /// times the request is repeated. That is the property a lost acknowledgement makes load-bearing, and
+    /// it cannot be exercised through an entry that mints internally.
+    ///
+    /// Both are declared as REFERENCE types, and `delayMillis` deliberately so. Jackson refuses an ABSENT
+    /// creator property of primitive type outright — `Type mismatch: expected long, got unknown`, a 500
+    /// rather than a default — so a `long` here would have made the field mandatory in fact while reading
+    /// as optional. A boxed `Long` arrives null when the field is omitted, which is what an omitted field
+    /// means, and [Option#option] mints the optionality at the boundary where the nullable actually is.
+    record TimerRequest(String orderId, Long delayMillis, String token) {
+        /// The pre-I4 hardcoded value, kept as the default so every caller that supplies no delay is
+        /// unchanged by the field's arrival.
+        private static final Duration DEFAULT_DELAY = Duration.ofMinutes(5);
+
+        Duration delay() {
+            return Option.option(delayMillis)
+                         .filter(Verify.Is::positive)
+                         .map(Duration::ofMillis)
+                         .or(DEFAULT_DELAY);
+        }
+
+        /// An absent JSON field arrives as null here — the HTTP boundary is exactly where [Option] is minted
+        /// from a nullable, so nothing downstream has to ask.
+        Option<DurableEntity.TimerToken> callerToken() {
+            return Option.option(token)
+                         .filter(Verify.Is::present)
+                         .map(DurableEntity.TimerToken::timerToken);
+        }
+    }
+
     /// The keyspace's command hierarchy — the transitions this slice can apply to an [OrderState].
     ///
     /// SEALED with record variants on purpose. A lambda has no name, so it cannot be persisted for a
@@ -93,31 +147,40 @@ public interface EntitySlice {
         }
     }
 
-    record OrderState(String status, int amount) {
+    /// The entity state. Deliberately never crosses the HTTP boundary — [EntityResponse] carries its
+    /// fields flattened — so this fixture measures the ENTITY, never the slice codec. A codec defect
+    /// would otherwise be indistinguishable from an entity defect.
+    record OrderState(String status, int amount, int expiries) {
         OrderState withAmount(int newAmount) {
-            return new OrderState(status, newAmount);
+            return new OrderState(status, newAmount, expiries);
         }
 
-        /// The pure mutator a durable timer would apply on fire. Unreachable until #351 lands; it
-        /// exists so [EntitySlice#scheduleTimer] presents a real `S -> S` rather than an identity
-        /// stub that would keep passing after timers become real.
+        /// The pure mutator a durable timer applies on fire. It COUNTS: flipping the status alone would be
+        /// idempotent, so two fires would be indistinguishable from one and no test could pin exactly-once.
+        /// `amount` is deliberately untouched, so a fire is also distinguishable from an [OrderCommand.SetAmount].
         OrderState expired() {
-            return new OrderState("expired", amount);
+            return new OrderState("expired", amount, expiries + 1);
         }
     }
 
     /// A single flat shape for every outcome, so a test asserts on `outcome`/`failureType` rather
     /// than on HTTP status codes or error prose.
     ///
-    /// `failureType` is the [Cause]'s simple class name — `TimerNotSupported`, `EntityAlreadyExists`,
-    /// `EntityNotFound`. Asserting on the TYPE rather than on `failure` (the rendered message) keeps
+    /// `failureType` is the [Cause]'s simple class name — `EntityAlreadyExists`, `EntityNotFound`,
+    /// `NotCurrentOwner`. Asserting on the TYPE rather than on `failure` (the rendered message) keeps
     /// the proof anchored to the sealed cause hierarchy instead of to wording that may be reworded.
+    ///
+    /// `token` carries a scheduled timer's handle in its own component rather than borrowing `status`: a
+    /// gate that re-sends a schedule asserts the SAME token comes back, and reading that out of a field
+    /// whose other meaning is the order's lifecycle would make the assertion unreadable.
     record EntityResponse(String instance,
                           String outcome,
                           String failureType,
                           String failure,
                           String status,
-                          int amount) {
+                          int amount,
+                          int expiries,
+                          String token) {
         static EntityResponse created(String instance, OrderState state) {
             return succeeded(instance, "created", state);
         }
@@ -131,15 +194,15 @@ public interface EntitySlice {
         }
 
         static EntityResponse absent(String instance) {
-            return new EntityResponse(instance, "absent", "", "", "", 0);
+            return new EntityResponse(instance, "absent", "", "", "", 0, 0, "");
         }
 
         static EntityResponse deleted(String instance) {
-            return new EntityResponse(instance, "deleted", "", "", "", 0);
+            return new EntityResponse(instance, "deleted", "", "", "", 0, 0, "");
         }
 
         static EntityResponse scheduled(String instance, DurableEntity.TimerToken token) {
-            return new EntityResponse(instance, "scheduled", "", "", token.value(), 0);
+            return new EntityResponse(instance, "scheduled", "", "", "", 0, 0, token.value());
         }
 
         static EntityResponse failed(String instance, Cause cause) {
@@ -148,38 +211,40 @@ public interface EntitySlice {
                                       cause.getClass().getSimpleName(),
                                       cause.message(),
                                       "",
-                                      0);
+                                      0,
+                                      0,
+                                      "");
         }
 
         private static EntityResponse succeeded(String instance, String outcome, OrderState state) {
-            return new EntityResponse(instance, outcome, "", "", state.status(), state.amount());
+            return new EntityResponse(instance, outcome, "", "", state.status(), state.amount(), state.expiries(), "");
         }
     }
 
     Promise<EntityResponse> create(CreateRequest request);
-
     Promise<EntityResponse> get(KeyRequest request);
-
     Promise<EntityResponse> update(UpdateRequest request);
-
     Promise<EntityResponse> delete(KeyRequest request);
-
-    /// Calls [DurableEntity#scheduleTimer] for real and reports the refusal. See the type comment:
-    /// omitting this call would let a reader assume timers work.
-    Promise<EntityResponse> scheduleTimer(KeyRequest request);
+    /// Schedules a durable timer that applies [OrderCommand.Expire] when it fires, and reports the token as
+    /// data. Both the delay and the token come from the caller (see [TimerRequest]); the effect of a fire is
+    /// visible through the ordinary [#get] path as an incremented [OrderState#expiries], so a test asserts on
+    /// entity state rather than on logs.
+    Promise<EntityResponse> scheduleTimer(TimerRequest request);
 
     static EntitySlice entitySlice(@OrderEntity DurableEntity<String, OrderState, OrderCommand> orders) {
-        return new entitySlice(orders, UUID.randomUUID().toString());
+        return new entitySlice(orders,
+                               UUID.randomUUID().toString());
     }
 
     record entitySlice(DurableEntity<String, OrderState, OrderCommand> orders, String instance) implements EntitySlice {
-        /// Long enough that the timer cannot plausibly fire during a test, short enough to stay
-        /// meaningful once #351 makes it real.
-        private static final Duration TIMER_DELAY = Duration.ofMinutes(5);
+        /// The command every timer in this fixture fires. A component-less record, hence immutable and
+        /// shareable — there is nothing per-call to build.
+        private static final OrderCommand EXPIRE = new OrderCommand.Expire();
 
         @Override
         public Promise<EntityResponse> create(CreateRequest request) {
-            return orders.create(request.orderId(), request.initialState())
+            return orders.create(request.orderId(),
+                                 request.initialState())
                          .map(state -> EntityResponse.created(instance, state))
                          .recover(this::failure);
         }
@@ -193,7 +258,8 @@ public interface EntitySlice {
 
         @Override
         public Promise<EntityResponse> update(UpdateRequest request) {
-            return orders.update(request.orderId(), new OrderCommand.SetAmount(request.amount()))
+            return orders.update(request.orderId(),
+                                 new OrderCommand.SetAmount(request.amount()))
                          .map(state -> EntityResponse.updated(instance, state))
                          .recover(this::failure);
         }
@@ -206,16 +272,34 @@ public interface EntitySlice {
         }
 
         @Override
-        public Promise<EntityResponse> scheduleTimer(KeyRequest request) {
-            return orders.scheduleTimer(request.orderId(), TIMER_DELAY, new OrderCommand.Expire())
-                         .map(token -> EntityResponse.scheduled(instance, token))
-                         .recover(this::failure);
+        public Promise<EntityResponse> scheduleTimer(TimerRequest request) {
+            return scheduled(request).map(token -> EntityResponse.scheduled(instance, token))
+                            .recover(this::failure);
+        }
+
+        /// Routes to the entry the caller's request selects: a supplied token re-presents a schedule that
+        /// may already be pending (the owner answers it and appends nothing), an absent one asks the entity
+        /// to mint. Two entries rather than one because only the token-carrying entry can be retried.
+        private Promise<DurableEntity.TimerToken> scheduled(TimerRequest request) {
+            return request.callerToken()
+                          .fold(() -> orders.scheduleTimer(request.orderId(),
+                                                           request.delay(),
+                                                           EXPIRE),
+                                token -> orders.scheduleTimer(request.orderId(),
+                                                              request.delay(),
+                                                              EXPIRE,
+                                                              token));
         }
 
         private EntityResponse lookup(Option<OrderState> state) {
             return state.fold(() -> EntityResponse.absent(instance), found -> EntityResponse.found(instance, found));
         }
 
+        /// Where every `recover(this::failure)` in this record lands, and the reason none of them is a
+        /// swallowed failure: the cause is not absorbed, it is TRANSPOSED into the response payload. Its
+        /// type and message both survive into [EntityResponse#failureType] and [EntityResponse#failure], so
+        /// a caller learns strictly more than a thrown exception would have told it. Nothing is dropped and
+        /// nothing is retried — this is a REPORTER, and reporting the refusal is the product.
         private EntityResponse failure(Cause cause) {
             return EntityResponse.failed(instance, cause);
         }

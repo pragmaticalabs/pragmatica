@@ -62,10 +62,16 @@ final class TestArtifacts {
     /// `resources.toml` anywhere named a durable entity, so the whole `resource/durable-entity`
     /// module — interface, SPI factory, and all three implementations — was unreachable from any
     /// running node and every build stayed green regardless of whether it worked. The slice reports
-    /// each operation's outcome as data (including the `TimerNotSupported` refusal), so
-    /// [DurableEntityForgeTest] asserts on the entity's real behavior rather than on the absence of
-    /// an exception. Mirrors the [#STREAM_CONSUMER_SLICE] coordinate (fixed `1.0.0` blueprint
-    /// version, resolved from the local Maven repo).
+    /// each operation's outcome as data — a create's state, a scheduled timer's token, and every
+    /// failure by its cause type (`EntityAlreadyExists`, `EntityNotFound`) — so [DurableEntityForgeTest]
+    /// asserts on the entity's real behavior rather than on the absence of an exception. Timers are real
+    /// on a node: `DurableEntityFactory` provisions only the fenced-log backing, which schedules them as
+    /// ordinary fenced writes, so `TimerNotSupported` — the in-memory backings' answer — never appears
+    /// here. It also COUNTS timer fires in
+    /// `OrderState.expiries`, which is what lets [DurableEntityTimerDurabilityTest] hold a durable
+    /// timer to exactly-once across an owner handover and a full-cluster restart. Mirrors the
+    /// [#STREAM_CONSUMER_SLICE] coordinate (fixed `1.0.0` blueprint version, resolved from the local
+    /// Maven repo).
     static final String ENTITY_SLICE = "org.pragmatica.aether.test:test-entity-entity-slice:1.0.0";
 
     private TestArtifacts() {}

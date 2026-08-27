@@ -176,7 +176,8 @@ class DurableEntityFactoryTest {
                                  ProvisioningContext context,
                                  RecordingRegistrar registrar,
                                  RecordingForwardRegistry registry,
-                                 EntityCheckpointDriver driver) {}
+                                 EntityCheckpointDriver driver,
+                                 EntityTimerDriver timerDriver) {}
 
     /// A fully-wired provisioning context — the shape `AetherNode.registerEntityExtensionsOnSpi`
     /// produces — with the three unload collaborators reachable so the test can watch them.
@@ -184,10 +185,20 @@ class DurableEntityFactoryTest {
         var registrar = new RecordingRegistrar();
         var registry = new RecordingForwardRegistry();
         var driver = EntityCheckpointDriver.entityCheckpointDriver();
+        // Both entity drivers, because `registerEntityExtensionsOnSpi` registers both together and
+        // unconditionally: a fixture carrying only one is not the shape a node produces, and the factory
+        // reports that asymmetry as an assembly defect.
+        var timerDriver = EntityTimerDriver.entityTimerDriver();
         var context = fencedContext(registrar).withExtension(EntityForwardRegistry.class, registry)
-                                              .withExtension(EntityCheckpointDriver.class, driver);
+                                              .withExtension(EntityCheckpointDriver.class, driver)
+                                              .withExtension(EntityTimerDriver.class, timerDriver);
 
-        return config().map(config -> new UnloadFixture(config, context, registrar, registry, driver));
+        return config().map(config -> new UnloadFixture(config,
+                                                        context,
+                                                        registrar,
+                                                        registry,
+                                                        driver,
+                                                        timerDriver));
     }
 
     private static void assertUnloadReleasesEverything(UnloadFixture fixture) {

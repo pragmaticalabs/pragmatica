@@ -15,6 +15,7 @@ import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.TestMethodOrder;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.pragmatica.aether.dht.EntityPartitionArc;
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.http.HttpOperations;
@@ -30,8 +31,10 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.LockSupport;
 import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -55,15 +58,27 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 /// The fixture slice declares `@OrderEntity DurableEntity<String, OrderState, OrderCommand>` and does nothing
 /// else — if resource provisioning fails, the slice does not load and every test here fails at
 /// setup rather than passing quietly. Each response carries the slice instance's own id, so the
-/// cross-node assertions ([#get_returnsAbsentOnEveryOtherNode_afterCreateOnOneNode],
-/// [#create_succeedsOnEveryNode_forTheSameKey]) prove they contacted DIFFERENT instances rather
+/// cross-node assertions ([#get_isServedByMoreThanOneNode_afterCreateOnOne],
+/// [#scheduleTimer_succeedsOnEveryNode_includingInstancesThatCannotBeTheCommittedOwner]) prove they
+/// contacted DIFFERENT instances rather
 /// than being satisfied by a routing quirk that sent every request to one node.
 ///
 /// ## What is proven, and what is NOT
 ///
 /// Proven: the resource SPI resolves a `[entities.orders]` TOML section to a `DurableEntityConfig`,
-/// provisions a `DurableEntity`, and the create / get / update / delete surface executes inside a
-/// live node with correct per-key semantics — plus the honest negative, that timers refuse.
+/// provisions a `DurableEntity`, and the create / get / update / delete / scheduleTimer surface executes
+/// inside a live node with correct per-key semantics.
+///
+/// NOT proven: that a PENDING timer survives an owner change or a full restart. That needs a disruption
+/// this suite deliberately does not perform until its last test, and it is
+/// [DurableEntityTimerDurabilityTest]'s question.
+///
+/// ## Timers
+///
+/// Every node answers a schedule with a token — the owner locally, every other node by forwarding to it
+/// ([#scheduleTimer_succeedsOnEveryNode_includingInstancesThatCannotBeTheCommittedOwner]) — and five
+/// presentations of ONE caller-minted token leave exactly one fire
+/// ([#scheduleTimer_appliesTheEffectExactlyOnce_whenTheSameTokenIsResent]).
 ///
 /// ## What I1 changed here
 ///
@@ -79,9 +94,16 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 /// demonstrates it — provisioning REFUSES if any fence collaborator is missing, so a slice that loads is
 /// a slice that got a fully wired fenced entity.
 ///
-/// Still NOT flipped, and still measured: state is per-node and dies with its holder
-/// ([#state_isUnrecoverable_afterTheOnlyNodeHoldingItStops]). The backing is `MemoryStorageEngine`;
-/// restart-durability is I3. `replication_factor` is no longer ignored — it is REFUSED above 1.
+/// ## State durability and replication
+///
+/// State is durable and replicated (I3): it lives on a fenced, fsync-durable, replicated log per
+/// partition, and the in-memory view is a fold any node holding the partition rebuilds from it. So a key
+/// is answered by more slice instances than the one that accepted it
+/// ([#get_isServedByMoreThanOneNode_afterCreateOnOne]) and the value outlives the node that owned it
+/// ([#state_survivesTheLossOfTheNodeThatOwnedIt] — the discriminating one, since forwarding cannot
+/// explain an answer once the holder is gone).
+/// `replication_factor` is honoured: the blueprint declares 3, `DurableEntityConfig.minSyncReplicas()`
+/// derives 2, and the owner plus one peer hold a record before a write acks.
 ///
 /// ## What the 02w hosting-set fix changed here
 ///
@@ -95,6 +117,8 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class DurableEntityForgeTest {
+    private static final System.Logger LOG = System.getLogger(DurableEntityForgeTest.class.getName());
+
     private static final int BASE_PORT = 19000;
     private static final int BASE_MGMT_PORT = 19100;
     private static final int BASE_APP_HTTP_PORT = 19200;
@@ -109,8 +133,24 @@ class DurableEntityForgeTest {
     /// committed arcs against it.
     private static final int ENTITY_PARTITIONS = 8;
 
+    /// The SAME partition function production uses, so a key can be mapped to the arc whose committed owner
+    /// [#entityArcOwners] reports. Re-deriving it here would only test this test's own arithmetic.
+    private static final EntityPartitionArc ENTITY_ARC = EntityPartitionArc.entityPartitionArc("orders", ENTITY_PARTITIONS);
+
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
+
+    /// The delay [#scheduleTimer_appliesTheEffectExactlyOnce_whenTheSameTokenIsResent] schedules under. It
+    /// only has to outlive the five presentations of the one token — the timer must still be pending when
+    /// the last of them arrives, or that one plants a fresh timer and the gate measures the wrong thing.
+    /// Five sequential localhost posts (four of them forwarded a hop) measure 5-15 ms, so 8s is nearly three
+    /// orders of magnitude of margin, and the test asserts the measured figure against a quarter of it.
+    private static final long RESEND_DELAY_MILLIS = 8_000L;
+
+    /// Ticks to wait out before declaring a fire exactly-once. `ENTITY_TIMER_INTERVAL` is one second, so a
+    /// duplicate timer planted alongside the first would come due within one tick of it; five gives four
+    /// spare ticks for the second fire that must not happen to happen.
+    private static final Duration EXACTLY_ONCE_SETTLE = Duration.ofSeconds(5);
 
     private static final String ENTITY_SLICE = TestArtifacts.ENTITY_SLICE;
     private static final String BLUEPRINT_ID = "forge.test:durable-entity:1.0.0";
@@ -157,11 +197,35 @@ class DurableEntityForgeTest {
                .pollInterval(POLL_INTERVAL)
                .failFast(this::failIfSliceFailed)
                .until(this::entityReadyOnEveryNode);
+        // Placement converges LATER than entity readiness, and the gap is wide enough to be read as a
+        // defect. Measured on 2026-08-27: the scheduler's first pass placed 2 of the 3 requested instances,
+        // the reconciler logged "has 2 instances, desired 3 - adjusting" 52s after deploy, and the third
+        // completed 8s after that. Nothing above waits for it — an entity answers, and ownership converges,
+        // on 2 instances just as well as on 3 — so without this
+        // [#ownership_isMintedOnlyOverNodesHostingTheEntitySlice] read a genuinely-mid-reconcile view and
+        // failed its own non-vacuity precondition in 2 of 3 local runs. Polling here fails LOUDLY (a setUp
+        // timeout naming placement) if the reconcile never gets there, instead of intermittently as a
+        // wrong-looking hosting-set assertion.
+        awaitFullSlicePlacement();
         // Ownership records are minted by a leader-only reconcile tick, so for a few seconds after deploy
         // NO arc has a committed owner and every write is refused as transient. Poll for convergence on a
         // throwaway key rather than sleeping: a sleep would either flake on a slow tick or hide a driver
         // that never ran at all.
         awaitOwnershipConvergence();
+    }
+
+    /// Wait until the blueprint's full instance count is ACTIVE cluster-wide, reporting WHICH hosts were
+    /// seen on expiry — "expected 3, saw 2" is diagnosable; "condition not met in 240s" is not.
+    private void awaitFullSlicePlacement() {
+        try {
+            await().atMost(WAIT_TIMEOUT)
+                   .pollInterval(POLL_INTERVAL)
+                   .failFast(this::failIfSliceFailed)
+                   .until(() -> activeSliceHosts().size() == INSTANCES);
+        } catch (ConditionTimeoutException e) {
+            throw new AssertionError("Slice placement never reached " + INSTANCES + " ACTIVE instances; hosts seen: "
+                                     + activeSliceHosts(), e);
+        }
     }
 
     /// Wait for the ownership reconcile, and on expiry report WHAT the entity actually answered.
@@ -313,52 +377,193 @@ class DurableEntityForgeTest {
         assertThat(text(repeated, "failureType")).isEqualTo("EntityNotFound");
     }
 
-    /// Timers are declared in the API (spec §5) and implemented nowhere (spec §4.5, plan Phase 2c).
-    /// The fixture CALLS `scheduleTimer` rather than skipping it, so this records the refusal as an
-    /// observed fact. When #351 lands, this test must be rewritten — it failing is the signal that
-    /// timers became real, which is exactly the notification I4 wants.
+    /// EVERY node answers a schedule with a token. The fenced-log backing a node provisions schedules
+    /// timers as ordinary fenced writes on the key's own log, and a node that is not the committed owner
+    /// forwards to the one that is rather than refusing.
+    ///
+    /// What the five-node breadth pins, precisely. The key's partition carries exactly ONE committed owner
+    /// (read from the ownership records here, so it is a checked premise and not an assumed one), a node
+    /// hosts at most one instance of the entity slice, and the five schedules come back served by MORE THAN
+    /// ONE instance — so at least one instance that cannot be the owner's answered `scheduled`. That is
+    /// what the forward buys: without it, only the owner could answer at all.
+    ///
+    /// What it does NOT pin is where the timer LANDED. The response's `instance` field names the slice
+    /// instance that served the HTTP call — a UUID minted at slice construction, correlatable to no node id
+    /// — and the forward happens inside the entity, below that seam. A node that quietly scheduled locally
+    /// rather than forwarding would answer identically here. That half is
+    /// [#scheduleTimer_appliesTheEffectExactlyOnce_whenTheSameTokenIsResent]'s, where five presentations of
+    /// ONE token must yield exactly ONE fire, and [DurableEntityTimerDurabilityTest]'s.
+    ///
+    /// Each call mints its own token (none is supplied), so this leaves FIVE independent pending timers on
+    /// one key — deliberately, because it is also the proof that the token is what distinguishes schedules.
+    /// The delay is the fixture's five-minute default, far longer than this suite runs, so none of them
+    /// fires here.
     @Test
     @Order(8)
-    void scheduleTimer_failsWithTimerNotSupported_onEveryNode() {
+    void scheduleTimer_succeedsOnEveryNode_includingInstancesThatCannotBeTheCommittedOwner() {
         createOnOwner("order-timer", "placed", 1);
+
+        var partition = ENTITY_ARC.partitionOf("order-timer");
+
+        assertThat(entityArcOwners()).describedAs("the key's partition must carry a committed owner, else 'an instance "
+                                                  + "that cannot be the owner' names nothing")
+                                     .containsKey(partition);
 
         var responses = appPorts().stream()
                                   .map(port -> scheduleTimer(port, "order-timer"))
                                   .toList();
 
+        assertThat(responses).describedAs("every node must answer a schedule, the owner locally and the rest by forwarding")
+                             .hasSize(NODES);
         assertThat(responses).allSatisfy(response -> {
-            assertThat(outcome(response)).describedAs("timers must refuse, not silently no-op").isEqualTo("failed");
-            assertThat(text(response, "failureType")).isEqualTo("TimerNotSupported");
+            assertThat(outcome(response)).describedAs("timers are real after I4 — a refusal here is the regression")
+                                         .isEqualTo("scheduled");
+            assertThat(text(response, "token")).describedAs("a scheduled timer must come back with the handle that cancels it")
+                                               .isNotEmpty();
         });
+
+        var tokens = responses.stream()
+                              .map(response -> text(response, "token"))
+                              .distinct()
+                              .toList();
+
+        assertThat(tokens).describedAs("five schedules with no caller token are five timers, each with its own handle")
+                          .hasSize(NODES);
+
+        var instances = responses.stream()
+                                 .map(response -> text(response, "instance"))
+                                 .distinct()
+                                 .toList();
+
+        LOG.log(System.Logger.Level.INFO,
+                "I4 forwarding gate: nodes={0} committedOwner={1} distinctServingInstances={2}",
+                NODES,
+                entityArcOwners().get(partition),
+                instances.size());
+
+        assertThat(instances).describedAs("more than one slice instance must have answered: a node hosts at most one, and "
+                                          + "the partition asserted above has a single committed owner, so a second "
+                                          + "instance answering 'scheduled' is a non-owner that relayed instead of "
+                                          + "refusing. All five served by one instance would leave that untested; "
+                                          + "instances=%s",
+                                          instances)
+                             .hasSizeGreaterThan(1);
     }
 
-    // --- the baseline: in-memory, unreplicated, unfenced -----------------------
-
-    /// The entity holds NO shared state. A key created on one node is invisible on every other,
-    /// even though the blueprint asked for `replication_factor = 3`.
+    /// The retry-after-lost-ack gate, at cluster level: a schedule RE-SENT under the same token is the same
+    /// schedule, and its effect lands exactly once.
     ///
-    /// The instance ids make this non-vacuous: each "absent" answer is proven to come from a
+    /// The scenario it stands for is the one a caller cannot distinguish from success: the schedule reached
+    /// the owner and was appended, and the acknowledgement was lost on the way back. The caller holds the
+    /// token — it minted it — and re-sends. If the owner treated that as a fresh request it would plant a
+    /// second timer under a handle the caller does not know it has, and `Expire` would be applied twice.
+    ///
+    /// Offering the SAME token to all five nodes is the strongest available form of that: four of the five
+    /// presentations arrive at the owner through the forward, one locally, and the owner's already-pending
+    /// check is the only thing standing between five presentations and five timers. Every one of them must
+    /// answer with the token it was given — a token of the owner's own minting coming back would mean the
+    /// caller's handle was silently replaced.
+    ///
+    /// ## The delay, chosen deliberately
+    ///
+    /// {@value #RESEND_DELAY_MILLIS} ms. It has to outlive the five presentations — a timer that fires
+    /// between presentation one and presentation five would leave the pending set, and the later ones would
+    /// then legitimately plant NEW timers, turning an exactly-once gate into an at-least-once one that
+    /// passes for the wrong reason. The five sequential posts are measured and asserted to consume less than
+    /// a quarter of the delay, so the margin is a number this test checks rather than one it assumes.
+    /// Measured over three 2026-08-27 local runs: 5-15 ms against the 8,000 ms delay, i.e. better than a
+    /// 500x margin against the 2,000 ms threshold.
+    ///
+    /// After the fire, the state is re-read a second time a few ticks later: a duplicate timer would be a
+    /// second `Expire` arriving on a later tick, so a single reading at the moment of the fire could not
+    /// tell exactly-once from not-yet-twice.
+    @Test
+    @Order(9)
+    void scheduleTimer_appliesTheEffectExactlyOnce_whenTheSameTokenIsResent() {
+        createOnOwner("order-timer-resend", "placed", 500);
+
+        var token = "resent-" + UUID.randomUUID();
+        var startNanos = System.nanoTime();
+        var responses = appPorts().stream()
+                                  .map(port -> scheduleTimer(port, "order-timer-resend", RESEND_DELAY_MILLIS, token))
+                                  .toList();
+        var presentationMillis = Duration.ofNanos(System.nanoTime() - startNanos).toMillis();
+
+        assertThat(presentationMillis).describedAs("all five presentations must land while the timer is still pending, "
+                                                   + "else the later ones plant fresh timers and prove nothing")
+                                      .isLessThan(RESEND_DELAY_MILLIS / 4);
+
+        LOG.log(System.Logger.Level.INFO,
+                "I4 resend gate: delay={0}ms fivePresentations={1}ms",
+                RESEND_DELAY_MILLIS,
+                presentationMillis);
+        assertThat(responses).allSatisfy(response -> {
+            assertThat(outcome(response)).describedAs("a re-sent schedule is the same schedule, and answers success")
+                                         .isEqualTo("scheduled");
+            assertThat(text(response, "token")).describedAs("the owner must echo the CALLER's token, not one of its own")
+                                               .isEqualTo(token);
+        });
+
+        await().atMost(WAIT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .until(() -> expiriesAcrossCluster("order-timer-resend").contains(1));
+
+        // A duplicate arrives on a LATER tick, so a reading taken at the moment of the fire cannot tell
+        // exactly-once from not-yet-twice. There is no condition to poll for the absence of a second fire —
+        // only elapsed ticks — so this waits out a quiet period and then re-reads.
+        awaitQuietPeriod(EXACTLY_ONCE_SETTLE);
+        var counts = expiriesAcrossCluster("order-timer-resend");
+
+        assertThat(counts).describedAs("at least one node must serve the key after the fire").isNotEmpty();
+        assertThat(counts).describedAs("five presentations of ONE token are one timer, so Expire lands once — "
+                                       + "a second timer would show as 2 on whichever node folded both fires")
+                          .allSatisfy(count -> assertThat(count).isLessThanOrEqualTo(1));
+        assertThat(counts).describedAs("and the fire did land, on some node's committed view").contains(1);
+
+        var settled = servedView("order-timer-resend");
+
+        assertThat(text(settled, "status")).describedAs("the fire is a real mutation, applied through the ordinary update path")
+                                           .isEqualTo("expired");
+        assertThat(number(settled, "amount")).describedAs("Expire touches the counter and the status only")
+                                             .isEqualTo(500);
+    }
+
+    // --- replication and durability, across nodes --------------------------------
+
+    /// More than ONE slice instance answers a key with the value that was written, after a create on a
+    /// single node.
+    ///
+    /// The instance ids make this non-vacuous: at least one "found" answer is proven to come from a
     /// different slice instance than the one that accepted the create. Without that check, a
     /// load-balancer sending every request to one node would produce the same assertion outcome for
     /// the opposite reason.
     ///
-    /// I3 (restart-durable state on a fenced log) must flip this.
+    /// What it does NOT pin is WHERE each answer was served from. A node holding the partition answers
+    /// from its own fold; a node that does not hold it forwards to the committed owner, and the response's
+    /// `instance` field names the slice that served the HTTP call, not the node that read the state — the
+    /// forward happens inside the entity, below that seam. Replication itself is pinned by
+    /// [#state_survivesTheLossOfTheNodeThatOwnedIt], where the node that held the state is gone.
+    ///
+    /// Polled rather than sampled, and the VALUE is asserted rather than the outcome field: a replica
+    /// serves only once it has folded the partition, and a node answering with anything other than
+    /// what was written would be worse than one that refused.
     @Test
-    @Order(9)
+    @Order(10)
     void get_isServedByMoreThanOneNode_afterCreateOnOne() {
         var accepted = createOnOwner("order-isolated", "placed", 42);
         var ownerInstance = text(accepted.response(), "instance");
 
         // Polled, not sampled: a replica serves only once it has folded the partition, and taking one
         // reading immediately after the create would measure the fold's latency rather than whether the
-        // state replicated at all.
+        // key is answerable cluster-wide at all.
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
                .until(() -> serversOf("order-isolated").size() > 1);
 
         var servers = serversOf("order-isolated");
 
-        assertThat(servers).describedAs("entity state is replicated after I3, so more than the owner must serve it")
+        assertThat(servers).describedAs("more than the accepting node must answer the key — from its own fold if it "
+                                        + "holds the partition, by forwarding to the owner if it does not")
                            .hasSizeGreaterThan(1);
 
         var instances = servers.stream()
@@ -379,9 +584,11 @@ class DurableEntityForgeTest {
         });
     }
 
-    /// Every node currently serving `key`, by response body. A node that does not hold the key's partition
-    /// refuses rather than answering "absent", so this filters on a positive answer instead of counting
-    /// negatives — "absent" and "I cannot say" are different claims and must not be summed.
+    /// Every node currently serving `key`, by response body. Filters on a POSITIVE answer rather than
+    /// counting negatives: a node whose fold is still replaying answers neither "found" nor "absent" but
+    /// a transient refusal, and "absent" and "I cannot say" are different claims that must not be summed.
+    /// A node that does not hold the key's partition forwards to the committed owner, so a "found" here
+    /// names a node that answered, not necessarily one that holds the state.
     private List<String> serversOf(String key) {
         return appPorts().stream()
                          .map(port -> get(port, key))
@@ -401,7 +608,7 @@ class DurableEntityForgeTest {
     /// suite goes through — so the property is checked continuously as a side effect of ordinary setup,
     /// not only here.
     @Test
-    @Order(10)
+    @Order(11)
     void create_succeedsOnExactlyOneNode_forTheSameKey() {
         var accepted = createOnOwner("order-fenced", "placed", 7);
 
@@ -409,15 +616,18 @@ class DurableEntityForgeTest {
         assertThat(number(accepted.response(), "amount")).isEqualTo(7);
     }
 
-    /// State lives on exactly one node and dies with it. Declared `replication_factor = 3`, survived
-    /// zero failures.
+    /// State outlives the node that owned it. The blueprint declares `replication_factor = 3`, so
+    /// `minSyncReplicas` derives 2 and the owner plus one peer hold each record before the write acks —
+    /// which is what makes the value recoverable from a survivor rather than only from the owner's own
+    /// restart.
     ///
-    /// Forge cannot hard-kill in-JVM (`stop()` always closes cleanly), so this is a GRACEFUL
-    /// shutdown — the most durability-friendly restart available here. Even under those conditions
-    /// nothing survives, because the entity has no persistence path at all: not a lost race, an
-    /// absent mechanism. Ordered last because it shrinks the cluster.
+    /// Forge cannot hard-kill in-JVM (`stop()` always closes cleanly), so the loss here is a GRACEFUL
+    /// shutdown. That makes this the weaker half of the durability claim: SIGKILL crash durability is
+    /// gated separately by the `02w-entity-crash` cloud suite. What this pins is that the surviving
+    /// nodes serve the exact value that was written, after ownership moves and the new owner rebuilds
+    /// the partition from the log. Ordered last because it shrinks the cluster.
     @Test
-    @Order(11)
+    @Order(12)
     void state_survivesTheLossOfTheNodeThatOwnedIt() {
         var ownerPort = createOnOwner("order-durability", "placed", 77).port();
 
@@ -582,8 +792,73 @@ class DurableEntityForgeTest {
         return httpPost(port, "/api/entity/delete", "{\"orderId\":\"" + key + "\"}");
     }
 
+    /// Schedules a timer with the fixture's default delay and no caller token — the entity mints one per
+    /// call, so N calls are N timers.
     private String scheduleTimer(int port, String key) {
         return httpPost(port, "/api/entity/schedule-timer", "{\"orderId\":\"" + key + "\"}");
+    }
+
+    /// Schedules a timer under a CALLER-minted token and an explicit delay. Re-sending the same token is
+    /// what makes a lost acknowledgement recoverable: the owner recognises the token as already pending and
+    /// appends nothing, so the schedule — and its effect — happen once.
+    private String scheduleTimer(int port, String key, long delayMillis, String token) {
+        return httpPost(port,
+                        "/api/entity/schedule-timer",
+                        "{\"orderId\":\"" + key + "\",\"delayMillis\":" + delayMillis + ",\"token\":\"" + token + "\"}");
+    }
+
+    /// Every currently-serving node's `expiries` count for `key` — the multiplicity of applied `Expire`
+    /// commands as each node's own committed view reports it.
+    ///
+    /// Read cluster-wide rather than from a resolved owner, for the same reason [#createOnOwner] offers its
+    /// write to everyone: asking production who owns the arc and then believing that node's answer would
+    /// make the gate partly self-confirming. A duplicate fire shows up as a 2 on whichever node folded both,
+    /// and this sees all of them.
+    private List<Integer> expiriesAcrossCluster(String key) {
+        return serversOf(key).stream()
+                             .map(response -> number(response, "expiries"))
+                             .toList();
+    }
+
+    /// One serving node's view of `key`, for reading components other than the count.
+    private String servedView(String key) {
+        return serversOf(key).stream()
+                             .findFirst()
+                             .orElseThrow(() -> new AssertionError("No node serves '" + key + "'"));
+    }
+
+    /// Wait out a fixed span. Deliberately a sleep and not a poll: what is being waited for is the ABSENCE
+    /// of a second fire, and absence has no condition to poll on — only elapsed ticks.
+    ///
+    /// The loop is load-bearing, not defensive. [org.pragmatica.lang.Promise#await()] registers an unpark
+    /// callback and then parks in a `while (result == null)` loop; when the promise resolves between the
+    /// registration and the check, the loop exits WITHOUT consuming the permit that callback's `unpark`
+    /// leaves behind. A bare `parkNanos` on the same thread then returns in ~0ns by consuming that residual
+    /// permit — and every caller here runs dozens of `await()` calls immediately beforehand. Parking to a
+    /// DEADLINE re-parks after such a wakeup, so the span elapses whatever the permit state.
+    ///
+    /// The elapsed span is measured and asserted rather than assumed. A quiet period that does not elapse
+    /// degrades its caller's exactly-once gate into a re-read of the value it just polled for — the gate
+    /// stays green and stops testing anything, which is the failure mode a bare park already produced here.
+    private static void awaitQuietPeriod(Duration span) {
+        var startedAt = System.nanoTime();
+        var deadline = startedAt + span.toNanos();
+
+        while (System.nanoTime() < deadline) {
+            LockSupport.parkNanos(deadline - System.nanoTime());
+        }
+
+        var elapsedMillis = Duration.ofNanos(System.nanoTime() - startedAt).toMillis();
+
+        LOG.log(System.Logger.Level.INFO,
+                "I4 quiet period: requested={0}ms elapsed={1}ms",
+                span.toMillis(),
+                elapsedMillis);
+
+        assertThat(elapsedMillis).describedAs("the quiet period must actually elapse — a residual unpark permit left by "
+                                              + "Promise.await() makes a bare park return at once, which would reduce the "
+                                              + "exactly-once assertion below to a re-read of the value just polled for")
+                                 .isGreaterThanOrEqualTo(span.toMillis());
     }
 
     // --- response reading -------------------------------------------------------

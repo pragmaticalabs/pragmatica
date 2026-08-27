@@ -89,6 +89,165 @@ class EntityLogRecordTest {
         }
     }
 
+    /// #345 I4 — the timer payload that rides inside `state` for the three timer ops. Pinned as hard as
+    /// the envelope, for the same reason: a token that round-tripped wrong would silently cancel or fire
+    /// the WRONG timer, and a fire instant that round-tripped wrong would fire at the wrong time — neither
+    /// announces itself as a parse failure.
+    @Nested
+    class Timers {
+        private static final String TOKEN = "01J8XG7Q0000000000000000";
+
+        @Test
+        void encode_thenDecode_preservesTimerSchedule() {
+            var command = new byte[] {4, 5, 6};
+            var decoded = decodeOrFail(EntityLogRecord.timerSchedule(KEY, TOKEN, 1_700_000_000_123L, command).encode());
+
+            assertThat(decoded.op()).isEqualTo(EntityLogRecord.Op.TIMER_SCHEDULE);
+            assertThat(decoded.key()).isEqualTo(KEY);
+            assertPayload(decoded, TOKEN, 1_700_000_000_123L, command);
+        }
+
+        @Test
+        void encode_thenDecode_preservesTimerCancel() {
+            var decoded = decodeOrFail(EntityLogRecord.timerCancel(KEY, TOKEN).encode());
+
+            assertThat(decoded.op()).isEqualTo(EntityLogRecord.Op.TIMER_CANCEL);
+            assertPayload(decoded, TOKEN, 0L, new byte[0]);
+        }
+
+        /// A fire carries the POST-FIRE STATE where a schedule carries the command — one record, so the
+        /// token leaving the pending set and the state landing cannot be separated by a crash.
+        @Test
+        void encode_thenDecode_preservesTimerFire() {
+            var state = new byte[] {7, 8};
+            var decoded = decodeOrFail(EntityLogRecord.timerFire(KEY, TOKEN, state).encode());
+
+            assertThat(decoded.op()).isEqualTo(EntityLogRecord.Op.TIMER_FIRE);
+            assertPayload(decoded, TOKEN, 0L, state);
+        }
+
+        /// The instant is a full 64-bit field. Truncating it to an int would move far-future timers into
+        /// the past and fire them all on the next tick.
+        @Test
+        void encode_thenDecode_preservesFireInstantsBeyondIntRange() {
+            assertPayload(decodeOrFail(EntityLogRecord.timerSchedule(KEY, TOKEN, Long.MAX_VALUE, new byte[] {1}).encode()),
+                          TOKEN,
+                          Long.MAX_VALUE,
+                          new byte[] {1});
+        }
+
+        /// Tokens are length-prefixed in BYTES, exactly as keys are. A multi-byte token counted in
+        /// characters would take the wrong slice and corrupt both the token and the command after it.
+        @Test
+        void encode_thenDecode_preservesMultiByteToken() {
+            var token = "токен-δ-🚀";
+
+            assertThat(token.getBytes(StandardCharsets.UTF_8).length).isGreaterThan(token.length());
+            assertPayload(decodeOrFail(EntityLogRecord.timerSchedule(KEY, token, 9L, new byte[] {3}).encode()),
+                          token,
+                          9L,
+                          new byte[] {3});
+        }
+
+        @Test
+        void encode_thenDecode_preservesEmptyCommand() {
+            assertPayload(decodeOrFail(EntityLogRecord.timerSchedule(KEY, TOKEN, 9L, new byte[0]).encode()),
+                          TOKEN,
+                          9L,
+                          new byte[0]);
+        }
+
+        /// The ordinals ARE the wire form. A reordering of the enum would re-interpret every record already
+        /// on disk as a different operation, so they are pinned rather than left to declaration order.
+        @Test
+        void ordinals_areStable_soExistingLogsKeepTheirMeaning() {
+            assertThat(EntityLogRecord.Op.values()).containsExactly(EntityLogRecord.Op.UPSERT,
+                                                                    EntityLogRecord.Op.DELETE,
+                                                                    EntityLogRecord.Op.TIMER_SCHEDULE,
+                                                                    EntityLogRecord.Op.TIMER_CANCEL,
+                                                                    EntityLogRecord.Op.TIMER_FIRE);
+        }
+
+        @Test
+        void timerPayload_fails_forTruncatedPayload() {
+            assertMalformedPayload(new EntityLogRecord(EntityLogRecord.Op.TIMER_SCHEDULE, KEY, new byte[] {1, 0, 0, 0}));
+        }
+
+        @Test
+        void timerPayload_fails_forEmptyPayload() {
+            assertMalformedPayload(new EntityLogRecord(EntityLogRecord.Op.TIMER_CANCEL, KEY, new byte[0]));
+        }
+
+        /// A token length that runs past the payload is the corruption most likely to be waved through by a
+        /// parser that trusts its input — it would read whatever followed in the buffer as the token.
+        @Test
+        void timerPayload_fails_forTokenLengthBeyondPayload() {
+            var record = EntityLogRecord.timerSchedule(KEY, TOKEN, 1L, new byte[] {1});
+            var payload = record.state();
+
+            payload[9] = 0x7F;
+            payload[10] = 0x00;
+
+            assertMalformedPayload(new EntityLogRecord(record.op(), record.key(), payload));
+        }
+
+        @Test
+        void timerPayload_fails_forNegativeTokenLength() {
+            var record = EntityLogRecord.timerCancel(KEY, TOKEN);
+            var payload = record.state();
+
+            payload[9] = (byte) 0xFF;
+            payload[10] = (byte) 0xFF;
+            payload[11] = (byte) 0xFF;
+            payload[12] = (byte) 0xFF;
+
+            assertMalformedPayload(new EntityLogRecord(record.op(), record.key(), payload));
+        }
+
+        /// A newer node's payload must be refused loudly for the same reason a newer envelope is: parsing
+        /// it under this build's layout would fold a garbage timer into state that then gets checkpointed.
+        @Test
+        void timerPayload_failsUnsupportedVersion_forNewerPayloadFraming() {
+            var record = EntityLogRecord.timerFire(KEY, TOKEN, new byte[] {1});
+            var payload = record.state();
+
+            payload[0] = (byte) (EntityLogRecord.TimerPayload.PAYLOAD_VERSION + 1);
+
+            new EntityLogRecord(record.op(), record.key(), payload)
+                .timerPayload()
+                .onSuccess(decoded -> fail("a newer payload version must be refused, got " + decoded))
+                .onFailure(cause -> assertThat(cause.stream()).hasAtLeastOneElementOfType(EntityLogError.UnsupportedVersion.class));
+        }
+
+        /// The envelope is unchanged by timers: a timer record still decodes to its op and key under
+        /// framing version 1, so a build that predates I4 still reads the log — it simply meets an op
+        /// ordinal it does not know and refuses THAT, rather than misparsing the record.
+        ///
+        /// Against the LITERAL 1, not against `EntityLogRecord.VERSION`. The claim is about the byte an
+        /// older build will find on the wire, and comparing the encoder's output to the constant the
+        /// encoder writes holds for every value that constant could take — including the bump this test
+        /// exists to catch.
+        @Test
+        void encode_keepsEnvelopeVersionOne_forTimerRecords() {
+            assertThat(EntityLogRecord.timerSchedule(KEY, TOKEN, 1L, new byte[] {1}).encode()[0])
+                .isEqualTo((byte) 1);
+        }
+
+        private static void assertPayload(EntityLogRecord record, String token, long fireAt, byte[] body) {
+            var payload = record.timerPayload().fold(cause -> fail(cause.message()), decoded -> decoded);
+
+            assertThat(payload.token()).isEqualTo(token);
+            assertThat(payload.fireAtEpochMillis()).isEqualTo(fireAt);
+            assertThat(payload.body()).isEqualTo(body);
+        }
+
+        private static void assertMalformedPayload(EntityLogRecord record) {
+            record.timerPayload()
+                  .onSuccess(payload -> fail("malformed timer payload must be refused, got " + payload))
+                  .onFailure(EntityLogRecordTest::assertMalformedRecord);
+        }
+    }
+
     @Nested
     class Malformed {
         @Test

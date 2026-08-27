@@ -7,6 +7,7 @@ package org.pragmatica.aether.resource.entity;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 
 
 /// Lets an arriving forwarded command reach the keyspace's LIVE entity instance (#596).
@@ -52,5 +53,30 @@ public interface EntityForwardRegistry {
         /// locally either, and the answer stays honest under deposal (it claims a staleness bound, not
         /// currency).
         Promise<Option<byte[]>> getForwarded(byte[] encodedKey);
+
+        /// Schedule a one-shot timer, as [#applyForwarded] is update (#345 I4). The DELAY arrives rather
+        /// than an absolute instant, and THIS node stamps the fire instant from its own wall clock — so the
+        /// clock that mints the instant is the clock that later finds it due, and no sender/owner skew
+        /// enters the timer. A NEGATIVE delay is refused rather than applied: it would name an instant
+        /// already past and fire on the next tick, turning "later" into "now" with nothing in the answer
+        /// to say so.
+        ///
+        /// The TOKEN arrives too, minted by the sender before the hop: this node applies that token, and a
+        /// token already pending on the key names a schedule that ALREADY landed, so it is answered without
+        /// appending a second timer. Answers the token this node actually applied, in its STRING form — the
+        /// token type belongs to this module and never crosses the wire, so the encoded boundary carries a
+        /// string, the sender re-wraps it and verifies it against what it sent.
+        Promise<String> scheduleTimerForwarded(byte[] encodedKey,
+                                               long delayMillis,
+                                               byte[] encodedOnFire,
+                                               String token);
+
+        /// Cancel a timer, as [#deleteForwarded] is delete (#345 I4). A cancel has no post-state and is
+        /// idempotent on the owner, so the outcome the caller needs is the success or failure itself —
+        /// answered as [Unit] rather than as empty bytes. The sender's half
+        /// ([EntityOwnerForward#forwardCancelTimer]) already answers `Promise<Unit>`, and one operation
+        /// cannot have two answers to "there is no payload" without the byte convention on one end drifting
+        /// into meaning something.
+        Promise<Unit> cancelTimerForwarded(byte[] encodedKey, String token);
     }
 }

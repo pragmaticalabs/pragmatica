@@ -235,7 +235,7 @@ class EntityFoldFreshnessTest {
         @Override
         public Promise<Option<EntityCheckpoint>> loadCheckpoint(String keyspace, int partition) {
             return Promise.success(checkpoint.map(c -> EntityCheckpoint.entityCheckpoint(c.throughOffset(),
-                                                                                         EntityFoldSnapshot.encode(c.state()))));
+                                                                                         EntityFoldSnapshot.encode(c.state(), Map.of()))));
         }
     }
 

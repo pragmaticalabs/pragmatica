@@ -5,6 +5,7 @@
 package org.pragmatica.aether.resource.entity;
 
 import java.time.Duration;
+import java.util.UUID;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.aether.resource.Mutator;
@@ -136,33 +137,111 @@ public interface DurableEntity<K, S, C extends Mutator<S>> {
 
     /// Schedule a one-shot timer that applies `onFire` to the entity state after `delay`.
     ///
-    /// Durable per-entity timers are owned by a later slice (spec §4.5, plan Phase 2c). The HA-only
-    /// in-memory cut declines this with [EntityError.TimerNotSupported]; the signature is
-    /// declared here to keep the API faithful to spec §5.
+    /// Supported by the fenced-log backing (#345 I4), where a pending timer is a record in the entity's
+    /// own durable log and therefore survives handover and restart by the same machinery state does. The
+    /// HA-only in-memory cut declines with [EntityError.TimerNotSupported].
+    ///
+    /// ## Semantics, stated per property rather than as a label
+    ///   - **One-shot.** The timer fires at most once and leaves the pending set when it does. There is no
+    ///     repeat form; a recurring timer is the caller re-scheduling from the fired command.
+    ///   - **Wall-clock instant, stamped by the OWNER.** `delay` is resolved to an absolute instant by the
+    ///     committed owner, on the owner's own clock, at the moment the schedule is appended to the log. A
+    ///     schedule issued anywhere else travels as a DELAY and is stamped on arrival, so the clock that
+    ///     mints the instant is the clock that later finds it due and sender/owner skew never enters the
+    ///     timer. The instant is then stored, so a handover or restart does not restart the delay. Skew
+    ///     enters in one place only: across a HANDOVER, where the stamped instant is compared against a
+    ///     successor owner's clock and the fire shifts by the difference between the two.
+    ///   - **At or after, never before — as measured by the FIRING node's clock.** A timer fires at the
+    ///     first tick at or after its instant, so lateness is bounded by the tick interval. Worst-case
+    ///     lateness is one tick interval — one second — plus however long the key's partition goes without
+    ///     a live owner: a timer whose owner is being replaced fires when the new owner takes over, late
+    ///     but not lost. Earliness in REAL time has exactly one route, the handover above: a successor
+    ///     owner whose clock runs ahead of the stamping owner's fires the timer that far before the
+    ///     wall-clock instant the caller meant. **Sub-second punctuality is not offered here.** A deadline
+    ///     measured in milliseconds wants in-memory scheduling, which buys that precision by giving up
+    ///     durability across an owner change.
+    ///     [design intent — unverified] — the handover and full-restart gates measure it.
+    ///   - **The key must exist.** Scheduling on a key that holds no state fails with
+    ///     [EntityError.EntityNotFound] — there is nothing for `onFire` to mutate.
+    ///   - **The token is the CALLER's, and a retry carrying it is the SAME schedule.** This overload mints
+    ///     a fresh token and delegates to [#scheduleTimer(Object, Duration, Mutator, TimerToken)], which is
+    ///     the entry a caller that intends to retry uses directly — the only one able to present the same
+    ///     token twice. The owner recognises an already-pending token, appends nothing, and answers with
+    ///     that same token. A retry therefore cannot plant a second timer, and the at-least-once caveat
+    ///     that a retried operation may leave behind an effect the caller cannot name does NOT apply here.
+    ///   - **The fire is an ordinary update.** `onFire` runs on the owner, inside the key's per-key
+    ///     serialization, totally ordered against every concurrent operation on that key (spec §4.5).
+    ///   - **A fire that cannot be applied is CONSUMED, not retried.** If the command fails to decode or
+    ///     its mutator throws, the timer is durably cancelled and the failure logged; the entity's state is
+    ///     untouched. `onFire` is a pure `S -> S`, so a retry would fail identically. Recovery is the
+    ///     operator's: fix the command and schedule again.
     ///
     /// @param key    entity key
     /// @param delay  delay before the timer fires
     /// @param onFire pure state transition applied when the timer fires
     ///
     /// @return a token identifying the scheduled timer, or a failure
-    Promise<TimerToken> scheduleTimer(K key, Duration delay, C onFire);
+    default Promise<TimerToken> scheduleTimer(K key, Duration delay, C onFire) {
+        return scheduleTimer(key,
+                             delay,
+                             onFire,
+                             TimerToken.timerToken(UUID.randomUUID().toString()));
+    }
+
+    /// Schedule a one-shot timer under a token the CALLER supplies — the retry-safe entry.
+    ///
+    /// Every semantic of [#scheduleTimer(Object, Duration, Mutator)] holds unchanged; the only difference is
+    /// where the token comes from, and that difference is the whole point. `scheduleTimer` returns its token
+    /// in the answer, so a caller whose acknowledgement is lost or times out never learns it: the schedule
+    /// may well have landed, and there is no cancel-by-key verb to reach it with. Minting the token BEFORE
+    /// the call closes that window — the caller holds the handle whatever the answer turns out to be, and
+    /// can re-send until it gets one.
+    ///
+    /// **A re-send carrying the same token is the same schedule, not a second one.** The owner answers a
+    /// token it already has pending for this key with that token and appends nothing, so the effect lands
+    /// exactly once no matter how many times the request is repeated. This holds across the forward hop
+    /// too: the token travels to the committed owner, which re-runs its own admission and its own
+    /// already-pending check on arrival.
+    ///
+    /// The token identifies the timer only WITHIN its key, so uniqueness is the caller's obligation only
+    /// against its own concurrent schedules on the same key. Two DIFFERENT tokens on one key are two
+    /// timers, deliberately.
+    ///
+    /// @param key    entity key
+    /// @param delay  delay before the timer fires
+    /// @param onFire pure state transition applied when the timer fires
+    /// @param token  caller-minted handle identifying this schedule within `key`
+    ///
+    /// @return `token`, once the timer is pending, or a failure
+    Promise<TimerToken> scheduleTimer(K key, Duration delay, C onFire, TimerToken token);
 
     /// Cancel a previously scheduled timer.
     ///
-    /// Durable per-entity timers are owned by a later slice (spec §4.5, plan Phase 2c). The HA-only
-    /// in-memory cut declines this with [EntityError.TimerNotSupported]; the signature is
-    /// declared here to keep the API faithful to spec §5.
+    /// Supported by the fenced-log backing (#345 I4); the HA-only in-memory cut declines with
+    /// [EntityError.TimerNotSupported].
+    ///
+    /// **Idempotent** (spec §5.1): a token that already fired, was already cancelled, or belonged to a key
+    /// that has since been deleted succeeds without doing anything — [#delete] auto-cancels the key's
+    /// pending timers, so an absent key counts as already-cancelled rather than as an error.
+    ///
+    /// **A token whose schedule never landed is the same noop-success.** Both schedule entries fix the token
+    /// before anything is appended, so a caller can hold a token for a schedule that was refused, timed out,
+    /// or never reached the owner at all. Nothing is pending under such a token, so cancelling it succeeds
+    /// with no record appended, exactly as an already-cancelled one does. That is what makes "cancel the
+    /// token you hold" a safe recovery for a schedule whose outcome is unknown: it either removes the timer
+    /// or finds nothing to remove, and the caller cannot tell — nor need to.
     ///
     /// @param key   entity key
-    /// @param token token returned by [#scheduleTimer]
+    /// @param token token a schedule entry returned or was given
     ///
-    /// @return success when cancelled, or a failure
+    /// @return success when cancelled or when there was nothing to cancel, or a failure
     Promise<Unit> cancelTimer(K key, TimerToken token);
 
     /// Delete the entity instance for `key`.
     ///
-    /// Applied inside the per-key serialization. Fails with [EntityError.EntityNotFound] if the
-    /// key holds no state.
+    /// Applied inside the per-key serialization, and it AUTO-CANCELS the key's pending timers (spec §5.1)
+    /// — otherwise each would come due against a key with no state, once per tick. Fails with
+    /// [EntityError.EntityNotFound] if the key holds no state.
     ///
     /// @param key entity key
     ///

@@ -36,15 +36,19 @@ import org.pragmatica.serialization.Serializer;
 ///   - **HA, not restart-durable.** The engine is the in-memory `MemoryStorageEngine`; restart
 ///     durability is the fenced-log slice (spec §4.4 / plan Phase 3), behind this same API.
 ///   - **Single-replica, local-owner.** This cut commits to ONE engine and assumes it runs on the
-///     owner; cross-node owner-routing of updates and quorum replication are later sub-slices (2b-ii)
-///     — no general owner-routed invocation mechanism exists yet to run a mutator on a remote owner.
+///     owner; it carries no owner routing of its own. Cross-node owner-forwarding lives on
+///     [PartitionFencedDurableEntity] ([EntityOwnerForward]), which is what a node provisions —
+///     [DurableEntityFactory] never builds this entity, so it is reached only by direct construction
+///     in tests.
 ///
 /// ## State representation
 ///
 /// A key `K` is mapped to the DHT key bytes `keyspace + "/" + key` (UTF-8). The state `S` is encoded
-/// with the injected [Serializer] and decoded with the [Deserializer]. A monotonic process-wide
+/// with the injected [Serializer] and decoded with the [Deserializer]. A monotonic PER-INSTANCE
 /// version sequencer supplies the within-epoch HLC-LWW `version`; under the per-key tail each commit
 /// for a key gets a strictly higher version than its predecessor, so the last committed write wins.
+/// Two instances over one keyspace would each start from zero, which is why this cut assumes a single
+/// local owner.
 ///
 /// @param <K> entity key type — rendered to bytes via `String.valueOf` for the DHT key (first cut)
 /// @param <S> entity state type — an application-defined immutable value, encoded via [Serializer]
@@ -100,7 +104,7 @@ final class FencedDurableEntity<K, S, C extends Mutator<S>> implements DurableEn
     }
 
     @Override
-    public Promise<TimerToken> scheduleTimer(K key, Duration delay, C onFire) {
+    public Promise<TimerToken> scheduleTimer(K key, Duration delay, C onFire, TimerToken token) {
         return new EntityError.TimerNotSupported(String.valueOf(key)).promise();
     }
 

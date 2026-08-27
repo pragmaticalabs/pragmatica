@@ -35,8 +35,9 @@ public sealed interface EntityForwardMessage extends ProtocolMessage {
     /// `HttpForwardRequest`): the sender's remaining budget at send time (`Deadline.toWireMillis`).
     /// The receiver rebinds it and REFUSES an arrived-expired command instead of applying work whose
     /// ack nobody collects — the zombie-dispatch amplification 02w measured behind abandoned hops.
-    /// Wire note: adding this component changes the encoded shape of all three request records —
-    /// same-version clusters only, rc-internal, the same policy as every positional-codec change.
+    /// Wire note: this component sits on all SIX request records — the mutation trio, the get, and both
+    /// timer verbs — so its encoded shape is theirs: same-version clusters only, rc-internal, the same
+    /// policy as every positional-codec change.
     record EntityUpdateForward(NodeId sender,
                                String correlationId,
                                String keyspace,
@@ -154,10 +155,10 @@ public sealed interface EntityForwardMessage extends ProtocolMessage {
         }
     }
 
-    /// The response for ALL THREE forwarded operations — update, create and delete. Deliberately NOT
-    /// renamed to match: the name is a codec identity, and renaming a `@Codec` type re-derives its tag
-    /// for a cosmetic gain. `state` carries the encoded post-mutation state for update and create, is
-    /// EMPTY for delete (which has no post-state), and is empty on failure.
+    /// The response for FOUR forwarded operations — update, create, delete and timer-cancel. Deliberately
+    /// NOT renamed to match: the name is a codec identity, and renaming a `@Codec` type re-derives its tag
+    /// for a cosmetic gain. `state` carries the encoded post-mutation state for update and create, and is
+    /// EMPTY for delete and timer-cancel (neither has a post-state) and on failure.
     ///
     /// A failure here must reach the original caller as a failure. The one thing the sender must never
     /// do is apply the command locally instead — that would put a second writer on the key, which is
@@ -184,6 +185,120 @@ public sealed interface EntityForwardMessage extends ProtocolMessage {
                                                                   String failureType,
                                                                   String errorMessage) {
             return new EntityUpdateForwardResponse(sender, correlationId, false, new byte[0], failureType, errorMessage);
+        }
+    }
+
+    /// Schedule a one-shot timer on `key` in `keyspace`, on this node (#345 I4).
+    ///
+    /// The DELAY travels, never an absolute instant. The owner stamps the fire instant from its OWN wall
+    /// clock on arrival, so the clock that mints the instant and the clock that later finds it due are the
+    /// same one — an instant stamped by the sender would be compared against a different node's clock and
+    /// shift the fire by the skew between them. The price is that the hop's latency is added to the delay,
+    /// which is bounded by the forward timeout and far smaller than unbounded skew.
+    ///
+    /// The TOKEN, by contrast, IS the sender's: it is minted at the caller's `DurableEntity.scheduleTimer`
+    /// entry, before this message exists, and the owner applies it rather than one of its own. A token
+    /// already pending on the key names a schedule that already landed, so a re-sent forward — the shape a
+    /// lost response takes — appends nothing and answers the same token. Carried as a plain `String`, for
+    /// the reason [EntityScheduleTimerForwardResponse] gives. Positioned next to `key` so it sits where
+    /// [EntityCancelTimerForward] carries its own.
+    ///
+    /// `key` and `onFire` are defensively copied for the same reason the mutation trio's arrays are: a
+    /// record component that aliases a caller's buffer is a mutable field with extra steps, and these
+    /// cross a thread boundary on arrival.
+    record EntityScheduleTimerForward(NodeId sender,
+                                      String correlationId,
+                                      String keyspace,
+                                      byte[] key,
+                                      String token,
+                                      long delayMillis,
+                                      byte[] onFire,
+                                      long remainingMillis) implements EntityForwardMessage {
+        public EntityScheduleTimerForward {
+            key = key.clone();
+            onFire = onFire.clone();
+        }
+
+        public static EntityScheduleTimerForward entityScheduleTimerForward(NodeId sender,
+                                                                            String correlationId,
+                                                                            String keyspace,
+                                                                            byte[] key,
+                                                                            String token,
+                                                                            long delayMillis,
+                                                                            byte[] onFire,
+                                                                            long remainingMillis) {
+            return new EntityScheduleTimerForward(sender,
+                                                  correlationId,
+                                                  keyspace,
+                                                  key,
+                                                  token,
+                                                  delayMillis,
+                                                  onFire,
+                                                  remainingMillis);
+        }
+    }
+
+    /// The schedule response, carrying the owner's ECHO of the token it applied ("" on failure).
+    ///
+    /// An echo rather than a mint: the token arrives on [EntityScheduleTimerForward] and the owner answers
+    /// with the one it actually used, so the sender can VERIFY the identity survived both the wire and the
+    /// owner's already-pending check. It fails loudly on a mismatch — a schedule whose token changed under
+    /// it is a durable timer the caller cannot cancel, which is the defect caller-side minting removes.
+    ///
+    /// The token is a plain `String` and never the entity's own `TimerToken`: that type lives in
+    /// `resource/durable-entity`, and a wire type here that depended on it would drag the entity module
+    /// into the node's codec surface — and pin a domain type's SHAPE to a wire tag, so a later field on
+    /// it would be a wire break. The sender wraps the string back into the token inside the entity module,
+    /// where the type belongs.
+    ///
+    /// `failureType` is the owner-side cause's simple class name ("" on success) — carried so the sender
+    /// can reconstruct the TYPED refusal instead of a string-flattened one; see
+    /// `EntityOwnerForward.ForwardRefused`. A schedule on a key that holds no state refuses with
+    /// `EntityNotFound`, and that must still read as `EntityNotFound` after the hop.
+    record EntityScheduleTimerForwardResponse(NodeId sender,
+                                              String correlationId,
+                                              boolean success,
+                                              String token,
+                                              String failureType,
+                                              String errorMessage) implements EntityForwardMessage {
+        public static EntityScheduleTimerForwardResponse successResponse(NodeId sender,
+                                                                         String correlationId,
+                                                                         String token) {
+            return new EntityScheduleTimerForwardResponse(sender, correlationId, true, token, "", "");
+        }
+
+        public static EntityScheduleTimerForwardResponse failureResponse(NodeId sender,
+                                                                         String correlationId,
+                                                                         String failureType,
+                                                                         String errorMessage) {
+            return new EntityScheduleTimerForwardResponse(sender, correlationId, false, "", failureType, errorMessage);
+        }
+    }
+
+    /// Cancel `token` on `key` in `keyspace`, on this node (#345 I4). The token is a plain `String` for
+    /// the same reason [EntityScheduleTimerForwardResponse]'s is.
+    ///
+    /// There is deliberately NO `EntityCancelTimerForwardResponse`: a cancel's outcome is the success or
+    /// failure itself, which is exactly what [EntityUpdateForwardResponse] with an empty `state` already
+    /// carries for delete. A second Unit-shaped response record would spend a wire tag and a correlation
+    /// map on a distinction nothing reads.
+    record EntityCancelTimerForward(NodeId sender,
+                                    String correlationId,
+                                    String keyspace,
+                                    byte[] key,
+                                    String token,
+                                    long remainingMillis) implements EntityForwardMessage {
+        public EntityCancelTimerForward {
+            key = key.clone();
+        }
+
+        public static EntityCancelTimerForward entityCancelTimerForward(NodeId sender,
+                                                                        String correlationId,
+                                                                        String keyspace,
+                                                                        byte[] key,
+                                                                        String token,
+                                                                        long remainingMillis) {
+            return new EntityCancelTimerForward(sender, correlationId, keyspace, key, token, remainingMillis);
         }
     }
 }

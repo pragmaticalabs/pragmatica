@@ -34,11 +34,14 @@ import static org.pragmatica.lang.Promise.unitPromise;
 /// [#get(Object)] and [#get(Object, ReadConsistency)] with [ReadConsistency#BOUNDED_STALE] serve the
 /// local committed-prefix read. [ReadConsistency#LINEARIZABLE] routes through an optional
 /// [LinearizableEntityServe] (committed-owner routing + no-op round + post-round epoch fence); when that
-/// component is absent — the default factory product, and the single-owner in-memory cut generally — a
+/// component is absent — the no-arg form, and the single-owner in-memory cut generally — a
 /// `LINEARIZABLE` read degrades to the local read, which on a single owner already reflects every
 /// acknowledged write. The wired form ([#inMemoryDurableEntity(NodeId, EntityPartitionArc,
-/// CommittedPartitionOwnerSource, Option, Option)]) is exercised by tests today and lands in production
-/// with the entity node wiring (#277).
+/// CommittedPartitionOwnerSource, Option, Option)]) is exercised by tests.
+///
+/// Neither form reaches a running node: [DurableEntityFactory] provisions only the fenced-log
+/// [PartitionFencedDurableEntity] and refuses without its fence collaborators. This entity is
+/// constructed directly, by tests and harnesses.
 ///
 /// @param <K> entity key type
 /// @param <S> entity state type (immutable)
@@ -74,7 +77,7 @@ final class InMemoryDurableEntity<K, S, C extends Mutator<S>> implements Durable
 
     /// Linearizable-capable in-memory entity: a [ReadConsistency#LINEARIZABLE] read routes to the key's
     /// committed partition owner via [LinearizableEntityServe] (owner-serve pipeline over the shared
-    /// ownership substrate). Used by tests today and by the entity node wiring (#277) in production.
+    /// ownership substrate). Constructed by tests; a node provisions the fenced-log entity instead.
     static <K, S, C extends Mutator<S>> DurableEntity<K, S, C> inMemoryDurableEntity(NodeId selfNodeId,
                                                                                      EntityPartitionArc arc,
                                                                                      CommittedPartitionOwnerSource committedOwnerSource,
@@ -122,7 +125,7 @@ final class InMemoryDurableEntity<K, S, C extends Mutator<S>> implements Durable
     }
 
     @Override
-    public Promise<TimerToken> scheduleTimer(K key, Duration delay, C onFire) {
+    public Promise<TimerToken> scheduleTimer(K key, Duration delay, C onFire, TimerToken token) {
         return new EntityError.TimerNotSupported(String.valueOf(key)).promise();
     }
 

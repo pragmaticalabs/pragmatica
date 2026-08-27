@@ -5,6 +5,7 @@
 package org.pragmatica.aether.resource.entity;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -41,6 +42,11 @@ class EntityOwnerForwardTest {
     private static final int PARTITIONS = 8;
     private static final NodeId SELF = new NodeId("self-node");
     private static final NodeId OTHER = new NodeId("other-node");
+    private static final Duration TIMER_DELAY = Duration.ofSeconds(10);
+
+    /// The handle the cancel tests present. A literal, so what arrives at the transport is compared against
+    /// a value production never produced.
+    private static final DurableEntity.TimerToken CANCELLED_TOKEN = DurableEntity.TimerToken.timerToken("tok-7");
 
     private RecordingSubstrate substrate;
     private EntityPartitionArc arc;
@@ -359,6 +365,98 @@ class EntityOwnerForwardTest {
         });
     }
 
+    // === #345 I4 timer schedule: the caller-minted token across the hop ===
+
+    /// The token the caller minted is what crosses the seam and what comes back. A hop that minted its own
+    /// would hand the caller a handle to a timer it did not plant — and, when the answer is lost, no handle
+    /// at all for a timer that WAS planted, since cancel takes a token and there is no cancel-by-key verb.
+    ///
+    /// Driven through the token-taking overload with a LITERAL token, and asserted against that literal
+    /// rather than against the answered one. The transport fake echoes what it is handed, so comparing the
+    /// arrived token to the RESULT would hold even if the hop replaced the caller's token with one of its
+    /// own — the fake would echo the replacement and both sides would agree. Only a value fixed outside the
+    /// production path can tell those apart.
+    @Test
+    void scheduleTimer_sendsTheCallerMintedToken_andAnswersThatSameToken() {
+        var minted = DurableEntity.TimerToken.timerToken("caller-minted-token");
+
+        var result = entityAs(SELF, OTHER, Option.some(transport)).scheduleTimer("k1", TIMER_DELAY, new IntOp.Add(7), minted)
+                                                                  .await();
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(transport.arrivedToken)
+            .as("the owner must be asked to apply the token the CALLER minted, not one minted at the hop")
+            .isEqualTo("caller-minted-token");
+
+        String token = result.fold(cause -> fail(cause.message()), value -> value.value());
+
+        assertThat(token).as("and the caller gets its own token back as the handle").isEqualTo("caller-minted-token");
+    }
+
+    /// The echo is CHECKED, not trusted. An owner answering a different token would leave the caller
+    /// holding a handle to nothing while a durable timer runs under a name it never saw — the very defect
+    /// caller-side minting removes, reappearing one layer down. So the mismatch fails loudly, naming both.
+    @Test
+    void scheduleTimer_failsWithTokenMismatch_whenTheOwnerEchoesADifferentToken() {
+        transport.echoedToken = "a-token-the-caller-never-minted";
+
+        var result = entityAs(SELF, OTHER, Option.some(transport)).scheduleTimer("k1", TIMER_DELAY, new IntOp.Add(7))
+                                                                  .await();
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> {
+            assertThat(cause).isInstanceOf(EntityError.TimerTokenMismatch.class);
+            assertThat(cause.message()).contains("a-token-the-caller-never-minted");
+        });
+    }
+
+    // === #345 I4 timer cancel: the same hop, in the other direction ===
+
+    /// Cancel forwards on the same terms schedule does (#596): a non-owner relays to the committed owner
+    /// instead of refusing. The TOKEN is what crosses — there is no cancel-by-key verb, so a hop that
+    /// dropped or replaced it would cancel nothing while answering success.
+    @Test
+    void cancelTimer_forwardsToTheCommittedOwner_whenSelfIsNotOwner() {
+        var result = entityAs(SELF, OTHER, Option.some(transport)).cancelTimer("k1", CANCELLED_TOKEN).await();
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(transport.calls).hasSize(1);
+        assertThat(transport.calls.getFirst().op()).isEqualTo("cancelTimer");
+        assertThat(transport.calls.getFirst().owner()).isEqualTo(OTHER);
+        assertThat(new String(transport.calls.getFirst().key(), StandardCharsets.UTF_8)).isEqualTo("k1");
+        assertThat(new String(transport.calls.getFirst().command(), StandardCharsets.UTF_8))
+            .as("the token names WHICH timer to cancel — a hop that lost it would cancel nothing and say so"
+                + " with a success")
+            .isEqualTo("tok-7");
+    }
+
+    /// Unwired is INERT for cancel too: no transport means the honest local admission refusal, not a
+    /// silently-successful no-op.
+    @Test
+    void cancelTimer_refusesAsBefore_whenNoTransportIsWired() {
+        var result = entityAs(SELF, OTHER, Option.none()).cancelTimer("k1", CANCELLED_TOKEN).await();
+
+        assertThat(refusalOf(result)).contains("reached a non-owner");
+        assertThat(transport.calls).isEmpty();
+    }
+
+    /// Cancel is idempotent ON THE OWNER — a token that names nothing pending is success with no record
+    /// appended — and that is exactly why a failed forward must not fall back to the local path. This
+    /// node's fold holds no timer for the key, so a fallback would find nothing pending, answer SUCCESS,
+    /// and leave the caller believing a timer still armed on the owner had been cancelled.
+    @Test
+    void cancelTimer_failsWithoutFallingBackToTheLocalIdempotentSuccess_whenTheForwardFails() {
+        transport.failWith("owner unreachable");
+
+        var result = entityAs(SELF, OTHER, Option.some(transport)).cancelTimer("k1", CANCELLED_TOKEN).await();
+
+        assertThat(result.isFailure())
+            .as("the local path would answer success here, which is why silence about a failed forward is"
+                + " worse for cancel than for any other verb")
+            .isTrue();
+        assertThat(substrate.appended).isEmpty();
+    }
+
     // === #596 read half: BOUNDED_STALE ===
 
     /// A read on a node that HOLDS the partition is served locally — owner or NOT. Serving replicas
@@ -510,6 +608,35 @@ class EntityOwnerForwardTest {
 
         /// When set, forwarded reads answer ABSENT — arming the explicit-Option path end to end.
         boolean absentGets;
+
+        /// Echoes the token it was handed, which is what a correct owner does — [#echoedToken] overrides it
+        /// so the mismatch path can be driven.
+        @Override
+        public Promise<String> forwardScheduleTimer(NodeId owner,
+                                                    String keyspace,
+                                                    byte[] key,
+                                                    long delayMillis,
+                                                    byte[] onFire,
+                                                    String token) {
+            arrivedToken = token;
+
+            return record("scheduleTimer", owner, keyspace, key, onFire).map(_ -> echoedToken == null ? token : echoedToken);
+        }
+
+        /// The token the last forwarded schedule ARRIVED with, so a test can assert that what crossed the
+        /// seam is the caller's own token rather than one minted at the hop.
+        String arrivedToken;
+
+        /// When set, forwarded schedules answer with THIS token instead of the one they were handed —
+        /// modelling an owner that applied a different identity than the caller minted.
+        String echoedToken;
+
+        /// The token rides in the recorded `command` slot — cancel carries no body of its own, and a test
+        /// asserting only "a cancel was forwarded" would pass with the handle dropped on the way.
+        @Override
+        public Promise<Unit> forwardCancelTimer(NodeId owner, String keyspace, byte[] key, String token) {
+            return record("cancelTimer", owner, keyspace, key, token.getBytes(StandardCharsets.UTF_8)).mapToUnit();
+        }
 
         private Promise<byte[]> record(String op, NodeId owner, String keyspace, byte[] key, byte[] body) {
             calls.add(new ForwardCall(op, owner, keyspace, key, body));

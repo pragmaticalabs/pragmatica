@@ -191,11 +191,22 @@ public final class DurableEntityFactory implements ResourceFactory<DurableEntity
             return;
         }
 
-        context.extension(EntityCheckpointDriver.class)
-               .onSuccess(driver -> driver.register(config.keyspace(),
-                                                    config.partitionCount(),
-                                                    fenced.fold(),
-                                                    fence.substrate()));
+        var checkpointDriver = context.extension(EntityCheckpointDriver.class)
+                                      .onSuccess(driver -> driver.register(config.keyspace(),
+                                                                           config.partitionCount(),
+                                                                           fenced.fold(),
+                                                                           fence.substrate()));
+        // Timers (#345 I4) are OPTIONAL on the same terms as checkpointing, and for the same reason the
+        // shape of a refusal has to match the size of the loss: an absent driver costs TIMELINESS, not
+        // safety. Every scheduled timer is still durable, fenced and replicated — it is in the log — so a
+        // node that later runs a driver fires it. Refusing to provision would take down a keyspace whose
+        // reads and writes are entirely correct.
+        //
+        var timerDriver = context.extension(EntityTimerDriver.class)
+                                 .onSuccess(driver -> driver.register(config.keyspace(),
+                                                                      fenced));
+
+        reportDriverAsymmetry(config.keyspace(), checkpointDriver.isSuccess(), timerDriver.isSuccess());
         // Owner-forwarding (#596) is OPT-IN on both halves, and each half is independently inert:
         // without the transport a non-owner still refuses, and without the registry a forwarded command
         // finds no target. Neither absence silently degrades into applying a write on the wrong node.
@@ -206,17 +217,55 @@ public final class DurableEntityFactory implements ResourceFactory<DurableEntity
         fenced.withCloseHook(() -> retractOnUnload(config, context, fence));
     }
 
+    /// The one entity-driver state worth shouting about, and the reason it keys on asymmetry rather than
+    /// on absence.
+    ///
+    /// `AetherNode` registers both drivers unconditionally and side by side, so exactly two states are
+    /// legitimate: BOTH present (a real node) and NEITHER present (a bare provisioning context — unit
+    /// tests and harnesses provision without drivers on purpose, and that loss is deliberately tolerated
+    /// rather than refused). **One present is neither of those**: something registered half the pair, and
+    /// the missing half's work then silently never runs — no checkpoint driver means no entity log is
+    /// ever reclaimed, no timer driver means every scheduled timer stays durably in the log and never
+    /// fires. Either way the symptom surfaces far from its cause, as unbounded growth or as an
+    /// application bug in whatever depended on the timer.
+    ///
+    /// Reporting mere ABSENCE at error grade was the obvious move and the wrong one: it fires on every
+    /// bare-context unit test, and an error line that is expected to appear is an error line readers stop
+    /// reading. Keying on the asymmetry keeps the shout for the state that is genuinely unreachable on a
+    /// correctly assembled node.
+    private static void reportDriverAsymmetry(String keyspace, boolean checkpointPresent, boolean timerPresent) {
+        if (checkpointPresent == timerPresent) {
+            return;
+        }
+
+        LOG.error("Entity keyspace '{}' provisioned with a HALF-REGISTERED entity driver pair "
+                 + "(EntityCheckpointDriver {}, EntityTimerDriver {}). AetherNode registers both together "
+                 + "and unconditionally, so this state is unreachable on a correctly assembled node. The "
+                 + "absent half's work will silently never run on this keyspace.",
+                  keyspace,
+                  presence(checkpointPresent),
+                  presence(timerPresent));
+    }
+
+    private static String presence(boolean present) {
+        return present
+               ? "present"
+               : "ABSENT";
+    }
+
     /// The unload mirror of provisioning, run through `ResourceFactory.close` when the keyspace's last
     /// local consumer slice stops. Retracting the keyspace declaration is what shrinks the hosting set
     /// the leader mints ownership over — without it, a node whose slice moved away stays a placement
-    /// candidate forever and refuses every write it is handed. The registry and driver unhooks keep the
-    /// forward path and the checkpoint tick from reaching into an unloaded slice's classloader.
+    /// candidate forever and refuses every write it is handed. The registry, checkpoint and timer unhooks
+    /// keep the forward path, the checkpoint tick and the timer tick from reaching into an unloaded
+    /// slice's classloader.
     private static void retractOnUnload(DurableEntityConfig config,
                                         ProvisioningContext context,
                                         FenceCollaborators fence) {
         fence.registrar().retract(config.keyspace());
         context.extension(EntityForwardRegistry.class).onSuccess(registry -> registry.unregister(config.keyspace()));
         context.extension(EntityCheckpointDriver.class).onSuccess(driver -> driver.unregister(config.keyspace()));
+        context.extension(EntityTimerDriver.class).onSuccess(driver -> driver.unregister(config.keyspace()));
     }
 
     private record FenceCollaborators(EntityLogSubstrate substrate,

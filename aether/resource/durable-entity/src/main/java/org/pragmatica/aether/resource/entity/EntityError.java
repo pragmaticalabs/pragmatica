@@ -34,9 +34,18 @@ public sealed interface EntityError extends Cause {
         }
     }
 
-    /// A timer operation referenced a key that holds no state, or a token that is not (or no
-    /// longer) registered for that key. Reserved for the durable-timer slice (spec §4.5); the
-    /// in-memory cut declines timer operations with [TimerNotSupported].
+    /// A timer operation referenced a key that holds no state, or a token that is not (or no longer)
+    /// registered for that key.
+    ///
+    /// **No code path constructs this**, and the absence is deliberate rather than pending: every case it
+    /// could name is answered by something else. Scheduling on a key that holds no state fails with
+    /// [EntityNotFound]. A token that is not registered is not a failure at all —
+    /// [DurableEntity#cancelTimer] is idempotent, so a token that never landed, already fired, was already
+    /// cancelled, or belonged to a deleted key succeeds with no record appended. A due timer that cannot be
+    /// applied reports [TimerFireFailed], which reaches the log rather than a caller. Retained because the
+    /// durable-entity spec §5.3 pins it in the author-facing error surface; a slice matching this sealed
+    /// type may name it, and nothing will send it.
+    ///
     /// Carries the TOKEN as well as the key (spec §5.3). A caller holding several timers for one
     /// entity cannot act on "a timer was not found" — it needs to know WHICH, and the token is the
     /// only thing that distinguishes them.
@@ -47,13 +56,72 @@ public sealed interface EntityError extends Cause {
         }
     }
 
-    /// Timers are declared in the [DurableEntity] API (spec §5) but are owned by a later slice
-    /// (durable, fenced-persisted, handover-recovered — spec §4.5). The HA-only in-memory cut
-    /// declines them with this typed cause rather than silently no-op'ing.
+    /// A forwarded [DurableEntity#scheduleTimer] came back naming a token OTHER than the one the caller
+    /// minted and sent.
+    ///
+    /// The caller's token is the handle it will later [DurableEntity#cancelTimer] by, so an owner that
+    /// applied a different one leaves a durable timer the caller cannot name — precisely the hazard
+    /// caller-side minting removes. The mismatch is reported rather than absorbed because it can only mean
+    /// the token's identity was lost in the wire encoding or in the owner's already-pending check, and
+    /// both are defects that must not pass as a success. `appliedToken` names what the owner answered, so
+    /// the operator's recovery action is to cancel THAT token on the key, or to delete the key (which
+    /// auto-cancels its pending timers).
+    record TimerTokenMismatch(String key, DurableEntity.TimerToken token, String appliedToken) implements EntityError {
+        @Override
+        public String message() {
+            return "Durable entity timer schedule for key '" + key
+                 + "' was sent with token " + token.value()
+                 + " but the owner answered with token '" + appliedToken
+                 + "' — the scheduled timer cannot be cancelled by the token the caller holds";
+        }
+    }
+
+    /// A forwarded [DurableEntity#scheduleTimer] arrived carrying a NEGATIVE delay.
+    ///
+    /// `delayMillis` is a wire field, and the arriving owner stamps the fire instant from it. A negative
+    /// value names an instant already past, which the fold finds due on the very next tick — so a caller
+    /// asking for "one-shot, later" would silently get "one-shot, now", with the acknowledgement giving no
+    /// hint that anything was reinterpreted. Refused at the boundary rather than clamped to zero, because
+    /// clamping would apply a timer the sender never asked for; the sender still holds the token it
+    /// minted, so its recovery action is to re-send with a delay it means.
+    record TimerDelayInvalid(String key, long delayMillis) implements EntityError {
+        @Override
+        public String message() {
+            return "Durable entity timer schedule for key '" + key
+                 + "' arrived with a negative delay of " + delayMillis
+                 + " ms — a timer cannot be scheduled into the past";
+        }
+    }
+
+    /// A timer operation reached a backing that has no durable log to hold a pending timer in — the
+    /// HA-only in-memory cut ([InMemoryDurableEntity], [FencedDurableEntity]). It declines with this typed
+    /// cause rather than silently no-op'ing, because a timer that is accepted and never fires is worse than
+    /// one that is refused.
+    ///
+    /// **A running node never answers this.** [DurableEntityFactory] provisions only the fenced-log
+    /// [PartitionFencedDurableEntity], where [DurableEntity#scheduleTimer] and
+    /// [DurableEntity#cancelTimer] are ordinary fenced writes (#345 I4). This is the answer of the
+    /// in-memory backings alone, which unit tests and harnesses construct directly.
     record TimerNotSupported(String key) implements EntityError {
         @Override
         public String message() {
             return "Durable entity timers are not yet supported for key: " + key;
+        }
+    }
+
+    /// A due timer could not be applied: its command did not decode, the mutator threw, or the key it was
+    /// scheduled on no longer holds state. Carries the TOKEN for the same reason [TimerNotFound] does —
+    /// a key may hold several timers and only the token says which one.
+    ///
+    /// **This never reaches a caller**, because a timer has none: it is raised inside the timer tick,
+    /// logged at ERROR, and the timer is then CONSUMED — durably cancelled — rather than retried. The
+    /// entity's state is untouched. A retry would fail identically, because [DurableEntity#scheduleTimer]
+    /// takes a pure `S -> S` command, so the operator's recovery action is to fix the command and schedule
+    /// again; nothing clears this by itself.
+    record TimerFireFailed(String key, DurableEntity.TimerToken token, Cause cause) implements EntityError {
+        @Override
+        public String message() {
+            return "Durable entity timer " + token.value() + " for key '" + key + "' could not fire: " + cause.message();
         }
     }
 

@@ -107,6 +107,7 @@ import org.pragmatica.aether.resource.artifact.MavenProtocolHandler;
 import org.pragmatica.aether.node.entityforward.EntityForwardMessage;
 import org.pragmatica.aether.node.entityforward.EntityForwardService;
 import org.pragmatica.aether.resource.entity.EntityCheckpointDriver;
+import org.pragmatica.aether.resource.entity.EntityTimerDriver;
 import org.pragmatica.aether.resource.entity.EntityOwnerForward;
 import org.pragmatica.aether.resource.entity.EntityForwardRegistry;
 import org.pragmatica.aether.resource.entity.EntityKeyspaceRegistrar;
@@ -795,6 +796,21 @@ public interface AetherNode extends ManageableNode {
     /// seconds against a ring measured in minutes leaves a wide margin; raising it narrows the margin
     /// toward that refusal.
     TimeSpan ENTITY_CHECKPOINT_INTERVAL = TimeSpan.timeSpan(30).seconds();
+    /// The entity-timer tick, and therefore the punctuality contract itself: a timer fires at the first
+    /// tick at or after its due instant, so this value IS the worst-case lateness a scheduled timer can
+    /// see, plus however long its partition goes without a live owner.
+    ///
+    /// **A constant, deliberately, not a config knob.** #351 promises no punctuality anywhere, so this
+    /// choice CREATES the de-facto contract rather than implementing one — and a knob nobody reads would
+    /// leave that contract undefined per deployment. It becomes configurable when a real consumer needs a
+    /// different value, not before.
+    ///
+    /// One second is chosen against the consumers this mechanism is for — reservation expiry, saga
+    /// timeouts, and similar minutes-scale due times, where a second of lateness is invisible and the
+    /// thirty above would be sloppy. **Sub-second punctuality is explicitly not this mechanism's job**: a
+    /// deadline measured in milliseconds wants in-memory scheduling, which buys that precision by giving
+    /// up durability across an owner change.
+    TimeSpan ENTITY_TIMER_INTERVAL = TimeSpan.timeSpan(1).seconds();
     /// #634-4 periodic invariant check — the tri-floor retention invariant is evaluated on every
     /// `/api/storage/retention` read, but a violation nobody polls for must still reach an operator:
     /// the metrics-threshold alert path only runs while a dashboard client is connected. Five minutes
@@ -3809,6 +3825,13 @@ public interface AetherNode extends ManageableNode {
                                                  entityForwardService::onEntityGetForward));
         allEntries.add(MessageRouter.Entry.route(EntityForwardMessage.EntityGetForwardResponse.class,
                                                  entityForwardService::onEntityGetForwardResponse));
+        allEntries.add(MessageRouter.Entry.route(EntityForwardMessage.EntityScheduleTimerForward.class,
+                                                 entityForwardService::onEntityScheduleTimerForward));
+        allEntries.add(MessageRouter.Entry.route(EntityForwardMessage.EntityScheduleTimerForwardResponse.class,
+                                                 entityForwardService::onEntityScheduleTimerForwardResponse));
+        // Cancel answers with EntityUpdateForwardResponse, already routed above — no response route of its own.
+        allEntries.add(MessageRouter.Entry.route(EntityForwardMessage.EntityCancelTimerForward.class,
+                                                 entityForwardService::onEntityCancelTimerForward));
         allEntries.add(MessageRouter.Entry.route(StreamForwardMessage.PublishForward.class,
                                                  streamForwardHandler::onPublishForward));
         allEntries.add(MessageRouter.Entry.route(StreamForwardMessage.PublishForwardResponse.class,
@@ -3873,6 +3896,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                             entityArcOwner),
                                                                                             clusterCommandApplier);
         var entityCheckpointDriver = EntityCheckpointDriver.entityCheckpointDriver();
+        var entityTimerDriver = EntityTimerDriver.entityTimerDriver();
         // #345 I3: entity state lives on a fenced, fsync-durable, replicated stream partition, and its
         // checkpoints are blocks in stream storage pointed at from consensus KV. The catch-up source is
         // the same one the partition manager gates replica release on — a fold must not trust its local
@@ -3896,11 +3920,18 @@ public interface AetherNode extends ManageableNode {
                                  : Option.none(),
                                  entityLogSubstrate,
                                  entityCheckpointDriver,
+                                 entityTimerDriver,
                                  entityForwardService);
         // The only thing that ever bounds an entity log: until a partition is checkpointed, the retention
         // floor refuses to reclaim any of its segments (correctly — nothing has been folded anywhere), so
         // a node that never ticks grows its entity logs without limit.
         periodicTasks.add(SharedScheduler.scheduleAtFixedRate(entityCheckpointDriver::tick, ENTITY_CHECKPOINT_INTERVAL));
+        // Scheduled here with the other assembly-time periodic tasks, deliberately rather than
+        // special-cased: #644 tracks the whole family (tasks started at assembly run on nodes that never
+        // start), and a driver that opted out of the pattern would hide from that sweep. The per-partition
+        // owner gate ahead of the fire path is what is expected to make a tick on a never-started node
+        // inert; that expectation is recorded on #644 to be VERIFIED by the sweep, not assumed here.
+        periodicTasks.add(SharedScheduler.scheduleAtFixedRate(entityTimerDriver::tick, ENTITY_TIMER_INTERVAL));
         // #345 I1 narrow C: mint the ownership records the entity fence reads, reusing the stream-side
         // writer mechanism, record family, leader gate and batching rather than an entity-specific
         // driver. The keyspace's LOG is a real stream since I3 (StreamEntityLogSubstrate.ensureLog),
@@ -5859,6 +5890,7 @@ public interface AetherNode extends ManageableNode {
                                                  Option<EntityLinearizableBarrier> entityBarrier,
                                                  EntityLogSubstrate entityLogSubstrate,
                                                  EntityCheckpointDriver entityCheckpointDriver,
+                                                 EntityTimerDriver entityTimerDriver,
                                                  EntityForwardService entityForwardService) {
         resourceProviderSetup.spiProvider()
                              .onPresent(spi -> registerEntityExtensionsOnSpi(spi,
@@ -5868,6 +5900,7 @@ public interface AetherNode extends ManageableNode {
                                                                              entityBarrier,
                                                                              entityLogSubstrate,
                                                                              entityCheckpointDriver,
+                                                                             entityTimerDriver,
                                                                              entityForwardService));
     }
 
@@ -5878,6 +5911,7 @@ public interface AetherNode extends ManageableNode {
                                                       Option<EntityLinearizableBarrier> entityBarrier,
                                                       EntityLogSubstrate entityLogSubstrate,
                                                       EntityCheckpointDriver entityCheckpointDriver,
+                                                      EntityTimerDriver entityTimerDriver,
                                                       EntityForwardService entityForwardService) {
         // The entity's DURABLE backing (#345 I3). Entity state is the fold of a fenced, fsync-durable,
         // replicated log — one stream named entity:<keyspace> per keyspace — so it now survives both a
@@ -5905,6 +5939,10 @@ public interface AetherNode extends ManageableNode {
         // correctness) but ALWAYS registered here — without it no entity log is ever reclaimed and the
         // retention floor pins every segment forever.
         spi.registerExtension(EntityCheckpointDriver.class, entityCheckpointDriver);
+        // The timer driver, registered on the same terms and for the same reason: the factory treats an
+        // absent driver as a TIMELINESS cost rather than a refusal, so registering it here is what makes
+        // that absence an assembly bug rather than a supported mode.
+        spi.registerExtension(EntityTimerDriver.class, entityTimerDriver);
         // Owner-forwarding (#596), both halves of the same service: the SENDER a non-owner uses to reach
         // the committed owner, and the REGISTRY an arriving command is applied through. Registered
         // together because a node that can send but not receive would forward into silence.

@@ -452,6 +452,13 @@ public interface SystemTags {
         pin(table, 1666, "org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityGetForward");
         pin(table, 1667, "org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityGetForwardResponse");
 
+        // entity owner-forwarding, timer verbs (#345 I4)  [base 1668]
+        // Cancel has no response of its own — it answers with EntityUpdateForwardResponse (1663) and an
+        // empty state, exactly as delete does, so no tag is spent on a second Unit-shaped carrier.
+        pin(table, 1668, "org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityScheduleTimerForward");
+        pin(table, 1669, "org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityScheduleTimerForwardResponse");
+        pin(table, 1670, "org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityCancelTimerForward");
+
         // ---- 2112..16383 RESERVED ----
         rejectDuplicateTags(table);
 

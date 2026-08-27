@@ -91,6 +91,25 @@ final class EntityOwnerAdmission {
                                    .filter(owner -> !owner.equals(selfNodeId));
     }
 
+    /// Whether this node is the committed owner of `partition` — the SAME question [#admit] answers, asked
+    /// without a key.
+    ///
+    /// The timer tick (#345 I4) needs exactly this shape. It iterates PARTITIONS, not keys, and the only
+    /// keys it could ask about are the ones inside a fold it has not built yet — so a key-based check
+    /// would force every replica to rebuild and catch-up-poll each partition's fold on every tick just to
+    /// discover it must not fire. Asking the arc directly makes a replica's tick cost one map lookup per
+    /// partition and nothing else.
+    ///
+    /// An arc with NO committed owner reads as false, matching [#admit]'s refusal in the pre-ownership
+    /// window: nobody may fire a timer on an arc nobody owns.
+    boolean isPartitionOwner(int partition) {
+        return committedOwnerSource.committedOwner(arc.arcName(),
+                                                   partition)
+                                   .map(CommittedOwner::owner)
+                                   .filter(selfNodeId::equals)
+                                   .isPresent();
+    }
+
     private Result<Unit> admitIfSelf(CommittedOwner committed, Object key) {
         return committed.owner()
                         .equals(selfNodeId)

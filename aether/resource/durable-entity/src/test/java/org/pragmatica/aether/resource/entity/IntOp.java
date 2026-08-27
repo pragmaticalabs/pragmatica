@@ -34,4 +34,15 @@ sealed interface IntOp extends Mutator<Integer> {
             return state;
         }
     }
+
+    /// A command whose `apply` THROWS — the shape an author's buggy mutator has. It exists so the
+    /// consume-on-failure path can be reached where it actually fires (inside `apply`, on the per-key
+    /// serialization tail) rather than by injecting a failure at the codec or the append, neither of which
+    /// is where a bad command fails.
+    record Exploding() implements IntOp {
+        @Override
+        public Integer apply(Integer state) {
+            throw new IllegalStateException("command deliberately fails for state " + state);
+        }
+    }
 }

@@ -99,7 +99,7 @@ class EntityFoldTest {
         void ready_restoresCheckpoint_thenReplaysOnlyTheTail() {
             var substrate = new FakeSubstrate();
 
-            substrate.checkpoint(4, EntityFoldSnapshot.encode(Map.of("seeded", bytes("fromCheckpoint"))));
+            substrate.checkpoint(4, EntityFoldSnapshot.encode(Map.of("seeded", bytes("fromCheckpoint")), Map.of()));
             substrate.appendAt(5, EntityLogRecord.upsert("tail", bytes("fromLog")));
 
             var fold = EntityFold.entityFold(KEYSPACE, substrate);
@@ -120,7 +120,7 @@ class EntityFoldTest {
         void ready_fails_whenRetentionHasOutrunTheCheckpoint() {
             var substrate = new FakeSubstrate();
 
-            substrate.checkpoint(4, EntityFoldSnapshot.encode(Map.of("seeded", bytes("v"))));
+            substrate.checkpoint(4, EntityFoldSnapshot.encode(Map.of("seeded", bytes("v")), Map.of()));
             substrate.appendAt(20, EntityLogRecord.upsert("late", bytes("v")));
             substrate.trimBefore(20);
 
@@ -246,7 +246,7 @@ class EntityFoldTest {
         private static EntityFold foldSeededAt(long throughOffset) {
             var substrate = new FakeSubstrate();
 
-            substrate.checkpoint(throughOffset, EntityFoldSnapshot.encode(Map.of()));
+            substrate.checkpoint(throughOffset, EntityFoldSnapshot.encode(Map.of(), Map.of()));
 
             return readyFold(substrate);
         }

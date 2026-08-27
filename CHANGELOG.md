@@ -6,6 +6,65 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Added (2026-08-27 — #351 / #345 I4: durable entity timers, end to end)
+- **A timer scheduled on an entity is a record in that entity's own fenced, replicated log**, so it
+  survives its owner being replaced and the whole cluster restarting. `scheduleTimer` / `cancelTimer`
+  work from any node: a non-owner forwards to the committed owner over three new wire verbs
+  (`EntityScheduleTimerForward`, `EntityScheduleTimerForwardResponse`, `EntityCancelTimerForward`;
+  tags 1668/1670 and 1669), and the owner re-runs admission on arrival, so the epoch fence still
+  decides and the per-key total order stays the owner's to enforce.
+- **The token is CALLER-minted**, so a re-send after a lost acknowledgement is the SAME schedule:
+  owner-side dedupe on the fold's pending set means no duplicate timer and the same success answer.
+  Without it a lost ack left a durable timer scheduled with no token to cancel it by — for the
+  canonical consumer (reservation expiry) a spurious expiry attributable to nothing. `TimerToken`
+  never crosses the wire; the token travels as a plain `String` and is re-wrapped inside the module.
+  The API exposes both forms: `scheduleTimer(key, delay, onFire, token)` for callers that want
+  retry-safety, and a minting `scheduleTimer(key, delay, onFire)` default for callers that do not.
+- **The fire instant is stamped by the committed OWNER at append, never by the scheduling node.** The
+  API's one unconditional promise is at-or-after, never before; a sender whose clock ran ahead of the
+  owner's would fire a timer EARLY and it would look correct to everyone involved. Paying one network
+  hop of extra delay keeps the promise. Skew shifts a fire only across a handover between owners.
+- `ENTITY_TIMER_INTERVAL` is 1s, a documented CONSTANT rather than a config knob. #351 promises no
+  punctuality anywhere, so this value CREATES the contract: worst-case lateness is one tick plus
+  however long the partition goes without a live owner. Sub-second punctuality is explicitly not this
+  mechanism's job — a millisecond deadline wants in-memory scheduling, which buys that precision by
+  giving up durability across an owner change.
+
+#### Measured, from live 5-node clusters
+| Gate | delay | disruption | fire |
+|---|---|---|---|
+| full restart | 30s | 42,061ms downtime | 1,052ms after ready |
+| owner handover | 45s | 9,344ms kill→new committed owner | 36,720ms |
+| same-token resend ×5 | 8s | — | ≤1 tick |
+
+The restart gate is the stronger of the two because its **downtime outlasts the delay** — the timer
+comes due while the cluster is down, so it demonstrates "late, never lost" rather than merely
+"survived". The handover gate keeps ~35s of runway, so the timer fires on its ORIGINAL instant from a
+node that never saw the schedule; its target is chosen through the production `EntityPartitionArc`
+and then VERIFIED to have changed owner, so a mis-targeted kill fails loudly instead of passing
+vacuously. Exactly-once is asserted on entity state (`OrderState.expiries`), not on logs.
+[verified: `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/DurableEntityTimerDurabilityTest.java`,
+`.../DurableEntityForgeTest.java`]
+
+**The exactly-once evidence required repairing its own instrument first, and that repair is part of the
+claim.** The quiet period separating "exactly once" from "not yet twice" was a bare
+`LockSupport.parkNanos`, and `Promise.await()` can leave a residual permit on the calling thread that
+the next bare park consumes immediately. Measured: **5 residual-permit hits per 20,000 awaits**, and
+with a permit present the bare park returned in **0ms** where a deadline loop takes **503ms**. Until
+that was fixed the gates could silently re-read the value they had just polled. All three now
+measurably elapse (5,000 → 5,004-5,005ms).
+
+### Fixed (2026-08-27 — checkpoint correctness, reached from the I4 fold work)
+- **A checkpoint could claim more coverage than its contents carried.** The driver read the applied
+  offset and the fold contents separately, so a fold advancing between the two reads produced a HIGH
+  claim over LOW contents. Both now come from one captured fold (`checkpointCandidate`).
+- **`saveCheckpoint` was a blind Put with no monotonicity**, so a regressed-but-honest claim could
+  overwrite a higher one whose log beneath had already been reclaimed by the retention floor — leaving
+  those records on no reachable node. Now advance-only, guarded by the previously write-only
+  `checkpointedThrough`. The cross-NODE half needs a conditional substrate write and is #700.
+- `EntityCheckpointDriver.register` did check-then-add, so its documented idempotence held only for
+  sequential re-provisioning. Now a single atomic `putIfAbsent`, matching `EntityTimerDriver`.
+- Pre-existing fold defects found here and deliberately left for their own review: #701.
 ### Fixed (2026-08-27 — #519 dead-config-accessor gate re-homed so it can pass a clean build)
 - **The gate could not pass a from-scratch reactor run, and had held the branch red for hours.** It
   scans every module in `aether/pom.xml`'s default `<modules>` list by reading each one's

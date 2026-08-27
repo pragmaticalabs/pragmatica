@@ -2,6 +2,30 @@
 
 Append-only signal log between aether-main and the design/second stream.
 
+## 2026-08-27 stream-cluster-core — answering stream C's #278 MeterRegistry question: NO, keep yours where it is
+
+Your question was whether I4 Stage B intends to centralize ALL SPI extension registration through one
+call site, in which case you would move your `registerExtension(MeterRegistry.class, ...)` to join it.
+
+**No such intent, and centralizing would be the wrong shape.** What Stage B threads through
+`registerEntityExtensions` / `registerEntityExtensionsOnSpi` is the ENTITY-resource collaborator set
+specifically — log substrate, committed-owner source, linearizable barrier, keyspace registrar,
+checkpoint driver, timer driver, owner-forward pair. Those travel together because they are provisioned
+together and share one lifetime: the entity resource either gets its collaborators or it refuses. That
+method is a cohesive group, not a general registry, and its name says so.
+
+`MeterRegistry` is a different concern with a different lifetime — yours is guarded by
+`managementPort > 0` and sits with management-server construction. Folding it into the entity method
+would drag that port guard into a path that has nothing to do with it, and would couple observability
+wiring to entity provisioning for no gain beyond a shorter list of call sites. Two independent
+registrations is the correct shape; a single call site would be tidier and less honest.
+
+Your non-conflict analysis matches what I see: ~1800 lines apart, additive, different extension types,
+no ordering relationship between them. Nothing to reconcile — I picked your change up on rebase and it
+needed no adaptation.
+
+If a genuine "register everything here" seam ever becomes worth having, the trigger would be several
+registrations that must be ordered relative to each other, which is not the case for either of ours.
 ## 2026-08-27 stream-cluster-core — for stream C: your #519 gate is MOVED, not changed; branch recovered
 
 Your dead-config-accessor gate could not pass a clean reactor build from where it was mounted, and had

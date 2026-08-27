@@ -11,9 +11,12 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityCancelTimerForward;
 import org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityCreateForward;
 import org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityGetForward;
 import org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityGetForwardResponse;
+import org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityScheduleTimerForward;
+import org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityScheduleTimerForwardResponse;
 import org.pragmatica.aether.resource.entity.EntityForwardRegistry;
 import org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityUpdateForward;
 import org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityUpdateForwardResponse;
@@ -22,6 +25,7 @@ import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Deadline;
 
@@ -383,6 +387,143 @@ class EntityForwardServiceTest {
             .isEqualTo(Deadline.NO_BUDGET);
     }
 
+    // === #345 I4 timer schedule: the caller's token crosses both directions ===
+
+    /// The token is minted by the caller and must survive the whole round trip: onto the wire in the
+    /// request, into the registered target, back in the response, and out of the correlation map unchanged.
+    /// Every hop is asserted, because a drop or a re-mint at any one of them hands the caller a handle to a
+    /// timer nobody planted — and, when the response is lost, no handle at all to one that WAS planted.
+    ///
+    /// The target answers a token DISTINCT from the one it was handed, and that is what makes the second
+    /// half non-vacuous. With an echoing target, a service that filled the response from `request.token()`
+    /// instead of from the owner's answer would be indistinguishable from a correct one. The distinct marker
+    /// separates the two sources, so the response is pinned to what the ENTITY said. Surfacing the owner's
+    /// answer verbatim is this seam's whole job; comparing it against what was sent belongs one layer up, in
+    /// `PartitionFencedDurableEntity`, which fails a mismatch with `TimerTokenMismatch`.
+    @Test
+    void forwardScheduleTimer_putsTheCallersTokenOnTheWire_andSurfacesTheOwnersAnswer() {
+        service.register("orders", echoTarget());
+
+        var promise = service.forwardScheduleTimer(OWNER, "orders", bytes("k1"), 10_000L, bytes("Add:5"), "caller-token");
+        var request = (EntityScheduleTimerForward) sender.lastMessage();
+
+        assertThat(request.token()).as("the caller's token must be on the wire, not minted at the owner").isEqualTo("caller-token");
+
+        service.onEntityScheduleTimerForward(request);
+
+        var response = (EntityScheduleTimerForwardResponse) sender.lastMessage();
+
+        assertThat(response.success()).isTrue();
+        assertThat(response.token())
+            .as("the response must carry what the TARGET answered — a service echoing request.token() back"
+                + " would answer 'caller-token' here without ever consulting the entity")
+            .isEqualTo("applied:caller-token");
+
+        service.onEntityScheduleTimerForwardResponse(response);
+
+        var result = promise.await();
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.fold(Cause::message, token -> token))
+            .as("and the sender surfaces the owner's answer unaltered, for the layer above to verify")
+            .isEqualTo("applied:caller-token");
+    }
+
+    // === #345 I4 timer cancel: the same correlation protocol, the other direction ===
+
+    /// The sender half of cancel. It rides the mutation trio's correlation map rather than a carrier of its
+    /// own, so the pin is that the TOKEN reaches the wire and that an `EntityUpdateForwardResponse` on that
+    /// correlation resolves the caller — a cancel that correlated on the wrong map would hang until timeout.
+    @Test
+    void forwardCancelTimer_putsTheTokenOnTheWire_andResolvesOnTheOwnersAnswer() {
+        var promise = service.forwardCancelTimer(OWNER, "orders", bytes("k1"), "tok-7");
+        var request = (EntityCancelTimerForward) sender.lastMessage();
+
+        assertThat(request.token()).as("cancel names its timer by token; there is no cancel-by-key verb").isEqualTo("tok-7");
+        assertThat(new String(request.key(), StandardCharsets.UTF_8)).isEqualTo("k1");
+
+        service.onEntityUpdateForwardResponse(EntityUpdateForwardResponse.successResponse(OWNER,
+                                                                                          request.correlationId(),
+                                                                                          new byte[0]));
+
+        assertThat(promise.await().isSuccess())
+            .as("the empty answer bytes cancel carries by contract are discarded, not decoded")
+            .isTrue();
+    }
+
+    /// The receiver half. A cancel answers [Unit] and its response carries a FIXED empty payload, so the
+    /// arrived token leaves no trace in what goes back on the wire — the recording target is the only place
+    /// a dropped or substituted token can be seen, and asserting on the response alone would pass with the
+    /// entity asked to cancel nothing in particular.
+    @Test
+    void onEntityCancelTimerForward_registeredKeyspace_cancelsWithTheArrivedToken() {
+        var applications = new AtomicInteger();
+        var cancelledTokens = new ArrayList<String>();
+
+        service.register("orders", countingTarget(applications, cancelledTokens));
+        service.onEntityCancelTimerForward(EntityCancelTimerForward.entityCancelTimerForward(OWNER, "corr-c1", "orders",
+                                                                                              bytes("k1"), "tok-7",
+                                                                                              Deadline.NO_BUDGET));
+
+        var response = (EntityUpdateForwardResponse) sender.lastMessage();
+
+        assertThat(response.success()).isTrue();
+        assertThat(applications.get()).as("the cancel must reach the entity, not be answered from the seam").isEqualTo(1);
+        assertThat(cancelledTokens)
+            .as("the entity must be asked to cancel the token that ARRIVED — there is no cancel-by-key verb,"
+                + " so a lost token cancels nothing while still answering success")
+            .containsExactly("tok-7");
+    }
+
+    /// The unload half, for cancel: after the keyspace's entity resource unloads, an arriving cancel must
+    /// reach the same typed refusal a never-registered keyspace gets. Armed by the first assertion — the
+    /// identical cancel succeeds while the registration stands.
+    @Test
+    void onEntityCancelTimerForward_afterUnregister_refusesWithTheUnknownKeyspaceCause() {
+        service.register("orders", echoTarget());
+        service.onEntityCancelTimerForward(EntityCancelTimerForward.entityCancelTimerForward(OWNER, "corr-c4", "orders",
+                                                                                              bytes("k1"), "tok-7",
+                                                                                              Deadline.NO_BUDGET));
+
+        assertThat(((EntityUpdateForwardResponse) sender.lastMessage()).success())
+            .as("registered keyspace must serve the cancel — else the refusal below proves nothing")
+            .isTrue();
+
+        service.unregister("orders");
+        service.onEntityCancelTimerForward(EntityCancelTimerForward.entityCancelTimerForward(OWNER, "corr-c5", "orders",
+                                                                                              bytes("k1"), "tok-7",
+                                                                                              Deadline.NO_BUDGET));
+
+        assertRefusedAsUnknownKeyspace((EntityUpdateForwardResponse) sender.lastMessage());
+    }
+
+    /// Cancel shares the arrived-budget discipline of every other forward: a cancel whose sender has already
+    /// timed out is refused WITHOUT touching the entity. Armed by the second half — the identical cancel with
+    /// budget does reach it — so the refusal is the budget and not a broken fixture.
+    @Test
+    void onEntityCancelTimerForward_arrivedExpired_refusesWithoutTouchingTheEntity() {
+        var applications = new AtomicInteger();
+
+        service.register("orders", countingTarget(applications));
+        service.onEntityCancelTimerForward(EntityCancelTimerForward.entityCancelTimerForward(OWNER, "corr-c2", "orders",
+                                                                                              bytes("k1"), "tok-7", 1L));
+
+        var refusal = (EntityUpdateForwardResponse) sender.lastMessage();
+
+        assertThat(refusal.success()).isFalse();
+        assertThat(refusal.failureType()).isEqualTo("ForwardBudgetExhausted");
+        assertThat(applications.get()).as("an ack nobody collects must not cost a fenced append").isZero();
+
+        service.onEntityCancelTimerForward(EntityCancelTimerForward.entityCancelTimerForward(OWNER, "corr-c3", "orders",
+                                                                                              bytes("k1"), "tok-7",
+                                                                                              Deadline.NO_BUDGET));
+
+        assertThat(((EntityUpdateForwardResponse) sender.lastMessage()).success())
+            .as("the same cancel WITH budget reaches the entity — else the refusal above proves nothing")
+            .isTrue();
+        assertThat(applications.get()).isEqualTo(1);
+    }
+
     private static byte[] bytes(String text) {
         return text.getBytes(StandardCharsets.UTF_8);
     }
@@ -390,6 +531,15 @@ class EntityForwardServiceTest {
     /// A forward target that counts how many times the entity was actually reached — the difference
     /// between "refused before dispatch" and "applied then failed" is invisible from the response alone.
     private static EntityForwardRegistry.ForwardTarget countingTarget(AtomicInteger applications) {
+        return countingTarget(applications, new ArrayList<>());
+    }
+
+    /// The counting target, additionally recording the CANCEL tokens it was handed. Cancel answers [Unit]
+    /// and its response carries a fixed empty payload, so unlike every other verb the arrived token cannot
+    /// be recovered from the wire — recording it here is the only way a test can pin what the entity was
+    /// asked to cancel.
+    private static EntityForwardRegistry.ForwardTarget countingTarget(AtomicInteger applications,
+                                                                       List<String> cancelledTokens) {
         return new EntityForwardRegistry.ForwardTarget() {
             @Override
             public Promise<byte[]> applyForwarded(byte[] key, byte[] command) {
@@ -418,11 +568,28 @@ class EntityForwardServiceTest {
 
                 return Promise.success(Option.some(bytes("41")));
             }
+
+            @Override
+            public Promise<String> scheduleTimerForwarded(byte[] key, long delayMillis, byte[] onFire, String token) {
+                applications.incrementAndGet();
+
+                return Promise.success(token);
+            }
+
+            @Override
+            public Promise<Unit> cancelTimerForwarded(byte[] key, String token) {
+                applications.incrementAndGet();
+                cancelledTokens.add(token);
+
+                return Promise.unitPromise();
+            }
         };
     }
 
-    /// A live keyspace's forward target: it echoes what it was handed, so a successful response proves
-    /// the command reached THIS registration rather than any other path.
+    /// A live keyspace's forward target: it answers with a marker BUILT FROM what it was handed, so a
+    /// successful response proves the command reached THIS registration rather than any other path — and,
+    /// for the token-bearing verbs, that the response was filled from the entity's answer rather than
+    /// copied back off the request.
     private static EntityForwardRegistry.ForwardTarget echoTarget() {
         return new EntityForwardRegistry.ForwardTarget() {
             @Override
@@ -447,6 +614,22 @@ class EntityForwardServiceTest {
                 return "present".equals(new String(key, StandardCharsets.UTF_8))
                        ? Promise.success(Option.some(bytes("41")))
                        : Promise.success(Option.none());
+            }
+
+            /// Answers a token DISTINGUISHABLE from the arrived one. A real owner echoes what it applied,
+            /// but a fake that echoes cannot tell a response filled from the entity's answer from one
+            /// filled off `request.token()` — both would read "caller-token". The marker separates them
+            /// while still proving the caller's token is what arrived.
+            @Override
+            public Promise<String> scheduleTimerForwarded(byte[] key, long delayMillis, byte[] onFire, String token) {
+                return Promise.success("applied:" + token);
+            }
+
+            /// Cancel answers [Unit] — the outcome IS the answer, and this target's is success, which is
+            /// what the unregister test needs on the "still registered" side of its arming assertion.
+            @Override
+            public Promise<Unit> cancelTimerForwarded(byte[] key, String token) {
+                return Promise.unitPromise();
             }
         };
     }
