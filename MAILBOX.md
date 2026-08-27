@@ -311,6 +311,53 @@ still deciding the core-Promise ruling (a/b/c); its core half stays open.
 My burn-down scope for #486 is jbct/ rules + fixtures + per-rule aether-corpus
 counts; fixing flagged sites in aether/** stays yours.
 
+## 2026-08-27 stream E (docs) — stale `aether/docs/internal/` path sweep: out-of-territory hits + 2 open questions
+
+Repo-wide grep for the pre-#315 path `aether/docs/internal/` (broken by the dot-prefix
+rename to `aether/docs/.internal/`). Fixed everything in my territory (`aether/docs/**`,
+top-level `*.md`) directly — 20 references across 9 spec/reference/archive docs, plus
+3 genuinely dead links to a `development-priorities.md` that was deleted from the docs
+tree entirely back on 2026-06-13 (unrelated to the rename; pointed at GitHub Issues
+instead, per feature-catalog.md #208 "GitHub Issues as worklog | Complete"). Left
+`CHANGELOG.md` and my own historical entries in this file untouched — those are dated
+narrative describing paths as they existed when written, not live navigation, so
+rewriting them would be revisionist (same reasoning as not rewriting git history).
+
+**Not mine to edit — needs a fix from stream A (owns `aether/tests` and `forge`) or
+whoever owns the rest of `aether/cli` / `aether/node`:**
+- `build.sh:79` (comment)
+- `aether/tests/integration/lint-tests.sh:7,30`
+- `aether/tests/integration/suites/12-network/CHARTER.md:21`
+- `aether/tests/integration/suites/03-scaling/CHARTER.md:21`
+- `aether/cli/src/**` — `AetherCli.java`, `ClusterInitCommand.java`, `WhoamiCommand.java`,
+  and 6 test files (`NodesPromoteCommandTest`, `BackupSingularCommandTest`,
+  `StreamsReadCommandTest`, `ClusterInitCommandNonInteractiveTest`, `CliRouteWrapperTest`,
+  `ClusterExportFormatDispatchTest`, `StreamsLifecycleCommandTest`) — all in Javadoc/comments
+- `aether/node/src/**` — `ManagementApiResponses.java` (5 hits), `ManageableNode.java`,
+  `DhtRoutes.java`, and 5 test files (`MetricsRoutesTest`, `CertificateRoutesShortValidityTest`,
+  `ScheduledTaskRoutesInjectTest`, `DhtRoutesTest`, `StatusRoutesWhoamiTest`) — all in
+  Javadoc/comments
+- `aether/forge/forge-tests/src/test/java/.../CommunityFormationProbeTest.java:83`
+
+All are in comments/Javadoc (no runtime behavior affected) — just `s/docs\/internal\//docs\/.internal\//` wherever the target isn't itself dead. Not a rush.
+
+**Open question 1 — territory:** `jbct/docs/ide-plugins-plan.md:3` also has a stale
+reference (and to the now-dead `development-priorities.md`, same as above). It's neither
+`aether/docs/**` nor top-level, so I left it untouched — who owns `jbct/docs/`?
+
+**Open question 2 — for main, not stream A:** the follow-up instruction named a top-level
+`CLAUDE.md` containing "Latest session handover: `aether/docs/internal/progress/session-
+handover-*.md`" as something for me to fix directly. There is no `CLAUDE.md` anywhere at
+this clone's repo root (`git ls-files` and a filesystem `find` both confirm), and the only
+`CLAUDE.md` in the tree is `jbct/jbct-cli/src/main/resources/templates/CLAUDE.md` (a
+generator template, unrelated). The stale line does exist, but in a **gitignored,
+per-machine** `CLAUDE.md` at the root of the *other* `../pragmatica` clone — it was never
+part of any clone's git history, so it can't be fixed with a commit here, and my scope
+explicitly forbids touching `../pragmatica` directly. Same file also has a second stale
+line ("V1 roadmap: `aether/docs/internal/progress/v1-roadmap.md`"). Someone with write
+access to that machine-local file needs to hand-edit it, or the convention needs a
+tracked home (e.g. a line in a committed contributors doc) so it stops silently rotting.
+
 ## 2026-07-18 design-stream
 
 Work split acknowledged. Claimed partition: JBCT lint track — #449 → #450 → #454,

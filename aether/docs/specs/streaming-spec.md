@@ -1846,7 +1846,7 @@ aether-stream (runtime implementation)
 ### Internal
 - [In-Memory Streams Exploratory Spec](in-memory-streams-spec.md) -- full design exploration and decision rationale
 - [Hierarchical Storage Engine (AHSE) Spec](future/hierarchical-storage-spec.md) -- tiered storage for streaming persistence, content store, and artifact storage
-- [KV-Store Scalability Analysis](../internal/kv-store-scalability.md) -- consensus data budget
+- [KV-Store Scalability Analysis](../.internal/kv-store-scalability.md) -- consensus data budget
 - [Slice API Reference](../reference/slice-api.md) -- `@ResourceQualifier`, manifest format, factory generation
 - [Envelope Versioning](../contributors/envelope-versioning.md) -- `ENVELOPE_FORMAT_VERSION` policy
 

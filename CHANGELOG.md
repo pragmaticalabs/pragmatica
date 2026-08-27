@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Fixed (2026-08-27 — #315 follow-up: stale `aether/docs/internal/` path references)
+- Repo-wide sweep for references to the pre-#315 path `aether/docs/internal/` left dangling
+  by the dot-prefix rename to `aether/docs/.internal/`. Fixed 20 references across 9 files
+  (`security-subsystem-spec.md`, `deployment-recovery.md`, `membership-architecture-v2-spec.md`,
+  `membership-unification-spec.md`, `cli.md`, `management-api.md`, `cluster-topology-overhaul-spec.md`,
+  `worker-membership-spec.md`, plus relative-path hits in `in-memory-streams-spec.md`,
+  `streaming-spec.md`, `http-media-types-spec.md`, `feature-catalog.md`) and one pre-existing,
+  unrelated relative-path bug (`future/control-plane-delegation-spec.md` pointed one directory
+  short even before the rename). Also closed 3 dead links to `development-priorities.md`, a
+  planning doc deleted from the tree entirely on 2026-06-13 — repointed to GitHub Issues as the
+  current worklog (feature-catalog.md #208). Out-of-territory hits (scripts, CI, Java
+  Javadoc/comments in `aether/cli`, `aether/node`, `aether/tests`, `aether/forge`) and two open
+  questions (a gitignored, per-machine root `CLAUDE.md` in the sibling clone with the same stale
+  path, and `jbct/docs/` territory ownership) logged in `MAILBOX.md`.
+
 ### Added (2026-08-27 — #321: versioning-and-compatibility reference doc)
 - New `aether/docs/reference/versioning-and-compatibility.md`: maps the four independent
   versioning surfaces (product release, envelope format, slice HTTP API, management HTTP API)

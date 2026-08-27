@@ -1354,7 +1354,7 @@ aether scheduled-tasks trigger scheduling.cleanup com.example:my-slice:1.0.0 cle
 # Synchronously inject a task execution (dev-mode only — requires AETHER_INSECURE_DEV_MODE=true
 # on the target node). Returns previousExecutionMs + currentExecutionMs so integration tests
 # can assert strict monotonic advancement. Unblocks 08-resources scheduled-task assertions
-# (RC1-blocker #16 in aether/docs/internal/audits/integration-test-audit-2026-05-21.md §2.2).
+# (RC1-blocker #16 in aether/docs/.internal/audits/integration-test-audit-2026-05-21.md §2.2).
 aether scheduled-tasks inject \
     --section scheduling.cleanup \
     --artifact com.example:my-slice:1.0.0 \

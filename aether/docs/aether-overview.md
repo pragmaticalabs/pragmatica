@@ -394,7 +394,7 @@ This enables a clean mix: Aether-native resources (like cluster-wide pubsub wher
 - Advanced deployment strategy options (custom stages, A/B testing integration)
 - LLM-based cluster management (Layer 3 controller)
 
-See [development-priorities.md](internal/progress/development-priorities.md) for the full prioritized backlog.
+The `development-priorities.md` planning doc that formerly lived here was removed from the docs tree (2026-06-13); current backlog and priorities are tracked via GitHub Issues on `pragmaticalabs/pragmatica`.
 
 ---
 

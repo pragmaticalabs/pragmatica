@@ -5,8 +5,8 @@
 **Date:** 2026-06-23
 **Author:** security design-stream
 **Related issues:** #139, #119, #269, #206, #253, #287, #209, #88, #307, #313, #319, #23
-**Companion documents:** `aether/docs/internal/progress/security-subsystem-spec-plan.md` (work order),
-`aether/docs/internal/progress/session-transcript-2026-06-23-security-subsystem-design.md` (rationale/"why"),
+**Companion documents:** `aether/docs/.internal/progress/security-subsystem-spec-plan.md` (work order),
+`aether/docs/.internal/progress/session-transcript-2026-06-23-security-subsystem-design.md` (rationale/"why"),
 `aether/docs/specs/rbac-spec.md` (request-time RBAC), `aether/docs/specs/cloud-integration-spi-spec.md` (cloud SPIs)
 
 ---

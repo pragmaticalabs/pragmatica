@@ -5,7 +5,7 @@ Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 
 # Worker Membership & Community Topology — Design Specification
 
-**Status:** DRAFT for review (2026-06-10) · **Branch:** `release-1.0.0-rc1` (written against `dd5a2187f`) · **Implements:** GitHub **#241** (this document is the #241 spec of record) · **Builds on:** `cluster-topology-overhaul-spec.md` (the keystone; this spec extends its invariants A1–A8 with A9–A14), `membership-fsm-unification-spec.md` (the `connectionSet` seam), `membership-placement-split-spec.md` (the KV governing principle) · **Foundation:** `aether/docs/internal/audits/worker-topology-membership-analysis-2026-06-10.md` (Class 2/3 findings; Class 1 = overhaul Wave 2) · **Release target:** RC2 (gated on overhaul Waves 2, 4, 5, 7 — §10)
+**Status:** DRAFT for review (2026-06-10) · **Branch:** `release-1.0.0-rc1` (written against `dd5a2187f`) · **Implements:** GitHub **#241** (this document is the #241 spec of record) · **Builds on:** `cluster-topology-overhaul-spec.md` (the keystone; this spec extends its invariants A1–A8 with A9–A14), `membership-fsm-unification-spec.md` (the `connectionSet` seam), `membership-placement-split-spec.md` (the KV governing principle) · **Foundation:** `aether/docs/.internal/audits/worker-topology-membership-analysis-2026-06-10.md` (Class 2/3 findings; Class 1 = overhaul Wave 2) · **Release target:** RC2 (gated on overhaul Waves 2, 4, 5, 7 — §10)
 
 ## 1. Why
 
@@ -256,10 +256,10 @@ Deployment (CDM/NDM/`WorkerDeploymentManager`) consumes from this layer: (a) `Al
 ## 15. References
 
 - `cluster-topology-overhaul-spec.md` — keystone; invariants A1–A8; Waves 2/4/5/7 prerequisites; §5.2 names this spec.
-- `aether/docs/internal/audits/worker-topology-membership-analysis-2026-06-10.md` — foundation audit (Class 2 severed wires, Class 3 scalability, dependency chain).
-- `aether/docs/internal/audits/cluster-topology-architecture-audit-2026-06-10.md` (companion copy in `pragmatica-store/`) — core audit.
+- `aether/docs/.internal/audits/worker-topology-membership-analysis-2026-06-10.md` — foundation audit (Class 2 severed wires, Class 3 scalability, dependency chain).
+- `aether/docs/.internal/audits/cluster-topology-architecture-audit-2026-06-10.md` (companion copy in `pragmatica-store/`) — core audit.
 - `membership-fsm-unification-spec.md`, `membership-convergence-fsm.md`, `membership-placement-split-spec.md` — adopted model + KV governing principle.
-- `aether/docs/internal/phase2-open-issues.md` — DHT Options D/E (adopted §7).
+- `aether/docs/.internal/phase2-open-issues.md` — DHT Options D/E (adopted §7).
 - `dht-resilience-spec.md` — implemented resilience layer this spec inherits.
 - GitHub #241 (+3 comments), #178, #189, #236, #235, #220, #222.
 - HashiCorp Lifeguard / memberlist scaling practice — SWIM pool sizing input (§8, D7).

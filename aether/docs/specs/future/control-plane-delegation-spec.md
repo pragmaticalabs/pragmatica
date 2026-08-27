@@ -887,7 +887,7 @@ Every existing integration test suite (12 suites, 183+ tests) MUST pass with del
 
 ### Internal References
 
-- [Investigation Document](../internal/control-plane-delegation-investigation.md) --- architecture assessment confirming feasibility
+- [Investigation Document](../../.internal/control-plane-delegation-investigation.md) --- architecture assessment confirming feasibility
 - [CDM Source](../../aether-deployment/src/main/java/org/pragmatica/aether/deployment/cluster/ClusterDeploymentManager.java) --- Dormant/Active pattern reference
 - [LoadBalancerManager Source](../../aether-deployment/src/main/java/org/pragmatica/aether/deployment/loadbalancer/LoadBalancerManager.java) --- Dormant/Active pattern reference
 - [AetherNode Source](../../node/src/main/java/org/pragmatica/aether/node/AetherNode.java) --- current wiring and leader change routing

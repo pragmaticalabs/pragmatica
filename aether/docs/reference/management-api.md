@@ -483,7 +483,7 @@ gate on `tlsEnabled` before reading the cert metadata.
 
 ### POST /api/certificates/configure-short-validity
 
-**Dev-mode only.** Reconfigures the `CertificateRenewalScheduler` so the active certificate appears to expire in `validitySeconds` from now, causing the renewal timer to reschedule at the recomputed 40%-of-remaining mark (24s for `validitySeconds=60`). Used by `Strengthen-cert-rotation-trigger` integration tests (see `aether/docs/internal/production-readiness-followup-2026-05-21.md` P-NEW-I) to observe automatic cert rotation in seconds rather than waiting hours.
+**Dev-mode only.** Reconfigures the `CertificateRenewalScheduler` so the active certificate appears to expire in `validitySeconds` from now, causing the renewal timer to reschedule at the recomputed 40%-of-remaining mark (24s for `validitySeconds=60`). Used by `Strengthen-cert-rotation-trigger` integration tests (see `aether/docs/.internal/production-readiness-followup-2026-05-21.md` P-NEW-I) to observe automatic cert rotation in seconds rather than waiting hours.
 
 Gated by the `AETHER_INSECURE_DEV_MODE=true` environment variable on the node. When the gate is closed the endpoint returns a failure response and the scheduler is untouched. Precondition: a node with operator-provided TLS certificates refuses to start in dev-mode, so this route is never reachable on a node configured with real TLS.
 
@@ -1781,7 +1781,7 @@ responsible for replication.
 consistent-hash ring clockwise. `totalKeys` reflects the count of keys
 matching the supplied `prefix` (or full storage size when no prefix is
 given); `returned` is bounded by `limit`. See
-`aether/docs/internal/production-readiness-followup-2026-05-21.md` P-NEW-F.
+`aether/docs/.internal/production-readiness-followup-2026-05-21.md` P-NEW-F.
 
 ### POST /api/dht/inject
 
@@ -4103,7 +4103,7 @@ Get detailed execution state for a specific scheduled task.
 
 ### POST /api/scheduled-tasks/inject
 
-**Dev-mode only.** Synchronously fire a scheduled task and advance its `lastExecutionAt` timestamp, bypassing the normal schedule. Used by integration tests that need a deterministic way to drive scheduled-task assertions — replaces the warn-then-pass demotion described in `aether/docs/internal/audits/integration-test-audit-2026-05-21.md` §2.2 (RC1-blocker #16).
+**Dev-mode only.** Synchronously fire a scheduled task and advance its `lastExecutionAt` timestamp, bypassing the normal schedule. Used by integration tests that need a deterministic way to drive scheduled-task assertions — replaces the warn-then-pass demotion described in `aether/docs/.internal/audits/integration-test-audit-2026-05-21.md` §2.2 (RC1-blocker #16).
 
 Gated by the `AETHER_INSECURE_DEV_MODE=true` environment variable on the node. When the gate is closed the endpoint returns a failure response and the task is not invoked. Precondition: a node with operator-provided TLS certificates refuses to start in dev-mode, so this route is never reachable on a node configured with real TLS.
 

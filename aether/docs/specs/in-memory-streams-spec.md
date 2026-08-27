@@ -1076,7 +1076,7 @@ The in-memory Phase 1 design must not preclude the persistence path. Key constra
 
 ### Internal
 - [Hierarchical Storage Engine (AHSE) Spec](future/hierarchical-storage-spec.md) — Tiered storage for streaming persistence, content store, and artifact storage
-- [KV-Store Scalability Analysis](../internal/kv-store-scalability.md) — Consensus data budget analysis
+- [KV-Store Scalability Analysis](../.internal/kv-store-scalability.md) — Consensus data budget analysis
 
 ### External
 - [Apache Kafka Design](https://kafka.apache.org/documentation/#design) — Partitioned log, consumer groups, ISR replication

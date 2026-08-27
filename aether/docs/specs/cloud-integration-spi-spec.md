@@ -1498,6 +1498,6 @@ Similar structure to AWS, estimated 5-7 days each.
 - `aether/aether-deployment/src/main/java/org/pragmatica/aether/deployment/cluster/ClusterDeploymentManager.java` -- CDM auto-heal consumer
 - `aether/aether-deployment/src/main/java/org/pragmatica/aether/deployment/loadbalancer/LoadBalancerManager.java` -- LB manager consumer
 - `aether/node/src/main/java/org/pragmatica/aether/Main.java` -- Bootstrap and config loading
-- `aether/docs/internal/progress/development-priorities.md` -- Priority #1: Cloud Integration
+- `development-priorities.md` -- Priority #1: Cloud Integration — **note:** this planning doc was removed from the docs tree 2026-06-13; current priorities are tracked via GitHub Issues (`pragmaticalabs/pragmatica`)
 - `aether/docs/operators/infrastructure-design.md` -- Terraform layer design (separate from SPI)
 - `aether/docs/reference/configuration.md` -- Existing TOML configuration reference

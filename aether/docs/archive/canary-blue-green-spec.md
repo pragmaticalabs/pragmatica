@@ -1283,7 +1283,7 @@ The `getActiveUpdate()` / `getActiveCanary()` / `getActiveDeployment()` checks e
 - `aether/aether-metrics/src/main/java/org/pragmatica/aether/metrics/invocation/MethodMetrics.java` -- Per-method metrics
 - `aether/node/src/main/java/org/pragmatica/aether/api/routes/RollingUpdateRoutes.java` -- REST API pattern
 - `aether/aether-deployment/src/main/java/org/pragmatica/aether/deployment/cluster/ClusterDeploymentManager.java` -- CDM orchestration
-- `aether/docs/internal/progress/development-priorities.md` -- Priority #4 (Canary & Blue-Green)
+- `development-priorities.md` -- Priority #4 (Canary & Blue-Green) — **note:** this planning doc was removed from the docs tree 2026-06-13; current priorities are tracked via GitHub Issues (`pragmaticalabs/pragmatica`)
 
 ### Technical Documentation
 - `aether/docs/architecture/02-deployment.md` -- Deployment architecture

@@ -409,8 +409,8 @@ Explicitly delimited so the boundary is clear:
 
 - Predecessor: the v1 membership-architecture spec (removed; see git history) — the layered model being superseded for topology management; the simple scheme at its base — SWIM, QUIC, Rabia — is preserved.
 - Discovery: `aether/docs/specs/swim-driven-topology-spec.md`.
-- Layered-stack diagnosis (root-cause of the bug class this redesign eliminates): `aether/docs/internal/progress/session-handover-2026-05-28.md`.
-- Session handover for this design work: `aether/docs/internal/progress/session-handover-2026-05-28-experimental.md`.
+- Layered-stack diagnosis (root-cause of the bug class this redesign eliminates): `aether/docs/.internal/progress/session-handover-2026-05-28.md`.
+- Session handover for this design work: `aether/docs/.internal/progress/session-handover-2026-05-28-experimental.md`.
 - Memory: `[[project_cluster_b_wedge_layered_stack]]`, `[[project_membership_v2_redesign]]`.
 
 ## 17. Changelog

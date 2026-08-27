@@ -175,7 +175,7 @@ A first-class Aether-on-k8s operator (a Kubernetes Operator / CRD that wraps CTM
 ## 6 · Reading list
 
 - `aether/docs/specs/cluster-generation-spec.md` — generation snapshot semantics, what CTM publishes after recovery
-- `aether/docs/internal/audits/membership-state-tracker-audit-2026-05-07.md` — single-source-of-truth design that requires the recovery layer to be Aether, not the orchestrator
+- `aether/docs/.internal/audits/membership-state-tracker-audit-2026-05-07.md` — single-source-of-truth design that requires the recovery layer to be Aether, not the orchestrator
 - `ClusterTopologyManagerRecord` — CTM implementation, including the circuit breaker that prevents runaway provisioning
 - `BootstrapPhaseDeploy.buildRestartCommand` — the cloud-init / SSH command that uses `--restart no`
 - `UserDataTemplate.appendContainerRun` — the cloud-init template for container mode (emits `--restart no`)
