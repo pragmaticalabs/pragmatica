@@ -2,7 +2,9 @@
 
 **Status:** Current
 
-This document describes the security architecture: mTLS, gossip encryption, RBAC, and API key authentication.
+This document describes the security architecture: mTLS, gossip encryption, RBAC, and the three
+`SecurityMode` options. For the trust model, default posture, and operational guidance, see
+[`SECURITY.md`](../../../SECURITY.md) at the repo root.
 
 ## Security Layers
 
@@ -142,27 +144,48 @@ sequenceDiagram
 - `UnknownKeyId` error if neither matches
 - Zero-downtime key rotation
 
-## API Key Authentication
+## Security Modes
 
-Management API uses API key authentication:
+The management API supports three mutually exclusive `SecurityMode` values, selected by the
+`security_mode` config key: `NONE`, `API_KEY`, and `JWT`
+[verified: `aether/aether-config/.../config/SecurityMode.java`].
+
+**`API_KEY` is the default** when `security_mode` is omitted — a hardening fix tracked under
+**#290** [mechanism: `ConfigLoader.populateAppHttpConfig`, `explicitMode.or(SecurityMode.API_KEY)`].
+If no API key was provisioned, the first elected leader generates one random `ADMIN` key on first
+startup and prints it once. Full trust-model detail, the bootstrap-key flow, and how to recognize
+an unsafe deployment live in [`SECURITY.md`](../../../SECURITY.md) at the repo root — this page
+covers only the architecture, not the operational posture.
 
 ```
 GET /api/nodes/status
 X-Api-Key: <key>
 ```
 
+`JWT` mode verifies bearer tokens against a JWKS endpoint instead of static keys, extracting the
+role claim for RBAC [mechanism: `aether/aether-config/.../config/JwtConfig.java` — `jwksUrl`,
+configurable `roleClaim` (default `"role"`), JWKS cache TTL, clock-skew tolerance].
+
+An operator can explicitly set `security_mode = "none"` to disable authentication — an explicit
+setting always overrides the default. This is appropriate only for a single-node local/dev
+instance, never for a network-reachable deployment.
+
 ### Configuration
 
 ```java
-public record AppHttpConfig(
-    boolean enabled,
-    int port,
-    Map<String, ApiKeyEntry> apiKeys,  // key → permissions
-    long forwardTimeoutMs
-) {}
+public record AppHttpConfig(boolean enabled,
+                            int port,
+                            Map<String, ApiKeyEntry> apiKeys,
+                            int maxRequestSize,
+                            SecurityMode securityMode,
+                            Option<JwtConfig> jwtConfig,
+                            HttpProtocol httpProtocol,
+                            ApiVersioningDetection apiVersioningDetection,
+                            String apiVersionHeaderName) {}
 ```
 
-API keys are configured per-node. Each key maps to a set of allowed operations.
+[verified: `aether/aether-config/.../config/AppHttpConfig.java`] API keys are configured per-node;
+each key maps to an `authorization_role` (`ADMIN` / `OPERATOR` / `VIEWER`, default `VIEWER`).
 
 ## RBAC (Role-Based Access Control)
 
@@ -218,12 +241,14 @@ graph TB
     RBAC_Check --> Internal
 ```
 
-- External access requires API key authentication + RBAC
+- External access requires API key (or JWT) authentication + RBAC **by default** — an operator can
+  explicitly opt out via `security_mode = "none"`, see "Security Modes" above
 - Internal node-to-node communication uses mTLS (shared trust via cluster secret)
 - Slice-to-slice invocation is within the same trust domain (no additional auth)
 
 ## Related Documents
 
+- [`SECURITY.md`](../../../SECURITY.md) - Trust model, default posture, operator guidance
 - [04-networking.md](04-networking.md) - Transport layer
 - [05-worker-pools.md](05-worker-pools.md) - SWIM gossip encryption
 - [12-management.md](12-management.md) - Management API authentication

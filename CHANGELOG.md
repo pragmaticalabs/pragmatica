@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Fixed (2026-08-27 — #316: stale SecurityMode.NONE-default premise in 10-security.md)
+- `architecture/10-security.md`'s "API Key Authentication" section predated #290 and described a
+  stale 4-field `AppHttpConfig` (including a nonexistent `forwardTimeoutMs` field, no
+  `securityMode`/`jwtConfig`) with no mention of the `JWT` mode. Replaced with a "Security Modes"
+  section covering all three `SecurityMode` values (`NONE`/`API_KEY`/`JWT`), the correct default
+  (`API_KEY`, per #290) and bootstrap-admin-key flow, and the real 9-field `AppHttpConfig` +
+  `JwtConfig` record shapes [verified: `SecurityMode.java`, `AppHttpConfig.java`, `JwtConfig.java`].
+  Fixed the "Security Boundaries" bullet to reflect the default (not an unconditional requirement)
+  and added `SECURITY.md` as the page's primary trust-model/operational-posture pointer. This file
+  was out of scope for the #318 sweep (which fixed `cli.md`/`management-api.md`/
+  `getting-started.md` for the same stale-default class of claim) and is fixed here under its own
+  ticket.
+
 ### Changed (2026-08-27 — #321 follow-through: node-binary version skew now tracked as #666)
 - `reference/versioning-and-compatibility.md` ("Rolling upgrades and node version skew"):
   replaced the "no visible spec or tracking issue" language with a reference to #666 (filed
