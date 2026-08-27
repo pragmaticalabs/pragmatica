@@ -107,6 +107,13 @@ via `docker inspect` on any host that can reach the Docker socket]. This is a kn
 the resulting `docker-compose.yml` and the Docker daemon's inspect API as secret-bearing, and control
 access accordingly, exactly as you would a file containing the secret in the clear.
 
+Separately: the daily-rotated gossip key described above is itself HKDF-derived from
+`cluster_secret`, so rotating `cluster_secret` does not immediately revoke gossip decryption for
+an attacker who captured it beforehand; the KV-delivered path built for exactly this
+case (`GossipKeyRotationKey`, pushing independent key material without a full secret
+rotation/restart) has no production writer and no CLI/admin trigger, so it cannot currently be
+invoked — tracked as #683.
+
 ### Recognizing an untrusted-network deployment
 
 Ask these questions before exposing a cluster beyond a private network:

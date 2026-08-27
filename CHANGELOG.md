@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Fixed (2026-08-27 — #616 follow-up: GossipKeyRotationKey security-operations gap, #616 closed)
+- Filed **#683**: `GossipKeyRotationKey`'s consumer path (`GossipKeyRotationHandler`, wired as the
+  design comment's "sole delivery path" for gossip-key rotation) has zero production writer and no
+  CLI/admin trigger anywhere in the codebase. Verified the daily automatic gossip-key rotation
+  claimed in `SECURITY.md` is unaffected and independently correct — every node derives its
+  current/previous/next key via HKDF from `cluster_secret` + UTC day
+  (`SelfSignedCertificateProvider.deriveGossipKeyWithLabel`), with no KV/consensus dependency. The
+  gap is narrower and sharper: because that daily key is itself derived from `cluster_secret`,
+  rotating `cluster_secret` doesn't revoke gossip access already computed from a leaked copy — the
+  KV-delivered path was meant to be the in-place escape hatch and currently cannot be invoked.
+  Cross-referenced #287 (closed, rc2 — chmod 600 + off-argv hardening on a different code path) and
+  `SECURITY.md`'s `cluster_secret` hygiene section, where a one-line note now cites #683.
+- Closed **#616** — the KV key-type census landed in `guarantees.md` §1a (commit `cb245eb36`), and
+  every gap the audit surfaced now carries its own ticket (#676 backup, #679/#680/#681 spun-off
+  findings, #683 gossip-key rotation).
+
 ### Fixed (2026-08-27 — #616 durability audit: KV key-type census, backup mechanism, three new gaps)
 - Added `guarantees.md` §1a: a census of all 50 `AetherKey` record types (not ~40 as originally
   estimated), current-truth-only (no sufficiency judgment, no internal-ruling references).
