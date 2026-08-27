@@ -6,7 +6,7 @@ Slices access infrastructure — databases, HTTP clients, caches — through **r
 
 ### Built-In Qualifiers
 
-Aether ships three built-in qualifiers:
+Aether ships four built-in qualifiers:
 
 | Annotation | Resource Type | Config Section |
 |------------|--------------|----------------|
@@ -140,7 +140,14 @@ The annotation processor classifies factory parameters automatically:
 
 ### Configuration Section Naming
 
-Resource configuration lives in `aether.toml` using the pattern `[type.qualifier]`:
+Resource configuration is layered, not single-file. A slice may bundle its own
+`META-INF/resources.toml` inside the JAR — **slice-intrinsic defaults**, parsed as-is by
+`SliceStore` with no secret resolution. The operator/node-level `aether.toml` (plus the KV-Store
+config overlay above it) is the **deployment layer**; it wins over the slice's intrinsic defaults
+when both define the same key [mechanism: first-wins `LayeredConfigProvider`, node-composite
+listed first].
+
+Both layers use the same section pattern, `[type.qualifier]`:
 
 ```toml
 [http.payment-gateway]
@@ -156,9 +163,12 @@ The `type` prefix determines which `ResourceFactory` handles provisioning. The `
 
 ### Secret Handling
 
-### Secret Handling
-
-String values containing `${secrets:path/to/secret}` are resolved at configuration load time by `SecretResolvingConfigurationProvider`. The secret resolver function maps paths to values asynchronously. All placeholders are resolved eagerly before the configuration is made available to resource factories.
+String values containing `${secrets:path/to/secret}` are resolved eagerly at load time by
+`SecretResolvingConfigurationProvider` [verified: `AetherNode.java` — eager resolution against the
+node-composite provider]. **This applies only to `aether.toml` and the KV-Store overlay** — a
+slice's bundled `resources.toml` is parsed raw, with no secret resolution at that layer today.
+Put secrets in the operator-level `aether.toml`, not in a slice-shipped `resources.toml`;
+extending resolution to the slice-intrinsic layer is tracked in #269.
 
 ```toml
 [database.orders]
@@ -526,9 +536,9 @@ Nested under `[notification.smtp]`:
 |-------|------|---------|-------------|
 | `host` | `String` | required | SMTP server hostname |
 | `port` | `int` | `587` | SMTP server port |
-| `tls` | `SmtpTlsMode` | `STARTTLS` | TLS mode: `NONE`, `STARTTLS`, `IMPLICIT` |
-| `username` | `String` (optional) | none | AUTH PLAIN username |
-| `password` | `String` (optional) | none | AUTH PLAIN password |
+| `tls_mode` | `SmtpTlsMode` | `STARTTLS` | TLS mode: `NONE`, `STARTTLS`, `IMPLICIT` |
+| `auth.username` | `String` (optional, nested) | none | AUTH PLAIN username — under `[notification.smtp.auth]` |
+| `auth.password` | `String` (optional, nested) | none | AUTH PLAIN password — under `[notification.smtp.auth]` |
 | `connect_timeout` | duration | `10s` | TCP connection timeout |
 | `command_timeout` | duration | `30s` | SMTP command timeout |
 
@@ -538,10 +548,10 @@ Nested under `[notification.http]`:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `provider` | `String` | required | Vendor: `"sendgrid"`, `"mailgun"`, `"postmark"`, `"resend"` |
+| `provider_hint` | `String` | required | Vendor: `"sendgrid"`, `"mailgun"`, `"postmark"`, `"resend"` |
 | `api_key` | `String` | required | Vendor API key |
 | `endpoint` | `String` (optional) | vendor default | Override API endpoint URL |
-| `from` | `String` (optional) | none | Default sender address |
+| `from_address` | `String` (optional) | none | Default sender address |
 
 #### Retry Configuration
 
@@ -604,7 +614,9 @@ backend = "smtp"
 [notification.smtp]
 host = "smtp.example.com"
 port = 587
-tls = "STARTTLS"
+tls_mode = "STARTTLS"
+
+[notification.smtp.auth]
 username = "noreply@example.com"
 password = "${secrets:smtp/password}"
 
@@ -618,9 +630,9 @@ max_attempts = 3
 backend = "http"
 
 [notification.http]
-provider = "sendgrid"
+provider_hint = "sendgrid"
 api_key = "${secrets:sendgrid/api-key}"
-from = "noreply@example.com"
+from_address = "noreply@example.com"
 
 [notification.retry]
 max_attempts = 5
@@ -633,7 +645,7 @@ initial_delay_ms = 2000
 backend = "http"
 
 [notification.http]
-provider = "mailgun"
+provider_hint = "mailgun"
 api_key = "${secrets:mailgun/api-key}"
 ```
 
@@ -729,7 +741,7 @@ Custom vendors can be added via `VendorMapping` SPI (ServiceLoader in `integrati
 |------|---------|-------------|
 | `LOCAL` | In-memory on local node | Fastest, no network overhead |
 | `DISTRIBUTED` | DHT across the cluster | Shared cache, survives node loss |
-| `TIERED` | Local L1 + distributed L2 | Best of both: fast reads with cluster-wide consistency |
+| `TIERED` | Local L1 + distributed L2 | Best of both: fast local reads, falls back to the distributed L2 on a local miss [gap: no cross-node invalidation yet, so a write on one node can leave a stale L1 entry on another — tracked in #279; don't rely on cross-node consistency] |
 
 ### TOML Example
 
@@ -767,6 +779,10 @@ Built-in backoff strategies:
 max_attempts = 3
 ```
 
+> **Gap:** this minimal example does not fully provision through the generic config binder today
+> — `backoff_strategy` has no config-level default (`RetryConfig` declares none), so a section
+> that omits it fails to bind rather than falling back to exponential backoff. Tracked in #278.
+
 ### Circuit Breaker
 
 **Resource type:** `CircuitBreakerMethodInterceptor`
@@ -792,9 +808,12 @@ test_attempts = 5
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `max_requests` | `int` | `100` | Maximum requests allowed in the window |
-| `window` | duration | `1m` | Time window for rate limiting |
-| `burst` | `int` | `0` | Additional burst capacity above base rate |
+| `max_requests` | `int` | required | Maximum requests allowed in the window |
+| `window` | duration | required | Time window for rate limiting |
+| `burst` | `int` | required | Additional burst capacity above base rate |
+
+`RateLimitConfig` declares no `DEFAULT` static field either, so all three keys above are mandatory —
+omitting one fails config binding rather than falling back to a built-in value.
 
 ```toml
 [rate-limit.api-calls]
@@ -857,6 +876,9 @@ Provisioned by `RateGuardFactory` (`ResourceFactory<RateGuard, RateGuardConfig>`
 
 The `registry` field (Micrometer `MeterRegistry`) is injected programmatically, not via TOML.
 
+> **Gap:** the generic config binder has no handler for bare `List<String>` fields, so `tags` cannot
+> actually be provisioned through TOML today despite appearing in this table. Tracked in #278.
+
 ```toml
 [metrics.order-processing]
 name = "order.processing"
@@ -872,10 +894,13 @@ record_counts = true
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `name` | `String` | required | Logger name prefix |
-| `level` | `LogLevel` | `INFO` | Log level (`TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`) |
-| `log_args` | `boolean` | `true` | Log method arguments |
-| `log_result` | `boolean` | `true` | Log method results |
-| `log_duration` | `boolean` | `true` | Log execution duration |
+| `level` | `LogLevel` | required | Log level (`TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`) |
+| `log_args` | `boolean` | required | Log method arguments |
+| `log_result` | `boolean` | required | Log method results |
+| `log_duration` | `boolean` | required | Log execution duration |
+
+`LogConfig` declares no `DEFAULT` static field, so the generic config binder treats every key above
+as mandatory — there is no config-level fallback to `INFO`/`true` if a key is omitted from TOML.
 
 ```toml
 [logging.payment-flow]
@@ -968,9 +993,11 @@ public interface OrderService {
 |-------|------|---------|-------------|
 | `interval` | `String` | — | Fixed-rate interval: `"30s"`, `"5m"`, `"1h"`, `"1d"`, `"2w"` |
 | `cron` | `String` | — | Standard 5-field cron: `minute hour dom month dow` |
-| `leaderOnly` | `boolean` | `true` | Whether only the leader node triggers the task |
+| `execution_mode` | `ExecutionMode` | `single` | `single`: leader-only; `all`: every quorum-participating node |
 
-Exactly one of `interval` or `cron` must be specified.
+Exactly one of `interval` or `cron` must be specified. `execution_mode` replaces the earlier
+`leaderOnly: boolean` design — see #272/#273
+[verified: `aether/resource/api/.../ScheduleConfig.java`, `ExecutionMode.java`].
 
 ### TOML Examples
 
@@ -978,21 +1005,21 @@ Exactly one of `interval` or `cron` must be specified.
 ```toml
 [scheduling.cleanup]
 interval = "5m"
-leaderOnly = true
+execution_mode = "single"
 ```
 
 **Cron-based (daily at midnight):**
 ```toml
 [scheduling.report]
 cron = "0 0 * * *"
-leaderOnly = true
+execution_mode = "single"
 ```
 
-**Non-leader task (runs on every node):**
+**Runs on every node (not leader-only):**
 ```toml
 [scheduling.local-cache-refresh]
 interval = "30s"
-leaderOnly = false
+execution_mode = "all"
 ```
 
 ### Cron Expression Format
@@ -1012,8 +1039,12 @@ Examples: `*/5 * * * *` (every 5 min), `0 9 * * 1-5` (weekdays at 9am), `0 0 1 *
 ### Behavior
 
 - Scheduled tasks are registered in the cluster KV-Store on slice activation
-- `leaderOnly = true`: the leader starts a timer and invokes via `SliceInvoker`; any node with the slice may execute
-- `leaderOnly = false`: each node with the slice starts its own timer
+- `execution_mode = "single"`: only the leader's timer fires, invoking via `SliceInvoker`
+  [verified: `aether/aether-invoke/.../ScheduledTaskManager.java` — `shouldRunInCurrentState`,
+  `state instanceof Leading`]
+- `execution_mode = "all"`: every node currently participating in the quorum (leader or follower)
+  runs its own timer and executes the task independently — not "each node with the slice," but
+  specifically quorum members [verified: same file, `state instanceof Following || state instanceof Leading`]
 - Timers are quorum-gated: cancelled on quorum loss, restarted on quorum establishment
 - Schedule changes via Management API trigger automatic timer restart
 - Interval tasks use fixed-rate scheduling; cron tasks use one-shot timers that re-schedule after each execution

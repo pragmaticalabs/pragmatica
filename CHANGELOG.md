@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Fixed (2026-08-27 — #283: stale @Notify/interceptor/qualifier/@Scheduled claims in resource-reference.md)
+- `slice-developers/resource-reference.md` had drifted further since the ticket's original
+  2026-06-11 assessment. Fixed: built-in qualifier count (three → four); the config-layering/secret
+  explanation, which previously implied slice-bundled `resources.toml` gets the same
+  `${secrets:...}` resolution as the operator `aether.toml` (it doesn't — tracked in #269); SMTP
+  config (`tls` → `tls_mode`, flat `username`/`password` → nested `auth.username`/`auth.password`)
+  and HTTP vendor config (`provider` → `provider_hint`, `from` → `from_address`) to match the real
+  `SmtpConfig`/`SmtpAuth`/`HttpEmailConfig` record shapes (#271); the TIERED cache row's false
+  "cluster-wide consistency" claim, replaced with the real local-L1/distributed-L2-fallback
+  behavior and a cross-node-invalidation gap note (#279).
+- Added gap notes to the Retry and Metrics TOML examples: `RetryConfig.backoff_strategy` and
+  `MetricsConfig.tags` (`List<String>`) have no config-level default or binding path through the
+  generic config binder today, so the examples shown don't fully provision as written (#278).
+  Corrected the Rate Limit and Logging config tables' Default column from fabricated values to
+  `required` — neither `RateLimitConfig` nor `LogConfig` declares a `DEFAULT` static field, so the
+  binder has no fallback and omitting any key fails config binding.
+- Rewrote the `@Scheduled` section: replaced the fictional `leaderOnly: boolean` field with the
+  real `execution_mode` (`ExecutionMode`: `single`/`all`, default `single`) across the config
+  table, all three TOML examples, and the Behavior bullets — `single` is leader-only, `all` runs on
+  every quorum-participating node (leader or follower), correcting the previous "each node with the
+  slice" description [verified: `ScheduleConfig.java`, `ExecutionMode.java`,
+  `ScheduledTaskManager.shouldRunInCurrentState`/`startEligibleTasks`]. Cross-refs #272/#273.
+
 ### Fixed (2026-08-27 — #310: 12-management.md base paths, /api/aspects, CLI typos)
 - `architecture/12-management.md`'s "Endpoint Categories" table listed every management-API
   category under a fictional `/api/v1/...` prefix; the real `ManagementRoute` enum has no version
