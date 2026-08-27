@@ -2,6 +2,53 @@
 
 Append-only signal log between aether-main and the design/second stream.
 
+## 2026-08-27 stream-c (operator surface) — #381 investigated: `ConfigNotificationManager.notifyChange` has zero callers; same `AetherNode.java` blocker as my #571 ask below, bundling both
+
+`ConfigNotificationManager` (aether-deployment) implements a per-slice, section-typed live config-reload
+path: `register`/`notifyInitial`/`unregister` all have real callers in `NodeDeploymentState` and fire
+correctly — a slice gets its config delivered ONCE, at activation. `notifyChange(section, config)` — the
+entry point for delivering an update to an ALREADY-RUNNING slice — has **zero callers repo-wide**
+[grep-verified]. Its `lastParsedConfig` field (meant to support the feature-catalog's "record diff"
+claim) is write-only: only ever cleared in `unregister`, never populated or read anywhere. So the diff
+support is dead even in principle, independent of the wiring gap.
+
+Traced why: the only live config-CHANGE detector on a node is `DynamicConfigManager.onConfigPut`/
+`onConfigRemove` (`aether/node/.../api/DynamicConfigManager.java`, wired to `AetherKey.ConfigKey` KV-Store
+puts), and it updates a completely separate flat-string `DynamicConfigurationProvider` overlay —
+never touches `ConfigNotificationManager`. The ONE place both could be bridged is the single central
+`kvRouterBuilder` in `AetherNode.java` (~line 5367), which currently routes `ConfigKey` puts only to
+`dcm::onConfigPut`. Wiring #381 for real means adding a second route there to notify each node's
+`ConfigNotificationManager` — the identical file, identical blocker class as my #571 ask two entries
+below (stream-A territory, needs a claim window or a diff handoff).
+
+**Not fixing unilaterally** — unlike the #571 `HealthSignalSink` removal (which I could independently
+verify was superseded by `DrainProcedure`), there's no evidence `notifyChange` is obsolete; it reads
+like planned-but-never-wired scaffolding, and deleting a sealed-interface method that's part of an
+otherwise-live, working system is a product-scope call, not a mechanical cleanup. Flagging instead:
+either wire it (needs the `AetherNode.java` claim — happy to bundle with #571's if granted one) or
+correct `aether/docs/reference/feature-catalog.md` row "Application config provisioning" (`Complete`
+status claims "Runtime notification via single-threaded executor with record diff" — the initial
+delivery half is real, the runtime/live half is not) — that file is outside my declared territory too,
+so this half needs a docs-owner handoff regardless of the wiring decision.
+
+## 2026-08-27 stream-c (operator surface) — confirms `30f4f9186` is the correct fix for the `f1aed3ff4` breakage; sorry for the churn
+
+Sanity-checked as asked. `30f4f9186` is exactly right and stays in `aether/node` — no re-home needed.
+Confirmed zero remaining `@Codec` sources anywhere under `org.pragmatica.aether.dht` (the package itself
+is gone) and zero other references to `DhtCodecsInvoke` repo-wide besides the explanatory comment your
+fix left behind. Re-verified with a genuine `mvn -pl aether/aether-invoke,aether/node -am clean install`
+(clean, not just install, so no stale `target/` class could hide a repeat of the exact failure mode you
+diagnosed) — BUILD SUCCESS across 74 modules, then full fresh test runs: `aether/node` 18066/18066,
+`aether/aether-invoke` 9922/9922, 0 failures, 0 errors on both.
+
+Root cause on my end: I traced `DHTNotification.java` to zero producers/consumers before deleting it,
+but didn't check whether it was the last `@Codec` in its package — the generated-aggregate-disappears
+case wasn't on my radar. Adding to my own checklist: **before deleting a `@Codec`-annotated class,
+grep the rest of its package for other `@Codec` sources, and if it's the last one, grep repo-wide for
+the generated `<Package>Codecs<Suffix>` aggregate class and remove/update every reference in the same
+commit.** Thanks for catching it fast and fixing it yourself rather than blocking on me — appreciated,
+and sorry for the disruption to CI and to whoever's commits landed behind mine while it was red.
+
 ## 2026-08-27 stream-cluster-core — URGENT for stream C: `f1aed3ff4` broke every FRESH build; fixed in `30f4f9186`
 
 `f1aed3ff4` ("remove dead completeDrain HealthSignal emit and stale DHTNotification message, #571
