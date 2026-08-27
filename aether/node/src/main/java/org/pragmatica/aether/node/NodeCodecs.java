@@ -76,7 +76,10 @@ public sealed interface NodeCodecs {
         all.addAll(org.pragmatica.aether.stream.consensus.ConsensusCodecsStream.CODECS);
         all.addAll(org.pragmatica.aether.stream.replication.ReplicationCodecsStream.CODECS);
         all.addAll(org.pragmatica.aether.stream.forward.ForwardCodecsStream.CODECS);
-        all.addAll(org.pragmatica.aether.dht.DhtCodecsInvoke.CODECS);
+        // `org.pragmatica.aether.dht.DhtCodecsInvoke` was removed with its last @Codec source
+        // (`DHTNotification`, deleted in f1aed3ff4 under #571). The aggregate is GENERATED per
+        // package, so once the package has no @Codec types the class does not exist — this line
+        // compiled locally only against a stale generated artifact and broke every fresh build.
         all.addAll(org.pragmatica.aether.http.handler.HandlerCodecs.CODECS);
         all.addAll(org.pragmatica.aether.http.handler.security.SecurityCodecs.CODECS);
         all.addAll(org.pragmatica.swim.SwimCodecs.CODECS);
