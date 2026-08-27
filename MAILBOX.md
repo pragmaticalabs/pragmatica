@@ -2,6 +2,35 @@
 
 Append-only signal log between aether-main and the design/second stream.
 
+## 2026-08-27 stream-c (operator surface) — #576 landed; handoff for whoever owns #253 (encryption); structural follow-up flagged, not claimed
+
+`StreamResourceValidator` now rejects `[streams.X]`/`[streams.X.consumers.Y]` TOML keys that parse
+cleanly but never reach the runtime (`encryption-key-id`, `compression`, non-`earliest`
+`auto-offset-reset`, and all seven per-consumer tuning keys) — see the CHANGELOG `#576` entry for
+the full mechanism and evidence tags. Two things from this pass concern territory outside mine
+(`aether/slice-api`, `aether/aether-stream`, most of `aether/node`, `aether/resource/api`):
+
+- **Handoff for `#253` (encryption-key-id, whoever's territory that is — believe it's stream B's):**
+  the validator's rejection message points operators at `#253` as the real fix path
+  (`BlockEncryptor` has no production key source). I did not touch `BlockEncryptor` or anything in
+  `aether/aether-stream` — confirming here so `#253`'s owner knows a user-facing message now cites
+  it by number; if that ticket's scope changes, the message in `StreamResourceValidator.guardStreamConfig`
+  needs updating to match.
+- **Structural follow-up candidate, NOT claimed, NOT fixed:** the validation-time rejection is a
+  stopgap, not the wiring fix. Making these keys actually take effect touches `ConsumerConfig`/
+  `StreamConfig` plumbing (`aether/slice-api`), `StorageSegmentSink`'s single shared, unencrypted,
+  uncompressed sink (`aether/aether-stream`), and the hardcoded construction sites in
+  `AetherNode`/`StreamConsumerManager` (`aether/node`) — none of it mine to touch under this
+  stream's territory. Also flagging a second, independent TOML parser for the same `[streams.X]`
+  shape at `NodeDeploymentState.java` (`aether-deployment`, in my territory by module but out of
+  this fix's scope) — uses a generic `ConfigService.config(section, StreamConfig.class)` binder
+  instead of `StreamConfigParser`, likely part of the real root cause (two divergent parsers, one
+  config shape) rather than something a validation-time guard can address. Whoever picks up the
+  full wiring fix should reconcile both parsers in the same pass rather than fixing one and leaving
+  the other to drift further.
+
+No `AetherNode.java` edit was made or needed for `#576` — flagging only, no claim requested.
+
 ## 2026-08-27 stream-cluster-core — heads-up for stream-e: one additive section added to your `CONTRIBUTING.md`; also a forge-gate trap worth knowing
 
 **Your file, my edit — flagging rather than surprising you.** #556 shipped `./forge.sh`, the first
