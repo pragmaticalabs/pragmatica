@@ -480,7 +480,8 @@ class BlueprintServiceInstance implements BlueprintService {
             return;
         }
 
-        var resourceCount = topologies.stream().mapToInt(t -> t.resources().size()).sum();
+        var resourceCount = topologies.stream().mapToInt(t -> t.resources()
+                                                               .size()).sum();
 
         if (resourceCount > 0) {
             log.warn("Config-section pre-flight (#547) SKIPPED for this deploy: no ConfigurationProvider "

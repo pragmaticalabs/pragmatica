@@ -2285,7 +2285,11 @@ public interface AetherNode extends ManageableNode {
         // NTT-side `LeaderReconciler` (wired below) is the sole provisioning driver.
         periodicTasks.add(schedulePhaseChangeWatcher(effectivePhaseSupplier, clusterTopologyManager));
         var controller = DecisionTreeController.decisionTreeController(config.controllerConfig());
-        var blueprintService = BlueprintService.blueprintService(clusterNode, kvStore, repository, artifactStore, resourceProviderSetup.nodeComposite());
+        var blueprintService = BlueprintService.blueprintService(clusterNode,
+                                                                 kvStore,
+                                                                 repository,
+                                                                 artifactStore,
+                                                                 resourceProviderSetup.nodeComposite());
         var mavenProtocolHandler = MavenProtocolHandler.mavenProtocolHandler(artifactStore);
         var deploymentManager = DeploymentManager.deploymentManager(clusterNode, kvStore);
         var alertManager = AlertManager.alertManager(clusterNode, kvStore);

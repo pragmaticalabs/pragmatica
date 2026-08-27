@@ -6,6 +6,7 @@ package org.pragmatica.aether.deployment.validation;
 
 import org.pragmatica.lang.Cause;
 
+
 /// A slice declares a generic resource dependency ([org.pragmatica.aether.slice.topology.SliceTopology.ResourceDep])
 /// whose `resources.toml` section is not found in the leader's composite configuration view
 /// (node.toml layered with the operator KV overlay), checked at deploy time. Raised by
@@ -18,8 +19,9 @@ public record MissingConfigSection(String field, String rule, String message) im
 
     public static MissingConfigSection missingConfigSection(String sliceName, String resourceType, String section) {
         var field = "[" + section + "]";
-        var message = "slice '%s' requires config section [%s] for its %s resource — not found in the leader's composite configuration view (node.toml layered with the operator KV overlay), checked at deploy time. This does not confirm the section is present on every follower's node.toml. Add the section before deploying, or remove the resource dependency from the slice."
-                          .formatted(sliceName, section, resourceType);
+        var message = "slice '%s' requires config section [%s] for its %s resource — not found in the leader's composite configuration view (node.toml layered with the operator KV overlay), checked at deploy time. This does not confirm the section is present on every follower's node.toml. Add the section before deploying, or remove the resource dependency from the slice.".formatted(sliceName,
+                                                                                                                                                                                                                                                                                                                                                                                                 section,
+                                                                                                                                                                                                                                                                                                                                                                                                 resourceType);
 
         return new MissingConfigSection(field, RULE_SECTION_NOT_CONFIGURED, message);
     }
