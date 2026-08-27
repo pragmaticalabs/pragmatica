@@ -103,7 +103,9 @@ when written by the CLI. **However**, the Docker Compose generator currently wri
 environment variable in the generated compose file
 (`AETHER_CLUSTER_SECRET: "<value>"`) [mechanism: `DockerComposeGenerator.java` — the value is visible
 via `docker inspect` on any host that can reach the Docker socket]. This is a known, tracked residual
-(internally referenced as #287) — **not yet closed**. If you generate a Compose deployment, treat
+(internally referenced as #684, which also covers the generator-class sweep so this doesn't recur
+elsewhere — distinct from the now-closed #287, which hardened a different code path: cloud-init
+user-data/argv and `aether.toml` file permissions). If you generate a Compose deployment, treat
 the resulting `docker-compose.yml` and the Docker daemon's inspect API as secret-bearing, and control
 access accordingly, exactly as you would a file containing the secret in the clear.
 
