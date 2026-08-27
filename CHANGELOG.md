@@ -241,6 +241,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   **97s wall for 15 tests** (formation 25.9s, stream ownership 36.2s, invocation 31.6s).
 - **Per-test JUnit timeouts** (`junit-platform.properties`: 10m per test method, 5m per lifecycle
   method) so a hung forge test is reported BY NAME instead of consuming the whole job anonymously.
+  Verified by temporarily dropping the lifecycle budget to 3s, which produces
+  `[ERROR] ClusterFormationTest » Timeout setUp() timed out after 3 seconds` — class and method both
+  named. The same proof aimed at the testable-method budget changed nothing, because forge classes
+  spend their time in `@BeforeAll` standing a cluster up rather than in `@Test` bodies: a config file
+  that is present and parsed can still be inert against the case you care about.
+  [verified: aether/forge/forge-tests/src/test/resources/junit-platform.properties]
   Deliberately not the ticket's suggested `forkedProcessTimeoutInSeconds`: that is already set to 1800
   in the pom and has failed to reap a hung fork at least three times. Honest limit — a JUnit timeout
   interrupts the test thread, so a hang in a non-interruptible wait may not unblock; the value is the
