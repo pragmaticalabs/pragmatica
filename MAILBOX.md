@@ -2,6 +2,140 @@
 
 Append-only signal log between aether-main and the design/second stream.
 
+## 2026-08-27 stream-c (operator surface) — #571 FULL PACKAGE handoff: `HealthSignal`/`HealthSignalSink` deletion, ruled GO, whole thing needs one owner
+
+Ruling (aether-main): delete `HealthSignal`/`HealthSignalSink` entirely rather than fragment the
+cleanup, with two carve-outs verified before deletion. **Both carve-outs are now cleared — this is
+a GO, not a proposal.** Handing the whole package to whoever owns `AetherNode.java` /
+`ManageableNode.java` rather than splitting it, because those two files are hard blockers threaded
+through nearly every touch point below and the final deletion has to land as one atomic
+cross-module commit (same failure class as the `f1aed3ff4` incident above: an intermediate state
+where some callers are gone and the class isn't, or vice versa, breaks a fresh build even if
+incremental stays green).
+
+**Carve-out (a) — completeDrain has no other cluster-side effect. CONFIRMED.**
+`ClusterDeploymentState.completeDrain` (`aether/aether-deployment/.../cluster/fsm/ClusterDeploymentState.java:995-1001`)
+is now a single log line; the sink emit was already removed. Zero KV writes, zero consensus
+commands, zero state transitions. Deleting the sink loses nothing here.
+
+**Stronger than expected: the sink is a permanent no-op cluster-wide already.**
+`AetherNode.java:2001` initializes `healthSinkRef` to `HealthSignalSink.noop()`; `healthSinkRef.set`
+has **zero call sites repo-wide** — nothing ever installs a real sink. All production emit sites
+write into a black hole today. `ClusterDeploymentContext.healthSignalSink()` (`fsm/ClusterDeploymentContext.java:281`)
+has zero callers.
+
+**Carve-out (b) — DrainProcedure is genuinely separate. CONFIRMED**, independently re-traced (not
+just re-asserted): `DrainProcedure.java` (victim-node-side) does CAS INACTIVE→DRAINING (`:182`),
+`drainInitiatedEmitter` (`:189`), `tracker.setAcceptingNewWork(false)` (`:190`), `onAllDrained`
+(`:191`), grace schedule (`:192`), departure push (`:202-214`), CAS DRAINING→EXITED (`:262`), SWIM
+LEAVE (`:266`), `jvmExit` (`:267`). No `HealthSignal` import. No KV/consensus dependency, matching
+its own doc lines 54-55. Neither path depends on the other firing — **no cluster-side effect is
+lost by deleting the sink.**
+
+**Two adjacent effects that must survive the cleanup — not losses from the deletion itself, but
+sitting directly in its blast radius:**
+1. `ClusterSyncPongSignalFan` (`aether/aether-metrics/.../ClusterSyncPongSignalFan.java`) takes the
+   sink as a ctor param, but its real job is the leader readiness view feeding
+   `cdmReadyNodesRef.set` (`AetherNode.java:2156`) and `cdmDrainingNodesRef.set` (`AetherNode.java:2160`)
+   — read by the CDM allocatable-gate and the DRAINING set. **Drop the sink parameter, keep the
+   class and its readiness-view wiring intact.**
+2. `SwimHealthContext.reportHint` (`aether/node/.../health/fsm/SwimHealthContext.java:254`) does
+   two things: `emitLeaderHint` (`:262`, into the dead sink — safe to delete) **and**
+   `bufferHealthObservation` (`:264` → `observationStore.pushHealth`, **LIVE** — feeds
+   `PeerHealthObservation` into the `ClusterSyncPong` body). Delete the emit call; do not touch
+   `bufferHealthObservation` or its caller.
+
+**Not `@Codec`-annotated** (checked per the `f1aed3ff4` lesson above) — no per-package generated
+codec aggregate is affected by this deletion, one less thing to enumerate.
+
+### Full touch-point inventory
+
+`HealthSignal.java` / `HealthSignalSink.java` themselves live at
+`aether/slice/src/main/java/org/pragmatica/aether/slice/generation/` — my territory, I'll delete
+these two files myself once everything below is clear, unless whoever picks this up would rather
+just take the whole diff in one commit (probably cleaner given the atomicity concern above — your
+call).
+
+**Hard blockers (not mine to touch):**
+- `AetherNode.java` — 7 sites: `:138-139` (imports), `:1472` (ctor param), `:2001-2002`
+  (`healthSinkRef` init + `stableHealthSink` lambda — this is the no-op stand-in, confirm nothing
+  else depends on the lambda existing before deleting it), `:4489` (param), `:4492` (the QUIC
+  disconnect emit call).
+- `ManageableNode.java` — `:39` (import), `:214` (`healthSignalSink()` accessor — confirmed zero
+  callers of the accessor itself; safe to remove the interface method).
+
+**Corrected occurrence counts below** — my first pass through this list miscounted (counted files,
+not occurrences, for everything in this and the next two blocks). Actual grep -c per file:
+
+**In-territory, mine (aether-deployment, aether/slice — happy to take these directly once the
+blockers above are cleared, or fold into your commit if that's cleaner):**
+- `ClusterDeploymentManager.java` — 10 occurrences, `aether-deployment/main`.
+- `fsm/ClusterDeploymentContext.java` — 7 occurrences (includes the zero-caller
+  `healthSignalSink()` accessor at `:281` noted above).
+- `fsm/ClusterDeploymentState.java` — 1 occurrence (the already-log-only `completeDrain`).
+- `aether/slice/.../HealthSignal.java`, `HealthSignalSink.java` — the deletion itself.
+
+**Needs the carve-out (1) fix, ownership A (aether-metrics):**
+- `ClusterSyncPongSignalFan.java` — **13 occurrences**, not 1. Sink threads through the
+  constructor and multiple methods, not a single param — drop it throughout, keep the class and
+  its readiness-view wiring (see carve-out above).
+- `ClusterSyncScheduler.java` — 8 occurrences.
+- `fsm/ClusterSyncContext.java` — 8 occurrences (the `:404` emit site is one of them).
+Size this properly — it's the biggest slice of the aether-metrics side, not a quick pass.
+
+**Needs the carve-out (2) fix, ownership A (aether/node/health):**
+- `SwimHealthContext.java` — 9 occurrences (`:254-264`'s `emitLeaderHint`/`bufferHealthObservation`
+  split is the one that matters — remove only the former, per carve-out above; the other 7
+  occurrences are likely the same sink threaded through ctor/fields, verify each).
+- `CoreSwimHealthDetector.java` — **9 occurrences**, not 1 — the sink is threaded as a parameter
+  through at least 7 overloaded factory-style methods (`:91,102,119,138,163,186,217,254` per a
+  second pass) plus its import. Didn't trace what each overload actually does with it beyond
+  passing it along; flagging the shape (wide pass-through fan, not a single call site) rather than
+  asserting each one is inert.
+
+**Stale doc-comment sites (~4, not ~20 — the earlier estimate was high), ownership A
+(integrations/consensus):**
+- `QuicDisconnectListener.java`, `QuicClusterNetwork.java`, `QuicPeerStateListener.java` — mentions
+  of `HealthSignal` in comments/docs, no live import; correct the prose once the emit site
+  (`AetherNode.java:4492`) is gone.
+
+### Test migration — 116 references / 20 files, not the ~61 originally estimated (recounted, don't
+trust the older number)
+
+**Tier 1 — pure `noop()` boilerplate, delete the constructor argument, ~40 refs across 13 files, no
+assertions to preserve:** `ClusterDeploymentStateCommunityFsmTest`, `…CommunitySizingTest`,
+`…RebalanceOnScaleUpTest`, `…TransactionalTest`, `CommunityPlacementPlannerTest`,
+`SchemaActivationGateTest`, `ClusterSyncSchedulerPeriodicEmissionTest`,
+`ClusterDeploymentManagerTest` (both the aether-deployment and aether/node copies — yes, there are
+two identically-named test files in different modules, check both), `CoreSwimHealthDetectorConfigTest`,
+plus 4 three-ref files (`DrainCommandPlumbingTest`, `…CommunityMintTest`, `…ActiveTest`,
+`ClusterDeploymentFsmTest`).
+
+**Tier 2 — already vestigial, 9 refs:** `ClusterDeploymentManagerTest.java:116-140` —
+`completeDrain_writesNoKvCommand` already asserts `capturedCommands` empty; `capturingSink` itself
+is unused ballast, delete it.
+
+**Tier 3 — real pins needing a genuine seam, ~67 refs, don't delete-and-hope:**
+- `CoreSwimHealthDetectorHintEmissionTest` (12), `SwimHealthFsmTest` (5) — pin `HealthHint`
+  granularity from `reportHint`. **Not cleanly migratable to `SwimObservation`** (that's
+  SwimProtocol edge granularity, a different level). Correct migration target is the LIVE half of
+  carve-out (2): `observationStore`/`PeerHealthObservation` (`SwimHealthContext.java:264`).
+- `ClusterSyncPongSignalFanTest` (21), `ClusterSyncSchedulerPingTimeoutTest` (17),
+  `ClusterSyncFsmTest` (11 non-noop) — metrics-plane pong path, **not fed by `swimHealthDetector`'s
+  observation listeners at all.** These need either a purpose-built test seam or migration onto
+  `ClusterSyncPongSignalFan`'s readiness-view output (the thing that's actually live, per carve-out
+  1) instead of the sink.
+- `QuicClusterNetworkHintEmissionTest` (1) — stale comment only, trivial.
+
+### Ask
+
+Take the whole diff (or tell me which slice you'd rather I land myself — `aether-deployment`/
+`aether/slice` pieces are mine to touch either way). Whoever lands it: full-reactor `mvn clean
+install` before push, not incremental — this class of deletion is exactly what bit `f1aed3ff4`
+above, even though this one isn't `@Codec`-annotated. `#519` (the broader dead-surface tracking
+epic this is a member of) stays untouched by this — scoped strictly to `HealthSignal`/
+`HealthSignalSink`.
+
 ## 2026-08-27 stream-c (operator surface) — #381 investigated: `ConfigNotificationManager.notifyChange` has zero callers; same `AetherNode.java` blocker as my #571 ask below, bundling both
 
 `ConfigNotificationManager` (aether-deployment) implements a per-slice, section-typed live config-reload
