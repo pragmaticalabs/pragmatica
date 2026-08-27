@@ -369,19 +369,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   out of scope here. [design intent — unverified]
 
 ### Changed (2026-08-27 — #558 follow-through: the public count renamed, pre-GA while it is free)
-- **`TopologyManager.healthyActiveNodeCount()` → `observedActiveNodeCount()`** (public default +
+- **`TopologyManager.healthyActiveNodeCount()` → `reportedActiveNodeCount()`** (public default +
   `TopologyObserver` override + both production callers + 13 count-asserting test sites). Post-delete
   the method performs no health filtering, so the old name asserted a check that does not happen — on
   a PUBLIC interface, which is where that defect class mints the next #678.
 - **No deprecation alias.** Aether is not published (#668) and the two callers in
   `ClusterTopologyManagerRecord` are the entire consumer set; pre-GA is when an API rename is free.
-- **The docstring now states the two modes**, because the honest name depends on which one you are in:
-  `TopologyObserver` returns the membership view's on-duty count in NORMAL, which post-#557 requires
-  OBSERVED reachability (completed QUIC handshake or SWIM ALIVE) — the name is fully earned there — and
-  falls back to a DISCOVERY count in BOOTING, deliberately, to break the cold-start catch-22 where the
-  snapshot only exists after consensus commits. During that window the number is not an observation,
-  and the docstring says so rather than letting the name imply otherwise.
-  [mechanism: TopologyObserver.observedActiveNodeCount mode split; PresenceMembershipView.healthyOnDutyCount]
+- **The name asserts NO filter property, deliberately, because the method is genuinely two things.**
+  `TopologyObserver` returns the membership view's on-duty count in NORMAL — post-#557 that requires
+  OBSERVED reachability (completed QUIC handshake or SWIM ALIVE) — and falls back to a DISCOVERY count
+  in BOOTING to break the cold-start catch-22 where the snapshot only exists after consensus commits.
+- Two better-reading candidates were rejected for being false in one mode each, which is precisely the
+  defect this rename removes. `observedActiveNodeCount` (used briefly, then corrected) overclaims —
+  there is no observation during BOOTING. `discoveredActiveNodeCount` names a SUPERSET of what NORMAL
+  returns, and for a COUNT that is the more dangerous error: a caller comparing it against a configured
+  size would silently over-expect. "Reported" is true in both modes; which authority and what it filters
+  is the docstring's job, not the name's. Per the repo's claim discipline — between two candidate
+  phrasings, choose the weaker one.
+  [mechanism: TopologyObserver.reportedActiveNodeCount mode split; PresenceMembershipView.healthyOnDutyCount]
 
 
 - **Deleted** `NodeHealth`, `NodeState.suspected(...)`, `NodeState.canAttemptConnection(...)`, the

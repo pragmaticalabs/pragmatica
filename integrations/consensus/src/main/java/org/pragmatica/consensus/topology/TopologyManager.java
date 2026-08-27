@@ -107,14 +107,25 @@ public interface TopologyManager {
     /// docstring elsewhere (#678). No deprecation alias: Aether is not published (#668) and the two
     /// production callers are the entire consumer set.
     ///
-    /// **Read the two modes before trusting the number.** `TopologyObserver` overrides this: in NORMAL
-    /// it returns the membership view's on-duty count, which post-#557 requires OBSERVED reachability
-    /// (completed QUIC handshake or SWIM ALIVE) — the name is fully earned there. In BOOTING it falls
-    /// back to a DISCOVERY count, deliberately, to break the cold-start catch-22 where the snapshot
-    /// only exists after consensus commits. During that window the number is not an observation.
+    /// **The name deliberately asserts NO filter property, because this method is genuinely two
+    /// different things.** `TopologyObserver` overrides it: in NORMAL it returns the membership view's
+    /// on-duty count, which post-#557 requires OBSERVED reachability (completed QUIC handshake or SWIM
+    /// ALIVE); in BOOTING it falls back to a DISCOVERY count, deliberately, to break the cold-start
+    /// catch-22 where the snapshot only exists after consensus commits.
+    ///
+    /// Two better-reading candidates were rejected for being false in one mode each, which is the whole
+    /// defect #558 removed:
+    /// - `observedActiveNodeCount` overclaims — there is no observation during BOOTING.
+    /// - `discoveredActiveNodeCount` names a SUPERSET of what NORMAL returns. For a COUNT that is the
+    ///   more dangerous error: a caller comparing it against a configured size would silently
+    ///   over-expect, since the observed subset is smaller than the discovered set.
+    ///
+    /// "Reported" is what is true in both modes: this is the number the current membership authority
+    /// reports. Which authority, and what it filters, is the docstring's job — not the name's. Per the
+    /// repo's claim discipline: between two candidate phrasings, choose the weaker one.
     ///
     /// This default is the discovery-only shape for implementations without a membership view.
-    default int observedActiveNodeCount() {
+    default int reportedActiveNodeCount() {
         // The `health == HEALTHY` filter removed here was constant-true, so this is behaviour-
         // preserving. `topology()` is derived from the same map `getState` reads, so the presence
         // check is total — kept only to make the discovery semantics explicit at the call site.

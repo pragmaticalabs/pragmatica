@@ -1188,7 +1188,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     @Contract
     private void activateWithCurrentTopology() {
-        var actual = observer.observedActiveNodeCount();
+        var actual = observer.reportedActiveNodeCount();
         var desired = activationDesiredSize();
         var readyCount = observer.readyNodeCount();
         var effectiveActual = Math.max(actual, readyCount);
@@ -1328,7 +1328,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             return;
         }
 
-        var actual = observer.observedActiveNodeCount();
+        var actual = observer.reportedActiveNodeCount();
         var desired = snapshotDesiredCoreSize();
 
         if (desired == 0) {

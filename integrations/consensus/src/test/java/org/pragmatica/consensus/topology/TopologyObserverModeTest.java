@@ -118,14 +118,14 @@ class TopologyObserverModeTest {
     @Nested
     class BootingFallback {
         @Test
-        void bootingMode_noSnapshot_observedActiveNodeCount_usesLegacy() {
+        void bootingMode_noSnapshot_reportedActiveNodeCount_usesLegacy() {
             // v2-architecture §5.4: dial set is SWIM-discovery-derived, so the legacy fallback
             // counts the full core set only after discovery injects the 4 peers (+ self = 5).
             var observer = observerWith(clusterOf5(), GenerationSnapshotSource.noop());
             discoverAllPeers(observer);
 
             assertThat(observer.topologyMode()).isEqualTo(TopologyMode.BOOTING);
-            assertThat(observer.observedActiveNodeCount()).isEqualTo(5);
+            assertThat(observer.reportedActiveNodeCount()).isEqualTo(5);
         }
 
         @Test
@@ -152,7 +152,7 @@ class TopologyObserverModeTest {
 
             // Trigger an evaluation by calling a public read path (which evaluates the
             // transition on snapshot presence).
-            assertThat(observer.observedActiveNodeCount()).isEqualTo(3);
+            assertThat(observer.reportedActiveNodeCount()).isEqualTo(3);
             assertThat(observer.topologyMode()).isEqualTo(TopologyMode.NORMAL);
         }
 
@@ -165,7 +165,7 @@ class TopologyObserverModeTest {
             source.set(new StubView(Set.of(SELF, PEER_A), Set.of(SELF, PEER_A), 2, 5));
 
             // Read still returns the snapshot's value (2) but mode stays BOOTING.
-            assertThat(observer.observedActiveNodeCount()).isEqualTo(2);
+            assertThat(observer.reportedActiveNodeCount()).isEqualTo(2);
             assertThat(observer.topologyMode()).isEqualTo(TopologyMode.BOOTING);
         }
     }
@@ -181,14 +181,14 @@ class TopologyObserverModeTest {
             source.set(new StubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
                                     Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
                                     5, 5));
-            assertThat(observer.observedActiveNodeCount()).isEqualTo(5);
+            assertThat(observer.reportedActiveNodeCount()).isEqualTo(5);
             assertThat(observer.topologyMode()).isEqualTo(TopologyMode.NORMAL);
 
             // A subsequent shrunken snapshot is the source of truth; legacy is ignored.
             source.set(new StubView(Set.of(SELF, PEER_A, PEER_B, PEER_C),
                                     Set.of(SELF, PEER_A, PEER_B, PEER_C),
                                     4, 5));
-            assertThat(observer.observedActiveNodeCount()).isEqualTo(4);
+            assertThat(observer.reportedActiveNodeCount()).isEqualTo(4);
         }
 
         @Test
@@ -198,13 +198,13 @@ class TopologyObserverModeTest {
 
             // Trip into NORMAL.
             source.set(new StubView(Set.of(SELF, PEER_A, PEER_B), Set.of(SELF, PEER_A, PEER_B), 3, 5));
-            assertThat(observer.observedActiveNodeCount()).isEqualTo(3);
+            assertThat(observer.reportedActiveNodeCount()).isEqualTo(3);
             assertThat(observer.topologyMode()).isEqualTo(TopologyMode.NORMAL);
 
             // Now CLEAR the snapshot — in NORMAL we must NOT silently fall back to legacy.
             source.clear();
             assertThat(observer.topologyMode()).isEqualTo(TopologyMode.NORMAL);
-            assertThat(observer.observedActiveNodeCount()).isZero();
+            assertThat(observer.reportedActiveNodeCount()).isZero();
             assertThat(observer.readyNodeCount()).isZero();
         }
     }
@@ -218,12 +218,12 @@ class TopologyObserverModeTest {
 
             // Trip into NORMAL with a quorum-reaching snapshot.
             source.set(new StubView(Set.of(SELF, PEER_A, PEER_B), Set.of(SELF, PEER_A, PEER_B), 3, 5));
-            assertThat(observer.observedActiveNodeCount()).isEqualTo(3);
+            assertThat(observer.reportedActiveNodeCount()).isEqualTo(3);
             assertThat(observer.topologyMode()).isEqualTo(TopologyMode.NORMAL);
 
             // Subsequent below-quorum snapshot must NOT flip the mode back to BOOTING.
             source.set(new StubView(Set.of(SELF), Set.of(SELF), 1, 5));
-            assertThat(observer.observedActiveNodeCount()).isEqualTo(1);
+            assertThat(observer.reportedActiveNodeCount()).isEqualTo(1);
             assertThat(observer.topologyMode()).isEqualTo(TopologyMode.NORMAL);
         }
     }
