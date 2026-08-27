@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Fixed (2026-08-27 — #616 durability audit: KV key-type census, backup mechanism, three new gaps)
+- Added `guarantees.md` §1a: a census of all 50 `AetherKey` record types (not ~40 as originally
+  estimated), current-truth-only (no sufficiency judgment, no internal-ruling references).
+  `EphemeralKeys.java`'s compiled, test-pinned 17-type set is documented as authoritative for the
+  declared/derivable split, superseding #616's own stale 15-type hand-list (10-type discrepancy in
+  both directions, enumerated). Classified 4 fully-dead key types (`StorageBlockKey`,
+  `StorageRefKey`, `CloudCredentialsKey`, `StreamPartitionAssignmentKey`) and one half-wired type
+  (`GossipKeyRotationKey`: consumer fully wired as the sole delivery path, zero found production
+  write/trigger site, no CLI/admin route to fire a rotation).
+- Documented the real backup mechanism per #676's tracked resolution: `[backup] enabled` defaults
+  `false` and additionally requires a non-blank `path` (the true gate is `Main.resolveBackup`, not
+  `AetherNode.resolvePersistence`'s own redundant filter); saves fire only on quorum-loss pause,
+  membership reconfigure (which persists an *empty* state, not a snapshot), graceful stop, or a
+  post-restore echo — never on commit. **New finding:** the on-disk payload is an opaque base64
+  blob of a generic binary snapshot, not the structured/diffable TOML `feature-catalog.md:122`
+  claimed — corrected there (row 206 downgraded Complete → Partial) and in `guarantees.md` §1a.
+  The manual backup/restore REST API and CLI are unconditionally disabled at both node-construction
+  call sites regardless of `[backup]` config — stays tracked as **#676**.
+- Filed three new issues surfaced by this pass: **#679** (`ApiKeyAuditKey` is write-only — 4
+  production write sites, zero read/query sites found anywhere), **#680** (`ScheduledTaskStateKey`'s
+  automatic cron/interval-fire path hardcodes `nextFireAt`/`totalExecutions`/`consecutiveFailures`
+  on every write instead of reading prior state — telemetry-only, scheduling itself unaffected;
+  the correct read-modify-write pattern already exists in `ScheduledTaskRoutes.java`), and **#681**
+  (open question, not a reopen of the already-closed #384: no production reader was found for the
+  DHT `ReplicatedMap`s — `EndpointKey`/`SliceNodeKey`/`HttpNodeRouteKey` — that actually queries them
+  for a routing decision; only replication-receive plumbing and node-departure cleanup reference
+  them today).
+
 ### Fixed (2026-08-27 — #616 partial: guarantees.md/known-limitations.md understated declarative stream-consumer cursor durability)
 - `guarantees.md` §4 (`stream.consume` bullet and summary-matrix row 19) and `known-limitations.md`'s
   streaming-substrate bullet both described automatic cursor resume as app-`StreamAccess`-only,

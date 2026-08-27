@@ -79,6 +79,40 @@ Source of truth for leader, blueprint, target, generation, governor, and ownersh
 
 ---
 
+## 1a. KV key-type census & backup story (`AetherKey` audit — #616)
+
+There are **50** `AetherKey` record types (not ~40 as originally estimated), each a distinct KV keyspace under Store-A/Store-B. This section states, per type, what's classified as ephemeral vs. declared, what's dead, what's earned with a gap, and how the underlying persistence actually works — current behavior only, no judgment on whether the declared-state model is sufficient overall.
+
+**Backup / snapshot persistence — real mechanism, off by default, disconnected from the advertised API.**
+- **Gate:** `[backup] enabled` defaults `false` (`ConfigLoader.java:375`). Turning it on additionally requires a non-blank `[backup] path` — the actual gate is `Main.resolveBackup` (`Main.java:316-321`), which filters on `BackupConfig::enabled` **and** non-blank `path` before `AetherNodeConfig` ever sees a `Some(BackupConfig)`; `AetherNode.resolvePersistence`'s own `path`-blank filter (`AetherNode.java:596-601`) is a redundant downstream check, not the real switch. `enabled=true` with no `path` set silently stays in-memory — no warning logged.
+- **When active:** `RabiaPersistence.gitBacked(...)` (`AetherNode.createGitBackedPersistence`, `AetherNode.java:604-610`) backs Store-A's KV.
+- **Triggers — lifecycle only, never on commit:** `persistence.save(...)` is called from exactly three engine transitions in `RabiaEngine.java` — quorum-loss pause (`doPauseForQuorumLoss`, `:526`), membership reconfigure (`reconfigure`, `:604` — this save writes an **empty state at `Phase.ZERO`**, not a snapshot of the pre-reconfigure state), and graceful stop (`shutdownAndReset`, `:634`) — plus a re-persist immediately after a restore-from-disk (`applyRestoredState`, `:1297`), which is an echo of a load, not an independent trigger.
+- **Payload is not structured/diffable TOML.** `feature-catalog.md:122` currently claims "Cluster metadata serialized to TOML file... Git provides versioning, history, diffs." In fact `AetherNode::snapshotToBase64`/`::base64ToSnapshot` are wired as the `snapshotToToml`/`tomlToSnapshot` hooks (`AetherNode.java:613-620`), so the on-disk file is `"# Phase: N\n" + Base64(rawBytes)` (`GitBackedPersistence.save`), and the raw bytes come from a generic `serializer.encode(new HashMap<>(storage))` (`KVStore.makeSnapshot`, `integrations/cluster/.../KVStore.java:210-212`) — a per-key structured dump never happens on this path. An opaque base64 blob is not meaningfully diffable; `feature-catalog.md:122` needs correcting to match.
+- **API/CLI surface returns `backup-disabled` in every current configuration.** `BackupService.disabled()` is hardcoded, unconditionally, at both node-construction call sites (`AetherNode.java:3976`, `:4153`) — no branch on `[backup]` config exists at either site. `POST /api/backups` and `aether backups trigger|list|restore` cannot be enabled today regardless of the `[backup]` TOML section, even though the underlying git-backed mechanism above is real and does run when configured. **Tracked as #676** (deliberate-vs-regression question and the two honest GA-endgame options are open there).
+
+**Declared vs. derivable — `EphemeralKeys.java` is the authoritative split, not this ticket's original hand-list.** `EphemeralKeys.EPHEMERAL_KEY_TYPES` (`aether/slice/.../kvstore/EphemeralKeys.java`) is a compiled, test-pinned set of **17** key types. It disagrees with #616's original 15-type "Derivable" list in both directions:
+- In the ticket's list but **not** in `EphemeralKeys`: `WorkerSliceDirectiveKey`, `CommunityKey`, `GossipKeyRotationKey`, `StreamPartitionAssignmentKey`.
+- In `EphemeralKeys` but **not** in the ticket's list: `ConsumerGroupKey`, `DhtPartitionOwnershipKey`, `StreamPartitionOwnershipKey`, `SpokesmanKey`, `ProvisioningSlotKey`, `ClusterPhaseKey`.
+
+Treat `EphemeralKeys.java` as ground truth going forward for this split — it's compiled and test-pinned, the hand-list isn't. Context, not a defect: its only consumer is `KVStoreSerializer.isEphemeral`/`isEphemeralSection` (`:88,131`), and `KVStoreSerializer.toToml`/`fromToml` are themselves a dead path with zero production callers (the file's own doc comments say so, `~:1249,1272`) — so the classification is real and authoritative, but currently exercised only by tests and by a serializer nothing in production calls.
+
+**Dead key types (zero production references beyond their own declaration):** `StorageBlockKey`, `StorageRefKey`, `CloudCredentialsKey`, `StreamPartitionAssignmentKey`. All four are referenced only from `AetherKey.java` (declaration/factories) and the dead-path `KVStoreSerializer`.
+
+**Half-wired, not simply dead: `GossipKeyRotationKey`.** The consumer side is fully live and production-wired — `AetherNode.java:2654` subscribes `AetherKey.GossipKeyRotationKey.class` to `GossipKeyRotationHandler::onGossipKeyRotationPut`, and a design comment at the subscription site (`AetherNode.java:2657+`) calls it "the SOLE delivery path" for gossip-key rotation, with idempotent replay-on-late-join. But **no production write/trigger call site was found anywhere** — only test code constructs a `Put` of this key — and there is no CLI/admin route to fire a rotation. The delivery mechanism is real; there is currently no way to use it in production.
+
+**Earned key types, spot-checked:**
+- `StreamCursorCheckpointKey` — resolved via `ClusterCursorStore` (see §4 row 19); the ticket's original "may not be durable" guess is superseded.
+- `SchemaVersionKey` — earned: live production write/read sites across `ClusterDeploymentManager`, `BlueprintService`, `SchemaOrchestratorService`, `SchemaRoutes`, and `DashboardMetricsPublisher`.
+- `EntityCheckpointKey` — earned: live production write/read sites across `RetentionRoutes` and `StreamEntityLogSubstrate`.
+- `ApiKeyAuditKey` — earned-with-a-gap: 4 production write sites (`ApiKeyRoutes.java:89,138,196`; `BootstrapAdminKeyLeg.java:96`, all `KVCommand.Put`), **zero read/query sites found anywhere** — a durable audit ledger nothing ever reads back. **Tracked as #679.**
+- `ScheduledTaskStateKey` — earned, with a state-reporting bug: the automatic cron/interval-fire path (`ScheduledTaskManager.java:362-378`) writes `successState(0,0)`/`failureState(0,1,0,msg)` without reading prior state, pinning `nextFireAt`/`totalExecutions` to 0 and `consecutiveFailures` to 1 forever on that path — telemetry-only (scheduling itself runs on in-memory timers, unaffected), but the wrong counters are surfaced via Management API DTOs. The correct read-modify-write pattern already exists next door in `ScheduledTaskRoutes.java` (~`:297-332`). **Tracked as #680.**
+
+**DHT-plane keys (`EndpointKey`, `SliceNodeKey`, `HttpNodeRouteKey`) — open question, left unresolved here.** §2 below states their write/read consistency and durability. This audit adds a distinct question: no production reader was found that queries these maps to answer an actual routing decision ("which node holds this slice," "what route serves this request") — only replication-receive plumbing (`AetherNode.java:2559,2565,5209-5225`) and node-departure cleanup (`DhtNodeCleanup`) reference them. This is **not** the already-resolved #384 (which documented the CP→eventual downgrade, not whether a reader exists) — it's a new, explicitly unverified-either-way question, filed as **#681**.
+
+**Tracking:** #616 (this audit) · #676 (backup mechanism vs. API/CLI) · #679 (`ApiKeyAuditKey` read gap) · #680 (`ScheduledTaskStateKey` write bug) · #681 (DHT reader-existence question).
+
+---
+
 ## 2. Cluster — eventual plane (DHT `ReplicatedMap`, "Store-B")
 
 Holds slice-node state, HTTP routes, and RPC endpoints — **migrated off consensus** onto a consistent-hash `ReplicatedMap` (catalog rows 94/95/152/281) for O(3)-vs-O(N) scaling. The migration was a real **guarantee downgrade** that the catalog frames only as a perf win.
