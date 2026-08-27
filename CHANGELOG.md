@@ -231,6 +231,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   is carrying the responder's engine state in `SyncResponse`, which is protocol surface and deliberately
   out of scope here. [design intent — unverified]
 
+### Added (2026-08-27 — #556: a local forge gate, so cluster regressions stop being a CI-only discovery)
+- **`./forge.sh`** — the first local gate that actually RUNS a multi-node cluster. `./forge.sh`
+  (smoke), `ci` (everything except `@Tag("Heavy")`, exactly what CI runs), `full`, or a single class
+  name. Until now nothing local executed forge: `build.sh` compiles the tests and says so in its own
+  banner, and `mvn test` runs surefire while forge tests are failsafe ITs.
+- **A `Smoke` tag** on `ClusterFormationTest`, `SliceInvocationTest` and `StreamOwnershipDriverFenceTest`
+  — the ticket's formation + deployment/invocation + one-stream-path set. Measured, not estimated:
+  **97s wall for 15 tests** (formation 25.9s, stream ownership 36.2s, invocation 31.6s).
+- **Per-test JUnit timeouts** (`junit-platform.properties`: 10m per test method, 5m per lifecycle
+  method) so a hung forge test is reported BY NAME instead of consuming the whole job anonymously.
+  Deliberately not the ticket's suggested `forkedProcessTimeoutInSeconds`: that is already set to 1800
+  in the pom and has failed to reap a hung fork at least three times. Honest limit — a JUnit timeout
+  interrupts the test thread, so a hang in a non-interruptible wait may not unblock; the value is the
+  named failure in the report, not a guaranteed JVM exit. `forkedProcessTimeoutInSeconds` stays as the
+  outer backstop. [mechanism: JUnit timeouts interrupt the test thread]
+- `forge.sh` uses `verify`, not `integration-test`: failsafe enforces failures only at `verify`, and
+  `integration-test` prints `BUILD SUCCESS` over failing tests. Its `-pl aether/forge/forge-tests`
+  scope is hard-coded and documented as non-negotiable — that scoping is what keeps `HetznerCloudIT`
+  (which provisions a real paid server when `HCLOUD_TOKEN` is set) out of the reactor.
+- The script clears `target/failsafe-reports` before running. Without that, its own summary read
+  every previous run's XML: a 3-class smoke run reported 50 tests from 12 files, most left by an
+  unrelated probe run. A gate that reports another run's results is the same defect as a positive
+  control that ignores its own trigger — it does not miss problems, it reports confident nonsense.
+- The pre-push expectation is now written where it is seen rather than remembered: `build.sh`'s
+  closing banner leads with "NOTHING ABOVE RAN A CLUSTER", and `CONTRIBUTING.md` — which previously
+  implied `build.sh` was sufficient before a PR — carries the requirement and the module list.
+
 ### Fixed (2026-08-27 — #509 probe: the positive control never posted a valid scale request)
 - `PostRestartSlowRejoinDeficitFillProbeTest.postScale` sent `{"coreCount": N}`, a field
   `ManagementApiResponses.ScaleRequest` has never had. The server rejected it with HTTP 500

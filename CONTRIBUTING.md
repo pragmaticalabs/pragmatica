@@ -65,6 +65,27 @@ is in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) — format+lint che
 `.github/workflows/ci.yml`]. There is no separate staging environment; passing this matrix is the
 bar for merge.
 
+**`build.sh` does not run a cluster — run `./forge.sh` before pushing.** Steps 4-5 of `build.sh`
+*compile* the e2e and Forge tests; nothing local executes them [mechanism: `build.sh` step 4 runs
+`compile test-compile`]. Forge is the only gate that starts a real multi-node cluster — in-JVM,
+3-7 nodes, real consensus, real streams, real deployment FSM — and it catches the one class of
+defect unit tests structurally cannot: a change that compiles, lints, passes every unit suite, and
+then hangs or livelocks a live cluster. That is not hypothetical; a deployment-FSM and KV-codec
+change once passed `build.sh` and 2915 unit tests with zero failures, then wedged Forge for 30
+minutes with zero failing assertions.
+
+```bash
+./forge.sh          # smoke set: formation + deployment/invocation + one stream path
+./forge.sh ci       # what CI runs (everything except @Tag("Heavy"))
+./forge.sh full     # everything, Heavy probes included
+```
+
+The smoke set is the pre-push expectation, and it is **required** for changes touching
+`aether/aether-deployment`, `aether/aether-stream`, `aether/slice/**/kvstore/**`,
+`integrations/consensus`, or node runtime wiring. The cost argument is the whole point: the smoke
+set takes a couple of minutes, while the same defect found in CI costs a 30-minute job, a red
+branch, and the diagnosis.
+
 ## Branches, commits, and pull requests
 
 - Fork the repository and branch off `main`.
