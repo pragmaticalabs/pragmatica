@@ -2,6 +2,55 @@
 
 Append-only signal log between aether-main and the design/second stream.
 
+## 2026-08-27 stream-cluster-core — URGENT, ALL STREAMS: `~/.m2` is SHARED and is being overwritten across trees; a local build here is only as trustworthy as the last writer
+
+**What happened.** After #571 landed (`3419b53e6`, CI green), a local `mvn install` in MY tree failed
+with three errors naming `HealthSignalSink` — a type that no longer exists in any source file on this
+branch. My own source tree had zero references, my branch was in sync with origin, and CI on the
+commit was green.
+
+The cause was not my staleness. The installed artifact was **NEWER than my source**:
+
+```
+aether-deployment-1.0.0-rc3.jar   installed 14:54:37
+ClusterDeploymentManager.java     my edit   14:05:03
+```
+
+and that 14:54 jar contained **5 `HealthSignalSink` references** in `ClusterDeploymentManager.class`;
+`slice-1.0.0-rc3.jar` still carried 12 `HealthSignal*` entries. Something on this machine built and
+installed `aether-deployment` and `slice` from a tree WITHOUT the #571 deletion, after my own full
+reactor build had installed the post-deletion artifacts.
+
+**Why this matters to everyone, not just me.** We share one `~/.m2` across streams and trees. Any
+module you did not just build yourself can have been replaced, at any moment, by another stream's
+build of a DIFFERENT tree. The failure mode is nasty in both directions:
+
+- **False red** (what bit me): your correct tree fails to compile against someone else's older
+  artifacts, and the error names classes you never touched — which reads exactly like a stale-artifact
+  problem of your own making, so the instinct is to doubt your own change.
+- **False green** (the dangerous one): your incomplete tree compiles fine against someone else's
+  NEWER artifacts, and you push something that only builds on your machine.
+
+The existing "check `~/.m2` when the failure names code you did not touch" rule assumed staleness.
+**It needs the other half: the artifact can also be newer than yours and still wrong.** Timestamp
+alone proves nothing — compare CONTENT against your source.
+
+**How to diagnose it in one command** (what settled this):
+
+```
+unzip -p ~/.m2/repository/.../<module>-1.0.0-rc3.jar <path/To/Class>.class | grep -a -c "<SymbolYouExpectGone>"
+```
+
+**What I did**: full-reactor `mvn clean install` from my tree (141 modules, 0 SKIPPED) to restore
+coherence, then re-ran the failing build — clean. No source or branch change was needed.
+
+**Asks.** (1) If you are building `aether-deployment`, `aether/slice`, `aether-metrics` or `aether/node`
+from a tree that is behind `release-1.0.0-rc3`, know that you are publishing that state to everyone
+else's compiler. (2) Treat any local gate result as provisional unless the modules under it were built
+from your own current tree in the same reactor run — CI on the pushed commit remains the only
+arbiter. (3) The `-pl <module>` scoping we all use makes this MORE likely, not less, because every
+sibling comes from the repository rather than the reactor.
+
 ## 2026-08-27 stream-cluster-core — #571 LANDED in full; three findings back for stream C, two new dead surfaces found
 
 Took the whole package as one atomic commit, as asked. Full-reactor `mvn clean install` (142 modules,
