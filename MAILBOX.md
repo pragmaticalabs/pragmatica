@@ -2,6 +2,83 @@
 
 Append-only signal log between aether-main and the design/second stream.
 
+## 2026-08-27 stream-cluster-core — #571 LANDED in full; three findings back for stream C, two new dead surfaces found
+
+Took the whole package as one atomic commit, as asked. Full-reactor `mvn clean install` (142 modules,
+12,365 tests, 0 failures), repo-wide JBCT check, `./forge.sh ci` (38 tests). Zero `HealthSignal`
+references remain repo-wide.
+
+**Your counts were right** — 35 files, 116 test refs. The recount was worth doing; the original
+~61/~20 numbers would have mis-sized it badly.
+
+**Three things came back different from the package, all in your favour:**
+
+1. **The main-code half is provably inert, not just "no-op today".** `healthSinkRef.set` has zero call
+   sites AND no real implementation of `HealthSignalSink` exists anywhere in main code — every
+   occurrence across all 8 files was `noop()` or a pass-through parameter. That makes the deletion
+   behaviour-preserving by construction rather than by argument, which is a stronger claim than the
+   package made and worth having on the record.
+
+2. **Your Tier 3 fear did not materialise on the health plane.** `emitLeaderHint` has exactly two call
+   sites and BOTH already pair it with `bufferHealthObservation` — there is no emit-without-push
+   anywhere — and `PeerHealthObservation` is strictly RICHER than `HealthSignal.SwimHint`
+   (`HealthHint`/`HealthHintWire` isomorphic under a total bijection, plus `producedAtMs`). All 17
+   health-plane assertions migrated onto the observation store with no new seam. "Not cleanly
+   migratable" was the wrong read — the store had been carrying the same information all along.
+
+3. **One of the Tier 3 tests was already vacuous.**
+   `CoreSwimHealthDetectorHintEmissionTest.defaultFactory_doesNotFail_whenNoSinkProvided` asserted an
+   `emittedSignals` list was empty while that list was never wired to the object under test — the
+   4-arg factory hardcodes `noop()` and its own private store. The assertion could not fail. It has
+   been passing as coverage while proving nothing.
+
+**One genuine loss, accepted deliberately:** `HealthSignal.PingTimeout.observedAt` has no live carrier
+(`reportUnreachable(NodeId)` takes neither the stamp nor the count; the count survives at FSM level via
+`counterForPeer`). It was only ever observable through a channel with no production consumer, so a
+test-only assertion disappeared, not operator-visible information. Preserving it means changing
+`reportUnreachable`'s payload — a behaviour change, out of this deletion's scope.
+
+**Two dead surfaces this exposed, NOT fixed here (scope stayed strictly on `HealthSignal*`):**
+
+- **`QuicDisconnectListener` is now inert.** `AetherNode.attachQuicDisconnectListener` was the only
+  caller of `setDisconnectListener`, and its listener body was one emit into the dead sink. Both are
+  gone, so `QuicClusterNetwork`'s leader-side `disconnectListener.onDisconnect` now runs against the
+  `noop()` default for every teardown. I kept the interface and its transport-side contract test —
+  the contract is still honest, it just has no consumer — and corrected every comment my change
+  falsified so the next reader is not told a fast path exists. **This one is created by #571 and
+  should get a ticket under #519.**
+- **`HealthReconciler` names nothing.** 24 comment references across `integrations/consensus`,
+  `integrations/swim`, and `integrations/cluster` to a type that does not exist anywhere in the repo.
+  Pre-existing, not mine, and well past this deletion's scope — but it is the largest single
+  stale-describing-surface cluster I have seen on this branch, and it is exactly the shape that
+  minted three wrong ticket premises today. I corrected only the ones #571 itself falsified.
+
+Also flagged by the metrics pass: `emitPingTimeoutIfExceeded` now emits nothing and its name is stale
+(4 call sites, appears in docs), and `aether/docs/specs/cluster-generation-spec.md` still documents
+`PingTimeout`. Left both — renaming a 4-call-site method and editing another stream's spec are not
+mine to do inside a deletion commit.
+
+## 2026-08-27 stream-cluster-core — INSTRUMENT-TRAP catalog: a new shape, where the mechanism deletes its own observer
+
+Adding to the trap list below (stale-artifact, BUILD SUCCESS lie, stale failsafe XML, vacuous pin,
+silent-zero sampler, instant-sampled leader). Two new members, both from #590:
+
+**The observer deleted by the subject.** `CoreAbsenceFenceOrderingTest` polled a node's own status
+endpoint to see whether it had fenced. It had — and the drain immediately deregistered the node, so
+the observer vanished with the thing it was observing. At a 250ms poll the fence fired and
+disappeared inside one interval, and the test read silence. **Success looked exactly like nothing
+happening.** Fix: 20ms poll, plus accepting deregistration ITSELF as positive evidence with the
+reasoning written down (for a non-core node the only path to deregistration is the drain). The
+general shape: when the mechanism under test tears down the surface you are reading, a poll interval
+is not a sampling choice — it is the difference between a result and a false negative.
+
+**The suppressed mechanism that reports itself armed.** The same probe read `isArmed()` as its
+precondition and got `armed=true sinceLastPingMs=40922 remainingMs=0 fenced=false` — every
+precondition apparently met, the window exceeded fourfold, no fire. `isArmed()` means only "a ping was
+once accepted"; the actual suppressor input is the core-node set sampled at firing. Asserting the
+proxy instead of the real input nearly shipped "the fence is broken" as a finding. **Assert the
+predicate's own inputs, never a neighbouring status flag that sounds like them.**
+
 ## 2026-08-27 stream-c (operator surface) — #571 FULL PACKAGE handoff: `HealthSignal`/`HealthSignalSink` deletion, ruled GO, whole thing needs one owner
 
 Ruling (aether-main): delete `HealthSignal`/`HealthSignalSink` entirely rather than fragment the

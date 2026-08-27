@@ -36,7 +36,6 @@ import org.pragmatica.aether.resource.artifact.ArtifactStore;
 import org.pragmatica.aether.resource.artifact.MavenProtocolHandler;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.generation.Epoch;
-import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.node.StorageFactory;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -211,7 +210,6 @@ public interface ManageableNode {
     long uptimeSeconds();
     List<NodeId> initialTopology();
     TopologyConfig topologyConfig();
-    HealthSignalSink healthSignalSink();
     InFlightRequestTracker inFlightRequestTracker();
     NodeLifecycle nodeLifecycle();
     /// RC1 Step 4 — exposes the node's canonical Hybrid Logical Clock so request-handling

@@ -32,7 +32,6 @@ import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Vers
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentState;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
-import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
@@ -213,7 +212,6 @@ public interface ClusterDeploymentManager {
                                         coreMax,
                                         DEFAULT_RECONCILE_INTERVAL,
                                         schemaOrchestrator,
-                                        HealthSignalSink.noop(),
                                         Set::of,
                                         Set::of);
     }
@@ -238,7 +236,6 @@ public interface ClusterDeploymentManager {
                                         coreMax,
                                         reconcileInterval,
                                         schemaOrchestrator,
-                                        HealthSignalSink.noop(),
                                         Set::of,
                                         Set::of);
     }
@@ -253,33 +250,6 @@ public interface ClusterDeploymentManager {
                                                              int coreMax,
                                                              TimeSpan reconcileInterval,
                                                              SchemaOrchestratorService schemaOrchestrator,
-                                                             HealthSignalSink healthSignalSink) {
-        return clusterDeploymentManager(self,
-                                        cluster,
-                                        kvStore,
-                                        router,
-                                        initialTopology,
-                                        topologyManager,
-                                        atomicity,
-                                        coreMax,
-                                        reconcileInterval,
-                                        schemaOrchestrator,
-                                        healthSignalSink,
-                                        Set::of,
-                                        Set::of);
-    }
-
-    static ClusterDeploymentManager clusterDeploymentManager(NodeId self,
-                                                             ClusterNode<KVCommand<AetherKey>> cluster,
-                                                             KVStore<AetherKey, AetherValue> kvStore,
-                                                             MessageRouter router,
-                                                             List<NodeId> initialTopology,
-                                                             TopologyManager topologyManager,
-                                                             DeploymentAtomicity atomicity,
-                                                             int coreMax,
-                                                             TimeSpan reconcileInterval,
-                                                             SchemaOrchestratorService schemaOrchestrator,
-                                                             HealthSignalSink healthSignalSink,
                                                              Supplier<Set<NodeId>> coreCountedMembersSupplier,
                                                              Supplier<Set<NodeId>> readyNodesSupplier) {
         return clusterDeploymentManager(self,
@@ -292,7 +262,6 @@ public interface ClusterDeploymentManager {
                                         coreMax,
                                         reconcileInterval,
                                         schemaOrchestrator,
-                                        healthSignalSink,
                                         coreCountedMembersSupplier,
                                         readyNodesSupplier,
                                         Set::of);
@@ -308,7 +277,6 @@ public interface ClusterDeploymentManager {
                                                              int coreMax,
                                                              TimeSpan reconcileInterval,
                                                              SchemaOrchestratorService schemaOrchestrator,
-                                                             HealthSignalSink healthSignalSink,
                                                              Supplier<Set<NodeId>> coreCountedMembersSupplier,
                                                              Supplier<Set<NodeId>> readyNodesSupplier,
                                                              Supplier<Set<NodeId>> drainingNodesSupplier) {
@@ -322,7 +290,6 @@ public interface ClusterDeploymentManager {
                                         coreMax,
                                         reconcileInterval,
                                         schemaOrchestrator,
-                                        healthSignalSink,
                                         coreCountedMembersSupplier,
                                         readyNodesSupplier,
                                         drainingNodesSupplier,
@@ -339,7 +306,6 @@ public interface ClusterDeploymentManager {
                                                              int coreMax,
                                                              TimeSpan reconcileInterval,
                                                              SchemaOrchestratorService schemaOrchestrator,
-                                                             HealthSignalSink healthSignalSink,
                                                              Supplier<Set<NodeId>> coreCountedMembersSupplier,
                                                              Supplier<Set<NodeId>> readyNodesSupplier,
                                                              Supplier<Set<NodeId>> drainingNodesSupplier,
@@ -354,7 +320,6 @@ public interface ClusterDeploymentManager {
                                         coreMax,
                                         reconcileInterval,
                                         schemaOrchestrator,
-                                        healthSignalSink,
                                         coreCountedMembersSupplier,
                                         readyNodesSupplier,
                                         drainingNodesSupplier,
@@ -372,7 +337,6 @@ public interface ClusterDeploymentManager {
                                                              int coreMax,
                                                              TimeSpan reconcileInterval,
                                                              SchemaOrchestratorService schemaOrchestrator,
-                                                             HealthSignalSink healthSignalSink,
                                                              Supplier<Set<NodeId>> coreCountedMembersSupplier,
                                                              Supplier<Set<NodeId>> readyNodesSupplier,
                                                              Supplier<Set<NodeId>> drainingNodesSupplier,
@@ -388,7 +352,6 @@ public interface ClusterDeploymentManager {
                                coreMax,
                                reconcileInterval,
                                schemaOrchestrator,
-                               healthSignalSink,
                                coreCountedMembersSupplier,
                                readyNodesSupplier,
                                drainingNodesSupplier,
@@ -408,7 +371,6 @@ public interface ClusterDeploymentManager {
                                                          int coreMax,
                                                          TimeSpan reconcileInterval,
                                                          SchemaOrchestratorService schemaOrchestrator,
-                                                         HealthSignalSink healthSignalSink,
                                                          Supplier<Set<NodeId>> coreCountedMembersSupplier,
                                                          Supplier<Set<NodeId>> readyNodesSupplier,
                                                          Supplier<Set<NodeId>> drainingNodesSupplier,
@@ -427,7 +389,6 @@ public interface ClusterDeploymentManager {
                                                                                                                                            coreMax,
                                                                                                                                            reconcileInterval,
                                                                                                                                            schemaOrchestrator,
-                                                                                                                                           healthSignalSink,
                                                                                                                                            coreCountedMembersSupplier,
                                                                                                                                            readyNodesSupplier,
                                                                                                                                            drainingNodesSupplier,
@@ -450,7 +411,6 @@ public interface ClusterDeploymentManager {
                                                                  int coreMax,
                                                                  TimeSpan reconcileInterval,
                                                                  SchemaOrchestratorService schemaOrchestrator,
-                                                                 HealthSignalSink healthSignalSink,
                                                                  Supplier<Set<NodeId>> coreCountedMembersSupplier,
                                                                  Supplier<Set<NodeId>> readyNodesSupplier,
                                                                  Supplier<Set<NodeId>> drainingNodesSupplier,
@@ -463,7 +423,6 @@ public interface ClusterDeploymentManager {
                                                router,
                                                topologyManager,
                                                schemaOrchestrator,
-                                               healthSignalSink,
                                                coreCountedMembersSupplier,
                                                readyNodesSupplier,
                                                drainingNodesSupplier,

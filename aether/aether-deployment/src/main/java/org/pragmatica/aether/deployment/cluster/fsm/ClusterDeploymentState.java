@@ -992,11 +992,9 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             }
         }
 
+        /// Terminal step of the drain eviction chain: draining completion is observed through the
+        /// FSM transition and its log line, and writes no KV command.
         private void completeDrain(NodeId drainingNode) {
-            // #571: used to also emit HealthSignal.DrainCompleted to ctx.healthSignalSink(), but
-            // that sink's only consumer (LifecycleWriter) was deleted during the membership-v2
-            // migration and the sink has been permanently noop() since. Removed rather than left
-            // as a call into a dead sink.
             log.info("Drain complete for node {}", drainingNode);
         }
 

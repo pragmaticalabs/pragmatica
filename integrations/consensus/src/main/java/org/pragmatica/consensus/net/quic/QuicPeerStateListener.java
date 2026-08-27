@@ -25,10 +25,10 @@ import org.pragmatica.lang.Contract;
 /// these to keep stability windows aligned with the transport's view, even when membership
 /// notifications are debounced.
 ///
-/// Distinct from [`QuicDisconnectListener`] — that listener feeds the leader's
-/// `HealthReconciler` with a `HealthSignal.QuicDisconnect` and does NOT fire on
-/// join/reconnect. This listener fires on every QUIC peer-state change so CTM-style
-/// stability bookkeeping can remain consistent with the transport.
+/// Distinct from [`QuicDisconnectListener`] — that listener fires on teardown only, never on
+/// join/reconnect, and currently has no consumer installed. This listener fires on every QUIC
+/// peer-state change so CTM-style stability bookkeeping can remain consistent with the
+/// transport.
 @Contract
 public interface QuicPeerStateListener {
     /// First-time peer attach (INIT/CONNECTING -> CONNECTED). Upstream consumers

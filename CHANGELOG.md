@@ -6,6 +6,55 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Removed (2026-08-27 — #571: `HealthSignal` / `HealthSignalSink` deleted repo-wide)
+- **The whole signal channel is gone: 2 types, ~64 main-code sites across 5 modules, 116 test
+  references across 20 files, landed as one atomic commit.** Splitting it was never an option — an
+  intermediate state where some callers are gone and the type is not (or the reverse) breaks a fresh
+  build while incremental stays green, which is exactly what `f1aed3ff4` did to this branch.
+- **The deletion is behaviour-preserving by construction, not by argument.** `healthSinkRef.set` had
+  zero call sites and every `HealthSignalSink` in main code was either `HealthSignalSink.noop()` or a
+  pass-through parameter — **no real implementation of the interface existed anywhere in production
+  code**, so every emit already went into a black hole. `ClusterDeploymentContext.healthSignalSink()`
+  and `ManageableNode.healthSignalSink()` both had zero callers.
+- **Two live paths sitting inside the blast radius were kept intact**, and they are the reason this
+  needed one owner rather than a mechanical sweep: `ClusterSyncPongSignalFan`'s leader readiness view
+  (`recordReadiness` / `readinessSnapshot()`, feeding the CDM allocatable gate and the DRAINING set)
+  is a SEPARATE interface from the sink and survives untouched; `SwimHealthContext.reportHint`'s
+  `bufferHealthObservation` → `observationStore.pushHealth` half is LIVE and feeds
+  `PeerHealthObservation` into the `ClusterSyncPong` body — only the `emitLeaderHint` half went.
+- **Test migration lost no resolution on the health plane.** `emitLeaderHint` had exactly two call
+  sites and BOTH already paired it with `bufferHealthObservation` — there was no emit-without-push
+  anywhere — and `PeerHealthObservation` is strictly richer than `HealthSignal.SwimHint`
+  (`HealthHint`/`HealthHintWire` are isomorphic under a total bijection, plus it carries
+  `producedAtMs`). All 17 health-plane assertions moved onto the observation store with no new seam.
+- **One genuine loss, recorded rather than absorbed:** `HealthSignal.PingTimeout.observedAt` has no
+  live carrier — `reportUnreachable(NodeId)` takes neither the epoch stamp nor the missed count. The
+  count is still pinned at FSM level by `counterForPeer`; the stamp is not pinned anywhere. It was
+  only ever observable through a channel with no production consumer, so what disappeared is a
+  test-only assertion, not operator-visible information. Putting it on `reportUnreachable`'s payload
+  would be a behaviour change and belongs in its own review.
+- **Four metrics-plane tests deleted outright** as pinning only the dead channel (`translateHint` /
+  `translateConnectivity` coverage went with the code they translated into); one deleted as a
+  duplicate of its readiness-view sibling. Seven migrated onto `reportUnreachable` and
+  `readinessSnapshot()`. The leader-transition test needed a SECOND peer to keep pinning its real
+  property (leadership re-read per `fan()`, not cached at construction) — the existing entry is not
+  cleared on demotion, so re-using one peer would have made it vacuous.
+- **One test in the migration set was already vacuous.**
+  `CoreSwimHealthDetectorHintEmissionTest.defaultFactory_doesNotFail_whenNoSinkProvided` asserted an
+  `emittedSignals` list was empty, but that list was never wired to the object under test (the 4-arg
+  factory hardcodes `noop()` and its own private store), so the assertion could not fail. Reduced to
+  the construction smoke check it actually was, and named accordingly.
+- **The QUIC disconnect listener is now inert, and every comment that claimed otherwise was
+  corrected.** `AetherNode.attachQuicDisconnectListener` was the only caller of
+  `setDisconnectListener` and its listener body was a single emit into the dead sink, so both are
+  gone; `QuicClusterNetwork`'s leader-side `disconnectListener.onDisconnect` now runs against the
+  `noop()` default for every teardown. Liveness reaches the leader through
+  `PeerConnectivityObservation` instead. The interface and its transport-side contract test are kept
+  — the contract is still honest, it simply has no consumer — and both now say so.
+- Verified: full-reactor `mvn clean install` (142 modules, 12,365 tests, 0 failures), repo-wide JBCT
+  check, and `./forge.sh ci` (38 tests). The format gate caught two files a compile-green build did
+  not — the same class that broke this branch once already.
+
 ### Fixed (2026-08-27 — #678: replacement PEERS no longer seeded from discovered-but-dead peers)
 - `ClusterTopologyManagerRecord.buildProvisionContext` — the cold-path PEERS fallback used when the
   `LeaderReconciler`'s live `clusterMembers` set is empty — filtered candidate peers with

@@ -9,8 +9,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
-import org.pragmatica.aether.slice.generation.HealthSignal;
-import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.cluster.node.ClusterNode;
@@ -35,7 +33,6 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
@@ -72,14 +69,12 @@ class ClusterDeploymentManagerTest {
     class DrainCompletionTests {
         private ClusterDeploymentManager cdm;
         private final List<KVCommand<AetherKey>> capturedCommands = new ArrayList<>();
-        private final CopyOnWriteArrayList<HealthSignal> capturedSignals = new CopyOnWriteArrayList<>();
         private final AtomicReference<java.util.Set<NodeId>> countedMembersRef = new AtomicReference<>(Set.of());
         private final AtomicReference<java.util.Set<NodeId>> drainingRef = new AtomicReference<>(Set.of());
 
         @BeforeEach
         void setUp() {
             capturedCommands.clear();
-            capturedSignals.clear();
             // Membership-v2: presence IS membership. The draining set is the real
             // NodeReportedState.DRAINING source, fed via drainingRef (mutated by the test).
             countedMembersRef.set(Set.of(NODE_1, NODE_2, NODE_3, DRAINING_NODE));
@@ -93,7 +88,6 @@ class ClusterDeploymentManagerTest {
 
             TopologyManager topologyManager = stubTopologyManager(NODE_1, initialTopology);
 
-            HealthSignalSink capturingSink = capturedSignals::add;
             Supplier<java.util.Set<NodeId>> countedMembersSupplier = countedMembersRef::get;
 
             cdm = ClusterDeploymentManager.clusterDeploymentManager(NODE_1,
@@ -106,26 +100,15 @@ class ClusterDeploymentManagerTest {
                                                                      3,
                                                                      timeSpan(300).seconds(),
                                                                      NO_OP_SCHEMA_ORCHESTRATOR,
-                                                                     capturingSink,
                                                                      countedMembersSupplier,
                                                                      Set::of,
                                                                      drainingRef::get);
         }
 
+        /// Spec §8 single-writer rule: the CDM is not a membership writer. Membership is
+        /// FSM/SWIM-derived, so drain completion issues no KV command at all.
         @Test
         void completeDrain_writesNoKvCommand() throws InterruptedException {
-            // #571: this used to assert completeDrain emits HealthSignal.DrainCompleted, pinning
-            // the (still-true) "Spec §8 single-writer rule: CDM MUST NOT write the membership atom
-            // directly on drain completion" via its OLD mechanism — signal a dedicated writer
-            // (LifecycleWriter) instead of writing itself. That writer, and the NodeLifecycleKey
-            // atom it owned, were deleted during the membership-v2 migration; membership is now
-            // FSM/SWIM-derived, so there is no atom for CDM to write, directly or otherwise, and
-            // the signal has no live consumer [confirmed via aether-investigator: DrainProcedure
-            // (membership/ntt, the current §8.2 implementation) runs on the victim node, not the
-            // leader where CDM runs, and has no CDM/slice/KV seam — the old in-JVM signal could
-            // never have carried this information across that boundary even before deletion].
-            // Rewritten to pin the surviving property directly: drain completion issues no KV
-            // command at all.
             cdm.activate().await();
 
             drainingRef.set(Set.of(DRAINING_NODE));
@@ -144,14 +127,12 @@ class ClusterDeploymentManagerTest {
     class SnapshotDerivedMembershipTests {
         private ClusterDeploymentManager cdm;
         private final List<KVCommand<AetherKey>> capturedCommands = new ArrayList<>();
-        private final CopyOnWriteArrayList<HealthSignal> capturedSignals = new CopyOnWriteArrayList<>();
         private final AtomicReference<java.util.Set<NodeId>> countedMembersRef = new AtomicReference<>(Set.of());
         private final AtomicReference<java.util.Set<NodeId>> drainingRef = new AtomicReference<>(Set.of());
 
         @BeforeEach
         void setUp() {
             capturedCommands.clear();
-            capturedSignals.clear();
             countedMembersRef.set(Set.of());
             drainingRef.set(Set.of());
             var initialTopology = List.of(NODE_1, NODE_2, NODE_3, DRAINING_NODE);
@@ -159,7 +140,6 @@ class ClusterDeploymentManagerTest {
             var kvStore = new KVStore<AetherKey, AetherValue>(router, stubSerializer(), stubDeserializer());
             ClusterNode<KVCommand<AetherKey>> clusterNode = stubClusterNode(NODE_1, capturedCommands);
             TopologyManager topologyManager = stubTopologyManager(NODE_1, initialTopology);
-            HealthSignalSink capturingSink = capturedSignals::add;
             Supplier<java.util.Set<NodeId>> countedMembersSupplier = countedMembersRef::get;
             cdm = ClusterDeploymentManager.clusterDeploymentManager(NODE_1,
                                                                      clusterNode,
@@ -171,7 +151,6 @@ class ClusterDeploymentManagerTest {
                                                                      3,
                                                                      timeSpan(300).seconds(),
                                                                      NO_OP_SCHEMA_ORCHESTRATOR,
-                                                                     capturingSink,
                                                                      countedMembersSupplier,
                                                                      Set::of,
                                                                      drainingRef::get);
@@ -253,13 +232,10 @@ class ClusterDeploymentManagerTest {
                                                                      3,
                                                                      timeSpan(300).seconds(),
                                                                      NO_OP_SCHEMA_ORCHESTRATOR,
-                                                                     capturedSignals::add,
                                                                      coreCountedRef::get,
                                                                      Set::of,
                                                                      Set::of);
         }
-
-        private final CopyOnWriteArrayList<HealthSignal> capturedSignals = new CopyOnWriteArrayList<>();
 
         @Test
         void nodeJoined_belowCoreMax_assignedCoreDirective() {
@@ -330,13 +306,11 @@ class ClusterDeploymentManagerTest {
 
         private ClusterDeploymentManager cdm;
         private final List<KVCommand<AetherKey>> capturedCommands = new ArrayList<>();
-        private final CopyOnWriteArrayList<HealthSignal> capturedSignals = new CopyOnWriteArrayList<>();
         private final AtomicReference<java.util.Set<NodeId>> coreCountedRef = new AtomicReference<>(Set.of());
 
         @BeforeEach
         void setUp() {
             capturedCommands.clear();
-            capturedSignals.clear();
             coreCountedRef.set(Set.of());
             var initialTopology = List.of(NODE_1, NODE_2, NODE_3);
             var router = MessageRouter.mutable();
@@ -354,7 +328,6 @@ class ClusterDeploymentManagerTest {
                                                                      CORE_TARGET,
                                                                      timeSpan(300).seconds(),
                                                                      NO_OP_SCHEMA_ORCHESTRATOR,
-                                                                     capturedSignals::add,
                                                                      coreCountedRef::get,
                                                                      Set::of,
                                                                      Set::of);

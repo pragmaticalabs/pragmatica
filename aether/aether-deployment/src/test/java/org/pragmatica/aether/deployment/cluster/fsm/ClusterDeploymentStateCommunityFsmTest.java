@@ -10,7 +10,6 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Activate;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
-import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -88,7 +87,6 @@ class ClusterDeploymentStateCommunityFsmTest {
                                                     router,
                                                     stubTopologyManager(SELF),
                                                     stubSchemaOrchestrator(),
-                                                    HealthSignalSink.noop(),
                                                     () -> Set.of(SELF),
                                                     () -> Set.of(SELF),
                                                     Set::of,

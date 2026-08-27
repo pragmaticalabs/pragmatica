@@ -20,7 +20,6 @@ import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Acti
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
-import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
@@ -98,7 +97,6 @@ class SchemaActivationGateTest {
                                                                                                                                      router,
                                                                                                                                      stubTopologyManager(SELF),
                                                                                                                                      stubSchemaOrchestrator(),
-                                                                                                                                     HealthSignalSink.noop(),
                                                                                                                                      () -> Set.of(SELF, NODE_A),
                                                                                                                                      () -> Set.of(SELF, NODE_A),
                                                                                                                                      Set::of,

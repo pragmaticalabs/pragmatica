@@ -18,7 +18,6 @@ import org.pragmatica.aether.metrics.fsm.ClusterSyncEvents;
 import org.pragmatica.aether.metrics.fsm.ClusterSyncState;
 import org.pragmatica.aether.metrics.observation.PeerObservationStore;
 import org.pragmatica.aether.slice.generation.Epoch;
-import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.cluster.metrics.PeerConnectivityObservation;
 import org.pragmatica.cluster.metrics.PeerHealthObservation;
 import org.pragmatica.cluster.metrics.PeerObservationBuffer;
@@ -110,7 +109,6 @@ public interface ClusterSyncScheduler extends PeerObservationBuffer {
                                     clusterSyncCollector,
                                     interval,
                                     () -> 0L,
-                                    HealthSignalSink.noop(),
                                     DEFAULT_PING_TIMEOUT_THRESHOLD,
                                     () -> Epoch.ZERO,
                                     PeerObservationStore.peerObservationStore());
@@ -126,7 +124,6 @@ public interface ClusterSyncScheduler extends PeerObservationBuffer {
                                     clusterSyncCollector,
                                     interval,
                                     rabiaTermSupplier,
-                                    HealthSignalSink.noop(),
                                     DEFAULT_PING_TIMEOUT_THRESHOLD,
                                     () -> Epoch.ZERO,
                                     PeerObservationStore.peerObservationStore());
@@ -137,7 +134,6 @@ public interface ClusterSyncScheduler extends PeerObservationBuffer {
                                                      ClusterSyncCollector clusterSyncCollector,
                                                      TimeSpan interval,
                                                      Supplier<Long> rabiaTermSupplier,
-                                                     HealthSignalSink signalSink,
                                                      int pingTimeoutThreshold,
                                                      Supplier<Epoch> epochSupplier) {
         return clusterSyncScheduler(self,
@@ -145,7 +141,6 @@ public interface ClusterSyncScheduler extends PeerObservationBuffer {
                                     clusterSyncCollector,
                                     interval,
                                     rabiaTermSupplier,
-                                    signalSink,
                                     pingTimeoutThreshold,
                                     epochSupplier,
                                     PeerObservationStore.peerObservationStore());
@@ -156,7 +151,6 @@ public interface ClusterSyncScheduler extends PeerObservationBuffer {
                                                      ClusterSyncCollector clusterSyncCollector,
                                                      TimeSpan interval,
                                                      Supplier<Long> rabiaTermSupplier,
-                                                     HealthSignalSink signalSink,
                                                      int pingTimeoutThreshold,
                                                      Supplier<Epoch> epochSupplier,
                                                      PeerObservationStore observationStore) {
@@ -165,7 +159,6 @@ public interface ClusterSyncScheduler extends PeerObservationBuffer {
                                     clusterSyncCollector,
                                     interval,
                                     rabiaTermSupplier,
-                                    signalSink,
                                     pingTimeoutThreshold,
                                     epochSupplier,
                                     observationStore,
@@ -177,7 +170,6 @@ public interface ClusterSyncScheduler extends PeerObservationBuffer {
                                                      ClusterSyncCollector clusterSyncCollector,
                                                      TimeSpan interval,
                                                      Supplier<Long> rabiaTermSupplier,
-                                                     HealthSignalSink signalSink,
                                                      int pingTimeoutThreshold,
                                                      Supplier<Epoch> epochSupplier,
                                                      PeerObservationStore observationStore,
@@ -187,7 +179,6 @@ public interface ClusterSyncScheduler extends PeerObservationBuffer {
                                     clusterSyncCollector,
                                     interval,
                                     rabiaTermSupplier,
-                                    signalSink,
                                     pingTimeoutThreshold,
                                     epochSupplier,
                                     observationStore,
@@ -205,7 +196,6 @@ public interface ClusterSyncScheduler extends PeerObservationBuffer {
                                                      ClusterSyncCollector clusterSyncCollector,
                                                      TimeSpan interval,
                                                      Supplier<Long> rabiaTermSupplier,
-                                                     HealthSignalSink signalSink,
                                                      int pingTimeoutThreshold,
                                                      Supplier<Epoch> epochSupplier,
                                                      PeerObservationStore observationStore,
@@ -219,7 +209,6 @@ public interface ClusterSyncScheduler extends PeerObservationBuffer {
                                                                                                                                clusterSyncCollector,
                                                                                                                                interval,
                                                                                                                                rabiaTermSupplier,
-                                                                                                                               signalSink,
                                                                                                                                pingTimeoutThreshold,
                                                                                                                                epochSupplier,
                                                                                                                                observationStore,
@@ -246,7 +235,6 @@ public interface ClusterSyncScheduler extends PeerObservationBuffer {
                                                            ClusterSyncCollector collector,
                                                            TimeSpan interval,
                                                            Supplier<Long> rabiaTermSupplier,
-                                                           HealthSignalSink signalSink,
                                                            int pingTimeoutThreshold,
                                                            Supplier<Epoch> epochSupplier,
                                                            PeerObservationStore observationStore,
@@ -258,7 +246,6 @@ public interface ClusterSyncScheduler extends PeerObservationBuffer {
                                          collector,
                                          interval,
                                          rabiaTermSupplier,
-                                         signalSink,
                                          pingTimeoutThreshold,
                                          epochSupplier,
                                          observationStore,

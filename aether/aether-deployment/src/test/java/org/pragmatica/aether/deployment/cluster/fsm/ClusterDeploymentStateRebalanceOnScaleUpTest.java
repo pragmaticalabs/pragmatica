@@ -12,7 +12,6 @@ import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.Deploym
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Activate;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.SliceState;
-import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -87,7 +86,6 @@ class ClusterDeploymentStateRebalanceOnScaleUpTest {
                                                                 router,
                                                                 stubTopologyManager(SELF),
                                                                 stubSchemaOrchestrator(),
-                                                                HealthSignalSink.noop(),
                                                                 countedMembersRef::get,
                                                                 () -> readyNodes,
                                                                 Set::of,

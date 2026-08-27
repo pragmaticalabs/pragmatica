@@ -135,8 +135,6 @@ import org.pragmatica.aether.metrics.MinuteAggregator;
 import org.pragmatica.aether.metrics.PeriodicObservationConfig;
 import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
 import org.pragmatica.aether.slice.generation.Epoch;
-import org.pragmatica.aether.slice.generation.HealthSignal;
-import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.metrics.artifact.ArtifactMetricsCollector;
 import org.pragmatica.aether.metrics.consensus.RabiaMetricsCollector;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent;
@@ -275,7 +273,6 @@ import org.pragmatica.dht.DistributedDHTClient;
 import org.pragmatica.dht.storage.MemoryStorageEngine;
 import org.pragmatica.dht.storage.StorageEngine;
 import org.pragmatica.consensus.net.quic.QuicClusterNetwork;
-import org.pragmatica.consensus.net.quic.QuicDisconnectListener;
 import org.pragmatica.consensus.net.quic.QuicPeerStateListener;
 import org.pragmatica.consensus.net.quic.QuicTlsProvider;
 import org.pragmatica.lang.Cause;
@@ -1469,7 +1466,6 @@ public interface AetherNode extends ManageableNode {
                           Option<ManagementServer> managementServer,
                           Option<DiscoveryProvider> discoveryProvider,
                           Option<CertificateRenewalScheduler> certRenewalScheduler,
-                          HealthSignalSink healthSignalSink,
                           InFlightRequestTracker inFlightRequestTracker,
                           NodeLifecycle nodeLifecycle,
                           HlcClock hlcClock,
@@ -1998,9 +1994,6 @@ public interface AetherNode extends ManageableNode {
                                                                          config.clusterName(),
                                                                          config.autoHeal().maxNodes());
         var deploymentMap = DeploymentMap.deploymentMap();
-        var healthSinkRef = new AtomicReference<HealthSignalSink>(HealthSignalSink.noop());
-        HealthSignalSink stableHealthSink = signal -> healthSinkRef.get()
-                                                                   .emit(signal);
         // #114 W2c + Wave 2 / W3+W6: CDM membership source is the per-node MembershipFsm's
         // CORE-SCOPED counting projection (lazy deref — the FSM holder is populated before the
         // CDM reconcile loop first runs). Core-scoping at THIS seam makes role assignment count
@@ -2045,7 +2038,6 @@ public interface AetherNode extends ManageableNode {
                                                                                                .deployment()
                                                                                                .reconciliationInterval(),
                                                                                          schemaOrchestrator,
-                                                                                         stableHealthSink,
                                                                                          cdmCoreCountedMembersSupplier,
                                                                                          stableCdmReadyNodesSupplier,
                                                                                          stableCdmDrainingNodesSupplier,
@@ -2113,8 +2105,7 @@ public interface AetherNode extends ManageableNode {
         metricsCollector.setNodeReportedStateSupplier(nodeReportedStateHolder::current);
         // Incarnation supplier is wired to the SWIM self-incarnation below, once
         // `swimHealthDetector` is constructed (single `(NodeId, incarnation)` authority).
-        var pongSignalFan = ClusterSyncPongSignalFan.clusterSyncPongSignalFan(stableHealthSink,
-                                                                              clusterNode.leaderManager(),
+        var pongSignalFan = ClusterSyncPongSignalFan.clusterSyncPongSignalFan(clusterNode.leaderManager(),
                                                                               readyCandidateSink);
 
         metricsCollector.setPongSignalFan(pongSignalFan);
@@ -2166,7 +2157,6 @@ public interface AetherNode extends ManageableNode {
                                                                          metricsCollector,
                                                                          config.timeouts().cluster().pingInterval(),
                                                                          rabiaTermSupplier,
-                                                                         stableHealthSink,
                                                                          ClusterSyncScheduler.DEFAULT_PING_TIMEOUT_THRESHOLD,
                                                                          leaderEpochSupplier,
                                                                          peerObservationStore,
@@ -2730,7 +2720,6 @@ public interface AetherNode extends ManageableNode {
                                                                                config.topology(),
                                                                                serializer,
                                                                                deserializer,
-                                                                               stableHealthSink,
                                                                                leaderEpochSupplier,
                                                                                isLeaderSupplier,
                                                                                peerObservationStore,
@@ -3230,7 +3219,6 @@ public interface AetherNode extends ManageableNode {
                                                               configBaselineSupplier,
                                                               clusterNode);
 
-        attachQuicDisconnectListener(clusterNode.network(), stableHealthSink, leaderEpochSupplier);
         attachQuicConnectivityReporter(clusterNode.network(),
                                        isLeaderSupplier,
                                        peerObservationStore,
@@ -3996,7 +3984,6 @@ public interface AetherNode extends ManageableNode {
                                   Option.empty(),
                                   discoveryProvider,
                                   certRenewalScheduler,
-                                  stableHealthSink,
                                   inFlightTrackerForDrain,
                                   nodeLifecycle,
                                   hlcClock,
@@ -4173,7 +4160,6 @@ public interface AetherNode extends ManageableNode {
                                                                         Option.some(managementServer),
                                                                         discoveryProvider,
                                                                         certRenewalScheduler,
-                                                                        stableHealthSink,
                                                                         inFlightTrackerForDrain,
                                                                         nodeLifecycle,
                                                                         hlcClock,
@@ -4483,17 +4469,6 @@ public interface AetherNode extends ManageableNode {
         allEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeDraining.class, subscriber::accept));
         allEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeFailedDrain.class, subscriber::accept));
         allEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeShuttingDown.class, subscriber::accept));
-    }
-
-    private static void attachQuicDisconnectListener(ClusterNetwork network,
-                                                     HealthSignalSink sink,
-                                                     Supplier<Epoch> epochSupplier) {
-        if (network instanceof QuicClusterNetwork quicNetwork) {
-            QuicDisconnectListener listener = nodeId -> sink.emit(new HealthSignal.QuicDisconnect(nodeId,
-                                                                                                  epochSupplier.get()));
-
-            quicNetwork.setDisconnectListener(listener);
-        }
     }
 
     /// Wire the FSM-backed membership-view supplier into the QUIC transport so consensus

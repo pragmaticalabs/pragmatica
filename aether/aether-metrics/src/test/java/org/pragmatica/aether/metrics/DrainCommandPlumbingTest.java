@@ -10,7 +10,6 @@ import org.pragmatica.aether.metrics.fsm.ClusterSyncContext;
 import org.pragmatica.aether.metrics.fsm.ClusterSyncState;
 import org.pragmatica.aether.metrics.observation.PeerObservationStore;
 import org.pragmatica.aether.slice.generation.Epoch;
-import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
@@ -192,7 +191,6 @@ class DrainCommandPlumbingTest {
                                                  new NoopClusterSyncCollector(),
                                                  TimeSpan.timeSpan(1).hours(),
                                                  () -> 1L,
-                                                 HealthSignalSink.noop(),
                                                  3,
                                                  () -> Epoch.epoch(1L, 0L),
                                                  PeerObservationStore.peerObservationStore(),
@@ -216,7 +214,6 @@ class DrainCommandPlumbingTest {
                                                  new NoopClusterSyncCollector(),
                                                  TimeSpan.timeSpan(1).hours(),
                                                  () -> 1L,
-                                                 HealthSignalSink.noop(),
                                                  3,
                                                  () -> Epoch.epoch(1L, 0L),
                                                  PeerObservationStore.peerObservationStore());

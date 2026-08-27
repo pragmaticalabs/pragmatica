@@ -58,8 +58,11 @@ import static org.mockito.Mockito.when;
 
 /// Verifies that `QuicClusterNetwork` invokes the injected `QuicDisconnectListener`
 /// on every peer-removal view-change, alongside the existing
-/// `TransportObservation.PeerDisconnected` emission. Higher layers adapt the
-/// callback into `HealthSignal.QuicDisconnect` for the leader's HealthReconciler.
+/// `TransportObservation.PeerDisconnected` emission.
+///
+/// The contract is pinned here with a listener this test injects itself. No production caller
+/// installs one — `setDisconnectListener` has no call sites — so what this class guards is the
+/// transport's side of the contract, kept honest for whoever wires a consumer next.
 @Timeout(10)
 class QuicClusterNetworkHintEmissionTest {
     private static final TimeSpan AWAIT_TIMEOUT = TimeSpan.timeSpan(5).seconds();

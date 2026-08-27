@@ -15,7 +15,6 @@ import java.util.function.Supplier;
 import org.pragmatica.aether.config.CommunitySizing;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
-import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.cluster.node.ClusterNode;
@@ -40,7 +39,6 @@ public final class ClusterDeploymentContext {
     private final MessageRouter router;
     private final TopologyManager topologyManager;
     private final SchemaOrchestratorService schemaOrchestrator;
-    private final HealthSignalSink healthSignalSink;
     private final Supplier<Set<NodeId>> coreCountedMembersSupplier;
     private final Supplier<Set<NodeId>> readyNodesSupplier;
     private final Supplier<Set<NodeId>> drainingNodesSupplier;
@@ -77,7 +75,6 @@ public final class ClusterDeploymentContext {
                                     MessageRouter router,
                                     TopologyManager topologyManager,
                                     SchemaOrchestratorService schemaOrchestrator,
-                                    HealthSignalSink healthSignalSink,
                                     Supplier<Set<NodeId>> coreCountedMembersSupplier,
                                     Supplier<Set<NodeId>> readyNodesSupplier,
                                     Supplier<Set<NodeId>> drainingNodesSupplier,
@@ -92,7 +89,6 @@ public final class ClusterDeploymentContext {
              router,
              topologyManager,
              schemaOrchestrator,
-             healthSignalSink,
              coreCountedMembersSupplier,
              readyNodesSupplier,
              drainingNodesSupplier,
@@ -110,7 +106,6 @@ public final class ClusterDeploymentContext {
                                     MessageRouter router,
                                     TopologyManager topologyManager,
                                     SchemaOrchestratorService schemaOrchestrator,
-                                    HealthSignalSink healthSignalSink,
                                     Supplier<Set<NodeId>> coreCountedMembersSupplier,
                                     Supplier<Set<NodeId>> readyNodesSupplier,
                                     Supplier<Set<NodeId>> drainingNodesSupplier,
@@ -126,7 +121,6 @@ public final class ClusterDeploymentContext {
              router,
              topologyManager,
              schemaOrchestrator,
-             healthSignalSink,
              coreCountedMembersSupplier,
              readyNodesSupplier,
              drainingNodesSupplier,
@@ -145,7 +139,6 @@ public final class ClusterDeploymentContext {
                                     MessageRouter router,
                                     TopologyManager topologyManager,
                                     SchemaOrchestratorService schemaOrchestrator,
-                                    HealthSignalSink healthSignalSink,
                                     Supplier<Set<NodeId>> coreCountedMembersSupplier,
                                     Supplier<Set<NodeId>> readyNodesSupplier,
                                     Supplier<Set<NodeId>> drainingNodesSupplier,
@@ -162,7 +155,6 @@ public final class ClusterDeploymentContext {
              router,
              topologyManager,
              schemaOrchestrator,
-             healthSignalSink,
              coreCountedMembersSupplier,
              readyNodesSupplier,
              drainingNodesSupplier,
@@ -182,7 +174,6 @@ public final class ClusterDeploymentContext {
                                     MessageRouter router,
                                     TopologyManager topologyManager,
                                     SchemaOrchestratorService schemaOrchestrator,
-                                    HealthSignalSink healthSignalSink,
                                     Supplier<Set<NodeId>> coreCountedMembersSupplier,
                                     Supplier<Set<NodeId>> readyNodesSupplier,
                                     Supplier<Set<NodeId>> drainingNodesSupplier,
@@ -200,7 +191,6 @@ public final class ClusterDeploymentContext {
         this.router = router;
         this.topologyManager = topologyManager;
         this.schemaOrchestrator = schemaOrchestrator;
-        this.healthSignalSink = healthSignalSink;
         this.coreCountedMembersSupplier = coreCountedMembersSupplier;
         this.readyNodesSupplier = readyNodesSupplier;
         this.drainingNodesSupplier = drainingNodesSupplier;
@@ -276,10 +266,6 @@ public final class ClusterDeploymentContext {
 
     public SchemaOrchestratorService schemaOrchestrator() {
         return schemaOrchestrator;
-    }
-
-    public HealthSignalSink healthSignalSink() {
-        return healthSignalSink;
     }
 
     public Supplier<Set<NodeId>> coreCountedMembersSupplier() {

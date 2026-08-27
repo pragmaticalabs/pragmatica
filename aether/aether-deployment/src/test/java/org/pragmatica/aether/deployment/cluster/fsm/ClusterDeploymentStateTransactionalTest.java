@@ -16,7 +16,6 @@ import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
-import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
@@ -88,7 +87,6 @@ class ClusterDeploymentStateTransactionalTest {
                                                     router,
                                                     stubTopologyManager(SELF),
                                                     stubSchemaOrchestrator(),
-                                                    HealthSignalSink.noop(),
                                                     () -> Set.of(SELF, NODE_A),
                                                     () -> Set.of(SELF, NODE_A),
                                                     Set::of,

@@ -9,7 +9,6 @@ import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.metrics.observation.PeerObservationStore;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.generation.Epoch;
-import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.cluster.metrics.CommunityReport;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPong;
@@ -183,7 +182,6 @@ class ClusterSyncSchedulerPeriodicEmissionTest {
                                                           collector,
                                                           TimeSpan.timeSpan(1).seconds(),
                                                           () -> 7L,
-                                                          HealthSignalSink.noop(),
                                                           ClusterSyncScheduler.DEFAULT_PING_TIMEOUT_THRESHOLD,
                                                           () -> Epoch.epoch(7L, 0L),
                                                           PeerObservationStore.peerObservationStore(),

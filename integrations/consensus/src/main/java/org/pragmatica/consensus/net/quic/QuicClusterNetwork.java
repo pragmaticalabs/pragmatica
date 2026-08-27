@@ -2737,8 +2737,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
     ///
     /// Mapping:
     ///   - ADD       → `TransportObservation.PeerJoined`
-    ///   - REMOVE    → `TransportObservation.PeerDisconnected` (also fires
-    ///                 `HealthSignal.QuicDisconnect` via `reportPeerRemoval`)
+    ///   - REMOVE    → `TransportObservation.PeerDisconnected` (also routes through
+    ///                 `reportPeerRemoval`)
     ///   - SHUTDOWN  → `TransportObservation.SelfShutdown` (self-emit only)
     ///   - RECONNECT → `TransportObservation.PeerReconnected` (previously suppressed;
     ///                 now surfaced as a typed event so subscribers can invalidate
@@ -2851,7 +2851,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     private void reportPeerRemoval(NodeId peerId, boolean deathPathInitiated) {
-        // Leader path: route to the local disconnect listener (HealthReconciler fast path)
+        // Leader path: route to the local disconnect listener (no consumer is installed today,
+        // so this arm is inert; the connectivity reporter below carries the live signal)
         // for liveness bookkeeping. Symmetric to follower-side reporting, ALSO emit a
         // connectivity transition via the reporter so the leader's local adapter can fold
         // the observation directly into ReachabilityAggregator (Step 4 of the topology-
@@ -2860,8 +2861,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // only emit through the reporter, which buffers the observation for the next
         // outbound ClusterSyncPong → leader.
         //
-        // The leader `disconnectListener` (HealthReconciler) is fired unconditionally — its
-        // liveness bookkeeping is independent of the FSM co-confirmation. `deathPathInitiated`
+        // The leader `disconnectListener` is fired unconditionally — the call is independent of
+        // the FSM co-confirmation, and inert while no listener is installed. `deathPathInitiated`
         // (Wave 9 Fix B) is forwarded to the connectivity reporter, whose aether-side adapter
         // gates the FSM liveness-gone tap on it (organic close = death evidence; death-path
         // close = the verdict's own side effect, must not self-co-confirm).

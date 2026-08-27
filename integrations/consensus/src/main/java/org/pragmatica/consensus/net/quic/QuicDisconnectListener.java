@@ -22,8 +22,14 @@ import org.pragmatica.lang.Contract;
 /// Listener fired whenever `QuicClusterNetwork` tears down a peer connection.
 ///
 /// Kept intentionally minimal — consensus has no awareness of cluster-generation
-/// typing (that lives in `aether-slice`). Higher layers adapt these callbacks
-/// into richer domain events (e.g. `HealthSignal.QuicDisconnect`).
+/// typing (that lives in `aether-slice`), so a higher layer is expected to adapt these
+/// callbacks into its own domain events.
+///
+/// **No consumer is installed today.** [`QuicClusterNetwork#setDisconnectListener`] has no
+/// callers, so the field keeps its [`#noop`] default and the leader-side
+/// `disconnectListener.onDisconnect` call is a no-op for every peer teardown. Liveness
+/// bookkeeping reaches the leader through `PeerConnectivityObservation` instead — see
+/// `reportPeerRemoval`, which fires both.
 @Contract
 public interface QuicDisconnectListener {
     void onDisconnect(NodeId nodeId);
