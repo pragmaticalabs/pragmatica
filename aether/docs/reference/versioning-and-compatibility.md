@@ -1,0 +1,114 @@
+# Versioning & Compatibility
+
+This page is the map across the versioning surfaces Aether actually has, and says plainly where a
+policy has not been decided yet rather than implying one exists. Four surfaces get confused with
+each other because they all use the word "version"; they are independent by design:
+
+| Surface | What it versions | Status |
+|---|---|---|
+| Product release (`1.0.0-rc3`) | The whole codebase, as a release artifact | rc series, pre-GA |
+| Envelope format (`ENVELOPE_FORMAT_VERSION`) | Slice-processor generated-code structure | Built, frozen at `1000` until GA |
+| Slice HTTP API versions (`v1`, `v2`, ...) (#198) | An individual slice's own routes | Built |
+| Management HTTP API (`/api/v1/...`) (#300) | The cluster's control-plane routes | **Draft — not implemented** |
+
+Node-to-node wire-protocol version skew is discussed separately below because, unlike the four
+rows above, there is currently no mechanism for it at all — see "Rolling upgrades and node
+version skew."
+
+## Product release versioning
+
+Aether is pre-GA — `1.0.0-rc3` at this writing — with one active release line and no formal
+backport/LTS policy [mechanism: `CHANGELOG.md`, current branch]. **No SemVer commitment for the
+product as a whole has been published anywhere in this repository** [design intent — unverified:
+checked `README.md`, `LICENSE`, `CHANGELOG.md` — none states one]. Treat every rc as able to break
+compatibility with the previous one until a GA versioning policy is written and linked here.
+
+What *is* an explicit, recorded policy — but scoped to the management API surface only, and still
+in Draft — is a **pre-GA no-backward-compatibility stance**: "pre-GA, a rename is free (no-compat
+policy)" [mechanism: `aether/docs/specs/management-api-versioning-spec.md` §1, §2.3]. Do not read
+that as a blanket statement about every surface in the codebase (the envelope format, for
+instance, already carries an explicit accept-set across rc's — see below); it is that one Draft
+spec's stated design principle for its own surface.
+
+For the authoritative statement of what "pre-GA" means for production-readiness (not a versioning
+question, a scope one), see [`known-limitations.md`](known-limitations.md#release-maturity--rc-series-toward-ga)
+— GA is gated on the scale-validation epic (#365), not a calendar date.
+
+## Envelope format versioning (slice/runtime compatibility)
+
+This is the mechanism that actually makes a rolling upgrade or a mixed-rc-version cluster work
+today: the slice-processor stamps every generated slice with an integer `ENVELOPE_FORMAT_VERSION`,
+and the runtime checks it against an accept-set (`SliceManifest.SUPPORTED_ENVELOPE_VERSIONS`)
+before loading a slice [mechanism: `aether/slice/.../SliceManifest.java`,
+`checkEnvelopeCompatibility()`]. It versions the generated-code *structure* (factory signatures,
+dependency-wiring protocol), not the release version, and only changes when that structure
+changes — most releases ship no bump at all.
+
+**Frozen at `1000` until GA** (owner ruling 2026-07-18, #386): pre-GA structural changes to the
+generated code ride without a version bump, because the rc series is rebuild-together and the
+stamp is treated as a membership-checked compatibility gate, not a structural dispatch. Full
+version history, the bump/no-bump rules, and the file-level mechanism are the single source of
+truth at [`../contributors/envelope-versioning.md`](../contributors/envelope-versioning.md) — this
+page doesn't duplicate that table.
+
+## HTTP API versioning — two independent surfaces
+
+### Slice-facing API versions (#198) — built
+
+A slice can expose multiple versions of its own routes side by side (`v1`, `v2`, ...), selected by
+URL path (default) or by request header, with `deprecated`/`sunset` metadata per version that adds
+`Deprecation`/`Sunset` response headers a client can observe
+[mechanism: `aether/docs/slice-developers/api-versioning-and-media-types.md`; `ApiVersioningDetection`
+enum, `aether/aether-config/.../config/ApiVersioningDetection.java`]. This is per-slice and
+independent of both the product version and the management API below.
+
+### Management (control-plane) API versioning (#300) — Draft, not implemented
+
+There is a Draft v0.1 design (`aether/docs/specs/management-api-versioning-spec.md`, dated
+2026-07-04) proposing a `/api/v1/...` prefix for the management API, additive-vs-breaking rules for
+when a new version is minted, and a post-GA dual-serve window (≥1 minor release) for the previous
+version. **None of this is built yet** — every `ManagementRoute` entry in the current tree still
+mounts at a bare `/api/...` with no version segment [verified: `aether/aether-management-api/.../
+route/ManagementRoute.java`, checked directly — e.g. `NODES_LIST(GET, "/api/nodes", ...)`, no
+`/v1/` anywhere in the enum]. Treat the whole management-API-versioning policy as
+[design intent — unverified] until that spec lands in code; this page will be updated when it
+does.
+
+## Rolling upgrades and node version skew
+
+The operator-facing procedure exists and is real: `rolling-aether-upgrade.sh` drains a node,
+shuts it down, has the operator restart it on the new binary, and canary-watches it before moving
+to the next node [mechanism: [`../guides/rolling-upgrade.md`](../guides/rolling-upgrade.md)]. That
+guide states the cluster "remains in a valid mixed-version state" during the rollout, and the part
+of that claim this page can verify is the slice-loading layer: envelope-format compatibility
+(above) is exactly what lets an old-format and new-format slice coexist across nodes mid-rollout.
+
+**What this page cannot verify, because it does not appear to exist:** a version field on the
+node-to-node join/handshake protocol, or documented codec-evolution rules for the gossip/consensus
+wire format itself — i.e. a design for *node-binary* version skew, as opposed to slice-envelope
+version skew. A search of the runtime's membership/handshake code turned up no version field, and
+an internal design-completeness review from 2026-06-11 flagged this by name as a real gap with no
+tracking issue: *"No node-version-skew design — `Hello` carries no version field; codecs have no
+evolution rules; no rolling node-binary-upgrade story, no ticket."* As of this writing (2026-08-27)
+that gap still has no visible spec or tracking issue in this repository.
+
+One consequence: **there is currently no recorded decision on whether node-binary version-skew
+safety is a runtime-owned guarantee or an application-owned concern.** This page will not assert
+one — that is an architecture decision this doc can describe once made, not invent. If you are
+relying on the rolling-upgrade procedure across anything other than adjacent rc builds (i.e.
+skipping rc versions in one rolling upgrade), treat that as unverified and validate it yourself;
+the script's built-in canary-wait step is the best available safety net today.
+
+## Reference material
+
+- [`../contributors/envelope-versioning.md`](../contributors/envelope-versioning.md) — envelope
+  format version history and the bump/no-bump rules.
+- [`../slice-developers/api-versioning-and-media-types.md`](../slice-developers/api-versioning-and-media-types.md) —
+  slice-facing API versioning and the deprecation lifecycle.
+- [`../specs/management-api-versioning-spec.md`](../specs/management-api-versioning-spec.md) —
+  Draft design for management-API versioning; not yet implemented.
+- [`../guides/rolling-upgrade.md`](../guides/rolling-upgrade.md) — the operational rolling-upgrade
+  procedure.
+- [`known-limitations.md`](known-limitations.md) — the single source of truth for Aether's current
+  scope; this page defers to it rather than restating release-maturity boundaries.
+- [`../../../SECURITY.md`](../../../SECURITY.md) — trust model and default security posture.

@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Added (2026-08-27 — #321: versioning-and-compatibility reference doc)
+- New `aether/docs/reference/versioning-and-compatibility.md`: maps the four independent
+  versioning surfaces (product release, envelope format, slice HTTP API, management HTTP API)
+  with verified status for each — envelope versioning and slice API versioning (#198) are real and
+  built; management API versioning (#300) is Draft and not implemented (routes still bare
+  `/api/...`, verified directly against `ManagementRoute.java`); no project-wide SemVer commitment
+  is published anywhere in this repository. Flags an open gap found during research, not previously
+  documented anywhere user-visible: no version field or codec-evolution design exists for the
+  node-to-node handshake/wire protocol, so there is no recorded runtime-owned-vs-app-owned decision
+  for node-binary version skew during a rolling upgrade — a real, ticketless gap first flagged
+  internally 2026-06-11 and still open as of this writing. `SECURITY.md`'s forward-pointer to this
+  document updated now that it exists.
+
 ### Added (2026-08-27 — #320: repo-root CONTRIBUTING.md)
 - New `CONTRIBUTING.md`: license implications of contributing by directory (BSL-1.1 under
   `aether/` and `jbct/slice-processor{,-tests}/` is not OSI-approved open source; Apache-2.0
