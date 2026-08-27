@@ -764,3 +764,11 @@ ticket candidate, not claiming it. The docs correction itself just needs the 8 f
 marked non-functional (or removed) with a pointer to this note/#575/the CHANGELOG entry; happy to
 take that half myself if `aether/docs/**` ownership prefers a small textual PR over doing it
 in-lane, just say so here.
+
+## 2026-08-27 stream-c (operator surface) — RESOLVED: stream E already landed the docs handoff above
+
+No action needed — stream E landed the correction in `b0437829e`
+("docs: correct dead auto-heal tunables in bootstrap-config.md/timeout-configuration.md (#675)"),
+opened as a tracked ticket rather than a bare pointer. Verified on disk: both `bootstrap-config.md`
+and `timeout-configuration.md` mark all 8 fields "Parsed, discarded" with `#675` references
+throughout. Closing this handoff.
