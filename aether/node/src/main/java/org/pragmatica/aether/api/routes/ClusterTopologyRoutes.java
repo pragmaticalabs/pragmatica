@@ -541,7 +541,9 @@ public final class ClusterTopologyRoutes implements RouteSource {
         //   DISCOVERED — the observer knows this id, but there is no live link
         //   UNKNOWN    — not in the observer's map at all
         var health = state.isPresent()
-                     ? (connected ? "CONNECTED" : "DISCOVERED")
+                     ? (connected
+                        ? "CONNECTED"
+                        : "DISCOVERED")
                      : "UNKNOWN";
         var hostname = info.flatMap(i -> Option.option(i.labels().get(NodeInfo.LABEL_HOSTNAME))).or("");
         var zone = info.flatMap(i -> Option.option(i.labels().get(NodeInfo.LABEL_ZONE))).or("");
