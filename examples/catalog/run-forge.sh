@@ -61,4 +61,6 @@ FORGE_ARGS=(
     --blueprint "$BLUEPRINT_COORDS"
 )
 
-exec java -jar "$FORGE_JAR" "${FORGE_ARGS[@]}"
+# FORGE_JVM_OPTS: extra JVM flags (e.g. JDWP remote debug -- see docs/slice-developers/forge-guide.md#debugging).
+# Deliberately unquoted: several space-separated flags must word-split.
+exec java ${FORGE_JVM_OPTS:-} -jar "$FORGE_JAR" "${FORGE_ARGS[@]}"
