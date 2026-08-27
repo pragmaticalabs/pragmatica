@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Fixed (2026-08-27 — #616 partial: guarantees.md/known-limitations.md understated declarative stream-consumer cursor durability)
+- `guarantees.md` §4 (`stream.consume` bullet and summary-matrix row 19) and `known-limitations.md`'s
+  streaming-substrate bullet both described automatic cursor resume as app-`StreamAccess`-only,
+  claiming the declarative `[streams.X]` consumer runtime (`ConsumerRuntimeState`) "remains
+  test-only — not the wired path." Verified false: `AetherNode.java:3734-3757` composes it with
+  `ClusterCursorStore` in production, layering a consensus-committed KV checkpoint
+  (`AetherKey.StreamCursorCheckpointKey`) on the local cursor store — resume is `max(local,
+  cluster)`, so an ownership change resumes from the last checkpoint instead of offset 0, and a
+  same-node restart never re-delivers what it already processed. Noted the honest edge: a
+  consensus-write failure on checkpoint is logged and swallowed, degrading that checkpoint to
+  local-only durability rather than blocking delivery. Flagged, not overclaimed: the composition is
+  unit-tested (`ClusterCursorStoreTest`, fakes for the KV reader/writer) but no multi-node failover
+  test was found exercising it end-to-end — a coverage gap, not a correctness doubt.
+- Partial: this is the #616 durability-audit finding independent of the BackupService/declared-state
+  question (#676), which is still gated on an owner decision before the rest of #616's durability
+  model can be written. `known-limitations.md`'s separate DHT-migration claim (line 127,
+  `SliceNodeKey`/`EndpointKey`/`HttpNodeRouteKey`) is left untouched — open question, not yet traced.
+
 ### Fixed (2026-08-27 — #675: bootstrap-config.md/timeout-configuration.md advertised dead auto-heal tunables)
 - `bootstrap-config.md`'s `[operations.*]` schema table and Traps callout described all nine
   `[operations.auto_heal]` fields as operator-tunable. Verified reality: only `enabled` and the
