@@ -49,6 +49,14 @@ public final class ApiKeyRoutes implements RouteSource {
         return new ApiKeyRoutes(nodeSupplier);
     }
 
+    /// Cancel the expiry sweep (#642). [`SharedScheduler`] is process-wide and this route source is
+    /// per-`ManagementServer`, so without this every node ever started in a shared JVM keeps sweeping
+    /// API keys through a `nodeSupplier` whose node is gone. Called from `ManagementServer.stop()`.
+    @Contract
+    public void stop() {
+        sweepTask.cancel(false);
+    }
+
     @Override
     public Stream<Route<?>> routes() {
         return Stream.of(ManagementRoutes.<Object> route(ManagementRoute.CLUSTER_KEYS_CREATE)

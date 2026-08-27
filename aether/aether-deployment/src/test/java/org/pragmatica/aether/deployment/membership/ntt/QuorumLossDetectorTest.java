@@ -20,6 +20,9 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
+import java.util.function.IntSupplier;
+import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.deployment.membership.MembershipConfig.membershipConfig;
@@ -752,7 +755,184 @@ class QuorumLossDetectorTest {
         }
     }
 
-    private static final class RecordingListener implements java.util.function.Consumer<QuorumLossIntent> {
+    /// #642 terminal stop. A detector whose node has stopped keeps its timers on the process-wide
+    /// SharedScheduler while its inputs die, so its member count freezes below threshold and the #415
+    /// re-arm retries off that frozen value until the cold-boot window expires — then fires a drain for
+    /// a node that no longer exists. In a shared JVM the drain is resolved by node id against the LIVE
+    /// registry, so it terminates the id's NEXT incarnation.
+    ///
+    /// Each test below isolates ONE guarded point, so removing that single check turns exactly one test
+    /// red rather than the whole class.
+    @Nested
+    class TerminalStop {
+        @Test
+        void stop_armedBelowThresholdChain_neverFires() {
+            armBelowThreshold();
+            assertThat(scheduler.pendingTasks()).hasSize(1);
+
+            detector.stop();
+            timeSource.advanceTimeMillis(20_000);
+            scheduler.fireAll();
+
+            assertThat(listener.events())
+                .as("a stopped detector must emit nothing, however long the below-threshold count persists")
+                .isEmpty();
+        }
+
+        @Test
+        void stop_countPathCheckAlreadyDispatched_neverFires() {
+            armBelowThreshold();
+
+            var coConfirmation = new CountingCoConfirmation();
+
+            detector.setCoConfirmationSupplier(coConfirmation);
+
+            var dispatched = scheduler.pendingTasks().getFirst();
+
+            detector.stop();
+            timeSource.advanceTimeMillis(20_000);
+            // Cancellation cannot reach a body SharedScheduler has already dispatched, so the latch —
+            // not the cancel — has to be what stops this.
+            dispatched.forceRun();
+
+            assertThat(listener.events())
+                .as("the count-path firing check must no-op on a stopped detector even when cancellation lost the race")
+                .isEmpty();
+            assertThat(coConfirmation.samples())
+                .as("it must bail at its ENTRY, not deeper: sampling co-confirmation reads live membership "
+                   + "and SWIM state that a stopped node no longer owns")
+                .isZero();
+        }
+
+        @Test
+        void stop_presencePathCheckAlreadyDispatched_neverFires() {
+            members(5);
+            coreCount(5);
+            assertThat(detector.isArmed()).isTrue();
+            // Members stay quorate, so ONLY the PASSIVE presence path arms a task.
+            detector.onQuorumPresence(false);
+
+            var coConfirmation = new CountingCoConfirmation();
+
+            detector.setCoConfirmationSupplier(coConfirmation);
+
+            var dispatched = scheduler.pendingTasks().getFirst();
+
+            detector.stop();
+            timeSource.advanceTimeMillis(20_000);
+            dispatched.forceRun();
+
+            assertThat(listener.events())
+                .as("the PASSIVE presence-edge check must no-op on a stopped detector even when cancellation lost the race")
+                .isEmpty();
+            assertThat(coConfirmation.samples())
+                .as("the presence path must bail at its ENTRY too, for the same reason")
+                .isZero();
+        }
+
+        /// Isolates the [`QuorumLossDetector#emitIntent`] latch — the one guarding the window between a
+        /// check passing its OWN entry guard and the listener actually being called. The
+        /// co-confirmation supplier is sampled inside the firing check immediately before `emitIntent`,
+        /// so stopping from there reproduces that interleaving deterministically.
+        @Test
+        void stop_landingBetweenCheckAndEmit_neverFires() {
+            armBelowThreshold();
+            detector.setCoConfirmationSupplier(QuorumLossDetectorTest.this::stopDetectorThenReportAbsent);
+            timeSource.advanceTimeMillis(20_000);
+            scheduler.fireAll();
+
+            assertThat(listener.events())
+                .as("stop() landing after the firing check passed must still suppress the intent at the emit point")
+                .isEmpty();
+        }
+
+        @Test
+        void stop_memberCountChangedAfterwards_schedulesNoNewCheck() {
+            armBelowThreshold();
+            detector.stop();
+
+            var tasksAtStop = scheduler.pendingTasks().size();
+
+            // Recovery then a fresh below-edge would normally open a new window and arm a new check.
+            members(5);
+            members(1);
+
+            assertThat(scheduler.pendingTasks())
+                .as("a stopped detector must never arm another firing check, whatever its inputs do")
+                .hasSize(tasksAtStop);
+            scheduler.fireAll();
+            assertThat(listener.events()).isEmpty();
+        }
+
+        @Test
+        void stop_quorumPresenceLostAfterwards_schedulesNoNewCheck() {
+            members(5);
+            coreCount(5);
+            detector.stop();
+
+            var tasksAtStop = scheduler.pendingTasks().size();
+
+            detector.onQuorumPresence(false);
+
+            assertThat(scheduler.pendingTasks())
+                .as("a stopped detector must never arm another presence check either")
+                .hasSize(tasksAtStop);
+            scheduler.fireAll();
+            assertThat(listener.events()).isEmpty();
+        }
+
+        @Test
+        void stop_pendingCountPathCheck_isCancelled() {
+            armBelowThreshold();
+
+            var pending = scheduler.pendingTasks().getFirst();
+
+            detector.stop();
+
+            assertThat(pending.cancelled())
+                .as("stop() also cancels, so a check that has NOT yet been dispatched never runs at all")
+                .isTrue();
+        }
+    }
+
+    /// Reach quorum (arming the detector), then drop to self-only so a below-threshold window opens and
+    /// a firing check is armed.
+    @Contract
+    private void armBelowThreshold() {
+        members(5);
+        coreCount(5);
+        members(1);
+    }
+
+    /// Co-confirmation supplier that stops the detector as a side effect of being sampled. The sample
+    /// happens inside the firing check just before `emitIntent`, which is the only way to land a stop()
+    /// in that window deterministically.
+    private QuorumCoConfirmation stopDetectorThenReportAbsent() {
+        detector.stop();
+
+        return QuorumCoConfirmation.absent();
+    }
+
+    /// Co-confirmation supplier that counts how often the firing paths sample it. That sample sits
+    /// AFTER a check's entry latch and BEFORE `emitIntent`, so it is the observable that distinguishes
+    /// "bailed at the entry" from "ran the whole check and was stopped at the last gate". Without it
+    /// the entry latches are invisible to a test, because `emitIntent`'s latch masks their absence.
+    private static final class CountingCoConfirmation implements Supplier<QuorumCoConfirmation> {
+        private final AtomicInteger samples = new AtomicInteger();
+
+        @Override
+        public QuorumCoConfirmation get() {
+            samples.incrementAndGet();
+
+            return QuorumCoConfirmation.absent();
+        }
+
+        int samples() {
+            return samples.get();
+        }
+    }
+
+    private static final class RecordingListener implements Consumer<QuorumLossIntent> {
         private final List<QuorumLossIntent> events = new CopyOnWriteArrayList<>();
 
         @Override
@@ -765,7 +945,7 @@ class QuorumLossDetectorTest {
         }
     }
 
-    private static final class MutableIntSupplier implements java.util.function.IntSupplier {
+    private static final class MutableIntSupplier implements IntSupplier {
         private final AtomicInteger value;
 
         MutableIntSupplier(int initial) {
@@ -849,6 +1029,17 @@ class QuorumLossDetectorTest {
             if (cancelled || done) {
                 return;
             }
+            done = true;
+            runnable.run();
+        }
+
+        /// Run the body IGNORING cancellation. This models what the production
+        /// [`org.pragmatica.lang.utils.SharedScheduler`] does once a task has been handed to its
+        /// virtual thread: `cancel(false)` returns, but the body still runs to completion. That race
+        /// is exactly what the detector's terminal `stopped` latch exists to close (#642), and it is
+        /// unreachable through [#runIfLive], which honours the cancel flag.
+        @Contract
+        void forceRun() {
             done = true;
             runnable.run();
         }
