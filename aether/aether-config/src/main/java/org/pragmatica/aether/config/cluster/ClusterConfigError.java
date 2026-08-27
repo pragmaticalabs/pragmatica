@@ -369,6 +369,57 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware {
         }
     }
 
+    /// #578: `ClusterConfigApplier` only actuates [DiffAction.ScaleUp]/[DiffAction.ScaleDown] — the
+    /// other 8 `DiffAction` variants (source/role add-remove, runtime change, field changes) fell
+    /// through a catch-all `default` that logged and returned success, so a config push naming one of
+    /// them silently no-op'd while the response claimed the apply worked. 501 (not 400) because the
+    /// request itself is well-formed and the diff plan is valid — the server just doesn't implement
+    /// this action kind on the `POST /api/cluster/config` path.
+    ///
+    /// The message deliberately does NOT tell the operator to destroy and re-bootstrap: unlike
+    /// `ImmutableFieldChange`, these actions are not actually unsupportable — `aether cluster apply
+    /// --resume`/`--rollback` route through `WaveExecutor`, which DOES provision/destroy/roll these
+    /// kinds live. The plain `aether cluster apply <file>` invocation just never reaches that engine;
+    /// it POSTs straight to this endpoint instead. That dispatch gap is a separate, structural finding
+    /// (flagged for its own fix, not asserted here as a working workaround) — this cause only
+    /// guarantees the one thing this layer can promise: the operation did not silently happen. It
+    /// carries the [DiffAction] itself, not a pre-rendered symbol/description pair, so a caller can
+    /// inspect which action kind failed rather than string-match the message.
+    record UnsupportedApplyAction(DiffAction action) implements ClusterConfigError {
+        @Override
+        public String message() {
+            return "Config action not supported for live apply on POST /api/cluster/config in this release: " + action.symbol()
+                 + " " + action.description()
+                 + ". No verified recovery is available through this endpoint yet — escalate rather than retry.";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.NOT_IMPLEMENTED;
+        }
+    }
+
+    /// #578 review: `ClusterConfigApplier.NoTopologyManager` is `ManagementServer`'s fallback wiring for a
+    /// node whose `clusterTopologyManager()` returns `Option.none()` — today that never happens
+    /// (`AetherNode` always returns `Option.some(...)`), so this path is currently dead, not live.
+    /// It still shipped as a silent-success stub — the identical shape of defect #578 fixes on the
+    /// live path — so a future conditional `clusterTopologyManager()` would reintroduce #578 through
+    /// this fallback with no test catching it. 503 (not 501): this is about THIS node's readiness,
+    /// not about the action kind being unimplemented — retrying the identical request against a node
+    /// that has a topology manager wired is the honest recovery.
+    enum ClusterTopologyManagerUnavailable implements ClusterConfigError {
+        INSTANCE;
+        @Override
+        public String message() {
+            return "This node has no cluster topology manager wired — it cannot apply cluster config "
+                 + "changes. Retry against a node where cluster topology management is active.";
+        }
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.SERVICE_UNAVAILABLE;
+        }
+    }
+
     record unused() implements ClusterConfigError {
         @Override
         public String message() {

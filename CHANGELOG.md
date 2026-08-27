@@ -317,6 +317,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `WITHIN_DEBOUNCE` — asserted before the debounce window is advanced, the only point where the two
   reasons actually diverge [verified: `LeaderReconcilerTest.autoHealDisabled_suppressesProvisioning_evenPastDebounceWithGenuineDeparture`]
 
+### Fixed (2026-08-27 — #578: cluster-config apply no longer silently no-ops or partially mutates)
+- **A rejected apply plan is now guaranteed zero side effects.** `ClusterConfigApplier.apply`
+  previously actuated actions as it walked them — a diff mixing a valid scale with an unsupported
+  action wrote the live desired-count change and only then failed, leaving the cluster mutated
+  while the stored config still held the old value. The applier now classifies the WHOLE plan
+  first (one exhaustive switch, no `default`, so an eleventh `DiffAction` variant fails to compile
+  rather than silently falling through) and rejects up front on the first failing action before
+  anything is actuated [mechanism: `firstRejection`/`scalesOf` split the classified list before any
+  `topologyManager.setDesiredCount` call runs]. An accepted plan's scale writes still fold
+  sequentially, matching an operator's top-to-bottom reading of the plan; a write that fails
+  partway through the fold leaves the earlier writes landed with no compensation — documented as a
+  known boundary, not built, since no caller has yet produced a plan where that ordering matters
+  [design intent — unverified].
+- **`ManagementServer`'s no-topology-manager fallback now fails loudly instead of silently
+  succeeding.** The fallback (currently dead code — no live route wires a node with an absent
+  `ClusterTopologyManager`) previously accepted any apply as a no-op. Renamed
+  `ClusterConfigApplier.unused()` to the enum-singleton `NoTopologyManager`, returning a new typed
+  `ClusterConfigError.ClusterTopologyManagerUnavailable` (503, operator recovery action: retry
+  against a node with cluster topology management active) so the same silent-success defect this
+  ticket closes on the live path cannot resurface here if the fallback ever becomes reachable
+  [verified: `ClusterConfigApplierTest.NoTopologyManagerFallback`].
+- **Known, deferred inconsistency (not fixed by this batch):** an `ImmutableFieldChange` action
+  answers 409 CONFLICT from this applier but 400 BAD_REQUEST from the live HTTP route
+  (`ClusterConfigRoutes.executeDiff` intercepts `hasImmutableChanges()` before the applier runs, via
+  `ClusterConfigError.ValidationFailed`, which does not override the interface's default
+  `httpStatus()`). The applier's 409 is unreachable from the live route today. Fixing it means
+  changing `ValidationFailed`'s status propagation, which affects every other validator wrapping
+  it — tracked here, out of scope for #578.
+- Fixed a `.field()` bug at two pre-existing call sites (`ClusterConfigRoutes.java`,
+  `ApplyOrchestrator.java`) where an `ImmutableFieldChange` rejection's field name was read lazily
+  only inside the branch that has one, found during review of this batch.
+
 ### Added (2026-08-27 — #642/#509 test infra)
 - `EmberCluster.start(heldBackNodeIds)` + `startHeldBackNodes()`: deterministic slow-rejoiner seam —
   held nodes are created into every peer's configured topology but not started, producing the #509

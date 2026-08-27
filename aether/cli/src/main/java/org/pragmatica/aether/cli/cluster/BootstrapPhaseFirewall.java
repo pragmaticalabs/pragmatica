@@ -35,10 +35,13 @@ import static org.pragmatica.lang.Result.success;
 /// ingress after create would leave a window in which the node is up and — per §6.2, a Hetzner
 /// server with no firewall association accepts ALL inbound traffic — fully open.
 ///
-/// **Bootstrap-only.** Editing `allow_ingress` on an existing cluster does NOT re-run this phase,
-/// and `ClusterConfigApplier` currently no-ops the corresponding `DiffAction` while logging
-/// "Applied config action" (#578). Until that lands, firewall config is honoured at bootstrap and
-/// silently discarded on edit.
+/// **Bootstrap-only.** Editing `allow_ingress` on an existing cluster does NOT re-run this phase.
+/// Before #578, `ClusterConfigApplier` no-op'd the corresponding `DiffAction` while logging "Applied
+/// config action" — an edit was silently discarded but the apply reported success. #578 closed that:
+/// the applier now refuses the action with `ClusterConfigError.UnsupportedApplyAction` (501), so an
+/// edit is loudly rejected rather than silently dropped. The gap this phase describes is unchanged,
+/// though — a rejected edit still isn't APPLIED; `allow_ingress` remains fixed at bootstrap-time
+/// values until a real re-provisioning path for firewall rules exists.
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"})
 public sealed interface BootstrapPhaseFirewall {
     record unused() implements BootstrapPhaseFirewall {}

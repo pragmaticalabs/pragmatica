@@ -231,6 +231,34 @@ class ClusterConfigRoutesApplyTest {
         }
     }
 
+    @Nested
+    class ScaleReachesApplier {
+
+        /// #578 review Testing Gap T4: none of the other tests in this file exercise a diff that
+        /// actually reaches `applier.apply(plan.allActions())` (`ClusterConfigRoutes.executeDiff`) —
+        /// they either replace a bootstrap seed (bypasses the applier entirely) or fail before the
+        /// diff is even computed. A genuine worker-count scale against a real, matching-version
+        /// committed config is the smallest diff that reaches the applier. This harness wires
+        /// `ClusterConfigApplier.NoTopologyManager` (the single-arg `clusterConfigRoutes` factory's
+        /// applier), so the observable proof of reachability is the applier's own honest 503 — not a
+        /// fabricated success — and a rejected apply must leave the previously committed config
+        /// untouched, same guarantee the applier's own `apply()` gives for any rejected plan.
+        @Test
+        void handleApplyConfig_genuineScale_reachesApplier_andFailsHonestlyWithNoTopologyManagerWired() {
+            var store = storeWith(committedOperatorConfig(5));
+
+            var result = apply(store, new ApplyConfigRequest(SCALED_TOML, 5));
+
+            assertThat(result.isFailure()).isTrue();
+            result.onFailure(cause -> assertThat(cause).isInstanceOf(ClusterConfigError.ClusterTopologyManagerUnavailable.class));
+
+            var committed = committedConfig(store);
+            assertThat(committed.tomlContent()).as("a rejected apply must leave the previously committed config untouched")
+                                               .isEqualTo(OPERATOR_TOML);
+            assertThat(committed.configVersion()).isEqualTo(5);
+        }
+    }
+
     private static Result<Object> apply(TestKVStore store, ApplyConfigRequest request) {
         return ClusterConfigRoutes.clusterConfigRoutes(() -> nodeWith(store))
                                   .handleApplyConfig(request)

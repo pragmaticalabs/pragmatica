@@ -81,7 +81,7 @@ public final class ClusterConfigRoutes implements RouteSource {
     }
 
     public static ClusterConfigRoutes clusterConfigRoutes(Supplier<ManageableNode> nodeSupplier) {
-        return new ClusterConfigRoutes(nodeSupplier, new ClusterConfigApplier.unused());
+        return new ClusterConfigRoutes(nodeSupplier, ClusterConfigApplier.NoTopologyManager.INSTANCE);
     }
 
     @Override
@@ -453,9 +453,16 @@ public final class ClusterConfigRoutes implements RouteSource {
     }
 
     private static ClusterConfigError.ValidationFailed buildImmutableChangeError(DiffPlan plan) {
+        // #578 review Issue 2: DiffPlan.immutable() is always populated with the ImmutableFieldChange
+        // variant (ClusterBootstrapConfigDiff is its only producer) — field() names the config key
+        // ("cluster.name"), description() is a full sentence. Passing description() here made the
+        // resulting message read "Field 'cluster.name is immutable and cannot be changed' is immutable
+        // after bootstrap." The description() fallback below is defensive only; it's unreachable today.
         var errors = plan.immutable()
                          .stream()
-                         .map(a -> (ClusterConfigError) new ClusterConfigError.ImmutableFieldChange(a.description()))
+                         .map(a -> (ClusterConfigError) new ClusterConfigError.ImmutableFieldChange(a instanceof DiffAction.ImmutableFieldChange(var field)
+                                                                                                    ? field
+                                                                                                    : a.description()))
                          .toList();
 
         return new ClusterConfigError.ValidationFailed(errors);
