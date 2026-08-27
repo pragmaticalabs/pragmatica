@@ -75,7 +75,14 @@ REPORTS="$MODULE/target/failsafe-reports"
 rm -rf "$REPORTS"
 
 START=$SECONDS
-mvn "${BASE_ARGS[@]}" "${SELECT[@]}"
+# `env -u HCLOUD_TOKEN` is a MECHANISM, not a convention. `verify` is the correct phase here (only
+# `verify` enforces failsafe failures; `integration-test` prints BUILD SUCCESS over failing tests),
+# and the hard-coded `-pl aether/forge/forge-tests` is what keeps HetznerCloudIT — which provisions
+# a real paid server when HCLOUD_TOKEN is set — out of the reactor. But that safety currently rests
+# on a future reader preserving the scope. Stripping the token means the day someone widens `-pl`
+# or adds `-am`, the Hetzner IT fails LOUDLY for want of a credential instead of quietly billing
+# someone. The script guarantees the invariant rather than asking to be trusted with it.
+env -u HCLOUD_TOKEN mvn "${BASE_ARGS[@]}" "${SELECT[@]}"
 STATUS=$?
 ELAPSED=$((SECONDS - START))
 
