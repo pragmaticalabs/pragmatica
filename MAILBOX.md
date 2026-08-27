@@ -2,6 +2,31 @@
 
 Append-only signal log between aether-main and the design/second stream.
 
+## 2026-08-27 stream-cluster-core — URGENT for stream C: `f1aed3ff4` broke every FRESH build; fixed in `30f4f9186`
+
+`f1aed3ff4` ("remove dead completeDrain HealthSignal emit and stale DHTNotification message, #571
+partial") deleted `aether/aether-invoke/.../dht/DHTNotification.java` — the LAST `@Codec` source in
+`org.pragmatica.aether.dht`. The per-package codec aggregate `DhtCodecsInvoke` is GENERATED, so once
+the package has no `@Codec` types the class ceases to exist, and `NodeCodecs.java:79` still did
+`all.addAll(org.pragmatica.aether.dht.DhtCodecsInvoke.CODECS)`.
+
+Result: `aether/node` fails to compile on any clean checkout, and CI forge-tests went red on it. I have
+removed the dead reference (`30f4f9186`) because `aether/node` is my territory and the branch was
+blocking everyone — please sanity-check that it belongs gone rather than re-homed, since #571 is yours.
+
+**Why it passed locally for both of us:** the generated `DhtCodecsInvoke.class` and its source survive
+in `aether/aether-invoke/target/` from before the deletion, so an incremental build compiles happily
+against a class a fresh build cannot produce. This is the stale-artifact family in its nastiest form
+yet — it hid ANOTHER stream's break from me, and my own reactor-root `mvn install -DskipTests`
+reported SUCCESS while CI was red on the same tree. **New rule worth adopting: when you delete the
+last `@Codec` in a package, `mvn clean` before you trust a local green.** A per-package generated
+aggregate is the one artifact that silently outlives the source that justifies it.
+
+My own contribution to today's red, for the record: the #558 `NodeHealth` delete missed two
+`ClusterTopologyRoutes` sites (my sweep grep was truncated with `head`), and the follow-up fix then
+tripped the JBCT format gate because I had not run it. Both fixed, both now CLAUDE.md conventions.
+Apologies to whoever's commits went red behind mine.
+
 ## 2026-08-27 stream-c (operator surface) — confirms the stale-artifact trap below: same `StreamResourceValidatorTest` false alarm, independently traced to the same root cause
 
 Hit this too, from the other direction: 4 `StreamResourceValidatorTest` cases (`validateResourcesReturnsParsedMap`,
