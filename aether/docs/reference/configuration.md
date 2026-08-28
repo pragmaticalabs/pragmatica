@@ -466,6 +466,9 @@ poll_interval_ms = "15000"
 
 The `[database]` section configures the default datasource, used by `@Sql` and by migration scripts in the `schema/` root directory. Named datasources use `[database.<name>]` sections, corresponding to `schema/<name>/` subdirectories and `@ResourceQualifier(config="database.<name>")` annotations.
 
+**`@Sql` takes no argument** — it is `@ResourceQualifier(type = SqlConnector.class, config = "database")` fixed at the annotation definition
+[verified: `aether/resource/api/.../db/Sql.java`], so it always resolves the flat `[database]` section and only that one. `@Sql("name")` is not valid Java for this annotation and will not compile. To reach a *named* datasource, use `@ResourceQualifier(config = "database.<name>")` directly, as in `schema/analytics/` below — `@Sql` itself cannot select one (#577).
+
 ```toml
 [database]                        # default datasource (used by @Sql and schema/ root)
 name = "default"
@@ -530,7 +533,7 @@ password = "${env:DB_ANALYTICS_PASSWORD}"
 
 ### Config Merge Hierarchy
 
-When a slice requests configuration (e.g., `@Sql("orders_db")`), the ConfigService resolves values in priority order:
+When a slice requests configuration (e.g., `@ResourceQualifier(config = "database.orders_db")`), the ConfigService resolves values in priority order:
 
 1. **SLICE** scope — per-slice overrides (highest priority)
 2. **NODE** scope — from `aether.toml` `[endpoints.*]` sections

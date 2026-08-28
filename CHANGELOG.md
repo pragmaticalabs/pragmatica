@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Fixed (2026-08-28 — #577 docs half: `@Sql` documented usage did not compile)
+- `aether/docs/reference/configuration.md`'s Config Merge Hierarchy example called
+  `@Sql("orders_db")` — `@Sql` (`aether/resource/api/.../db/Sql.java`) has no value element at all,
+  fixed to `@ResourceQualifier(type = SqlConnector.class, config = "database")`, so that call is a
+  compile error and no named datasource is reachable through it. Fixed the example to
+  `@ResourceQualifier(config = "database.<name>")`, the annotation the rest of the page already
+  documents correctly for named datasources, and added an explicit "`@Sql` takes no argument" note
+  to the Multi-Datasource Convention section so the constraint isn't only implicit in the examples.
+  The `[datasources.*]`/`[endpoints.*]` merge-hierarchy mechanism itself is untouched — its wiring
+  is a separate, unverified question (`#577`'s "reported, needing confirmation" bucket), not this
+  fix's scope. `@Sql`'s data-plane-adjacent half of #577 (`StreamConsumerAdapter` and friends)
+  remains for stream B; not started here.
+
 ### Changed (2026-08-28 — #321: SemVer commitment ruled for GA)
 - `aether/docs/reference/versioning-and-compatibility.md` updated with the owner ruling: Aether
   commits to semantic versioning for the product release from GA (`v1.0.0`) onward — additive
