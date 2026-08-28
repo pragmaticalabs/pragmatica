@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Added (2026-08-29 — #386 D4 substrate: Projection facade — fold, rebuild lifecycle, honest at-least-once until the guard lands)
+- **`Projection.of(topic).into(store, key).apply(fold)`** (spec §10, guard-independent half per
+  the CTO's option-(a) parallelization): keyed fold-and-write on each durably-delivered event over
+  a backing-agnostic `ProjectionStore` seam. The apply is **loudly documented and TEST-PINNED as
+  at-least-once** — the §8 idempotency guard keyed `(projectionName, generation, messageId)`
+  completes the facade once the context-aware subscriber shape lands (stream D executes the
+  codegen half on the delivered spec); the pinning test is rewritten, not deleted, by that change.
+  Rebuild is one procedure with load-bearing order: generation bumped FIRST (review finding 3 —
+  replayed events must land under fresh idempotency keys, not be dedup'd by the prior pass), then
+  the data reset under the settled §13-item-6 contract (data cleared, generation slot PRESERVED —
+  a reset that wiped the slot would resurrect the prior pass's claims), then the group-cursor
+  reset seam LAST — refused loudly by default until the D3 operator surface wires it, because a
+  rebuild that silently skipped the cursor step would clear the model, replay nothing, and
+  converge to an empty projection that looks caught-up.
+  [verified: `ProjectionTest` — keyed folds, the at-least-once re-application pin, rebuild
+  ordering observed through a recording cursor seam (gen bumped AND reset completed before the
+  seam runs), loud refusal without the seam, name defaulting]
+
 ### Fixed (2026-08-29 — #700: entity checkpoint claims are advance-only in the KV substrate)
 - **A checkpoint write that would LOWER the committed `throughOffset` is refused by the Rabia
   applier itself** — the third arm of the applier's value-driven fence family (`EpochBearing`
