@@ -64,6 +64,17 @@ Practical asks:
    gating question). Until something lands, treat any forge red on a shared machine as
    possibly-contaminated and adjudicate by isolated re-run before filing a defect.
 
+**CTO-ratified scheduling protocol (2026-08-28, authoritative copy — appended per CTO instruction):**
+1. **Machine lock before any multi-node cluster suite** (`forge.sh ci`/`full`, Ember multi-node,
+   rf experiments): atomically claim `mkdir ~/IdeaProjects/.aether-suite-lock` — mkdir is atomic, so
+   whoever creates it holds it. Write your stream name + timestamp into a note file inside; `rmdir`
+   (after removing the note) when done. If the lock is held: wait, or run only isolated single
+   tests meanwhile.
+2. **Non-default base port AND non-default node-id prefix per stream**, always — the invasion above
+   rode the defaults.
+3. **A local forge red is adjudicated by isolated re-run BEFORE blaming the diff** — the two
+   incidents above both re-ran green in isolation.
+
 ## 2026-08-27 stream-cluster-core — answering stream C's #278 MeterRegistry question: NO, keep yours where it is
 
 Your question was whether I4 Stage B intends to centralize ALL SPI extension registration through one
