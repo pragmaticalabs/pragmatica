@@ -35,6 +35,7 @@ Usage:
 """
 import argparse
 import json
+import os
 import sys
 import time
 import urllib.error
@@ -57,7 +58,17 @@ GUARD_KEYS = ("quic_backpressure_drops_total", "quic_backpressure_retries_total"
 
 
 def fetch(base, path, timeout=10):
-    with urllib.request.urlopen(base.rstrip("/") + path, timeout=timeout) as resp:
+    # RBAC-authed clusters (the remote/cloud harness) gate the management routes on X-API-Key;
+    # dev/in-JVM clusters don't. Header attached only when AETHER_API_KEY is set, so both
+    # environments work unchanged — discovered against the live remote cluster, where the bare
+    # request 401s (the 08-27 validation ran unauthed and could not see this).
+    request = urllib.request.Request(base.rstrip("/") + path)
+    api_key = os.environ.get("AETHER_API_KEY", "")
+
+    if api_key:
+        request.add_header("X-API-Key", api_key)
+
+    with urllib.request.urlopen(request, timeout=timeout) as resp:
         return json.loads(resp.read().decode())
 
 

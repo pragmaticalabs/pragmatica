@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Changed (2026-08-29 — #366 re-scope + #591 instrument hardening, per the #367 pole-gate ruling)
+- **#366 re-scoped onto the shipping mechanism** (CTO ruling 2026-08-29, recorded on the ticket):
+  community size in the product that ships is the PER-SOURCE WORKER COUNT — communities are minted
+  one-per-source (`ClusterDeploymentState`, `source + "-w-0"`), and the `max_group_size` knob gates
+  the never-wired splitting mechanism (#673). Three honest fixes ride the re-scope: an explicit
+  `[worker] max_group_size < 2` now REFUSES at parse instead of silently becoming 100 (the #673
+  trap: a typo produced a plausible green run, unobservable precisely because the knob changes no
+  behavior) [verified: `WorkerConfigLoaderMaxGroupSizeTest` — refusal, absent-defaults, and the
+  low-but-valid-survives arming pin]; `configuration.md`'s `max_group_size` row and feature-catalog
+  row 99 no longer describe splitting as live (row 99 drops from Complete to Partial). The
+  wire-or-delete decision on the splitter chain stays with #673, owner-grade.
+- **#591's instrument survived first contact with an RBAC-authed cluster**: `coordination_slope.py`
+  now attaches `X-API-Key` when `AETHER_API_KEY` is set (the live remote cluster 401s bare
+  requests; the 08-27 validation ran unauthed and could not see this), and the new
+  `slope_sweep.sh` driver (BSD-sed-portable, resumable via `COUNTS`) boots raw worker containers
+  through the proven suite-13 join path and produces one slope row per worker-count step. The #591
+  measurement itself is posted on the ticket.
+
 ### Added (2026-08-29 — #386 D2/D3 substrate: durable-topic dispatch, group-attributed DLQ stream, version-stable group identity)
 - **The durable-topic dispatch substrate is complete in `aether-stream` (not yet node-wired —
   delivery semantics of deployed topics are still unchanged).** One strictly serial dispatch loop

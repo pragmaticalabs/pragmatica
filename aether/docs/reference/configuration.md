@@ -320,7 +320,7 @@ max_group_size = 100
 |-------|------|---------|-------------|
 | `group_name` | string | `"default"` | Logical group name for this worker pool |
 | `zone` | string | `"local"` | Zone identifier for zone-aware grouping. Workers in the same zone auto-cluster |
-| `max_group_size` | int | `100` | Maximum members per group before splitting. Groups split at this threshold; merge below 50% |
+| `max_group_size` | int | `100` | **Inert today** — declared for the worker-group splitting mechanism, which is not built (#673: `GroupAssignment.computeGroups` has no live caller; communities are one-per-source). Parsed and validated (`< 2` refuses at parse); changes no behavior until #673's wire-or-delete decision. Community size in the shipping product is the per-source worker count. |
 
 Zone is also extracted from the NodeId: everything before the last dash (e.g., `us-east-worker-1` → zone `us-east-worker`). The explicit `zone` config takes precedence for group computation.
 

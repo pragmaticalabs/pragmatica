@@ -11,6 +11,7 @@ import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 
 import static org.pragmatica.aether.config.WorkerConfig.SwimSettings;
 import static org.pragmatica.lang.Result.success;
@@ -36,7 +37,7 @@ public final class WorkerConfigLoader {
         var sliceConfig = parseSliceConfig(doc);
         var groupName = doc.getString("worker", "group_name").or(WorkerConfig.DEFAULT_GROUP_NAME);
         var zone = doc.getString("worker", "zone").or(WorkerConfig.DEFAULT_ZONE);
-        var maxGroupSize = doc.getInt("worker", "max_group_size").or(WorkerConfig.DEFAULT_MAX_GROUP_SIZE);
+        var maxGroupSize = validatedMaxGroupSize(doc);
         var heartbeatInterval = parseTimeSpanOrMs(doc,
                                                   "worker",
                                                   "heartbeat_interval",
@@ -54,18 +55,39 @@ public final class WorkerConfigLoader {
                                                    "metrics_aggregation_interval_ms",
                                                    WorkerConfig.DEFAULT_METRICS_AGGREGATION);
 
-        return swimSettings.flatMap(swim -> sliceConfig.flatMap(slice -> assembleConfig(coreNodes,
-                                                                                        clusterPort,
-                                                                                        swimPort,
-                                                                                        swim,
-                                                                                        slice,
-                                                                                        groupName,
-                                                                                        zone,
-                                                                                        maxGroupSize,
-                                                                                        heartbeatInterval,
-                                                                                        heartbeatTimeout,
-                                                                                        advertiseAddress,
-                                                                                        metricsAggregation)));
+        return swimSettings.flatMap(swim -> sliceConfig.flatMap(slice -> maxGroupSize.flatMap(groupSize -> assembleConfig(coreNodes,
+                                                                                                                          clusterPort,
+                                                                                                                          swimPort,
+                                                                                                                          swim,
+                                                                                                                          slice,
+                                                                                                                          groupName,
+                                                                                                                          zone,
+                                                                                                                          groupSize,
+                                                                                                                          heartbeatInterval,
+                                                                                                                          heartbeatTimeout,
+                                                                                                                          advertiseAddress,
+                                                                                                                          metricsAggregation))));
+    }
+
+    /// #673's config trap, fixed under the #366 re-scope ruling (2026-08-29): an EXPLICIT
+    /// `max_group_size < 2` used to be silently reset to the default (100) by the record's
+    /// programmatic fallback, so a typo produced a plausible-looking green run instead of a config
+    /// error. An absent key still defaults; an explicitly-set invalid value now refuses at parse.
+    /// (The knob itself gates the unbuilt group-splitting mechanism — inert until #673's
+    /// wire-or-delete decision — which is precisely why a silently-absorbed typo could never be
+    /// caught by observing behavior.)
+    private static Result<Integer> validatedMaxGroupSize(TomlDocument doc) {
+        return doc.getInt("worker", "max_group_size")
+                  .map(WorkerConfigLoader::requireGroupOfAtLeastTwo)
+                  .or(success(WorkerConfig.DEFAULT_MAX_GROUP_SIZE));
+    }
+
+    private static Result<Integer> requireGroupOfAtLeastTwo(int value) {
+        return value >= 2
+               ? success(value)
+               : Causes.cause("[worker] max_group_size must be >= 2, got " + value
+                             + " — omit the key for the default (" + WorkerConfig.DEFAULT_MAX_GROUP_SIZE
+                             + "); note the knob gates the not-yet-built group-splitting mechanism (#673)").result();
     }
 
     private static Result<WorkerConfig> assembleConfig(List<String> coreNodes,
