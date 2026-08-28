@@ -281,6 +281,56 @@ class JsonMapperTest {
                                              .onFailure(cause -> fail("Settlement should be success: " + cause))
                                              .onSuccess(amount -> assertEquals(new Amount(250, "EUR"), amount)));
         }
+
+        // Nested-wrapper pins: element derivation must never re-derive the OUTER wrapper from the
+        // property and recurse (pre-guard: unbounded recursion -> StackOverflowError). The inner
+        // element stays untyped through these shapes — the pins assert no-crash and correct wrapper
+        // structure, deliberately not inner element types.
+        record NestedWrappers(String id,
+                              Result<Option<Long>> auth,
+                              Option<Result<Amount>> outcome,
+                              Option<Option<Long>> doubled) {}
+
+        @Test
+        void readString_doesNotRecurse_forResultOfOptionField() {
+            var json = "{\"id\":\"n-1\",\"auth\":{\"success\":true,\"value\":42},\"outcome\":null,\"doubled\":null}";
+
+            mapper.readString(json, NestedWrappers.class)
+                .onFailure(cause -> fail("Should not fail: " + cause))
+                .onSuccess(nested -> nested.auth()
+                                           .onFailure(cause -> fail("auth should be success: " + cause))
+                                           .onSuccess(value -> assertTrue(value.isPresent())));
+        }
+
+        @Test
+        void readString_doesNotRecurse_forOptionOfResultField() {
+            var json = "{\"id\":\"n-2\",\"auth\":{\"success\":true,\"value\":1},\"outcome\":{\"success\":true,\"value\":{\"minor\":5,\"currency\":\"EUR\"}},\"doubled\":null}";
+
+            mapper.readString(json, NestedWrappers.class)
+                .onFailure(cause -> fail("Should not fail: " + cause))
+                .onSuccess(nested -> assertTrue(nested.outcome().isPresent()));
+        }
+
+        @Test
+        void readString_doesNotRecurse_forOptionOfOptionField() {
+            var json = "{\"id\":\"n-3\",\"auth\":{\"success\":true,\"value\":1},\"outcome\":null,\"doubled\":7}";
+
+            mapper.readString(json, NestedWrappers.class)
+                .onFailure(cause -> fail("Should not fail: " + cause))
+                .onSuccess(nested -> assertTrue(nested.doubled().isPresent()));
+        }
+
+        record Cart(String id, Option<List<Amount>> lines) {}
+
+        @Test
+        void readString_deserializesTypedListElements_forOptionListField() {
+            var json = "{\"id\":\"c-1\",\"lines\":[{\"minor\":100,\"currency\":\"EUR\"},{\"minor\":200,\"currency\":\"EUR\"}]}";
+
+            mapper.readString(json, Cart.class)
+                .onFailure(cause -> fail("Should not fail: " + cause))
+                .onSuccess(cart -> assertEquals(Option.some(List.of(new Amount(100, "EUR"), new Amount(200, "EUR"))),
+                                                cart.lines()));
+        }
     }
 
     @Nested

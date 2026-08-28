@@ -59,6 +59,7 @@ public class OptionDeserializer extends ValueDeserializer<Option<?>> {
     @Override
     public ValueDeserializer<?> createContextual(DeserializationContext ctxt, BeanProperty property) {
         return option(property).map(BeanProperty::getType)
+                     .filter(type -> type.getRawClass() == Option.class)
                      .flatMap(OptionDeserializer::elementType)
                      .<ValueDeserializer<?>> map(type -> createContextualDeserializer(ctxt, property, type))
                      .or(this);
@@ -68,6 +69,10 @@ public class OptionDeserializer extends ValueDeserializer<Option<?>> {
     /// `hasContentType()` is false and `T` lives in the generic binding instead (#696). Without this
     /// resolution the element deserializes as raw Object (Integer for Option<Long>, LinkedHashMap
     /// for record elements) and the declared type is violated at first use.
+    ///
+    /// The raw-class filter above is a recursion guard, not decoration: `createContextual` sees only
+    /// the PROPERTY's type, so when this deserializer is resolved for the element of another wrapper
+    /// (`Result<Option<X>>`), deriving from the property would re-derive the outer wrapper forever.
     private static Option<JavaType> elementType(JavaType type) {
         return type.hasContentType()
                ? option(type.getContentType())
@@ -79,7 +84,13 @@ public class OptionDeserializer extends ValueDeserializer<Option<?>> {
     private OptionDeserializer createContextualDeserializer(DeserializationContext ctxt,
                                                             BeanProperty property,
                                                             JavaType elementType) {
-        var deser = ctxt.findContextualValueDeserializer(elementType, property);
+        // A same-wrapper element (Option<Option<X>> — forbidden in JBCT, but a crash is never the
+        // contract) passes the raw-class guard at every level and would recurse through
+        // findContextualValueDeserializer with the same property: read it through the type-directed
+        // path instead of a contextualized delegate.
+        var deser = elementType.getRawClass() == Option.class
+                    ? null
+                    : ctxt.findContextualValueDeserializer(elementType, property);
 
         return new OptionDeserializer(elementType, deser);
     }
