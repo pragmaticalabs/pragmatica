@@ -43,7 +43,8 @@ import org.codehaus.plexus.archiver.jar.JarArchiver;
 /// Packages slices into separate JAR artifacts.
 /// Reads slice manifests from META-INF/slice/*.manifest and creates:
 /// - {module}-{slice}-api.jar - API interface only
-/// - {module}-{slice}.jar - Implementation + factory + request/response types (fat JAR)
+/// - {module}-{slice}.jar - Implementation + factory + request/response types
+///   + declared message/event types (fat JAR)
 ///
 ///
 /// The impl JAR includes:
@@ -51,7 +52,7 @@ import org.codehaus.plexus.archiver.jar.JarArchiver;
 ///   - META-INF/dependencies/{FactoryClass} - runtime dependency file
 ///   - META-INF/MANIFEST.MF with Slice-Artifact and Slice-Class entries
 ///   - Bundled external libs (compile scope, non-slice, non-infra, non-provided)
-///   - Application shared code (sibling shared package or slice subpackages)
+///   - Application shared code (sibling shared package tree, recursively, or slice subpackages)
 ///
 @Mojo(name = "package-slices", defaultPhase = LifecyclePhase.PACKAGE, requiresDependencyResolution = ResolutionScope.COMPILE)
 public class PackageSlicesMojo extends AbstractMojo {
@@ -375,7 +376,7 @@ public class PackageSlicesMojo extends AbstractMojo {
             var parentPackage = String.join("/", java.util.Arrays.copyOf(packageParts, packageParts.length - 1));
             var sharedDir = classesPath.resolve(parentPackage).resolve("shared");
 
-            addDirectoryClasses(archiver, sharedDir, classesPath);
+            addPackageTreeClasses(archiver, sharedDir, classesPath);
         }
         // Find subpackages of slice package (e.g., org.example.order.utils)
         var sliceDir = classesPath.resolve(slicePackage.replace('.', '/'));
@@ -388,6 +389,24 @@ public class PackageSlicesMojo extends AbstractMojo {
             } catch (IOException e) {
                 getLog().debug("Could not scan slice subpackages: " + e.getMessage());
             }
+        }
+    }
+
+    /// Add every class in the package tree rooted at `root` — the directory itself and all
+    /// subdirectories. The sibling `shared` package is a tree, not a flat directory: message
+    /// records in `shared.event` and the component types they reference from other `shared.*`
+    /// subpackages must ship with the slice (#712). Mirrors the recursive slice-subpackage walk
+    /// in addSharedCode.
+    private void addPackageTreeClasses(JarArchiver archiver, Path root, Path classesPath) {
+        if (!Files.isDirectory(root)) {
+            return;
+        }
+
+        try (var stream = Files.walk(root)) {
+            stream.filter(Files::isDirectory)
+                  .forEach(dir -> addDirectoryClasses(archiver, dir, classesPath));
+        } catch (IOException e) {
+            getLog().debug("Could not scan shared package tree: " + root + " - " + e.getMessage());
         }
     }
 
