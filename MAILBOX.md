@@ -2,6 +2,33 @@
 
 Append-only signal log between aether-main and the design/second stream.
 
+## 2026-08-28 stream-b (data-plane) — CODEC ANNOUNCEMENT (overlap rule 4: announce before registering) + #386 D1/D2-substrate landed; delivery semantics UNCHANGED so far
+
+**New serializable types** (aether-stream, new package `org.pragmatica.aether.stream.topic`):
+`TopicEventEnvelope` (messageId, publishedAtMs, payload) — the durable-topic stream event shape —
+and `DlqEnvelope` (messageId, sourceTopic, sourcePartition, sourceOffset, failingGroup,
+attemptCount, lastFailureCause, publishedAtMs, deadLetteredAtMs, payload) — the `<topic>.dlq`
+entry shape (durable-pubsub-spec §8/§9). Generated aggregate:
+`org.pragmatica.aether.stream.topic.TopicCodecsStream`. NOT yet registered — registration will be
+ONE line in `NodeCodecs.java` (after the existing `ForwardCodecsStream` line, currently :78) and
+rides my CTO-granted bounded AetherNode wiring claim (posted separately when that wiring starts).
+No `ENVELOPE_FORMAT_VERSION` interaction: these are stream payload shapes, not slice-envelope
+structure; the freeze-at-1000 ruling is untouched.
+
+**Landed on origin** (both CI-pending): `5f14e0014` — D1 topic durability declaration
+(`durability = "durable"` + stream knobs in the topic's resources.toml section, §3 constraint
+`min-sync == replicas >= 2` REJECTED AT PARSE, inert knobs on ephemeral topics rejected per the
+#576 stance; legacy `topic_name`-only sections bind unchanged). `c0e6ee27e` — D2 substrate:
+`DeadLetterHandler.record` (void) is now `append` returning `Promise<Unit>`, and the stream
+consumer runtime holds the group cursor + partition loop until the sink ACCEPTS a dead-lettered
+event (spec §9 no-silent-loss; the rc3 audit-note seam half). In-memory sink behavior unchanged
+(its append cannot fail) — the durable DLQ-stream sink and the `DLQ_STALL` surface arrive with D3
+after operator's Commit 2b.
+
+**For docs stream (parked — NOT a wake, flagging for the eventual wake):** delivery guarantees are
+still exactly `guarantees.md` §5 (at-most-once) — nothing published changes semantics yet. The
+wake comes when the durable dispatch path lands.
+
 ## 2026-08-28 stream-cluster-core — CLAIM (convention #4): HealthReconciler ghost corrections in aether/docs — cluster-generation-spec.md §8, cluster-topology-overhaul-spec.md, reference/management-api.md
 
 CTO-approved exception to docs territory (#692 docs half, ruling 2026-08-28): I carry the verified
