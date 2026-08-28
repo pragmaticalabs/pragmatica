@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Added (2026-08-29 — #386 D2/D3 substrate: durable-topic dispatch, group-attributed DLQ stream, version-stable group identity)
+- **The durable-topic dispatch substrate is complete in `aether-stream` (not yet node-wired —
+  delivery semantics of deployed topics are still unchanged).** One strictly serial dispatch loop
+  per (group × partition) over the stream consumer runtime decodes the `TopicEventEnvelope` and
+  hands payload bytes to a `DurableSubscriberInvoker` seam (the node wires it over `SliceInvoker`;
+  the handler promise is the ack, per-attempt timeout stays the slice-invoker call timeout — §6's
+  single source of truth). Retries exhausted → the event is re-enveloped as a GROUP-ATTRIBUTED
+  `DlqEnvelope` (original `messageId` preserved — the §8 idempotency key survives where offsets
+  cannot) and appended to `topic:<address>.dlq` through the same min-sync barrier as the source
+  (`DlqStreamSink`); the source cursor is held until that append resolves, so DLQ-append stalls
+  block the partition visibly instead of dropping events. Consumer-group identity is
+  version-stable (`groupId:artifactId#method`, §6): a slice upgrade keeps its cursor and DLQ
+  attribution. `DeadLetterHandler.append` and `DeadLetterEntry` now carry the failing group —
+  redrive is group-targeted (§9), and an entry without its group could only be redriven by
+  re-publishing, duplicating to groups that already processed the event. Also un-inerted:
+  `ConsumerConfig.checkpointInterval` now actually gates the time half of cursor checkpoints
+  (previously read by nothing; safe — #576's validator rejects non-default declarative values).
+  Two cadence deltas from the spec's normative defaults are stated in
+  `DurableTopicDispatcher`'s doc rather than hidden (backoff base/cap, checkpoint event-count).
+  [verified: `DurableTopicDispatcherTest` — end-to-end over the real generated wire format:
+  in-order payload delivery with cursor advance on ack, idempotent attach/detach, and the §6→§9
+  poison path (5 attempts → group-attributed `DlqEnvelope` in the DLQ stream with the original
+  messageId → partition unblocked, next event dispatched); `DurableGroupIdentityTest` pins
+  upgrade-stability; single-node scope — the replication barrier and multi-node placement are
+  exercised by their own machinery (#410) and the pending node wiring respectively]
+
 ### Fixed (2026-08-28 — #674: consensus load metrics reach the wire)
 - **An external observer can now measure coordination load on a core node.** Three disconnects,
   all fixed: the three vote-traffic recorders (`RabiaMetricsCollector.recordVoteRound1/2`,

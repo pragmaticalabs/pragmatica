@@ -28,5 +28,20 @@ public sealed interface DurableTopicNames {
         return topicStream(topicAddress) + DLQ_SUFFIX;
     }
 
+    /// The DLQ stream paired with an already-prefixed topic STREAM name — the derivation the
+    /// dead-letter sink uses, where only the consumer-runtime's stream name is in hand.
+    static String dlqStreamForTopicStream(String topicStreamName) {
+        return topicStreamName + DLQ_SUFFIX;
+    }
+
+    /// Inverse of [#topicStream]: the canonical topic address of a topic STREAM name.
+    static String topicAddressOf(String topicStreamName) {
+        return topicStreamName.substring(TOPIC_STREAM_PREFIX.length());
+    }
+
+    static boolean isTopicStream(String streamName) {
+        return streamName.startsWith(TOPIC_STREAM_PREFIX);
+    }
+
     record unused() implements DurableTopicNames {}
 }

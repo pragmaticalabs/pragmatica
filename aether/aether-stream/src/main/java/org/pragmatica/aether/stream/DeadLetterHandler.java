@@ -21,15 +21,21 @@ public interface DeadLetterHandler {
     Promise<Unit> append(String streamName,
                          int partition,
                          long offset,
+                         String failingGroup,
                          byte[] payload,
                          String errorMessage,
                          int attemptCount);
 
     List<DeadLetterEntry> read(String streamName, int maxCount);
 
+    /// `failingGroup` is the consumer group whose retries exhausted (durable-pubsub-spec §9 —
+    /// redrive is group-targeted, so the attribution must survive into the entry; a dead letter
+    /// without its group could only be redriven by re-publishing, duplicating to groups that
+    /// already processed the event).
     record DeadLetterEntry(String streamName,
                            int partition,
                            long offset,
+                           String failingGroup,
                            byte[] payload,
                            String errorMessage,
                            int attemptCount,
@@ -51,6 +57,7 @@ public interface DeadLetterHandler {
                    && attemptCount == other.attemptCount
                    && timestamp == other.timestamp
                    && streamName.equals(other.streamName)
+                   && failingGroup.equals(other.failingGroup)
                    && Arrays.equals(payload, other.payload)
                    && errorMessage.equals(other.errorMessage);
         }
@@ -59,6 +66,7 @@ public interface DeadLetterHandler {
         public int hashCode() {
             int result = streamName.hashCode();
 
+            result = 31 * result + failingGroup.hashCode();
             result = 31 * result + partition;
             result = 31 * result + Long.hashCode(offset);
             result = 31 * result + Arrays.hashCode(payload);
@@ -72,11 +80,19 @@ public interface DeadLetterHandler {
         public static DeadLetterEntry deadLetterEntry(String streamName,
                                                       int partition,
                                                       long offset,
+                                                      String failingGroup,
                                                       byte[] payload,
                                                       String errorMessage,
                                                       int attemptCount,
                                                       long timestamp) {
-            return new DeadLetterEntry(streamName, partition, offset, payload, errorMessage, attemptCount, timestamp);
+            return new DeadLetterEntry(streamName,
+                                       partition,
+                                       offset,
+                                       failingGroup,
+                                       payload,
+                                       errorMessage,
+                                       attemptCount,
+                                       timestamp);
         }
     }
 

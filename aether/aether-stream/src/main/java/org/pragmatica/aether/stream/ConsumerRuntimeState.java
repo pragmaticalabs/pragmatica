@@ -486,6 +486,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         dlHandler.append(key.streamName(),
                          key.partition(),
                          event.offset(),
+                         key.groupId(),
                          event.data(),
                          errorMessage,
                          attemptCount)
@@ -567,7 +568,6 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
 
     static final class ConsumerState {
         private static final long CHECKPOINT_EVENT_THRESHOLD = 1000;
-        private static final long CHECKPOINT_TIME_THRESHOLD_MS = 30_000;
 
         private final ConsumerConfig config;
         private final ConsumerCallback callback;
@@ -659,8 +659,14 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
             eventsSinceCheckpoint.incrementAndGet();
         }
 
+        /// Time half honors the DECLARED `checkpointInterval` (previously inert — read by nothing;
+        /// safe to honor because #576's validator rejects non-default declarative values, so only
+        /// the 1s factory default and explicit programmatic values exist). The event half stays at
+        /// the class constant: a cadence-dominated bound, tightened per durable-pubsub-spec §7 for
+        /// durable-topic groups by their 500ms attach-time interval.
         boolean shouldCheckpoint() {
-            return eventsSinceCheckpoint.get() >= CHECKPOINT_EVENT_THRESHOLD || (System.currentTimeMillis() - lastCheckpointTime.get()) >= CHECKPOINT_TIME_THRESHOLD_MS;
+            return eventsSinceCheckpoint.get() >= CHECKPOINT_EVENT_THRESHOLD || (System.currentTimeMillis() - lastCheckpointTime.get()) >= config.checkpointInterval()
+                                                                                                                                                 .millis();
         }
 
         @Contract
