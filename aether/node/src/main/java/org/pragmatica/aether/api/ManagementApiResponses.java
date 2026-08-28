@@ -189,7 +189,26 @@ public sealed interface ManagementApiResponses {
                                         double latencyP99,
                                         double errorRate,
                                         long eventCount,
-                                        long sampleCount) {}
+                                        long sampleCount,
+                                        ConsensusMetricsResponse consensus) {}
+
+    /// #674: the consensus-load block — previously collected in-process and DROPPED at this DTO
+    /// boundary, leaving no external observer able to measure coordination load on a core node.
+    /// LIVE monotonic totals (not minute aggregates): a differencing consumer needs raw totals over
+    /// its own window, the same contract `/metrics/transport` serves. NODE-LOCAL scope — each core
+    /// answers for itself. `pendingBatches` is a level; `avgDecisionLatencyMs` is derived over the
+    /// cumulative counts.
+    record ConsensusMetricsResponse(String role,
+                                    Option<String> leaderId,
+                                    int pendingBatches,
+                                    long decisionsCount,
+                                    long proposalsCount,
+                                    long voteRound1Count,
+                                    long voteRound2Count,
+                                    long fastPathCount,
+                                    long syncSuccessCount,
+                                    long syncFailureCount,
+                                    double avgDecisionLatencyMs) {}
 
     record DerivedMetricsResponse(double requestRate,
                                   double errorRate,

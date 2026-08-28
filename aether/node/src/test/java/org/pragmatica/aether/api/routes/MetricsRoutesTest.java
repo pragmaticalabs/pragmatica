@@ -11,11 +11,21 @@ import org.pragmatica.aether.api.ManagementApiResponses.BackfillMetricsRequest;
 import org.pragmatica.aether.api.ManagementApiResponses.BackfillMetricsResponse;
 import org.pragmatica.aether.metrics.ClusterSyncCollector;
 import org.pragmatica.aether.metrics.ClusterSyncCollector.MetricsSnapshot;
+import org.pragmatica.aether.metrics.ComprehensiveSnapshotCollector;
+import org.pragmatica.aether.metrics.MinuteAggregator;
+import org.pragmatica.aether.metrics.consensus.RabiaMetricsCollector;
+import org.pragmatica.aether.metrics.eventloop.EventLoopMetricsCollector;
+import org.pragmatica.aether.metrics.gc.GCMetricsCollector;
+import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
+import org.pragmatica.aether.metrics.network.NetworkMetricsHandler;
 import org.pragmatica.aether.metrics.observability.ObservabilityRegistry;
 import org.pragmatica.aether.metrics.timeout.TimeoutMetricsRegistry;
 import org.pragmatica.aether.metrics.timeout.TimeoutSubsystem;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.rabia.Phase;
+import org.pragmatica.consensus.rabia.StateValue;
+import org.pragmatica.lang.Option;
 
 import java.lang.reflect.Proxy;
 import java.util.ArrayList;
@@ -242,6 +252,58 @@ class MetricsRoutesTest {
                         return null;
                     }
                     throw new UnsupportedOperationException("Not implemented in test proxy: " + method.getName());
+                }
+            );
+        }
+    }
+
+    @Nested
+    class ComprehensiveConsensusBlock {
+
+        /// The #674 pin at the route boundary: the consensus block rides the comprehensive response
+        /// with LIVE collector totals — including on the empty-minute-aggregate branch, which is
+        /// exactly the state a freshly-started node serves its first request from. Before the fix
+        /// the DTO had no consensus field at all and the collected block was dropped here.
+        @Test
+        void comprehensive_carriesLiveConsensusBlock_evenBeforeFirstMinuteAggregate() {
+            var rabia = RabiaMetricsCollector.rabiaMetricsCollector();
+
+            rabia.recordProposal(LOCAL_NODE, new Phase(1));
+            rabia.recordVoteRound1(LOCAL_NODE, new Phase(1), StateValue.V1);
+            rabia.recordVoteRound1(LOCAL_NODE, new Phase(1), StateValue.V0);
+            rabia.recordVoteRound2(LOCAL_NODE, new Phase(1), StateValue.V1);
+            rabia.updateRole(true, Option.some("node-1"));
+
+            var snapshotCollector = ComprehensiveSnapshotCollector.comprehensiveSnapshotCollector(
+                GCMetricsCollector.gcMetricsCollector(),
+                EventLoopMetricsCollector.eventLoopMetricsCollector(),
+                NetworkMetricsHandler.networkMetricsHandler(),
+                rabia,
+                InvocationMetricsCollector.invocationMetricsCollector(),
+                MinuteAggregator.minuteAggregator());
+            var routes = MetricsRoutes.metricsRoutes(() -> nodeWithSnapshotCollector(snapshotCollector),
+                                                     ObservabilityRegistry.prometheus(),
+                                                     timeouts,
+                                                     () -> false);
+
+            var response = routes.buildComprehensiveMetricsResponseForTest();
+
+            assertEquals(0, response.minuteTimestamp(), "no minute bucket exists yet — the aggregate half is zeros");
+            assertEquals("LEADER", response.consensus().role());
+            assertEquals(1, response.consensus().proposalsCount());
+            assertEquals(2, response.consensus().voteRound1Count());
+            assertEquals(1, response.consensus().voteRound2Count());
+            assertEquals(0, response.consensus().fastPathCount());
+        }
+
+        private ManageableNode nodeWithSnapshotCollector(ComprehensiveSnapshotCollector snapshotCollector) {
+            return (ManageableNode) Proxy.newProxyInstance(
+                ManageableNode.class.getClassLoader(),
+                new Class[]{ManageableNode.class},
+                (_, method, _) -> switch (method.getName()) {
+                    case "self" -> LOCAL_NODE;
+                    case "snapshotCollector" -> snapshotCollector;
+                    default -> throw new UnsupportedOperationException("Not implemented in test proxy: " + method.getName());
                 }
             );
         }

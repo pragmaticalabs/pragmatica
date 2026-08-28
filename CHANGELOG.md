@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Fixed (2026-08-28 — #674: consensus load metrics reach the wire)
+- **An external observer can now measure coordination load on a core node.** Three disconnects,
+  all fixed: the three vote-traffic recorders (`RabiaMetricsCollector.recordVoteRound1/2`,
+  `recordFastPath`) were EMPTY BODIES — the engine called them all along and every call vanished,
+  so round-1/round-2 vote volume, the quantity that grows with coordination load, was counted
+  nowhere; the comprehensive HTTP DTO had no consensus field, so the collected block was dropped at
+  the boundary; and Prometheus carried none of it. Now: `GET /api/v1/metrics/comprehensive` carries
+  a `consensus` block of LIVE monotonic totals (deliberately not minute-aggregated — a differencing
+  consumer needs raw totals over its own window, the `/metrics/transport` contract; present from a
+  node's first request, before any minute bucket exists), and the same counters serve as
+  `consensus_*` Prometheus gauges with a shared key vocabulary (`RabiaMetrics.counterMap()` — the
+  gauge names ARE the map keys, pinned so a drifted key cannot silently freeze a gauge at 0). The
+  CLI's `aether metrics comprehensive` passes the block through unchanged. Endpoint SCOPE is now
+  documented per the #674 semantics note: `/metrics` is cluster-wide despite its LOCAL routing
+  declaration (fetch once, select by id); `/metrics/comprehensive` and `/metrics/transport` are
+  node-local — and the transport section's stale "per-peer byte counters" description was corrected
+  to what it serves (node-level message counts, no bytes).
+  [verified: `aether/forge/forge-tests/.../ClusterFormationTest.cluster_comprehensiveMetrics_carryLiveConsensusBlock`
+  — live 3-node formed cluster answers with a positive decision count; unit pins in
+  `RabiaMetricsCollectorTest` (counting, snapshot-vs-reset, gauge vocabulary) and
+  `MetricsRoutesTest$ComprehensiveConsensusBlock` (live block on the empty-aggregate branch);
+  mutations red: recorder re-emptied → 4 pins red; counterMap key drifted → vocabulary pin red]
+- **Deliberately NOT exposed: the `NetworkMetrics` byte counters.** Verification found the ticket's
+  scope-growth premise inverted — `NetworkMetricsHandler` is constructed and threaded into the
+  snapshot collector but never installed into any channel pipeline, so its counters are
+  permanently zero; putting them on the wire would ship a silent-zero instrument. The honest
+  byte-counter home is the QUIC transport's own metrics; recorded on #674's close.
+
+
 ### Added (2026-08-28 — #386 D1: topic durability declaration, parse-enforced)
 - **A topic's `resources.toml` section now declares its durability class** (durable-pubsub-spec §3,
   D1 of the 2026-07-18 ratified set): `durability = "ephemeral"` (default) keeps today's RPC

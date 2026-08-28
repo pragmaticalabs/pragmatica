@@ -24,6 +24,9 @@ import static org.pragmatica.lang.Result.unitResult;
 public final class RabiaMetricsCollector implements ConsensusMetrics {
     private final AtomicLong decisionsCount = new AtomicLong();
     private final AtomicLong proposalsCount = new AtomicLong();
+    private final AtomicLong voteRound1Count = new AtomicLong();
+    private final AtomicLong voteRound2Count = new AtomicLong();
+    private final AtomicLong fastPathCount = new AtomicLong();
     private final AtomicLong syncSuccessCount = new AtomicLong();
     private final AtomicLong syncFailureCount = new AtomicLong();
     private final AtomicInteger pendingBatches = new AtomicInteger();
@@ -50,17 +53,28 @@ public final class RabiaMetricsCollector implements ConsensusMetrics {
         proposalsCount.incrementAndGet();
     }
 
+    /// The three vote-traffic recorders were EMPTY BODIES until #674 — round-1/round-2 vote volume
+    /// is precisely the quantity that grows with coordination load, and nothing anywhere counted it,
+    /// which left the #367/#368 scale ladder measuring a subsystem with no wire-visible load signal.
+    /// The engine has called these all along (`RabiaEngine` vote/fast-path handlers); only the
+    /// counting was missing.
     @Override
     @Contract
-    public void recordVoteRound1(NodeId nodeId, Phase phase, StateValue stateValue) {}
+    public void recordVoteRound1(NodeId nodeId, Phase phase, StateValue stateValue) {
+        voteRound1Count.incrementAndGet();
+    }
 
     @Override
     @Contract
-    public void recordVoteRound2(NodeId nodeId, Phase phase, StateValue stateValue) {}
+    public void recordVoteRound2(NodeId nodeId, Phase phase, StateValue stateValue) {
+        voteRound2Count.incrementAndGet();
+    }
 
     @Override
     @Contract
-    public void recordFastPath(NodeId nodeId, Phase phase, StateValue value) {}
+    public void recordFastPath(NodeId nodeId, Phase phase, StateValue value) {
+        fastPathCount.incrementAndGet();
+    }
 
     @Override
     @Contract
@@ -93,6 +107,9 @@ public final class RabiaMetricsCollector implements ConsensusMetrics {
                                 pendingBatches.get(),
                                 decisionsCount.get(),
                                 proposalsCount.get(),
+                                voteRound1Count.get(),
+                                voteRound2Count.get(),
+                                fastPathCount.get(),
                                 syncSuccessCount.get(),
                                 syncFailureCount.get(),
                                 totalDecisionLatencyNs.sum());
@@ -104,6 +121,9 @@ public final class RabiaMetricsCollector implements ConsensusMetrics {
                                 pendingBatches.get(),
                                 decisionsCount.getAndSet(0),
                                 proposalsCount.getAndSet(0),
+                                voteRound1Count.getAndSet(0),
+                                voteRound2Count.getAndSet(0),
+                                fastPathCount.getAndSet(0),
                                 syncSuccessCount.getAndSet(0),
                                 syncFailureCount.getAndSet(0),
                                 totalDecisionLatencyNs.sumThenReset());

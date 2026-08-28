@@ -570,6 +570,12 @@ class ManagementServerImpl implements ManagementServer {
         eventWsPublisher.start();
         observability.registerTransportMetrics(() -> nodeSupplier.get()
                                                                  .transportMetrics());
+        // #674: consensus-load counters on the Prometheus surface, same key vocabulary as the
+        // comprehensive response's consensus block (RabiaMetrics.counterMap()).
+        observability.registerConsensusMetrics(() -> nodeSupplier.get()
+                                                                 .snapshotCollector()
+                                                                 .consensusSnapshot()
+                                                                 .counterMap());
         registerStreamMemoryMetrics();
         var transport = tls.isPresent()
                         ? "HTTPS"

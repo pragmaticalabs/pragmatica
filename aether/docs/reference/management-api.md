@@ -974,6 +974,11 @@ For `strengthen_only` policy, security levels are ordered: `public (0) < authent
 
 Get cluster-wide metrics including per-node load and deployment metrics.
 
+**Scope: cluster-wide, despite the route's `LOCAL` routing declaration** — `LOCAL` governs
+routing (no forwarding), not response scope. Any node answers with a `load` entry for **every**
+node it knows, so fetch this ONCE and select nodes by id; polling it per node returns the same
+cluster-wide map N times (the #591 instrument mis-read exactly this and had to hard-fail on it).
+
 **Response:**
 ```json
 {
@@ -999,7 +1004,17 @@ Get cluster-wide metrics including per-node load and deployment metrics.
 
 ### GET /api/metrics/comprehensive
 
-Get comprehensive minute-aggregated metrics for the most recent minute.
+Get comprehensive metrics. **Scope: node-local** — the answering node reports itself.
+
+The response has two halves with different time semantics, deliberately:
+
+- The top-level fields are **minute-aggregated** (the most recent completed minute bucket); they
+  are zeros until the first bucket exists.
+- The `consensus` block (#674) is **live** — cumulative monotonic totals read from the consensus
+  collector at request time, present from the node's first request. Consumers measuring load
+  difference the totals over their own window (the same contract as `/api/metrics/transport`).
+  `pendingBatches` is a level, not a total; `avgDecisionLatencyMs` is derived over the cumulative
+  counts; `leaderId` is absent until a leader is known.
 
 **Response:**
 ```json
@@ -1016,7 +1031,20 @@ Get comprehensive minute-aggregated metrics for the most recent minute.
   "latencyP99": 80.0,
   "errorRate": 0.005,
   "eventCount": 120,
-  "sampleCount": 60
+  "sampleCount": 60,
+  "consensus": {
+    "role": "LEADER",
+    "leaderId": "node-1",
+    "pendingBatches": 0,
+    "decisionsCount": 1042,
+    "proposalsCount": 998,
+    "voteRound1Count": 2084,
+    "voteRound2Count": 2011,
+    "fastPathCount": 812,
+    "syncSuccessCount": 3,
+    "syncFailureCount": 0,
+    "avgDecisionLatencyMs": 4.7
+  }
 }
 ```
 
@@ -1050,10 +1078,20 @@ Get Prometheus-format metrics for scraping.
 
 **Content-Type**: `text/plain; version=0.0.4; charset=utf-8`
 
+Includes the consensus-load gauges (#674): `consensus_decisions_total`, `consensus_proposals_total`,
+`consensus_vote_round1_total`, `consensus_vote_round2_total`, `consensus_fast_path_total`,
+`consensus_sync_success_total`, `consensus_sync_failure_total` (monotonic totals) and
+`consensus_pending_batches` (a level) — the same names and values as the comprehensive response's
+`consensus` block.
+
 ### GET /api/metrics/transport
 
-Get transport-layer metrics: per-peer QUIC/Netty connection state, I/O counters,
-backpressure indicators, reconnect attempts.
+Get transport-layer metrics. **Scope: node-local** — a flat map of **node-level** QUIC counters
+(the answering node's own totals; there is no per-peer attribution and no byte counter on this
+surface): `quic_messages_sent_total` / `quic_messages_received_total` (protocol-message counts),
+`quic_active_connections`, handshake totals/failures, backpressure and write-failure indicators,
+stream-zombie heal counters. Message counters are monotonic; consumers difference them over their
+own window.
 
 ### GET /api/metrics/history
 

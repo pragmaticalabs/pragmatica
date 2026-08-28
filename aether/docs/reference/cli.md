@@ -402,10 +402,10 @@ Variants (wrap `/api/metrics/*` REST routes):
 # Prometheus-format scrape (text/plain exposition)
 aether metrics prometheus
 
-# Transport-layer metrics (QUIC/Netty connection + I/O counters)
+# Transport-layer metrics (node-level QUIC message/backpressure counters)
 aether metrics transport
 
-# Minute-aggregated comprehensive snapshot (most recent minute)
+# Comprehensive snapshot: minute-aggregated node stats + LIVE consensus-load block (#674)
 aether metrics comprehensive
 
 # Derived/computed: trends, saturation, cluster health score

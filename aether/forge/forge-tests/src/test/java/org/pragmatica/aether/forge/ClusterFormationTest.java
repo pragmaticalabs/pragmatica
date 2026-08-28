@@ -127,6 +127,37 @@ class ClusterFormationTest {
         assertThat(metrics).doesNotContain("\"error\"");
     }
 
+    /// #674 end-to-end pin: the comprehensive response's consensus block carries LIVE non-zero
+    /// consensus activity on a formed cluster — formation itself runs Rabia rounds, so a formed
+    /// cluster with zero recorded decisions would mean the counters are disconnected again (the
+    /// pre-#674 state: the DTO dropped the block, and the vote recorders were empty bodies).
+    @Test
+    void cluster_comprehensiveMetrics_carryLiveConsensusBlock() {
+        var anyNodePort = cluster.status().nodes().getFirst().mgmtPort();
+        var comprehensive = httpGet(anyNodePort, "/api/v1/metrics/comprehensive");
+
+        assertThat(comprehensive).doesNotContain("\"error\"");
+        assertThat(comprehensive).as("the consensus block must be on the wire")
+                                 .contains("\"consensus\"")
+                                 .contains("\"decisionsCount\"")
+                                 .contains("\"voteRound1Count\"");
+        assertThat(consensusLong(comprehensive, "decisionsCount"))
+            .as("a formed cluster has committed Rabia decisions — zero means the counter chain is disconnected")
+            .isPositive();
+    }
+
+    private static long consensusLong(String json, String field) {
+        var matcher = java.util.regex.Pattern.compile("\"" + field + "\"\\s*:\\s*(\\d+)")
+                                             .matcher(json);
+
+        if (!matcher.find()) {
+            throw new AssertionError("field " + field + " not found in: "
+                                     + json.substring(0, Math.min(json.length(), 400)));
+        }
+
+        return Long.parseLong(matcher.group(1));
+    }
+
     private boolean allNodesHealthy() {
         var status = cluster.status();
         return status.nodes().stream()
