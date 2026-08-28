@@ -950,6 +950,380 @@ class SliceProcessorTest {
                            + "MethodHandle<String, String> nameOfHandle) implements InventoryService {");
     }
 
+    /// #663 regression: a Java 9+ private super-interface instance method is neither static
+    /// nor default, so a modifier-skip filter let it into the scan; a private non-Promise
+    /// helper then drew a spurious #612 error for an interface that compiled before the
+    /// super-interface walk existed. Only ABSTRACT methods are proxy candidates.
+    @Test
+    void should_ignore_private_super_interface_helper_method() throws Exception {
+        var cachedQuery = JavaFileObjects.forSourceString("external.CachedQuery",
+                                                          """
+            package external;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface CachedQuery {
+                Promise<Integer> cachedLookup(String key);
+
+                private String cacheKey(String key) {
+                    return "cache:" + key;
+                }
+            }
+            """);
+
+        var externalService = JavaFileObjects.forSourceString("external.InventoryService",
+                                                              """
+            package external;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface InventoryService extends CachedQuery {
+                Promise<Integer> checkStock(String productId);
+            }
+            """);
+
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import external.InventoryService;
+
+            @Slice
+            public interface OrderService {
+                Promise<String> placeOrder(String orderId);
+
+                static OrderService orderService(InventoryService inventory) {
+                    return null;
+                }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(cachedQuery);
+        sources.add(externalService);
+        sources.add(source);
+
+        Compilation compilation = javac()
+                                       .withProcessors(new SliceProcessor())
+                                       .compile(sources);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.OrderServiceFactory")
+                                        .get().getCharContent(false).toString();
+
+        assertThat(factoryContent).contains("MethodHandle<Integer, String> cachedLookupHandle");
+        assertThat(factoryContent).doesNotContain("cacheKeyHandle");
+    }
+
+    /// #663 regression, the silent half: a private Promise-returning super-interface method
+    /// passed the modifier-skip filter and wrongly gained a record component + wiring + codec
+    /// entry — generated output changed for a previously-compiling slice. Private methods are
+    /// implementation detail; they never reach the proxy.
+    @Test
+    void should_not_proxy_private_promise_returning_super_interface_method() throws Exception {
+        var cachedQuery = JavaFileObjects.forSourceString("external.CachedQuery",
+                                                          """
+            package external;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface CachedQuery {
+                Promise<Integer> cachedLookup(String key);
+
+                private Promise<Integer> prefetch(String key) {
+                    return cachedLookup(key);
+                }
+            }
+            """);
+
+        var externalService = JavaFileObjects.forSourceString("external.InventoryService",
+                                                              """
+            package external;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface InventoryService extends CachedQuery {
+                Promise<Integer> checkStock(String productId);
+            }
+            """);
+
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import external.InventoryService;
+
+            @Slice
+            public interface OrderService {
+                Promise<String> placeOrder(String orderId);
+
+                static OrderService orderService(InventoryService inventory) {
+                    return null;
+                }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(cachedQuery);
+        sources.add(externalService);
+        sources.add(source);
+
+        Compilation compilation = javac()
+                                       .withProcessors(new SliceProcessor())
+                                       .compile(sources);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.OrderServiceFactory")
+                                        .get().getCharContent(false).toString();
+
+        assertThat(factoryContent).contains("MethodHandle<Integer, String> cachedLookupHandle");
+        assertThat(factoryContent).doesNotContain("prefetchHandle");
+    }
+
+    /// #663 regression: the Object-method exclusion must key on the TYPE, not its string
+    /// spelling — `equals(@Nullable Object)` (a TYPE_USE-annotated re-declaration) is still
+    /// Object's equals per JLS 9.2, but its parameter's toString carries the annotation and
+    /// escaped a string comparison, drawing a spurious #612 error.
+    @Test
+    void should_exclude_annotated_object_equals_redeclaration_from_dependency_scan() throws Exception {
+        var nullable = JavaFileObjects.forSourceString("external.Nullable",
+                                                       """
+            package external;
+
+            import java.lang.annotation.ElementType;
+            import java.lang.annotation.Retention;
+            import java.lang.annotation.RetentionPolicy;
+            import java.lang.annotation.Target;
+
+            @Target(ElementType.TYPE_USE)
+            @Retention(RetentionPolicy.CLASS)
+            public @interface Nullable {}
+            """);
+
+        var auditedQuery = JavaFileObjects.forSourceString("external.AuditedQuery",
+                                                           """
+            package external;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface AuditedQuery {
+                Promise<Integer> audit(String entry);
+
+                boolean equals(@Nullable Object other);
+            }
+            """);
+
+        var externalService = JavaFileObjects.forSourceString("external.InventoryService",
+                                                              """
+            package external;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface InventoryService extends AuditedQuery {
+                Promise<Integer> checkStock(String productId);
+            }
+            """);
+
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import external.InventoryService;
+
+            @Slice
+            public interface OrderService {
+                Promise<String> placeOrder(String orderId);
+
+                static OrderService orderService(InventoryService inventory) {
+                    return null;
+                }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(nullable);
+        sources.add(auditedQuery);
+        sources.add(externalService);
+        sources.add(source);
+
+        Compilation compilation = javac()
+                                       .withProcessors(new SliceProcessor())
+                                       .compile(sources);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.OrderServiceFactory")
+                                        .get().getCharContent(false).toString();
+
+        assertThat(factoryContent).contains("MethodHandle<Integer, String> auditHandle");
+        assertThat(factoryContent).doesNotContain("equalsHandle");
+    }
+
+    /// #663 pin: diamond tie-break is deterministic — when two super-interfaces both declare
+    /// the same signature, the winner follows extends-clause order (`getInterfaces()`), so
+    /// the FIRST listed super's declaration supplies the proxy method (observable through
+    /// its parameter name), and the signature yields exactly one record component.
+    @Test
+    void should_pick_first_extends_clause_declaration_for_diamond_dependency_method() throws Exception {
+        var alphaQuery = JavaFileObjects.forSourceString("external.AlphaQuery",
+                                                         """
+            package external;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface AlphaQuery {
+                Promise<Integer> lookup(String alphaKey);
+            }
+            """);
+
+        var betaQuery = JavaFileObjects.forSourceString("external.BetaQuery",
+                                                        """
+            package external;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface BetaQuery {
+                Promise<Integer> lookup(String betaKey);
+            }
+            """);
+
+        var externalService = JavaFileObjects.forSourceString("external.InventoryService",
+                                                              """
+            package external;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface InventoryService extends AlphaQuery, BetaQuery {
+                Promise<Integer> checkStock(String productId);
+            }
+            """);
+
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import external.InventoryService;
+
+            @Slice
+            public interface OrderService {
+                Promise<String> placeOrder(String orderId);
+
+                static OrderService orderService(InventoryService inventory) {
+                    return null;
+                }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(alphaQuery);
+        sources.add(betaQuery);
+        sources.add(externalService);
+        sources.add(source);
+
+        Compilation compilation = javac()
+                                       .withProcessors(new SliceProcessor())
+                                       .compile(sources);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.OrderServiceFactory")
+                                        .get().getCharContent(false).toString();
+
+        assertThat(factoryContent).contains("public Promise<Integer> lookup(String alphaKey)");
+        assertThat(factoryContent).doesNotContain("betaKey");
+
+        var occurrences = factoryContent.split("lookupHandle", -1).length - 1;
+
+        assertThat(occurrences).isEqualTo(2);
+    }
+
+    /// #663 pin: multi-level generic indirection — `KeyedQuery<K> extends BatchQuery<List<K>>`
+    /// with the dependency binding K=String means BatchQuery's `putAll(U)` must resolve as
+    /// `putAll(List<String>)`: `asMemberOf` composes the substitution U -> List<K> -> List<String>
+    /// across levels, not just a single direct binding.
+    @Test
+    void should_compose_substitution_across_generic_super_interface_levels() throws Exception {
+        var batchQuery = JavaFileObjects.forSourceString("external.BatchQuery",
+                                                         """
+            package external;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface BatchQuery<U> {
+                Promise<Integer> putAll(U items);
+            }
+            """);
+
+        var keyedQuery = JavaFileObjects.forSourceString("external.KeyedQuery",
+                                                         """
+            package external;
+
+            import java.util.List;
+            import org.pragmatica.lang.Promise;
+
+            public interface KeyedQuery<K> extends BatchQuery<List<K>> {
+                Promise<Integer> lookup(K key);
+            }
+            """);
+
+        var externalService = JavaFileObjects.forSourceString("external.InventoryService",
+                                                              """
+            package external;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface InventoryService extends KeyedQuery<String> {
+                Promise<Integer> checkStock(String productId);
+            }
+            """);
+
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import external.InventoryService;
+
+            @Slice
+            public interface OrderService {
+                Promise<String> placeOrder(String orderId);
+
+                static OrderService orderService(InventoryService inventory) {
+                    return null;
+                }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(batchQuery);
+        sources.add(keyedQuery);
+        sources.add(externalService);
+        sources.add(source);
+
+        Compilation compilation = javac()
+                                       .withProcessors(new SliceProcessor())
+                                       .compile(sources);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.OrderServiceFactory")
+                                        .get().getCharContent(false).toString();
+
+        assertThat(factoryContent).contains("public Promise<Integer> lookup(String key)");
+        assertThat(factoryContent).contains("putAll(List<java.lang.String> items)");
+    }
+
     @Test
     void should_handle_multiple_dependencies() throws Exception {
         var paymentService = JavaFileObjects.forSourceString("payments.PaymentService",

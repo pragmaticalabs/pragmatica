@@ -1027,9 +1027,11 @@ public class FactoryClassGenerator {
 
                 var method = (ExecutableElement) enclosed;
 
-                if (method.getModifiers().contains(Modifier.STATIC)
-                    || method.getModifiers().contains(Modifier.DEFAULT)
-                    || isObjectLevelMethod(method)) {
+                // Only ABSTRACT methods are proxy candidates. javax.lang.model reports implicit
+                // modifiers, so this one check excludes static, default, AND Java 9+ private
+                // interface methods — a modifier-skip list missed private and changed generated
+                // output for interfaces that compiled before the super-interface walk.
+                if (!method.getModifiers().contains(Modifier.ABSTRACT) || isObjectLevelMethod(method)) {
                     continue;
                 }
 
@@ -1083,7 +1085,16 @@ public class FactoryClassGenerator {
 
         return params.size() == 1
                && name.equals("equals")
-               && "java.lang.Object".equals(params.getFirst().asType().toString());
+               && isJavaLangObject(params.getFirst().asType());
+    }
+
+    /// Type identity, not string spelling: a TYPE_USE annotation (`equals(@Nullable Object)`)
+    /// rides along in `TypeMirror#toString`, so string comparison misclassifies the
+    /// re-declaration. Erasure + `isSameType` keys on the type itself.
+    private boolean isJavaLangObject(TypeMirror type) {
+        var objectType = elements.getTypeElement("java.lang.Object").asType();
+
+        return types.isSameType(types.erasure(type), objectType);
     }
 
     private ProxyMethodInfo toProxyMethodInfo(ExecutableElement method, ExecutableType resolved, String responseType) {
