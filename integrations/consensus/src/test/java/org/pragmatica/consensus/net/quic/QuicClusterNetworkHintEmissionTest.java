@@ -95,7 +95,7 @@ class QuicClusterNetworkHintEmissionTest {
     void disconnect_unknownPeer_propagatesListenerForTopologyRemoval() {
         // SWIM-driven DisconnectNode is the authoritative "this peer is gone" signal —
         // even if we never had a live QUIC link, the REMOVE view-change must fire so
-        // topology and HealthReconciler see the departure. Otherwise peers whose
+        // topology and the membership layer see the departure. Otherwise peers whose
         // connection tore down before lifecycle promotion stay in coreNodes forever.
         var captured = new CopyOnWriteArrayList<NodeId>();
         QuicDisconnectListener listener = captured::add;
@@ -110,8 +110,8 @@ class QuicClusterNetworkHintEmissionTest {
     @Test
     void disconnect_followerPath_buffersConnectivityObservation_skipsDisconnectListener() {
         // Commit 2 (ClusterSync refactor): on a follower node, REMOVE view-changes
-        // must NOT invoke the disconnect listener (which would feed the local
-        // HealthReconciler). Instead, a PeerConnectivityObservation is pushed to the
+        // must NOT invoke the disconnect listener (a v1 surface with no live
+        // consumer). Instead, a PeerConnectivityObservation is pushed to the
         // upstream buffer via the PeerConnectivityReporter so the leader folds it.
         var listenerInvocations = new CopyOnWriteArrayList<NodeId>();
         QuicDisconnectListener listener = listenerInvocations::add;
@@ -143,9 +143,9 @@ class QuicClusterNetworkHintEmissionTest {
     @Test
     void disconnect_leaderPath_invokesBothDisconnectListenerAndReporter() {
         // Topology-observation refactor Step 4: leader MUST also fire the connectivity
-        // reporter on QUIC drops so the AetherNode-level adapter can ingest the
-        // observation synchronously into ReachabilityAggregator. The disconnect listener
-        // (HealthReconciler fast path) still fires too — these consumers are
+        // reporter on QUIC drops so the AetherNode-level adapter can buffer the
+        // observation for the cluster-sync fold. The disconnect listener (a v1 fast
+        // path, today consumer-less) still fires too — these surfaces are
         // complementary, not exclusive.
         var listenerInvocations = new CopyOnWriteArrayList<NodeId>();
         QuicDisconnectListener listener = listenerInvocations::add;

@@ -27,6 +27,47 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `jbct/jbct-maven-plugin/src/test/java/org/pragmatica/jbct/maven/PackageSlicesMessageClassesTest.java`
   (red against unfixed code, green after; jar-level assertion on a built archive); final e2e
   against the #704 rf=1 reproduction runs in the coordinating session before #712 closes]
+### Changed (2026-08-28 — #692: HealthReconciler ghost-comment sweep, Java surfaces)
+- **Zero `HealthReconciler` references remain in Java sources.** 21 comment/docstring references
+  across `integrations/consensus`, `integrations/swim`, and `integrations/cluster` described a type
+  deleted in the membership-v2 migration — the largest single stale-describing-surface cluster on
+  the branch, and exactly the shape that minted five wrong ticket premises on 2026-08-27. Each was
+  corrected against the verified current mechanism, not search-replaced: SWIM `FaultyObserved` edges
+  drive `MembershipFsm.onSwimFaulty` via the observation listener (no `DECOMMISSIONED` node-state KV
+  write exists in v2); `PeerHealthObservation`'s epoch-fencing consumer is `SwimHintsRegistry`;
+  connectivity observations ride `PeerObservationBuffer` → cluster-sync pong (the leader-side
+  `ReachabilityAggregator` fold named by one comment is ALSO gone — P3 removed it, SWIM is the
+  single liveness signal); leader-term consumers are Aether's generation/ownership epoch suppliers;
+  `NodeLifecycleKey` is itself deleted. 1012 tests green across the three modules after the sweep.
+- **#692's rename item was a stale premise, corrected rather than executed:**
+  `ClusterSyncContext.emitPingTimeoutIfExceeded` does NOT "emit nothing" on current HEAD — the
+  S01/Option-1 wiring gives it a live effect (`collector.reportUnreachable`, the SWIM
+  transport-unreachable hint path), pinned by `ClusterSyncFsmTest`'s
+  `emitPingTimeout_*` tests. The name matches the behavior; no rename shipped. Remaining #692
+  surfaces live under `aether/docs/**` (docs-stream territory) and are routed, not swept here.
+
+### Fixed (2026-08-28 — #694: Ember instances round-trip the CTM's tag selector)
+- **In-JVM worker reconcile can now see its own inventory.** `EmberComputeProvider.toInstanceInfo`
+  returned an EMPTY tag map for every instance; an instance with no tags matches no non-empty
+  selector, so the CTM's worker reconcile — which counts ACTUAL inventory through the
+  `aether-cluster`/`aether-source`/`aether-role` filter — read `actual = 0` forever in-JVM,
+  re-provisioning every pass and never able to see a scale-down victim, with a symptom that pointed
+  the next investigation at the CTM instead of the harness (the #590 family, one layer up). Tags are
+  now built from the `ProvisionContext` AT PROVISION TIME and stored per node (the ticket's ordering
+  constraint: `toInstanceInfo` is also reached from `listInstances`/`instanceStatus`, which hold no
+  request), mirroring `HetznerComputeProvider.labelsFor` — the three selector keys with the blank
+  role defaulting to `core`, plus the provider-agnostic dotted `aether.node-id`. Nodes created
+  OUTSIDE the provider (initial cluster, direct `addNode`) stay untagged — the pre-#694 shape,
+  preserved deliberately and pinned. One recorded divergence: an absent cluster name stamps `""`
+  where cloud providers refuse the create outright (RFC-0017 C2) — the CTM selector renders an
+  unresolvable name as the same `""`, so the round-trip holds either way.
+  [verified: `aether/forge/forge-tests/.../EmberInstanceTagRoundTripTest.java` — same-context
+  selector finds the instance with the exact four-entry map; selectors differing in any ONE field do
+  not; blank role stamps the production `core` default; untagged initial nodes match no non-empty
+  selector while staying listed. Mutation (stamp propagation removed): exactly the two positive
+  guards red. The three CTM-provisioning probes (`MembershipChaosCycleTest`,
+  `ProvisioningRecoveryAfterFailureBurstProbeTest`, `PostRestartSlowRejoinDeficitFillProbeTest`)
+  re-run green against the stamped provider.]
 
 ### Fixed (2026-08-28 — #644: periodic tasks arm in start(), not at assembly)
 - **A created-but-never-started node now performs no periodic work and holds no timers.**

@@ -1574,11 +1574,24 @@ public interface AetherNode extends ManageableNode {
                                        // in formation itself (clusterNode.start() resolves inside the
                                        // consensus stack; the activation level-heal's own gate,
                                        // clusterNode::isActive, is true by this point in the one
-                                       // dropped-edge scenario it exists to heal). PeriodicTasks.arm()
-                                       // is a no-op after stop(), closing the late-resolution race.
-                                       .onSuccess(_ -> periodicTasks.arm())
+                                       // dropped-edge scenario it exists to heal). A MAP stage, not an
+                                       // onSuccess observer, deliberately: observers race an await() on
+                                       // the same promise (CI caught the race), while a stage makes
+                                       // "start() resolved ⇒ periodic work armed" a real guarantee.
+                                       // PeriodicTasks.arm() is a no-op after stop(), closing the
+                                       // late-resolution race in the other direction.
+                                       .map(this::armPeriodicTasks)
                                        .onSuccess(_ -> log.info("Aether node {} started, cluster forming...",
                                                                 self()));
+            }
+
+            /// The #644 arming stage of [#start]'s chain — a named identity so the arm rides the
+            /// promise PIPELINE (resolution of the returned stage happens-after the arm) instead of
+            /// an observer that races awaiters.
+            private Unit armPeriodicTasks(Unit unit) {
+                periodicTasks.arm();
+
+                return unit;
             }
 
             @Override

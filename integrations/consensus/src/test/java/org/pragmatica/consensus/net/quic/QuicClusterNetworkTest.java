@@ -190,7 +190,8 @@ class QuicClusterNetworkTest {
     /// reconnect path emits a `ConnectionEstablished` and forwards the
     /// `TransportObservation` upward via the peer-state listener — but does NOT call
     /// `registerPeer` on `TopologyObserver` (which has been removed). Authoritative
-    /// membership flows through HealthReconciler → KV → snapshot.
+    /// membership flows through the SWIM/QUIC observation path into Aether's
+    /// `MembershipFsm` and its decision stream (presence-derived, membership v2).
     @Nested
     class ReconnectFinalization {
 

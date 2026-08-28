@@ -542,7 +542,7 @@ public final class LeaderElectionContext {
 
     /// Live read of the cluster-side rabia term. Source for
     /// [`LeaderManager#currentLeaderEpoch`]; the rabia term is the canonical leader-tenure
-    /// identifier exposed to consumers (e.g. Aether's `HealthReconciler`).
+    /// identifier exposed to consumers (e.g. Aether's generation and ownership epoch suppliers).
     public Supplier<Long> rabiaTermSupplier() {
         return rabiaTermSupplier;
     }

@@ -19,16 +19,16 @@
 # `former_names` records pre-freeze names so the contract test can flag a harness lib that still
 # greps the old name.
 
-[endpoint."GET /api/cluster/status"]
+[endpoint."GET /api/v1/cluster/status"]
 frozen_fields = ["leaderId", "coreCount", "clusterPhase"]
 
-[endpoint."GET /api/nodes/status"]
+[endpoint."GET /api/v1/nodes/status"]
 frozen_fields = ["nodeId", "lifecycleState", "isLeader"]
 
-[endpoint."GET /api/nodes/lifecycle"]
+[endpoint."GET /api/v1/nodes/lifecycle"]
 frozen_fields = ["nodeId", "derivedStatus"]
 
-[endpoint."GET /api/nodes/live"]
+[endpoint."GET /api/v1/nodes/live"]
 frozen_fields = ["nodeId", "swimAlive", "reportedState"]
 
 # Pre-freeze field names that MUST NOT reappear in harness lib grep patterns. A match means a

@@ -18,7 +18,7 @@ test_cluster_ready() {
 test_create_stream() {
     local payload="{\"name\":\"${STREAM_NAME}\",\"partitions\":1}"
     local result
-    result=$(api_post "/api/streams" "$payload")
+    result=$(api_post "/api/v1/streams" "$payload")
     assert_contains "$result" "$STREAM_NAME" "Stream created: ${STREAM_NAME}"
 }
 
@@ -115,9 +115,9 @@ test_read_from_non_governor_node() {
     # surfaces as a warn rather than silently collapsing to empty body (which the
     # `assert_ne` below would conflate with "stream metadata absent").
     result=$(curl -sf -H "X-API-Key: ${API_KEY}" --connect-timeout 5 \
-                  "${alt_endpoint}/api/streams/${STREAM_NAME}" 2>/dev/null) && rc=0 || rc=$?
+                  "${alt_endpoint}/api/v1/streams/${STREAM_NAME}" 2>/dev/null) && rc=0 || rc=$?
     if [ "$rc" -ne 0 ] && [ -z "$result" ]; then
-        log_warn "Read from non-governor: curl rc=${rc} from ${alt_endpoint}/api/streams/${STREAM_NAME} (empty body — treating as missing metadata for assertion)"
+        log_warn "Read from non-governor: curl rc=${rc} from ${alt_endpoint}/api/v1/streams/${STREAM_NAME} (empty body — treating as missing metadata for assertion)"
     fi
 
     # Empty IS the failure mode — replication is the feature under test. If the

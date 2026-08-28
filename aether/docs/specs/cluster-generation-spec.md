@@ -88,7 +88,7 @@ DhtPartitionOwnershipValue {
 }
 ```
 
-Written only by the leader through `HealthReconciler.assignPartition()`. Read by DHT clients to route requests. Epoch-fenced: writes by `ownerNodeId` to DHT entries carry `ownershipTerm`; readers reject stale-term writes.
+Written only by the leader — today through `BootstrapModule`'s ownership writer (`decideCoreOwnership` / `rewriteIfOwnerStale`; the spec'd `HealthReconciler.assignPartition()` was never built — see the §8 note). Read by DHT clients to route requests. Epoch-fenced: writes by `ownerNodeId` to DHT entries carry `ownershipTerm`; readers reject stale-term writes.
 
 #### 5.3.2 `SpokesmanKey(coreNodeId: NodeId) → SpokesmanValue`
 
@@ -114,7 +114,7 @@ Shards Tier 2 governor communication across all core nodes. Each core node holds
 | Core node removed / FAULTY | Redistribute its communities across survivors |
 | Spokesman assignment FAILED | Reassign affected communities |
 
-All rebalance actions are atomic Rabia batch writes through `HealthReconciler`.
+All rebalance actions are atomic Rabia batch writes issued by the leader-resident reconcile paths (`BootstrapModule` for core ownership; the spec'd single `HealthReconciler` writer was never built — see the §8 note).
 
 ## 6. ClusterGenerationSnapshot (ephemeral)
 
@@ -297,6 +297,24 @@ Steady-state wire: heartbeats with metrics only. Change events: one-ping full sn
 Gap: Rabia election (~1–2s) + projection (<100ms) + ≤1 ping interval (500ms) → **~2–3s of distribution staleness** during leader change. Projections on nodes continue serving the last-known-good snapshot in the interim.
 
 ## 8. HealthReconciler (leader-only, single-writer)
+
+> ✏️ **This section describes a component that was NEVER BUILT** (confirmed:
+> [`cluster-topology-overhaul-spec.md`](cluster-topology-overhaul-spec.md) W9 — no `SpokesmanKey`
+> producer, no `HealthReconciler` type anywhere in the repo). It is retained as the v1 design
+> record. What ships instead (membership-v2, verified against sources 2026-08-28):
+> - **Membership** is presence-derived through Aether's `MembershipFsm` (SWIM/QUIC observations →
+>   `onSwimHealthy`/`onSwimFaulty`/NTT connect-disconnect hints); there is no node-state KV write
+>   and no single health-signal consumer component.
+> - **The `PingTimeout` signal below does not exist** — its bus (`HealthSignal`) was deleted
+>   (#571). The surviving carrier of the missed-pong count is the ClusterSync FSM's per-peer
+>   counter (`counterForPeer`), and on threshold the owner side feeds SWIM a transport-unreachable
+>   hint (`ClusterSyncContext.emitPingTimeoutIfExceeded` → `reportUnreachable`, with a SWIM-HEALTHY
+>   early-skip); the signal's epoch stamp was accepted as lost (#571 close).
+> - **`SwimHint` relay**: follower observations travel as `PeerHealthObservation` in the
+>   `ClusterSyncPong` and are epoch-fenced by `SwimHintsRegistry` on the leader.
+> - **Ownership/spokesman-family Rabia writes** live in the leader's `BootstrapModule` (core DHT
+>   ownership) and the CTM/stream ownership writers; community formation/dissolution choreography
+>   in §§8–9's diagrams is unwired today (overhaul spec W7–W9).
 
 The `HealthReconciler` is the leader-resident component that consumes health signals and decides which atoms to mutate. It issues `DhtPartitionOwnershipKey` transfers and `SpokesmanKey` updates in response to node presence changes, and drives the ephemeral epoch counter. Node membership itself is presence-derived (SWIM/QUIC via NTT) and is **not** an atom it writes — there is no node-state KV record (see `aether/docs/specs/membership-architecture-v2-spec.md`).
 

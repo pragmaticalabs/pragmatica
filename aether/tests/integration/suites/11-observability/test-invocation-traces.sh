@@ -1,5 +1,5 @@
 #!/bin/bash
-# test-invocation-traces.sh — Inject deterministic traces, verify shape via GET /api/traces.
+# test-invocation-traces.sh — Inject deterministic traces, verify shape via GET /api/v1/traces.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -21,10 +21,10 @@ test_cluster_ready() {
     log_pass "Cluster ready"
 }
 
-# Drive the trace path explicitly via POST /api/traces/inject. Tracing is not
+# Drive the trace path explicitly via POST /api/v1/traces/inject. Tracing is not
 # auto-enabled in the integration cluster, and the runtime does not provide a
 # deterministic invocation that emits a trace with known field values — see
-# aether/docs/reference/management-api.md → POST /api/traces/inject for the
+# aether/docs/reference/management-api.md → POST /api/v1/traces/inject for the
 # product capability that closes this gap.
 _inject_trace() {
     local operation="$1"
@@ -33,12 +33,12 @@ _inject_trace() {
     local body
     body="{\"operation\":\"${operation}\",\"durationMs\":${duration_ms},\"depth\":${depth}}"
     local response
-    if ! response=$(api_post "/api/traces/inject" "$body"); then
-        log_fail "POST /api/traces/inject failed for operation=${operation} (api_post returned non-zero)"
+    if ! response=$(api_post "/api/v1/traces/inject" "$body"); then
+        log_fail "POST /api/v1/traces/inject failed for operation=${operation} (api_post returned non-zero)"
         return 1
     fi
     # Server returns {traceId, requestId, operation, durationMs, depth, timestamp}.
-    # requestId is the field GET /api/traces actually surfaces, so we correlate by it.
+    # requestId is the field GET /api/v1/traces actually surfaces, so we correlate by it.
     local req_id
     req_id=$(printf '%s' "$response" | grep -oE '"requestId"[[:space:]]*:[[:space:]]*"[^"]+"' | sed -E 's/.*"([^"]+)"$/\1/' | head -1)
     if [ -z "$req_id" ]; then
@@ -52,7 +52,7 @@ test_generate_traceable_requests() {
     TRACE_REQ_ID_1=$(_inject_trace "$TRACE_OP_1" 100 0) || return 1
     TRACE_REQ_ID_2=$(_inject_trace "$TRACE_OP_2" 250 1) || return 1
     TRACE_REQ_ID_3=$(_inject_trace "$TRACE_OP_3" 500 2) || return 1
-    # Brief wait so the entries are observable from /api/traces. Inject is
+    # Brief wait so the entries are observable from /api/v1/traces. Inject is
     # synchronous on the receiving node so this is mostly a tolerance for HTTP
     # layer scheduling; per the spec it must be visible within 1s.
     sleep 1
@@ -62,8 +62,8 @@ test_generate_traceable_requests() {
 # Endpoint smoke check — must respond 200. Body content is asserted in the
 # field-level tests below.
 test_traces_endpoint() {
-    assert_http_status "${CLUSTER_ENDPOINT}/api/traces" "200" \
-        "GET /api/traces returns 200" \
+    assert_http_status "${CLUSTER_ENDPOINT}/api/v1/traces" "200" \
+        "GET /api/v1/traces returns 200" \
         -H "X-API-Key: ${API_KEY}"
 }
 
@@ -79,25 +79,25 @@ _require_injected_request_ids() {
 test_traces_contain_request_id() {
     _require_injected_request_ids || return 1
     local traces
-    if ! traces=$(api_get "/api/traces?limit=200"); then
-        log_fail "GET /api/traces failed (api_get returned non-zero)"
+    if ! traces=$(api_get "/api/v1/traces?limit=200"); then
+        log_fail "GET /api/v1/traces failed (api_get returned non-zero)"
         return 1
     fi
     # Each injected requestId must be surfaced verbatim. Assertions report
     # which specific id failed so test output names the exact missing entry.
     assert_contains "$traces" "$TRACE_REQ_ID_1" \
-        "GET /api/traces must surface injected requestId=${TRACE_REQ_ID_1}"
+        "GET /api/v1/traces must surface injected requestId=${TRACE_REQ_ID_1}"
     assert_contains "$traces" "$TRACE_REQ_ID_2" \
-        "GET /api/traces must surface injected requestId=${TRACE_REQ_ID_2}"
+        "GET /api/v1/traces must surface injected requestId=${TRACE_REQ_ID_2}"
     assert_contains "$traces" "$TRACE_REQ_ID_3" \
-        "GET /api/traces must surface injected requestId=${TRACE_REQ_ID_3}"
+        "GET /api/v1/traces must surface injected requestId=${TRACE_REQ_ID_3}"
 }
 
 test_traces_contain_duration() {
     _require_injected_request_ids || return 1
     local traces
-    if ! traces=$(api_get "/api/traces?limit=200"); then
-        log_fail "GET /api/traces failed (api_get returned non-zero)"
+    if ! traces=$(api_get "/api/v1/traces?limit=200"); then
+        log_fail "GET /api/v1/traces failed (api_get returned non-zero)"
         return 1
     fi
     # `durationMs` is emitted as a JSON number by ObservabilityRoutes#appendTraceNodeJson.
@@ -115,8 +115,8 @@ test_traces_contain_duration() {
 test_traces_contain_depth() {
     _require_injected_request_ids || return 1
     local traces
-    if ! traces=$(api_get "/api/traces?limit=200"); then
-        log_fail "GET /api/traces failed (api_get returned non-zero)"
+    if ! traces=$(api_get "/api/v1/traces?limit=200"); then
+        log_fail "GET /api/v1/traces failed (api_get returned non-zero)"
         return 1
     fi
     # `depth` is emitted as a JSON number for every entry. Each of the three
