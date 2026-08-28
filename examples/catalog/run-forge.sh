@@ -62,5 +62,7 @@ FORGE_ARGS=(
 )
 
 # FORGE_JVM_OPTS: extra JVM flags (e.g. JDWP remote debug -- see docs/slice-developers/forge-guide.md#debugging).
-# Deliberately unquoted: several space-separated flags must word-split.
-exec java ${FORGE_JVM_OPTS:-} -jar "$FORGE_JAR" "${FORGE_ARGS[@]}"
+# Split with read -rd into an array: flags word-split on whitespace INCLUDING newlines, no glob expansion
+# (a literal * in JDWP address= survives), empty value yields zero argv words (#664).
+IFS=$' \t\n' read -rd '' -a FORGE_JVM_OPTS_ARR <<< "${FORGE_JVM_OPTS:-}" || true
+exec java "${FORGE_JVM_OPTS_ARR[@]}" -jar "$FORGE_JAR" "${FORGE_ARGS[@]}"
