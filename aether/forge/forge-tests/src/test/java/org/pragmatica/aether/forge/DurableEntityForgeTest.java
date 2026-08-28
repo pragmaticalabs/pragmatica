@@ -250,7 +250,7 @@ class DurableEntityForgeTest {
         if (cluster != null) {
             var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
 
-            httpDelete(leaderPort, "/api/blueprints/" + BLUEPRINT_ID);
+            httpDelete(leaderPort, "/api/v1/blueprints/" + BLUEPRINT_ID);
             cluster.stop()
                    .await();
         }
@@ -776,26 +776,26 @@ class DurableEntityForgeTest {
 
     private String create(int port, String key, String status, int amount) {
         return httpPost(port,
-                        "/api/entity/create",
+                        "/api/v1/entity/create",
                         "{\"orderId\":\"" + key + "\",\"status\":\"" + status + "\",\"amount\":" + amount + "}");
     }
 
     private String get(int port, String key) {
-        return httpPost(port, "/api/entity/get", "{\"orderId\":\"" + key + "\"}");
+        return httpPost(port, "/api/v1/entity/get", "{\"orderId\":\"" + key + "\"}");
     }
 
     private String update(int port, String key, int amount) {
-        return httpPost(port, "/api/entity/update", "{\"orderId\":\"" + key + "\",\"amount\":" + amount + "}");
+        return httpPost(port, "/api/v1/entity/update", "{\"orderId\":\"" + key + "\",\"amount\":" + amount + "}");
     }
 
     private String delete(int port, String key) {
-        return httpPost(port, "/api/entity/delete", "{\"orderId\":\"" + key + "\"}");
+        return httpPost(port, "/api/v1/entity/delete", "{\"orderId\":\"" + key + "\"}");
     }
 
     /// Schedules a timer with the fixture's default delay and no caller token — the entity mints one per
     /// call, so N calls are N timers.
     private String scheduleTimer(int port, String key) {
-        return httpPost(port, "/api/entity/schedule-timer", "{\"orderId\":\"" + key + "\"}");
+        return httpPost(port, "/api/v1/entity/schedule-timer", "{\"orderId\":\"" + key + "\"}");
     }
 
     /// Schedules a timer under a CALLER-minted token and an explicit delay. Re-sending the same token is
@@ -803,7 +803,7 @@ class DurableEntityForgeTest {
     /// appends nothing, so the schedule — and its effect — happen once.
     private String scheduleTimer(int port, String key, long delayMillis, String token) {
         return httpPost(port,
-                        "/api/entity/schedule-timer",
+                        "/api/v1/entity/schedule-timer",
                         "{\"orderId\":\"" + key + "\",\"delayMillis\":" + delayMillis + ",\"token\":\"" + token + "\"}");
     }
 
@@ -900,7 +900,7 @@ class DurableEntityForgeTest {
     /// Node ids hosting an ACTIVE instance of the entity slice, from the cluster-wide slice view. The
     /// suite deploys exactly one slice, so every `nodeId` in the filtered response belongs to it.
     private Set<String> activeSliceHosts() {
-        var body = httpGet(anyMgmtPort(), "/api/slices?state=ACTIVE");
+        var body = httpGet(anyMgmtPort(), "/api/v1/slices?state=ACTIVE");
         var matcher = Pattern.compile("\"nodeId\"\\s*:\\s*\"([^\"]+)\"").matcher(body);
         var hosts = new HashSet<String>();
 
@@ -914,7 +914,7 @@ class DurableEntityForgeTest {
     /// Committed `entity:orders` arc owners by partition, from the stream ownership domain (entity
     /// arcs ride the stream record family under the `entity:` namespace).
     private Map<Integer, String> entityArcOwners() {
-        var body = httpGet(anyMgmtPort(), "/api/ownership/stream");
+        var body = httpGet(anyMgmtPort(), "/api/v1/ownership/stream");
         var matcher = Pattern.compile("\"identity\"\\s*:\\s*\"entity:orders:(\\d+)\"[^}]*\"owner\"\\s*:\\s*\"([^\"]+)\"")
                              .matcher(body);
         var owners = new HashMap<Integer, String>();
@@ -973,7 +973,7 @@ class DurableEntityForgeTest {
             instances = %d
             """.formatted(BLUEPRINT_ID, ENTITY_SLICE, INSTANCES);
         var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
-        var response = httpPostToml(leaderPort, "/api/blueprints", blueprint);
+        var response = httpPostToml(leaderPort, "/api/v1/blueprints", blueprint);
 
         assertThat(response).describedAs("durable-entity slice deployment")
                             .doesNotContain("\"error\"")
@@ -1015,7 +1015,7 @@ class DurableEntityForgeTest {
     /// rollback, so it is the only surface that still carries the failure.
     private void failIfSliceFailed() {
         for (int port : mgmtPorts()) {
-            var reason = deploymentFailedReason(httpGet(port, "/api/events"));
+            var reason = deploymentFailedReason(httpGet(port, "/api/v1/events"));
 
             if (reason != null) {
                 throw new AssertionError("Deployment of " + ENTITY_SLICE + " FAILED — event surface reason: " + excerpt(reason));
@@ -1024,7 +1024,7 @@ class DurableEntityForgeTest {
     }
 
     /// Extracts `details.reason` from a `DEPLOYMENT_FAILED` cluster event for {@link #ENTITY_SLICE}
-    /// in an `/api/events` response body, or null if no such event is present (yet).
+    /// in an `/api/v1/events` response body, or null if no such event is present (yet).
     private static String deploymentFailedReason(String eventsBody) {
         var matcher = Pattern.compile("\"type\"\\s*:\\s*\"DEPLOYMENT_FAILED\".*?\"artifact\"\\s*:\\s*\""
                                       + Pattern.quote(ENTITY_SLICE)
@@ -1046,7 +1046,7 @@ class DurableEntityForgeTest {
 
     private boolean checkNodeHealth(int port) {
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + "/api/health"))
+                                 .uri(URI.create("http://localhost:" + port + "/api/v1/health"))
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();

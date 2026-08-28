@@ -30,7 +30,7 @@ import static org.awaitility.Awaitility.await;
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 
-/// #336 observability — surface-layer probe for `GET /api/cluster/provisioning`. Forms a small Ember
+/// #336 observability — surface-layer probe for `GET /api/v1/cluster/provisioning`. Forms a small Ember
 /// cluster, queries the provisioning-diagnostics endpoint on the leader's management port, and asserts
 /// the JSON parses and the key fields are present and internally consistent:
 ///   - `leader` is `true` on the leader endpoint (the diagnostics view is leader-only);
@@ -91,8 +91,8 @@ class ClusterProvisioningDiagnosticsProbeTest {
                                 .onFailure(ClusterProvisioningDiagnosticsProbeTest::failScenario)
                                 .or(-1);
 
-        var json = httpGet(leaderPort, "/api/cluster/provisioning");
-        log.info("PROVISIONING-PROBE: GET /api/cluster/provisioning -> {}", json);
+        var json = httpGet(leaderPort, "/api/v1/cluster/provisioning");
+        log.info("PROVISIONING-PROBE: GET /api/v1/cluster/provisioning -> {}", json);
 
         assertThat(matchGroup(LEADER, json))
             .as("leader endpoint must report leader=true (diagnostics are leader-only): %s", json)

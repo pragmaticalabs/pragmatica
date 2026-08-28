@@ -88,7 +88,7 @@ test_concurrent_deploy() {
 
     (
         local status
-        status=$(http_status "${CLUSTER_ENDPOINT}/api/streams/publish/${STREAM_A}" \
+        status=$(http_status "${CLUSTER_ENDPOINT}/api/v1/streams/publish/${STREAM_A}" \
             -X POST \
             -H "X-API-Key: ${API_KEY}" \
             -H "Content-Type: application/json" \
@@ -99,7 +99,7 @@ test_concurrent_deploy() {
 
     (
         local status
-        status=$(http_status "${CLUSTER_ENDPOINT}/api/streams/publish/${STREAM_B}" \
+        status=$(http_status "${CLUSTER_ENDPOINT}/api/v1/streams/publish/${STREAM_B}" \
             -X POST \
             -H "X-API-Key: ${API_KEY}" \
             -H "Content-Type: application/json" \
@@ -183,7 +183,7 @@ test_slices_active_after_concurrent_deploy() {
 test_artifact_isolation() {
     # Two distinct blueprints (test-echo + test-persistence) are deployed in
     # test_cluster_ready above. Verify both artifact identifiers appear in
-    # /api/slices — proving the cluster maintains separate slice records per
+    # /api/v1/slices — proving the cluster maintains separate slice records per
     # artifact (the prior fixture only deployed test-echo, so this assertion
     # was structurally untestable; replaced with a real isolation check).
     local slices
@@ -197,10 +197,10 @@ test_artifact_isolation() {
         found_persistence="true"
     fi
     if [ "${found_echo:-}" = "true" ] && [ "${found_persistence:-}" = "true" ]; then
-        log_pass "Artifact isolation verified: both test-echo and test-persistence appear in /api/slices as distinct artifacts"
+        log_pass "Artifact isolation verified: both test-echo and test-persistence appear in /api/v1/slices as distinct artifacts"
         return 0
     fi
-    log_fail "Artifact isolation: expected both test-echo and test-persistence in /api/slices (found echo=${found_echo:-false}, persistence=${found_persistence:-false})"
+    log_fail "Artifact isolation: expected both test-echo and test-persistence in /api/v1/slices (found echo=${found_echo:-false}, persistence=${found_persistence:-false})"
     return 1
 }
 

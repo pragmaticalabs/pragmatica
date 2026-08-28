@@ -23,7 +23,7 @@ test_cluster_ready() {
 }
 
 test_all_nodes_connected() {
-    # Reads the queried node's `connectedPeerCount` from /api/cluster/topology.
+    # Reads the queried node's `connectedPeerCount` from /api/v1/cluster/topology.
     # ClusterTopologyRoutes.assembleFromTopologyManager populates this from
     # node.connectedPeerIds().size() — the count of QUIC-connected peers (excluding
     # self). For a healthy 5-node cluster each node sees 4 peers.
@@ -38,11 +38,11 @@ test_all_nodes_connected() {
     log_pass "QUIC peer connectivity: $(quic_connected_peer_count) connected peers (cluster size 5; expected ≥ 4, settled)"
 }
 
-# Current connectedPeerCount from /api/cluster/topology ("-1" when the endpoint is
+# Current connectedPeerCount from /api/v1/cluster/topology ("-1" when the endpoint is
 # unreachable or the field is absent, so numeric comparisons fail safe).
 quic_connected_peer_count() {
     local topology
-    topology=$(api_get "/api/cluster/topology")
+    topology=$(api_get "/api/v1/cluster/topology")
     local connected
     connected=$(json_value "$topology" "connectedPeerCount")
     echo "${connected:--1}"
@@ -66,7 +66,7 @@ test_kill_node_and_detect_drop() {
         log_fail "No NODE_LEFT/NODE_FAILED event for ${victim} within 60s"
         return 1
     fi
-    log_pass "Departure of ${victim} observed on /api/events"
+    log_pass "Departure of ${victim} observed on /api/v1/events"
 
     # 180s base × TIMEOUT_SCALE: 180s docker / 540s cloud. CTM auto-heal on
     # docker-remote takes 60-150s typically (provision + image pull + QUIC handshake +
@@ -75,7 +75,7 @@ test_kill_node_and_detect_drop() {
         log_fail "No NODE_JOINED event for a replacement of ${victim} within 180s"
         return 1
     fi
-    log_pass "Replacement for ${victim} observed on /api/events"
+    log_pass "Replacement for ${victim} observed on /api/v1/events"
 
     local verdict
     verdict=$(observe_quorum_window "$baseline" 5)

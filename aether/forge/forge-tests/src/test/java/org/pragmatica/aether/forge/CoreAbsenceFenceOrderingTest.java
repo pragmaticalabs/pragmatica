@@ -321,7 +321,7 @@ class CoreAbsenceFenceOrderingTest {
     }
 
     /// Polls the node's own snapshot — the same `coreAbsence` projection served on
-    /// `GET /api/cluster/membership`, so this asserts on the operator-visible surface rather than on
+    /// `GET /api/v1/cluster/membership`, so this asserts on the operator-visible surface rather than on
     /// an internal the operator could not see. Returns -1 on timeout so the caller reports its own
     /// message instead of dying with a bare Awaitility timeout.
     private long awaitFence(long t0) {

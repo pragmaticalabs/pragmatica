@@ -66,7 +66,7 @@
 #     3-node majority's leader or quorum (e.g. the reconciler decommissioning
 #     majority members on a one-sided signal, or quorum miscount on split),
 #     the S05 majority-stability assertion catches it.
-#   * Post-heal convergence (S06): if /api/nodes/status projected a stale
+#   * Post-heal convergence (S06): if /api/v1/nodes/status projected a stale
 #     count after reconnect, or reconvergence stalled, the post-heal ON_DUTY
 #     count assertion catches it.
 
@@ -123,15 +123,15 @@ LEADER_FILE="/tmp/s05-leader.$$"
 # state string. Returns one of SYNCING / READY / DRAINING (NodeReportedState),
 # or empty when the node is unknown to membership (404). v2 has no terminal
 # lifecycle state — a removed node is simply ABSENT (empty here, and gone from
-# /api/nodes/status cluster.nodes[]).
+# /api/v1/nodes/status cluster.nodes[]).
 #
-# WHY the lifecycle endpoint (not raw /api/nodes/status parsing): the lifecycle
+# WHY the lifecycle endpoint (not raw /api/v1/nodes/status parsing): the lifecycle
 # endpoint is leader-forwarded and reports the authoritative per-node reported
 # state. During a partition the minority's SWIM state on the majority side decays,
 # but the gate must keep the minority PRESENT (not removed) for the whole
 # self-drain window. If the gate is doing its job, the minority nodes remain
 # present (and READY) for the entire partition window — premature removal shows up
-# as absence from /api/nodes/status (see node_absent_from_status).
+# as absence from /api/v1/nodes/status (see node_absent_from_status).
 #
 # #426 review follow-up (item 4): this used to be a LOCAL shadow of
 # lib/topology.sh's kv_lifecycle_state with the OLD "empty body == absent"

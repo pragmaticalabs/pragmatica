@@ -18,7 +18,7 @@ test_cluster_ready() {
     log_pass "Cluster ready for cert rotation test"
 }
 
-# Verify the TLS contract via /api/certificates.
+# Verify the TLS contract via /api/v1/certificates.
 #
 # Audit RC1-blocker #3: the previous body asserted `cluster_config` non-empty,
 # which conflates "endpoint live" with "TLS active". Per P3 the certificates
@@ -35,9 +35,9 @@ test_tls_active() {
     # Distinguish "cluster unreachable" (empty/error CLI output) from "field missing
     # from JSON body" (real API contract violation). When the cluster is in a degraded
     # state (e.g. silent-divergence cascade) the CLI returns empty and the cert test
-    # would otherwise misattribute the failure to /api/certificates.
+    # would otherwise misattribute the failure to /api/v1/certificates.
     if [ -z "$cert_info" ] || [ "$cert_info" = "{}" ] || [ "$cert_info" = "null" ]; then
-        log_fail "Cluster unreachable: /api/certificates returned empty/null response (CLI got: '$(printf '%s' "$cert_info" | head -c 100)'). This is likely a network/auth failure, not a cert API issue."
+        log_fail "Cluster unreachable: /api/v1/certificates returned empty/null response (CLI got: '$(printf '%s' "$cert_info" | head -c 100)'). This is likely a network/auth failure, not a cert API issue."
         return 1
     fi
 
@@ -53,7 +53,7 @@ test_tls_active() {
     status=$(aether_field "certs status" renewalStatus)
 
     if [ -z "$tls_enabled" ]; then
-        log_fail "TLS contract violation: /api/certificates returned JSON body but missing tlsEnabled field (got: $(printf '%s' "$cert_info" | head -c 200))"
+        log_fail "TLS contract violation: /api/v1/certificates returned JSON body but missing tlsEnabled field (got: $(printf '%s' "$cert_info" | head -c 200))"
         return 1
     fi
 
@@ -95,7 +95,7 @@ test_tls_active() {
 # NOT_CONFIGURED instead of skipping, and (b) drove load against /health/live
 # (no auth, no cert path). The new shape:
 #   - tlsEnabled=false  ⇒ clean skip_test (not a vacuous pass)
-#   - tlsEnabled=true   ⇒ drive load against /api/cluster/status (auth-gated,
+#   - tlsEnabled=true   ⇒ drive load against /api/v1/cluster/status (auth-gated,
 #                          flows through the TLS handshake), POST the rotation
 #                          directive, then assert error rate < MAX_ERROR_RATE.
 # Load uses api_get-style _api_call semantics so 4xx/5xx surface as failures
@@ -105,16 +105,16 @@ test_rotation_under_load() {
     cert_info=$(aether_json certs status)
 
     # Same distinction as test_tls_active: empty/null CLI output indicates the cluster
-    # is unreachable, not that the /api/certificates contract was violated.
+    # is unreachable, not that the /api/v1/certificates contract was violated.
     if [ -z "$cert_info" ] || [ "$cert_info" = "{}" ] || [ "$cert_info" = "null" ]; then
-        log_fail "Cluster unreachable: /api/certificates returned empty/null response (CLI got: '$(printf '%s' "$cert_info" | head -c 100)'). Cannot determine TLS state for rotation test."
+        log_fail "Cluster unreachable: /api/v1/certificates returned empty/null response (CLI got: '$(printf '%s' "$cert_info" | head -c 100)'). Cannot determine TLS state for rotation test."
         return 1
     fi
 
     tls_enabled=$(aether_field "certs status" tlsEnabled)
 
     if [ -z "$tls_enabled" ]; then
-        log_fail "TLS contract violation: /api/certificates returned JSON body but missing tlsEnabled field"
+        log_fail "TLS contract violation: /api/v1/certificates returned JSON body but missing tlsEnabled field"
         return 1
     fi
 
@@ -131,12 +131,12 @@ test_rotation_under_load() {
     # Drive load against an authenticated mgmt endpoint that flows through TLS.
     # APP_ENDPOINT is overridden to CLUSTER_ENDPOINT (mgmt host) so start_load's
     # internal http_status calls hit the TLS-served mgmt port.
-    APP_ENDPOINT="${CLUSTER_ENDPOINT}" start_load "$LOAD_RPS" "$LOAD_DURATION" "GET" "/api/cluster/status"
+    APP_ENDPOINT="${CLUSTER_ENDPOINT}" start_load "$LOAD_RPS" "$LOAD_DURATION" "GET" "/api/v1/cluster/status"
     sleep 5
 
     log_info "Triggering certificate rotation"
     local rotation_status
-    rotation_status=$(http_status "${CLUSTER_ENDPOINT}/api/config" \
+    rotation_status=$(http_status "${CLUSTER_ENDPOINT}/api/v1/config" \
         -X POST \
         -H "X-API-Key: ${ADMIN_API_KEY}" \
         -H "Content-Type: application/json" \
