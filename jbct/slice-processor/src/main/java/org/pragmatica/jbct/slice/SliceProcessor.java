@@ -78,7 +78,7 @@ public class SliceProcessor extends AbstractProcessor {
         this.factoryGenerator = new FactoryClassGenerator(processingEnv, filer, elements, types, versionResolver);
         this.manifestGenerator = new ManifestGenerator(filer, versionResolver, options);
         this.errorDiscovery = new ErrorTypeDiscovery(processingEnv);
-        this.routeGenerator = new RouteSourceGenerator(filer, processingEnv.getMessager(), elements);
+        this.routeGenerator = new RouteSourceGenerator(filer, processingEnv.getMessager(), elements, types);
         this.errorsStrict = Boolean.parseBoolean(options.getOrDefault(ERRORS_STRICT_OPTION, "false"));
         this.coverageStrict = Boolean.parseBoolean(options.getOrDefault(COVERAGE_STRICT_OPTION, "false"));
         // Stamp the running processor version into the build log so a stale locally-installed jar

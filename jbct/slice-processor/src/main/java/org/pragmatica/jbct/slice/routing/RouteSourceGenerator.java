@@ -11,9 +11,11 @@ import javax.lang.model.element.ExecutableElement;
 import javax.lang.model.element.Modifier;
 import javax.lang.model.element.TypeElement;
 import javax.lang.model.type.DeclaredType;
+import javax.lang.model.type.PrimitiveType;
 import javax.lang.model.type.TypeMirror;
 import javax.lang.model.util.ElementFilter;
 import javax.lang.model.util.Elements;
+import javax.lang.model.util.Types;
 import javax.tools.Diagnostic;
 import javax.tools.JavaFileObject;
 import java.io.IOException;
@@ -178,11 +180,13 @@ public class RouteSourceGenerator {
     private final Filer filer;
     private final Messager messager;
     private final Elements elements;
+    private final Types types;
 
-    public RouteSourceGenerator(Filer filer, Messager messager, Elements elements) {
+    public RouteSourceGenerator(Filer filer, Messager messager, Elements elements, Types types) {
         this.filer = filer;
         this.messager = messager;
         this.elements = elements;
+        this.types = types;
     }
 
     /// Generates Routes class for a slice.
@@ -896,9 +900,16 @@ public class RouteSourceGenerator {
     /// factory.
     ///
     /// A validating factory is a `static Result<Self> anyName(components...)` declared on the record
-    /// itself, whose parameter types equal the record components' types in declaration order. The
-    /// first match in declaration order wins; a second equally-shaped match is reported as a warning
-    /// and ignored, because choosing between two of them is the slice author's call, not ours.
+    /// itself, whose parameter types match the record components' types in declaration order — the
+    /// same type per `Types.isSameType` (a boxed parameter also matches a primitive component; the
+    /// reverse does not, since the call site would auto-unbox a possibly-null accessor), so a purely
+    /// cosmetic spelling difference such as a type-use annotation does not disable validation (#662).
+    /// The first match in declaration order wins; a second equally-shaped match is reported as a
+    /// warning and ignored, because choosing between two of them is the slice author's call, not
+    /// ours. A factory-shaped method (static, component-count arity, returning `Result` of this
+    /// record in some spelling) that still fails the match is a near-miss: it is reported as a
+    /// "found but unmatched" warning before the canonical-constructor fallback stands, because the
+    /// silent form of that fallback is exactly the validation skip #605 fixed (#662).
     ///
     /// Non-JSON bodies never reach the accessor decomposition: [MediaTypeTypeChecker] already
     /// constrains a text, binary or multipart `consumes` to `String`/`byte[]`/`MultipartRequest`,
@@ -921,25 +932,29 @@ public class RouteSourceGenerator {
     private Option<BodyFactory> declaredFactory(TypeElement record) {
         var components = record.getRecordComponents();
         var componentTypes = components.stream()
-                                       .map(component -> component.asType().toString())
+                                       .map(component -> component.asType())
                                        .toList();
         var recordName = record.getQualifiedName().toString();
         var candidates = ElementFilter.methodsIn(record.getEnclosedElements())
                                       .stream()
-                                      .filter(method -> isValidatingFactory(method, recordName, componentTypes))
+                                      .filter(method -> isFactoryShaped(method, record, componentTypes.size()))
                                       .toList();
+        var matched = candidates.stream()
+                                .filter(method -> isValidatingFactory(method, record, recordName, componentTypes))
+                                .toList();
 
-        if (candidates.isEmpty()) {
+        if (matched.isEmpty()) {
+            candidates.forEach(candidate -> warnUnmatchedFactory(record, recordName, candidate, componentTypes));
             return Option.none();
         }
 
-        if (candidates.size() > 1) {
+        if (matched.size() > 1) {
             messager.printMessage(Diagnostic.Kind.WARNING,
                                   "Record " + recordName
                                  + " declares more than one validating factory ('"
-                                 + candidates.getFirst().getSimpleName()
-                                 + "' and '" + candidates.get(1).getSimpleName()
-                                 + "'); route generation uses '" + candidates.getFirst().getSimpleName()
+                                 + matched.getFirst().getSimpleName()
+                                 + "' and '" + matched.get(1).getSimpleName()
+                                 + "'); route generation uses '" + matched.getFirst().getSimpleName()
                                  + "'.",
                                   record);
         }
@@ -948,16 +963,60 @@ public class RouteSourceGenerator {
                                   .map(component -> component.getSimpleName().toString())
                                   .toList();
 
-        return Option.some(new BodyFactory(candidates.getFirst()
-                                                     .getSimpleName()
-                                                     .toString(),
+        return Option.some(new BodyFactory(matched.getFirst()
+                                                  .getSimpleName()
+                                                  .toString(),
                                            accessors));
     }
 
-    private boolean isValidatingFactory(ExecutableElement method, String recordName, List<String> componentTypes) {
+    /// #662: a factory-shaped method that fails the component-type match previously fell back to
+    /// the canonical constructor with no diagnostic — silently skipping the validation the author
+    /// wrote, the exact failure mode #605 fixed. The fallback stands (the method may genuinely not
+    /// be the factory), but it is now visible and actionable at the declaration it almost matched.
+    private void warnUnmatchedFactory(TypeElement record,
+                                      String recordName,
+                                      ExecutableElement candidate,
+                                      List<TypeMirror> componentTypes) {
+        messager.printMessage(Diagnostic.Kind.WARNING,
+                              "Record " + recordName + ": method '" + candidate.getSimpleName()
+                             + "' looks like a validating factory but does not match — expected"
+                             + " parameter types (" + typeNames(componentTypes)
+                             + "), the record components in declaration order; found ("
+                             + String.join(", ", parameterTypeNames(candidate))
+                             + ") returning " + candidate.getReturnType()
+                             + ". Routes fall back to the canonical constructor, so this factory's"
+                             + " validation is skipped.",
+                              candidate);
+    }
+
+    private static String typeNames(List<TypeMirror> mirrors) {
+        return mirrors.stream()
+                      .map(TypeMirror::toString)
+                      .collect(Collectors.joining(", "));
+    }
+
+    /// A factory-shaped method: static, component-count arity, returning `Result` of this record in
+    /// some spelling (any type arguments or annotations on the carried type). Shape is the warning
+    /// gate (#662): helpers with a different arity or carrying a different type are not near-misses
+    /// and stay silent.
+    private boolean isFactoryShaped(ExecutableElement method, TypeElement record, int componentCount) {
         return method.getModifiers().contains(Modifier.STATIC)
-              && returnsResultOf(method.getReturnType(), recordName)
-              && parameterTypeNames(method).equals(componentTypes);
+              && method.getParameters().size() == componentCount
+              && method.getReturnType() instanceof DeclaredType declared
+              && declared.asElement() instanceof TypeElement carrier
+              && RESULT_TYPE.equals(carrier.getQualifiedName().toString())
+              && declared.getTypeArguments().size() == 1
+              && declared.getTypeArguments().getFirst() instanceof DeclaredType carried
+              && carried.asElement() instanceof TypeElement carriedElement
+              && record.getQualifiedName().contentEquals(carriedElement.getQualifiedName());
+    }
+
+    private boolean isValidatingFactory(ExecutableElement method,
+                                        TypeElement record,
+                                        String recordName,
+                                        List<TypeMirror> componentTypes) {
+        return returnsResultOf(method.getReturnType(), record, recordName)
+              && parameterTypesMatch(method, componentTypes);
     }
 
     private List<String> parameterTypeNames(ExecutableElement method) {
@@ -967,14 +1026,63 @@ public class RouteSourceGenerator {
                      .toList();
     }
 
-    private boolean returnsResultOf(TypeMirror returnType, String recordName) {
+    private boolean parameterTypesMatch(ExecutableElement method, List<TypeMirror> componentTypes) {
+        var parameters = method.getParameters();
+
+        if (parameters.size() != componentTypes.size()) {
+            return false;
+        }
+
+        for (var index = 0; index < componentTypes.size(); index++) {
+            if (!sameComponentType(parameters.get(index).asType(), componentTypes.get(index))) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// Same type by mirror identity (`Types.isSameType`), by a boxed parameter meeting a
+    /// primitive component, or by the textual spelling the pre-#662 detector compared.
+    /// `isSameType` absorbs purely cosmetic spelling differences — a type-use annotation on a
+    /// factory parameter is not part of the type — that a textual comparison reads as a mismatch.
+    /// Full erasure is deliberately NOT applied: it would equate `List<String>` with
+    /// `List<Integer>` and emit a factory call that does not compile. The textual clause keeps
+    /// every previously-matching declaration matching: `isSameType` refuses any wildcard-containing
+    /// spelling (a wildcard is not the same type as anything, itself included), so a component and
+    /// parameter both spelled e.g. `List<? extends Foo>` match only textually.
+    private boolean sameComponentType(TypeMirror parameter, TypeMirror component) {
+        return types.isSameType(parameter, component)
+              || boxedParameterOverPrimitiveComponent(parameter, component)
+              || parameter.toString().equals(component.toString());
+    }
+
+    /// Boxing is accepted in one direction only: a boxed factory parameter (`Integer`) over a
+    /// primitive record component (`int`). The accessor returns the primitive and the generated
+    /// call site boxes it — a total conversion. The reverse (primitive parameter over boxed
+    /// component) is refused: the accessor can return null (an absent JSON field), and the call
+    /// site's auto-unboxing would turn that into an NPE → 500 instead of the typed 400 the
+    /// factory path exists to produce; refused, it warns as a near-miss (#710 review).
+    private boolean boxedParameterOverPrimitiveComponent(TypeMirror parameter, TypeMirror component) {
+        return component instanceof PrimitiveType primitive
+              && types.isSameType(parameter, types.boxedClass(primitive).asType());
+    }
+
+    /// The carried type argument must be this record — same type per `Types.isSameType`, with the
+    /// pre-#662 textual comparison kept as the compatibility fallback (a generic record's
+    /// `Result<Self<T>>` carries the method's own type variable, which `isSameType` correctly
+    /// refuses; such factories never matched and still do not — but now warn as near-misses).
+    private boolean returnsResultOf(TypeMirror returnType, TypeElement record, String recordName) {
         return returnType instanceof DeclaredType declared
               && declared.asElement() instanceof TypeElement erasure
               && RESULT_TYPE.equals(erasure.getQualifiedName().toString())
               && declared.getTypeArguments().size() == 1
-              && recordName.equals(declared.getTypeArguments()
-                                           .getFirst()
-                                           .toString());
+              && carriesRecordType(declared.getTypeArguments().getFirst(), record, recordName);
+    }
+
+    private boolean carriesRecordType(TypeMirror carried, TypeElement record, String recordName) {
+        return types.isSameType(carried, record.asType())
+              || recordName.equals(carried.toString());
     }
 
     /// Emit the delegate call for a route that builds the request record from path/query arguments.
