@@ -111,6 +111,31 @@ class CstUseCaseStructureRuleTest {
         }
 
         @Test
+        void flags_request_typed_parameter_when_the_annotation_argument_contains_a_paren() {
+            // The ')' inside "(ab)+" lands in the annotation argument; the parameter must still
+            // read as Request-typed and be denied the fact-consumer exemption (#661).
+            assertTrue(flagsMissingNestedPair("""
+                    package org.example;
+                    public interface CreateOrder {
+                        static CreateOrder createOrder() { return r -> null; }
+                        Promise<Unit> execute(@Pattern(regexp = "(ab)+") CreateOrderRequest body);
+                    }
+                    """));
+        }
+
+        @Test
+        void flags_request_typed_parameter_when_the_qualifier_annotation_is_fully_qualified() {
+            // A fully-qualified annotation must not mask the parameter's Request type (#661).
+            assertTrue(flagsMissingNestedPair("""
+                    package org.example;
+                    public interface CreateOrder {
+                        static CreateOrder createOrder() { return r -> null; }
+                        Promise<Unit> execute(@com.acme.Traced CreateOrderRequest body);
+                    }
+                    """));
+        }
+
+        @Test
         void flags_static_method_not_returning_use_case_type() {
             // A static method that does not return the interface's own type is not a factory.
             assertTrue(hasRule("""
@@ -150,6 +175,80 @@ class CstUseCaseStructureRuleTest {
                     package org.example;
                     public interface ReleaseSeat {
                         Promise<Unit> execute(@SeatEvents SeatReleased event);
+
+                        static ReleaseSeat releaseSeat() {
+                            return event -> Promise.unitPromise();
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void clean_on_fact_consumer_with_paren_annotation_argument_and_fully_qualified_fact_type() {
+            // The exemption survives the #661 annotation spellings when the fact type is genuine.
+            assertFalse(hasRule("""
+                    package org.example;
+                    public interface ReleaseSeat {
+                        Promise<Unit> execute(@SeatEvents(filter = "(ab)+") com.acme.SeatReleased event);
+
+                        static ReleaseSeat releaseSeat() {
+                            return event -> Promise.unitPromise();
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void clean_on_fact_consumer_with_a_generic_fact_type() {
+            // The type gate reads the erased simple name; type arguments do not obscure it.
+            assertFalse(hasRule("""
+                    package org.example;
+                    public interface ReleaseSeat {
+                        Promise<Unit> execute(@SeatEvents Envelope<SeatReleased> event);
+
+                        static ReleaseSeat releaseSeat() {
+                            return event -> Promise.unitPromise();
+                        }
+                    }
+                    """));
+        }
+
+        // Three green pins (#661 review): correct today by grammar analysis, pinned so a future
+        // typeSimpleName refactor cannot silently regress these parameter spellings.
+        @Test
+        void clean_on_fact_consumer_with_a_varargs_fact_parameter() {
+            assertFalse(hasRule("""
+                    package org.example;
+                    public interface ReleaseSeat {
+                        Promise<Unit> execute(@SeatEvents SeatReleased... events);
+
+                        static ReleaseSeat releaseSeat() {
+                            return events -> Promise.unitPromise();
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void clean_on_fact_consumer_with_a_reference_array_fact_parameter() {
+            assertFalse(hasRule("""
+                    package org.example;
+                    public interface ReleaseSeat {
+                        Promise<Unit> execute(@SeatEvents SeatReleased[] events);
+
+                        static ReleaseSeat releaseSeat() {
+                            return events -> Promise.unitPromise();
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void clean_on_fact_consumer_with_a_fully_qualified_qualifier_annotation() {
+            assertFalse(hasRule("""
+                    package org.example;
+                    public interface ReleaseSeat {
+                        Promise<Unit> execute(@com.acme.SeatEvents SeatReleased event);
 
                         static ReleaseSeat releaseSeat() {
                             return event -> Promise.unitPromise();
@@ -220,6 +319,14 @@ class CstUseCaseStructureRuleTest {
         return lint(source).stream()
                            .anyMatch(diagnostic -> diagnostic.ruleId()
                                                              .equals(RULE_ID));
+    }
+
+    /// Pins the missing-nested-pair diagnostic specifically, so an exemption test cannot pass
+    /// through an unrelated UC-02 finding.
+    private boolean flagsMissingNestedPair(String source) {
+        return lint(source).stream()
+                           .anyMatch(diagnostic -> diagnostic.ruleId().equals(RULE_ID)
+                                                   && diagnostic.message().contains("no nested Request/Response"));
     }
 
     private List<Diagnostic> lint(String source) {
