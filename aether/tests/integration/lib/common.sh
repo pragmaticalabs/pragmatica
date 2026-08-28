@@ -596,11 +596,11 @@ connectivity_preflight() {
     local timeout="${PREFLIGHT_TIMEOUT:-10}"
 
     # --- Probe 1: raw HTTP via curl (the api_get transport). ---
-    # `/api/nodes/status` is a genuine management read (same endpoint cluster_leader_http
+    # `/api/v1/nodes/status` is a genuine management read (same endpoint cluster_leader_http
     # uses), not a bare /health/live that a half-booted node answers — so a curl OK here
     # means the management API is genuinely serving over plain HTTP from this machine.
     local curl_ok=false
-    if curl -sfk -m "$timeout" -H "X-API-Key: ${API_KEY}" "${endpoint}/api/nodes/status" >/dev/null 2>&1; then
+    if curl -sfk -m "$timeout" -H "X-API-Key: ${API_KEY}" "${endpoint}/api/v1/nodes/status" >/dev/null 2>&1; then
         curl_ok=true
     fi
 
@@ -1057,7 +1057,7 @@ MGMT_SCHEME="${MGMT_SCHEME:-http}"
 #   `${CLOUD_SOURCE_NAME}-core-0`, etc.
 #
 # Use this whenever a test calls a management endpoint that takes a node-id path
-# parameter (e.g. /api/nodes/drain/<id>, /api/node/lifecycle/<id>). Test helpers
+# parameter (e.g. /api/v1/nodes/drain/<id>, /api/node/lifecycle/<id>). Test helpers
 # that go through SSH (cloud_ssh / kill_node) already translate internally; use
 # this only when the node id reaches the runtime as-is.
 to_node_id() {
@@ -1227,10 +1227,10 @@ cloud_public_ip() {
     if [ -z "$ip" ]; then
         # bootstrap-state.json only records the nodes provisioned at bootstrap. A
         # CTM-provisioned REPLACEMENT VM (cloud auto-heal) is NOT in that file — its
-        # node-id reaches us from /api/nodes/status, not from bootstrap. Ask THIS
+        # node-id reaches us from /api/v1/nodes/status, not from bootstrap. Ask THIS
         # cluster's own management API for the node's advertised transport address.
         #
-        # `GET /api/nodes/endpoint/<id>` (harness-resilience spec A1) returns
+        # `GET /api/v1/nodes/endpoint/<id>` (harness-resilience spec A1) returns
         # {"nodeId":..,"address":"host:port","reachable":bool} where `address` is the
         # node's own view of its cluster-transport endpoint. The advertise-host fix
         # makes `host` a routable public IP on cloud, so we take the host portion.
@@ -1245,7 +1245,7 @@ cloud_public_ip() {
         #
         # Resolve by the ORIGINAL node_id (CTM ids do not carry `<source>-core-N`).
         local ep_body ep_addr
-        ep_body=$(api_get "/api/nodes/endpoint/${node_id}" 2>/dev/null || true)
+        ep_body=$(api_get "/api/v1/nodes/endpoint/${node_id}" 2>/dev/null || true)
         if [ -n "$ep_body" ]; then
             ep_addr=$(json_value "$ep_body" "address")
             ip="${ep_addr%%:*}"   # strip ":port"; leave a bare host/IP
@@ -1254,7 +1254,7 @@ cloud_public_ip() {
             printf '%s\n' "$ip"
             return 0
         fi
-        log_fail "cloud_public_ip: no entry for '${target}' (input='${node_id}') in ${state_file} and this cluster's /api/nodes/endpoint/${node_id} returned no address"
+        log_fail "cloud_public_ip: no entry for '${target}' (input='${node_id}') in ${state_file} and this cluster's /api/v1/nodes/endpoint/${node_id} returned no address"
         return 1
     fi
     printf '%s\n' "$ip"

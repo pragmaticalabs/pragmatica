@@ -82,14 +82,14 @@ test_drain_first_node_allowed() {
     # which doesn't distinguish (a) auto-heal-disabled-but-budget-tripped from
     # (b) auto-heal-still-active from (c) cluster degraded from a prior suite.
     local autoheal_state
-    autoheal_state=$(api_get "/api/cluster/topology/auto-heal" 2>/dev/null || echo "<unreachable>")
+    autoheal_state=$(api_get "/api/v1/cluster/topology/auto-heal" 2>/dev/null || echo "<unreachable>")
     log_info "auto-heal state before first drain: $(printf '%s' "$autoheal_state" | head -c 200)"
 
     local status body_file
     body_file=$(mktemp)
     status=$(curl -sk -o "$body_file" -w "%{http_code}" -m 10 \
              -X POST -H "X-API-Key: ${API_KEY}" \
-             "${CLUSTER_ENDPOINT}/api/nodes/drain/${node1}")
+             "${CLUSTER_ENDPOINT}/api/v1/nodes/drain/${node1}")
 
     if [ "$status" -ge 200 ] && [ "$status" -lt 300 ] 2>/dev/null; then
         log_pass "First drain accepted (${status})"
@@ -115,7 +115,7 @@ test_drain_second_node_allowed() {
     # Re-resolve to a live node — see test_drain_first_node_allowed.
     _refresh_mgmt_entry_point || log_warn "no live mgmt endpoint — proceeding with pinned ${CLUSTER_ENDPOINT}"
     local status
-    status=$(http_status "${CLUSTER_ENDPOINT}/api/nodes/drain/${node2}" -X POST -H "X-API-Key: ${API_KEY}")
+    status=$(http_status "${CLUSTER_ENDPOINT}/api/v1/nodes/drain/${node2}" -X POST -H "X-API-Key: ${API_KEY}")
     log_info "Second drain response: ${status}"
     # Race-tolerant: 200 = within budget; 409 = budget rejected because CTM auto-heal
     # transitioned node-5 through DECOMMISSIONED and the replacement is still JOINING,
@@ -142,7 +142,7 @@ test_drain_beyond_budget_rejected() {
     # is non-2xx (note 409 is non-2xx → its body will be surfaced too, which is what
     # we want here).
     local status
-    status=$(http_status_with_body "${CLUSTER_ENDPOINT}/api/nodes/drain/${node3}" -X POST -H "X-API-Key: ${API_KEY}")
+    status=$(http_status_with_body "${CLUSTER_ENDPOINT}/api/v1/nodes/drain/${node3}" -X POST -H "X-API-Key: ${API_KEY}")
     log_info "Third drain response: ${status}"
 
     # Auto-heal is disabled (see test_cluster_ready). With two nodes already DRAINING
@@ -199,7 +199,7 @@ test_reactivate_nodes() {
     #
     # Cloud: there is no shared docker daemon to `docker ps` against — a drained node
     # that has exited simply drops out of the cluster's READY membership. Use
-    # cloud_running_cores (mgmt API /api/nodes/lifecycle) as the liveness source there;
+    # cloud_running_cores (mgmt API /api/v1/nodes/lifecycle) as the liveness source there;
     # the drained ids are runtime node-ids (pick_non_leader returns runtime ids on
     # cloud), so match them against the membership READY set.
     local drained_1 drained_2 running deadline still_running

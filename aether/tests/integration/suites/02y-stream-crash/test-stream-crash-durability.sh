@@ -23,7 +23,7 @@
 # unreachable there. `docker kill` on cluster B (`restart:"no"`, so the kill is
 # authoritative) is the only place the real boundary exists.
 #
-# Why the MANAGEMENT publish API cannot drive this: `/api/streams/publish/{name}`
+# Why the MANAGEMENT publish API cannot drive this: `/api/v1/streams/publish/{name}`
 # hardwires partition 0 (StreamRoutes.publishToPartition — #524), so it structurally
 # cannot exercise per-partition WAL replay. This test drives the app-HTTP routes of the
 # `test-stream-multipart` blueprint instead: a KEYLESS publish round-robins across all
@@ -223,7 +223,7 @@ json_scalar() {
 replicas_snapshot_owner_view() {
     local attempts="${1:-8}" body last_body="" i served
     for ((i = 0; i < attempts; i++)); do
-        body=$(api_get "/api/streams/replicas/${STREAM_NAME}/${KILL_PARTITION}" 2>/dev/null) || body=""
+        body=$(api_get "/api/v1/streams/replicas/${STREAM_NAME}/${KILL_PARTITION}" 2>/dev/null) || body=""
         if [ -n "$body" ]; then
             last_body="$body"
             served=$(json_scalar "$body" servedByOwner)
@@ -238,7 +238,7 @@ replicas_snapshot_owner_view() {
 # `hrwOwner`, so no owner-authoritative view is needed (see the note in test_identify_partition_owner).
 owner_of_partition() {
     local partition="$1" body
-    body=$(api_get "/api/streams/replicas/${STREAM_NAME}/${partition}" 2>/dev/null) || body=""
+    body=$(api_get "/api/v1/streams/replicas/${STREAM_NAME}/${partition}" 2>/dev/null) || body=""
     if [ -z "$body" ]; then
         printf ''
         return 0

@@ -77,7 +77,7 @@ detect_capabilities() {
     export CAP_PERSISTENCE=false
 
     # Network partition: enabled on docker/remote/cloud. The 12-network suite
-    # uses kill_node + /api/events polling. NODE_FAILED/NODE_LEFT are emitted
+    # uses kill_node + /api/v1/events polling. NODE_FAILED/NODE_LEFT are emitted
     # from local SWIM observation on every node (not leader-gated), so cloud
     # works the same as docker/remote.
     case "$env_type" in

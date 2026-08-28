@@ -33,7 +33,7 @@ ok()   { echo "  PASS  $1"; PASS=$((PASS + 1)); }
 fail() { echo "  FAIL  $1"; FAIL=$((FAIL + 1)); }
 
 # OFFLINE GUARD: cloud_public_ip's CTM-replacement fallback calls api_get
-# (-> /api/nodes/endpoint/<id>). With no live cluster, the real api_get would probe
+# (-> /api/v1/nodes/endpoint/<id>). With no live cluster, the real api_get would probe
 # the bogus TARGET_HOST over curl and stall every test that misses bootstrap-state.
 # Stub api_get for the whole file so the harness never touches the network: return
 # the A1 wire shape for the known CTM-replacement node, rc 1 (no endpoint) for
@@ -41,7 +41,7 @@ fail() { echo "  FAIL  $1"; FAIL=$((FAIL + 1)); }
 CTM_NODE="aether-cloud-test-b-node-01JCTMREPLACEMENT0000000001"
 api_get() {
     case "$1" in
-        "/api/nodes/endpoint/${CTM_NODE}")
+        "/api/v1/nodes/endpoint/${CTM_NODE}")
             printf '{"nodeId":"%s","address":"178.105.192.36:7100","reachable":true}' "$CTM_NODE" ;;
         *) return 1 ;;
     esac
@@ -117,7 +117,7 @@ got=$(cloud_node_ip "node-2" 2>/dev/null) && [ "$got" = "203.0.113.11" ] \
 #   (b) the OLD multi-line-JSON grep bug is gone (we never parse raw API JSON —
 #       hcloud emits columns, awk splits on whitespace);
 #   (c) cloud_public_ip resolves a CTM-replacement node (absent from
-#       bootstrap-state.json) via this cluster's /api/nodes/endpoint mgmt API,
+#       bootstrap-state.json) via this cluster's /api/v1/nodes/endpoint mgmt API,
 #       stripping the ":port" from the advertised host:port address;
 #   (d) cloud_server_id chains (c)->(a) end-to-end for a replacement node.
 # ---------------------------------------------------------------------------

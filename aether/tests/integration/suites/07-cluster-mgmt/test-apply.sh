@@ -18,7 +18,7 @@ test_get_current_config() {
 }
 
 test_apply_config_override() {
-    # /api/config expects {key, value, nodeId?} per ConfigRoutes.SetConfigRequest.
+    # /api/v1/config expects {key, value, nodeId?} per ConfigRoutes.SetConfigRequest.
     # The earlier {overrides:{...}} shape always 500s with "Missing key or value field".
     local body='{"key":"test.integration.marker","value":"applied"}'
     local result
@@ -52,7 +52,7 @@ test_config_visible_on_all_nodes() {
         local node_ep
         node_ep=$(node_base_url "$i" 2>/dev/null || echo "node-${i}")
         local overrides
-        if ! overrides=$(node_api_get "$i" "/api/config/overrides"); then
+        if ! overrides=$(node_api_get "$i" "/api/v1/config/overrides"); then
             log_fail "Per-node config probe failed on ${node_name} (${node_ep})"
             mismatches=$((mismatches + 1))
             continue
@@ -80,7 +80,7 @@ test_config_visible_on_all_nodes() {
 
 test_overrides_endpoint() {
     local overrides
-    overrides=$(api_get "/api/config/overrides")
+    overrides=$(api_get "/api/v1/config/overrides")
     # May be empty if no overrides configured
     if [ -n "$overrides" ]; then
         log_pass "Config overrides endpoint returns data"
