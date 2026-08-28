@@ -120,17 +120,36 @@ public class ResultDeserializer extends ValueDeserializer<Result<?>> {
     @Override
     public ValueDeserializer<?> createContextual(DeserializationContext ctxt, BeanProperty property) {
         return option(property).map(BeanProperty::getType)
-                     .filter(JavaType::hasContentType)
+                     .filter(type -> type.getRawClass() == Result.class)
+                     .flatMap(ResultDeserializer::elementType)
                      .map(type -> createContextualDeserializer(ctxt, property, type))
                      .or(this);
     }
 
+    /// Result is registered on the plain class, so a declared `Result<T>` arrives as a SimpleType:
+    /// `hasContentType()` is false and `T` lives in the generic binding instead — same defect family
+    /// as OptionDeserializer's (#696). The raw-class filter above is a recursion guard, not
+    /// decoration: `createContextual` sees only the PROPERTY's type, so when this deserializer is
+    /// resolved for the element of another wrapper (`Option<Result<X>>`), deriving from the property
+    /// would re-derive the outer wrapper forever.
+    private static Option<JavaType> elementType(JavaType type) {
+        return type.hasContentType()
+               ? option(type.getContentType())
+               : type.containedTypeCount() == 1
+                 ? option(type.containedType(0))
+                 : Option.none();
+    }
+
     private ResultDeserializer createContextualDeserializer(DeserializationContext ctxt,
                                                             BeanProperty property,
-                                                            JavaType type) {
-        var contentType = type.getContentType();
-        var deser = ctxt.findContextualValueDeserializer(contentType, property);
+                                                            JavaType elementType) {
+        // Same-wrapper and container elements skip the property-contextualized delegate — see
+        // OptionDeserializer: both shapes re-enter contextualization with the same property and
+        // recurse; the type-directed path stays typed and property-free.
+        var deser = elementType.getRawClass() == Result.class || elementType.isContainerType()
+                    ? Option.<ValueDeserializer<Object>> none()
+                    : option(ctxt.findContextualValueDeserializer(elementType, property));
 
-        return new ResultDeserializer(option(contentType), option(deser));
+        return new ResultDeserializer(option(elementType), deser);
     }
 }
