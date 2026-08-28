@@ -22,21 +22,43 @@ public final class RouteAssembler {
                                        .result();
         }
 
-        var sb = new StringBuilder(route.prefix());
+        var paramIndex = 0;
 
-        for (int i = 0; i < values.size(); i++) {
-            var value = values.get(i);
-
+        for (var value : values) {
             if (value == null) {
                 return ManagementRouteError.missingParam(route.name(),
-                                                         route.paramNames().get(i))
+                                                         route.paramNames().get(paramIndex))
                                            .result();
             }
 
-            sb.append('/').append(encodeSegment(value));
+            paramIndex++;
         }
 
-        return Result.success(sb.toString());
+        return Result.success(render(route.tokens(), values));
+    }
+
+    /// Walks the token sequence, appending each `Spacer`'s literal text verbatim and encoding
+    /// param values only at `Param` positions -- generalizing the old "prefix, then every value
+    /// appended trailing" assembly to arbitrary literal/param interleaving. For a tail-only route
+    /// (every existing route before this generalization) `tokens` is exactly literal-run followed
+    /// by param-run, so this produces byte-for-byte the same output as the old
+    /// `prefix + trailing values` construction. Package-private and pure so the mechanism is
+    /// directly pinnable against synthetic token sequences, without needing real `ManagementRoute`
+    /// enum entries.
+    static String render(List<PathToken> tokens, List<String> values) {
+        var sb = new StringBuilder();
+        var paramIndex = 0;
+
+        for (var token : tokens) {
+            if (token instanceof PathToken.Spacer(var text)) {
+                sb.append('/').append(text);
+            } else {
+                sb.append('/').append(encodeSegment(values.get(paramIndex)));
+                paramIndex++;
+            }
+        }
+
+        return sb.toString();
     }
 
     private static String encodeSegment(String value) {

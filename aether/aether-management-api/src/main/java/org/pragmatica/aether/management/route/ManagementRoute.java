@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.management.route;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
@@ -308,17 +309,84 @@ public enum ManagementRoute {
     private final String prefix;
     private final List<String> paramNames;
     private final RouteTarget target;
+    private final List<PathToken> tokens;
     ManagementRoute(HttpMethod method, String suffix, List<String> paramNames, RouteTarget target) {
         this.method = method;
         this.prefix = API_BASE + suffix;
         this.paramNames = List.copyOf(paramNames);
         this.target = target;
+        this.tokens = tailParamTokens(this.prefix, this.paramNames);
     }
     ManagementRoute(HttpMethod method, Raw prefix, List<String> paramNames, RouteTarget target) {
         this.method = method;
         this.prefix = prefix.value();
         this.paramNames = List.copyOf(paramNames);
         this.target = target;
+        this.tokens = tailParamTokens(this.prefix, this.paramNames);
+    }
+    /// Carve-out for routes whose params interleave with literal segments (a literal after or
+    /// between params) -- the shape the two constructors above cannot express, since they always
+    /// place every param at the tail. `suffixTokens` describes only the path AFTER [#API_BASE],
+    /// which is prepended as leading spacer tokens the same way the plain-`suffix` constructor
+    /// prepends it to a literal string, so composition stays at the one site (spec Sec 2.1).
+    /// `paramNames()`/`paramCount()` are derived from the `Param` tokens, in order, so
+    /// [MatchedRoute] and existing param-name-driven callers see no difference from the old shape.
+    ManagementRoute(HttpMethod method, List<PathToken> suffixTokens, RouteTarget target) {
+        this.method = method;
+        this.tokens = interleavedTokens(suffixTokens);
+        this.prefix = leadingLiteralPrefix(this.tokens);
+        this.paramNames = paramNamesOf(this.tokens);
+        this.target = target;
+    }
+    private static List<PathToken> tailParamTokens(String prefix, List<String> paramNames) {
+        var tokens = new ArrayList<PathToken>();
+
+        for (var segment : prefix.split("/")) {
+            if (!segment.isEmpty()) {
+                tokens.add(PathToken.spacer(segment));
+            }
+        }
+
+        for (var name : paramNames) {
+            tokens.add(PathToken.param(name));
+        }
+
+        return List.copyOf(tokens);
+    }
+    private static List<PathToken> interleavedTokens(List<PathToken> suffixTokens) {
+        var tokens = new ArrayList<PathToken>();
+
+        for (var segment : API_BASE.split("/")) {
+            if (!segment.isEmpty()) {
+                tokens.add(PathToken.spacer(segment));
+            }
+        }
+
+        tokens.addAll(suffixTokens);
+
+        return List.copyOf(tokens);
+    }
+    /// The leading run of literal tokens, joined -- the longest static prefix a caller can rely on
+    /// (e.g. for filtering routes by area). Always `{`-free by construction, for every constructor:
+    /// interleaved routes simply stop the join at their first `Param` token.
+    private static String leadingLiteralPrefix(List<PathToken> tokens) {
+        var sb = new StringBuilder();
+
+        for (var token : tokens) {
+            if (token instanceof PathToken.Spacer(var text)) {
+                sb.append('/').append(text);
+            } else {
+                break;
+            }
+        }
+
+        return sb.toString();
+    }
+    private static List<String> paramNamesOf(List<PathToken> tokens) {
+        return tokens.stream()
+                     .filter(PathToken.Param.class::isInstance)
+                     .map(t -> ((PathToken.Param) t).name())
+                     .toList();
     }
     public HttpMethod method() {
         return method;
@@ -334,6 +402,9 @@ public enum ManagementRoute {
     }
     public RouteTarget target() {
         return target;
+    }
+    List<PathToken> tokens() {
+        return tokens;
     }
     public Result<String> assemble(List<String> values) {
         return RouteAssembler.assemble(this, values);

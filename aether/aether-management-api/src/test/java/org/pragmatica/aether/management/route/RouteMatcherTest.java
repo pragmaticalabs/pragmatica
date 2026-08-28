@@ -8,6 +8,8 @@ package org.pragmatica.aether.management.route;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.http.HttpMethod;
 
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.http.HttpMethod.DELETE;
 import static org.pragmatica.http.HttpMethod.GET;
@@ -165,5 +167,52 @@ class RouteMatcherTest {
             var result = matcher.match(method, "/api/v1/nodes/status");
             assertThat(result).isNotNull();
         }
+    }
+
+    // -- Token-based ambiguity guard (management-api-versioning-spec.md §3.2/§3.3 groundwork) --
+    // These pin RouteMatcher.ambiguous(List<PathToken>, List<PathToken>) directly against
+    // synthetic token sequences, since the interleaved shapes these pins exercise don't exist as
+    // real ManagementRoute enum entries yet (that's Commit 2b's job).
+
+    @Test
+    void ambiguous_returnsFalse_forLegitimateSpecificityPair() {
+        // STREAM_NAMESPACES_GET-shaped: /api/v1/streams/namespaces/{ns}
+        var namespacesGet = List.<PathToken>of(
+                PathToken.spacer("api"), PathToken.spacer("v1"),
+                PathToken.spacer("streams"), PathToken.spacer("namespaces"), PathToken.param("ns"));
+        // STREAMS_VERSIONS_LIST-shaped: /api/v1/streams/{ns}/{stream}
+        var versionsList = List.<PathToken>of(
+                PathToken.spacer("api"), PathToken.spacer("v1"),
+                PathToken.spacer("streams"), PathToken.param("ns"), PathToken.param("stream"));
+
+        // Compatible (a concrete path like /api/v1/streams/namespaces/foo matches both
+        // structurally) but namespacesGet has strictly more literals in the same positions, so it
+        // properly dominates — today's longest-literal-prefix-wins behavior already resolves this
+        // without a build-time collision.
+        assertThat(RouteMatcher.ambiguous(namespacesGet, versionsList)).isFalse();
+        assertThat(RouteMatcher.ambiguous(versionsList, namespacesGet)).isFalse();
+    }
+
+    @Test
+    void ambiguous_returnsTrue_forGenuinelyAmbiguousPair() {
+        // Neither route's literal placement is a superset of the other's: a concrete path like
+        // /foo/bar could structurally match either, and neither is more specific.
+        var literalThenParam = List.<PathToken>of(PathToken.spacer("foo"), PathToken.param("x"));
+        var paramThenLiteral = List.<PathToken>of(PathToken.param("y"), PathToken.spacer("bar"));
+
+        assertThat(RouteMatcher.ambiguous(literalThenParam, paramThenLiteral)).isTrue();
+        assertThat(RouteMatcher.ambiguous(paramThenLiteral, literalThenParam)).isTrue();
+    }
+
+    @Test
+    void ambiguous_returnsTrue_forMutualDomination_differingOnlyInParamNames() {
+        // Identical literal placement and text, differing only in param names. Both routes
+        // trivially dominate each other, so neither PROPERLY dominates — this must still be
+        // rejected as ambiguous (it's a duplicate route shape, not a specificity ordering).
+        var a = List.<PathToken>of(PathToken.spacer("streams"), PathToken.param("ns"), PathToken.param("stream"));
+        var b = List.<PathToken>of(PathToken.spacer("streams"), PathToken.param("x"), PathToken.param("y"));
+
+        assertThat(RouteMatcher.ambiguous(a, b)).isTrue();
+        assertThat(RouteMatcher.ambiguous(b, a)).isTrue();
     }
 }
