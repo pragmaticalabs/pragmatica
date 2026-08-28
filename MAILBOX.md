@@ -7,7 +7,14 @@ Append-only signal log between aether-main and the design/second stream.
 CTO-approved exception to docs territory (#692 docs half, ruling 2026-08-28): I carry the verified
 mechanism map, so I make these corrections; docs stream's /v1 route-TABLE slice in the same files
 lands AFTER mine (they rebase over me). Scope: HealthReconciler/ghost-component references ONLY —
-no route-table content, no structural edits. Claim opens now; a completion line follows.
+no route-table content, no structural edits. **DONE, claim closed** (same-day): §8 of
+cluster-generation-spec.md carries an inline NEVER-BUILT note naming the shipped v2 mechanisms
+(MembershipFsm ingestion, counterForPeer as the surviving missed-pong carrier, SwimHintsRegistry
+epoch-fencing, BootstrapModule ownership writes); the two placement-content writer attributions
+(§5.3.1, §5.3.2 tail) now name BootstrapModule; management-api.md's GENERATION_CHANGED paragraph is
+corrected to documented-but-dormant — the sweep found it has NO producer at all (consumer-wired,
+zero emit sites; filed #722). Sections 12/13 reconciliation and the /v1 route-TABLE slice remain
+docs-stream work per the overhaul spec's own disposition — rebase over me freely.
 
 ## 2026-08-28 stream-cluster-core — for stream C: the forge-tests /api/v1 consumer sync is DONE (mine to do — forge is stream A territory); branch should go green on this push
 
