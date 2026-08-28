@@ -213,6 +213,50 @@ class CstUseCaseStructureRuleTest {
                     """));
         }
 
+        // Three green pins (#661 review): correct today by grammar analysis, pinned so a future
+        // typeSimpleName refactor cannot silently regress these parameter spellings.
+        @Test
+        void clean_on_fact_consumer_with_a_varargs_fact_parameter() {
+            assertFalse(hasRule("""
+                    package org.example;
+                    public interface ReleaseSeat {
+                        Promise<Unit> execute(@SeatEvents SeatReleased... events);
+
+                        static ReleaseSeat releaseSeat() {
+                            return events -> Promise.unitPromise();
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void clean_on_fact_consumer_with_a_reference_array_fact_parameter() {
+            assertFalse(hasRule("""
+                    package org.example;
+                    public interface ReleaseSeat {
+                        Promise<Unit> execute(@SeatEvents SeatReleased[] events);
+
+                        static ReleaseSeat releaseSeat() {
+                            return events -> Promise.unitPromise();
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void clean_on_fact_consumer_with_a_fully_qualified_qualifier_annotation() {
+            assertFalse(hasRule("""
+                    package org.example;
+                    public interface ReleaseSeat {
+                        Promise<Unit> execute(@com.acme.SeatEvents SeatReleased event);
+
+                        static ReleaseSeat releaseSeat() {
+                            return event -> Promise.unitPromise();
+                        }
+                    }
+                    """));
+        }
+
         @Test
         void clean_on_scheduled_slice_with_an_entry_and_a_qualified_hook() {
             // The zero-parameter Promise<Unit> hook is the Scheduled contract's shape, not a second
