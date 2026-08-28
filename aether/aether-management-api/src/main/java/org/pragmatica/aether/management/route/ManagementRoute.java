@@ -11,6 +11,7 @@ import java.util.List;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.http.HttpMethod;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 import static org.pragmatica.aether.management.route.RouteTarget.ANY;
 import static org.pragmatica.aether.management.route.RouteTarget.LEADER;
@@ -353,7 +354,14 @@ public enum ManagementRoute {
 
         return List.copyOf(tokens);
     }
-    private static List<PathToken> interleavedTokens(List<PathToken> suffixTokens) {
+    /// Package-private (not `private`) so the blank-`Spacer` guard below is directly pinnable
+    /// without constructing a real enum constant -- a bad token reaching the enum constructor
+    /// would fail `ManagementRoute`'s static init and take every other test down with it.
+    /// Scoped to interleaved routes only: the tail-only constructors above build their tokens from
+    /// a `String` prefix (`tailParamTokens`), which can't produce a blank segment in the first
+    /// place, so they need no equivalent guard and their ~150 existing routes need no audit.
+    static List<PathToken> interleavedTokens(List<PathToken> suffixTokens) {
+        validateNoBlankSpacer(suffixTokens).expect("interleaved ManagementRoute suffix tokens");
         var tokens = new ArrayList<PathToken>();
 
         for (var segment : API_BASE.split("/")) {
@@ -365,6 +373,15 @@ public enum ManagementRoute {
         tokens.addAll(suffixTokens);
 
         return List.copyOf(tokens);
+    }
+    private static Result<Unit> validateNoBlankSpacer(List<PathToken> suffixTokens) {
+        for (var token : suffixTokens) {
+            if (token instanceof PathToken.Spacer(var text) && text.isBlank()) {
+                return ManagementRouteError.blankSpacerText(suffixTokens).result();
+            }
+        }
+
+        return Result.success(Unit.unit());
     }
     /// The leading run of literal tokens, joined -- the longest static prefix a caller can rely on
     /// (e.g. for filtering routes by area). Always `{`-free by construction, for every constructor:

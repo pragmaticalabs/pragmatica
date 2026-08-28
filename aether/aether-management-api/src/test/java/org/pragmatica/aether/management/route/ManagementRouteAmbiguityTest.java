@@ -8,8 +8,10 @@ package org.pragmatica.aether.management.route;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 
 /// Verifies the [ManagementRoute] enum loads cleanly (no ambiguous routes)
@@ -72,5 +74,18 @@ class ManagementRouteAmbiguityTest {
         System.arraycopy(single, 0, doubled, single.length, single.length);
         var result = RouteMatcher.build(doubled);
         assertThat(result.isFailure()).isTrue();
+    }
+
+    @Test
+    void interleavedTokens_rejectsBlankSpacer() {
+        // Commit 2b will hand-author 16 interleaved token lists; a typo'd Spacer("") would
+        // otherwise silently collapse two path segments into one at render/match time. Scoped to
+        // the interleaved constructor only -- see the guard's own doc comment for why the ~150
+        // existing tail-only routes don't need this (and aren't audited for it).
+        var blankMiddle = List.<PathToken>of(PathToken.spacer("streams"), PathToken.spacer(""), PathToken.param("id"));
+
+        assertThatThrownBy(() -> ManagementRoute.interleavedTokens(blankMiddle))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Blank Spacer");
     }
 }
