@@ -39,9 +39,9 @@ ships — how long a superseded major keeps receiving fixes, whether there is a 
 line, what a deprecation/EOL timeline looks like. The SemVer commitment above says how a version
 number must behave; it does not by itself say how long an old one is supported. No such policy is
 published anywhere in this repository today [checked `README.md`, `LICENSE`, `CHANGELOG.md` — none
-states one], and this page will not invent a duration. Candidate for its own tracking ticket,
-parallel to how the version-skew gap below was tracked as #666, rather than being decided
-silently in a docs pass — flagged here, not filed.
+states one], and this page will not invent a duration. **Tracked as #705** (filed 2026-08-28,
+milestone v1.0.0): an owner-grade support-cost decision, parallel to how the version-skew gap
+below was tracked as #666, not one to make silently in a docs pass.
 
 Separately, what *is* an explicit, recorded policy — scoped to the management API surface only,
 and still in Draft — is a **pre-GA no-backward-compatibility stance**: "pre-GA, a rename is free

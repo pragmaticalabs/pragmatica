@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Changed (2026-08-28 — #705 filed: point the compat-window gap at it)
+- `aether/docs/reference/versioning-and-compatibility.md`'s open compatibility-window gap
+  (noted when #321 landed, below) now points at #705 — filed by the owner off that flag,
+  milestoned v1.0.0 — instead of describing it as an unfiled candidate. No policy content added;
+  the duration/backport decision is still owner-grade and unmade.
+
 ### Fixed (2026-08-28 — #577 docs half: `@Sql` documented usage did not compile)
 - `aether/docs/reference/configuration.md`'s Config Merge Hierarchy example called
   `@Sql("orders_db")` — `@Sql` (`aether/resource/api/.../db/Sql.java`) has no value element at all,
