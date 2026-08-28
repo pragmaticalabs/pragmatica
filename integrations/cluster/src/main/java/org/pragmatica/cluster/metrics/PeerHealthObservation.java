@@ -10,10 +10,10 @@ import org.pragmatica.serialization.Codec;
 
 /// Per-peer SWIM health observation produced by a follower's detector.
 /// Followers push these into an outbound buffer that drains into the next
-/// `ClusterSyncPong`. Carries the sender's observed epoch so the leader's
-/// `HealthReconciler` can epoch-fence stale observations, plus a wall-clock
-/// `producedAtMs` (epoch millis) so consumers can apply a staleness TTL at
-/// drain time independent of cluster epoch.
+/// `ClusterSyncPong`. Carries the sender's observed epoch so the leader-side
+/// consumer (Aether's `SwimHintsRegistry`) can epoch-fence stale observations,
+/// plus a wall-clock `producedAtMs` (epoch millis) so consumers can apply a
+/// staleness TTL at drain time independent of cluster epoch.
 ///
 /// @param peerId                node the observation is about
 /// @param hint                  observed health hint

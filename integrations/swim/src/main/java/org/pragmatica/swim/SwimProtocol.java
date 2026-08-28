@@ -102,8 +102,8 @@ public final class SwimProtocol implements SwimMessageHandler {
     ///             on the FAULTY edge regardless of `everSeenHealthy`. The `RECOVERING`
     ///             branch is the critical fix for compose-restart: peers were Healthy
     ///             in the prior `NORMAL` period, so a post-restart kill must produce
-    ///             `FaultyObserved` to drive `HealthReconciler` aggregation, the
-    ///             downstream `DECOMMISSIONED` write, and the `NODE_LEFT` event.
+    ///             `FaultyObserved` to drive the membership FSM's FAULTY ingestion, the
+    ///             downstream departure handling, and the `NODE_LEFT` event.
     /// The default `() -> true` keeps the legacy cold-boot-suppression behavior for
     /// callers (notably unit tests) that don't wire a phase source.
     private final BooleanSupplier isBooting;
@@ -2067,7 +2067,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// - In `COLD_BOOT` phase (`isBooting=true`), preserve the per-peer
     ///   `everSeenHealthy` gate: a peer that has never been observed HEALTHY emits
     ///   `UnknownObserved` so noisy bootstrap-time SWIM transitions do not flood
-    ///   `HealthReconciler` with unactionable FAULTY edges.
+    ///   the membership FSM with unactionable FAULTY edges.
     /// - In `NORMAL` and `RECOVERING` phases (`isBooting=false`), emit
     ///   `FaultyObserved` regardless of `everSeenHealthy` — EXCEPT when the never-HEALTHY
     ///   peer still has a LIVE transport connection (gate RCA fix, 2026-06-11): then the
@@ -2078,8 +2078,9 @@ public final class SwimProtocol implements SwimMessageHandler {
     ///   is provably up. The `RECOVERING` branch is the critical compose-restart fix: peers
     ///   were visible-and-Healthy in the prior `NORMAL` period (their `everSeenHealthy` flag
     ///   is preserved across protocol life), so a post-restart kill must produce a
-    ///   cluster-visible `FaultyObserved`. This drives `HealthReconciler` aggregation, the
-    ///   `DECOMMISSIONED` write, and the downstream `NODE_LEFT` / `NODE_FAILED` event that
+    ///   cluster-visible `FaultyObserved`. This drives the membership FSM's FAULTY ingestion
+    ///   (`MembershipFsm.onSwimFaulty` via the observation listener) and the downstream
+    ///   `NODE_LEFT` / `NODE_FAILED` event that
     ///   integration tests depend on.
     ///
     /// The NORMAL-phase JOIN-GRACE suppression that previously lived here is GONE (#336/#241):
@@ -2204,7 +2205,7 @@ public final class SwimProtocol implements SwimMessageHandler {
 
     /// Cold-boot FAULTY-suppression journal line: in COLD_BOOT phase a never-HEALTHY peer
     /// emits `UnknownObserved` instead of `FaultyObserved` so formation-time churn does not
-    /// flood `HealthReconciler`. (The former NORMAL-phase join-grace suppression branch is gone
+    /// flood the membership FSM. (The former NORMAL-phase join-grace suppression branch is gone
     /// — that case is now handled before the FAULTY edge by the OBSERVED birth state, #336/#241.)
     private void logColdBootSuppression(NodeId peer) {
         LOG.info("SWIM cold-boot suppression (COLD_BOOT phase): peer {} never observed HEALTHY — emitting UNKNOWN instead of FAULTY",
