@@ -11,6 +11,7 @@ import javax.lang.model.element.ExecutableElement;
 import javax.lang.model.element.Modifier;
 import javax.lang.model.element.TypeElement;
 import javax.lang.model.type.DeclaredType;
+import javax.lang.model.type.ExecutableType;
 import javax.lang.model.type.TypeMirror;
 import javax.lang.model.util.Elements;
 import javax.lang.model.util.Types;
@@ -18,7 +19,9 @@ import javax.tools.Diagnostic;
 import javax.tools.JavaFileObject;
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -989,22 +992,64 @@ public class FactoryClassGenerator {
         }
     }
 
+    /// #663: dependency methods follow Java interface-inheritance semantics — the scan walks
+    /// the super-interface closure breadth-first from the dependency interface, so inherited
+    /// abstract methods are proxied (or rejected by the #612 gate) exactly like declared ones.
+    /// Before the walk they silently vanished from the scan and javac then failed on the
+    /// generated proxy record ("does not override abstract method"), anchored in code the
+    /// user never wrote. BFS keeps generation deterministic: declared methods first in
+    /// declaration order, then supers level by level in declaration order. The signature set
+    /// makes the nearest declaration win an override chain (one proxy entry per signature);
+    /// signatures and generated types use `asMemberOf` so a generic super's `lookup(K)` seen
+    /// through `extends KeyedQuery<String>` is `lookup(String)`, and its override collapses
+    /// onto it.
     private List<ProxyMethodInfo> collectProxyMethods(DependencyModel dep) {
         var methods = new ArrayList<ProxyMethodInfo>();
         var interfaceElement = elements.getTypeElement(dep.interfaceQualifiedName());
 
-        if (interfaceElement != null) {
-            for (var enclosed : interfaceElement.getEnclosedElements()) {
-                if (enclosed.getKind() == ElementKind.METHOD) {
-                    var method = (ExecutableElement) enclosed;
+        if (interfaceElement == null || !(dep.interfaceType() instanceof DeclaredType dependencyType)) {
+            return methods;
+        }
 
-                    if (!method.getModifiers().contains(Modifier.STATIC) && !method.getModifiers()
-                                                                                   .contains(Modifier.DEFAULT)) {
-                        extractPromiseTypeArg(method.getReturnType()).map(responseType -> toProxyMethodInfo(method,
-                                                                                                            responseType))
-                                             .onPresent(methods::add)
-                                             .onEmpty(() -> reportNonPromiseDependencyMethod(dep, method));
-                    }
+        var seenSignatures = new HashSet<String>();
+        var visited = new HashSet<String>();
+        var queue = new ArrayDeque<TypeElement>();
+        queue.add(interfaceElement);
+        visited.add(interfaceElement.getQualifiedName().toString());
+
+        while (!queue.isEmpty()) {
+            var iface = queue.removeFirst();
+
+            for (var enclosed : iface.getEnclosedElements()) {
+                if (enclosed.getKind() != ElementKind.METHOD) {
+                    continue;
+                }
+
+                var method = (ExecutableElement) enclosed;
+
+                if (method.getModifiers().contains(Modifier.STATIC)
+                    || method.getModifiers().contains(Modifier.DEFAULT)
+                    || isObjectLevelMethod(method)) {
+                    continue;
+                }
+
+                var resolved = (ExecutableType) types.asMemberOf(dependencyType, method);
+
+                if (!seenSignatures.add(methodSignature(method, resolved))) {
+                    continue;
+                }
+
+                extractPromiseTypeArg(resolved.getReturnType())
+                                     .map(responseType -> toProxyMethodInfo(method, resolved, responseType))
+                                     .onPresent(methods::add)
+                                     .onEmpty(() -> reportNonPromiseDependencyMethod(dep, method, resolved));
+            }
+
+            for (var superType : iface.getInterfaces()) {
+                if (superType instanceof DeclaredType dt
+                    && dt.asElement() instanceof TypeElement superInterface
+                    && visited.add(superInterface.getQualifiedName().toString())) {
+                    queue.addLast(superInterface);
                 }
             }
         }
@@ -1012,16 +1057,48 @@ public class FactoryClassGenerator {
         return methods;
     }
 
-    private ProxyMethodInfo toProxyMethodInfo(ExecutableElement method, String responseType) {
-        var params = method.getParameters()
-                           .stream()
-                           .map(p -> new ProxyParamInfo(p.getSimpleName().toString(),
-                                                        p.asType().toString()))
-                           .toList();
+    /// Override-chain identity: name + erased parameter types, both taken AFTER `asMemberOf`
+    /// substitution so `put(T)` on a generic super and its override `put(String)` share one
+    /// signature.
+    private String methodSignature(ExecutableElement method, ExecutableType resolved) {
+        var params = resolved.getParameterTypes()
+                             .stream()
+                             .map(t -> types.erasure(t).toString())
+                             .collect(Collectors.joining(","));
+
+        return method.getSimpleName() + "(" + params + ")";
+    }
+
+    /// JLS 9.2: every interface implicitly declares abstract methods matching
+    /// java.lang.Object's public methods; an explicit re-declaration (`String toString();`)
+    /// is legal Java and is always satisfied by the generated record itself, so it is never
+    /// a proxy candidate and never a #612 violation.
+    private boolean isObjectLevelMethod(ExecutableElement method) {
+        var name = method.getSimpleName().toString();
+        var params = method.getParameters();
+
+        if (params.isEmpty()) {
+            return name.equals("toString") || name.equals("hashCode");
+        }
+
+        return params.size() == 1
+               && name.equals("equals")
+               && "java.lang.Object".equals(params.getFirst().asType().toString());
+    }
+
+    private ProxyMethodInfo toProxyMethodInfo(ExecutableElement method, ExecutableType resolved, String responseType) {
+        var names = method.getParameters();
+        var resolvedTypes = resolved.getParameterTypes();
+        var params = new ArrayList<ProxyParamInfo>(names.size());
+
+        for (int i = 0; i < names.size(); i++) {
+            params.add(new ProxyParamInfo(names.get(i).getSimpleName().toString(),
+                                          resolvedTypes.get(i).toString()));
+        }
 
         return new ProxyMethodInfo(method.getSimpleName().toString(),
                                    responseType,
-                                   params);
+                                   List.copyOf(params));
     }
 
     private void generateLocalProxyRecord(PrintWriter out,
@@ -1506,13 +1583,23 @@ public class FactoryClassGenerator {
     /// #612: silence was the failure mode — a non-Promise method vanished from the generated
     /// proxy (or, worse, a generic non-Promise one was misread as a Promise) and the caller found
     /// out at runtime. Same policy as codec tag collisions and unregistered resources: refuse
-    /// loudly at compile time, anchored on the offending method element.
-    private void reportNonPromiseDependencyMethod(DependencyModel dep, ExecutableElement method) {
+    /// loudly at compile time, anchored on the offending method element. #663 extends the gate to
+    /// inherited methods: the message names the declaring interface (where the signature lives)
+    /// and, when that differs from the dependency the slice factory takes, the inheriting
+    /// dependency; the return type is reported after `asMemberOf` substitution.
+    private void reportNonPromiseDependencyMethod(DependencyModel dep, ExecutableElement method, ExecutableType resolved) {
+        var declaringInterface = ((TypeElement) method.getEnclosingElement()).getQualifiedName()
+                                                                             .toString();
+        var inheritedNote = declaringInterface.equals(dep.interfaceQualifiedName())
+                            ? ""
+                            : " (inherited by dependency %s)".formatted(dep.interfaceQualifiedName());
+
         processingEnv.getMessager()
                      .printMessage(Diagnostic.Kind.ERROR,
-                                   "Slice dependency method %s.%s returns %s; a slice dependency method must return Promise<T> — slice-to-slice calls are remote-capable, and local shapes (Result, Option, bare values) belong on a step or leaf".formatted(dep.interfaceQualifiedName(),
-                                                                                                                                                                                                                                                          method.getSimpleName(),
-                                                                                                                                                                                                                                                          method.getReturnType()),
+                                   "Slice dependency method %s.%s returns %s; a slice dependency method must return Promise<T> — slice-to-slice calls are remote-capable, and local shapes (Result, Option, bare values) belong on a step or leaf%s".formatted(declaringInterface,
+                                                                                                                                                                                                                                                            method.getSimpleName(),
+                                                                                                                                                                                                                                                            resolved.getReturnType(),
+                                                                                                                                                                                                                                                            inheritedNote),
                                    method);
     }
 

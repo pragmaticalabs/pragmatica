@@ -627,6 +627,329 @@ class SliceProcessorTest {
         assertCompilation(compilation).hadErrorContaining("must return Promise<T>");
     }
 
+    /// #663: dependency methods inherited from super-interfaces were invisible to the
+    /// dependency-method scan — the generated proxy record omitted them while still
+    /// `implements`-ing the interface. The scan must follow Java interface-inheritance
+    /// semantics: the two-level chain pins transitivity, not just direct supers.
+    @Test
+    void should_generate_proxy_for_dependency_method_inherited_from_super_interface() throws Exception {
+        var auditedService = JavaFileObjects.forSourceString("external.AuditedService",
+                                                             """
+            package external;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface AuditedService {
+                Promise<String> auditLog(String entry);
+            }
+            """);
+
+        var stockQuery = JavaFileObjects.forSourceString("external.StockQuery",
+                                                         """
+            package external;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface StockQuery extends AuditedService {
+                Promise<Integer> stockOf(String productId);
+            }
+            """);
+
+        var externalService = JavaFileObjects.forSourceString("external.InventoryService",
+                                                              """
+            package external;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface InventoryService extends StockQuery {
+                Promise<Integer> checkStock(String productId);
+            }
+            """);
+
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import external.InventoryService;
+
+            @Slice
+            public interface OrderService {
+                Promise<String> placeOrder(String orderId);
+
+                static OrderService orderService(InventoryService inventory) {
+                    return null;
+                }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(auditedService);
+        sources.add(stockQuery);
+        sources.add(externalService);
+        sources.add(source);
+
+        Compilation compilation = javac()
+                                       .withProcessors(new SliceProcessor())
+                                       .compile(sources);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.OrderServiceFactory")
+                                        .get().getCharContent(false).toString();
+
+        // Declared method still proxied
+        assertThat(factoryContent).contains("MethodHandle<Integer, String> checkStockHandle");
+        // Direct super-interface method proxied
+        assertThat(factoryContent).contains("MethodHandle<Integer, String> stockOfHandle");
+        assertThat(factoryContent).contains("public Promise<Integer> stockOf(String productId)");
+        // Transitively inherited method proxied
+        assertThat(factoryContent).contains("MethodHandle<String, String> auditLogHandle");
+        assertThat(factoryContent).contains("public Promise<String> auditLog(String entry)");
+    }
+
+    /// #663: a generic super-interface's method must be proxied with the dependency's
+    /// actual type arguments (`lookup(K)` seen through `extends KeyedQuery<String>` is
+    /// `lookup(String)`), not with the raw type variable.
+    @Test
+    void should_substitute_type_arguments_for_generic_super_interface_dependency_method() throws Exception {
+        var keyedQuery = JavaFileObjects.forSourceString("external.KeyedQuery",
+                                                         """
+            package external;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface KeyedQuery<K> {
+                Promise<Integer> lookup(K key);
+            }
+            """);
+
+        var externalService = JavaFileObjects.forSourceString("external.InventoryService",
+                                                              """
+            package external;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface InventoryService extends KeyedQuery<String> {
+                Promise<Integer> checkStock(String productId);
+            }
+            """);
+
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import external.InventoryService;
+
+            @Slice
+            public interface OrderService {
+                Promise<String> placeOrder(String orderId);
+
+                static OrderService orderService(InventoryService inventory) {
+                    return null;
+                }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(keyedQuery);
+        sources.add(externalService);
+        sources.add(source);
+
+        Compilation compilation = javac()
+                                       .withProcessors(new SliceProcessor())
+                                       .compile(sources);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.OrderServiceFactory")
+                                        .get().getCharContent(false).toString();
+
+        assertThat(factoryContent).contains("MethodHandle<Integer, String> lookupHandle");
+        assertThat(factoryContent).contains("public Promise<Integer> lookup(String key)");
+    }
+
+    /// #663 × #612: an inherited non-Promise method must hit the same compile error as a
+    /// declared one — inheritance is not a hole in the #612 gate. The diagnostic names the
+    /// declaring interface (where the offending signature lives) and the dependency that
+    /// inherits it.
+    @Test
+    void should_fail_on_non_promise_dependency_method_inherited_from_super_interface() {
+        var legacyQuery = JavaFileObjects.forSourceString("external.LegacyQuery",
+                                                          """
+            package external;
+
+            public interface LegacyQuery {
+                String syncLookup(String id);
+            }
+            """);
+
+        var externalService = JavaFileObjects.forSourceString("external.InventoryService",
+                                                              """
+            package external;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface InventoryService extends LegacyQuery {
+                Promise<Integer> checkStock(String productId);
+            }
+            """);
+
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import external.InventoryService;
+
+            @Slice
+            public interface OrderService {
+                Promise<String> placeOrder(String orderId);
+
+                static OrderService orderService(InventoryService inventory) {
+                    return null;
+                }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(legacyQuery);
+        sources.add(externalService);
+        sources.add(source);
+
+        Compilation compilation = javac()
+                                       .withProcessors(new SliceProcessor())
+                                       .compile(sources);
+
+        assertCompilation(compilation).failed();
+        assertCompilation(compilation).hadErrorContaining("external.LegacyQuery.syncLookup returns java.lang.String");
+        assertCompilation(compilation).hadErrorContaining("must return Promise<T>");
+        assertCompilation(compilation).hadErrorContaining("inherited by dependency external.InventoryService");
+    }
+
+    /// #663: an override chain is ONE method — a signature declared in both the dependency
+    /// interface and its super-interface must produce exactly one proxy entry (the
+    /// subinterface's declaration wins). Two entries would generate a duplicate record
+    /// component. The pinned count is 2: one record component + one `invoke` call site.
+    @Test
+    void should_count_overridden_dependency_method_once() throws Exception {
+        var stockQuery = JavaFileObjects.forSourceString("external.StockQuery",
+                                                         """
+            package external;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface StockQuery {
+                Promise<Integer> checkStock(String productId);
+            }
+            """);
+
+        var externalService = JavaFileObjects.forSourceString("external.InventoryService",
+                                                              """
+            package external;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface InventoryService extends StockQuery {
+                @Override
+                Promise<Integer> checkStock(String productId);
+            }
+            """);
+
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import external.InventoryService;
+
+            @Slice
+            public interface OrderService {
+                Promise<String> placeOrder(String orderId);
+
+                static OrderService orderService(InventoryService inventory) {
+                    return null;
+                }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(stockQuery);
+        sources.add(externalService);
+        sources.add(source);
+
+        Compilation compilation = javac()
+                                       .withProcessors(new SliceProcessor())
+                                       .compile(sources);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.OrderServiceFactory")
+                                        .get().getCharContent(false).toString();
+        var occurrences = factoryContent.split("checkStockHandle", -1).length - 1;
+
+        assertThat(occurrences).isEqualTo(2);
+    }
+
+    /// #663 control: a flat dependency interface (no super-interfaces) generates exactly
+    /// the proxy record it generated before the super-interface walk — same components,
+    /// same declaration order.
+    @Test
+    void should_keep_flat_dependency_interface_proxy_unchanged() throws Exception {
+        var externalService = JavaFileObjects.forSourceString("external.InventoryService",
+                                                              """
+            package external;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface InventoryService {
+                Promise<Integer> checkStock(String productId);
+
+                Promise<String> nameOf(String productId);
+            }
+            """);
+
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import external.InventoryService;
+
+            @Slice
+            public interface OrderService {
+                Promise<String> placeOrder(String orderId);
+
+                static OrderService orderService(InventoryService inventory) {
+                    return null;
+                }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(externalService);
+        sources.add(source);
+
+        Compilation compilation = javac()
+                                       .withProcessors(new SliceProcessor())
+                                       .compile(sources);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.OrderServiceFactory")
+                                        .get().getCharContent(false).toString();
+
+        assertThat(factoryContent)
+                  .contains("record inventoryService(MethodHandle<Integer, String> checkStockHandle, "
+                           + "MethodHandle<String, String> nameOfHandle) implements InventoryService {");
+    }
+
     @Test
     void should_handle_multiple_dependencies() throws Exception {
         var paymentService = JavaFileObjects.forSourceString("payments.PaymentService",
