@@ -320,6 +320,21 @@ class JsonMapperTest {
                 .onSuccess(nested -> assertTrue(nested.doubled().isPresent()));
         }
 
+        record Shipment(String id, Option<List<Option<Long>>> slots) {}
+
+        @Test
+        void readString_doesNotRecurse_forContainerSeparatedSameWrapper() {
+            // Collection deserializers propagate the SAME property into content contextualization,
+            // so a same-wrapper element on the far side of a container re-derives the container
+            // forever unless container elements go through the type-directed path.
+            var json = "{\"id\":\"s-1\",\"slots\":[1,null,3]}";
+
+            mapper.readString(json, Shipment.class)
+                .onFailure(cause -> fail("Should not fail: " + cause))
+                .onSuccess(shipment -> shipment.slots()
+                                               .onPresent(slots -> assertEquals(3, slots.size())));
+        }
+
         record Cart(String id, Option<List<Amount>> lines) {}
 
         @Test

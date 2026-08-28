@@ -84,11 +84,14 @@ public class OptionDeserializer extends ValueDeserializer<Option<?>> {
     private OptionDeserializer createContextualDeserializer(DeserializationContext ctxt,
                                                             BeanProperty property,
                                                             JavaType elementType) {
-        // A same-wrapper element (Option<Option<X>> — forbidden in JBCT, but a crash is never the
-        // contract) passes the raw-class guard at every level and would recurse through
-        // findContextualValueDeserializer with the same property: read it through the type-directed
-        // path instead of a contextualized delegate.
-        var deser = elementType.getRawClass() == Option.class
+        // Two element shapes must NOT get a property-contextualized delegate, or contextualization
+        // re-enters with the same property and recurses: a same-wrapper element (Option<Option<X>> —
+        // forbidden in JBCT, but a crash is never the contract), and a container element
+        // (Option<List<Option<X>>> — Collection/Map deserializers propagate the property into
+        // content contextualization, so a same-wrapper element beyond the container re-derives it).
+        // The type-directed path (valueType only) stays fully typed for containers: readValue
+        // contextualizes against the element's own JavaType with no property.
+        var deser = elementType.getRawClass() == Option.class || elementType.isContainerType()
                     ? null
                     : ctxt.findContextualValueDeserializer(elementType, property);
 

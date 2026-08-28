@@ -143,9 +143,10 @@ public class ResultDeserializer extends ValueDeserializer<Result<?>> {
     private ResultDeserializer createContextualDeserializer(DeserializationContext ctxt,
                                                             BeanProperty property,
                                                             JavaType elementType) {
-        // Same-wrapper element (Result<Result<X>>): see OptionDeserializer — contextualizing the
-        // delegate with the same property would recurse; the type-directed path stays safe.
-        var deser = elementType.getRawClass() == Result.class
+        // Same-wrapper and container elements skip the property-contextualized delegate — see
+        // OptionDeserializer: both shapes re-enter contextualization with the same property and
+        // recurse; the type-directed path stays typed and property-free.
+        var deser = elementType.getRawClass() == Result.class || elementType.isContainerType()
                     ? Option.<ValueDeserializer<Object>> none()
                     : option(ctxt.findContextualValueDeserializer(elementType, property));
 
