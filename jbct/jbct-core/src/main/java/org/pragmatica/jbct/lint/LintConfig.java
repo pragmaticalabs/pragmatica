@@ -215,13 +215,15 @@ public record LintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
     // Null literal argument / defensive null comparison
     Map.entry("JBCT-RET-08", DiagnosticSeverity.WARNING),
 
-    // Typed-error construction pack (typed-error-lint-spec §5.1): the whole pack lands at WARNING;
-    // severities freeze only after the track-A census and track-B pilot migration. CAUSE-01 absorbs
-    // the retired JBCT-SEAL-02.
-    Map.entry("JBCT-CAUSE-01", DiagnosticSeverity.WARNING),
-    Map.entry("JBCT-CAUSE-02", DiagnosticSeverity.WARNING),
+    // Typed-error construction pack (typed-error-lint-spec §5.1). Severities FROZEN per #713
+    // (2026-08-28, track-A census: 38/38 CAUSE-02 true positives, 0 false positives, enum carve-out
+    // silent on the 65-file ticketing corpus; track-B pilot: #638): CAUSE-01/02/04 = ERROR per the
+    // spec's proposed table, the rest stay WARNING. CAUSE-06 is unimplemented and outside the
+    // freeze (WARNING-at-introduction when it lands). CAUSE-01 absorbs the retired JBCT-SEAL-02.
+    Map.entry("JBCT-CAUSE-01", DiagnosticSeverity.ERROR),
+    Map.entry("JBCT-CAUSE-02", DiagnosticSeverity.ERROR),
     Map.entry("JBCT-CAUSE-03", DiagnosticSeverity.WARNING),
-    Map.entry("JBCT-CAUSE-04", DiagnosticSeverity.WARNING),
+    Map.entry("JBCT-CAUSE-04", DiagnosticSeverity.ERROR),
     Map.entry("JBCT-CAUSE-05", DiagnosticSeverity.WARNING),
     Map.entry("JBCT-CAUSE-07", DiagnosticSeverity.WARNING),
     Map.entry("JBCT-CAUSE-08", DiagnosticSeverity.WARNING),
