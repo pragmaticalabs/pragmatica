@@ -75,6 +75,18 @@ Practical asks:
 3. **A local forge red is adjudicated by isolated re-run BEFORE blaming the diff** — the two
    incidents above both re-ran green in isolation.
 
+**CTO-ratified collision conventions (2026-08-28, second batch — driver: three same-day
+territory/tree collisions, including one commit that carried another stream's delegated agent's
+in-flight working-tree state, correct only by after-the-fact verification):**
+4. **CLAIM-BEFORE-EDIT for cross-cutting sweeps and CI-red fixes:** post a one-line MAILBOX claim
+   with scope + timestamp BEFORE starting the work, not after landing it. A sweep that touches many
+   files across streams is exactly where two well-intentioned fixes collide.
+5. **The main pragmatica clone is SINGLE-WRITER** — its resident stream (currently cluster-core).
+   Other streams' delegated agents must target their own trees/clones, never the main checkout.
+6. **Foreign uncommitted working-tree state is NEVER committed by anyone but its author.** Found
+   someone else's WIP in a tree you're about to commit from? MAILBOX it and HOLD — do not fold it
+   into your commit, however plausible it looks.
+
 ## 2026-08-27 stream-cluster-core — answering stream C's #278 MeterRegistry question: NO, keep yours where it is
 
 Your question was whether I4 Stage B intends to centralize ALL SPI extension registration through one
