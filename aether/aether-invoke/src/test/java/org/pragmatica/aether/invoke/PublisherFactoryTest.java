@@ -2,14 +2,13 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.invoke;
 
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Test;
+import java.util.concurrent.CopyOnWriteArrayList;
+
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.endpoint.TopicSubscriptionRegistry;
+import org.pragmatica.aether.resource.ResourceProvisioningError;
 import org.pragmatica.aether.resource.SpiResourceProvider;
 import org.pragmatica.aether.resource.TopicConfig;
 import org.pragmatica.aether.slice.MethodName;
@@ -22,6 +21,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.resource.ResourceVersion;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.config.ConfigError;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
@@ -29,13 +29,15 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.type.TypeToken;
-import org.pragmatica.lang.utils.Causes;
 
-import java.util.concurrent.CopyOnWriteArrayList;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
+
 
 class PublisherFactoryTest {
     private PublisherFactory factory;
@@ -63,7 +65,6 @@ class PublisherFactoryTest {
         @Test
         void provision_withoutContext_fails() {
             var config = new TopicConfig("orders");
-
             var result = factory.provision(config).await();
 
             result.onSuccess(_ -> fail("Expected failure"));
@@ -74,20 +75,20 @@ class PublisherFactoryTest {
             var registry = TopicSubscriptionRegistry.topicSubscriptionRegistry();
             var invocations = new CopyOnWriteArrayList<Object>();
             SliceInvoker stubInvoker = new MinimalStubSliceInvoker(invocations);
-
             var context = ProvisioningContext.provisioningContext()
                                              .withExtension(TopicSubscriptionRegistry.class, registry)
                                              .withExtension(SliceInvoker.class, stubInvoker);
             var config = new TopicConfig("orders");
-
             var result = factory.provision(config, context).await();
 
             result.onFailure(_ -> fail("Expected success"))
                   .onSuccess(publisher -> {
-                      // Verify it's a functional publisher by publishing a message
-                      var publishResult = publisher.publish("test").await();
-                      publishResult.onFailure(_ -> fail("Publish should succeed"));
-                  });
+                                 // Verify it's a functional publisher by publishing a message
+                                 var publishResult = publisher.publish("test")
+                                                              .await();
+
+                                 publishResult.onFailure(_ -> fail("Publish should succeed"));
+                             });
         }
     }
 
@@ -115,20 +116,23 @@ class PublisherFactoryTest {
             var key = TopicSubscriptionKey.topicSubscriptionKey(address, subscriberArtifact, METHOD);
             var value = TopicSubscriptionValue.topicSubscriptionValue(NODE);
             var put = new KVCommand.Put<>(key, value);
+
             registry.onSubscriptionPut(new ValuePut<>(put, Option.none()));
         }
 
         private Publisher<Object> provisionPublisherFor(String sliceArtifact, String bareTopic) {
             var context = ProvisioningContext.provisioningContext()
                                              .withExtension(TopicSubscriptionRegistry.class, registry)
-                                             .withExtension(SliceInvoker.class, new MinimalStubSliceInvoker(invocations))
+                                             .withExtension(SliceInvoker.class,
+                                                            new MinimalStubSliceInvoker(invocations))
                                              .withExtension(String.class, sliceArtifact);
-
             @SuppressWarnings("unchecked")
-            var publisher = (Publisher<Object>) factory.provision(new TopicConfig(bareTopic), context)
+            var publisher = (Publisher<Object>) factory.provision(new TopicConfig(bareTopic),
+                                                                  context)
                                                        .await()
                                                        .onFailure(_ -> fail("Provisioning should succeed"))
                                                        .unwrap();
+
             return publisher;
         }
 
@@ -138,13 +142,14 @@ class PublisherFactoryTest {
             var expectedNamespace = BlueprintNamespace.deriveNamespace(artifact).unwrap();
             var expectedAddress = ResourceAddress.resourceAddress(expectedNamespace,
                                                                   "orders",
-                                                                  ResourceVersion.defaultVersion()).unwrap();
+                                                                  ResourceVersion.defaultVersion())
+                                                 .unwrap();
 
             registerBareSubscriptionFor(artifact, "orders");
             var publisher = provisionPublisherFor(artifact.asString(), "orders");
-
             // The subscriber is stored at the blueprint-derived address (not DEFAULT_NAMESPACE).
-            assertEquals(1, registry.findSubscribers(expectedAddress.asString()).size());
+            assertEquals(1,
+                         registry.findSubscribers(expectedAddress.asString()).size());
             // A publish from the co-deployed publisher reaches it → both resolved the same address.
             publisher.publish("order-1").await().onFailure(_ -> fail("Publish should succeed"));
             assertEquals(1, invocations.size());
@@ -158,7 +163,6 @@ class PublisherFactoryTest {
             var publisher = provisionPublisherFor(artifact.asString(), "orders");
 
             publisher.publish("order-1").await().onFailure(_ -> fail("Publish should succeed"));
-
             assertEquals(1, invocations.size());
             assertEquals(artifact, invocations.getFirst());
         }
@@ -167,13 +171,11 @@ class PublisherFactoryTest {
         void publish_subscriberInDifferentBlueprint_isNotReached() {
             var publisherArtifact = Artifact.artifact("org.example:publisher-slice:1.0.0").unwrap();
             var subscriberArtifact = Artifact.artifact("org.example:subscriber-slice:1.0.0").unwrap();
-
             // Both declare the bare topic "orders" but live in different blueprints → different namespaces.
             registerBareSubscriptionFor(subscriberArtifact, "orders");
             var publisher = provisionPublisherFor(publisherArtifact.asString(), "orders");
 
             publisher.publish("order-1").await().onFailure(_ -> fail("Publish should succeed"));
-
             assertTrue(invocations.isEmpty());
         }
     }
@@ -190,8 +192,13 @@ class PublisherFactoryTest {
     class TopicNameFallbackDelivery {
         private static final MethodName METHOD = MethodName.methodName("onClickEvent").unwrap();
         private static final NodeId NODE = new NodeId("node-a");
-        private static final Cause NO_SECTION = Causes.cause("no resources.toml section (name derived from Topic constant)");
         private static final String CLICK_EVENTS = "click-events";
+        // Production loaders type a missing section as ConfigError.SectionNotFound (both TOML
+        // binders run a hasSection check first), so the stub models absence with exactly that
+        // cause: the fallback is absence-discriminating — an existing-but-invalid topic section
+        // (durable-pubsub §3 violation, mistyped durability enum) fails provisioning loudly
+        // instead of silently downgrading to an ephemeral default.
+        private static final Cause NO_SECTION = ConfigError.sectionNotFound(CLICK_EVENTS);
 
         record ClickEvent(String shortCode) {}
 
@@ -205,7 +212,6 @@ class PublisherFactoryTest {
             var publisher = provisionByName(registry, invocations, artifact);
 
             publisher.publish(new ClickEvent("A1")).await().onFailure(cause -> fail(cause.message()));
-
             assertEquals(1, invocations.size());
             assertEquals(artifact, invocations.getFirst());
         }
@@ -215,35 +221,64 @@ class PublisherFactoryTest {
             var registry = TopicSubscriptionRegistry.topicSubscriptionRegistry();
             var invocations = new CopyOnWriteArrayList<Object>();
             var artifact = Artifact.artifact("org.pragmatica.aether.example:url-shortener-url-shortener:1.0.0").unwrap();
-
             var publisher = provisionByName(registry, invocations, artifact);
-
             // TopicPublisher silently no-ops on empty subscribers — publish still succeeds.
             publisher.publish(new ClickEvent("A1")).await().onFailure(cause -> fail(cause.message()));
-
             assertTrue(invocations.isEmpty());
+        }
+
+        /// The second genuine ABSENCE shape: a minimal runtime with no global ConfigService at all
+        /// (the zero-arg provider's loader fails `ConfigServiceNotAvailable` before any section
+        /// lookup). The topic name is derivable from the section, so provisioning must fall back
+        /// exactly as it does for a missing section — refusing here would break topic publishers
+        /// on every runtime that never installs a ConfigService.
+        @Test
+        void publish_reachesSubscriber_whenNoConfigServiceAtAll() {
+            var registry = TopicSubscriptionRegistry.topicSubscriptionRegistry();
+            var invocations = new CopyOnWriteArrayList<Object>();
+            var artifact = Artifact.artifact("org.pragmatica.aether.example:url-shortener-url-shortener:1.0.0").unwrap();
+
+            registerSubscriber(registry, artifact);
+            var publisher = provisionByName(registry,
+                                            invocations,
+                                            artifact,
+                                            ResourceProvisioningError.ConfigServiceNotAvailable.INSTANCE);
+
+            publisher.publish(new ClickEvent("A1")).await().onFailure(cause -> fail(cause.message()));
+            assertEquals(1, invocations.size());
         }
 
         private void registerSubscriber(TopicSubscriptionRegistry registry, Artifact artifact) {
             var address = TopicAddressResolver.resolve(artifact, CLICK_EVENTS).unwrap();
             var key = TopicSubscriptionKey.topicSubscriptionKey(address, artifact, METHOD);
             var value = TopicSubscriptionValue.topicSubscriptionValue(NODE);
+
             registry.onSubscriptionPut(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none()));
         }
 
         private Publisher<Object> provisionByName(TopicSubscriptionRegistry registry,
                                                   CopyOnWriteArrayList<Object> invocations,
                                                   Artifact artifact) {
-            var provider = SpiResourceProvider.spiResourceProvider((section, configClass) -> NO_SECTION.result());
+            return provisionByName(registry, invocations, artifact, NO_SECTION);
+        }
+
+        private Publisher<Object> provisionByName(TopicSubscriptionRegistry registry,
+                                                  CopyOnWriteArrayList<Object> invocations,
+                                                  Artifact artifact,
+                                                  Cause loaderFailure) {
+            var provider = SpiResourceProvider.spiResourceProvider((section, configClass) -> loaderFailure.result());
             var context = ProvisioningContext.provisioningContext()
                                              .withExtension(TopicSubscriptionRegistry.class, registry)
-                                             .withExtension(SliceInvoker.class, new MinimalStubSliceInvoker(invocations))
-                                             .withExtension(String.class, artifact.asString());
+                                             .withExtension(SliceInvoker.class,
+                                                            new MinimalStubSliceInvoker(invocations))
+                                             .withExtension(String.class,
+                                                            artifact.asString());
             @SuppressWarnings("unchecked")
             var publisher = (Publisher<Object>) provider.provide(Publisher.class, CLICK_EVENTS, context)
                                                         .await()
                                                         .onFailure(cause -> fail("Provisioning should succeed: " + cause.message()))
                                                         .unwrap();
+
             return publisher;
         }
     }
@@ -262,6 +297,7 @@ class PublisherFactoryTest {
         @SuppressWarnings("unchecked")
         public <R> Promise<R> invoke(Artifact slice, MethodName method, Object request, TypeToken<R> responseType) {
             invocations.add(slice);
+
             return (Promise<R>) Promise.unitPromise();
         }
 
@@ -276,14 +312,19 @@ class PublisherFactoryTest {
         }
 
         @Override
-        public <R> Promise<R> invokeWithRetry(Artifact slice, MethodName method, Object request,
-                                               TypeToken<R> responseType, int maxRetries) {
+        public <R> Promise<R> invokeWithRetry(Artifact slice,
+                                              MethodName method,
+                                              Object request,
+                                              TypeToken<R> responseType,
+                                              int maxRetries) {
             return invoke(slice, method, request, responseType);
         }
 
         @Override
-        public <R> Promise<R> invokeLocal(Artifact slice, MethodName method, Object request,
-                                           TypeToken<R> responseType) {
+        public <R> Promise<R> invokeLocal(Artifact slice,
+                                          MethodName method,
+                                          Object request,
+                                          TypeToken<R> responseType) {
             return invoke(slice, method, request, responseType);
         }
 
@@ -315,8 +356,7 @@ class PublisherFactoryTest {
         }
 
         @Override
-        public Unit registerAffinityResolver(Artifact artifact, MethodName method,
-                                              CacheAffinityResolver resolver) {
+        public Unit registerAffinityResolver(Artifact artifact, MethodName method, CacheAffinityResolver resolver) {
             return Unit.unit();
         }
 

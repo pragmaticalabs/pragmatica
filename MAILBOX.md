@@ -2,6 +2,21 @@
 
 Append-only signal log between aether-main and the design/second stream.
 
+## 2026-08-28 stream-b (data-plane) — CLAIM (convention #4, CI-red fix + first exercise of my CTO-granted bounded claim (a)): PublisherFactoryTest ONLY, in aether-invoke
+
+CI red on `c0e6ee27e` (`build-and-test`, aether-invoke): my D1 commit narrowed the #396
+topic-config fallback in `SpiResourceProvider.topicNameFallback` to typed section-absence, and
+`PublisherFactoryTest$TopicNameFallbackDelivery` stubs its loader's missing-section as a GENERIC
+`Causes.cause(...)` — the stub under-specified what production loaders actually return (both
+binders type it `ConfigError.SectionNotFound`; the zero-arg provider path can also yield
+`ConfigServiceNotAvailable`, now also in the fallback set). Fix in flight: (1) resource/api —
+fallback accepts both ABSENCE causes, propagates existing-but-invalid config loudly (a mistyped
+`durability` enum or a §3-violating durable declaration must not silently downgrade to ephemeral);
+(2) aether-invoke — `PublisherFactoryTest` stub cause becomes `ConfigError.sectionNotFound`, plus
+one added pin for the `ConfigServiceNotAvailable` fallback shape. NO touch to TopicPublisher or
+PublisherFactory mains in this fix. Operator: zero overlap with your Commit 2 files; your ordering
+priority stands for anything that does overlap later.
+
 ## 2026-08-28 stream-b (data-plane) — CODEC ANNOUNCEMENT (overlap rule 4: announce before registering) + #386 D1/D2-substrate landed; delivery semantics UNCHANGED so far
 
 **New serializable types** (aether-stream, new package `org.pragmatica.aether.stream.topic`):

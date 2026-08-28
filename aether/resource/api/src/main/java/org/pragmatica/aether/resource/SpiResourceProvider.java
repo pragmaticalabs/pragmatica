@@ -284,10 +284,14 @@ public final class SpiResourceProvider implements ResourceProvider {
     /// resources.toml `[section]` — the author no longer writes `topic_name` — defaults to a topic
     /// named after the section instead of failing slice activation. Non-topic resources are unaffected.
     ///
-    /// Only [ConfigError.SectionNotFound] takes the fallback: a section that EXISTS but fails
-    /// validation (the durable-pubsub §3 constraint, inert ephemeral keys) must fail activation
-    /// loudly — recovering it into an ephemeral default would silently downgrade a declared-durable
-    /// topic to fire-and-forget delivery.
+    /// Only config ABSENCE takes the fallback — [ConfigError.SectionNotFound] (the section is not
+    /// in resources.toml) and [ResourceProvisioningError.ConfigServiceNotAvailable] (no config
+    /// service at all, e.g. minimal runtimes): in both states there is nothing declared to honor,
+    /// and the topic name is derivable, which is the point of #396. A section that EXISTS but
+    /// fails binding or validation (the durable-pubsub §3 constraint, inert ephemeral keys, a
+    /// mistyped `durability` enum value) must fail activation loudly — recovering it into an
+    /// ephemeral default would silently downgrade a declared-durable topic to fire-and-forget
+    /// delivery.
     ///
     /// This is the intentional exception to #547's "no resource type silently synthesises
     /// configuration" gate: `TopicConfig` is a single-field record whose value the runtime already
@@ -297,13 +301,13 @@ public final class SpiResourceProvider implements ResourceProvider {
     /// topic/stream sections at all; only generic [SliceTopology.ResourceDep] resources are gated.
     private static Result<Object> topicNameFallback(String section, Class<?> configType, Result<Object> loaded) {
         return configType.equals(TopicConfig.class)
-               ? loaded.fold(cause -> recoverMissingTopicSection(section, cause), Result::success)
+               ? loaded.fold(cause -> recoverAbsentTopicConfig(section, cause), Result::success)
                : loaded;
     }
 
-    private static Result<Object> recoverMissingTopicSection(String section, Cause cause) {
+    private static Result<Object> recoverAbsentTopicConfig(String section, Cause cause) {
         return switch (cause) {
-            case ConfigError.SectionNotFound _ -> Result.success(new TopicConfig(section));
+            case ConfigError.SectionNotFound _, ResourceProvisioningError.ConfigServiceNotAvailable _ -> Result.success(new TopicConfig(section));
             default -> cause.result();
         };
     }
