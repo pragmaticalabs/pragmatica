@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Changed (2026-08-28 — #496 scoped audit, surfaces 2 & 3 closed: KV/durability, deployment/blueprint)
+- GA claims-vs-reality audit (#496), remaining two of three green-lit surfaces. No doc content
+  changed this pass — both surfaces audited clean; recorded here so the "zero findings" result is a
+  verified conclusion, not silence.
+- Surface 2 (KV/durability): a repo-wide sweep for flag-on-sight phrases found nothing left
+  unaddressed beyond what the consensus/cluster-core pass already fixed (D1) and what stays
+  correctly deferred (durable-entity D13, the #676 backup row). Substantially covered by that pass.
+- Surface 3 (deployment/blueprint semantics): read all 8 candidate ops/architecture/spec docs. The
+  `ALL_OR_NOTHING`/blue-green atomicity claims in `architecture/02-deployment.md`,
+  `slice-developers/deployment.md`, and `guides/deploy-guide.md` already earn their wording —
+  mechanism named (single consensus-batch write across all slices' keys, ~100ms/one-Rabia-round for
+  the blue-green switch). `operators/deployment-recovery.md:73` is already exemplary on why
+  "highly available with automatic restart" doesn't describe Aether's terminal-removal/reprovision
+  recovery model. `specs/unified-deploy-spec.md`'s atomicity claim is likewise well-grounded; its
+  `/api/deploy/*` route-namespace content was left untouched as entangled with the deferred
+  `/api/v1` hard-cutover territory, not for a guarantee-wording reason.
+- `aether/docs/reference/guarantees-corrections-needed.md`: logged both surfaces' conclusions.
+  #496's scoped pass (consensus/cluster-core, KV/durability, deployment/blueprint) is now complete;
+  remaining open rows (D6-D13, D16-D19) all sit in explicitly deferred streams/pub-sub/durable-entity
+  territory for a later pass.
+
 ### Changed (2026-08-28 — #496 scoped audit, consensus/cluster-core surface)
 - GA claims-vs-reality audit (#496), scoped to consensus/cluster-core guarantee language per
   team-lead's green-light (management-API-route content, the #676 backup row, and stream/data-plane

@@ -31,7 +31,37 @@
 > active cluster-core work, ownership ambiguous, held rather than guessed), D17/D19 (archive docs —
 > low priority, untouched). D5 ("Battle-tested") intentionally left alone: the term is already defined
 > precisely at the top of `feature-catalog.md`'s own legend, unlike the unqualified phrases above.
-
+>
+> **#496 progress, 2026-08-28 (surfaces 2 & 3 — KV/durability, deployment/blueprint) — both closed,
+> zero further fixes.** Surface 2 (KV/durability): a repo-wide grep for flag-on-sight phrases
+> (`strongly consistent|highly available|never loses|fully durable|always consistent|exactly.once`,
+> excluding streams/pub-sub/durable-entity/archive territory) found nothing left unaddressed beyond
+> what surface 1 already fixed (D1) and what stays correctly deferred (D13 durable-entity, the #676
+> backup row). Everything else the grep hit was already honest (`durable-pubsub-spec.md:98`,
+> `durable-entity-primitive-spec.md:1107`), a false positive (`http-routing.md` "try every node
+> exactly once" is a retry-count bound, not a delivery claim), or squarely in deferred streams
+> territory (`in-memory-streams-spec.md`, `streaming-spec.md`, `hierarchical-storage-spec.md` — all
+> D8–D12/D16 already logged above). **Concluding surface 2 as substantially covered by surface 1.**
+> Surface 3 (deployment/blueprint semantics): read all 8 candidate docs
+> (`architecture/02-deployment.md`, `slice-developers/deployment.md`, `guides/deploy-guide.md`,
+> `guides/rolling-upgrade.md` [D15, already fixed in surface 1], `specs/unified-deploy-spec.md`,
+> `operators/{multi-cluster-deployment,docker-deployment,deployment-recovery}.md`,
+> `operators/runbooks/deployment.md`). The `ALL_OR_NOTHING`/blue-green atomicity claims already earn
+> their wording — mechanism named (single consensus-batch `KVCommand` write across all slices' keys,
+> `InFlightBlueprint` rollback tracking, "~100ms via single Rabia round" for the blue-green switch) —
+> so no fix needed. `deployment-recovery.md:73` is already exemplary: it explicitly explains why
+> "highly available with automatic restart" does **not** describe Aether's node-recovery model
+> (terminal-removal membership, fresh-ULID reprovision, not restart), naming the mechanism precisely —
+> flagged as a good/honest example, not a finding. `multi-cluster-deployment.md`, `docker-deployment.md`,
+> `runbooks/deployment.md` carry no guarantee-language claims at all (pure operational procedure).
+> `unified-deploy-spec.md`'s own atomicity claim (REQ-4) is likewise well-grounded (batch consensus
+> apply), but its `/api/deploy/*` route-namespace content is entangled with the deferred `/api/v1`
+> hard-cutover territory (stream-operator, #300) and was left untouched for that reason, not a
+> guarantee-wording reason. **Concluding surface 3 as audited, clean, zero fixes.**
+> **#496 scoped pass (consensus/cluster-core, KV/durability, deployment/blueprint) is now complete.**
+> Remaining open items in this file (D6–D13, D16–D19) all sit in explicitly deferred territory
+> (streams, pub-sub, durable-entity, archive) and are correctly left for whichever stream owns that
+> re-grounding pass next.
 
 
 Two kinds of item:
