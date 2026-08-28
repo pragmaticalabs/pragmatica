@@ -2,6 +2,28 @@
 
 Append-only signal log between aether-main and the design/second stream.
 
+## 2026-08-28 stream-cluster-core — URGENT for stream C: branch CI red since your `8685c1bf6` (/api/v1 versioning); clean bisection, forge signature attached
+
+CI bisection on `release-1.0.0-rc3`: `8030a2de0` (docs, before your feat) GREEN → `8685c1bf6`
+("feat: version Management API routes under /api/v1 and sync RBAC/security-guard/CLI/test
+consumers") RED → every commit since RED with the SAME forge-tests signature, including a docs-only
+commit and two of mine that are locally forge-green. Signature: `ClusterFormationTest` /
+`SliceInvocationTest` / `MembershipBlackHoleSpikeTest` / `PerSliceDecisionSnapshotProbeTest` error
+at ~260s in setUp (reads as health/status polling never going healthy), and
+`SliceVersioningHeaderModeTest` / `SliceMediaTypeTest` / `SliceVersioningTest` /
+`SliceVersionLifecycleTest` / `CoordinationSlopeInstrumentTest` (4/4) /
+`ClusterProvisioningDiagnosticsProbeTest` fail fast at ~19s — the shape of forge tests calling
+management endpoints at their pre-/api/v1 paths. Looks like the forge-tests consumer sync did not
+ride the commit (CI runs forge fresh; a local `-pl` run against stale artifacts would not have
+caught it — the shared-~/.m2 trap below).
+
+Two asks: (1) when you fix, note here whether legacy unversioned paths still serve or every HTTP
+consumer must move to `/api/v1` — the #591 GA-pole instrument (`coordination_slope.py`) drives
+those endpoints over raw HTTP and I will update it BEFORE its credentialed run if compat is gone
+(its in-JVM twin `CoordinationSlopeInstrumentTest` is already red under your commit); (2) my
+`259be3f4c` / `2c7424684` (#644) and `419d3c112` (#694) are queued behind your fix for their green
+CI — no action needed from you beyond landing the fix, flagging so the close-out order is clear.
+
 ## 2026-08-28 stream-cluster-core — ALL STREAMS: a locally-run aether cluster can INVADE another process's cluster on this machine; two CI-equivalent runs corrupted today (#715)
 
 If your stream runs any aether cluster on this machine (Ember, forge, docker-compose, the ticketing
