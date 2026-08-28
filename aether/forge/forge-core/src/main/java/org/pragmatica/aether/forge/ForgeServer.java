@@ -342,7 +342,7 @@ public final class ForgeServer {
     private void pollNodeEvents() {
         try {
             var port = cluster.flatMap(EmberCluster::getLeaderManagementPort).or(forgeConfig.managementPort());
-            var uriStr = "http://localhost:" + port + "/api/events";
+            var uriStr = "http://localhost:" + port + "/api/v1/events";
 
             if (!lastEventTimestamp.isEmpty()) {
                 uriStr += "?since=" + java.net.URLEncoder.encode(lastEventTimestamp,
@@ -461,12 +461,12 @@ public final class ForgeServer {
         var leaderPort = cluster.flatMap(EmberCluster::getLeaderManagementPort).or(forgeConfig.managementPort());
         var body = "{\"artifact\":\"" + artifactCoords + "\"}";
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + leaderPort + "/api/blueprints/deploy"))
+                                 .uri(URI.create("http://localhost:" + leaderPort + "/api/v1/blueprints/deploy"))
                                  .header("Content-Type", "application/json")
                                  .POST(HttpRequest.BodyPublishers.ofString(body))
                                  .build();
 
-        log.info("Deploying blueprint by coordinates: POST /api/blueprints/deploy — {}", artifactCoords);
+        log.info("Deploying blueprint by coordinates: POST /api/v1/blueprints/deploy — {}", artifactCoords);
         http.sendString(request)
             .await(TimeSpan.timeSpan(10).seconds())
             .onSuccess(result -> handleDeployResponse(result, artifactCoords))

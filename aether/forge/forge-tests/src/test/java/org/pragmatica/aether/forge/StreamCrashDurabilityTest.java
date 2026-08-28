@@ -145,7 +145,7 @@ class StreamCrashDurabilityTest {
     void tearDown() {
         if (cluster != null) {
             var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
-            httpDelete(leaderPort, "/api/blueprints/" + BLUEPRINT_ID);
+            httpDelete(leaderPort, "/api/v1/blueprints/" + BLUEPRINT_ID);
             cluster.stop()
                    .await();
         }
@@ -308,7 +308,7 @@ class StreamCrashDurabilityTest {
     /// On a recovery shortfall, dump EVERY live node's in-JVM replica snapshot (mirrors
     /// `AbstractStreamOwnerFailover.dumpAllReplicaViews`): one WARNING line per node tagged with its own
     /// id, so a non-recovered partition view is diagnosable from the shared forge console instead of the
-    /// assertion dying blind. Reads the SAME `StreamReadRouter.replicaSnapshot` the `/api/streams/replicas`
+    /// assertion dying blind. Reads the SAME `StreamReadRouter.replicaSnapshot` the `/api/v1/streams/replicas`
     /// sensor serves, but per-node in-JVM (the HTTP sensor is delegate-routed, #490).
     private void dumpAllNodeStreamState() {
         for (var node : cluster.allNodes()) {
@@ -470,7 +470,7 @@ class StreamCrashDurabilityTest {
 
     private boolean checkNodeHealth(int port) {
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + "/api/health"))
+                                 .uri(URI.create("http://localhost:" + port + "/api/v1/health"))
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();
@@ -480,13 +480,13 @@ class StreamCrashDurabilityTest {
                    .or(false);
     }
 
-    /// A6 full-membership gate: poll the LEADER's `/api/health` and require quorum AND a member count
+    /// A6 full-membership gate: poll the LEADER's `/api/v1/health` and require quorum AND a member count
     /// that has reached the full expected set. `nodeCount` is the cluster-wide membership count the
     /// bootstrap formation phase also gates on (see `BootstrapPhaseFormation.healthMeetsFloor`).
     private boolean allNodesAreMembers(int expected) {
         var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + leaderPort + "/api/health"))
+                                 .uri(URI.create("http://localhost:" + leaderPort + "/api/v1/health"))
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();
@@ -512,7 +512,7 @@ class StreamCrashDurabilityTest {
         var lastResponse = ERROR_FALLBACK;
 
         for (int attempt = 1; attempt <= 3; attempt++) {
-            lastResponse = httpPostToml(port, "/api/blueprints", body);
+            lastResponse = httpPostToml(port, "/api/v1/blueprints", body);
 
             if (!lastResponse.contains("\"error\"")) {
                 return lastResponse;

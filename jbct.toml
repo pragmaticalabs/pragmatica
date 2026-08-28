@@ -19,3 +19,11 @@ excludes = [
     "**/aether/pg/parser/PgSqlParser.java",
     "**/jbct/parser/Java25Parser.java"
 ]
+
+[lint.rules]
+# TODO(#720): CAUSE-01/02 pinned to warning until the monorepo typed-error migration burns down the
+# gated corpus (39 x CAUSE-01 + 291 x CAUSE-02 across 18 aether modules); remove with #720. Freeze
+# ruling #713: DEFAULT is ERROR from rc3 — this override is explicit leniency, never a default.
+# CAUSE-04 deliberately carries NO override (zero corpus hits; #713 rider 1).
+JBCT-CAUSE-01 = "warning"
+JBCT-CAUSE-02 = "warning"

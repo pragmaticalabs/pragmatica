@@ -35,7 +35,7 @@ direct_scale_status() {
         leader_ip=$(cloud_public_ip "$leader" 2>/dev/null) || { echo "000"; return 0; }
         local port="${CLOUD_MGMT_PORT:-8080}"
         local status
-        status=$(http_status "http://${leader_ip}:${port}/api/cluster/scale" \
+        status=$(http_status "http://${leader_ip}:${port}/api/v1/cluster/scale" \
             -X POST \
             -H "X-API-Key: ${API_KEY}" \
             -H "Content-Type: application/json" \
@@ -47,7 +47,7 @@ direct_scale_status() {
     for i in $(seq 0 $((NODE_COUNT - 1))); do
         local port=$((base_port + i))
         local status
-        status=$(http_status "http://${TARGET_HOST}:${port}/api/cluster/scale" \
+        status=$(http_status "http://${TARGET_HOST}:${port}/api/v1/cluster/scale" \
             -X POST \
             -H "X-API-Key: ${API_KEY}" \
             -H "Content-Type: application/json" \

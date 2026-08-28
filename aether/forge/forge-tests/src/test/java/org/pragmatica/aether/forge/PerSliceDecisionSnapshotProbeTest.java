@@ -26,7 +26,7 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 import org.pragmatica.aether.ember.EmberCluster;
 
 /// #422/#423/#425 full-stack proof that per-slice metric attribution is LIVE end-to-end. Two
-/// distinct slices are deployed and the leader's `GET /api/controller/decisions` snapshot is read:
+/// distinct slices are deployed and the leader's `GET /api/v1/controller/decisions` snapshot is read:
 /// each slice must appear as its OWN per-artifact decision record (the aggregator → leader → snapshot
 /// carrier path is per-slice, not one merged cluster-wide record), and neither idle slice may be
 /// scaled up (no cross-slice mis-attribution).
@@ -122,11 +122,11 @@ class PerSliceDecisionSnapshotProbeTest {
     }
 
     private String getDecisions() {
-        return httpGet(leaderPort(), "/api/controller/decisions");
+        return httpGet(leaderPort(), "/api/v1/controller/decisions");
     }
 
     private String getSlices() {
-        return httpGet(leaderPort(), "/api/slices/status");
+        return httpGet(leaderPort(), "/api/v1/slices/status");
     }
 
     private int leaderPort() {
@@ -135,7 +135,7 @@ class PerSliceDecisionSnapshotProbeTest {
 
     private String postBlueprint(int port, String body) {
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + "/api/blueprints"))
+                                 .uri(URI.create("http://localhost:" + port + "/api/v1/blueprints"))
                                  .header("Content-Type", "application/toml")
                                  .POST(HttpRequest.BodyPublishers.ofString(body))
                                  .timeout(Duration.ofSeconds(10))
@@ -160,7 +160,7 @@ class PerSliceDecisionSnapshotProbeTest {
 
     private boolean checkNodeHealth(int port) {
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + "/api/health"))
+                                 .uri(URI.create("http://localhost:" + port + "/api/v1/health"))
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();

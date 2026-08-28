@@ -40,14 +40,15 @@ import time
 import urllib.error
 import urllib.request
 
-TRANSPORT_PATH = "/api/metrics/transport"
-METRICS_PATH = "/api/metrics"
+TRANSPORT_PATH = "/api/v1/metrics/transport"
+METRICS_PATH = "/api/v1/metrics"
 
 # The two routes behave DIFFERENTLY despite both being declared LOCAL in ManagementRoute
-# (`:243` METRICS, `:248` METRICS_TRANSPORT), and the difference is easy to get backwards:
-#   /api/metrics/transport — genuinely per-node. Each core must be polled for its own counters.
-#   /api/metrics          — CLUSTER-WIDE `load` map. Any node returns an entry for every node it
-#                           knows, so it is fetched once and the cores are selected by id.
+# (METRICS, METRICS_TRANSPORT — both versioned under the /api/v1 base since the management-api
+# versioning cutover), and the difference is easy to get backwards:
+#   /api/v1/metrics/transport — genuinely per-node. Each core must be polled for its own counters.
+#   /api/v1/metrics           — CLUSTER-WIDE `load` map. Any node returns an entry for every node it
+#                               knows, so it is fetched once and the cores are selected by id.
 # Assuming the second was per-node is what the live 3-node validation caught.
 
 MSG_KEYS = ("quic_messages_sent_total", "quic_messages_received_total")
@@ -79,7 +80,7 @@ def guards(transport):
 
 
 def load_map(base):
-    """`GET /api/metrics` returns {"load": {"<nodeId>": {"cpu.usage": .., "heap.used": ..}}, ...}.
+    """`GET /api/v1/metrics` returns {"load": {"<nodeId>": {"cpu.usage": .., "heap.used": ..}}, ...}.
 
     IMPORTANT, and not what this script first assumed: the load map is CLUSTER-WIDE. Although the
     route is declared LOCAL, the payload carries an entry for every node the collector knows, not

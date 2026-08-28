@@ -180,7 +180,7 @@ class SliceMediaTypeTest {
 
     private String httpRequestBlueprint(int port, String body) {
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + "/api/blueprints"))
+                                 .uri(URI.create("http://localhost:" + port + "/api/v1/blueprints"))
                                  .header("Content-Type", "application/toml")
                                  .POST(HttpRequest.BodyPublishers.ofString(body))
                                  .timeout(Duration.ofSeconds(10))
@@ -198,7 +198,7 @@ class SliceMediaTypeTest {
     }
 
     private String getSlices() {
-        return httpGet(anyMgmtPort(), "/api/slices/status");
+        return httpGet(anyMgmtPort(), "/api/v1/slices/status");
     }
 
     private String httpGet(int port, String path) {

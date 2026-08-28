@@ -12,7 +12,7 @@
 # test-kill-leader.sh for the kill/re-election model this mirrors.
 #
 # Stream-replication acceptance for #260 / #261 / #333. Uses the regression-sensor
-# endpoint shipped for that class: GET /api/streams/replicas/{name}/{partition}
+# endpoint shipped for that class: GET /api/v1/streams/replicas/{name}/{partition}
 # (response: { stream, partition, hrwOwner, servedByOwner, ownerHeadOffset,
 #  earliestRetainedOffset, replicas:[{nodeId,state,confirmedOffset,isHrwOwner}] }).
 # The endpoint is OWNER-AWARE, not owner-forwarded: its replica set is authoritative
@@ -29,13 +29,13 @@ source "${SCRIPT_DIR}/../../lib/generation.sh"
 
 # The stream under test is declared by the test-stream-repl blueprint with
 # min-sync-replicas=2 -> RF=2 (owner + 1 synchronously-in-sync replica). This is
-# the ONLY way to get RF>=2: POST /api/streams hardcodes minSyncReplicas=0 -> RF=1
+# the ONLY way to get RF>=2: POST /api/v1/streams hardcodes minSyncReplicas=0 -> RF=1
 # (owner-only), which structurally cannot have a CAUGHT_UP non-owner replica to fail
 # over to. The blueprint's stream name is fixed; the deploy step deletes+redeploys it
 # so a re-run (or a prior run) cannot pollute the partition with stale offsets.
 STREAM_NAME="${STREAM_NAME:-repl-failover-events}"
 STREAM_BP="${STREAM_BP:-org.pragmatica.aether.test:test-stream-repl:1.0.0}"
-PARTITION=0                 # /api/streams/publish/{name} always writes partition 0
+PARTITION=0                 # /api/v1/streams/publish/{name} always writes partition 0
                             # (StreamRoutes.publishToPartition), and the stream is
                             # single-partition, so all markers land here.
 N_EVENTS="${N_EVENTS:-20}"  # distinct markers published before the kill
@@ -166,7 +166,7 @@ replicas_snapshot_owner_view() {
     local attempts="${1:-8}"
     local body last_body="" i served
     for ((i = 0; i < attempts; i++)); do
-        body=$(api_get "/api/streams/replicas/${STREAM_NAME}/${PARTITION}" 2>/dev/null) || body=""
+        body=$(api_get "/api/v1/streams/replicas/${STREAM_NAME}/${PARTITION}" 2>/dev/null) || body=""
         if [ -n "$body" ]; then
             last_body="$body"
             served=$(json_scalar "$body" servedByOwner)
@@ -194,7 +194,7 @@ json_scalar() {
 # Resolve the partition's HRW owner NodeId from any replicas view (header field).
 partition_hrw_owner() {
     local body
-    body=$(api_get "/api/streams/replicas/${STREAM_NAME}/${PARTITION}" 2>/dev/null) || body=""
+    body=$(api_get "/api/v1/streams/replicas/${STREAM_NAME}/${PARTITION}" 2>/dev/null) || body=""
     json_scalar "$body" hrwOwner
 }
 
@@ -343,7 +343,7 @@ test_initial_state() {
 
 test_deploy_repl_stream_blueprint() {
     # RF>=2 sync replication requires the stream be created via a blueprint that
-    # declares min-sync-replicas; POST /api/streams can only mint RF=1 (owner-only).
+    # declares min-sync-replicas; POST /api/v1/streams can only mint RF=1 (owner-only).
     # Deploy the dedicated test-stream-repl blueprint whose 'repl-failover-events'
     # stream is partitions=1 + min-sync-replicas=2 -> RF=2 (owner + 1 in-sync replica).
     #
