@@ -81,6 +81,38 @@
 > (artifact-repository "Always available" — annotated as superseded, with the design decision's real
 > justification named instead of the false universal-availability claim). All D-rows gated on another
 > stream (D8–D13/D16, management-API routes, backup) remain correctly untouched.
+>
+> **#322 progress, 2026-08-28 (slice-developers/ stale-front-door refresh HALF only) —** the
+> security-default-warnings half stays explicitly untouched (held on #665's builder flip); no
+> security section in any touched file was edited. The ticket's own "13 docs, last touched
+> 2026-04-17" premise had partly gone stale itself — git history showed most of `slice-developers/`
+> already refreshed by other work since #322 was filed (2026-06-11); only 5 files still predated
+> it: `demos.md`, `troubleshooting.md`, `faq.md`, `pg-notifications.md`, `testing-slices.md`.
+> Delegated a staleness audit of those 5 against current source/APIs (not the stale ticket text).
+> **Findings, all applied:** `demos.md` — Forge API reference table listed routes that don't exist
+> (`/api/status`, `/api/crash/*`, `/api/load/set/*`); rewritten against `ChaosRoutes.java`/
+> `StatusRoutes.java`/`LoadRoutes.java`. `troubleshooting.md` — wrong Maven groupId
+> (`org.pragmatica.jbct` → `org.pragmatica-lite`, confirmed against `slice-processor/pom.xml`);
+> a code example calling a nonexistent `Aspect.identity()` and `SliceInvokerFacade.invoke(...)`
+> (rewritten against the current `SliceCreationContext`/`MethodHandle` API); two "Fixed in 0.20.0"
+> entries citing a defunct pre-1.0 version scheme (reworded as historical/not-reproducible-on-any-
+> current-build rather than a false current version claim). `faq.md` — "Fury binary serialization"
+> claim was false (no Fury dependency anywhere in the repo; actual mechanism is a custom
+> `SliceCodec`/`@CodecFor` scheme, confirmed via `NodeCodecs.java`); "2-hour history" for predictive
+> scaling stated the configurable max as if it were the default (actual default is 1 hour, per
+> `TtmConfig.java`). `pg-notifications.md` — audited, genuinely clean, no changes (annotation
+> syntax, config fields, and guarantee language all match current source and `guarantees.md` §5).
+> `testing-slices.md` — the worst case: described a Testcontainers/Docker framework
+> (`AetherNodeContainer`, `AetherCluster`) that no longer exists anywhere in the codebase, including
+> a stale "85 tests / 13 classes" table naming test classes that don't exist. Full rewrite around
+> the actual current framework: `EmberCluster` (in-process JVM, no Docker), direct HTTP calls
+> against node management ports, `@BeforeAll`/`@TestInstance(PER_CLASS)` shared-cluster lifecycle,
+> `forge.sh` as the runner — verified against `ClusterFormationTest.java`, `SliceDeploymentTest.java`,
+> `EmberCluster.java`'s public API, and `forge.sh`'s own comments. Deliberately did not re-encode a
+> snapshot list of the 34 current test classes (that's exactly the staleness pattern being fixed);
+> pointed at `ls .../forge-tests/.../*Test.java` instead. No touch to `getting-started.md` or any
+> operator-install page was needed for this half — the 5 stale files didn't include them, so the
+> "leave security sections alone" constraint had nothing to collide with this pass.
 
 ### Surface 3 file audit (2026-08-28) — deployment/blueprint, per-file disposition
 

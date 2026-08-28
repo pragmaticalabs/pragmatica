@@ -1,494 +1,276 @@
 # End-to-End Testing Guide
 
-Test Aether clusters with Testcontainers for realistic integration testing.
+Test Aether clusters with **Forge** — an in-process, in-JVM multi-node cluster — for realistic
+integration testing without Docker.
 
 ## Overview
 
-The E2E testing framework provides:
-- **AetherNodeContainer**: Testcontainer wrapper for single nodes
-- **AetherCluster**: Multi-node cluster management
-- **Built-in test categories**: Formation, deployment, chaos, rolling deployments
+The E2E testing framework (module `aether/forge/forge-tests`) provides:
+- **`EmberCluster`**: an in-process 3-7 node cluster (real consensus, real streams, real
+  deployment FSM), driven by plain HTTP calls to each node's management port — no container
+  wrapper API
+- **`forge.sh`**: the local gate that runs it (`smoke` / `ci` / `full` / a single class)
+- **JUnit 5 + Awaitility + AssertJ**, `@TestInstance(PER_CLASS)` with `@BeforeAll`/`@AfterAll` so
+  a whole test class shares one cluster instead of paying formation cost per test
 
 ## Prerequisites
 
-- Docker running locally
 - Maven with JDK 25
-- Built project JARs (`mvn package -DskipTests`)
+- Built project JARs (`mvn install -DskipTests`, or `./build.sh` first)
+- No Docker required — Forge clusters run as in-process nodes on `localhost`
 
 ## Quick Start
 
 ```java
-class MyE2ETest {
-    private static final Path PROJECT_ROOT = Path.of("..");
-    private AetherCluster cluster;
+import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
+import static org.awaitility.Awaitility.await;
 
-    @BeforeEach
+@Execution(ExecutionMode.SAME_THREAD)
+@TestInstance(TestInstance.Lifecycle.PER_CLASS)
+class MyE2ETest {
+    private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
+    private EmberCluster cluster;
+
+    @BeforeAll
     void setUp() {
-        cluster = AetherCluster.aetherCluster(3, PROJECT_ROOT);
+        cluster = emberCluster(3, 5500, 5600, 5400, "my");
+
+        cluster.start()
+               .await()
+               .onFailure(cause -> { throw new AssertionError("Cluster start failed: " + cause.message()); });
+
+        await().atMost(WAIT_TIMEOUT).until(() -> cluster.currentLeader().isPresent());
     }
 
-    @AfterEach
+    @AfterAll
     void tearDown() {
-        if (cluster != null) {
-            cluster.close();
-        }
+        if (cluster != null) cluster.stop().await();
     }
 
     @Test
     void clusterFormsQuorum() {
-        cluster.start();
-        cluster.awaitQuorum();
-
-        assertThat(cluster.runningNodeCount()).isEqualTo(3);
-        assertThat(cluster.anyNode().getHealth()).contains("\"status\":\"healthy\"");
+        assertThat(cluster.nodeCount()).isEqualTo(3);
+        assertThat(cluster.currentLeader().isPresent()).isTrue();
     }
 }
 ```
 
-## AetherNodeContainer
+`emberCluster(initialSize, basePort, baseMgmtPort, baseAppHttpPort, nodeIdPrefix)` allocates
+non-overlapping ports per test class — pick a distinct base-port block per class so parallel
+Maven modules don't collide (existing classes use 5050/5150/5250 for formation, 5500/5600/5400
+for deployment, etc. — grep the test directory for the next free block).
 
-Wrapper for individual Aether node containers.
+## `EmberCluster` — API surface
 
-### Creation
+Everything is either a lifecycle/topology call directly on `EmberCluster`, or a plain
+`java.net.http.HttpRequest` against a node's management port. There is no per-node wrapper object
+with typed methods for each management endpoint.
 
-```java
-// Single node
-var node = AetherNodeContainer.aetherNode("node-1", projectRoot);
-
-// Node with peers
-var peers = "node-1:node-1:8090,node-2:node-2:8090";
-var node = AetherNodeContainer.aetherNode("node-1", projectRoot, peers);
-```
-
-### Lifecycle
+### Lifecycle and topology
 
 ```java
-node.start();           // Start container
-node.stop();            // Stop container
-node.isRunning();       // Check if running
+cluster.start();                    // Promise<Unit> — start all nodes
+cluster.start(heldBackNodeIds);     // start with some nodes deliberately not joining yet
+cluster.stop();                     // Promise<Unit> — stop all nodes
+cluster.addNode();                  // Promise<NodeId> — grow the cluster by one
+cluster.addNode(labels);            // with role/label metadata
+cluster.addWorkerNode();            // worker-role node (non-quorum-participating)
+cluster.killNode(nodeIdStr);        // Promise<Unit> — hard-stop a node
+cluster.killNode(nodeIdStr, graceful); // graceful drain-then-stop
+cluster.blackhole(nodeIdStr);       // Promise<Unit> — simulate a network partition (no kill)
 ```
 
-### API Methods
+### Status and node access
 
 ```java
-// Status endpoints
-node.getHealth();       // GET /health
-node.getStatus();       // GET /status
-node.getNodes();        // GET /nodes
-node.getSlices();       // GET /slices
-node.getSlicesStatus(); // GET /slices/status
-
-// Deployment
-node.deploy(artifact, instances);  // POST /deploy
-node.scale(artifact, instances);   // POST /scale
-node.undeploy(artifact);           // POST /undeploy
-
-// Metrics
-node.getMetrics();              // GET /metrics
-node.getPrometheusMetrics();    // GET /metrics/prometheus
-node.getInvocationMetrics();    // GET /invocation-metrics
-node.getInvocationMetrics(artifact, method); // with filters
-node.getSlowInvocations();      // GET /invocation-metrics/slow
-node.getInvocationStrategy();   // GET /invocation-metrics/strategy
-
-// Thresholds & Alerts
-node.getThresholds();                           // GET /thresholds
-node.setThreshold(metric, warning, critical);   // POST /thresholds
-node.deleteThreshold(metric);                   // DELETE /thresholds/{metric}
-node.getActiveAlerts();                         // GET /alerts/active
-node.getAlertHistory();                         // GET /alerts/history
-node.clearAlerts();                             // POST /alerts/clear
-
-// Controller
-node.getControllerConfig();         // GET /controller/config
-node.setControllerConfig(config);   // POST /controller/config
-node.getControllerStatus();         // GET /controller/status
-node.triggerControllerEvaluation(); // POST /controller/evaluate
-
-// Deployments
-node.startDeployment(version, strategy);               // POST /api/deploy
-node.getDeployments();                                 // GET /api/deploy
-node.getDeploymentStatus(deploymentId);                // GET /api/deploy/{id}
-node.promoteDeployment(deploymentId);                  // POST /api/deploy/{id}/promote
-node.completeDeployment(deploymentId);                 // POST /api/deploy/{id}/complete
-node.rollbackDeployment(deploymentId);                 // POST /api/deploy/{id}/rollback
-
-// Slice Invocation
-node.invokeSlice(httpMethod, path, body);  // Invoke via HTTP router
-node.invokeGet(path);                      // GET to route
-node.invokePost(path, body);               // POST to route
-node.getRoutes();                          // GET /routes
+cluster.nodeCount();                // int
+cluster.currentLeader();            // Option<String> — leader node id
+cluster.status();                   // ClusterStatus(List<NodeStatus> nodes, String leaderId)
+cluster.allNodes();                 // List<AetherNode> — in-process node handles
+cluster.getNode(nodeIdStr);         // Option<AetherNode>
+cluster.getLeaderManagementPort();  // Option<Integer>
+cluster.nodeMetrics();              // List<NodeMetrics>
+cluster.slicesStatus();             // List<SliceStatus>
 ```
 
-### Generic HTTP
+Each `NodeStatus` carries `id`, `port`, `mgmtPort`, `state`, `isLeader` — use `mgmtPort()` to
+build the HTTP calls below.
+
+### Talking to a node — plain HTTP, not a wrapper
 
 ```java
-String response = node.get("/custom-endpoint");
-String response = node.post("/custom-endpoint", jsonBody);
+private final HttpOperations http = jdkHttpOperations(); // org.pragmatica.http.JdkHttpOperations
+
+private String httpGet(int port, String path) {
+    var request = HttpRequest.newBuilder()
+                             .uri(URI.create("http://localhost:" + port + path))
+                             .GET()
+                             .timeout(Duration.ofSeconds(5))
+                             .build();
+    return http.sendString(request).await().map(HttpResult::body).or("{\"error\":\"request failed\"}");
+}
 ```
 
-### Port Access
-
-```java
-node.managementPort();  // Mapped management port (8080)
-node.clusterPort();     // Mapped cluster port (8090)
-node.managementUrl();   // Full URL: http://localhost:<port>
-```
-
-## AetherCluster
-
-Manages multi-node clusters for testing.
-
-### Creation
-
-```java
-// Create 3-node cluster
-var cluster = AetherCluster.aetherCluster(3, projectRoot);
-
-// Create 5-node cluster for higher availability
-var cluster = AetherCluster.aetherCluster(5, projectRoot);
-```
-
-### Lifecycle
-
-```java
-cluster.start();           // Start all nodes in parallel
-cluster.close();           // Stop all nodes
-```
-
-### Waiting for State
-
-```java
-cluster.awaitQuorum();              // Wait for quorum
-cluster.awaitAllHealthy();          // Wait for all healthy
-cluster.awaitNodeCount(3);          // Wait for node count
-```
-
-### Node Access
-
-```java
-cluster.anyNode();             // Get any running node
-cluster.node("node-2");        // Get specific node
-cluster.nodes();               // Get all nodes
-cluster.leader();              // Get leader (Optional)
-```
-
-### Chaos Operations
-
-```java
-cluster.killNode("node-2");              // Stop a node
-cluster.node("node-2").start();          // Restart a node
-```
-
-### Status
-
-```java
-cluster.runningNodeCount();    // Number of running nodes
-cluster.size();                // Total cluster size
-```
+Common management paths (all under `/api/`, prefix required): `/api/health`, `/api/nodes/status`,
+`/api/metrics`, `/api/blueprints/{id}` (GET/POST/DELETE for deploy/scale/undeploy), `/api/deploy`
+and `/api/deploy/{id}/{promote,complete,rollback}` for staged deployments. Read the actual route
+definitions under `aether/node/.../api/routes/` or `aether/forge/forge-api/.../api/` rather than
+trusting a doc snapshot of the full path list — these evolve.
 
 ## Test Suite Overview
 
-The E2E test suite contains **85 tests** across **13 test classes**:
+The forge-tests module currently has **34 test classes** (~100 `@Test` methods) — formation,
+deployment, chaos/partition, streams, durable-entity, controller/scaling, and diagnostic-probe
+coverage. Rather than a table here (which drifts the moment a class is added, as the previous
+version of this doc did), the current, authoritative list is:
 
-| Test Class | Tests | Coverage |
-|------------|-------|----------|
-| ClusterFormationE2ETest | 4 | Cluster bootstrap, quorum, leader election |
-| SliceDeploymentE2ETest | 6 | Deploy, scale, undeploy, blueprints |
-| RollingUpdateE2ETest | 6 | Two-stage updates, traffic shifting |
-| NodeFailureE2ETest | 3 | Failure modes, recovery |
-| ManagementApiE2ETest | 19 | Status, metrics, thresholds, alerts, controller |
-| SliceInvocationE2ETest | 9 | Route handling, error cases, distribution |
-| MetricsE2ETest | 6 | Collection, Prometheus, distribution |
-| ControllerE2ETest | 7 | Configuration, status, leader behavior |
-| TtmE2ETest | 7 | TTM status, cluster behavior, leader failover |
-| GracefulShutdownE2ETest | 4 | Peer detection, leader failover |
-| NetworkPartitionE2ETest | 4 | Quorum behavior, partition healing |
-| NodeDrainE2ETest | 4 | Drain, activate, shutdown lifecycle |
-| ArtifactRepositoryE2ETest | 6 | Artifact storage, retrieval, validation |
+```bash
+ls aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/*Test.java
+```
+
+Two JUnit tags partition the suite: `@Tag("Smoke")` (fast, run by default via `./forge.sh`) and
+`@Tag("Heavy")` (slower probes, excluded from the default CI run).
 
 ## Test Categories
 
-### Cluster Formation Tests
-
-Test cluster startup and quorum:
+### Cluster formation
 
 ```java
 @Test
-void threeNodeCluster_formsQuorum() {
-    cluster.start();
-    cluster.awaitQuorum();
-
-    assertThat(cluster.runningNodeCount()).isEqualTo(3);
-    assertThat(cluster.leader()).isPresent();
+void threeNodeCluster_formsQuorum_andElectsLeader() {
+    assertThat(cluster.nodeCount()).isEqualTo(3);
+    assertThat(cluster.currentLeader().isPresent()).isTrue();
 }
 
 @Test
 void cluster_nodesVisibleToAllMembers() {
-    cluster.start();
-    cluster.awaitQuorum();
-
-    for (var node : cluster.nodes()) {
-        var nodes = node.getNodes();
-        assertThat(nodes).contains("node-1", "node-2", "node-3");
+    for (var node : cluster.status().nodes()) {
+        var health = httpGet(node.mgmtPort(), "/api/health");
+        assertThat(health).contains("\"connectedPeers\":2").contains("\"nodeCount\":3");
     }
 }
 ```
 
-### Node Failure Tests
-
-Test resilience to node failures:
+### Node failure and recovery
 
 ```java
 @Test
-void cluster_maintainsQuorum_afterOneNodeFailure() {
-    cluster.start();
-    cluster.awaitQuorum();
+void cluster_survivesNodeKill_reelectsIfLeader() {
+    var oldLeader = cluster.currentLeader().unwrap();
+    cluster.killNode(oldLeader).await();
 
-    cluster.killNode("node-2");
-    cluster.awaitNodeCount(2);
-
-    // Cluster should still function
-    var health = cluster.anyNode().getHealth();
-    assertThat(health).contains("\"quorum\":true");
-}
-
-@Test
-void cluster_recovers_afterNodeRestart() {
-    cluster.start();
-    cluster.awaitQuorum();
-
-    cluster.killNode("node-2");
-    cluster.node("node-2").start();
-    cluster.awaitNodeCount(3);
-
-    assertThat(cluster.runningNodeCount()).isEqualTo(3);
+    await().atMost(WAIT_TIMEOUT).until(() -> cluster.currentLeader().isPresent()
+                                              && !cluster.currentLeader().unwrap().equals(oldLeader));
 }
 ```
 
-### Slice Deployment Tests
+### Network partition (no process kill)
 
-Test slice lifecycle:
+```java
+@Test
+void cluster_toleratesBlackhole_ofMinorityNode() {
+    cluster.blackhole("node-2").await();
+    // minority side loses quorum participation; majority keeps serving — see guarantees.md §3
+}
+```
+
+### Slice deployment
+
+Deployment goes through the blueprint HTTP API on the leader's management port — there is no
+`.deploy(artifact, instances)` convenience method:
 
 ```java
 @Test
 void cluster_deploysSlice_acrossNodes() {
-    cluster.start();
-    cluster.awaitQuorum();
-
-    var result = cluster.anyNode().deploy("org.example:test-slice:1.0.0", 3);
-
-    assertThat(result).contains("\"status\":\"deployed\"");
-
-    // Verify slices running
-    var slices = cluster.anyNode().getSlices();
-    assertThat(slices).contains("test-slice");
-}
-
-@Test
-void cluster_scalesSlice_correctly() {
-    cluster.start();
-    cluster.awaitQuorum();
-
-    cluster.anyNode().deploy("org.example:test-slice:1.0.0", 1);
-    cluster.anyNode().scale("org.example:test-slice:1.0.0", 3);
-
-    // Verify scaled
-    var slices = cluster.anyNode().getSlices();
-    assertThat(slices).contains("\"instances\":3");
+    var leaderPort = cluster.getLeaderManagementPort().or(cluster.status().nodes().getFirst().mgmtPort());
+    // POST /api/blueprints/{id} with the blueprint body, then poll /api/nodes/status
+    // for SliceState.ACTIVE across the target instance count — see SliceDeploymentTest.java
+    // for the full request/response shapes and polling pattern.
 }
 ```
 
-### Chaos Tests
-
-Test cluster behavior under failure:
-
-```java
-@Test
-void cluster_rebalances_afterLeaderFailure() {
-    cluster.start();
-    cluster.awaitQuorum();
-
-    var oldLeader = cluster.leader().orElseThrow();
-    cluster.killNode(oldLeader.nodeId());
-    cluster.awaitQuorum();
-
-    // New leader should be elected
-    var newLeader = cluster.leader().orElseThrow();
-    assertThat(newLeader.nodeId()).isNotEqualTo(oldLeader.nodeId());
-}
-
-@Test
-void cluster_reelectsLeader_afterLeaderKilled() {
-    cluster.start();
-    cluster.awaitQuorum();
-
-    var oldLeader = cluster.leader().orElseThrow();
-    cluster.killNode(oldLeader.nodeId());
-    cluster.awaitQuorum();
-
-    // New leader should be elected
-    var newLeader = cluster.leader().orElseThrow();
-    assertThat(newLeader.nodeId()).isNotEqualTo(oldLeader.nodeId());
-}
-```
-
-### Deployment Tests
-
-Test deployment functionality:
-
-```java
-@Test
-void deployment_shiftsTraffic_gradually() {
-    cluster.start();
-    cluster.awaitQuorum();
-
-    // Deploy initial version
-    cluster.anyNode().deploy("org.example:my-slice:1.0.0", 3);
-
-    // Start rolling deployment
-    var result = cluster.anyNode().post("/api/deploy", """
-        {
-          "artifactBase": "org.example:my-slice",
-          "version": "2.0.0",
-          "strategy": "ROLLING",
-          "instances": 3
-        }
-        """);
-
-    assertThat(result).contains("\"state\":\"DEPLOYING\"");
-
-    // Promote to next traffic stage
-    var deploymentId = extractDeploymentId(result);
-    cluster.anyNode().post("/api/deploy/" + deploymentId + "/promote", "{}");
-
-    // Complete
-    cluster.anyNode().post("/api/deploy/" + deploymentId + "/complete", "{}");
-}
-```
+For the exact request bodies and polling idioms, read a current example test directly —
+`aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/SliceDeploymentTest.java` —
+rather than copying a paraphrase here; the blueprint/deploy JSON shape is exactly the kind of
+detail that drifts.
 
 ## Running Tests
 
-### Run All E2E Tests
-
 ```bash
-mvn test -pl aether/e2e-tests
+./forge.sh                # smoke — formation + deployment/invocation + one stream path (default)
+./forge.sh ci              # everything except @Tag("Heavy") — what CI runs
+./forge.sh full            # every forge test, Heavy probes included (slow)
+./forge.sh ClusterFormationTest   # a single class
+
+# Equivalent raw Maven (forge.sh sets the required phase/profile/module scope for you):
+mvn verify -Pwith-e2e -pl aether/forge/forge-tests -Dgroups=Smoke
 ```
 
-### Run Specific Test Class
+Use `verify`, not `test` — `forge-tests` runs via the Failsafe plugin, which only enforces
+failures at the `verify` phase; stopping at `test`/`integration-test` can print `BUILD SUCCESS`
+over failing tests. `forge.sh` also hard-scopes `-pl aether/forge/forge-tests` deliberately, to
+keep `HetznerCloudIT` (a separate module that provisions a real paid server when `HCLOUD_TOKEN` is
+set) out of the reactor — don't widen that scope without reading `forge.sh`'s own comments first.
 
-```bash
-mvn test -pl aether/e2e-tests -Dtest=ClusterFormationE2ETest
-```
+### CI
 
-### Run Specific Test Method
-
-```bash
-mvn test -pl aether/e2e-tests -Dtest=ClusterFormationE2ETest#threeNodeCluster_formsQuorum
-```
-
-### CI Configuration
-
-E2E tests run on:
-- Push to `main` branch
-- Pull requests with `[e2e]` tag
-
-```yaml
-# .github/workflows/ci.yml
-e2e-tests:
-  runs-on: ubuntu-latest
-  steps:
-    - uses: actions/checkout@v4
-    - name: Build
-      run: mvn package -DskipTests
-    - name: E2E Tests
-      run: mvn test -pl aether/e2e-tests
-```
+Forge runs in CI as the `ci` mode above (everything except `@Tag("Heavy")`); check
+`.github/workflows/` for the current trigger conditions rather than assuming a specific branch
+rule, which is a CI-config detail this doc shouldn't duplicate.
 
 ## Best Practices
 
-### Test Isolation
+### Test isolation and shared cluster cost
 
-Each test should create and destroy its own cluster:
+Formation of a real multi-node cluster is not free — that's why classes use
+`@TestInstance(PER_CLASS)` with `@BeforeAll`/`@AfterAll` (one cluster per class, shared across its
+`@Test` methods) rather than `@BeforeEach`/`@AfterEach` (one cluster per test method). If a test
+leaves cluster state dirty for the next test in the class, clean it up explicitly in
+`@BeforeEach` (see `SliceDeploymentTest`'s `cleanUp()` for the pattern), don't reach for
+per-test cluster isolation as the fix — it defeats the point of the shared-cluster design.
 
-```java
-@BeforeEach
-void setUp() {
-    cluster = AetherCluster.aetherCluster(3, PROJECT_ROOT);
-}
+### Sequential execution
 
-@AfterEach
-void tearDown() {
-    cluster.close();  // Always cleanup
-}
+`@Execution(ExecutionMode.SAME_THREAD)` on every forge test class, plus running the whole module
+without forking, avoids port and resource contention between concurrently-running in-process
+clusters:
+
+```xml
+<!-- aether/forge/forge-tests/pom.xml -->
+<plugin>
+    <groupId>org.apache.maven.plugins</groupId>
+    <artifactId>maven-failsafe-plugin</artifactId>
+</plugin>
 ```
 
 ### Timeouts
 
-Use reasonable timeouts for async operations:
-
 ```java
-// Default quorum timeout: 60 seconds
-cluster.awaitQuorum();
+private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
+private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
 
-// Custom await with Awaitility
-await().atMost(Duration.ofSeconds(30))
-       .pollInterval(Duration.ofSeconds(2))
-       .until(() -> condition);
+await().atMost(WAIT_TIMEOUT)
+       .pollInterval(POLL_INTERVAL)
+       .until(() -> cluster.currentLeader().isPresent());
 ```
 
-### Resource Management
-
-- Use `try-with-resources` for cluster management
-- Stop containers even on test failure
-- Clean up container networks
-
-```java
-try (var cluster = AetherCluster.aetherCluster(3, projectRoot)) {
-    cluster.start();
-    // ... test code
-}  // Automatically cleaned up
-```
-
-### Parallel Test Execution
-
-E2E tests should NOT run in parallel due to container resource contention:
-
-```xml
-<!-- pom.xml -->
-<plugin>
-    <groupId>org.apache.maven.plugins</groupId>
-    <artifactId>maven-surefire-plugin</artifactId>
-    <configuration>
-        <forkCount>1</forkCount>
-        <reuseForks>false</reuseForks>
-    </configuration>
-</plugin>
-```
+240s is generous on purpose — forge clusters share the CI machine with everything else in the
+build; a tight timeout produces flaky failures that are a scheduling artifact, not a real defect.
 
 ## Troubleshooting
 
-### Container Won't Start
+### Quorum not forming
 
-1. Check Docker is running: `docker ps`
-2. Check image builds: `docker build -f docker/aether-node/Dockerfile .`
-3. Check for port conflicts
+1. Check for port collisions with another test class or a locally-running Forge/Ember instance —
+   `emberCluster(...)`'s base ports must not overlap another live cluster on the same machine.
+2. Increase the `await()` timeout before assuming a real regression; formation time varies with
+   machine load.
+3. Run the single class directly (`./forge.sh ClusterFormationTest`) to rule out cross-class
+   interference from a shared Maven JVM.
 
-### Quorum Not Forming
+### Flaky tests
 
-1. Increase timeout: tests may need more time
-2. Check container logs: `docker logs <container>`
-3. Verify network connectivity between containers
-
-### Flaky Tests
-
-1. Add explicit waits for state changes
-2. Increase polling intervals
-3. Check for resource contention
-
-### Debug Container
-
-```java
-// Enable container logs in test output
-node.withLogConsumer(new Slf4jLogConsumer(LoggerFactory.getLogger("container")));
-```
+1. Add explicit `await()` waits for state changes instead of a fixed `Thread.sleep`.
+2. Widen the poll interval/timeout rather than tightening it — see the timeout note above.
+3. Check whether the failure is `@Tag("Heavy")`-class resource contention; `./forge.sh smoke` runs
+   a much smaller, more stable set than `./forge.sh full`.
