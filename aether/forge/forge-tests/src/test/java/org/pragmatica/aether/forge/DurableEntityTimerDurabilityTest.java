@@ -557,19 +557,19 @@ class DurableEntityTimerDurabilityTest {
 
     private String create(int port, String key, String status, int amount) {
         return httpPost(port,
-                        "/api/entity/create",
+                        "/api/v1/entity/create",
                         "{\"orderId\":\"" + key + "\",\"status\":\"" + status + "\",\"amount\":" + amount + "}");
     }
 
     private String get(int port, String key) {
-        return httpPost(port, "/api/entity/get", "{\"orderId\":\"" + key + "\"}");
+        return httpPost(port, "/api/v1/entity/get", "{\"orderId\":\"" + key + "\"}");
     }
 
     /// Schedules a timer with a CALLER-CONTROLLED delay. The fixture's five-minute default is unusable for a
     /// gate — nothing that must observe a fire can wait it out — so the delay travels in the request.
     private String scheduleTimer(int port, String key, long delayMillis) {
         return httpPost(port,
-                        "/api/entity/schedule-timer",
+                        "/api/v1/entity/schedule-timer",
                         "{\"orderId\":\"" + key + "\",\"delayMillis\":" + delayMillis + "}");
     }
 

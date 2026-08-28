@@ -252,7 +252,7 @@ class SliceInvocationTest {
     }
 
     private String getSlices() {
-        // Use /api/slices/status for cluster-wide view (reads from KVStore)
+        // Use /api/v1/slices/status for cluster-wide view (reads from KVStore)
         return httpRequest("GET", anyMgmtPort(), "/api/v1/slices/status", null);
     }
 

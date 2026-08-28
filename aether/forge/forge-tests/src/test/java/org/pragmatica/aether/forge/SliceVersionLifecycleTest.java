@@ -32,7 +32,7 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 /// non-deprecated `[v2]` (with `defaultIfMissing = true`). A path-mode request to `v1` MUST carry
 /// `Deprecation: true`, `Sunset: Thu, 31 Dec 2026 00:00:00 GMT`, and a `Link` header naming `v2` as
 /// the successor; a request to the non-deprecated `v2` MUST carry none of them. The management
-/// `GET /api/versions` endpoint MUST report the slice's registry: `v1` deprecated+sunset and `v2`
+/// `GET /api/v1/versions` endpoint MUST report the slice's registry: `v1` deprecated+sunset and `v2`
 /// defaultIfMissing.
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)

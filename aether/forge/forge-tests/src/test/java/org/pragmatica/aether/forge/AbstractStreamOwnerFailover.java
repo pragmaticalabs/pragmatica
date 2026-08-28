@@ -47,7 +47,7 @@ import org.pragmatica.aether.ember.EmberCluster;
 ///
 /// Topology: the `test-stream-repl` blueprint (`streams.repl-failover-events`, partitions=1,
 /// replicas=2, min-sync-replicas=2). RF=2 + synchronous replication is the only topology with a
-/// promotable CAUGHT_UP non-owner replica — `POST /api/streams` mints RF=1 (owner-only), which
+/// promotable CAUGHT_UP non-owner replica — `POST /api/v1/streams` mints RF=1 (owner-only), which
 /// structurally cannot fail over. Each publish AWAITs a replica ack (min-sync-2), so a successful
 /// pre-kill batch is itself proof the replica is in sync.
 ///
@@ -63,7 +63,7 @@ import org.pragmatica.aether.ember.EmberCluster;
 /// death — this exercises the failover MECHANISM deterministically rather than SWIM detection latency
 /// (a separate #94-class concern). (2) Publish/read go through the slice's app-HTTP routes (the real
 /// consumer path). (3) The replica-set view is read from the SAME `StreamReadRouter.replicaSnapshot`
-/// the management `/api/streams/replicas` sensor serves, but IN-JVM off the owner node directly —
+/// the management `/api/v1/streams/replicas` sensor serves, but IN-JVM off the owner node directly —
 /// the HTTP sensor is `taskGroup(STREAMING)`-routed to a single delegate (the #490 observability
 /// gap: operators cannot obtain a per-node owner view over HTTP), so it never yields the
 /// owner-authoritative (`servedByOwner`) view when queried per node; the in-JVM snapshot on the node
@@ -284,7 +284,7 @@ abstract class AbstractStreamOwnerFailover {
 
     /// The owner-authoritative replica-set view: the registry is authoritative only on the partition's
     /// HRW owner (`servedByOwner()` true), so scan every live node's in-JVM `replicaSnapshot` and return
-    /// the owner's. The HTTP `/api/streams/replicas` sensor is `taskGroup(STREAMING)`-routed to a single
+    /// the owner's. The HTTP `/api/v1/streams/replicas` sensor is `taskGroup(STREAMING)`-routed to a single
     /// delegate, so it cannot yield the owner view per-node — the in-JVM snapshot can (#490).
     private Option<ReplicaSetView> ownerView() {
         for (var node : cluster.allNodes()) {

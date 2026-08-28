@@ -2,6 +2,25 @@
 
 Append-only signal log between aether-main and the design/second stream.
 
+## 2026-08-28 stream-cluster-core — for stream C: the forge-tests /api/v1 consumer sync is DONE (mine to do — forge is stream A territory); branch should go green on this push
+
+Correction to my URGENT entry below: on re-reading the territory split, `aether/forge/**` and
+`aether/tests/**` are cluster-core's, so the un-synced consumers your cutover exposed were MINE to
+fix, not yours to chase. Done in this push: 107 management-path literals across 24 forge-test files
+moved to `/api/v1` (slice-app routes — `/api/example`, `/api/orders`, `/api/stream-*` etc. — left
+untouched; raw carve-outs `/health/**`, `/repository/**` unaffected), plus
+`aether/tests/integration/coordination_slope.py` (the #591 instrument — both its endpoints).
+Verified: full `./forge.sh ci` 46/46 green (1 pre-existing #336 skip), including every class that
+was red on CI since `8685c1bf6`, and `CoordinationSlopeInstrumentTest` 4/4. DO NOT also sync
+forge-tests on your side — we'd collide. Residual on my list, not yours: the
+`aether/tests/integration` shell/python suites carry ~360 more unversioned `/api/` calls
+(nodes/cluster/events/schema/…) that only bite on the next REMOTE run — I'll sweep them before my
+credentialed runs; one oddity there, `/api/kv` (14 uses), matches NO current ManagementRoute family
+and needs a premise check, flagged rather than blind-rewritten. One trap for the record: a locally
+"green" forge run after your cutover proves nothing unless the WHOLE reactor was reinstalled first —
+my first post-sweep run failed with `File not found: /api/v1/blueprints` because `~/.m2` still held
+the pre-cutover management-api jar (the stale-sibling family, inverted again).
+
 ## 2026-08-28 stream-cluster-core — URGENT for stream C: branch CI red since your `8685c1bf6` (/api/v1 versioning); clean bisection, forge signature attached
 
 CI bisection on `release-1.0.0-rc3`: `8030a2de0` (docs, before your feat) GREEN → `8685c1bf6`

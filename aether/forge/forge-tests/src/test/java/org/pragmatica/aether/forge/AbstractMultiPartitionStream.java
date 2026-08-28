@@ -44,7 +44,7 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 /// `@BeforeAll`/`@AfterAll` cluster lifecycle lives here.
 ///
 /// The replica-set view is read IN-JVM off the owner node's `StreamReadRouter.replicaSnapshot` (the
-/// same sensor the `/api/streams/replicas` management route serves), scanning every live node and
+/// same sensor the `/api/v1/streams/replicas` management route serves), scanning every live node and
 /// returning the owner-authoritative view (`servedByOwner()`), because the HTTP sensor is
 /// `taskGroup(STREAMING)`-routed to a single delegate and cannot yield a per-node owner view (#490).
 abstract class AbstractMultiPartitionStream {

@@ -49,8 +49,8 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 ///
 /// EXPECTED CORRECT OUTCOME (asserted here): a silently-dead node MUST still be detected dead →
 /// `NODE_FAILED` → terminal removal. Per the agreed absence-is-terminal contract, "terminally
-/// removed" = the victim is ABSENT from the leader's active membership (`/api/nodes/status`) AND a
-/// `NODE_FAILED`/`NODE_LEFT` cluster event (`/api/events`) has been emitted for it — both within
+/// removed" = the victim is ABSENT from the leader's active membership (`/api/v1/nodes/status`) AND a
+/// `NODE_FAILED`/`NODE_LEFT` cluster event (`/api/v1/events`) has been emitted for it — both within
 /// the [`#DETECT_BUDGET`]. Against pre-fix code this assertion FAILS — the eviction never marked the
 /// generation-snapshot publisher dirty, so `NODE_FAILED` lagged ~45s behind the SWIM-FAULTY evict.
 @Execution(ExecutionMode.SAME_THREAD)
@@ -129,8 +129,8 @@ class MembershipBlackHoleSpikeTest {
                  + "survivor connectedPeers={}",
                  victim.id(), detectedMs, DETECT_BUDGET.toSeconds(),
                  connectedPeers(survivorPort).map(Object::toString).or("?"));
-        log.info("BLACKHOLE-SPIKE FINAL /api/nodes/status: {}", status(survivorPort));
-        log.info("BLACKHOLE-SPIKE FINAL /api/events: {}", events(survivorPort));
+        log.info("BLACKHOLE-SPIKE FINAL /api/v1/nodes/status: {}", status(survivorPort));
+        log.info("BLACKHOLE-SPIKE FINAL /api/v1/events: {}", events(survivorPort));
 
         assertThat(detectedMs)
             .as("EXPECTED: silently-dead %s is terminally removed within %ds — ABSENT from the "
@@ -193,7 +193,7 @@ class MembershipBlackHoleSpikeTest {
         return victimAbsentFromMembership(port, victimId) && victimHasDepartureEvent(port, victimId);
     }
 
-    /// Victim is gone from the leader's active node list (`/api/nodes/status` no longer carries
+    /// Victim is gone from the leader's active node list (`/api/v1/nodes/status` no longer carries
     /// its id). Matched on the JSON `"id":"<victimId>"` field present per NodeInfo entry.
     private boolean victimAbsentFromMembership(int port, String victimId) {
         return !status(port).contains("\"id\":\"" + victimId + "\"");

@@ -43,14 +43,14 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 /// nodes come up RUNNING synchronously on localhost?
 ///
 /// ## What #336 reports
-/// On cloud, `POST /api/cluster/scale {coreCount:7}` returns HTTP 200 but the 2 new cores never
+/// On cloud, `POST /api/v1/cluster/scale {coreCount:7}` returns HTTP 200 but the 2 new cores never
 /// join — the cluster lingers at 5-6 counted cores. We want to know whether this is a
 /// provider-independent LOGIC bug (config-fan-out → reconciler deficit → provision → join → count)
 /// or a cloud-only networking/advertise/boot problem. If THIS probe reproduces the stall, the bug
 /// is in the membership/reconciler/provision logic and is not cloud-specific. If THIS probe PASSES
 /// (reaches 7), the bug lives in the cloud networking/advertise/boot layer that Ember bypasses.
 ///
-/// ## Scale-trigger path chosen: HTTP `POST /api/cluster/scale` (leader mgmt port)
+/// ## Scale-trigger path chosen: HTTP `POST /api/v1/cluster/scale` (leader mgmt port)
 /// This is the MOST FAITHFUL reproduction of the cloud path. The endpoint does NOT call
 /// `addNode()` directly; it commits `ClusterConfigKey.CURRENT.coreCount = 7` to the KV store, and
 /// the committed-config fan-out then drives the SAME reconciler chain the cloud bug travels:
@@ -112,7 +112,7 @@ class ScaleUpFiveToSevenProbeTest {
         await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> cluster.currentLeader().isPresent());
         await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> countedCores() == INITIAL_CORES);
         // Membership forms BEFORE the bootstrap-seed ClusterConfigKey.CURRENT is committed to KV. On a
-        // fast host the probe otherwise races ahead and POSTs /api/cluster/scale before any config is
+        // fast host the probe otherwise races ahead and POSTs /api/v1/cluster/scale before any config is
         // stored — the endpoint then 500s "No cluster configuration stored" (and a sentinel
         // expectedVersion=0 would be rejected as an unfenced overwrite, #289). Gate on the seed config
         // being durable (configVersion >= 1) so the scale carries the real fencing version.
@@ -143,7 +143,7 @@ class ScaleUpFiveToSevenProbeTest {
                  preScaleCounted, leaderPort, version);
 
         var scaleResponse = postScale(leaderPort, TARGET_CORES, version);
-        log.info("SCALE-PROBE: POST /api/cluster/scale {{coreCount:{}, expectedVersion:{}}} -> {}",
+        log.info("SCALE-PROBE: POST /api/v1/cluster/scale {{coreCount:{}, expectedVersion:{}}} -> {}",
                  TARGET_CORES, version, scaleResponse);
 
         var t0 = System.nanoTime();
@@ -155,7 +155,7 @@ class ScaleUpFiveToSevenProbeTest {
         dumpDiagnostics(leaderPort);
 
         assertThat(reached)
-            .as("EXPECTED: 5→7 scale via /api/cluster/scale converges to %d counted core members "
+            .as("EXPECTED: 5→7 scale via /api/v1/cluster/scale converges to %d counted core members "
                 + "within %ds. Reached=%d, finalCounted=%d. -1 = STALL — the 2 new cores never got "
                 + "counted (this is #336 reproducing IN-JVM => a provider-independent logic bug, not "
                 + "cloud-only). See the diagnostic dump above for whether the new nodes were never "
@@ -227,9 +227,9 @@ class ScaleUpFiveToSevenProbeTest {
         log.info("SCALE-PROBE DUMP: leader counted-core set = {}", idStrings(countedSet));
         log.info("SCALE-PROBE DUMP: leader connected-peer set = {}", idStrings(connectedPeers));
         log.info("SCALE-PROBE DUMP: provisioning circuit-breaker = {}", breakerSummary());
-        log.info("SCALE-PROBE DUMP: /api/cluster/config = {}", httpGet(leaderPort, "/api/v1/cluster/config"));
-        log.info("SCALE-PROBE DUMP: /api/cluster/generation = {}", httpGet(leaderPort, "/api/v1/cluster/generation"));
-        log.info("SCALE-PROBE DUMP: /api/nodes/status = {}", httpGet(leaderPort, "/api/v1/nodes/status"));
+        log.info("SCALE-PROBE DUMP: /api/v1/cluster/config = {}", httpGet(leaderPort, "/api/v1/cluster/config"));
+        log.info("SCALE-PROBE DUMP: /api/v1/cluster/generation = {}", httpGet(leaderPort, "/api/v1/cluster/generation"));
+        log.info("SCALE-PROBE DUMP: /api/v1/nodes/status = {}", httpGet(leaderPort, "/api/v1/nodes/status"));
 
         cluster.allNodes().forEach(node -> dumpNode(node, countedSet, connectedPeers));
     }

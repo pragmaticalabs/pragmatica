@@ -308,7 +308,7 @@ class StreamCrashDurabilityTest {
     /// On a recovery shortfall, dump EVERY live node's in-JVM replica snapshot (mirrors
     /// `AbstractStreamOwnerFailover.dumpAllReplicaViews`): one WARNING line per node tagged with its own
     /// id, so a non-recovered partition view is diagnosable from the shared forge console instead of the
-    /// assertion dying blind. Reads the SAME `StreamReadRouter.replicaSnapshot` the `/api/streams/replicas`
+    /// assertion dying blind. Reads the SAME `StreamReadRouter.replicaSnapshot` the `/api/v1/streams/replicas`
     /// sensor serves, but per-node in-JVM (the HTTP sensor is delegate-routed, #490).
     private void dumpAllNodeStreamState() {
         for (var node : cluster.allNodes()) {
@@ -480,7 +480,7 @@ class StreamCrashDurabilityTest {
                    .or(false);
     }
 
-    /// A6 full-membership gate: poll the LEADER's `/api/health` and require quorum AND a member count
+    /// A6 full-membership gate: poll the LEADER's `/api/v1/health` and require quorum AND a member count
     /// that has reached the full expected set. `nodeCount` is the cluster-wide membership count the
     /// bootstrap formation phase also gates on (see `BootstrapPhaseFormation.healthMeetsFloor`).
     private boolean allNodesAreMembers(int expected) {

@@ -26,7 +26,7 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 import org.pragmatica.aether.ember.EmberCluster;
 
 /// #422/#423/#425 full-stack proof that per-slice metric attribution is LIVE end-to-end. Two
-/// distinct slices are deployed and the leader's `GET /api/controller/decisions` snapshot is read:
+/// distinct slices are deployed and the leader's `GET /api/v1/controller/decisions` snapshot is read:
 /// each slice must appear as its OWN per-artifact decision record (the aggregator → leader → snapshot
 /// carrier path is per-slice, not one merged cluster-wide record), and neither idle slice may be
 /// scaled up (no cross-slice mis-attribution).
