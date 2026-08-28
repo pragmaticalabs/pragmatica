@@ -47,7 +47,7 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 /// `DrainProcedure` (AetherNode.java:1857), invoked once at the INACTIVE→DRAINING transition. With
 /// the fix present at HEAD this is an ENABLED green-gate: the seeded artifact survives the churn.
 ///
-/// ## Managed scale trigger: HTTP `POST /api/cluster/scale` (the REAL ClusterConfigKey path)
+/// ## Managed scale trigger: HTTP `POST /api/v1/cluster/scale` (the REAL ClusterConfigKey path)
 /// Mirrors `ScaleUpFiveToSevenProbeTest` (its `postScale` / `readConfigVersion` /
 /// `observeUntilTargetCounted` counted-core settle helpers). The endpoint commits
 /// `ClusterConfigKey.CURRENT.coreCount`, whose fan-out drives `AetherNode.onClusterConfigPut` →
@@ -65,7 +65,7 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 /// counted cores after the up-leg AND settled back to 5 after the down-leg — read from
 /// `membershipFsm().coreCountedMembers()`, the exact denominator the reconciler uses. If either leg
 /// fails to converge within the settle budget the test FAILS (that IS the signal the trigger no-ops
-/// and the departure push was never exercised). The artifact-survival check (ACTIVE + `/api/slices`)
+/// and the departure push was never exercised). The artifact-survival check (ACTIVE + `/api/v1/slices`)
 /// is the load-bearing post-condition on top of the confirmed churn. (The optional "a seeded
 /// chunk's holder set changed" assertion is NOT added — per-key DHT ring holders are not exposed on
 /// the Ember/Forge surface without deep plumbing; the asserted counted-core 5→7→5 convergence is the
@@ -130,7 +130,7 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
 
         var upLatency = managedScale(TARGET_CORES);
         assertThat(upLatency)
-            .as("GUARD: managed 5->7 via /api/cluster/scale must physically reach %d counted cores "
+            .as("GUARD: managed 5->7 via /api/v1/cluster/scale must physically reach %d counted cores "
                 + "within %ds (latch=-1 => no physical churn, the trigger no-ops and the departure "
                 + "push is never exercised — vacuous survival is thereby impossible).",
                 TARGET_CORES, SCALE_TIMEOUT.toSeconds())
@@ -138,7 +138,7 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
 
         var downLatency = managedScale(INITIAL_CORES);
         assertThat(downLatency)
-            .as("GUARD: managed 7->5 via /api/cluster/scale must settle back to %d counted cores "
+            .as("GUARD: managed 7->5 via /api/v1/cluster/scale must settle back to %d counted cores "
                 + "within %ds (latch=-1 => surplus never drained, so the departure push never ran).",
                 INITIAL_CORES, SCALE_TIMEOUT.toSeconds())
             .isGreaterThanOrEqualTo(0L);
@@ -158,7 +158,7 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
 
     // ----- managed scale via the real ClusterConfigKey path (mirrors ScaleUpFiveToSevenProbeTest) -----
 
-    /// Commits the target core count through `POST /api/cluster/scale` and blocks until the
+    /// Commits the target core count through `POST /api/v1/cluster/scale` and blocks until the
     /// in-process counted-core denominator equals it (or the budget expires). Returns the
     /// convergence latency in ms, or -1 if the target was never observed within the budget.
     @TerminalOperation
@@ -166,7 +166,7 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
         var port = leaderPort();
         var version = readConfigVersion(port);
         var response = postScale(port, targetCores, version);
-        log.info("CHURN-PROBE: POST /api/cluster/scale {{coreCount:{}, expectedVersion:{}}} -> {}",
+        log.info("CHURN-PROBE: POST /api/v1/cluster/scale {{coreCount:{}, expectedVersion:{}}} -> {}",
                  targetCores, version, response);
         return awaitCounted(targetCores, SCALE_TIMEOUT);
     }
@@ -222,7 +222,7 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
     private String postScale(int port, int coreCount, int expectedVersion) {
         var body = "{\"coreCount\":" + coreCount + ",\"expectedVersion\":" + expectedVersion + "}";
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + "/api/cluster/scale"))
+                                 .uri(URI.create("http://localhost:" + port + "/api/v1/cluster/scale"))
                                  .header("Content-Type", "application/json")
                                  .POST(HttpRequest.BodyPublishers.ofString(body))
                                  .timeout(Duration.ofSeconds(10))
@@ -238,7 +238,7 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
     }
 
     private int readConfigVersion(int port) {
-        var matcher = CONFIG_VERSION.matcher(httpGet(port, "/api/cluster/config"));
+        var matcher = CONFIG_VERSION.matcher(httpGet(port, "/api/v1/cluster/config"));
         return matcher.find()
                ? Integer.parseInt(matcher.group(1))
                : 0;
@@ -281,7 +281,7 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
 
     private static HttpRequest postBlueprint(int port, String body) {
         return HttpRequest.newBuilder()
-                          .uri(URI.create("http://localhost:" + port + "/api/blueprints"))
+                          .uri(URI.create("http://localhost:" + port + "/api/v1/blueprints"))
                           .header("Content-Type", "application/toml")
                           .POST(HttpRequest.BodyPublishers.ofString(body))
                           .timeout(Duration.ofSeconds(10))
@@ -291,7 +291,7 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
     @TerminalOperation
     private String getSlices(int port) {
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + "/api/slices"))
+                                 .uri(URI.create("http://localhost:" + port + "/api/v1/slices"))
                                  .GET()
                                  .timeout(Duration.ofSeconds(10))
                                  .build();
@@ -308,7 +308,7 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
     @TerminalOperation
     private boolean checkNodeHealth(int port) {
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + "/api/health"))
+                                 .uri(URI.create("http://localhost:" + port + "/api/v1/health"))
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();

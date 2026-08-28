@@ -103,41 +103,41 @@ class CoordinationSlopeInstrumentTest {
         Option.option(cluster).onPresent(c -> c.stop().await());
     }
 
-    /// The sampler's contract with `GET /api/metrics/transport`, checked on EVERY core because the
+    /// The sampler's contract with `GET /api/v1/metrics/transport`, checked on EVERY core because the
     /// route is LOCAL — each node answers for itself, which is what makes per-core sampling meaningful
     /// and what makes a single node's reply insufficient evidence.
     @Test
     void everyCoreServesTheTransportCountersTheSamplerDifferences() {
         for (var node : cluster.status().nodes()) {
-            var body = get(node.mgmtPort(), "/api/metrics/transport");
+            var body = get(node.mgmtPort(), "/api/v1/metrics/transport");
 
             assertThat(body)
-                .as("node %s must answer /api/metrics/transport", node.id())
+                .as("node %s must answer /api/v1/metrics/transport", node.id())
                 .isNotBlank();
 
             for (var key : REQUIRED_TRANSPORT_KEYS) {
                 assertThat(body)
-                    .as("node %s: /api/metrics/transport must carry %s — the sampler differences it, and "
+                    .as("node %s: /api/v1/metrics/transport must carry %s — the sampler differences it, and "
                         + "a missing key would make a busy node read as perfectly idle", node.id(), key)
                     .contains("\"" + key + "\"");
             }
         }
     }
 
-    /// The sampler's contract with `GET /api/metrics`: a `load` map keyed by node id, carrying the CPU
+    /// The sampler's contract with `GET /api/v1/metrics`: a `load` map keyed by node id, carrying the CPU
     /// and heap fields it reports alongside the message rate.
     @Test
     void everyCoreServesTheLoadFieldsTheSamplerReads() {
         for (var node : cluster.status().nodes()) {
-            var body = get(node.mgmtPort(), "/api/metrics");
+            var body = get(node.mgmtPort(), "/api/v1/metrics");
 
             assertThat(body)
-                .as("node %s: /api/metrics must carry a load map", node.id())
+                .as("node %s: /api/v1/metrics must carry a load map", node.id())
                 .contains("\"load\"");
 
             for (var key : REQUIRED_LOAD_KEYS) {
                 assertThat(body)
-                    .as("node %s: /api/metrics load entries must carry %s", node.id(), key)
+                    .as("node %s: /api/v1/metrics load entries must carry %s", node.id(), key)
                     .contains("\"" + key + "\"");
             }
         }
@@ -210,7 +210,7 @@ class CoordinationSlopeInstrumentTest {
     }
 
     private long messagesTotal(int mgmtPort) {
-        var body = get(mgmtPort, "/api/metrics/transport");
+        var body = get(mgmtPort, "/api/v1/metrics/transport");
 
         return REQUIRED_TRANSPORT_KEYS.stream()
                                       .mapToLong(key -> extractLong(body, key))

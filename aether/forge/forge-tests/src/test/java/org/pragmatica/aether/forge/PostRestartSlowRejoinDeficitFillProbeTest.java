@@ -118,7 +118,7 @@ class PostRestartSlowRejoinDeficitFillProbeTest {
     /// The positive control raises the configured core count to the next legal value, so a genuine
     /// deficit-fill is the only way to converge — the smallest change that proves the path is live.
     ///
-    /// It is +2, not +1: `POST /api/cluster/scale` refuses an even core count outright
+    /// It is +2, not +1: `POST /api/v1/cluster/scale` refuses an even core count outright
     /// (`HTTP 400 Invalid core count: 6. Must be an odd number >= 3`), because an even core count buys
     /// no extra fault tolerance over the odd number below it while making a split quorum possible.
     /// `INITIAL_CORES + 1` was the original value and could never have been accepted; the request was
@@ -311,7 +311,7 @@ class PostRestartSlowRejoinDeficitFillProbeTest {
     /// wired to the call the path travels, and (c) the `reachedFullMembership` latch opened once the
     /// held members rejoined — none of which the zero-observation alone can establish.
     ///
-    /// The trigger is `POST /api/cluster/scale`, NOT `EmberCluster.setClusterSize`: the latter routes
+    /// The trigger is `POST /api/v1/cluster/scale`, NOT `EmberCluster.setClusterSize`: the latter routes
     /// a `SetClusterSize` topology message that moves only the consensus-side `effectiveClusterSize`
     /// atomic and never writes `ClusterConfigKey.CURRENT`, so `configuredCoreCountSupplier` would
     /// never see 6 and the control would silently no-op into a false pass. Same resolved caveat as
@@ -331,7 +331,7 @@ class PostRestartSlowRejoinDeficitFillProbeTest {
         var version = readConfigVersion(leaderPort);
         var response = postScale(leaderPort, RAISED_CORES, version);
 
-        log.info("SLOWJOIN-PROBE CONTROL: POST /api/cluster/scale {{role:core, count:{}, expectedVersion:{}}} -> {}",
+        log.info("SLOWJOIN-PROBE CONTROL: POST /api/v1/cluster/scale {{role:core, count:{}, expectedVersion:{}}} -> {}",
                  RAISED_CORES,
                  version,
                  response);
@@ -674,7 +674,7 @@ class PostRestartSlowRejoinDeficitFillProbeTest {
 
     // ----- HTTP (positive-control scale trigger + config version read) -----
     private int readConfigVersion(int port) {
-        var matcher = CONFIG_VERSION.matcher(httpGet(port, "/api/cluster/config"));
+        var matcher = CONFIG_VERSION.matcher(httpGet(port, "/api/v1/cluster/config"));
 
         return matcher.find()
                ? Number.parseInt(matcher.group(1)).or(0)
@@ -682,7 +682,7 @@ class PostRestartSlowRejoinDeficitFillProbeTest {
     }
 
     /// Posts the documented `ScaleRequest` shape — `source` / `role` / `count` / `expectedVersion`
-    /// (`aether/docs/reference/management-api.md`, `POST /api/cluster/scale`). A blank `source` asks the
+    /// (`aether/docs/reference/management-api.md`, `POST /api/v1/cluster/scale`). A blank `source` asks the
     /// server to infer it, which succeeds here because the Ember cluster declares exactly one source
     /// carrying `core`.
     ///
@@ -698,7 +698,7 @@ class PostRestartSlowRejoinDeficitFillProbeTest {
         var body = "{\"source\":\"\",\"role\":\"core\",\"count\":" + coreCount
                    + ",\"expectedVersion\":" + expectedVersion + "}";
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + "/api/cluster/scale"))
+                                 .uri(URI.create("http://localhost:" + port + "/api/v1/cluster/scale"))
                                  .header("Content-Type", "application/json")
                                  .POST(HttpRequest.BodyPublishers.ofString(body))
                                  .timeout(Duration.ofSeconds(10))
@@ -714,7 +714,7 @@ class PostRestartSlowRejoinDeficitFillProbeTest {
     /// can never be mistaken for an inert provisioning path.
     private static String requireScaleAccepted(HttpResult result) {
         if (result.statusCode() / 100 != 2) {
-            throw new AssertionError("CONTROL TRIGGER REJECTED: POST /api/cluster/scale returned HTTP "
+            throw new AssertionError("CONTROL TRIGGER REJECTED: POST /api/v1/cluster/scale returned HTTP "
                                      + result.statusCode()
                                      + " — the configured core count was never raised, so any subsequent "
                                      + "zero-provision observation says nothing about the deficit-fill path. "

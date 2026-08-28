@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Changed (2026-08-28 — #692: HealthReconciler ghost-comment sweep, Java surfaces)
+- **Zero `HealthReconciler` references remain in Java sources.** 21 comment/docstring references
+  across `integrations/consensus`, `integrations/swim`, and `integrations/cluster` described a type
+  deleted in the membership-v2 migration — the largest single stale-describing-surface cluster on
+  the branch, and exactly the shape that minted five wrong ticket premises on 2026-08-27. Each was
+  corrected against the verified current mechanism, not search-replaced: SWIM `FaultyObserved` edges
+  drive `MembershipFsm.onSwimFaulty` via the observation listener (no `DECOMMISSIONED` node-state KV
+  write exists in v2); `PeerHealthObservation`'s epoch-fencing consumer is `SwimHintsRegistry`;
+  connectivity observations ride `PeerObservationBuffer` → cluster-sync pong (the leader-side
+  `ReachabilityAggregator` fold named by one comment is ALSO gone — P3 removed it, SWIM is the
+  single liveness signal); leader-term consumers are Aether's generation/ownership epoch suppliers;
+  `NodeLifecycleKey` is itself deleted. 1012 tests green across the three modules after the sweep.
+- **#692's rename item was a stale premise, corrected rather than executed:**
+  `ClusterSyncContext.emitPingTimeoutIfExceeded` does NOT "emit nothing" on current HEAD — the
+  S01/Option-1 wiring gives it a live effect (`collector.reportUnreachable`, the SWIM
+  transport-unreachable hint path), pinned by `ClusterSyncFsmTest`'s
+  `emitPingTimeout_*` tests. The name matches the behavior; no rename shipped. Remaining #692
+  surfaces live under `aether/docs/**` (docs-stream territory) and are routed, not swept here.
+
 ### Fixed (2026-08-28 — #694: Ember instances round-trip the CTM's tag selector)
 - **In-JVM worker reconcile can now see its own inventory.** `EmberComputeProvider.toInstanceInfo`
   returned an EMPTY tag map for every instance; an instance with no tags matches no non-empty

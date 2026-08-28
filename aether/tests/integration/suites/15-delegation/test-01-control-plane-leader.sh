@@ -3,7 +3,7 @@
 #
 # Rescoped from the former distributed task-group delegation suite. The
 # distributed task-assignment machinery (TaskAssignmentCoordinator, the
-# `/api/cluster/tasks` + `/api/cluster/tasks/reassign` endpoints, per-group
+# `/api/v1/cluster/tasks` + `/api/v1/cluster/tasks/reassign` endpoints, per-group
 # METRICS/SCALING/STORAGE/… assignments) was REMOVED. Control-plane components
 # (CDM, scaling, streaming, …) are now LEADER-PINNED: they activate on the
 # elected cluster leader rather than being assigned to task groups across nodes.

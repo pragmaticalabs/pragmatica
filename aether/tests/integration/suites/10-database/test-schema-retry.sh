@@ -13,7 +13,7 @@ DATASOURCE=""
 
 discover_tracked_datasource() {
     local body
-    body=$(api_get "/api/schema/status" 2>/dev/null) || return 1
+    body=$(api_get "/api/v1/schema/status" 2>/dev/null) || return 1
     # #598: the status list is CLUSTER-GLOBAL and url-shortener's datasource is tracked
     # too when cluster-A suites run in parallel — select THIS blueprint's row, never
     # the first row (head -1 grabbed whichever blueprint published first).
@@ -68,16 +68,16 @@ test_schema_retry_endpoint() {
     # Non-2xx response — surface body to confirm the contract message.
     local resp
     resp=$(curl -sk -m 10 -X POST -H "X-API-Key: ${API_KEY}" \
-           "${CLUSTER_ENDPOINT}/api/schema/retry/${DATASOURCE}" 2>/dev/null || echo "")
+           "${CLUSTER_ENDPOINT}/api/v1/schema/retry/${DATASOURCE}" 2>/dev/null || echo "")
     if printf '%s' "$resp" | grep -qiE 'not in FAILED state'; then
         log_pass "Schema retry returned expected 'not in FAILED state' for healthy ${DATASOURCE} (contract verified)"
         return 0
     fi
-    log_fail "POST /api/schema/retry/${DATASOURCE} failed unexpectedly: $(printf '%s' "$resp" | head -c 200)"
+    log_fail "POST /api/v1/schema/retry/${DATASOURCE} failed unexpectedly: $(printf '%s' "$resp" | head -c 200)"
     return 1
 }
 
-# Strict (product contract): /api/schema/retry against a healthy/COMPLETED datasource
+# Strict (product contract): /api/v1/schema/retry against a healthy/COMPLETED datasource
 # transitions it to FAILED — the orchestrator interprets the call as "operator forcing
 # a retry" and surfaces FAILED as the visible state until the real retry succeeds. This
 # matches the SchemaOrchestratorService contract ("Schema is not in FAILED state — retry
@@ -116,12 +116,12 @@ test_retry_idempotent() {
     fi
     local resp
     resp=$(curl -sk -m 10 -X POST -H "X-API-Key: ${API_KEY}" \
-           "${CLUSTER_ENDPOINT}/api/schema/retry/${DATASOURCE}" 2>/dev/null || echo "")
+           "${CLUSTER_ENDPOINT}/api/v1/schema/retry/${DATASOURCE}" 2>/dev/null || echo "")
     if printf '%s' "$resp" | grep -qiE 'not in FAILED state'; then
         log_pass "Schema retry second call returned expected 'not in FAILED state' (idempotent against healthy state)"
         return 0
     fi
-    log_fail "POST /api/schema/retry/${DATASOURCE} failed unexpectedly on second call: $(printf '%s' "$resp" | head -c 200)"
+    log_fail "POST /api/v1/schema/retry/${DATASOURCE} failed unexpectedly on second call: $(printf '%s' "$resp" | head -c 200)"
     return 1
 }
 

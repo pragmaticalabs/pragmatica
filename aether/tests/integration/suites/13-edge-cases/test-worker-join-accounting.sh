@@ -12,9 +12,9 @@
 #   - The worker boots as a raw container on the cluster network with AETHER_ROLE=worker —
 #     the self-asserted SWIM role label is the role carrier until #241 (spec Q3), and the
 #     leader's CDM independently assigns the WORKER ActivationDirective (join past coreMax).
-#   - Core membership truth is read from /api/cluster/generation via cluster_member_count
+#   - Core membership truth is read from /api/v1/cluster/generation via cluster_member_count
 #     (the generation member set is built from the FSM's role-filtered coreMembers, so the
-#     worker never appears there) and per-member role/state from /api/cluster/topology
+#     worker never appears there) and per-member role/state from /api/v1/cluster/topology
 #     fsmMembers (descriptor role from the FSM).
 set -euo pipefail
 
@@ -67,7 +67,7 @@ fi
 # (core/worker) or empty when unknown.
 fsm_role_of() {
     local node="$1"
-    direct_api_get "/api/cluster/topology" 2>/dev/null \
+    direct_api_get "/api/v1/cluster/topology" 2>/dev/null \
         | grep -o "\"nodeId\"[[:space:]]*:[[:space:]]*\"${node}\"[^}]*" \
         | grep '"fsmState"' \
         | head -1 \
@@ -79,7 +79,7 @@ fsm_role_of() {
 # only fsmMembers[] entries carry an "fsmState" field, so the extraction self-selects.
 fsm_state_of() {
     local node="$1"
-    direct_api_get "/api/cluster/topology" 2>/dev/null \
+    direct_api_get "/api/v1/cluster/topology" 2>/dev/null \
         | grep -o "\"nodeId\"[[:space:]]*:[[:space:]]*\"${node}\"[^}]*" \
         | grep -o '"fsmState"[[:space:]]*:[[:space:]]*"[^"]*"' \
         | head -1 \
@@ -90,7 +90,7 @@ fsm_state_of() {
 # excluded defensively (the route's core-id filter is transport-based, not
 # descriptor-role-based, until Wave 9).
 live_core_ids() {
-    direct_api_get "/api/cluster/topology" 2>/dev/null \
+    direct_api_get "/api/v1/cluster/topology" 2>/dev/null \
         | grep -o '"coreNodes"[[:space:]]*:[[:space:]]*\[[^]]*\]' \
         | grep -o '"[^"]*"' \
         | tr -d '"' \

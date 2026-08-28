@@ -28,7 +28,7 @@ final class TestArtifacts {
     /// RF=2 / min-sync-replicas=2 replicated stream blueprint (`test-stream-repl`), used by
     /// `StreamOwnerFailoverTest` for the #457 in-JVM owner-kill failover proof. A synchronously
     /// replicated stream (owner + 1 in-sync replica) is the ONLY topology with a promotable CAUGHT_UP
-    /// non-owner replica; `POST /api/streams` can only mint RF=1 (owner-only), so the RF=2 config MUST
+    /// non-owner replica; `POST /api/v1/streams` can only mint RF=1 (owner-only), so the RF=2 config MUST
     /// come from a blueprint that declares `min-sync-replicas=2`. Mirrors the RF=1 [#STREAM_SLICE]
     /// coordinate (the `-stream-slice` artifact, fixed `1.0.0` blueprint version, resolved from the
     /// local Maven repo) — the sibling `aether/tests/blueprints/test-stream-repl` module the cloud

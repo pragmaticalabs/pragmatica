@@ -167,7 +167,7 @@ class DeclarativeStreamConsumerTest {
         if (cluster != null) {
             var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
 
-            httpDelete(leaderPort, "/api/blueprints/" + BLUEPRINT_ID);
+            httpDelete(leaderPort, "/api/v1/blueprints/" + BLUEPRINT_ID);
             cluster.stop()
                    .await();
         }
@@ -238,7 +238,7 @@ class DeclarativeStreamConsumerTest {
         @Test
         void declarativeConsumersEndpoint_answersOnEveryNode_namingStreamAndMethod() {
             var bodies = mgmtPorts().stream()
-                                    .map(port -> httpGet(port, "/api/streams/declarative-consumers"))
+                                    .map(port -> httpGet(port, "/api/v1/streams/declarative-consumers"))
                                     .toList();
 
             assertThat(bodies).allSatisfy(body -> {
@@ -252,7 +252,7 @@ class DeclarativeStreamConsumerTest {
         /// endpoint must say so rather than warning spuriously.
         @Test
         void declarativeConsumersEndpoint_reportsEventTypePublishable_forStringEvents() {
-            var body = httpGet(ownerMgmtPort(), "/api/streams/declarative-consumers");
+            var body = httpGet(ownerMgmtPort(), "/api/v1/streams/declarative-consumers");
 
             assertThat(body).contains("\"eventTypePublishable\":true");
             assertThat(body).contains("java.lang.String");
@@ -315,7 +315,7 @@ class DeclarativeStreamConsumerTest {
         @Test
         void declarativeConsumersEndpoint_reportsEventTypePublishable_forApplicationType() {
             var fragments = mgmtPorts().stream()
-                                       .map(port -> consumerFragment(httpGet(port, "/api/streams/declarative-consumers"),
+                                       .map(port -> consumerFragment(httpGet(port, "/api/v1/streams/declarative-consumers"),
                                                                      ORDER_EVENTS_STREAM))
                                        .filter(fragment -> !fragment.isEmpty())
                                        .toList();
@@ -427,7 +427,7 @@ class DeclarativeStreamConsumerTest {
 
     private int totalAttachedSubscriptions() {
         return mgmtPorts().stream()
-                          .map(port -> httpGet(port, "/api/streams/declarative-consumers"))
+                          .map(port -> httpGet(port, "/api/v1/streams/declarative-consumers"))
                           .mapToInt(body -> firstInt(ATTACHED_FIELD, body))
                           .sum();
     }
@@ -436,7 +436,7 @@ class DeclarativeStreamConsumerTest {
     /// aggregate count cannot distinguish "both consumers attached" from "one attached twice".
     private boolean consumerAttachedFor(String stream) {
         return mgmtPorts().stream()
-                          .map(port -> consumerFragment(httpGet(port, "/api/streams/declarative-consumers"), stream))
+                          .map(port -> consumerFragment(httpGet(port, "/api/v1/streams/declarative-consumers"), stream))
                           .anyMatch(fragment -> fragment.contains("\"assignedPartitions\""));
     }
 
@@ -452,7 +452,7 @@ class DeclarativeStreamConsumerTest {
 
     private int ownerMgmtPort() {
         return mgmtPorts().stream()
-                          .filter(port -> firstInt(ATTACHED_FIELD, httpGet(port, "/api/streams/declarative-consumers")) > 0)
+                          .filter(port -> firstInt(ATTACHED_FIELD, httpGet(port, "/api/v1/streams/declarative-consumers")) > 0)
                           .findFirst()
                           .orElseThrow(() -> new AssertionError("No node reports an attached declarative consumer"));
     }
@@ -476,7 +476,7 @@ class DeclarativeStreamConsumerTest {
             instances = %d
             """.formatted(BLUEPRINT_ID, CONSUMER_SLICE, INSTANCES);
         var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
-        var response = httpPostToml(leaderPort, "/api/blueprints", blueprint);
+        var response = httpPostToml(leaderPort, "/api/v1/blueprints", blueprint);
 
         assertThat(response).describedAs("declarative-consumer slice deployment")
                             .doesNotContain("\"error\"")
@@ -545,7 +545,7 @@ class DeclarativeStreamConsumerTest {
 
     private boolean checkNodeHealth(int port) {
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + "/api/health"))
+                                 .uri(URI.create("http://localhost:" + port + "/api/v1/health"))
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();

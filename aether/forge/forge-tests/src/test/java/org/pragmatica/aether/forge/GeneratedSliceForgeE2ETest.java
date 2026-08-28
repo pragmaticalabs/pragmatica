@@ -170,13 +170,13 @@ class GeneratedSliceForgeE2ETest {
     private String deployByArtifact(int port, String coords) {
         var body = "{\"artifact\":\"" + coords + "\"}";
 
-        return post(port, "/api/blueprints/deploy", body);
+        return post(port, "/api/v1/blueprints/deploy", body);
     }
 
     private int deployStatus(int port, String coords) {
         var body = "{\"artifact\":\"" + coords + "\"}";
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + "/api/blueprints/deploy"))
+                                 .uri(URI.create("http://localhost:" + port + "/api/v1/blueprints/deploy"))
                                  .header("Content-Type", "application/json")
                                  .POST(HttpRequest.BodyPublishers.ofString(body))
                                  .timeout(Duration.ofSeconds(30))
@@ -219,7 +219,7 @@ class GeneratedSliceForgeE2ETest {
 
     private boolean checkNodeHealth(int port) {
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + "/api/health"))
+                                 .uri(URI.create("http://localhost:" + port + "/api/v1/health"))
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();

@@ -3,8 +3,8 @@
 #
 # Replaces the old retry/sleep/self_heal machinery with server-side synchronous
 # waits using the public endpoints introduced in commit 9a8f6ec7b:
-#   - GET  /api/cluster/generation            (current snapshot)
-#   - POST /api/cluster/await-quiesced        (blocking epoch-gated wait)
+#   - GET  /api/v1/cluster/generation            (current snapshot)
+#   - POST /api/v1/cluster/await-quiesced        (blocking epoch-gated wait)
 #
 # Preferred invocation is through `aether cluster await-quiesced` per user
 # feedback — fall back to raw curl only when the CLI is unavailable.
@@ -20,7 +20,7 @@ source "${LIB_DIR_GENERATION}/common.sh"
 # ---------------------------------------------------------------------------
 # generation_current [endpoint]
 #
-# Prints the current epoch as "T:C" read from GET /api/cluster/generation.
+# Prints the current epoch as "T:C" read from GET /api/v1/cluster/generation.
 # If the node has no snapshot yet (epoch==null) prints empty + returns 1.
 # endpoint defaults to ${CLUSTER_ENDPOINT} (per-suite scoped mgmt endpoint).
 # ---------------------------------------------------------------------------
@@ -28,7 +28,7 @@ generation_current() {
     local endpoint="${1:-$(_resolve_live_endpoint)}"
     local response
     response=$(curl -sf -m 5 -H "X-API-Key: ${API_KEY}" \
-        "${endpoint}/api/cluster/generation" 2>/dev/null) || return 1
+        "${endpoint}/api/v1/cluster/generation" 2>/dev/null) || return 1
     # Extract nested epoch.rabiaTerm / epoch.localCounter.
     local term counter
     term=$(printf '%s' "$response" | grep -oE '"rabiaTerm"[[:space:]]*:[[:space:]]*[0-9]+' | head -1 | grep -oE '[0-9]+$')
@@ -65,7 +65,7 @@ await_generation_quiesced() {
     if ! target_epoch=$(_resolve_epoch "$endpoint" "$epoch"); then
         # rc=2 (distinct from the 408-timeout rc=1): we could not even READ the
         # current generation epoch — the endpoint is unreachable/unable to serve the
-        # leader-bound /api/cluster/generation route. Callers must NOT report this as
+        # leader-bound /api/v1/cluster/generation route. Callers must NOT report this as
         # "did not quiesce" (the #126 misdiagnosis): the cluster may be perfectly
         # quiesced on a live node we never reached.
         log_warn "await_generation_quiesced: could not read generation epoch from ${endpoint} (cluster unreachable — NOT a quiescence failure)"
@@ -102,7 +102,7 @@ await_generation_quiesced() {
     http_status=$(curl -s -o /dev/null -w "%{http_code}" \
         -X POST -H "X-API-Key: ${API_KEY}" \
         -m "${curl_budget}" \
-        "${endpoint}/api/cluster/await-quiesced?epoch=${target_epoch}&timeout=${timeout}s" 2>/dev/null)
+        "${endpoint}/api/v1/cluster/await-quiesced?epoch=${target_epoch}&timeout=${timeout}s" 2>/dev/null)
     local elapsed=$(( $(_now_ms) - start_ns ))
     if [ "$http_status" = "200" ]; then
         log_pass "quiesced at ${target_epoch} (${elapsed}ms)"
