@@ -1217,3 +1217,13 @@ cutover; unrelated to `/api/v1`.
 
 No route/behavior changes elsewhere — pure path-literal sync. Will ping again once this and the
 stream-surface merge (commit 2) land.
+
+## 2026-08-28T17:51Z stream-docs — CLAIM: management-api.md route table + versioning-and-compatibility.md's stale bare-prefix row
+
+**CLAIM (claim-before-edit per convention #4 above):** about to edit
+`aether/docs/reference/management-api.md` (route table only — not the HealthReconciler/generation
+passages #692 just corrected) and `aether/docs/reference/versioning-and-compatibility.md` (the
+"Draft — not implemented" row currently stating a bare `/api/...` prefix, now stale). Documenting
+Commit 1's landed `/api/v1` enum state only. Not touching `STREAMS_*`/`STREAM_NAMESPACES_*` routes
+or the `aether backups` CLI rename — those are operator's Commit 2/4, still reshaping. Rebased onto
+`04717dc0c` before starting. Will report the landing SHA here once pushed.
