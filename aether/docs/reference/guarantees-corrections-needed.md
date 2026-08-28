@@ -63,6 +63,23 @@
 > (streams, pub-sub, durable-entity, archive) and are correctly left for whichever stream owns that
 > re-grounding pass next.
 
+### Surface 3 file audit (2026-08-28) — deployment/blueprint, per-file disposition
+
+All 8 candidate deployment/blueprint docs, so the read-vs-skip boundary is enumerable rather than
+re-derived from the prose above:
+
+| File | Guarantee-language claims? | Disposition |
+|---|---|---|
+| `architecture/02-deployment.md` | Yes — `ALL_OR_NOTHING`/`BEST_EFFORT` blueprint atomicity | Already earns the claim (batch-consensus mechanism named, `InFlightBlueprint` rollback tracked) — no fix |
+| `slice-developers/deployment.md` | Yes — same `ALL_OR_NOTHING` claim, dev-facing | Already earns the claim — no fix |
+| `guides/deploy-guide.md` | Yes — blue-green "atomic switchover" | Already earns the claim (mechanism + timing named: "~100ms via single Rabia round") — no fix |
+| `guides/rolling-upgrade.md` | Yes — "zero downtime" | Fixed in surface 1 (D15) |
+| `specs/unified-deploy-spec.md` | Yes — REQ-4 "atomic multi-slice transitions" | Already earns the claim (batch consensus apply); `/api/deploy/*` route content untouched — entangled with the deferred `/api/v1` cutover (#300), not a wording gap |
+| `operators/deployment-recovery.md` | Yes — contrasts "highly available with automatic restart" | Already exemplary: names the actual mechanism (terminal-removal membership, fresh-ULID reprovision) precisely — credited, not a finding |
+| `operators/multi-cluster-deployment.md` | No | Skipped — pure operational procedure |
+| `operators/docker-deployment.md` | No | Skipped — pure operational procedure |
+| `operators/runbooks/deployment.md` | No | Skipped — pure operational procedure |
+
 
 Two kinds of item:
 - **DOC** — wording overclaim; fix the prose.
