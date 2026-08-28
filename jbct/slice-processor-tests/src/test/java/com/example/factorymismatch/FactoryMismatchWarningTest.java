@@ -34,9 +34,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// fallback but makes it visible: the processor emits a "looks like a validating factory but does
 /// not match" WARNING at the near-miss declaration.
 ///
-/// The match itself is semantic (`Types.isSameType`, boxed where one side is primitive) rather
-/// than `TypeMirror.toString()` equality, so a purely cosmetic spelling difference — a type-use
-/// annotation on a factory parameter — no longer disables validation.
+/// The match itself is semantic (`Types.isSameType`) rather than `TypeMirror.toString()`
+/// equality, so a purely cosmetic spelling difference — a type-use annotation on a factory
+/// parameter — no longer disables validation. Boxing is accepted in one direction only: a boxed
+/// factory parameter over a primitive component (the call site boxes, a total conversion); the
+/// reverse would auto-unbox a possibly-null accessor into an NPE and is refused as a near-miss.
 ///
 /// This test drives the real `SliceProcessor` through the platform `javac` against a fixture slice
 /// compiled with the module's full framework classpath, so both the diagnostics and the
@@ -62,7 +64,9 @@ class FactoryMismatchWarningTest {
                               Files.writeString(sourceDir.resolve("Mark.java"), MARK),
                               Files.writeString(sourceDir.resolve("MismatchRequest.java"), MISMATCH_REQUEST),
                               Files.writeString(sourceDir.resolve("ExactRequest.java"), EXACT_REQUEST),
-                              Files.writeString(sourceDir.resolve("AnnotatedRequest.java"), ANNOTATED_REQUEST));
+                              Files.writeString(sourceDir.resolve("AnnotatedRequest.java"), ANNOTATED_REQUEST),
+                              Files.writeString(sourceDir.resolve("BoxedParamRequest.java"), BOXED_PARAM_REQUEST),
+                              Files.writeString(sourceDir.resolve("PrimitiveParamRequest.java"), PRIMITIVE_PARAM_REQUEST));
 
         var compiler = ToolProvider.getSystemJavaCompiler();
         var collector = new DiagnosticCollector<JavaFileObject>();
@@ -152,6 +156,37 @@ class FactoryMismatchWarningTest {
         }
     }
 
+    @Nested
+    class BoxedFactoryParameterOverPrimitiveComponent {
+        @Test
+        void boxedParameterOverPrimitiveComponent_matchesWithNoWarning() {
+            assertThat(generatedRoutes)
+                .as("a boxed factory parameter over a primitive component is a total conversion"
+                   + " (the accessor returns the primitive, the call site boxes); the factory"
+                   + " must be detected and used — this pins the boxing clause: delete it and"
+                   + " this match textual/semantic-fails")
+                .contains("BoxedParamRequest.boxedParamRequest(request.url(), request.ttlSeconds())");
+            assertThat(warningsMentioning("BoxedParamRequest")).isEmpty();
+        }
+    }
+
+    @Nested
+    class PrimitiveFactoryParameterOverBoxedComponent {
+        @Test
+        void primitiveParameterOverBoxedComponent_isNotSilentlyMatched_warnsAsNearMiss() {
+            assertThat(generatedRoutes)
+                .as("a primitive factory parameter over a boxed component must NOT match: the"
+                   + " accessor can return null (absent JSON field) and the call site's"
+                   + " auto-unboxing would turn it into an NPE -> 500 instead of the typed 400"
+                   + " the factory path exists to produce")
+                .doesNotContain("PrimitiveParamRequest.primitiveParamRequest(");
+            assertThat(warningsMentioning("PrimitiveParamRequest"))
+                .as("the refused near-miss must be visible, not a silent validation skip")
+                .contains("primitiveParamRequest")
+                .contains("does not match");
+        }
+    }
+
     private static final String ROUTES_TOML = """
         prefix = "/api/mismatch"
 
@@ -159,6 +194,8 @@ class FactoryMismatchWarningTest {
         create = "POST /create"
         exact = "POST /exact"
         annotated = "POST /annotated"
+        boxed = "POST /boxed"
+        primitive = "POST /primitive"
 
         [errors]
         default = 500
@@ -175,6 +212,8 @@ class FactoryMismatchWarningTest {
             Promise<EchoResponse> create(MismatchRequest request);
             Promise<EchoResponse> exact(ExactRequest request);
             Promise<EchoResponse> annotated(AnnotatedRequest request);
+            Promise<EchoResponse> boxed(BoxedParamRequest request);
+            Promise<EchoResponse> primitive(PrimitiveParamRequest request);
 
             static FixtureSlice fixtureSlice() {
                 return new FixtureSlice() {
@@ -190,6 +229,16 @@ class FactoryMismatchWarningTest {
 
                     @Override
                     public Promise<EchoResponse> annotated(AnnotatedRequest request) {
+                        return Promise.success(new EchoResponse(request.url()));
+                    }
+
+                    @Override
+                    public Promise<EchoResponse> boxed(BoxedParamRequest request) {
+                        return Promise.success(new EchoResponse(request.url()));
+                    }
+
+                    @Override
+                    public Promise<EchoResponse> primitive(PrimitiveParamRequest request) {
                         return Promise.success(new EchoResponse(request.url()));
                     }
                 };
@@ -252,6 +301,36 @@ class FactoryMismatchWarningTest {
         public record AnnotatedRequest(String url) {
             public static Result<AnnotatedRequest> annotatedRequest(@Mark String url) {
                 return Result.success(new AnnotatedRequest(url));
+            }
+        }
+        """;
+
+    /// Boxed factory parameter (`Integer`) over a primitive component (`int`): the safe boxing
+    /// direction — the accessor returns `int`, the generated call site boxes, the conversion is
+    /// total. Must be detected as the validating factory.
+    private static final String BOXED_PARAM_REQUEST = """
+        package com.example.factorymismatch;
+
+        import org.pragmatica.lang.Result;
+
+        public record BoxedParamRequest(String url, int ttlSeconds) {
+            public static Result<BoxedParamRequest> boxedParamRequest(String url, Integer ttlSeconds) {
+                return Result.success(new BoxedParamRequest(url, ttlSeconds));
+            }
+        }
+        """;
+
+    /// Primitive factory parameter (`int`) over a boxed component (`Integer`): the unsafe boxing
+    /// direction — the accessor can return null (absent JSON field) and the call site's
+    /// auto-unboxing would NPE. Must be refused and reported as a near-miss.
+    private static final String PRIMITIVE_PARAM_REQUEST = """
+        package com.example.factorymismatch;
+
+        import org.pragmatica.lang.Result;
+
+        public record PrimitiveParamRequest(String url, Integer ttlSeconds) {
+            public static Result<PrimitiveParamRequest> primitiveParamRequest(String url, int ttlSeconds) {
+                return Result.success(new PrimitiveParamRequest(url, ttlSeconds));
             }
         }
         """;

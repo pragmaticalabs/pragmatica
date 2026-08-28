@@ -901,7 +901,8 @@ public class RouteSourceGenerator {
     ///
     /// A validating factory is a `static Result<Self> anyName(components...)` declared on the record
     /// itself, whose parameter types match the record components' types in declaration order — the
-    /// same type per `Types.isSameType` (boxed where exactly one side is primitive), so a purely
+    /// same type per `Types.isSameType` (a boxed parameter also matches a primitive component; the
+    /// reverse does not, since the call site would auto-unbox a possibly-null accessor), so a purely
     /// cosmetic spelling difference such as a type-use annotation does not disable validation (#662).
     /// The first match in declaration order wins; a second equally-shaped match is reported as a
     /// warning and ignored, because choosing between two of them is the slice author's call, not
@@ -1041,24 +1042,30 @@ public class RouteSourceGenerator {
         return true;
     }
 
-    /// Same type by mirror identity (`Types.isSameType`), after boxing a primitive side, or by the
-    /// textual spelling the pre-#662 detector compared. `isSameType` absorbs purely cosmetic
-    /// spelling differences — a type-use annotation on a factory parameter is not part of the type —
-    /// that a textual comparison reads as a mismatch; boxing lets an `Integer`-declared factory
-    /// validate an `int` component (the generated call site boxes). Full erasure is deliberately
-    /// NOT applied: it would equate `List<String>` with `List<Integer>` and emit a factory call
-    /// that does not compile. The textual clause keeps every previously-matching declaration
-    /// matching (e.g. spellings `isSameType` refuses, such as identically-named type variables).
+    /// Same type by mirror identity (`Types.isSameType`), by a boxed parameter meeting a
+    /// primitive component, or by the textual spelling the pre-#662 detector compared.
+    /// `isSameType` absorbs purely cosmetic spelling differences — a type-use annotation on a
+    /// factory parameter is not part of the type — that a textual comparison reads as a mismatch.
+    /// Full erasure is deliberately NOT applied: it would equate `List<String>` with
+    /// `List<Integer>` and emit a factory call that does not compile. The textual clause keeps
+    /// every previously-matching declaration matching: `isSameType` refuses any wildcard-containing
+    /// spelling (a wildcard is not the same type as anything, itself included), so a component and
+    /// parameter both spelled e.g. `List<? extends Foo>` match only textually.
     private boolean sameComponentType(TypeMirror parameter, TypeMirror component) {
         return types.isSameType(parameter, component)
-              || types.isSameType(boxed(parameter), boxed(component))
+              || boxedParameterOverPrimitiveComponent(parameter, component)
               || parameter.toString().equals(component.toString());
     }
 
-    private TypeMirror boxed(TypeMirror type) {
-        return type.getKind().isPrimitive()
-               ? types.boxedClass((PrimitiveType) type).asType()
-               : type;
+    /// Boxing is accepted in one direction only: a boxed factory parameter (`Integer`) over a
+    /// primitive record component (`int`). The accessor returns the primitive and the generated
+    /// call site boxes it — a total conversion. The reverse (primitive parameter over boxed
+    /// component) is refused: the accessor can return null (an absent JSON field), and the call
+    /// site's auto-unboxing would turn that into an NPE → 500 instead of the typed 400 the
+    /// factory path exists to produce; refused, it warns as a near-miss (#710 review).
+    private boolean boxedParameterOverPrimitiveComponent(TypeMirror parameter, TypeMirror component) {
+        return component instanceof PrimitiveType primitive
+              && types.isSameType(parameter, types.boxedClass(primitive).asType());
     }
 
     /// The carried type argument must be this record — same type per `Types.isSameType`, with the
