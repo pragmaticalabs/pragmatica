@@ -2,7 +2,6 @@ package org.pragmatica.jbct.lint.cst.rules;
 
 import java.util.List;
 import java.util.Set;
-import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import org.pragmatica.jbct.lint.Diagnostic;
@@ -187,20 +186,21 @@ public class CstUseCaseStructureRule implements CstLintRule {
         return methodParams(method).map(CstNodes::parameterNodes)
                            .or(List.of())
                            .stream()
-                           .anyMatch(param -> declaresQualifierAnnotation(param) && !isRequestOrResponse(parameterTypeName(param)));
+                           .anyMatch(param -> declaresQualifierAnnotation(param) && carriesFactType(param));
     }
 
-    private static final Pattern ANNOTATION_PREFIX = Pattern.compile("@\\w+(\\([^)]*\\))?\\s*");
-
-    /// The parameter's type simple name: parameter text minus its annotations, first token. Text
-    /// arrives annotation-first by grammar, so stripping the prefix leaves `Type name`.
-    private String parameterTypeName(Cursor param) {
-        var stripped = ANNOTATION_PREFIX.matcher(text(param).trim()).replaceAll("").trim();
-        var space = stripped.indexOf(' ');
-
-        return space > 0
-               ? stripped.substring(0, space)
-               : stripped;
+    /// The gate's type half. The parameter's declared type is read from its TYPE node
+    /// (`PlainParam <- Annotation* Modifier* Type Identifier` by grammar), never
+    /// reconstructed from annotation-stripped source text: an annotation argument may
+    /// contain `)` and an annotation may be fully qualified, so text surgery mis-reads the
+    /// type on both spellings (#661). Fail-closed in both directions: a Request/Response-typed
+    /// parameter demands the nested pair regardless of its qualifier, and a parameter whose
+    /// type yields no readable name (a published fact is never a primitive array) is denied
+    /// the exemption rather than granted it.
+    private boolean carriesFactType(Cursor param) {
+        return childByRule(param, RuleKind.TYPE).flatMap(CstNodes::typeSimpleName)
+                           .map(name -> !isRequestOrResponse(name))
+                           .or(false);
     }
 
     private boolean isRequestOrResponse(String name) {
