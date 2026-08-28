@@ -36,14 +36,14 @@ cluster_member_count() {
 # case where a snapshot legitimately reports 0 members.
 _cluster_member_count_checked() {
     # Query core node count via the generation snapshot rather than the topology
-    # endpoint. `/api/cluster/topology` `coreCount` is filtered to ON_DUTY+HEALTHY
+    # endpoint. `/api/v1/cluster/topology` `coreCount` is filtered to ON_DUTY+HEALTHY
     # members only, so during a CTM scale-up the freshly-provisioned overlay-only
     # node (no host port mapping) lags arbitrarily — first as JOINING then while
     # SWIM reaches HEALTHY. The test host can't reach the new node directly, so
     # it never sees `coreCount` reflect the actual cluster size during the
     # convergence window.
     #
-    # `/api/cluster/generation` exposes the authoritative snapshot member set:
+    # `/api/v1/cluster/generation` exposes the authoritative snapshot member set:
     #   - `core.members[]`   — every member admitted to the snapshot, including
     #                          JOINING / non-HEALTHY ones (CTM has placed them
     #                          in the cluster manifest)
@@ -55,7 +55,7 @@ _cluster_member_count_checked() {
     # snapshot carries no members at all (cold boot, pre-publication). Falls
     # back to topology.coreCount only if the generation endpoint is unreachable / empty.
     local gen gen_ok="false"
-    if gen=$(direct_api_get "/api/cluster/generation" 2>/dev/null); then
+    if gen=$(direct_api_get "/api/v1/cluster/generation" 2>/dev/null); then
         gen_ok="true"
     fi
     local desired members observed=0
@@ -90,7 +90,7 @@ _cluster_member_count_checked() {
     # Fallback: topology endpoint (legacy behaviour, used when generation
     # snapshot is unavailable — cold cluster pre-projection).
     local response response_ok="false" fallback
-    if response=$(direct_api_get "/api/cluster/topology" 2>/dev/null); then
+    if response=$(direct_api_get "/api/v1/cluster/topology" 2>/dev/null); then
         response_ok="true"
     fi
     if [ "$gen_ok" != "true" ] && [ "$response_ok" != "true" ]; then
@@ -133,7 +133,7 @@ cluster_leader() {
 # semantics of their CLI siblings but never shell out to `aether`.
 cluster_leader_http() {
     local body
-    body=$(api_get "/api/nodes/status" 2>/dev/null) || return 1
+    body=$(api_get "/api/v1/nodes/status" 2>/dev/null) || return 1
     [ -z "$body" ] && return 1
     local leader
     leader=$(printf '%s' "$body" \
@@ -148,7 +148,7 @@ cluster_leader_http() {
 
 ready_core_count_http() {
     local body
-    body=$(api_get "/api/nodes/lifecycle" 2>/dev/null) || { echo 0; return 0; }
+    body=$(api_get "/api/v1/nodes/lifecycle" 2>/dev/null) || { echo 0; return 0; }
     [ -z "$body" ] && { echo 0; return 0; }
     printf '%s' "$body" \
         | grep -oE '"state"[[:space:]]*:[[:space:]]*"READY"' \
@@ -184,8 +184,8 @@ cluster_phase() {
 
 # Count nodes whose derived membership state is ON_DUTY. H-series MembershipView
 # derives ON_DUTY at read-time from SWIM health rather than persisting an explicit
-# NodeLifecycleKey KV atom — so /api/nodes/lifecycle no longer carries ON_DUTY entries.
-# /api/cluster/topology `coreCount` is the authoritative operator-visible count of
+# NodeLifecycleKey KV atom — so /api/v1/nodes/lifecycle no longer carries ON_DUTY entries.
+# /api/v1/cluster/topology `coreCount` is the authoritative operator-visible count of
 # cores that are ON_DUTY+HEALTHY (as noted in cluster_member_count comment above).
 # Used by `restore_cluster_baseline` to assert the cluster has converged to N healthy
 # cores AFTER CTM auto-heal, without requiring those cores to be the original five
@@ -194,7 +194,7 @@ cluster_phase() {
 # cluster_active_core_count — topology snapshot ON_DUTY+reachable core count.
 # See aether/docs/specs/test-readiness-contract.md §2.2.
 #
-# Returns max(coreCount, coreNodes.length) from /api/cluster/topology.
+# Returns max(coreCount, coreNodes.length) from /api/v1/cluster/topology.
 #
 # Why max():
 #   - `coreCount` is `reachableOnDutyCount(membershipView, snapshot, self)`: counts
@@ -237,7 +237,7 @@ ready_core_count() {
 
 cluster_active_core_count() {
     local topology core_count core_nodes_count
-    topology=$(api_get "/api/cluster/topology" 2>/dev/null || true)
+    topology=$(api_get "/api/v1/cluster/topology" 2>/dev/null || true)
     if [ -z "$topology" ]; then
         echo 0
         return 0
@@ -335,10 +335,10 @@ mgmt_entry_point_node() {
 # server-side state filter returns the lifecycle entries already restricted to
 # nodes reporting READY (NodeReportedState). Nodes that are SYNCING, DRAINING, or
 # have left membership are dropped.
-# Leader re-derivation still rides on `/api/nodes/status` because lifecycle
+# Leader re-derivation still rides on `/api/v1/nodes/status` because lifecycle
 # carries no leader identity — the caller must `wait_for_leader` before invoking
 # us, and we additionally cross-check against `cluster.leaderId` from
-# `/api/nodes/status` to close the MGMT_ENTRY_POINT round-robin race the
+# `/api/v1/nodes/status` to close the MGMT_ENTRY_POINT round-robin race the
 # previous design called out (separate payloads now, but per-call atomicity is
 # preserved within each fetch).
 # Falls back to empty (fail-closed) if either call fails.
@@ -382,15 +382,15 @@ pick_non_leader() {
         attempt_list=""
         local pass_diag="endpoint=${MGMT_ENTRY_POINT}"
 
-        # Re-derive leader from /api/nodes/status each pass to close the
+        # Re-derive leader from /api/v1/nodes/status each pass to close the
         # MGMT_ENTRY_POINT round-robin race: a fast re-election between the
         # caller's read and ours must not let us hand back the new leader as a
         # "non-leader" victim. `"leaderId":null` (empty parse) falls back to the
         # caller-supplied leader.
         local status_payload
-        status_payload=$(api_get "/api/nodes/status" 2>/dev/null || true)
+        status_payload=$(api_get "/api/v1/nodes/status" 2>/dev/null || true)
         if [ -z "$status_payload" ]; then
-            last_reason="/api/nodes/status returned empty body"
+            last_reason="/api/v1/nodes/status returned empty body"
             last_diag="${pass_diag} status_payload=EMPTY"
         else
             local derived_leader
@@ -562,7 +562,7 @@ assert_cluster_healthy() {
     # Read health via the HTTP mgmt path (api_get → _resolve_live_endpoint), NOT the
     # CLI (`aether_field health status`). The CLI can land on a node that was just
     # drained/killed and raise a ConnectException (false negative — Quorum_preserved
-    # regression), whereas api_get rotates to any live core. /api/health returns
+    # regression), whereas api_get rotates to any live core. /api/v1/health returns
     # {"status":"healthy",...}; parse `status` with the same grep/sed idiom the other
     # *_http helpers use. Falls back to the CLI only if the HTTP path yields nothing
     # (keeps behavior on docker/remote where api_get and CLI agree).
@@ -573,13 +573,13 @@ assert_cluster_healthy() {
     assert_eq "$health" "healthy" "$desc"
 }
 
-# Raw-HTTP health status — the `status` field of GET /api/health ("healthy" when the
+# Raw-HTTP health status — the `status` field of GET /api/v1/health ("healthy" when the
 # node is ready + quorate). HTTP sibling of `aether_field health status`; rotates to
 # a live core via api_get/_resolve_live_endpoint so a killed/drained pinned node does
 # not produce a false negative. Prints the status string (empty on transport failure).
 cluster_health_status_http() {
     local body
-    body=$(api_get "/api/health" 2>/dev/null) || return 0
+    body=$(api_get "/api/v1/health" 2>/dev/null) || return 0
     [ -z "$body" ] && return 0
     printf '%s' "$body" \
         | grep -oE '"status"[[:space:]]*:[[:space:]]*"[^"]*"' \
@@ -729,7 +729,7 @@ wait_for_cluster() {
 
 # Wait for cluster using direct node access (before LB is available)
 wait_for_cluster_direct() {
-    # connected_peers_direct() coerces the /api/health connectedPeers capture to a
+    # connected_peers_direct() coerces the /api/v1/health connectedPeers capture to a
     # single integer (default 0), so the predicate is always `[ <int> -ge 2 ]` and
     # can never word-split into "too many arguments" on a degraded/empty body.
     wait_for "cluster healthy (direct)" \
@@ -737,12 +737,12 @@ wait_for_cluster_direct() {
         "${1:-120}"
 }
 
-# Single-integer connectedPeers reading via direct node /api/health. Always emits
+# Single-integer connectedPeers reading via direct node /api/v1/health. Always emits
 # exactly one integer (first match, digits only, 0 when empty/malformed) so it is
 # safe to embed unquoted-or-quoted in a numeric `[ ]` test.
 connected_peers_direct() {
     local body n
-    body=$(curl -sfk -H "X-API-Key: ${API_KEY}" "http://${TARGET_HOST}:${MGMT_PORT}/api/health" 2>/dev/null || true)
+    body=$(curl -sfk -H "X-API-Key: ${API_KEY}" "http://${TARGET_HOST}:${MGMT_PORT}/api/v1/health" 2>/dev/null || true)
     n=$(json_value "$body" connectedPeers 2>/dev/null | head -1 | tr -cd '0-9')
     printf '%s\n' "${n:-0}"
 }
@@ -888,8 +888,8 @@ wait_for_sustained_node_count() {
 #
 # Endpoint discovery rotates through MGMT_PORT..MGMT_PORT+NODE_COUNT-1, picking the
 # first one that answers /health/live within 1s. JSON path: max(`core.desiredSize`,
-# count of `"nodeId"` occurrences in core.members[]) from /api/cluster/generation,
-# falling back to `coreCount` from /api/cluster/topology if generation is empty.
+# count of `"nodeId"` occurrences in core.members[]) from /api/v1/cluster/generation,
+# falling back to `coreCount` from /api/v1/cluster/topology if generation is empty.
 # Mirrors `cluster_member_count` — see that helper for the full rationale; the short
 # version is that topology.coreCount filters to ON_DUTY+HEALTHY and lags during
 # CTM scale-up while the generation snapshot reflects the committed cluster
@@ -931,7 +931,7 @@ wait_for_node_count_fast() {
         if [ -n "$endpoint" ]; then
             local gen
             gen=$(curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" \
-                        "${endpoint}/api/cluster/generation" 2>/dev/null) || gen=""
+                        "${endpoint}/api/v1/cluster/generation" 2>/dev/null) || gen=""
             local desired members observed=0
             if [ -n "$gen" ]; then
                 # `|| true` guards each pipeline against `set -euo pipefail` aborts
@@ -955,7 +955,7 @@ wait_for_node_count_fast() {
                 # generation snapshot has not yet been projected to KV.
                 local body
                 body=$(curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" \
-                            "${endpoint}/api/cluster/topology" 2>/dev/null) || body=""
+                            "${endpoint}/api/v1/cluster/topology" 2>/dev/null) || body=""
                 if [ -n "$body" ]; then
                     observed=$(printf '%s' "$body" \
                         | grep -o '"coreCount"[[:space:]]*:[[:space:]]*[0-9]*' \
@@ -1328,7 +1328,7 @@ retarget_app_endpoint_to_active_slice() {
     fi
     if [ -z "$owner" ]; then
         # Diagnostic dump: surface the slice list so a future failure shows whether
-        # /api/slices is empty (deploy didn't propagate), all instances are still
+        # /api/v1/slices is empty (deploy didn't propagate), all instances are still
         # LOADING (timing window — caller didn't await ACTIVE), or the artifact
         # prefix doesn't match (coords mismatch between blueprint and slice).
         local diag
@@ -1347,7 +1347,7 @@ retarget_app_endpoint_to_active_slice() {
                 APP_ENDPOINT="http://${TARGET_HOST}:${_fallback_port}"
             fi
         fi
-        log_error "retarget: no ACTIVE owner found for ${coords} — /api/slices: ${diag:-<empty>}; APP_ENDPOINT=${APP_ENDPOINT}"
+        log_error "retarget: no ACTIVE owner found for ${coords} — /api/v1/slices: ${diag:-<empty>}; APP_ENDPOINT=${APP_ENDPOINT}"
         return 1
     fi
     RETARGETED_SLICE_OWNER="$owner"
@@ -1356,7 +1356,7 @@ retarget_app_endpoint_to_active_slice() {
         local owner_ip
         owner_ip=$(cloud_public_ip "$owner" 2>/dev/null || true)
         if [ -z "$owner_ip" ]; then
-            log_warn "retarget: cloud_public_ip(${owner}) returned empty; APP_ENDPOINT unchanged. (Owner reported by /api/slices is not in bootstrap-state.json — node may have been replaced by CTM and not re-recorded.)"
+            log_warn "retarget: cloud_public_ip(${owner}) returned empty; APP_ENDPOINT unchanged. (Owner reported by /api/v1/slices is not in bootstrap-state.json — node may have been replaced by CTM and not re-recorded.)"
             return 1
         fi
         APP_ENDPOINT="http://${owner_ip}:${app_port}"
@@ -1457,7 +1457,7 @@ slices_active_instances() {
 # Assert that the currently ACTIVE slice routing is at the version embedded in a
 # blueprint coordinate (group:artifact:VERSION). Used by 06-deployment strategy
 # tests to verify the v1 baseline is genuinely ACTIVE before a v1→v2 strategy
-# `deploy_start` — the strategy `/api/deploy` path has no redeployment escape
+# `deploy_start` — the strategy `/api/v1/deploy` path has no redeployment escape
 # hatch, so re-deploying the already-active version returns SameVersionDeployment
 # (HTTP 500) and the response carries no deploymentId. Reuses the same
 # `aether_json slices --state ACTIVE` + version-grep contract already inlined in
@@ -1624,7 +1624,7 @@ deploy_blueprint() {
     # the cluster is settled. Retries hid the actual race; the ClusterGeneration gate
     # replaces the compensation loop with a deterministic barrier.
     aether_failover blueprints deploy "$artifact" 2>/dev/null \
-        || api_post "/api/blueprints/deploy" "{\"artifact\":\"${artifact}\"}"
+        || api_post "/api/v1/blueprints/deploy" "{\"artifact\":\"${artifact}\"}"
 }
 
 publish_blueprint() {
@@ -1635,12 +1635,12 @@ publish_blueprint() {
     local artifact="$1"
     log_info "Publishing blueprint (no instances): ${artifact}" >&2
     local result
-    result=$(api_post "/api/blueprints/publish" "{\"artifact\":\"${artifact}\"}")
+    result=$(api_post "/api/v1/blueprints/publish" "{\"artifact\":\"${artifact}\"}")
     local rc=$?
     printf '%s' "$result"
     [ $rc -ne 0 ] && return $rc
     # KV-Store consensus commits at the leader but follower nodes apply asynchronously;
-    # /api/deploy may land on a STRATEGIES owner whose local state machine hasn't yet
+    # /api/v1/deploy may land on a STRATEGIES owner whose local state machine hasn't yet
     # processed the Put. Poll the cluster's blueprint list until the entry is visible
     # to absorb the propagation gap (5s budget × scaled).
     # Fail-closed: previously this wait was 5s + log_warn-and-continue, which let the
@@ -1649,9 +1649,9 @@ publish_blueprint() {
     # appear within the budget, the deploy WILL fail; surfacing it here gives the test
     # author a precise diagnostic instead of a downstream 404 chase.
     if ! wait_for "blueprint ${artifact} visible" \
-            "api_get /api/blueprints 2>/dev/null | grep -q \"${artifact}\"" \
+            "api_get /api/v1/blueprints 2>/dev/null | grep -q \"${artifact}\"" \
             10 1; then
-        log_fail "publish_blueprint: ${artifact} not visible in /api/blueprints after publish (propagation gap)"
+        log_fail "publish_blueprint: ${artifact} not visible in /api/v1/blueprints after publish (propagation gap)"
         return 1
     fi
     return 0
@@ -1666,7 +1666,7 @@ publish_blueprint() {
 # unchecked non-zero return from any helper is silently ignored and execution continues.
 #
 # That is how a refused publish became an unrelated-looking failure two steps later: a 409
-# datasource-ownership conflict on `POST /api/blueprints/publish` left the blueprint unregistered,
+# datasource-ownership conflict on `POST /api/v1/blueprints/publish` left the blueprint unregistered,
 # the test carried on to `deploy_start`, and the suite reported `output does not contain
 # deploymentId` while the actual cause (the 409, with its explanatory message) sat further up the
 # log as a warning. Callers that must not proceed past a failed publish use THIS helper; the raw
@@ -1686,11 +1686,11 @@ deploy_blueprint_file() {
     local content
     content=$(cat "$filepath")
     curl -sfk -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/toml" \
-        -d "$content" "${CLUSTER_ENDPOINT}/api/blueprints"
+        -d "$content" "${CLUSTER_ENDPOINT}/api/v1/blueprints"
 }
 
 list_blueprints() {
-    aether_json blueprints list 2>/dev/null || api_get "/api/blueprints"
+    aether_json blueprints list 2>/dev/null || api_get "/api/v1/blueprints"
 }
 
 # ---------------------------------------------------------------------------
@@ -2274,7 +2274,7 @@ cloud_heal_partition() {
 #
 # Provider-agnostic replacement for the single-host `docker ps` core enumeration:
 # on cloud there is no shared Docker daemon, so liveness comes from the cluster's
-# own membership. Reads /api/nodes/lifecycle through _resolve_live_endpoint
+# own membership. Reads /api/v1/nodes/lifecycle through _resolve_live_endpoint
 # (api_get) and prints the node-id of every entry whose state is READY, one per
 # line. Empty output (rc 0) when the API is unreachable or no core is READY — the
 # caller decides whether that is fatal.
@@ -2284,7 +2284,7 @@ cloud_heal_partition() {
 cloud_running_cores() {
     # Enumerate CORE members from the generation snapshot's core.members[] (the
     # ground-truth membership — includes SYNCING/JOINING members CTM has admitted),
-    # NOT /api/nodes/lifecycle filtered by --state READY. On cloud the READY lifecycle
+    # NOT /api/v1/nodes/lifecycle filtered by --state READY. On cloud the READY lifecycle
     # projection lags the leader's membership view by MINUTES (poller-proven: deficit=0,
     # actualCoreCount=5, CONVERGED — while --state READY reads 3-4), which false-failed
     # Pick_3's "5 running core containers" precondition on a genuinely-whole cluster.
@@ -2293,7 +2293,7 @@ cloud_running_cores() {
     # (identical source + idiom to cluster_member_count). Empty output (rc 0) when the API
     # is unreachable — the caller decides whether that is fatal.
     local gen
-    gen=$(direct_api_get "/api/cluster/generation" 2>/dev/null || true)
+    gen=$(direct_api_get "/api/v1/cluster/generation" 2>/dev/null || true)
     [ -z "$gen" ] && return 0
     printf '%s' "$gen" \
         | grep -oE '"nodeId"[[:space:]]*:[[:space:]]*"[^"]*"' \
@@ -2816,7 +2816,7 @@ restart_all_nodes() {
                 # says 0), then corroborate an ambiguous transport-failure case
                 # before treating this as destroy-eligible.
                 local topology_probe
-                topology_probe=$(api_get "/api/cluster/topology" 2>/dev/null || true)
+                topology_probe=$(api_get "/api/v1/cluster/topology" 2>/dev/null || true)
                 if [ -n "$topology_probe" ]; then
                     log_warn "restart_all_nodes: mgmt API cleanly reports 0 active cores — confirmed full self-drain, proceeding to reap+rebootstrap"
                     if ! _cloud_full_drain_recover; then
@@ -3103,7 +3103,7 @@ kill_node() {
     local node_id="$1"
     # Defensive guard: refuse to operate on an empty node_id. Tests typically call
     # `kill_node "$(pick_non_leader ...)"` — if `pick_non_leader` failed and
-    # returned empty on stdout (e.g. /api/nodes/lifecycle had no ON_DUTY members),
+    # returned empty on stdout (e.g. /api/v1/nodes/lifecycle had no ON_DUTY members),
     # without this guard `docker kill <prefix>-` would target a non-existent
     # container, log a confusing "No such container", and quietly proceed as if
     # the kill landed. Fail loudly so the test surfaces the upstream issue.
@@ -3200,41 +3200,41 @@ start_node() {
 }
 
 get_node_lifecycle() {
-    api_get "/api/nodes/lifecycle"
+    api_get "/api/v1/nodes/lifecycle"
 }
 
 # Node lifecycle transitions. Canonical REST contract is path-parameterized
-# (`/api/nodes/{action}/{id}` — see ManagementRoute.NODE_DRAIN/NODE_ACTIVATE/
+# (`/api/v1/nodes/{action}/{id}` — see ManagementRoute.NODE_DRAIN/NODE_ACTIVATE/
 # NODE_SHUTDOWN). Earlier body-based duplicates were removed
 # (audit 2026-05-21 §1.1) — they shadowed these with a different request shape.
 drain_node() {
     local node_id="$1"
     log_info "Draining node: ${node_id}"
-    api_post "/api/nodes/drain/${node_id}" "{}"
+    api_post "/api/v1/nodes/drain/${node_id}" "{}"
 }
 
 activate_node() {
     local node_id="$1"
     log_info "Activating node: ${node_id}"
-    api_post "/api/nodes/activate/${node_id}" "{}"
+    api_post "/api/v1/nodes/activate/${node_id}" "{}"
 }
 
 shutdown_node() {
     local node_id="$1"
     log_info "Shutting down node: ${node_id}"
-    api_post "/api/nodes/shutdown/${node_id}" "{}"
+    api_post "/api/v1/nodes/shutdown/${node_id}" "{}"
 }
 
 # Phase 3 PR-C (cluster-convergence-reconciler) — operator escape hatch for
 # silent-divergence cases (e.g., cluster B 02-chaos cascade where a peer is
-# stuck in JOINING). Wraps POST /api/nodes/lifecycle/commands with
+# stuck in JOINING). Wraps POST /api/v1/nodes/lifecycle/commands with
 # type=FORCE_DECOMMISSION, source=OPERATOR. Use sparingly until Phase 4-5
 # reconciler lands and surfaces the same recovery via RECONCILER source.
 force_decommission_node() {
     local node_id="$1"
     local reason="${2:-test-harness cleanup}"
     log_info "Force-decommissioning node: ${node_id} (reason: ${reason})"
-    api_post "/api/nodes/lifecycle/commands" \
+    api_post "/api/v1/nodes/lifecycle/commands" \
         "{\"type\":\"FORCE_DECOMMISSION\",\"nodeId\":\"${node_id}\",\"reason\":\"${reason}\"}"
 }
 
@@ -3295,7 +3295,7 @@ seed_cluster_config() {
 
     local body status _cfg_ep
     _cfg_ep=$(_resolve_live_endpoint)
-    body=$(curl -sk -H "X-API-Key: ${API_KEY}" "${_cfg_ep}/api/cluster/config" \
+    body=$(curl -sk -H "X-API-Key: ${API_KEY}" "${_cfg_ep}/api/v1/cluster/config" \
         -w $'\n__STATUS__:%{http_code}' 2>/dev/null || true)
     status="${body##*__STATUS__:}"
     body="${body%$'\n'__STATUS__:*}"
@@ -3316,7 +3316,7 @@ seed_cluster_config() {
             escaped_toml=$(escape_json "$toml_content")
             json_body="{\"tomlContent\":\"${escaped_toml}\",\"expectedVersion\":${stored_version:-0}}"
             local apply_out
-            apply_out=$(leader_api_post "/api/cluster/config" "$json_body" 2>&1) || true
+            apply_out=$(leader_api_post "/api/v1/cluster/config" "$json_body" 2>&1) || true
             # Surface VersionConflict / ImmutableFieldChange rather than masking them:
             # a failed reconcile means scale-up will still 400, so the caller must know.
             if printf '%s' "$apply_out" | grep -qiE 'VersionConflict|Immutable|error|"title"'; then
@@ -3335,11 +3335,11 @@ seed_cluster_config() {
     escaped_toml=$(escape_json "$toml_content")
     json_body="{\"tomlContent\":\"${escaped_toml}\",\"expectedVersion\":0}"
     # Must hit the leader — CTM only runs on leader
-    leader_api_post "/api/cluster/config" "$json_body"
+    leader_api_post "/api/v1/cluster/config" "$json_body"
 }
 
 # Operator-triggered reset of the CTM provisioning circuit breaker. Calls the
-# leader-routed POST /api/cluster/topology/circuit-breaker/reset; the server
+# leader-routed POST /api/v1/cluster/topology/circuit-breaker/reset; the server
 # returns the prior consecutive-failure count (audit log). Use between
 # disruptive tests when restart_all_nodes did not converge to phase=NORMAL
 # (i.e., CTM may be circuit-tripped from prior provisioning failures).
@@ -3348,7 +3348,7 @@ reset_provisioning_circuit() {
     local result rc ep
     ep=$(_resolve_live_endpoint)
     result=$(curl -sk -m 15 -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
-                  -d '{}' "${ep}/api/cluster/topology/circuit-breaker/reset" 2>&1)
+                  -d '{}' "${ep}/api/v1/cluster/topology/circuit-breaker/reset" 2>&1)
     rc=$?
     if [ "$rc" -ne 0 ]; then
         log_warn "reset_provisioning_circuit: POST failed rc=${rc}: $(printf '%s' "$result" | head -c 200)"
@@ -3359,7 +3359,7 @@ reset_provisioning_circuit() {
 }
 
 # Read-only snapshot of the #336 provisioning-diagnostics surface
-# (GET /api/cluster/provisioning). Surfaces the leader's last provisioning
+# (GET /api/v1/cluster/provisioning). Surfaces the leader's last provisioning
 # decision: reason / circuit-breaker state / membership deficit / latches /
 # last-failure. Mirrors reset_provisioning_circuit's curl idiom (same endpoint
 # family, same 15s hard timeout, same X-API-Key) but as a GET. Echoes the body
@@ -3376,7 +3376,7 @@ reset_provisioning_circuit() {
 provisioning_snapshot() {
     local ep body rc
     ep=$(_resolve_live_endpoint)
-    body=$(curl -sk -m 15 -H "X-API-Key: ${API_KEY}" "${ep}/api/cluster/provisioning" 2>&1)
+    body=$(curl -sk -m 15 -H "X-API-Key: ${API_KEY}" "${ep}/api/v1/cluster/provisioning" 2>&1)
     rc=$?
     if [ "$rc" -ne 0 ]; then
         log_warn "provisioning_snapshot: GET failed rc=${rc}: $(printf '%s' "$body" | head -c 200)"
@@ -3402,7 +3402,7 @@ provisioning_snapshot() {
 cluster_no_deficit() {
     local ep snap
     ep=$(_resolve_live_endpoint) || return 1
-    snap=$(curl -sk -m 10 -H "X-API-Key: ${API_KEY}" "${ep}/api/cluster/provisioning" 2>/dev/null) || return 1
+    snap=$(curl -sk -m 10 -H "X-API-Key: ${API_KEY}" "${ep}/api/v1/cluster/provisioning" 2>/dev/null) || return 1
     [ -n "$snap" ] || return 1
     printf '%s' "$snap" | grep -q '"deficit"[[:space:]]*:[[:space:]]*0' \
         && printf '%s' "$snap" | grep -q '"reachedFullMembership"[[:space:]]*:[[:space:]]*true'
@@ -3413,7 +3413,7 @@ cluster_no_deficit() {
 # disable auto-heal during disruption-budget testing, planned maintenance
 # windows, or any scenario where the cluster should not automatically rebuild
 # after node loss. All three helpers below hit the leader-routed
-# /api/cluster/topology/auto-heal{,/enable,/disable} endpoints. Curl is used
+# /api/v1/cluster/topology/auto-heal{,/enable,/disable} endpoints. Curl is used
 # for parity with reset_provisioning_circuit (same shape, same 15s timeout) —
 # the integration test harness does not wire the `aether` CLI binary into the
 # cluster.sh helper layer.
@@ -3512,7 +3512,7 @@ auto_heal_enabled() {
 #   2. Reset the CTM provisioning circuit breaker (a previous suite that
 #      tripped it would block the auto-heal we just re-enabled).
 #   3. Reactivate any DRAINING nodes left behind by an intentional drain test.
-#   4. Set desired cluster size to NODE_COUNT (default 5) via /api/cluster/scale.
+#   4. Set desired cluster size to NODE_COUNT (default 5) via /api/v1/cluster/scale.
 #   5. Wait for exactly NODE_COUNT ON_DUTY healthy cores — ANY NodeIds, not
 #      the original compose set. CTM is free to keep replacements; what we
 #      care about is the operator-visible invariant "5 healthy cores".
@@ -3605,11 +3605,11 @@ restore_cluster_baseline() {
     reset_provisioning_circuit || log_warn "restore_cluster_baseline: reset_provisioning_circuit failed (proceeding)"
 
     # 3. Reactivate any DRAINING node a test explicitly drained. Parse
-    # /api/nodes/lifecycle for state=DRAINING entries and POST activate. The
+    # /api/v1/nodes/lifecycle for state=DRAINING entries and POST activate. The
     # parser tolerates both Jackson field orderings (see pick_non_leader for
     # the same idiom).
     local lifecycle draining
-    lifecycle=$(api_get "/api/nodes/lifecycle" 2>/dev/null || true)
+    lifecycle=$(api_get "/api/v1/nodes/lifecycle" 2>/dev/null || true)
     if [ -n "$lifecycle" ]; then
         draining=$(printf '%s' "$lifecycle" \
             | grep -oE '"nodeId":"[^"]+","state":"DRAINING"|"state":"DRAINING","nodeId":"[^"]+"' \
@@ -3836,7 +3836,7 @@ scale_cluster() {
     # already works for docker/remote.
     local scale_ep
     scale_ep=$(_resolve_live_endpoint)
-    url="${scale_ep}/api/cluster/scale"
+    url="${scale_ep}/api/v1/cluster/scale"
     http_status=$(curl -sk -m 90 -o "$body_file" -w '%{http_code}' \
                       -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
                       -d "{\"role\":\"core\",\"count\":${target},\"expectedVersion\":0}" "$url")
@@ -3845,11 +3845,11 @@ scale_cluster() {
     body=$(head -c 500 "$body_file" 2>/dev/null)
     rm -f "$body_file"
     if [ "$rc" -ne 0 ]; then
-        log_warn "scale_cluster: POST /api/cluster/scale rc=${rc} (likely 90s timeout — cluster degraded; CTM circuit breaker may be tripped). Body: ${body}"
+        log_warn "scale_cluster: POST /api/v1/cluster/scale rc=${rc} (likely 90s timeout — cluster degraded; CTM circuit breaker may be tripped). Body: ${body}"
         return 1
     fi
     if [ -z "$http_status" ] || [ "$http_status" -lt 200 ] 2>/dev/null || [ "$http_status" -ge 300 ] 2>/dev/null; then
-        log_warn "scale_cluster: POST /api/cluster/scale REJECTED with HTTP ${http_status:-<empty>} — the cluster was NOT rescaled. Body: ${body}"
+        log_warn "scale_cluster: POST /api/v1/cluster/scale REJECTED with HTTP ${http_status:-<empty>} — the cluster was NOT rescaled. Body: ${body}"
         return 1
     fi
     log_info "Scale result: HTTP ${http_status} ${body}" >&2
@@ -3859,7 +3859,7 @@ scale_cluster() {
 # POST to the leader node — finds leader via CLI, targets its management port
 leader_api_post() {
     # Targets the consensus leader directly via its management port. CTM (cluster
-    # topology manager) is leader-bound, so /api/cluster/scale must reach the leader
+    # topology manager) is leader-bound, so /api/v1/cluster/scale must reach the leader
     # for auto-provisioning to actually run.
     local path="$1"
     local body="${2:-"{}"}"
@@ -3901,7 +3901,7 @@ leader_api_post() {
 config_apply() {
     local body="$1"
     log_info "Applying config"
-    api_post "/api/config" "$body"
+    api_post "/api/v1/config" "$body"
 }
 
 config_export() {
@@ -3910,7 +3910,7 @@ config_export() {
 
 config_get_key() {
     local key="$1"
-    api_get "/api/config/${key}"
+    api_get "/api/v1/config/${key}"
 }
 
 # ---------------------------------------------------------------------------
@@ -3919,52 +3919,52 @@ config_get_key() {
 schema_status() {
     local datasource="${1:-}"
     if [ -n "$datasource" ]; then
-        api_get "/api/schema/status/${datasource}"
+        api_get "/api/v1/schema/status/${datasource}"
     else
-        api_get "/api/schema/status"
+        api_get "/api/v1/schema/status"
     fi
 }
 
 schema_migrate() {
     local datasource="$1"
-    api_post "/api/schema/migrate/${datasource}" "{}"
+    api_post "/api/v1/schema/migrate/${datasource}" "{}"
 }
 
 schema_retry() {
     local datasource="$1"
-    api_post "/api/schema/retry/${datasource}" "{}"
+    api_post "/api/v1/schema/retry/${datasource}" "{}"
 }
 
 schema_history() {
     local datasource="$1"
-    api_get "/api/schema/history/${datasource}"
+    api_get "/api/v1/schema/history/${datasource}"
 }
 
 schema_baseline() {
     local datasource="$1"
-    api_post "/api/schema/baseline/${datasource}" "{}"
+    api_post "/api/v1/schema/baseline/${datasource}" "{}"
 }
 
 schema_undo() {
     local datasource="$1"
-    api_post "/api/schema/undo/${datasource}" "{}"
+    api_post "/api/v1/schema/undo/${datasource}" "{}"
 }
 
 # ---------------------------------------------------------------------------
 # Streams
 # ---------------------------------------------------------------------------
 stream_list() {
-    aether_json "streams list" 2>/dev/null || api_get "/api/streams"
+    aether_json "streams list" 2>/dev/null || api_get "/api/v1/streams"
 }
 
 stream_info() {
     local name="$1"
-    api_get "/api/streams/${name}"
+    api_get "/api/v1/streams/${name}"
 }
 
 stream_publish() {
     local name="$1" body="$2"
-    api_post "/api/streams/publish/${name}" "$body"
+    api_post "/api/v1/streams/publish/${name}" "$body"
 }
 
 # ---------------------------------------------------------------------------
@@ -3972,10 +3972,10 @@ stream_publish() {
 # ---------------------------------------------------------------------------
 # Historical name retained for the ~11 suite callers that use it as their
 # "Cluster ready" precondition. The distributed task-group assignment model it
-# originally polled (`GET /api/cluster/tasks`, counting `assignments[].status ==
+# originally polled (`GET /api/v1/cluster/tasks`, counting `assignments[].status ==
 # ACTIVE`) was REMOVED: control-plane components (CDM, scaling, streaming, …) are
 # now LEADER-PINNED — they activate on the elected leader rather than being
-# "assigned" to task groups across nodes. The `/api/cluster/tasks` endpoint is
+# "assigned" to task groups across nodes. The `/api/v1/cluster/tasks` endpoint is
 # gone (404).
 #
 # New semantics: "cluster ready for control-plane ops" == a leader is elected AND
@@ -4073,34 +4073,34 @@ deploy_start() {
             strategy_body="\"rolling\":{\"requireManualApproval\":${manual}}" ;;
     esac
     local body="{\"blueprint\":\"${coords}\",\"strategy\":\"${strategy_upper}\",\"instances\":${instances},${strategy_body},\"thresholds\":{\"maxErrorRate\":0.1,\"maxLatencyMs\":1000}}"
-    api_post "/api/deploy" "$body"
+    api_post "/api/v1/deploy" "$body"
 }
 
 deploy_list() {
-    api_get "/api/deploy"
+    api_get "/api/v1/deploy"
 }
 
 deploy_status() {
     local deployment_id="$1"
-    api_get "/api/deploy/${deployment_id}"
+    api_get "/api/v1/deploy/${deployment_id}"
 }
 
 deploy_promote() {
     local deployment_id="$1"
     log_info "Promoting deployment: ${deployment_id}" >&2
-    api_post "/api/deploy/promote/${deployment_id}" "{}"
+    api_post "/api/v1/deploy/promote/${deployment_id}" "{}"
 }
 
 deploy_rollback() {
     local deployment_id="$1"
     log_info "Rolling back deployment: ${deployment_id}" >&2
-    api_post "/api/deploy/rollback/${deployment_id}" "{}"
+    api_post "/api/v1/deploy/rollback/${deployment_id}" "{}"
 }
 
 deploy_complete() {
     local deployment_id="$1"
     log_info "Completing deployment: ${deployment_id}" >&2
-    api_post "/api/deploy/complete/${deployment_id}" "{}"
+    api_post "/api/v1/deploy/complete/${deployment_id}" "{}"
 }
 
 deploy_cleanup() {
@@ -4161,7 +4161,7 @@ wait_for_node_count_on() {
     # that wait_for's prior `2>&1` mask hid as "predicate false" — silently looping until
     # timeout even on healthy clusters that just hadn't yet emitted the field.
     wait_for "${expected} nodes on ${endpoint}" \
-        "v=\$(json_value \"\$(curl -sfk -H 'X-API-Key: ${API_KEY}' ${endpoint}/api/cluster/topology 2>/dev/null)\" coreCount 2>/dev/null); [ \"\${v:--1}\" -ge ${expected} ]" \
+        "v=\$(json_value \"\$(curl -sfk -H 'X-API-Key: ${API_KEY}' ${endpoint}/api/v1/cluster/topology 2>/dev/null)\" coreCount 2>/dev/null); [ \"\${v:--1}\" -ge ${expected} ]" \
         "$timeout"
 }
 
@@ -4170,14 +4170,14 @@ wait_for_leader_on() {
     local endpoint="$1"
     local timeout="${2:-30}"
 
-    # Check `leaderId` field on /api/nodes/status — the prior `role:ACTIVE` check matched any
+    # Check `leaderId` field on /api/v1/nodes/status — the prior `role:ACTIVE` check matched any
     # topology entry with `role=ACTIVE` (a per-node attribute), so the predicate was
     # satisfied whenever ANY node reported its own role as ACTIVE, NOT when a leader
-    # was elected. `/api/nodes/status` returns `cluster.leaderId` populated from the elected
+    # was elected. `/api/v1/nodes/status` returns `cluster.leaderId` populated from the elected
     # consensus leader (`ClusterConfigRoutes` is the model). The grep targets a
     # quoted non-empty value, so `"leaderId":null` and `"leaderId":""` both correctly
     # fail the predicate; `"leaderId":"node-3"` passes.
     wait_for "leader elected on ${endpoint}" \
-        "curl -sfk -H 'X-API-Key: ${API_KEY}' ${endpoint}/api/nodes/status 2>/dev/null | grep -qE '\"leaderId\"[[:space:]]*:[[:space:]]*\"[^\"]+\"'" \
+        "curl -sfk -H 'X-API-Key: ${API_KEY}' ${endpoint}/api/v1/nodes/status 2>/dev/null | grep -qE '\"leaderId\"[[:space:]]*:[[:space:]]*\"[^\"]+\"'" \
         "$timeout"
 }
