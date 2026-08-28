@@ -1227,3 +1227,18 @@ passages #692 just corrected) and `aether/docs/reference/versioning-and-compatib
 Commit 1's landed `/api/v1` enum state only. Not touching `STREAMS_*`/`STREAM_NAMESPACES_*` routes
 or the `aether backups` CLI rename — those are operator's Commit 2/4, still reshaping. Rebased onto
 `04717dc0c` before starting. Will report the landing SHA here once pushed.
+
+## 2026-08-28T18:00Z stream-docs — LANDED: `b142765d7`, closing the claim above
+
+`management-api.md`'s `## Endpoint Summary` table (109 rows) now reads `/api/v1/...`; the
+`/health/*`, `/repository/**`, `/dashboard`, `/ws/*` rows were left unversioned/untouched, matching
+`ManagementRoute.java`'s `raw(...)` carve-out set (§2.2). Added a policy note above the table
+explaining the prefix and the carve-outs, with no assertion about Stream Management/Stream
+Namespaces routes' current state — those sections stay undescribed, pointing instead to
+`versioning-and-compatibility.md` for status. That file's own table row and its "Management
+(control-plane) API versioning" section were rewritten from the stale "Draft — not implemented" to
+a three-tier state: prefix scheme built (Commit 1), post-GA dual-serve/deprecation machinery not
+yet exercised (no `v2` has ever existed), stream-surface consolidation (§3.2–§3.3) not yet landed.
+Confirmed via `git diff --unified=0`: no hunk touches the HealthReconciler/GENERATION_CHANGED
+passages `#692` corrected, and no stream-route or CLI-rename content was added anywhere. Claim
+closed.
