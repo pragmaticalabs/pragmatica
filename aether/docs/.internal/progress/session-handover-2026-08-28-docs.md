@@ -86,8 +86,23 @@ park time — check for `session-handover-2026-08-28-cluster-core.md` /
 ## §3 Queue for a successor
 
 - **Wake conditions** (verbatim from team-lead — do not start these until the named event fires):
-  - **Operator's `/v1` cutover lands (#300)** → unblocks the route-doc pass and the D8–D12/D16
-    second audit pass (management-API-route-shaped claims).
+  - **Operator's `/v1` cutover (#300), UPDATE 2026-08-28 post-park:** Commit 1 (`8685c1bf6`,
+    landed on origin minutes after this handover's first push — not yet in the commit history
+    above) is the real cutover: `ManagementRoute.java`'s enum is final for the routes it covers —
+    a blanket `/api/v1` prefix on ~150+ routes, with health probes and `/repository/**` artifact
+    routes staying unversioned carve-outs. Per stream-operator directly: **safe to document now**
+    — `management-api.md`'s route table, and `versioning-and-compatibility.md`'s "Draft — not
+    implemented" row (which currently states a bare `/api/...` prefix — now stale). **Still hold**:
+    anything stream-related (`STREAMS_*`/`STREAM_NAMESPACES_*` routes) and the `aether backups`
+    CLI rename — those reshape again in upcoming Commit 2 (stream-surface merge) and Commit 4
+    (CLI rename), not yet landed; a second pass would be needed if documented now. Also check
+    `configuration.md` for route examples (stream-operator's sweep didn't cover it). CI is
+    currently red on `forge-tests` since `8685c1bf6` (see the MAILBOX commit right after it on
+    origin) — per stream-operator this is a downstream test-consumer sync gap on their end
+    ("Commit 1.5", mechanical, no route-shape change), not a defect in the route definitions
+    themselves; don't treat the CI-red state as a reason to distrust the routes as documented.
+    The D8–D12/D16 second audit pass (management-API-route-shaped claims) stays gated on the
+    *full* cutover (Commits 2 and 4 too), not just Commit 1.
   - **#665 lands** (security-default-warnings builder flip) → unblocks #322's held security half.
   - **Cluster-core's durable-entity work settles** → unblocks D13.
   - **Stream B launches** → unblocks the data-plane rows (D8–D12/D16's non-route-shaped claims).

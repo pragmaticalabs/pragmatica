@@ -6,6 +6,86 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Changed (2026-08-28 — #692: HealthReconciler ghost-comment sweep, Java surfaces)
+- **Zero `HealthReconciler` references remain in Java sources.** 21 comment/docstring references
+  across `integrations/consensus`, `integrations/swim`, and `integrations/cluster` described a type
+  deleted in the membership-v2 migration — the largest single stale-describing-surface cluster on
+  the branch, and exactly the shape that minted five wrong ticket premises on 2026-08-27. Each was
+  corrected against the verified current mechanism, not search-replaced: SWIM `FaultyObserved` edges
+  drive `MembershipFsm.onSwimFaulty` via the observation listener (no `DECOMMISSIONED` node-state KV
+  write exists in v2); `PeerHealthObservation`'s epoch-fencing consumer is `SwimHintsRegistry`;
+  connectivity observations ride `PeerObservationBuffer` → cluster-sync pong (the leader-side
+  `ReachabilityAggregator` fold named by one comment is ALSO gone — P3 removed it, SWIM is the
+  single liveness signal); leader-term consumers are Aether's generation/ownership epoch suppliers;
+  `NodeLifecycleKey` is itself deleted. 1012 tests green across the three modules after the sweep.
+- **#692's rename item was a stale premise, corrected rather than executed:**
+  `ClusterSyncContext.emitPingTimeoutIfExceeded` does NOT "emit nothing" on current HEAD — the
+  S01/Option-1 wiring gives it a live effect (`collector.reportUnreachable`, the SWIM
+  transport-unreachable hint path), pinned by `ClusterSyncFsmTest`'s
+  `emitPingTimeout_*` tests. The name matches the behavior; no rename shipped. Remaining #692
+  surfaces live under `aether/docs/**` (docs-stream territory) and are routed, not swept here.
+
+### Fixed (2026-08-28 — #694: Ember instances round-trip the CTM's tag selector)
+- **In-JVM worker reconcile can now see its own inventory.** `EmberComputeProvider.toInstanceInfo`
+  returned an EMPTY tag map for every instance; an instance with no tags matches no non-empty
+  selector, so the CTM's worker reconcile — which counts ACTUAL inventory through the
+  `aether-cluster`/`aether-source`/`aether-role` filter — read `actual = 0` forever in-JVM,
+  re-provisioning every pass and never able to see a scale-down victim, with a symptom that pointed
+  the next investigation at the CTM instead of the harness (the #590 family, one layer up). Tags are
+  now built from the `ProvisionContext` AT PROVISION TIME and stored per node (the ticket's ordering
+  constraint: `toInstanceInfo` is also reached from `listInstances`/`instanceStatus`, which hold no
+  request), mirroring `HetznerComputeProvider.labelsFor` — the three selector keys with the blank
+  role defaulting to `core`, plus the provider-agnostic dotted `aether.node-id`. Nodes created
+  OUTSIDE the provider (initial cluster, direct `addNode`) stay untagged — the pre-#694 shape,
+  preserved deliberately and pinned. One recorded divergence: an absent cluster name stamps `""`
+  where cloud providers refuse the create outright (RFC-0017 C2) — the CTM selector renders an
+  unresolvable name as the same `""`, so the round-trip holds either way.
+  [verified: `aether/forge/forge-tests/.../EmberInstanceTagRoundTripTest.java` — same-context
+  selector finds the instance with the exact four-entry map; selectors differing in any ONE field do
+  not; blank role stamps the production `core` default; untagged initial nodes match no non-empty
+  selector while staying listed. Mutation (stamp propagation removed): exactly the two positive
+  guards red. The three CTM-provisioning probes (`MembershipChaosCycleTest`,
+  `ProvisioningRecoveryAfterFailureBurstProbeTest`, `PostRestartSlowRejoinDeficitFillProbeTest`)
+  re-run green against the stamped provider.]
+
+### Fixed (2026-08-28 — #644: periodic tasks arm in start(), not at assembly)
+- **A created-but-never-started node now performs no periodic work and holds no timers.**
+  `AetherNode.assembleNode` used to hand all fourteen of the node's recurring tasks to
+  `SharedScheduler.scheduleAtFixedRate` at ASSEMBLY time (#642's evidence run: two held-back Ember
+  nodes ran 274 snapshot ticks each over 45 minutes without ever starting) — a family that includes
+  destructive WAL truncation, metadata snapshot writes, operator-visible retention alerts, and
+  (pre-#702) consensus KV removals. The new `PeriodicTasks` holder accumulates arming THUNKS during
+  assembly and arms them only once cluster formation resolves in `start()`; `stop()` and the
+  failed-boot guard (`cancelArmedWork`) discard unarmed thunks and cancel armed handles, and a
+  `stop()` racing a late formation resolution wins — CANCELLED is terminal, so a torn-down node can
+  never gain work. Arming after formation is safe for every member of the family: none participates
+  in `clusterNode.start()`'s resolution (verified against the promise chain — the election trigger
+  itself runs after resolution), and the activation level-heal's one dropped-edge scenario requires
+  `clusterNode::isActive`, which is true by arming time. One deliberate seed choice: the
+  phase-change watcher's baseline is still captured at ASSEMBLY, so the formation transition is
+  reported as one edge on the first armed tick instead of being swallowed into a start-time
+  baseline — the deferral removes only the pre-start publishing. The two UNKNOWNs from the ticket's
+  partition are settled: `publishPhaseChange` cannot publish pre-start at all now, and
+  `StreamConsumerManager.reconcile` was wasteful-not-unsafe (its declaration registry is empty
+  pre-start). The guard-failure path additionally stops the two constructor-armed cleanup ticks it
+  could never reach (`SliceInvoker`'s stale-invocation sweep, `AdaptiveSampler`'s rate
+  recalculation); `RabiaEngine`'s constructor-armed phase cleanup remains reachable only through
+  `clusterNode.stop()` and is recorded on #644 as the residual, with the constructor-armed family's
+  own deferral left as an explicitly-scoped follow-up.
+  [verified: `aether/node/src/test/java/org/pragmatica/aether/node/PeriodicTasksTest.java` (the
+  deferral state machine, 8 pins) and
+  `aether/forge/forge-tests/.../NodeLifecyclePeriodicArmingForgeTest.java` (the WIRING, on a real
+  Ember cluster with a held-back node: zero armed while unstarted across 4s of the tightest
+  interval, start arms exactly the 14 deferred, stop disarms; the arm-call-deleted mutation goes
+  red on exactly the wiring pins)]
+- **#557's boot-quorum projection got a named, tested seam** (the composition rider recorded on
+  #644): `AetherNode.presenceMemberSupplier` replaces the inline lambda no test could reach, and
+  `PresenceMemberSupplierSeamTest` pins it against a real boot-seeded `MembershipFsm` — swapping
+  the observed projection for the counted one (the exact #557 regression) now goes red at the real
+  wiring instead of only in aether-deployment's mirror test.
+  [verified: `aether/node/src/test/java/org/pragmatica/aether/node/PresenceMemberSupplierSeamTest.java`,
+  mutation (observed→counted) demonstrated red]
+
 ### Fixed (2026-08-28 — #702: entity registration removals gated on live consensus-activity)
 - **A node that is not a live cluster participant can no longer mass-remove its own committed entity
   keyspace registrations.** `EntityOwnershipReconciler`'s removal half read an empty declared-keyspace

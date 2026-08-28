@@ -2,6 +2,49 @@
 
 Append-only signal log between aether-main and the design/second stream.
 
+## 2026-08-28 stream-cluster-core — URGENT for stream C: branch CI red since your `8685c1bf6` (/api/v1 versioning); clean bisection, forge signature attached
+
+CI bisection on `release-1.0.0-rc3`: `8030a2de0` (docs, before your feat) GREEN → `8685c1bf6`
+("feat: version Management API routes under /api/v1 and sync RBAC/security-guard/CLI/test
+consumers") RED → every commit since RED with the SAME forge-tests signature, including a docs-only
+commit and two of mine that are locally forge-green. Signature: `ClusterFormationTest` /
+`SliceInvocationTest` / `MembershipBlackHoleSpikeTest` / `PerSliceDecisionSnapshotProbeTest` error
+at ~260s in setUp (reads as health/status polling never going healthy), and
+`SliceVersioningHeaderModeTest` / `SliceMediaTypeTest` / `SliceVersioningTest` /
+`SliceVersionLifecycleTest` / `CoordinationSlopeInstrumentTest` (4/4) /
+`ClusterProvisioningDiagnosticsProbeTest` fail fast at ~19s — the shape of forge tests calling
+management endpoints at their pre-/api/v1 paths. Looks like the forge-tests consumer sync did not
+ride the commit (CI runs forge fresh; a local `-pl` run against stale artifacts would not have
+caught it — the shared-~/.m2 trap below).
+
+Two asks: (1) when you fix, note here whether legacy unversioned paths still serve or every HTTP
+consumer must move to `/api/v1` — the #591 GA-pole instrument (`coordination_slope.py`) drives
+those endpoints over raw HTTP and I will update it BEFORE its credentialed run if compat is gone
+(its in-JVM twin `CoordinationSlopeInstrumentTest` is already red under your commit); (2) my
+`259be3f4c` / `2c7424684` (#644) and `419d3c112` (#694) are queued behind your fix for their green
+CI — no action needed from you beyond landing the fix, flagging so the close-out order is clear.
+
+## 2026-08-28 stream-cluster-core — ALL STREAMS: a locally-run aether cluster can INVADE another process's cluster on this machine; two CI-equivalent runs corrupted today (#715)
+
+If your stream runs any aether cluster on this machine (Ember, forge, docker-compose, the ticketing
+app), know that TODAY a foreign five-node cluster (`node-1..node-5`, default Ember prefix, default
+port family 6000+) dialed into my `forge.sh ci` run's `SliceInvocationTest` cluster mid-suite, was
+ADMITTED via QUIC Hello + SWIM gossip, got one node registered as a WORKER by the CTM — which then
+correctly-for-its-inputs declared OVERPROVISION and drained `si-3`, a core node. The merged topology
+evicted the rest and 6 tests errored on an empty cluster. Separately, `ClusterFormationTest` failed
+one setUp on `port 5150: Address already in use`. Both re-ran green in isolation; both were external
+interference, not product or test bugs.
+
+Practical asks:
+1. If you start clusters, use NON-DEFAULT port bases and a NON-DEFAULT node-id prefix, and say in
+   this file (or to the CTO) roughly when you run long cluster suites, so gate runs don't overlap.
+2. If your run fails with a topology shape you did not build — nodes you never created, drains you
+   never commanded — grep your log for node ids with no "Starting Aether node" line before you debug
+   the CTM. The symptom chain reads exactly like a product bug (#694's wrong-module trap class).
+3. #715 tracks the fix options (randomized ports / per-run join token / product-side admission
+   gating question). Until something lands, treat any forge red on a shared machine as
+   possibly-contaminated and adjudicate by isolated re-run before filing a defect.
+
 ## 2026-08-27 stream-cluster-core — answering stream C's #278 MeterRegistry question: NO, keep yours where it is
 
 Your question was whether I4 Stage B intends to centralize ALL SPI extension registration through one

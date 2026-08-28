@@ -29,6 +29,7 @@ import org.pragmatica.aether.invoke.ObservabilityConfig;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.AetherNodeConfig;
 import org.pragmatica.aether.environment.AutoHealConfig;
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
@@ -37,6 +38,7 @@ import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.ProviderDefaults;
+import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.ProvisionRequest;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.consensus.NodeId;
@@ -90,6 +92,13 @@ public final class EmberCluster {
     /// and existing-test path (plain [#start] holds nothing back).
     private final Map<String, AetherNode> heldBackNodes = new ConcurrentHashMap<>();
     private final Map<String, NodeInfo> nodeInfos = new ConcurrentHashMap<>();
+    /// #694: per-instance tag maps, stamped by the compute provider at provision time (see
+    /// `EmberComputeProvider.stampAndDescribe`). Keyed by node id; nodes created outside the
+    /// provider (initial cluster, direct addNode calls) have no entry and read as UNTAGGED — the
+    /// pre-#694 shape, preserved deliberately so only provisioned instances change what
+    /// listInstances returns. Entries survive a restart (labels live on the VM in production) and
+    /// die with terminate/kill or cluster teardown.
+    private final Map<String, Map<String, String>> instanceTags = new ConcurrentHashMap<>();
     private final AtomicInteger nodeCounter = new AtomicInteger(0);
     private final Queue<Integer> availableSlots = new ConcurrentLinkedQueue<>();
     private final Map<String, Integer> slotsByNodeId = new ConcurrentHashMap<>();
@@ -173,7 +182,22 @@ public final class EmberCluster {
         /// core-provisioning path unchanged — pinned, not assumed, by `EmberAddNodeRoleLabelTest`.
         @Override
         public Promise<InstanceInfo> createFrom(ProvisionRequest request) {
-            return addNode(roleLabels(request.context().role())).map(nodeId -> toInstanceInfo(nodeId.id()));
+            return addNode(roleLabels(request.context().role())).map(nodeId -> stampAndDescribe(request.context(),
+                                                                                                nodeId.id()));
+        }
+
+        /// #694: the tag map is built from the provisioning context AT PROVISION TIME and stored per
+        /// node, because [#toInstanceInfo] is also reached from [#listInstances]/[#instanceStatus],
+        /// which hold no request. Without the stamp every in-JVM instance carried an EMPTY tag map, an
+        /// instance with no tags matches no non-empty selector, and the CTM's worker reconcile — which
+        /// lists ACTUAL inventory through the `aether-cluster`/`aether-source`/`aether-role` selector —
+        /// read `actual = 0` forever: re-provisioning every pass, never able to see a scale-down
+        /// victim, and pointing the next investigation at the CTM instead of this harness (the #590
+        /// role-label infidelity one layer up).
+        private InstanceInfo stampAndDescribe(ProvisionContext context, String nodeIdStr) {
+            instanceTags.put(nodeIdStr, provisionTags(context, nodeIdStr));
+
+            return toInstanceInfo(nodeIdStr);
         }
 
         @Override
@@ -204,8 +228,31 @@ public final class EmberCluster {
                                     InstanceStatus.RUNNING,
                                     addresses,
                                     InstanceType.ON_DEMAND,
-                                    Map.of(),
+                                    Option.option(instanceTags.get(nodeIdStr)).or(Map.of()),
                                     Option.some(nodeIdStr));
+        }
+
+        /// Mirrors `HetznerComputeProvider.labelsFor`, the reference native stamping: the three
+        /// selector keys the CTM's worker-reconcile filter is built from, with the blank role
+        /// defaulting to `core` exactly as the Hetzner provider defaults it, plus the
+        /// provider-agnostic dotted `aether.node-id` upper layers (`NodeLifecycleManager.NODE_ID_TAG`)
+        /// select by — Ember has no native key charset, so no dotted-to-hyphenated translation
+        /// applies. One deliberate divergence, recorded rather than hidden: an ABSENT cluster name
+        /// stamps the empty string where every cloud provider refuses to create the VM outright
+        /// (RFC-0017 C2) — the CTM's selector renders an unresolvable name as the same empty string,
+        /// so the round-trip holds, and refusing here would be a behavior change to every existing
+        /// harness consumer that provisions without a cluster name.
+        private static Map<String, String> provisionTags(ProvisionContext context, String nodeIdStr) {
+            return Map.of("aether-cluster",
+                          context.clusterName().map(ClusterName::value).or(""),
+                          "aether-role",
+                          context.role().isEmpty()
+                          ? "core"
+                          : context.role(),
+                          "aether-source",
+                          context.sourceName().value(),
+                          "aether.node-id",
+                          nodeIdStr);
         }
     }
 
@@ -568,6 +615,7 @@ public final class EmberCluster {
         // Held-back instances were never started, so dropping the references disposes them fully.
         heldBackNodes.clear();
         nodeInfos.clear();
+        instanceTags.clear();
         slotsByNodeId.clear();
         availableSlots.clear();
         nodeCounter.set(0);
@@ -590,6 +638,7 @@ public final class EmberCluster {
         // Still-held instances were never started — nothing to stop, dropping them disposes them.
         heldBackNodes.clear();
         nodeInfos.clear();
+        instanceTags.clear();
         slotsByNodeId.clear();
         availableSlots.clear();
         log.info("Ember cluster stopped");
@@ -713,6 +762,7 @@ public final class EmberCluster {
                  nodeIdStr);
         nodes.remove(nodeIdStr);
         nodeInfos.remove(nodeIdStr);
+        instanceTags.remove(nodeIdStr);
         var slotOpt = Option.option(slotsByNodeId.remove(nodeIdStr));
 
         return node.stop()
@@ -763,6 +813,14 @@ public final class EmberCluster {
 
     public Option<AetherNode> getNode(String nodeIdStr) {
         return Option.option(nodes.get(nodeIdStr));
+    }
+
+    /// TEST SEAM (#644 contract test) — the created-but-never-started instance for a held-back id,
+    /// while it is still held back ([#startHeldBackNodes] moves it into [#getNode]'s view). Lets a
+    /// test observe what a constructed-but-unstarted node holds (it must hold NO armed periodic
+    /// work) without reaching into this class's private state.
+    public Option<AetherNode> heldBackNode(String nodeIdStr) {
+        return Option.option(heldBackNodes.get(nodeIdStr));
     }
 
     public List<AetherNode> allNodes() {
