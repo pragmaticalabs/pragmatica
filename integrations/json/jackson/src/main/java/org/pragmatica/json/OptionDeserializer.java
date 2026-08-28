@@ -58,17 +58,30 @@ public class OptionDeserializer extends ValueDeserializer<Option<?>> {
 
     @Override
     public ValueDeserializer<?> createContextual(DeserializationContext ctxt, BeanProperty property) {
-        return option(property).filter(prop -> prop.getType()
-                                                   .hasContentType())
-                     .<ValueDeserializer<?>> map(prop -> createContextualDeserializer(ctxt, prop))
+        return option(property).map(BeanProperty::getType)
+                     .flatMap(OptionDeserializer::elementType)
+                     .<ValueDeserializer<?>> map(type -> createContextualDeserializer(ctxt, property, type))
                      .or(this);
     }
 
-    private OptionDeserializer createContextualDeserializer(DeserializationContext ctxt, BeanProperty prop) {
-        var contentType = prop.getType().getContentType();
-        var deser = ctxt.findContextualValueDeserializer(contentType, prop);
+    /// Option is registered on the plain class, so a declared `Option<T>` arrives as a SimpleType:
+    /// `hasContentType()` is false and `T` lives in the generic binding instead (#696). Without this
+    /// resolution the element deserializes as raw Object (Integer for Option<Long>, LinkedHashMap
+    /// for record elements) and the declared type is violated at first use.
+    private static Option<JavaType> elementType(JavaType type) {
+        return type.hasContentType()
+               ? option(type.getContentType())
+               : type.containedTypeCount() == 1
+                 ? option(type.containedType(0))
+                 : none();
+    }
 
-        return new OptionDeserializer(contentType, deser);
+    private OptionDeserializer createContextualDeserializer(DeserializationContext ctxt,
+                                                            BeanProperty property,
+                                                            JavaType elementType) {
+        var deser = ctxt.findContextualValueDeserializer(elementType, property);
+
+        return new OptionDeserializer(elementType, deser);
     }
 
     @Override

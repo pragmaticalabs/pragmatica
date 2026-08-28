@@ -227,6 +227,63 @@ class JsonMapperTest {
     }
 
     @Nested
+    class OptionElementContextualization {
+        record Amount(long minor, String currency) {}
+        record Refund(String id, Option<Long> partialAmount, Option<Amount> amount) {}
+        record Outcome(String id, Result<Amount> settlement) {}
+
+        // Option<String> works even without contextualization, so these tests pin non-String
+        // elements: pre-#696 a declared Option<Long> arrived as Integer and a record element as
+        // LinkedHashMap, failing only at first use.
+        @Test
+        void readString_deserializesTypedLongElement_forOptionLongField() {
+            var json = "{\"id\":\"r-1\",\"partialAmount\":42,\"amount\":null}";
+
+            mapper.readString(json, Refund.class)
+                .onFailure(cause -> fail("Should not fail: " + cause))
+                .onSuccess(refund -> {
+                    assertEquals(Option.some(Long.class), refund.partialAmount().map(Object::getClass));
+                    assertEquals(Option.some(42L), refund.partialAmount());
+                });
+        }
+
+        @Test
+        void readString_deserializesTypedRecordElement_forOptionRecordField() {
+            var json = "{\"id\":\"r-2\",\"partialAmount\":null,\"amount\":{\"minor\":100,\"currency\":\"EUR\"}}";
+
+            mapper.readString(json, Refund.class)
+                .onFailure(cause -> fail("Should not fail: " + cause))
+                .onSuccess(refund -> {
+                    assertEquals(Option.some(Amount.class), refund.amount().map(Object::getClass));
+                    assertEquals(Option.some(new Amount(100, "EUR")), refund.amount());
+                });
+        }
+
+        @Test
+        void readString_keepsNone_forAbsentOptionFields() {
+            var json = "{\"id\":\"r-3\"}";
+
+            mapper.readString(json, Refund.class)
+                .onFailure(cause -> fail("Should not fail: " + cause))
+                .onSuccess(refund -> {
+                    assertFalse(refund.partialAmount().isPresent());
+                    assertFalse(refund.amount().isPresent());
+                });
+        }
+
+        @Test
+        void readString_deserializesTypedRecordValue_forResultField() {
+            var json = "{\"id\":\"r-4\",\"settlement\":{\"success\":true,\"value\":{\"minor\":250,\"currency\":\"EUR\"}}}";
+
+            mapper.readString(json, Outcome.class)
+                .onFailure(cause -> fail("Should not fail: " + cause))
+                .onSuccess(outcome -> outcome.settlement()
+                                             .onFailure(cause -> fail("Settlement should be success: " + cause))
+                                             .onSuccess(amount -> assertEquals(new Amount(250, "EUR"), amount)));
+        }
+    }
+
+    @Nested
     class ErrorHandling {
         record User(String name, int age) {}
 

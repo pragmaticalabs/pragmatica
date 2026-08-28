@@ -120,17 +120,27 @@ public class ResultDeserializer extends ValueDeserializer<Result<?>> {
     @Override
     public ValueDeserializer<?> createContextual(DeserializationContext ctxt, BeanProperty property) {
         return option(property).map(BeanProperty::getType)
-                     .filter(JavaType::hasContentType)
+                     .flatMap(ResultDeserializer::elementType)
                      .map(type -> createContextualDeserializer(ctxt, property, type))
                      .or(this);
     }
 
+    /// Result is registered on the plain class, so a declared `Result<T>` arrives as a SimpleType:
+    /// `hasContentType()` is false and `T` lives in the generic binding instead — same defect family
+    /// as OptionDeserializer's (#696).
+    private static Option<JavaType> elementType(JavaType type) {
+        return type.hasContentType()
+               ? option(type.getContentType())
+               : type.containedTypeCount() == 1
+                 ? option(type.containedType(0))
+                 : Option.none();
+    }
+
     private ResultDeserializer createContextualDeserializer(DeserializationContext ctxt,
                                                             BeanProperty property,
-                                                            JavaType type) {
-        var contentType = type.getContentType();
-        var deser = ctxt.findContextualValueDeserializer(contentType, property);
+                                                            JavaType elementType) {
+        var deser = ctxt.findContextualValueDeserializer(elementType, property);
 
-        return new ResultDeserializer(option(contentType), option(deser));
+        return new ResultDeserializer(option(elementType), option(deser));
     }
 }
