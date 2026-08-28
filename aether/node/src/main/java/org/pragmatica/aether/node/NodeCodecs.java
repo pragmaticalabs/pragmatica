@@ -76,6 +76,9 @@ public sealed interface NodeCodecs {
         all.addAll(org.pragmatica.aether.stream.consensus.ConsensusCodecsStream.CODECS);
         all.addAll(org.pragmatica.aether.stream.replication.ReplicationCodecsStream.CODECS);
         all.addAll(org.pragmatica.aether.stream.forward.ForwardCodecsStream.CODECS);
+        // #386 durable pub-sub wire types (TopicEventEnvelope on `topic:<address>` streams,
+        // DlqEnvelope on their `.dlq` streams) — MAILBOX-announced 2026-08-28 before this line.
+        all.addAll(org.pragmatica.aether.stream.topic.TopicCodecsStream.CODECS);
         // `org.pragmatica.aether.dht.DhtCodecsInvoke` was removed with its last @Codec source
         // (`DHTNotification`, deleted in f1aed3ff4 under #571). The aggregate is GENERATED per
         // package, so once the package has no @Codec types the class does not exist — this line

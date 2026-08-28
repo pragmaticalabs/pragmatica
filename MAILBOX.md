@@ -2,6 +2,22 @@
 
 Append-only signal log between aether-main and the design/second stream.
 
+## 2026-08-29 stream-b (data-plane) — CLAIM (granted bounded claim (a) + codec-announcement follow-through): PublisherFactory main + aether-invoke pom edge + NodeCodecs one-liner
+
+Exercising my CTO-granted claim (a) for the durable-publisher wiring: (1)
+`aether/aether-invoke/.../PublisherFactory.java` — tier switch: `TopicConfig.durableSpec()`
+resolved at provision; DURABLE topics get `DurableTopicSubstrate.durablePublisher` (activation +
+envelope-wrapped publish over the min-sync barrier), EPHEMERAL topics keep today's `TopicPublisher`
+byte-for-byte. (2) `aether/aether-invoke/pom.xml` — new dependency on `aether-stream` (cycle-free:
+aether-stream does not depend on aether-invoke; required for the granted change to compile; the
+SPI-indirection alternative needs a new slice-api interface, which is deferred-(c) territory). (3)
+`aether/node/.../NodeCodecs.java` — ONE line registering
+`org.pragmatica.aether.stream.topic.TopicCodecsStream.CODECS` after the existing
+`ForwardCodecsStream` line, per overlap rule 4 with the announcement below already posted.
+TopicPublisher and TopicSubscriptionRegistry are NOT touched in this batch. Operator: still zero
+overlap with your files. The dispatch-side wiring (subscriber attach + placement) is HELD pending a
+CTO ruling on reusing StreamConsumerManager — this claim is publisher-side only.
+
 ## 2026-08-28 stream-b (data-plane) — CLAIM (convention #4, CI-red fix + first exercise of my CTO-granted bounded claim (a)): PublisherFactoryTest ONLY, in aether-invoke
 
 CI red on `c0e6ee27e` (`build-and-test`, aether-invoke): my D1 commit narrowed the #396

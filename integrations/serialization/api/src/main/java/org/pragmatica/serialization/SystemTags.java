@@ -216,7 +216,15 @@ public interface SystemTags {
         pin(table, 108, "org.pragmatica.lang.vo.Url");
         pin(table, 109, "org.pragmatica.lang.vo.Uuid");
 
-        // ---- 110..127 RESERVED: the last free 1-byte slots. Spend them on hot types only. ----
+        // durable pub-sub topic envelopes (#386)  [base 110] — TopicEventEnvelope heads the payload
+        // bytes of EVERY durable-topic event (hot on merit); DlqEnvelope is failure-bounded traffic,
+        // but the aether.stream.* hot-prefix contract (SystemCodecPinningTest) binds every type under
+        // the prefix to the one-byte window, and relocating the class to dodge the contract was
+        // ruled out as weakening it.
+        pin(table, 110, "org.pragmatica.aether.stream.topic.TopicEventEnvelope");
+        pin(table, 111, "org.pragmatica.aether.stream.topic.DlqEnvelope");
+
+        // ---- 112..127 RESERVED: the last free 1-byte slots. Spend them on hot types only. ----
         // ---- 128..16383: two-byte system tags. ----
 
         // worker bootstrap (rare, large payloads)  [base 128]

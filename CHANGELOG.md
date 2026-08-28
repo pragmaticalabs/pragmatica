@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Added (2026-08-29 — #386 publisher tier switch: durable topics provision the stream-backed publisher)
+- **`PublisherFactory` now selects the publisher by the topic's declared durability class** (D1/D5
+  substrate half): a DURABLE declaration provisions the envelope-wrapping stream-backed publisher —
+  topic + DLQ streams activated eagerly at provision in one idempotent step, each `publish`
+  resolving at the `min-sync == replicas >= 2` replication floor — while EPHEMERAL declarations
+  keep today's RPC fan-out byte-for-byte. Wire plumbing landed with it: `aether-invoke` gains a
+  cycle-free dependency on `aether-stream`; `NodeCodecs` registers the
+  `org.pragmatica.aether.stream.topic` aggregate (MAILBOX-announced first); the two envelopes take
+  hand-assigned one-byte SystemTags (110/111 — `TopicEventEnvelope` heads every durable event's
+  payload bytes, and the `aether.stream.*` hot-prefix contract binds `DlqEnvelope` alongside it).
+  **Stated intermediate window:** subscriber-side durable dispatch is the NEXT landing — until it
+  arrives, a topic explicitly declared `durability = "durable"` persists publishes but delivers
+  nothing to subscribers (the RPC fan-out deliberately does not fire for durable topics — replaying
+  through it would fake delivery the moment dispatch lands). Nothing deployed declares durability,
+  so the window is unreachable without opting in; `guarantees.md` §5 continues to describe every
+  DEPLOYED topic truthfully, and its rewrite rides the dispatch landing as one change.
+  [verified: `PublisherFactoryTest$DurableTierProvisioning` — durable declarations provision
+  `DurableTopicPublisher` with both streams activated, §3-invalid bypass declarations refuse
+  loudly; `$TopicNameFallbackDelivery` 3/3 and the ephemeral suite unchanged;
+  `SystemCodecPinningTest` pins the one-byte window]
+
 ### Changed (2026-08-29 — #366 re-scope + #591 instrument hardening, per the #367 pole-gate ruling)
 - **#366 re-scoped onto the shipping mechanism** (CTO ruling 2026-08-29, recorded on the ticket):
   community size in the product that ships is the PER-SOURCE WORKER COUNT — communities are minted

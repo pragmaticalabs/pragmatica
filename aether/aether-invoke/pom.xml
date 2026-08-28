@@ -34,6 +34,10 @@
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>aether-stream</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>aether-dht</artifactId>
         </dependency>
 

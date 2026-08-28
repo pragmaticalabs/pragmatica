@@ -92,6 +92,77 @@ class PublisherFactoryTest {
         }
     }
 
+    /// #386 D1/D5 — the declared durability class selects the provisioned publisher: DURABLE
+    /// topics get the stream-backed publisher (topic + DLQ streams activated eagerly at provision,
+    /// in one step), EPHEMERAL topics keep the RPC fan-out `TopicPublisher`. A durable declaration
+    /// that bypassed parse validation fails provisioning loudly instead of silently downgrading.
+    @Nested
+    class DurableTierProvisioning {
+        private static final org.pragmatica.serialization.Serializer NOOP_SERIALIZER = new org.pragmatica.serialization.Serializer() {
+            @Override
+            public <T> void write(io.netty.buffer.ByteBuf byteBuf, T object) {
+                byteBuf.writeBytes(String.valueOf(object).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            }
+        };
+
+        @Test
+        void provision_durableTopic_createsStreamBackedPublisher_andActivatesBothStreams() throws Exception {
+            var manager = org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager();
+
+            try {
+                var config = TopicConfig.topicConfig("orders",
+                                                     org.pragmatica.aether.resource.TopicDurability.DURABLE,
+                                                     Option.none(),
+                                                     Option.none(),
+                                                     Option.none(),
+                                                     Option.none())
+                                        .unwrap();
+                var context = ProvisioningContext.provisioningContext()
+                                                 .withExtension(org.pragmatica.aether.stream.StreamPartitionManager.class,
+                                                                manager)
+                                                 .withExtension(org.pragmatica.serialization.Serializer.class,
+                                                                NOOP_SERIALIZER);
+                var publisher = factory.provision(config, context)
+                                       .await()
+                                       .onFailure(cause -> fail(cause.message()))
+                                       .unwrap();
+
+                assertTrue(publisher instanceof org.pragmatica.aether.stream.topic.DurableTopicPublisher<?>);
+                // Bare name, no slice-id extension -> default-namespace address backs the stream pair.
+                assertTrue(manager.partitionBuffer("topic:default:orders:1.0.0", 0).isPresent());
+                assertTrue(manager.partitionBuffer("topic:default:orders:1.0.0.dlq", 0).isPresent());
+            } finally {
+                manager.close();
+            }
+        }
+
+        @Test
+        void provision_durableTopic_failsLoudly_whenDeclarationBypassedValidation() throws Exception {
+            var manager = org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager();
+
+            try {
+                // Canonical-constructor bypass with replicas=1 — the §3-invalid shape the factory rejects.
+                var config = new TopicConfig("orders",
+                                             org.pragmatica.aether.resource.TopicDurability.DURABLE,
+                                             Option.none(),
+                                             Option.some(1),
+                                             Option.none(),
+                                             Option.none());
+                var context = ProvisioningContext.provisioningContext()
+                                                 .withExtension(org.pragmatica.aether.stream.StreamPartitionManager.class,
+                                                                manager)
+                                                 .withExtension(org.pragmatica.serialization.Serializer.class,
+                                                                NOOP_SERIALIZER);
+
+                factory.provision(config, context)
+                       .await()
+                       .onSuccess(_ -> fail("a §3-invalid durable declaration must not provision"));
+            } finally {
+                manager.close();
+            }
+        }
+    }
+
     /// RC2 #274 — the publisher (provisioned here from the slice-id) and the subscriber (registered
     /// by the deployment FSM) MUST resolve the same bare topic name to the same blueprint-derived
     /// namespace, or co-deployed pub/sub silently stops delivering. The publisher reads its owning
