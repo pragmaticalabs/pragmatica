@@ -62,6 +62,18 @@
 > Remaining open items in this file (D6–D13, D16–D19) all sit in explicitly deferred territory
 > (streams, pub-sub, durable-entity, archive) and are correctly left for whichever stream owns that
 > re-grounding pass next.
+>
+> **#496 progress, 2026-08-28 (pub-sub — D6/D7/D18) —** re-audited against current `HEAD` per
+> guarantees.md §5 (not deferred: the original deferral was scope-naming, stream B being unlaunched
+> is not a reason for pub-sub claims to stay dishonest meanwhile). **Applied:** D6 and D7
+> (`feature-catalog.md` rows 24/23 — both had drifted to new line numbers since rc2; rewritten in
+> place rather than pasting the stale rc2-era boilerplate). **New finding beyond the original rows:**
+> D21, `slice-developers/resource-reference.md`'s subscriber-facing Behavior section omitted all
+> delivery-loss information — read as reliable-by-omission; fixed. **Blocked, not applied:** D18 —
+> its target (`aether-coder/.../pub-sub.md`) is not part of this repo's git-controlled territory at
+> all (empty `git log --all` for that path, `.claude/` gitignored here); it lives only in the
+> separate main `pragmatica` clone and local skill-cache directories. Flagged to team-lead for
+> routing rather than silently edited cross-repo or silently dropped.
 
 ### Surface 3 file audit (2026-08-28) — deployment/blueprint, per-file disposition
 
@@ -125,8 +137,8 @@ Two kinds of item:
 | D3 | `:270/271/281` (rows 94/95/152) | "moved from consensus to ReplicatedMap … O(3) vs O(N)" (perf-only framing) | ✅ RESOLVED — see guarantees.md §7 item 7 (#384 CLOSED); rows now carry the eventual/not-crash-durable downgrade pointer. |
 | D4 | `:52` (quorum loss) | "graceful degradation on quorum loss, automatic restoration" | ✅ **APPLIED 2026-08-28** — row now states pause/reject-writes + minority self-fence explicitly, cites guarantees.md §3. |
 | D5 | `:21/33/52` etc. | "Battle-tested" on Auto-healing / Quorum / DHT | "Validated in E2E + cloud chaos; quorum/self-fence paths hardened through 2026-06." (correctness fixes landed within the last week — A6 2026-06-28, self-drain 2026-06-21). |
-| D6 | `:85` (row, message delivery) | "Battle-tested … leader failover scenarios" | "Message delivery — **at-most-once**, unordered, fan-out + round-robin. No retry/persistence; lost if no live endpoint. Subscriptions survive leader change (KV-backed)." |
-| D7 | `:84` (row 23) | "competing consumers (round-robin)" | "competing consumers (round-robin) **via EndpointRegistry**." (the `TopicSubscriptionRegistry` RR/nodeId is vestigial dead code — cleanup candidate). |
+| D6 | `:97` (row 24, message delivery — row moved from the rc2-era `:85`) | "Battle-tested … leader failover scenarios" | ✅ **APPLIED 2026-08-28** — row now states delivery is at-most-once/unordered/best-effort, no retry or persistence, silently dropped if no live subscriber instance (publish still reports success), registration (not the message) survives leader change. Cites guarantees.md §5. |
+| D7 | `:96` (row 23 — row moved from the rc2-era `:84`) | "competing consumers (round-robin)" | ✅ **APPLIED 2026-08-28** — row now names `EndpointRegistry` as the mechanism doing the round-robin fan-out across a subscriber slice's live instances, distinct from `TopicSubscriptionKey`'s KV-Store registration bookkeeping. |
 | D8 | `:180` (row 139) | "Sync replication ack … Complete" | See **C1** — Partial / unsatisfiable. |
 | D9 | `:177` (row 146) | "cursor persistence (push + pull)" | "in-RAM cursors with periodic checkpoint; durable persistence depends on the (unwired) cursor-store overload." |
 | D10 | `:177` | "zero-copy MemorySegment reads" | "zero-copy **consumer-slice read**; the producer path copies into off-heap." |
@@ -141,7 +153,8 @@ Two kinds of item:
 | D15 | `guides/rolling-upgrade.md:3` | "zero downtime" | ✅ **APPLIED 2026-08-28** — scoped to app-downtime; added the core-node quorum-margin caveat, which the guide previously never stated at all. |
 | D16 | `streaming-performance-analysis.md:130` | "supporting exactly-once processing" | "**effectively-once** for same-DB side effects, **when** `PgTransactionalCursorCommit` is wired (not in node bootstrap today)." |
 | D17 | `archive/infrastructure-slices-design.md:701,767` | "Reliable event publishing with **exactly-once** delivery" (Outbox) | Mark "Planned / not implemented" (archived/aspirational). |
-| D18 | skill `aether-coder/.../pub-sub.md:52` | use case "Notifications, **broadcasts**" | "Notifications, fan-out to subscriber **types** (one instance each)" — not a true broadcast to all instances. |
+| D18 | skill `aether-coder/.../pub-sub.md:52` | use case "Notifications, **broadcasts**" | ⛔ **TERRITORY-BLOCKED, 2026-08-28** — the target file does not exist anywhere in this repo's git history (`git log --all -- .claude/skills/aether-coder` is empty) and `.claude/` is itself gitignored here; it only lives in the separate main `pragmatica` clone and in local, non-version-controlled skill-cache directories. Not committable from `pragmatica-stream-e`. Flagged to team-lead for routing to whichever stream/session owns the skill's actual source; honest rewrite unchanged from the row above pending that routing. |
+| D21 | `slice-developers/resource-reference.md:1034-1039` (Pub-Sub Messaging → Behavior) | (implicit, by omission) — Behavior list described registration and routing but said nothing about delivery loss, reading as if delivery were reliable | ✅ **APPLIED 2026-08-28** (new finding, not from the original rc2 grounding pass) — added an explicit at-most-once/no-persistence/no-retry/dropped-if-no-live-instance bullet, and reworded "routed to any node with a subscriber loaded" (ambiguous, readable as broadcast) to state one delivery per subscribing slice, round-robined across that slice's live instances. Cites guarantees.md §5. |
 | D19 | `archive/infra-services.md:346` | "Always available: Every node can serve artifacts" | Archived — annotate as superseded (a minority/partitioned node halts and serves nothing). |
 | D20 | `architecture/01-consensus.md`, `contributors/consensus.md` — leader-election table/prose | "Strong (all nodes agree)" / "Strong consistency required" | ✅ **APPLIED 2026-08-28** (new finding, not from the original rc2 grounding pass) — the commit itself is linearizably ordered (same Rabia log + `viewSequence` fence as any KV write), but each node applies it as its own consensus round completes, not simultaneously — same-order, not same-instant. Both docs now state this and cite guarantees.md §1. |
 

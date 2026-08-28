@@ -1033,10 +1033,11 @@ topic = "order-events"
 
 ### Behavior
 
-- The runtime registers the handler in the cluster KV-Store when the slice activates
-- Messages published to the topic are routed to any node with a subscriber loaded
-- Multiple slices can subscribe to the same topic
+- The runtime registers the handler in the cluster KV-Store when the slice activates (Rabia-replicated write — the registration itself is crash-durable and survives leader change)
+- On publish, each subscribing slice receives one delivery, round-robined across that slice's live instances — not broadcast to every node that happens to have the handler loaded
+- Multiple slices can subscribe to the same topic; each is delivered to independently
 - Subscriptions are automatically removed when the slice deactivates
+- **Delivery itself is at-most-once, unordered, and best-effort — not durable.** A publish that finds no live instance of a subscribing slice drops the message silently (the publish call still reports success); a delivery that fails mid-flight is not retried. Nothing is queued or persisted, so a subscriber that is down when a message is published misses it permanently, even after it comes back up. If your handler needs guaranteed processing, build idempotent recovery on top (e.g. reconcile against a durable source) rather than relying on delivery. See `guarantees.md` §5.
 
 ---
 

@@ -93,8 +93,8 @@ Three storage/persistence concepts that are distinct and must not be conflated:
 | # | Feature | Status | Description |
 |---|---------|--------|-------------|
 | 22 | Publisher/Subscriber API | Complete | `Publisher<T>` functional interface, `Subscriber` marker, `@Subscription` annotation. 18 unit tests |
-| 23 | Topic subscription registry | Complete | KV-Store backed subscriber discovery with competing consumers (round-robin). Tested |
-| 24 | Message delivery | Battle-tested | TopicPublisher fans out via SliceInvoker. PublisherFactory registered as SPI. Forge PubSubTest validates cross-node delivery, multi-click fan-out, and leader failover scenarios |
+| 23 | Topic subscription registry | Complete | KV-Store backed subscriber discovery (`TopicSubscriptionKey`, Rabia-replicated write). Competing-consumer round-robin fan-out is done by `EndpointRegistry` across a subscriber slice's live instances, not by this registry. Tested |
+| 24 | Message delivery | Battle-tested | TopicPublisher fans out via SliceInvoker. PublisherFactory registered as SPI. Forge PubSubTest validates cross-node delivery, multi-click fan-out, and leader failover scenarios. **Delivery itself is at-most-once, unordered, best-effort**: no retry, no persistence — a subscriber slice with no live instance at publish time misses the message permanently. The subscription registration survives leader change (KV-backed); in-flight messages do not. See guarantees.md §5 |
 | 25 | Resource lifecycle | Complete | Reference-counted `releaseAll()`, generated `stop()` cleanup, consumer tracking. SliceId auto-injected into ProvisioningContext |
 
 ## Scheduled Invocation
