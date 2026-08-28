@@ -765,6 +765,14 @@ public final class EmberCluster {
         return Option.option(nodes.get(nodeIdStr));
     }
 
+    /// TEST SEAM (#644 contract test) — the created-but-never-started instance for a held-back id,
+    /// while it is still held back ([#startHeldBackNodes] moves it into [#getNode]'s view). Lets a
+    /// test observe what a constructed-but-unstarted node holds (it must hold NO armed periodic
+    /// work) without reaching into this class's private state.
+    public Option<AetherNode> heldBackNode(String nodeIdStr) {
+        return Option.option(heldBackNodes.get(nodeIdStr));
+    }
+
     public List<AetherNode> allNodes() {
         return new ArrayList<>(nodes.values());
     }

@@ -6,6 +6,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Fixed (2026-08-28 — #644: periodic tasks arm in start(), not at assembly)
+- **A created-but-never-started node now performs no periodic work and holds no timers.**
+  `AetherNode.assembleNode` used to hand all fourteen of the node's recurring tasks to
+  `SharedScheduler.scheduleAtFixedRate` at ASSEMBLY time (#642's evidence run: two held-back Ember
+  nodes ran 274 snapshot ticks each over 45 minutes without ever starting) — a family that includes
+  destructive WAL truncation, metadata snapshot writes, operator-visible retention alerts, and
+  (pre-#702) consensus KV removals. The new `PeriodicTasks` holder accumulates arming THUNKS during
+  assembly and arms them only once cluster formation resolves in `start()`; `stop()` and the
+  failed-boot guard (`cancelArmedWork`) discard unarmed thunks and cancel armed handles, and a
+  `stop()` racing a late formation resolution wins — CANCELLED is terminal, so a torn-down node can
+  never gain work. Arming after formation is safe for every member of the family: none participates
+  in `clusterNode.start()`'s resolution (verified against the promise chain — the election trigger
+  itself runs after resolution), and the activation level-heal's one dropped-edge scenario requires
+  `clusterNode::isActive`, which is true by arming time. One deliberate seed choice: the
+  phase-change watcher's baseline is still captured at ASSEMBLY, so the formation transition is
+  reported as one edge on the first armed tick instead of being swallowed into a start-time
+  baseline — the deferral removes only the pre-start publishing. The two UNKNOWNs from the ticket's
+  partition are settled: `publishPhaseChange` cannot publish pre-start at all now, and
+  `StreamConsumerManager.reconcile` was wasteful-not-unsafe (its declaration registry is empty
+  pre-start). The guard-failure path additionally stops the two constructor-armed cleanup ticks it
+  could never reach (`SliceInvoker`'s stale-invocation sweep, `AdaptiveSampler`'s rate
+  recalculation); `RabiaEngine`'s constructor-armed phase cleanup remains reachable only through
+  `clusterNode.stop()` and is recorded on #644 as the residual, with the constructor-armed family's
+  own deferral left as an explicitly-scoped follow-up.
+  [verified: `aether/node/src/test/java/org/pragmatica/aether/node/PeriodicTasksTest.java` (the
+  deferral state machine, 8 pins) and
+  `aether/forge/forge-tests/.../NodeLifecyclePeriodicArmingForgeTest.java` (the WIRING, on a real
+  Ember cluster with a held-back node: zero armed while unstarted across 4s of the tightest
+  interval, start arms exactly the 14 deferred, stop disarms; the arm-call-deleted mutation goes
+  red on exactly the wiring pins)]
+- **#557's boot-quorum projection got a named, tested seam** (the composition rider recorded on
+  #644): `AetherNode.presenceMemberSupplier` replaces the inline lambda no test could reach, and
+  `PresenceMemberSupplierSeamTest` pins it against a real boot-seeded `MembershipFsm` — swapping
+  the observed projection for the counted one (the exact #557 regression) now goes red at the real
+  wiring instead of only in aether-deployment's mirror test.
+  [verified: `aether/node/src/test/java/org/pragmatica/aether/node/PresenceMemberSupplierSeamTest.java`,
+  mutation (observed→counted) demonstrated red]
+
 ### Fixed (2026-08-28 — #702: entity registration removals gated on live consensus-activity)
 - **A node that is not a live cluster participant can no longer mass-remove its own committed entity
   keyspace registrations.** `EntityOwnershipReconciler`'s removal half read an empty declared-keyspace
