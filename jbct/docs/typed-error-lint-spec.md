@@ -302,6 +302,14 @@ tests the right way; the census decides whether test-side flagging earns its noi
 
 ## 5. Rollout — measured, two tracks
 
+> **FROZEN 2026-08-28 — ruling [#713](https://github.com/pragmaticalabs/pragmatica/issues/713),
+> versioned against JBCT 5.0.0:** CAUSE-01/02/04 = ERROR (this section's proposed table adopted),
+> CAUSE-03/05/07/08 = WARNING; CAUSE-06 excluded (unimplemented — WARNING-at-introduction when it
+> lands). Enforcement landed with explicit migration-bound overrides pinning CAUSE-01/02 to warning
+> in the two reference corpora (monorepo root `jbct.toml` → #720; ticketing `jbct.toml` → its held
+> typed-error migration); CAUSE-04 carries no override anywhere (zero corpus hits). The prose below
+> is the pre-freeze plan, kept as the record of how the gates were defined.
+
 The pack's rules split by what they judge, and the gates differ. **Track A** rules judge existing
 code (CAUSE-01, 02, 06, 07): they are corpus-measurable today, and severities freeze only after
 the census. **Track B** rules judge code that does not exist yet (CAUSE-03, 04, 05, 08 — each

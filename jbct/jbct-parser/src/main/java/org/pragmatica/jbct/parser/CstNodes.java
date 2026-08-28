@@ -240,6 +240,53 @@ public final class CstNodes {
                : "";
     }
 
+    // ===== Types =====
+    /// Simple name of a `Type` node — the identifier of its last name segment, with type
+    /// annotations, type arguments and array dims excluded: `CreateOrderRequest`,
+    /// `com.acme.SeatReleased`, `com.acme.@Traced Foo<Bar>` and `Foo[]` yield
+    /// `CreateOrderRequest`, `SeatReleased`, `Foo` and `Foo`; a bare primitive or `void`
+    /// (a single-token `Type` leaf) yields that token. The name is read from the CST's
+    /// tokens, never reconstructed from source text, so annotation arguments containing
+    /// `)` and fully-qualified annotations cannot corrupt it (#661). Returns `none` when
+    /// the type has no name segment (a primitive array such as `byte[]` — its element
+    /// keyword is not a name segment).
+    public static Option<String> typeSimpleName(Cursor type) {
+        return switch (type) {
+            case Cursor.Leaf leaf -> Option.some(tokenText(leaf));
+            case Cursor.Branch branch -> childByRule(branch, RuleKind.REF_TYPE).flatMap(CstNodes::refTypeSimpleName);
+            case Cursor.ErrorNode _ -> Option.none();
+        };
+    }
+
+    /// `RefType <- AnnotatedTypeName ('.' AnnotatedTypeName)*` — the simple name lives in the
+    /// last segment.
+    private static Option<String> refTypeSimpleName(Cursor refType) {
+        var segments = childrenByRule(refType, RuleKind.ANNOTATED_TYPE_NAME);
+
+        return segments.isEmpty()
+               ? Option.none()
+               : segmentIdentifier(segments.getLast());
+    }
+
+    /// `AnnotatedTypeName <- Annotation* Identifier TypeArgs?` — the identifier is the last
+    /// non-trivia token before the `TypeArgs` subtree, or the segment's last token when there
+    /// is none. A single-token segment is a collapsed leaf and IS the identifier.
+    private static Option<String> segmentIdentifier(Cursor segment) {
+        var tokens = segment.cst()
+                            .tokens();
+        var end = childByRule(segment, RuleKind.TYPE_ARGS).map(args -> args.firstTokenIdx() - 1)
+                          .or(segment.lastTokenIdx());
+
+        for (int t = end; t >= segment.firstTokenIdx(); t--) {
+            if (!tokens.isTrivia(t)) {
+                return Option.some(tokens.textAt(t)
+                                         .toString());
+            }
+        }
+
+        return Option.none();
+    }
+
     // ===== Spans =====
     public static int startLine(Cursor node) {
         return node.startLine();

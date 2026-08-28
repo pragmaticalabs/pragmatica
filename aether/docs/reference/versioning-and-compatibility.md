@@ -9,7 +9,7 @@ each other because they all use the word "version"; they are independent by desi
 | Product release (`1.0.0-rc3`) | The whole codebase, as a release artifact | rc series, pre-GA; SemVer committed from GA (#321) |
 | Envelope format (`ENVELOPE_FORMAT_VERSION`) | Slice-processor generated-code structure | Built, frozen at `1000` until GA |
 | Slice HTTP API versions (`v1`, `v2`, ...) (#198) | An individual slice's own routes | Built |
-| Management HTTP API (`/api/v1/...`) (#300) | The cluster's control-plane routes | **Draft — not implemented** |
+| Management HTTP API (`/api/v1/...`) (#300) | The cluster's control-plane routes | Prefix scheme built (Commit 1, 2026-08-28); stream-route consolidation still in flight |
 
 Node-to-node wire-protocol version skew is discussed separately below because, unlike the four
 rows above, there is currently no mechanism for it at all — see "Rolling upgrades and node
@@ -83,17 +83,26 @@ URL path (default) or by request header, with `deprecated`/`sunset` metadata per
 enum, `aether/aether-config/.../config/ApiVersioningDetection.java`]. This is per-slice and
 independent of both the product version and the management API below.
 
-### Management (control-plane) API versioning (#300) — Draft, not implemented
+### Management (control-plane) API versioning (#300) — prefix scheme built, rest still landing
 
-There is a Draft v0.1 design (`aether/docs/specs/management-api-versioning-spec.md`, dated
-2026-07-04) proposing a `/api/v1/...` prefix for the management API, additive-vs-breaking rules for
-when a new version is minted, and a post-GA dual-serve window (≥1 minor release) for the previous
-version. **None of this is built yet** — every `ManagementRoute` entry in the current tree still
-mounts at a bare `/api/...` with no version segment [verified: `aether/aether-management-api/.../
-route/ManagementRoute.java`, checked directly — e.g. `NODES_LIST(GET, "/api/nodes", ...)`, no
-`/v1/` anywhere in the enum]. Treat the whole management-API-versioning policy as
-[design intent — unverified] until that spec lands in code; this page will be updated when it
-does.
+The `/api/v1` path-prefix scheme from `aether/docs/specs/management-api-versioning-spec.md` §2.1 is
+now built (Commit 1, 2026-08-28): `ManagementRoute`'s canonical constructor prepends the
+`API_BASE = "/api/v1"` constant at one site, so every route declared with a plain-string suffix
+mounts under `/api/v1/...` [mechanism: `aether/aether-management-api/.../route/ManagementRoute.java`].
+The §2.2 carve-outs — health probes (`/health/live`, `/health/ready`) and the artifact-repository
+routes (`/repository/**`) — opt out via the enum's distinct `raw(...)` constructor and stay
+unversioned, matching the spec's stated design. RBAC, the security-guard layer, the CLI, and the
+test consumers were synced to the new prefix in the same change.
+
+**Not yet exercised:** the spec's post-GA dual-serve window (§2.6 — v_{n-1} served in parallel for
+≥1 minor release once a `v2` is minted) and the `Deprecation`/`Sunset` header mechanism it depends on
+have nothing to exercise them yet, since `/api/v1` is still the only version that has ever existed;
+pre-GA the spec's stance is hard-cutover (§2.3), which is what this landing was. Treat the
+dual-serve/deprecation machinery as design intent until a `v2` actually ships.
+
+**Also not yet landed:** the spec's stream-surface consolidation (§3.2–§3.3 — folding the stream and
+stream-namespace routes into a single catalog) is a separate, still in-flight piece of the same
+effort; this page does not describe it until it lands.
 
 ## Rolling upgrades and node version skew
 

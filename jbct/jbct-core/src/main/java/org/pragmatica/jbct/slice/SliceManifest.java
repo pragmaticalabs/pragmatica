@@ -30,6 +30,7 @@ public record SliceManifest(String sliceName,
                             List<String> implClasses,
                             List<String> requestClasses,
                             List<String> responseClasses,
+                            List<String> messageClasses,
                             String baseArtifact,
                             String implArtifactId,
                             List<SliceDependency> dependencies,
@@ -42,6 +43,7 @@ public record SliceManifest(String sliceName,
         implClasses = List.copyOf(implClasses);
         requestClasses = List.copyOf(requestClasses);
         responseClasses = List.copyOf(responseClasses);
+        messageClasses = List.copyOf(messageClasses);
         dependencies = List.copyOf(dependencies);
         resourceConfigRefs = List.copyOf(resourceConfigRefs);
     }
@@ -89,6 +91,7 @@ public record SliceManifest(String sliceName,
         var implClasses = parseList(getPropertyOrEmpty(props, "impl.classes"));
         var requestClasses = parseList(getPropertyOrEmpty(props, "request.classes"));
         var responseClasses = parseList(getPropertyOrEmpty(props, "response.classes"));
+        var messageClasses = parseMessageClasses(props);
         var baseArtifact = getPropertyOrEmpty(props, "base.artifact");
         var implArtifactId = getPropertyOrEmpty(props, "slice.artifactId");
         var dependencies = parseDependencies(props);
@@ -101,11 +104,26 @@ public record SliceManifest(String sliceName,
                                  implClasses,
                                  requestClasses,
                                  responseClasses,
+                                 messageClasses,
                                  baseArtifact,
                                  implArtifactId,
                                  dependencies,
                                  configFile,
                                  resourceConfigRefs);
+    }
+
+    /// Message/event classes the manifest declares for serializer registration: topic publisher
+    /// message types (`publish.message.classes`) and stream event types (`stream.event.classes`).
+    /// Generated factory code references them, so they must reach the packaged slice jar even when
+    /// they live outside the slice package — e.g. a `shared.event` record (#712). Subscriber-side
+    /// topic message types already arrive via `request.classes` (reactive methods are interface
+    /// methods); stream consumer event types are folded into `stream.event.classes` at generation.
+    private static List<String> parseMessageClasses(Properties props) {
+        return Stream.of(parseList(getPropertyOrEmpty(props, "publish.message.classes")),
+                         parseList(getPropertyOrEmpty(props, "stream.event.classes")))
+                     .flatMap(List::stream)
+                     .distinct()
+                     .toList();
     }
 
     private static String getPropertyOrEmpty(Properties props, String key) {
@@ -187,10 +205,14 @@ public record SliceManifest(String sliceName,
     }
 
     /// Get all classes that should go into the impl artifact.
-    /// Includes implementation classes, request types, and response types.
+    /// Includes implementation classes, request/response types, and the manifest-declared
+    /// message/event classes (topic publisher message types, stream event types) — the generated
+    /// factory references those at runtime, so omitting them fails slice activation with
+    /// NoClassDefFoundError when they live outside the slice package (#712).
     public List<String> allImplClasses() {
-        return Stream.of(implClasses, requestClasses, responseClasses)
+        return Stream.of(implClasses, requestClasses, responseClasses, messageClasses)
                      .flatMap(List::stream)
+                     .distinct()
                      .toList();
     }
 

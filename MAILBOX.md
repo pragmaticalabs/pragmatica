@@ -1227,3 +1227,71 @@ passages #692 just corrected) and `aether/docs/reference/versioning-and-compatib
 Commit 1's landed `/api/v1` enum state only. Not touching `STREAMS_*`/`STREAM_NAMESPACES_*` routes
 or the `aether backups` CLI rename — those are operator's Commit 2/4, still reshaping. Rebased onto
 `04717dc0c` before starting. Will report the landing SHA here once pushed.
+
+## 2026-08-28T18:00Z stream-docs — LANDED: `b142765d7`, closing the claim above
+
+`management-api.md`'s `## Endpoint Summary` table (109 rows) now reads `/api/v1/...`; the
+`/health/*`, `/repository/**`, `/dashboard`, `/ws/*` rows were left unversioned/untouched, matching
+`ManagementRoute.java`'s `raw(...)` carve-out set (§2.2). Added a policy note above the table
+explaining the prefix and the carve-outs, with no assertion about Stream Management/Stream
+Namespaces routes' current state — those sections stay undescribed, pointing instead to
+`versioning-and-compatibility.md` for status. That file's own table row and its "Management
+(control-plane) API versioning" section were rewritten from the stale "Draft — not implemented" to
+a three-tier state: prefix scheme built (Commit 1), post-GA dual-serve/deprecation machinery not
+yet exercised (no `v2` has ever existed), stream-surface consolidation (§3.2–§3.3) not yet landed.
+Confirmed via `git diff --unified=0`: no hunk touches the HealthReconciler/GENERATION_CHANGED
+passages `#692` corrected, and no stream-route or CLI-rename content was added anywhere. Claim
+closed.
+
+## 2026-08-28 stream-c (operator surface) — claiming `aether/tests/**` stream-helper edits ahead of commit 2 (STRUCTURAL, not mechanical)
+
+Per team-lead's instruction, claiming these files before touching them — `aether/tests/**` is
+cluster-core's territory and this batch is a path-*shape* change (spec §3.2/§3.3 stream-surface
+merge), not a mechanical prefix sync (that part is already covered by commit 1.5 above). Posting
+now so cluster-core can flag if any of these are already mid-edit; will follow with the actual diff
+once commit 2's `ManagementRoute`/`StreamApiRoutes` changes land (this claim precedes that work, not
+the reverse).
+
+**Shared helper definitions — `aether/tests/integration/lib/cluster.sh`** (3 functions, verified
+line-by-line against current source, lines 3956-3968):
+- `stream_list()` (3956) → `aether_json "streams list"` falling back to `api_get "/api/v1/streams"`
+  — URL is already correct post-merge (`STREAMS_LIST`, now spans all namespaces incl. `system`); the
+  CLI-first branch needs checking against whichever of the two CLI stream command trees survives
+  Commit 2's reconciliation.
+- `stream_info(name)` (3960) → `api_get "/api/v1/streams/${name}"` — genuine shape change, bare
+  name has no post-merge equivalent; becomes identity-addressed against the `system` namespace
+  (management-created ad-hoc test streams mint `system/{name}/1` per §3.2's `STREAM_CREATE` row).
+- `stream_publish(name, body)` (3965) → `api_post "/api/v1/streams/publish/${name}" "$body"` —
+  verb-prefix shape retired; becomes identity-first `.../system/{name}/1/publish`.
+
+**Suite callers of the three helpers above** (consumers only, no shape logic of their own — will
+just need their `name` args threaded as `system`-namespace, version `1`):
+`suites/04-streaming/test-stream-publish.sh`, `test-stream-consumer.sh`, `test-stream-replication.sh`,
+`test-stream-under-load.sh`, `suites/08-resources/test-streaming-resources.sh`, `test-pub-sub.sh`,
+`suites/01-stability/test-streaming-soak.sh`, `suites/02-chaos/test-stream-replica-failover.sh`.
+
+**Correction to my own earlier pass:** four of those files — `test-stream-replication.sh`,
+`test-stream-under-load.sh`, `test-streaming-soak.sh`, `test-stream-replica-failover.sh` — are NOT
+pure consumers; each ALSO has its own independent inline `/api/v1/streams` call that bypasses the
+shared helpers and needs its own direct edit:
+- `test-stream-replication.sh:21` — `api_post "/api/v1/streams" "$payload"` (flat create, old
+  `STREAM_CREATE` shape) and `:118` — raw curl to `/api/v1/streams/${STREAM_NAME}` (cross-node
+  governor-vs-replica read check, old `STREAM_GET` shape).
+- `test-stream-under-load.sh:39` — `http_status ".../api/v1/streams/publish/${STREAM_NAME}"`.
+- `test-streaming-soak.sh:38` — same shape, `http_status ".../api/v1/streams/publish/${STREAM_NAME}"`.
+- `test-stream-replica-failover.sh` defines `replicas_snapshot_owner_view()` (line 165, raw calls at
+  169/197/etc.) hitting `GET /api/v1/streams/replicas/{name}/{partition}` (old `STREAM_REPLICAS`
+  shape) — duplicated verbatim in `suites/02y-stream-crash/test-stream-crash-durability.sh:223`
+  (same function name, same shape, not shared via `lib/`).
+
+**Inline-only, no helper usage:**
+- `suites/13-edge-cases/test-concurrent-deploys.sh:91,102` — `http_status` to
+  `.../api/v1/streams/publish/${STREAM_A|B}`.
+
+**Checked and ruled out** — no stream-API structural dependency: `lib/common.sh`, `lib/log-follower.sh`
+(their "stream" hits are unrelated log/data streaming), `lib/topology.sh` (references the
+`system:cluster-events:1.0.0` stream in comments only, makes no direct stream-API calls). No Java
+file under `aether/tests/**` (cloud-tests/forge-tests) references the retiring `StreamRoutes`/
+`STREAM_*` enum constants by name.
+
+Flag here if any of the above conflicts with something already in flight on your side.
