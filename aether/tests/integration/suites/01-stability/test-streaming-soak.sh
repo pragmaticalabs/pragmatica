@@ -35,7 +35,7 @@ test_sustained_publish() {
     while [ "$(now_epoch)" -lt "$end_time" ]; do
         local payload="{\"message\":\"soak-test-${count}\",\"timestamp\":$(now_epoch)}"
         local status
-        status=$(http_status "${CLUSTER_ENDPOINT}/api/streams/publish/${STREAM_NAME}" \
+        status=$(http_status "${CLUSTER_ENDPOINT}/api/v1/streams/publish/${STREAM_NAME}" \
             -X POST \
             -H "X-API-Key: ${API_KEY}" \
             -H "Content-Type: application/json" \

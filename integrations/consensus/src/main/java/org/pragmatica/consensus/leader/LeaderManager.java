@@ -49,8 +49,8 @@ public interface LeaderManager {
     boolean isLeader();
     /// Returns the current leader's epoch (the cluster-side rabia term) iff this node is the
     /// elected leader; otherwise [`Option#none`]. Source: the [`Supplier<Long>`] injected at
-    /// construction (`leaderManager(...)` overloads). Consumers (e.g. Aether's
-    /// `HealthReconciler`) wrap this raw term into their domain epoch type.
+    /// construction (`leaderManager(...)` overloads). Consumers (e.g. Aether's generation and
+    /// ownership epoch suppliers) wrap this raw term into their domain epoch type.
     ///
     /// SSOT note: leader-tenure identity (NodeId) and the rabia term advance together — the term
     /// increments on each leader transition (view change), so a live read here is semantically

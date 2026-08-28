@@ -18,8 +18,9 @@ package org.pragmatica.swim;
 /// Per-peer health observed by SWIM (Layer 1).
 ///
 /// Per the membership-architecture spec (§4.2): this is the public
-/// per-peer health classification surfaced upward to Layer 2
-/// (HealthReconciler). Distinct from the transport-internal state
+/// per-peer health classification surfaced upward to Layer 2 (today:
+/// Aether's `MembershipFsm`, via the SWIM observation listener). Distinct
+/// from the transport-internal state
 /// of [`SwimMember.MemberState`] — `SwimHealth` is an explicit signal type.
 ///
 /// Variants:

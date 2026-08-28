@@ -431,7 +431,15 @@ curl "http://localhost:8080/api/events?sinceEpoch=3&sinceSeq=42"
 - `DEPARTURE_PUSH_INCOMPLETE` -- a gracefully-departing node could not confirm, within the drain grace window, that every locally-held DHT chunk reached a surviving replica (per-node fact, NOT leader-gated; see below). Severity WARNING.
 - `SCALE_CAPPED` -- the leader autoscaler's requested instance count for an artifact was reduced by a cap before being applied (leader-side; emitted only on a real reduction). Severity WARNING.
 
-`GENERATION_CHANGED` events are emitted by the leader's `HealthReconciler` whenever the cluster generation epoch advances. `details` carries `oldEpoch`, `newEpoch`, and `reason` (a `GenerationReason` enum name). See [`cluster-generation-spec.md`](../specs/cluster-generation-spec.md) §14.4.
+`GENERATION_CHANGED` is a **documented-but-dormant** event type: nothing emits it on the current
+codebase. The event record (`OperationalEvent.GenerationChanged`, with `oldEpoch`, `newEpoch`, and
+`reason` — a `GenerationReason` enum name) and its aggregator route both exist, but every emission
+path belonged to the v1 spec's leader-resident reconciler, which was never built (see
+[`cluster-topology-overhaul-spec.md`](../specs/cluster-topology-overhaul-spec.md) W9); the
+`GenerationChangedSink` seam has no live implementation, so generation-epoch advances (which DO
+happen — the leader's per-tenure counter and term bumps) currently produce no operational event.
+Tracked in #722. See [`cluster-generation-spec.md`](../specs/cluster-generation-spec.md) §14.4 for
+the original design intent.
 
 `SELF_DRAIN_INITIATED` (severity `WARNING`) is emitted by the draining node itself when its `SelfDrainCoordinator` flips from `ACTIVE` to `DRAINING` (see `aether/docs/specs/membership-architecture-v2-spec.md`). Unlike most other events, this one is NOT leader-gated — a partition victim is the only authoritative source for "I'm self-draining" and may not be able to reach the leader at all. `details` carries `nodeId` (the draining node), `reason` (one of `sustained-below-quorum`, `quorum-disappeared`, `rabia-paused`), and `graceMs` (the configured in-flight grace before forced halt). Best-effort: if the publish does not reach a quorum before `Runtime.halt(2)` lands, the event is lost.
 

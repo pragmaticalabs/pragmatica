@@ -73,7 +73,7 @@ test_stream_info_after_publish() {
 test_subscriber_receives_events() {
     # Publish N events through partition 0 and verify them via streams read.
     # Drives the canonical CLI surface (streams read) rather than re-asserting
-    # /api/streams/<name> info — the audit (RC1-blocker #15) flagged the prior
+    # /api/v1/streams/<name> info — the audit (RC1-blocker #15) flagged the prior
     # version for never attaching a consumer.
     local publish_count=10
     local success=0
@@ -88,7 +88,7 @@ test_subscriber_receives_events() {
     # Allow replication / partition routing to settle.
     sleep 2
 
-    # Read events back via the streams read CLI (STREAM_READ → /api/streams/read/<name>/<partition>).
+    # Read events back via the streams read CLI (STREAM_READ → /api/v1/streams/read/<name>/<partition>).
     local result event_count
     result=$(aether_json streams read "$STREAM_NAME" 0) || {
         log_fail "streams read failed for ${STREAM_NAME} partition 0"

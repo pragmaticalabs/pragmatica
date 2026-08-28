@@ -248,8 +248,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     /// Leader-gate supplier. When `false`, REMOVE view-changes report a
     /// connectivity observation upstream via `PeerConnectivityReporter`
-    /// instead of invoking the local disconnect listener (which feeds the
-    /// local `HealthReconciler`).
+    /// instead of invoking the local disconnect listener (a v1 surface with
+    /// no live consumer since the membership-v2 migration).
     /// See `aether/docs/specs/clustersync-refactor-spec.md` commit 2.
     private volatile BooleanSupplier isLeaderSupplier;
     private volatile PeerConnectivityReporter connectivityReporter;
@@ -1505,8 +1505,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // R5 (spec §4.1): transport never mutates the topology projection. The Hello
         // handshake was reported upward via the attach-transition emission
         // (processViewChange(ADD) → peerStateListener → SWIM hint path) inside
-        // `state.attach(...)` above. HealthReconciler (sole writer of NodeLifecycleKey)
-        // projects the resulting MembershipView for Layer 3.
+        // `state.attach(...)` above. The membership layer (Aether's `MembershipFsm`,
+        // fed by those hints) projects the resulting membership view for Layer 3 —
+        // membership is presence-derived in v2, with no node-state KV write.
         // P1 fix: forward `unknownNodeInfo` so SWIM can learn the peer's full identity
         // (id + address) without falling back to a stale static-topology lookup. This
         // closes the QUIC eviction storm under topology-forgot-peer reconnects.
@@ -1996,7 +1997,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private void handleWriteFailure(NodeId peerId) {
         // Write failure is advisory — the QUIC channel-close handler owns authoritative
         // peer removal (processViewChange(REMOVE) emits the TransportObservation hint
-        // toward SWIM; topology mutation is HealthReconciler's responsibility, not ours).
+        // toward SWIM; topology mutation is the membership layer's responsibility, not ours).
         // Clearing peer state
         // here races with handshake completion from the reverse direction and prematurely
         // drops the peer from Rabia's membership view.
@@ -2788,9 +2789,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
                 yield TransportObservation.peerJoined(peerId, currentView(), ObservationSource.QUIC);
             }
             case REMOVE -> {
-                // Advisory QUIC-level disconnect signal. On the leader this feeds the local
-                // `HealthReconciler`; on a follower the observation is buffered into the next
-                // outbound `ClusterSyncPong` so the leader folds it through PeerObservationReducer
+                // Advisory QUIC-level disconnect signal, pushed into the local
+                // `PeerObservationBuffer` on every node; a follower's next outbound
+                // `ClusterSyncPong` relays it so the leader folds it through PeerObservationReducer
                 // (ClusterSync refactor commit 2 — followers are sensor-only).
                 reportPeerRemoval(peerId, deathPathInitiated);
                 // Synchronous `PeerDisconnected` is load-bearing for receivers that cannot
@@ -2876,15 +2877,13 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     private void reportPeerConnection(NodeId peerId) {
-        // Symmetric to reportPeerRemoval but reports CONNECTED transitions. The
-        // leader-side path has no direct listener equivalent to disconnectListener —
-        // HealthReconciler infers reachability from its own SWIM signals and from
-        // ReachabilityAggregator output (built from connectivity observations folded
-        // through the buffer). Both leader and follower route this signal through
-        // the connectivity reporter; AetherNode's adapter pushes it to the local
-        // PeerObservationBuffer, where it is drained at each cluster-sync tick:
-        // leader-side into the local ReachabilityAggregator, follower-side into
-        // the outbound ClusterSyncPong.
+        // Symmetric to reportPeerRemoval but reports CONNECTED transitions. Both leader
+        // and follower route this signal through the connectivity reporter; AetherNode's
+        // adapter pushes it into the local PeerObservationBuffer (drained at each
+        // cluster-sync tick into the outbound ClusterSyncPong on followers) and feeds the
+        // NTT membership tracker's connect hint. SWIM, fed by these QUIC hints, is the
+        // single liveness signal — the former leader-side reachability fold is removed
+        // (P3, membership unification).
         var epoch = observedEpochSupplier;
 
         connectivityReporter.onPeerConnected(peerId, epoch.term(), epoch.counter());

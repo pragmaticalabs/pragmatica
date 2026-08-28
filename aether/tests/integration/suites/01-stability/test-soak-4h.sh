@@ -33,7 +33,7 @@ collect_stats() {
         local node_name="node-$((port_offset + 1))"
         # Collect via management metrics endpoint (no SSH needed)
         local status_json
-        status_json=$(curl -s -H "X-API-Key: ${API_KEY}" "http://${TARGET_HOST}:${mgmt_port}/api/nodes/status" 2>/dev/null)
+        status_json=$(curl -s -H "X-API-Key: ${API_KEY}" "http://${TARGET_HOST}:${mgmt_port}/api/v1/nodes/status" 2>/dev/null)
         local uptime
         uptime=$(json_value "$status_json" "uptimeSeconds")
         uptime="${uptime:-0}"

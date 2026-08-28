@@ -199,7 +199,7 @@ class DurableEntityTimerDurabilityTest {
         if (cluster != null) {
             var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
 
-            httpDelete(leaderPort, "/api/blueprints/" + BLUEPRINT_ID);
+            httpDelete(leaderPort, "/api/v1/blueprints/" + BLUEPRINT_ID);
             cluster.stop()
                    .await();
         }
@@ -472,7 +472,7 @@ class DurableEntityTimerDurabilityTest {
     /// Node ids hosting an ACTIVE instance of the entity slice, from the cluster-wide slice view. The suite
     /// deploys exactly one slice, so every `nodeId` in the filtered response belongs to it.
     private Set<String> activeSliceHosts() {
-        var body = anyManagementAnswer("/api/slices?state=ACTIVE");
+        var body = anyManagementAnswer("/api/v1/slices?state=ACTIVE");
         var matcher = Pattern.compile("\"nodeId\"\\s*:\\s*\"([^\"]+)\"").matcher(body);
         var hosts = new HashSet<String>();
 
@@ -557,19 +557,19 @@ class DurableEntityTimerDurabilityTest {
 
     private String create(int port, String key, String status, int amount) {
         return httpPost(port,
-                        "/api/entity/create",
+                        "/api/v1/entity/create",
                         "{\"orderId\":\"" + key + "\",\"status\":\"" + status + "\",\"amount\":" + amount + "}");
     }
 
     private String get(int port, String key) {
-        return httpPost(port, "/api/entity/get", "{\"orderId\":\"" + key + "\"}");
+        return httpPost(port, "/api/v1/entity/get", "{\"orderId\":\"" + key + "\"}");
     }
 
     /// Schedules a timer with a CALLER-CONTROLLED delay. The fixture's five-minute default is unusable for a
     /// gate — nothing that must observe a fire can wait it out — so the delay travels in the request.
     private String scheduleTimer(int port, String key, long delayMillis) {
         return httpPost(port,
-                        "/api/entity/schedule-timer",
+                        "/api/v1/entity/schedule-timer",
                         "{\"orderId\":\"" + key + "\",\"delayMillis\":" + delayMillis + "}");
     }
 
@@ -616,7 +616,7 @@ class DurableEntityTimerDurabilityTest {
     /// handover gate calls this immediately after killing a node, and a fixed port would be a dead one half
     /// the time.
     private Map<Integer, String> entityArcOwners() {
-        var body = anyManagementAnswer("/api/ownership/stream");
+        var body = anyManagementAnswer("/api/v1/ownership/stream");
         var matcher = Pattern.compile("\"identity\"\\s*:\\s*\"entity:" + KEYSPACE + ":(\\d+)\"[^}]*\"owner\"\\s*:\\s*\"([^\"]+)\"")
                              .matcher(body);
         var owners = new HashMap<Integer, String>();
@@ -715,7 +715,7 @@ class DurableEntityTimerDurabilityTest {
     /// cluster-event stream is append-only and is NOT retracted by the rollback.
     private void failIfSliceFailed() {
         for (int port : mgmtPorts()) {
-            var reason = deploymentFailedReason(httpGet(port, "/api/events"));
+            var reason = deploymentFailedReason(httpGet(port, "/api/v1/events"));
 
             if (reason != null) {
                 throw new AssertionError("Deployment of " + ENTITY_SLICE + " FAILED — event surface reason: " + excerpt(reason));
@@ -755,7 +755,7 @@ class DurableEntityTimerDurabilityTest {
 
     private Option<String> healthBody(int port) {
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + "/api/health"))
+                                 .uri(URI.create("http://localhost:" + port + "/api/v1/health"))
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();
@@ -857,7 +857,7 @@ class DurableEntityTimerDurabilityTest {
         var lastResponse = ERROR_FALLBACK;
 
         for (int attempt = 1; attempt <= 3; attempt++) {
-            lastResponse = httpPostToml(port, "/api/blueprints", body);
+            lastResponse = httpPostToml(port, "/api/v1/blueprints", body);
 
             if (!lastResponse.contains("\"error\"")) {
                 return lastResponse;

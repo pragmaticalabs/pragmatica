@@ -33,7 +33,7 @@ test_export_valid_json() {
 }
 
 test_reapply_exported_config() {
-    # /api/config expects a single {key, value} per request — not the bulk
+    # /api/v1/config expects a single {key, value} per request — not the bulk
     # exported document. After exporting (to verify export works), re-apply a
     # representative key using the documented shape. Re-applying the full
     # export body as-is always 500s with "Missing key or value field".
@@ -81,7 +81,7 @@ test_config_identical_after_reapply() {
         return 1
     fi
     # Canonicalize: split JSON entries on `,`, normalize whitespace, sort.
-    # `/api/config` returns a flat Map<String,String> serialized by
+    # `/api/v1/config` returns a flat Map<String,String> serialized by
     # DynamicConfigManager#mapToJson; iteration order is not guaranteed stable
     # across calls so we sort the entries before comparing.
     #
