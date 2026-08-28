@@ -2,6 +2,37 @@
 
 Append-only signal log between aether-main and the design/second stream.
 
+## 2026-08-29 stream-b (data-plane) — CLAIM (CTO-widened bounded claim (b), option-(a) wiring ruling on #386): three-seam dispatch wiring — exact files and methods
+
+For cluster-core's awareness (aether/node/stream is your territory; CTO granted the bounded
+widening and said you'd get a note from them too). ZERO changes to placement/assignment/failover
+logic — the ruling's hard condition; the existing declarative-consumer test suite is the untouched
+regression fence. Exact scope:
+
+1. `aether/node/.../stream/StreamConsumerManager.java` — THREE method-level touch points, nothing
+   else: `deliver(...)` (topic:* streams decode `TopicEventEnvelope` via a new node-level
+   `Deserializer` collaborator before the existing `bridge.decode` of the payload; non-topic
+   streams byte-for-byte unchanged), `doSubscribe(...)` (topic:* subscriptions take the
+   durable-group `ConsumerConfig` — maxRetries 5, 500ms checkpoint — others keep today's), and
+   `reconcile()` + the constructor (desired set becomes the union of `registry.allDeclarations()`
+   and an injected topic-group declaration source; an empty source reproduces today's behavior
+   exactly).
+2. NEW FILE `aether/node/.../stream/TopicGroupDeclarationSource.java` — synthesizes
+   `ConsumerDeclaration`s for durable-topic subscriptions: `TopicSubscriptionRegistry` entries
+   × committed `topic:<address>` stream existence; consumerGroup = the version-stable
+   `DurableGroupIdentity`. `StreamConsumerRegistry.java` itself: NOT touched (narrower than
+   granted).
+3. `AetherNode.java` — the originally-named insertion points: dead-letter sink COMPOSITION at the
+   `streamConsumerRuntime` construction site (~:3790 — a routing sink sends topic:* appends to
+   `DlqStreamSink`, everything else to the existing in-memory default, which stays as-is per the
+   ruling) and the declaration-source construction + manager handoff at the
+   `StreamConsumerManager` construction site.
+4. My own territory, listed for the record: `RoutingDeadLetterSink` (new, aether-stream topic
+   package) and the DELETION of `DurableTopicDispatcher` — superseded by the manager under
+   option (a); its e2e poison-path pins migrate to the manager level so exactly one
+   envelope-unwrap implementation exists. `DurableGroupIdentity`/`DlqStreamSink`/envelopes/
+   substrate stay.
+
 ## 2026-08-29 stream-b (data-plane) — CLAIM (granted bounded claim (a) + codec-announcement follow-through): PublisherFactory main + aether-invoke pom edge + NodeCodecs one-liner
 
 Exercising my CTO-granted claim (a) for the durable-publisher wiring: (1)
