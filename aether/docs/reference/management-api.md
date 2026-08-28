@@ -3778,104 +3778,116 @@ Conclude the A/B test and promote the winning variant. Requires leader node.
 
 ## Endpoint Summary
 
+Every route below is served under the `/api/v1` prefix (landed 2026-08-28, #300), composed at one
+site by `ManagementRoute`'s `API_BASE` constant [mechanism:
+`aether/aether-management-api/.../route/ManagementRoute.java`; design:
+[`management-api-versioning-spec.md`](../specs/management-api-versioning-spec.md) §2.1]. Four
+surfaces are deliberately unversioned carve-outs and stay bare: the health probes
+(`/health/live`, `/health/ready` — spec §2.2), the artifact-repository routes (`/repository/**` —
+spec §2.2), the dashboard (`/dashboard`, a static asset, not a management-API route), and the
+WebSocket endpoints (`/ws/*`, likewise outside the `ManagementRoute` enum). The Stream Management
+and Stream Namespaces sections below are intentionally not covered by this note or this table — a
+separate, still in-flight consolidation effort (spec §3.2–§3.3) owns that surface; see
+[`versioning-and-compatibility.md`](versioning-and-compatibility.md) for status.
+
 | Method | Path | Section |
 |--------|------|---------|
 | GET | `/health/live` | Health Probes |
 | GET | `/health/live/{id}` | Health Probes |
 | GET | `/health/ready` | Health Probes |
 | GET | `/health/ready/{id}` | Health Probes |
-| GET | `/api/nodes/status` | Cluster Status |
-| GET | `/api/health` | Cluster Status |
-| GET | `/api/nodes` | Cluster Status |
-| GET | `/api/events` | Cluster Status |
-| GET | `/api/slices` | Slice Management (cluster-wide) |
-| GET | `/api/nodes/slices` | Slice Management (per-node) |
-| GET | `/api/slices/status` | Slice Management |
-| GET | `/api/slices/config/{id}` | Slice Management |
-| GET | `/api/nodes/routes` | Slice Management (per-node) |
-| GET | `/api/routes` | Slice Management (cluster-wide) |
-| POST | `/api/scale` | Slice Management |
-| POST | `/api/blueprints` | Blueprint Management |
-| GET | `/api/blueprints` | Blueprint Management |
-| GET | `/api/blueprints/{id}` | Blueprint Management |
-| GET | `/api/blueprints/{id}/status` | Blueprint Management |
-| DELETE | `/api/blueprints/{id}` | Blueprint Management |
-| POST | `/api/blueprints/deploy` | Blueprint Management |
-| POST | `/api/blueprints/publish` | Blueprint Management |
-| POST | `/api/blueprints/validate` | Blueprint Management |
-| GET | `/api/metrics` | Metrics |
-| GET | `/api/metrics/comprehensive` | Metrics |
-| GET | `/api/metrics/derived` | Metrics |
-| GET | `/api/metrics/prometheus` | Metrics |
-| GET | `/api/metrics/transport` | Metrics |
-| GET | `/api/metrics/history` | Metrics |
-| GET | `/api/metrics/timeouts` | Metrics |
-| POST | `/api/metrics/backfill` | Metrics (dev-mode only) |
-| GET | `/api/nodes/metrics` | Metrics |
-| GET | `/api/artifacts/metrics` | Metrics |
-| GET | `/api/invocations/metrics` | Metrics |
-| GET | `/api/invocations/metrics/slow` | Metrics |
-| GET | `/api/invocations/metrics/strategy` | Metrics |
-| POST | `/api/invocations/metrics/strategy` | Metrics |
-| GET | `/api/controller/config` | Controller |
-| POST | `/api/controller/config` | Controller |
-| GET | `/api/controller/status` | Controller |
-| GET | `/api/controller/decisions` | Controller |
-| POST | `/api/controller/evaluate` | Controller |
-| GET | `/api/ttm/status` | TTM |
-| GET | `/api/ttm/training-data` | TTM |
-| GET | `/api/alerts` | Alert Management |
-| GET | `/api/alerts/active` | Alert Management |
-| GET | `/api/alerts/history` | Alert Management |
-| POST | `/api/alerts/clear` | Alert Management |
-| GET | `/api/thresholds` | Threshold Configuration |
-| POST | `/api/thresholds` | Threshold Configuration |
-| DELETE | `/api/thresholds/{metric}` | Threshold Configuration |
-| GET | `/api/aspects` | Dynamic Aspects |
-| POST | `/api/aspects` | Dynamic Aspects |
-| DELETE | `/api/aspects/{artifact}/{method}` | Dynamic Aspects |
-| GET | `/api/traces` | Traces |
-| GET | `/api/traces/{id}` | Traces |
-| GET | `/api/traces/stats` | Traces |
-| GET | `/api/observability/depth` | Observability Depth |
-| POST | `/api/observability/depth` | Observability Depth |
-| DELETE | `/api/observability/depth/{artifact}/{method}` | Observability Depth |
-| GET | `/api/observability/config` | Observability Config |
-| GET | `/api/observability/config/{artifactBase}/{methodName}` | Observability Config |
-| POST | `/api/observability/config` | Observability Config |
-| DELETE | `/api/observability/config/{artifactBase}/{methodName}` | Observability Config |
-| GET | `/api/dht/replication-map` | DHT |
-| POST | `/api/dht/inject` | DHT (dev-mode only) |
-| GET | `/api/storage` | Storage (per-node) |
-| GET | `/api/storage/{name}` | Storage (per-node) |
-| GET | `/api/storage/retention` | Storage (per-node) |
-| POST | `/api/storage/snapshot/{name}` | Storage |
-| GET | `/api/cluster/storage` | Storage (cluster-wide) |
-| GET | `/api/cluster/storage/{name}` | Storage (cluster-wide) |
-| GET | `/api/entity/checkpoints` | Durable Entities (per-node) |
-| GET | `/api/entity/keyspaces` | Durable Entities |
-| GET | `/api/logging/levels` | Log Level Management |
-| POST | `/api/logging/levels` | Log Level Management |
-| DELETE | `/api/logging/levels/{logger}` | Log Level Management |
-| GET | `/api/config` | Dynamic Configuration |
-| GET | `/api/config/overrides` | Dynamic Configuration |
-| POST | `/api/config` | Dynamic Configuration |
-| DELETE | `/api/config/{key}` | Dynamic Configuration |
-| DELETE | `/api/config/node/{id}/{key}` | Dynamic Configuration |
-| GET | `/api/deploy` | Deployments |
-| GET | `/api/deploy/{id}` | Deployments |
-| GET | `/api/deploy/{id}/health` | Deployments |
-| POST | `/api/deploy` | Deployments |
-| POST | `/api/deploy/{id}/promote` | Deployments |
-| POST | `/api/deploy/{id}/rollback` | Deployments |
-| POST | `/api/deploy/{id}/complete` | Deployments |
-| GET | `/api/ab-tests` | A/B Testing |
-| GET | `/api/ab-tests/{id}` | A/B Testing |
-| GET | `/api/ab-tests/{id}/metrics` | A/B Testing |
-| POST | `/api/ab-tests/create` | A/B Testing |
-| POST | `/api/ab-tests/{id}/conclude` | A/B Testing |
-<!-- Rolling update endpoints replaced by unified /api/deploy above -->
-| GET | `/api/slices/topology` | Topology |
+| GET | `/api/v1/nodes/status` | Cluster Status |
+| GET | `/api/v1/health` | Cluster Status |
+| GET | `/api/v1/nodes` | Cluster Status |
+| GET | `/api/v1/events` | Cluster Status |
+| GET | `/api/v1/slices` | Slice Management (cluster-wide) |
+| GET | `/api/v1/nodes/slices` | Slice Management (per-node) |
+| GET | `/api/v1/slices/status` | Slice Management |
+| GET | `/api/v1/slices/config/{id}` | Slice Management |
+| GET | `/api/v1/nodes/routes` | Slice Management (per-node) |
+| GET | `/api/v1/routes` | Slice Management (cluster-wide) |
+| POST | `/api/v1/scale` | Slice Management |
+| POST | `/api/v1/blueprints` | Blueprint Management |
+| GET | `/api/v1/blueprints` | Blueprint Management |
+| GET | `/api/v1/blueprints/{id}` | Blueprint Management |
+| GET | `/api/v1/blueprints/{id}/status` | Blueprint Management |
+| DELETE | `/api/v1/blueprints/{id}` | Blueprint Management |
+| POST | `/api/v1/blueprints/deploy` | Blueprint Management |
+| POST | `/api/v1/blueprints/publish` | Blueprint Management |
+| POST | `/api/v1/blueprints/validate` | Blueprint Management |
+| GET | `/api/v1/metrics` | Metrics |
+| GET | `/api/v1/metrics/comprehensive` | Metrics |
+| GET | `/api/v1/metrics/derived` | Metrics |
+| GET | `/api/v1/metrics/prometheus` | Metrics |
+| GET | `/api/v1/metrics/transport` | Metrics |
+| GET | `/api/v1/metrics/history` | Metrics |
+| GET | `/api/v1/metrics/timeouts` | Metrics |
+| POST | `/api/v1/metrics/backfill` | Metrics (dev-mode only) |
+| GET | `/api/v1/nodes/metrics` | Metrics |
+| GET | `/api/v1/artifacts/metrics` | Metrics |
+| GET | `/api/v1/invocations/metrics` | Metrics |
+| GET | `/api/v1/invocations/metrics/slow` | Metrics |
+| GET | `/api/v1/invocations/metrics/strategy` | Metrics |
+| POST | `/api/v1/invocations/metrics/strategy` | Metrics |
+| GET | `/api/v1/controller/config` | Controller |
+| POST | `/api/v1/controller/config` | Controller |
+| GET | `/api/v1/controller/status` | Controller |
+| GET | `/api/v1/controller/decisions` | Controller |
+| POST | `/api/v1/controller/evaluate` | Controller |
+| GET | `/api/v1/ttm/status` | TTM |
+| GET | `/api/v1/ttm/training-data` | TTM |
+| GET | `/api/v1/alerts` | Alert Management |
+| GET | `/api/v1/alerts/active` | Alert Management |
+| GET | `/api/v1/alerts/history` | Alert Management |
+| POST | `/api/v1/alerts/clear` | Alert Management |
+| GET | `/api/v1/thresholds` | Threshold Configuration |
+| POST | `/api/v1/thresholds` | Threshold Configuration |
+| DELETE | `/api/v1/thresholds/{metric}` | Threshold Configuration |
+| GET | `/api/v1/aspects` | Dynamic Aspects |
+| POST | `/api/v1/aspects` | Dynamic Aspects |
+| DELETE | `/api/v1/aspects/{artifact}/{method}` | Dynamic Aspects |
+| GET | `/api/v1/traces` | Traces |
+| GET | `/api/v1/traces/{id}` | Traces |
+| GET | `/api/v1/traces/stats` | Traces |
+| GET | `/api/v1/observability/depth` | Observability Depth |
+| POST | `/api/v1/observability/depth` | Observability Depth |
+| DELETE | `/api/v1/observability/depth/{artifact}/{method}` | Observability Depth |
+| GET | `/api/v1/observability/config` | Observability Config |
+| GET | `/api/v1/observability/config/{artifactBase}/{methodName}` | Observability Config |
+| POST | `/api/v1/observability/config` | Observability Config |
+| DELETE | `/api/v1/observability/config/{artifactBase}/{methodName}` | Observability Config |
+| GET | `/api/v1/dht/replication-map` | DHT |
+| POST | `/api/v1/dht/inject` | DHT (dev-mode only) |
+| GET | `/api/v1/storage` | Storage (per-node) |
+| GET | `/api/v1/storage/{name}` | Storage (per-node) |
+| GET | `/api/v1/storage/retention` | Storage (per-node) |
+| POST | `/api/v1/storage/snapshot/{name}` | Storage |
+| GET | `/api/v1/cluster/storage` | Storage (cluster-wide) |
+| GET | `/api/v1/cluster/storage/{name}` | Storage (cluster-wide) |
+| GET | `/api/v1/entity/checkpoints` | Durable Entities (per-node) |
+| GET | `/api/v1/entity/keyspaces` | Durable Entities |
+| GET | `/api/v1/logging/levels` | Log Level Management |
+| POST | `/api/v1/logging/levels` | Log Level Management |
+| DELETE | `/api/v1/logging/levels/{logger}` | Log Level Management |
+| GET | `/api/v1/config` | Dynamic Configuration |
+| GET | `/api/v1/config/overrides` | Dynamic Configuration |
+| POST | `/api/v1/config` | Dynamic Configuration |
+| DELETE | `/api/v1/config/{key}` | Dynamic Configuration |
+| DELETE | `/api/v1/config/node/{id}/{key}` | Dynamic Configuration |
+| GET | `/api/v1/deploy` | Deployments |
+| GET | `/api/v1/deploy/{id}` | Deployments |
+| GET | `/api/v1/deploy/{id}/health` | Deployments |
+| POST | `/api/v1/deploy` | Deployments |
+| POST | `/api/v1/deploy/{id}/promote` | Deployments |
+| POST | `/api/v1/deploy/{id}/rollback` | Deployments |
+| POST | `/api/v1/deploy/{id}/complete` | Deployments |
+| GET | `/api/v1/ab-tests` | A/B Testing |
+| GET | `/api/v1/ab-tests/{id}` | A/B Testing |
+| GET | `/api/v1/ab-tests/{id}/metrics` | A/B Testing |
+| POST | `/api/v1/ab-tests/create` | A/B Testing |
+| POST | `/api/v1/ab-tests/{id}/conclude` | A/B Testing |
+<!-- Rolling update endpoints replaced by unified /api/v1/deploy above -->
+| GET | `/api/v1/slices/topology` | Topology |
 | GET | `/repository/info/{group}/{artifact}/{version}` | Artifact Repository |
 | GET | `/repository/{group}/{artifact}/{version}/{file}` | Artifact Repository |
 | PUT | `/repository/{group}/{artifact}/{version}/{file}` | Artifact Repository |
@@ -3885,24 +3897,24 @@ Conclude the A/B test and promote the winning variant. Requires leader node.
 | WS | `/ws/status` | WebSocket |
 | WS | `/ws/events` | WebSocket |
 
-| GET | `/api/nodes/lifecycle` | Node Lifecycle |
-| GET | `/api/nodes/lifecycle/{id}` | Node Lifecycle |
-| POST | `/api/nodes/drain/{id}` | Node Lifecycle |
-| POST | `/api/nodes/shutdown/{id}` | Node Lifecycle |
-| GET | `/api/scheduled-tasks` | Scheduled Tasks |
-| GET | `/api/scheduled-tasks/{configSection}` | Scheduled Tasks |
-| POST | `/api/scheduled-tasks/{configSection}/{artifact}/{method}/pause` | Scheduled Tasks |
-| POST | `/api/scheduled-tasks/{configSection}/{artifact}/{method}/resume` | Scheduled Tasks |
-| POST | `/api/scheduled-tasks/{configSection}/{artifact}/{method}/trigger` | Scheduled Tasks |
-| GET | `/api/scheduled-tasks/{configSection}/{artifact}/{method}/state` | Scheduled Tasks |
-| POST | `/api/scheduled-tasks/inject` | Scheduled Tasks (dev-mode only) |
-| GET | `/api/scheduled-tasks/executions-by-node/{configSection}/{artifact}/{method}` | Scheduled Tasks |
-| POST | `/api/certificates/configure-short-validity` | Certificates (dev-mode only) |
-| GET | `/api/workers` | Worker Pools |
-| GET | `/api/workers/health` | Worker Pools (501 — not implemented) |
-| GET | `/api/workers/endpoints` | Worker Pools (501 — not implemented) |
-| POST | `/api/cluster/migrate` | Cluster Migration (501 — not implemented) |
-| POST | `/api/cluster/migrate/plan` | Cluster Migration (501 — not implemented) |
+| GET | `/api/v1/nodes/lifecycle` | Node Lifecycle |
+| GET | `/api/v1/nodes/lifecycle/{id}` | Node Lifecycle |
+| POST | `/api/v1/nodes/drain/{id}` | Node Lifecycle |
+| POST | `/api/v1/nodes/shutdown/{id}` | Node Lifecycle |
+| GET | `/api/v1/scheduled-tasks` | Scheduled Tasks |
+| GET | `/api/v1/scheduled-tasks/{configSection}` | Scheduled Tasks |
+| POST | `/api/v1/scheduled-tasks/{configSection}/{artifact}/{method}/pause` | Scheduled Tasks |
+| POST | `/api/v1/scheduled-tasks/{configSection}/{artifact}/{method}/resume` | Scheduled Tasks |
+| POST | `/api/v1/scheduled-tasks/{configSection}/{artifact}/{method}/trigger` | Scheduled Tasks |
+| GET | `/api/v1/scheduled-tasks/{configSection}/{artifact}/{method}/state` | Scheduled Tasks |
+| POST | `/api/v1/scheduled-tasks/inject` | Scheduled Tasks (dev-mode only) |
+| GET | `/api/v1/scheduled-tasks/executions-by-node/{configSection}/{artifact}/{method}` | Scheduled Tasks |
+| POST | `/api/v1/certificates/configure-short-validity` | Certificates (dev-mode only) |
+| GET | `/api/v1/workers` | Worker Pools |
+| GET | `/api/v1/workers/health` | Worker Pools (501 — not implemented) |
+| GET | `/api/v1/workers/endpoints` | Worker Pools (501 — not implemented) |
+| POST | `/api/v1/cluster/migrate` | Cluster Migration (501 — not implemented) |
+| POST | `/api/v1/cluster/migrate/plan` | Cluster Migration (501 — not implemented) |
 
 ---
 
