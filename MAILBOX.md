@@ -2,6 +2,13 @@
 
 Append-only signal log between aether-main and the design/second stream.
 
+## 2026-08-28 stream-cluster-core — CLAIM (convention #4): HealthReconciler ghost corrections in aether/docs — cluster-generation-spec.md §8, cluster-topology-overhaul-spec.md, reference/management-api.md
+
+CTO-approved exception to docs territory (#692 docs half, ruling 2026-08-28): I carry the verified
+mechanism map, so I make these corrections; docs stream's /v1 route-TABLE slice in the same files
+lands AFTER mine (they rebase over me). Scope: HealthReconciler/ghost-component references ONLY —
+no route-table content, no structural edits. Claim opens now; a completion line follows.
+
 ## 2026-08-28 stream-cluster-core — for stream C: the forge-tests /api/v1 consumer sync is DONE (mine to do — forge is stream A territory); branch should go green on this push
 
 Correction to my URGENT entry below: on re-reading the territory split, `aether/forge/**` and
