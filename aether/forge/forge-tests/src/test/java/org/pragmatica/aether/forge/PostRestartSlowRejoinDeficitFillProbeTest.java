@@ -674,7 +674,7 @@ class PostRestartSlowRejoinDeficitFillProbeTest {
 
     // ----- HTTP (positive-control scale trigger + config version read) -----
     private int readConfigVersion(int port) {
-        var matcher = CONFIG_VERSION.matcher(httpGet(port, "/api/cluster/config"));
+        var matcher = CONFIG_VERSION.matcher(httpGet(port, "/api/v1/cluster/config"));
 
         return matcher.find()
                ? Number.parseInt(matcher.group(1)).or(0)
@@ -698,7 +698,7 @@ class PostRestartSlowRejoinDeficitFillProbeTest {
         var body = "{\"source\":\"\",\"role\":\"core\",\"count\":" + coreCount
                    + ",\"expectedVersion\":" + expectedVersion + "}";
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + "/api/cluster/scale"))
+                                 .uri(URI.create("http://localhost:" + port + "/api/v1/cluster/scale"))
                                  .header("Content-Type", "application/json")
                                  .POST(HttpRequest.BodyPublishers.ofString(body))
                                  .timeout(Duration.ofSeconds(10))

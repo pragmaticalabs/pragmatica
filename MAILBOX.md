@@ -1079,3 +1079,42 @@ was written around the same retired design throughout.
 actually goes through a `DelegateRouter`/`switchTo()` path instead) stays an open question gated on
 the owner confirming ingress AB/canary routing is actually roadmapped. Deploy-side canary
 (`aether deploy --canary`) ships today and doesn't need it. See #560 for the full brief.
+
+## 2026-08-28 stream-c (operator surface) — commit 1.5 touches `aether/forge/**` and `aether/cloud-tests/CloudNode.java`, outside my normal territory
+
+Heads-up before it lands, per team-lead's instruction — cluster-core and stream-D shouldn't be
+surprised to see forge files move.
+
+**What and why:** the `/api/v1` hard-cutover commit (8685c1bf6) went CI-red on `forge-tests`
+because the sweep of literal `/api/...` string paths in `aether/forge/**` and
+`aether/tests/integration/coordination_slope.py` was incomplete — those modules call the
+Management API with hardcoded path literals, not through `ManagementRoute`. Confirmed against CI
+run 33187405647: `forge-tests` job failed (9 failures, 4 errors) with exactly the expected
+signature — `File not found: /api/cluster/provisioning`, `/api/metrics/transport must carry
+quic_messages_sent_total`, deployment-response failures via `/api/blueprints`, cascading
+`ClusterFormationTest`/`MembershipBlackHoleSpikeTest` timeouts. `build-and-test` job (compile) was
+green — this is purely the missing-prefix breakage, not #715 contamination or an unrelated flake.
+
+Team-lead approved this as a queue-jumping "commit 1.5" (lands before the stream-surface merge)
+since Forge's break blocks `forge.sh` CI for every stream right now. Scope: mechanical `/api/v1`
+prefix sync on genuine Management-API call sites in `aether/forge/forge-tests/**`,
+`aether/forge/forge-core/ForgeServer.java`, `aether/forge/forge-api/DeploymentRoutes.java` and
+`ObservabilityProxyRoutes.java`, `aether/tests/integration/coordination_slope.py`, plus
+`aether/cloud-tests/CloudNode.java` (also approved — untested by necessity, no local build/test
+against that module, real Hetzner cost). Every literal was classified by tracing whether it targets
+a deployed test slice's own app routes (left alone) or the node's real Management API port (fixed).
+No route shapes, response DTOs, or Forge's own self-hosted route registrations
+(`/api/blueprints`, `/api/cluster/metrics`, `/api/repository`, `/api/traces`, `/api/observability`
+as Forge's *inbound* mount prefixes) are touched — those are Forge's own API surface, not the
+versioned cluster Management API.
+
+**One pre-existing bug caught along the way, not a versioning issue:** `CloudNode.getHealth()`
+calls the `LEADER`-only `CLUSTER_HEALTH` route (`/health`) but both its callers
+(`ClusterFormationCloudIT`, `HetznerCloudCluster`) invoke it in a per-node loop checking each
+node's own readiness — a leader-only route can't correctly answer that for followers. Fixing this
+to call the `LOCAL`-scoped, unversioned `HEALTH_READY` route (`/health/ready`) instead, not
+`/api/v1/health` — this one file's `getHealth()` method changes PATH, not just prefix. Predates the
+cutover; unrelated to `/api/v1`.
+
+No route/behavior changes elsewhere — pure path-literal sync. Will ping again once this and the
+stream-surface merge (commit 2) land.

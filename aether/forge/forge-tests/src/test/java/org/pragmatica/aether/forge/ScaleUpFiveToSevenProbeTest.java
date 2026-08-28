@@ -227,9 +227,9 @@ class ScaleUpFiveToSevenProbeTest {
         log.info("SCALE-PROBE DUMP: leader counted-core set = {}", idStrings(countedSet));
         log.info("SCALE-PROBE DUMP: leader connected-peer set = {}", idStrings(connectedPeers));
         log.info("SCALE-PROBE DUMP: provisioning circuit-breaker = {}", breakerSummary());
-        log.info("SCALE-PROBE DUMP: /api/cluster/config = {}", httpGet(leaderPort, "/api/cluster/config"));
-        log.info("SCALE-PROBE DUMP: /api/cluster/generation = {}", httpGet(leaderPort, "/api/cluster/generation"));
-        log.info("SCALE-PROBE DUMP: /api/nodes/status = {}", httpGet(leaderPort, "/api/nodes/status"));
+        log.info("SCALE-PROBE DUMP: /api/cluster/config = {}", httpGet(leaderPort, "/api/v1/cluster/config"));
+        log.info("SCALE-PROBE DUMP: /api/cluster/generation = {}", httpGet(leaderPort, "/api/v1/cluster/generation"));
+        log.info("SCALE-PROBE DUMP: /api/nodes/status = {}", httpGet(leaderPort, "/api/v1/nodes/status"));
 
         cluster.allNodes().forEach(node -> dumpNode(node, countedSet, connectedPeers));
     }
@@ -264,7 +264,7 @@ class ScaleUpFiveToSevenProbeTest {
     // ----- HTTP helpers (scale trigger + read-only diagnostics) -----
 
     private int readConfigVersion(int port) {
-        var matcher = CONFIG_VERSION.matcher(httpGet(port, "/api/cluster/config"));
+        var matcher = CONFIG_VERSION.matcher(httpGet(port, "/api/v1/cluster/config"));
         return matcher.find()
                ? Integer.parseInt(matcher.group(1))
                : 0;
@@ -274,7 +274,7 @@ class ScaleUpFiveToSevenProbeTest {
     private String postScale(int port, int coreCount, int expectedVersion) {
         var body = "{\"coreCount\":" + coreCount + ",\"expectedVersion\":" + expectedVersion + "}";
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + "/api/cluster/scale"))
+                                 .uri(URI.create("http://localhost:" + port + "/api/v1/cluster/scale"))
                                  .header("Content-Type", "application/json")
                                  .POST(HttpRequest.BodyPublishers.ofString(body))
                                  .timeout(Duration.ofSeconds(10))

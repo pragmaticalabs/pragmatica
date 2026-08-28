@@ -176,11 +176,11 @@ class MembershipBlackHoleSpikeTest {
 
     private boolean allNodesHealthy() {
         return cluster.status().nodes().stream()
-                      .allMatch(node -> httpGet(node.mgmtPort(), "/api/health").contains("\"quorum\":true"));
+                      .allMatch(node -> httpGet(node.mgmtPort(), "/api/v1/health").contains("\"quorum\":true"));
     }
 
     private Option<Integer> connectedPeers(int port) {
-        var matcher = CONNECTED_PEERS.matcher(httpGet(port, "/api/health"));
+        var matcher = CONNECTED_PEERS.matcher(httpGet(port, "/api/v1/health"));
         return matcher.find()
                ? Option.some(Integer.parseInt(matcher.group(1)))
                : Option.none();
@@ -208,11 +208,11 @@ class MembershipBlackHoleSpikeTest {
     }
 
     private String status(int port) {
-        return httpGet(port, "/api/nodes/status");
+        return httpGet(port, "/api/v1/nodes/status");
     }
 
     private String events(int port) {
-        return httpGet(port, "/api/events");
+        return httpGet(port, "/api/v1/events");
     }
 
     @TerminalOperation

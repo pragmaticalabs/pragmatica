@@ -97,7 +97,7 @@ class SliceVersionLifecycleTest {
 
     @Test
     void versionsEndpoint_reportsDeployedSliceRegistry() {
-        get(anyMgmtPort(), "/api/versions").onSuccess(result -> {
+        get(anyMgmtPort(), "/api/v1/versions").onSuccess(result -> {
             var body = result.body();
 
             assertThat(body).doesNotContain("\"error\"");
@@ -195,7 +195,7 @@ class SliceVersionLifecycleTest {
 
     private String httpRequestBlueprint(int port, String body) {
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + "/api/blueprints"))
+                                 .uri(URI.create("http://localhost:" + port + "/api/v1/blueprints"))
                                  .header("Content-Type", "application/toml")
                                  .POST(HttpRequest.BodyPublishers.ofString(body))
                                  .timeout(Duration.ofSeconds(10))

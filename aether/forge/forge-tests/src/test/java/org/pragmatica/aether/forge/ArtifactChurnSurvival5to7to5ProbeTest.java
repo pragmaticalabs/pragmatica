@@ -222,7 +222,7 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
     private String postScale(int port, int coreCount, int expectedVersion) {
         var body = "{\"coreCount\":" + coreCount + ",\"expectedVersion\":" + expectedVersion + "}";
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + "/api/cluster/scale"))
+                                 .uri(URI.create("http://localhost:" + port + "/api/v1/cluster/scale"))
                                  .header("Content-Type", "application/json")
                                  .POST(HttpRequest.BodyPublishers.ofString(body))
                                  .timeout(Duration.ofSeconds(10))
@@ -238,7 +238,7 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
     }
 
     private int readConfigVersion(int port) {
-        var matcher = CONFIG_VERSION.matcher(httpGet(port, "/api/cluster/config"));
+        var matcher = CONFIG_VERSION.matcher(httpGet(port, "/api/v1/cluster/config"));
         return matcher.find()
                ? Integer.parseInt(matcher.group(1))
                : 0;
@@ -281,7 +281,7 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
 
     private static HttpRequest postBlueprint(int port, String body) {
         return HttpRequest.newBuilder()
-                          .uri(URI.create("http://localhost:" + port + "/api/blueprints"))
+                          .uri(URI.create("http://localhost:" + port + "/api/v1/blueprints"))
                           .header("Content-Type", "application/toml")
                           .POST(HttpRequest.BodyPublishers.ofString(body))
                           .timeout(Duration.ofSeconds(10))
@@ -291,7 +291,7 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
     @TerminalOperation
     private String getSlices(int port) {
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + "/api/slices"))
+                                 .uri(URI.create("http://localhost:" + port + "/api/v1/slices"))
                                  .GET()
                                  .timeout(Duration.ofSeconds(10))
                                  .build();
@@ -308,7 +308,7 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
     @TerminalOperation
     private boolean checkNodeHealth(int port) {
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + "/api/health"))
+                                 .uri(URI.create("http://localhost:" + port + "/api/v1/health"))
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();

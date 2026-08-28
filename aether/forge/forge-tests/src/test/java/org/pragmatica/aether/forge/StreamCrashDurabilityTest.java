@@ -145,7 +145,7 @@ class StreamCrashDurabilityTest {
     void tearDown() {
         if (cluster != null) {
             var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
-            httpDelete(leaderPort, "/api/blueprints/" + BLUEPRINT_ID);
+            httpDelete(leaderPort, "/api/v1/blueprints/" + BLUEPRINT_ID);
             cluster.stop()
                    .await();
         }
@@ -470,7 +470,7 @@ class StreamCrashDurabilityTest {
 
     private boolean checkNodeHealth(int port) {
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + "/api/health"))
+                                 .uri(URI.create("http://localhost:" + port + "/api/v1/health"))
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();
@@ -486,7 +486,7 @@ class StreamCrashDurabilityTest {
     private boolean allNodesAreMembers(int expected) {
         var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + leaderPort + "/api/health"))
+                                 .uri(URI.create("http://localhost:" + leaderPort + "/api/v1/health"))
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();
@@ -512,7 +512,7 @@ class StreamCrashDurabilityTest {
         var lastResponse = ERROR_FALLBACK;
 
         for (int attempt = 1; attempt <= 3; attempt++) {
-            lastResponse = httpPostToml(port, "/api/blueprints", body);
+            lastResponse = httpPostToml(port, "/api/v1/blueprints", body);
 
             if (!lastResponse.contains("\"error\"")) {
                 return lastResponse;

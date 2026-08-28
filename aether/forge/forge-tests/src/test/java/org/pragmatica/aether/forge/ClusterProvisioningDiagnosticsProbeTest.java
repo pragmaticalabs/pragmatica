@@ -91,7 +91,7 @@ class ClusterProvisioningDiagnosticsProbeTest {
                                 .onFailure(ClusterProvisioningDiagnosticsProbeTest::failScenario)
                                 .or(-1);
 
-        var json = httpGet(leaderPort, "/api/cluster/provisioning");
+        var json = httpGet(leaderPort, "/api/v1/cluster/provisioning");
         log.info("PROVISIONING-PROBE: GET /api/cluster/provisioning -> {}", json);
 
         assertThat(matchGroup(LEADER, json))

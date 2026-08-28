@@ -109,7 +109,7 @@ class CoordinationSlopeInstrumentTest {
     @Test
     void everyCoreServesTheTransportCountersTheSamplerDifferences() {
         for (var node : cluster.status().nodes()) {
-            var body = get(node.mgmtPort(), "/api/metrics/transport");
+            var body = get(node.mgmtPort(), "/api/v1/metrics/transport");
 
             assertThat(body)
                 .as("node %s must answer /api/metrics/transport", node.id())
@@ -129,7 +129,7 @@ class CoordinationSlopeInstrumentTest {
     @Test
     void everyCoreServesTheLoadFieldsTheSamplerReads() {
         for (var node : cluster.status().nodes()) {
-            var body = get(node.mgmtPort(), "/api/metrics");
+            var body = get(node.mgmtPort(), "/api/v1/metrics");
 
             assertThat(body)
                 .as("node %s: /api/metrics must carry a load map", node.id())
@@ -210,7 +210,7 @@ class CoordinationSlopeInstrumentTest {
     }
 
     private long messagesTotal(int mgmtPort) {
-        var body = get(mgmtPort, "/api/metrics/transport");
+        var body = get(mgmtPort, "/api/v1/metrics/transport");
 
         return REQUIRED_TRANSPORT_KEYS.stream()
                                       .mapToLong(key -> extractLong(body, key))

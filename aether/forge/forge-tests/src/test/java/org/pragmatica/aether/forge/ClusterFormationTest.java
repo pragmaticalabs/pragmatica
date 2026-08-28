@@ -135,7 +135,7 @@ class ClusterFormationTest {
 
     private boolean checkNodeHealth(int port) {
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + "/api/health"))
+                                 .uri(URI.create("http://localhost:" + port + "/api/v1/health"))
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();
@@ -146,15 +146,15 @@ class ClusterFormationTest {
     }
 
     private String getHealth(int port) {
-        return httpGet(port, "/api/health");
+        return httpGet(port, "/api/v1/health");
     }
 
     private String getStatus(int port) {
-        return httpGet(port, "/api/nodes/status");
+        return httpGet(port, "/api/v1/nodes/status");
     }
 
     private String getMetrics(int port) {
-        return httpGet(port, "/api/metrics");
+        return httpGet(port, "/api/v1/metrics");
     }
 
     private String httpGet(int port, String path) {

@@ -122,11 +122,11 @@ class PerSliceDecisionSnapshotProbeTest {
     }
 
     private String getDecisions() {
-        return httpGet(leaderPort(), "/api/controller/decisions");
+        return httpGet(leaderPort(), "/api/v1/controller/decisions");
     }
 
     private String getSlices() {
-        return httpGet(leaderPort(), "/api/slices/status");
+        return httpGet(leaderPort(), "/api/v1/slices/status");
     }
 
     private int leaderPort() {
@@ -135,7 +135,7 @@ class PerSliceDecisionSnapshotProbeTest {
 
     private String postBlueprint(int port, String body) {
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + "/api/blueprints"))
+                                 .uri(URI.create("http://localhost:" + port + "/api/v1/blueprints"))
                                  .header("Content-Type", "application/toml")
                                  .POST(HttpRequest.BodyPublishers.ofString(body))
                                  .timeout(Duration.ofSeconds(10))
@@ -160,7 +160,7 @@ class PerSliceDecisionSnapshotProbeTest {
 
     private boolean checkNodeHealth(int port) {
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + "/api/health"))
+                                 .uri(URI.create("http://localhost:" + port + "/api/v1/health"))
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();
