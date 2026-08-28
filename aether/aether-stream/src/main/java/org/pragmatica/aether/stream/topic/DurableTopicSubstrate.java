@@ -5,16 +5,20 @@
 package org.pragmatica.aether.stream.topic;
 
 import org.pragmatica.aether.resource.DurableTopicSpec;
+import org.pragmatica.aether.slice.ProvisioningContext;
+import org.pragmatica.aether.slice.Publisher;
 import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.StreamConfig;
-import org.pragmatica.aether.stream.StreamError;
+import org.pragmatica.aether.slice.StreamPublisher;
+import org.pragmatica.aether.stream.StreamCreateOutcome;
 import org.pragmatica.aether.stream.StreamPartitionManager;
-import org.pragmatica.lang.Cause;
+import org.pragmatica.aether.stream.StreamPublisherFactory;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.parse.TimeSpan;
+import org.pragmatica.serialization.Serializer;
 
 import static org.pragmatica.lang.Option.none;
 
@@ -59,21 +63,48 @@ public interface DurableTopicSubstrate {
         return (topicAddress, spec) -> activate(partitionManager, topicAddress, spec);
     }
 
+    /// Provision the durable tier's publisher (durable-pubsub-spec §5) for a declared-durable
+    /// topic: activates the topic + DLQ streams (idempotent, same step) and assembles the
+    /// envelope-wrapping publisher over the SAME fully-wired stream-publish path app streams use
+    /// ([StreamPublisherFactory#assemblePublisher] — partition routing, owner forwarding, and the
+    /// `min-sync − 1` peer-ack barrier that IS the §5 durability resolution point).
+    ///
+    /// The returned publisher is keyless in v1 (round-robin partitions): the erased
+    /// `Publisher<T>.publish(T)` surface has no key channel; the publisher-supplied message key of
+    /// spec §3 arrives with D5's codegen-selected publisher shapes, riding the same
+    /// `ProvisioningContext.keyExtractor()` seam app streams already use.
+    static Result<Publisher<Object>> durablePublisher(String topicAddress,
+                                                      DurableTopicSpec spec,
+                                                      ProvisioningContext context) {
+        return context.extension(StreamPartitionManager.class)
+                      .flatMap(manager -> context.extension(Serializer.class)
+                                                 .flatMap(serializer -> buildDurablePublisher(manager,
+                                                                                              serializer,
+                                                                                              topicAddress,
+                                                                                              spec,
+                                                                                              context)));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Result<Publisher<Object>> buildDurablePublisher(StreamPartitionManager manager,
+                                                                   Serializer serializer,
+                                                                   String topicAddress,
+                                                                   DurableTopicSpec spec,
+                                                                   ProvisioningContext context) {
+        return activate(manager, topicAddress, spec).map(_ -> StreamPublisherFactory.assemblePublisher(manager,
+                                                                                                       serializer,
+                                                                                                       topicStreamConfig(topicAddress,
+                                                                                                                         spec),
+                                                                                                       context))
+                       .map(inner -> new DurableTopicPublisher<>(serializer,
+                                                                 (StreamPublisher<TopicEventEnvelope>) inner));
+    }
+
     TimeSpan DLQ_RETENTION_DEFAULT = TimeSpan.timeSpan("14d").unwrap();
 
     private static Result<Unit> activate(StreamPartitionManager manager, String topicAddress, DurableTopicSpec spec) {
-        return tolerateExisting(manager.createStream(topicStreamConfig(topicAddress, spec))).flatMap(_ -> tolerateExisting(manager.createStream(dlqStreamConfig(topicAddress,
-                                                                                                                                                                spec))));
-    }
-
-    private static Result<Unit> tolerateExisting(Result<Unit> created) {
-        return created.fold(DurableTopicSubstrate::recoverExisting, Result::success);
-    }
-
-    private static Result<Unit> recoverExisting(Cause cause) {
-        return cause == StreamError.General.STREAM_ALREADY_EXISTS
-               ? Result.unitResult()
-               : cause.result();
+        return StreamCreateOutcome.tolerateAlreadyExists(manager.createStream(topicStreamConfig(topicAddress, spec))).flatMap(_ -> StreamCreateOutcome.tolerateAlreadyExists(manager.createStream(dlqStreamConfig(topicAddress,
+                                                                                                                                                                                                                  spec))));
     }
 
     static StreamConfig topicStreamConfig(String topicAddress, DurableTopicSpec spec) {

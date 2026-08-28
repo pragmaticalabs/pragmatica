@@ -60,11 +60,17 @@ public final class StreamPublisherFactory implements ResourceFactory<StreamPubli
         return ensureStreamExists(manager, config).map(_ -> assemblePublisher(manager, serializer, config, context));
     }
 
+    /// Shared publisher assembly — the ONE place the stream-publish collaborator set (partition
+    /// routing, forward client, HRW owner resolver, self-guard, min-sync barrier) is folded from a
+    /// [ProvisioningContext] into a [DefaultStreamPublisher]. Public because the durable-topic
+    /// publisher ([org.pragmatica.aether.stream.topic.DurableTopicSubstrate]) rides the identical
+    /// path over its `topic:<address>` stream; a second hand-rolled assembly would drift from this
+    /// one collaborator by collaborator.
     @SuppressWarnings("unchecked")
-    private static StreamPublisher assemblePublisher(StreamPartitionManager manager,
-                                                     Serializer serializer,
-                                                     StreamConfig config,
-                                                     ProvisioningContext context) {
+    public static StreamPublisher assemblePublisher(StreamPartitionManager manager,
+                                                    Serializer serializer,
+                                                    StreamConfig config,
+                                                    ProvisioningContext context) {
         var keyExtractor = extractPartitionKeyFunction(context);
         var forwardClient = context.extension(StreamForwardClient.class).option();
         var governor = context.extension(GovernorResolver.class).option();
