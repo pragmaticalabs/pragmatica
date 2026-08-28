@@ -226,7 +226,9 @@ graph TB
 | Mode | Latency | Consistency | Use When |
 |------|---------|-------------|----------|
 | Local | Immediate | Eventual (brief disagreement possible) | Low latency critical |
-| Consensus | After commit | Strong (all nodes agree) | Strict consistency required |
+| Consensus | After commit | Same order, not same instant — see below | Cross-node agreement on a single leader required |
+
+**"Consensus" mode's precise guarantee:** the `LeaderKey` write goes through the same Rabia log as any KV write — quorum-commit + deterministic apply on every replica, `viewSequence`-fenced against stale proposals — so no two nodes ever commit conflicting leaders (the same *linearizable write order* guarantee as `kv.write`, [`../reference/guarantees.md`](../reference/guarantees.md) §1). That is a **same-order** guarantee, not a **same-instant** one: each node fires its local `onLeaderCommitted()` as its own consensus round completes, not simultaneously across the cluster, so a node can act on a stale leader value for a real (bounded) window while its own apply is still in flight — the same local-read caveat that applies to any `kv.read`.
 
 ### Race Condition Prevention
 

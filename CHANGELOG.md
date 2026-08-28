@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Changed (2026-08-28 — #496 scoped audit, consensus/cluster-core surface)
+- GA claims-vs-reality audit (#496), scoped to consensus/cluster-core guarantee language per
+  team-lead's green-light (management-API-route content, the #676 backup row, and stream/data-plane
+  claims explicitly deferred to a later pass — logged in `guarantees-corrections-needed.md`).
+- `aether/docs/reference/feature-catalog.md`: KV-Store row now states the write/read consistency
+  split (linearizable write order, non-linearizable local reads) instead of the unqualified
+  "Consensus-replicated store" phrasing (worklist D1); Quorum-state-management row now names the
+  pause/reject-writes + minority-self-fence mechanism instead of the "graceful degradation ...
+  automatic restoration" euphemism (worklist D4).
+- `aether/docs/operators/monitoring.md`: the threshold-replication "No single point of failure"
+  claim is now scoped to the write path, with the local-read-may-lag caveat added (worklist D14 —
+  applied with a context-specific rewrite, not the boilerplate one in the worklist, which didn't fit
+  this section since threshold writes aren't leader-pinned).
+- `aether/docs/guides/rolling-upgrade.md`: "zero downtime" is now scoped to app-downtime, with a new
+  core-node quorum-margin caveat during the rolling window (worklist D15 — the guide previously
+  never discussed this risk at all).
+- `aether/docs/architecture/01-consensus.md`, `aether/docs/contributors/consensus.md`: fixed an
+  unearned "Strong (all nodes agree)" / "Strong consistency required" claim on the leader-election
+  consensus mode (new finding, not in the original worklist) — the commit is linearizably ordered,
+  but nodes apply it as their own round completes, not simultaneously; same-order, not same-instant.
+- Confirmed `aether/docs/architecture/14-consistency-and-partitions.md` already meets the bar (no
+  changes needed) and that worklist items D2/D3 (DHT durability disclosure) were already applied in
+  the 2026-07-17 docs wave.
+- `aether/docs/reference/guarantees-corrections-needed.md`: marked D1-D4/D14/D15 applied, logged D20
+  (the new leader-election finding), and logged the deferred rows (D6-D13/D16-D19) so the next #496
+  pass is enumerable instead of rediscovered.
+
 ### Changed (2026-08-28 — #705 filed: point the compat-window gap at it)
 - `aether/docs/reference/versioning-and-compatibility.md`'s open compatibility-window gap
   (noted when #321 landed, below) now points at #705 — filed by the owner off that flag,

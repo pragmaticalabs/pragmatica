@@ -95,7 +95,12 @@ Leader is agreed through consensus protocol:
 3. After consensus commit, `onLeaderCommitted()` updates local state
 4. LeaderChange notification sent asynchronously via `router.routeAsync()`
 
-**Use when:** Strong consistency required, all nodes must agree on leader
+**Use when:** cross-node agreement on a single leader is required. The commit itself is
+linearizably ordered (same Rabia log as any KV write, `viewSequence`-fenced) so no two nodes ever
+commit conflicting leaders — but each node applies the committed proposal as its own consensus
+round completes, not simultaneously, so "all nodes agree" is a same-order guarantee, not a
+same-instant one. See [`../architecture/01-consensus.md`](../architecture/01-consensus.md) and
+[`../reference/guarantees.md`](../reference/guarantees.md) §1.
 
 ### Key Types
 

@@ -15,6 +15,24 @@
 >
 > Re-grounding this file against current `HEAD` is part of **#496** (GA claims-vs-reality audit).
 > Until that runs, treat the rows below as historically accurate at rc2, not as current findings.
+>
+> **#496 progress, 2026-08-28 (consensus/cluster-core surface, scoped pass) —** re-checked against
+> current `HEAD`. D2/D3 (DHT durability disclosure) were already applied in the 2026-07-17 docs wave.
+> **Applied this pass:** D1 (KV-Store row — added the write/read consistency split), D4 (quorum-loss
+> "graceful degradation" euphemism — replaced with the pause/self-fence mechanism), D14
+> (`operators/monitoring.md` SPOF claim — rescoped to the write path, the boilerplate rewrite in this
+> worklist didn't fit that section's actual context), D15 (`rolling-upgrade.md` "zero downtime" — added
+> the core-node quorum-margin caveat, which the guide never stated at all). Also fixed, not from this
+> worklist: an unearned "Strong (all nodes agree)" leader-election claim in both `01-consensus.md` and
+> `contributors/consensus.md` — same-order ≠ same-instant, now stated precisely.
+> **Deferred, not audited this pass** (out of the scoped surfaces — logged so the next pass doesn't
+> rediscover): D6/D7/D18 (pub-sub — not a named in-scope surface), D8–D12/D16 (streams — explicitly
+> named as deferred "stream/data-plane" territory), D13 (durable-entity — #345/#352/#596 read as
+> active cluster-core work, ownership ambiguous, held rather than guessed), D17/D19 (archive docs —
+> low priority, untouched). D5 ("Battle-tested") intentionally left alone: the term is already defined
+> precisely at the top of `feature-catalog.md`'s own legend, unlike the unqualified phrases above.
+
+
 
 Two kinds of item:
 - **DOC** — wording overclaim; fix the prose.
@@ -55,10 +73,10 @@ Two kinds of item:
 ### feature-catalog.md
 | # | Location | Claim | Honest rewrite |
 |---|----------|-------|----------------|
-| D1 | `:54` (row 17, KV-Store) | "Consensus-replicated store" (implies linearizable reads) | "Writes linearizably ordered via Rabia; reads served from local replica — sequential, possibly stale, **not linearizable**." |
-| D2 | `:105` (row 33, DHT) | "quorum R/W … Battle-tested" | "Eventual/LWW DHT (HLC-version). Aether system maps run FULL/q=1 in-memory: single-node ack, stale reads, lost on full restart." |
-| D3 | `:270/271/281` (rows 94/95/152) | "moved from consensus to ReplicatedMap … O(3) vs O(N)" (perf-only framing) | Add: "Trade-off: these keys are now **eventually consistent and not crash-durable**; reads may be stale across nodes." |
-| D4 | `:52` (quorum loss) | "graceful degradation on quorum loss, automatic restoration" | "On quorum loss the **minority pauses consensus (writes rejected) and self-fences (process exit)** after 15 s; majority keeps serving. Quorum return auto-resumes the majority; fenced nodes require restart/reprovision." |
+| D1 | `:54` (row 17, KV-Store) | "Consensus-replicated store" (implies linearizable reads) | ✅ **APPLIED 2026-08-28** — row now states linearizable write order vs. non-linearizable local reads, cites guarantees.md §1. |
+| D2 | `:105` (row 33, DHT) | "quorum R/W … Battle-tested" | ✅ **RESOLVED** (2026-07-17 docs wave, confirmed still live at current HEAD) — row states in-memory-only durability, cites guarantees.md §2. |
+| D3 | `:270/271/281` (rows 94/95/152) | "moved from consensus to ReplicatedMap … O(3) vs O(N)" (perf-only framing) | ✅ RESOLVED — see guarantees.md §7 item 7 (#384 CLOSED); rows now carry the eventual/not-crash-durable downgrade pointer. |
+| D4 | `:52` (quorum loss) | "graceful degradation on quorum loss, automatic restoration" | ✅ **APPLIED 2026-08-28** — row now states pause/reject-writes + minority self-fence explicitly, cites guarantees.md §3. |
 | D5 | `:21/33/52` etc. | "Battle-tested" on Auto-healing / Quorum / DHT | "Validated in E2E + cloud chaos; quorum/self-fence paths hardened through 2026-06." (correctness fixes landed within the last week — A6 2026-06-28, self-drain 2026-06-21). |
 | D6 | `:85` (row, message delivery) | "Battle-tested … leader failover scenarios" | "Message delivery — **at-most-once**, unordered, fan-out + round-robin. No retry/persistence; lost if no live endpoint. Subscriptions survive leader change (KV-backed)." |
 | D7 | `:84` (row 23) | "competing consumers (round-robin)" | "competing consumers (round-robin) **via EndpointRegistry**." (the `TopicSubscriptionRegistry` RR/nodeId is vestigial dead code — cleanup candidate). |
@@ -72,12 +90,13 @@ Two kinds of item:
 ### Other docs / skills
 | # | Location | Claim | Honest rewrite |
 |---|----------|-------|----------------|
-| D14 | `operators/monitoring.md:322` | "No single point of failure" | "No **consensus** SPOF (leaderless Rabia); **control-plane** ops (deploy, scale, auto-heal) are leader-pinned and briefly pause during re-election." |
-| D15 | `guides/rolling-upgrade.md:3` | "zero downtime" | "Zero **app-downtime** for slice upgrades; roll **core** nodes one at a time to preserve quorum." |
+| D14 | `operators/monitoring.md:322` | "No single point of failure" | ✅ **APPLIED 2026-08-28** — rescoped to the write path specifically (thresholds aren't leader-pinned, unlike deploy/scale/auto-heal, so the original suggested rewrite here would have misfit the section); added the local-read-may-lag caveat. |
+| D15 | `guides/rolling-upgrade.md:3` | "zero downtime" | ✅ **APPLIED 2026-08-28** — scoped to app-downtime; added the core-node quorum-margin caveat, which the guide previously never stated at all. |
 | D16 | `streaming-performance-analysis.md:130` | "supporting exactly-once processing" | "**effectively-once** for same-DB side effects, **when** `PgTransactionalCursorCommit` is wired (not in node bootstrap today)." |
 | D17 | `archive/infrastructure-slices-design.md:701,767` | "Reliable event publishing with **exactly-once** delivery" (Outbox) | Mark "Planned / not implemented" (archived/aspirational). |
 | D18 | skill `aether-coder/.../pub-sub.md:52` | use case "Notifications, **broadcasts**" | "Notifications, fan-out to subscriber **types** (one instance each)" — not a true broadcast to all instances. |
 | D19 | `archive/infra-services.md:346` | "Always available: Every node can serve artifacts" | Archived — annotate as superseded (a minority/partitioned node halts and serves nothing). |
+| D20 | `architecture/01-consensus.md`, `contributors/consensus.md` — leader-election table/prose | "Strong (all nodes agree)" / "Strong consistency required" | ✅ **APPLIED 2026-08-28** (new finding, not from the original rc2 grounding pass) — the commit itself is linearizably ordered (same Rabia log + `viewSequence` fence as any KV write), but each node applies it as its own consensus round completes, not simultaneously — same-order, not same-instant. Both docs now state this and cite guarantees.md §1. |
 
 ### Already honest (no change — credit where due)
 - `architecture/01-consensus.md:7,13` "leaderless crash-fault-tolerant (CFT)" — accurate fault-model scoping.
