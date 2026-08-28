@@ -14,6 +14,7 @@ import org.pragmatica.aether.slice.ConsumerConfig.ErrorStrategy;
 import org.pragmatica.aether.slice.ConsumerConfig.ProcessingMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.stream.DeadLetterHandler.DeadLetterEntry;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
@@ -21,6 +22,7 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.LongStream;
 
@@ -273,6 +275,144 @@ class StreamConsumerRuntimeTest {
             var dlEntries = runtime.deadLetterHandler().read("orders", 10);
             assertThat(dlEntries).isNotEmpty();
             assertThat(dlEntries.getFirst().offset()).isEqualTo(0L);
+        }
+    }
+
+    @Nested
+    class DeadLetterAppendContract {
+
+        /// Pins durable-pubsub-spec §9's no-silent-loss property at the runtime seam: retries
+        /// exhausted -> the cursor does NOT advance past the event until the dead-letter sink has
+        /// accepted it, the partition's delivery loop is held meanwhile (no re-delivery to the
+        /// handler from the un-advanced cursor), the append retries until the sink recovers, and
+        /// recovery yields exactly ONE dead-letter entry and a resumed loop.
+        @Test
+        void retryExhaustion_holdsCursorAndLoop_untilSinkAccepts() throws Exception {
+            createTestStream("orders");
+
+            var sink = new FlakyDeadLetterSink(2);
+            var flakyRuntime = streamConsumerRuntime(manager, sink);
+
+            try {
+                var deliveredOffsets = new CopyOnWriteArrayList<Long>();
+                var tailLatch = new CountDownLatch(2);
+                var config = ConsumerConfig.consumerConfig("group-dlq", 1,
+                    ProcessingMode.ORDERED, ErrorStrategy.RETRY, 1000L, 1, "");
+
+                flakyRuntime.subscribe("orders", 0, config, (offset, payload, ts) -> {
+                    deliveredOffsets.add(offset);
+                    if (offset == 0L) {
+                        return StreamError.General.BUFFER_EMPTY.promise();
+                    }
+                    tailLatch.countDown();
+                    return Promise.unitPromise();
+                });
+
+                manager.publishLocal("orders", 0, "poison".getBytes(UTF_8), 1000L);
+
+                // Two failed append attempts prove the retry-with-backoff loop runs.
+                assertThat(sink.failedAttempts.await(5, TimeUnit.SECONDS)).isTrue();
+
+                // A new append would normally trigger delivery; the in-flight guard must hold the
+                // loop, so the poison event is NOT re-delivered from the un-advanced cursor.
+                manager.publishLocal("orders", 0, "next-1".getBytes(UTF_8), 2000L);
+                Thread.sleep(300);
+                assertThat(deliveredOffsets).containsExactly(0L);
+                assertThat(flakyRuntime.cursorPosition("orders", 0, "group-dlq")
+                                       .or(-1L)).isEqualTo(0L);
+
+                // Sink recovers -> pending append retry succeeds, cursor advances, loop resumes on
+                // the next append notification.
+                sink.recover();
+                manager.publishLocal("orders", 0, "next-2".getBytes(UTF_8), 3000L);
+
+                assertThat(tailLatch.await(10, TimeUnit.SECONDS)).isTrue();
+                assertThat(deliveredOffsets).containsExactly(0L, 1L, 2L);
+
+                // Exactly one entry: failed append attempts must not mint duplicates.
+                var dlEntries = flakyRuntime.deadLetterHandler().read("orders", 10);
+                assertThat(dlEntries).hasSize(1);
+                assertThat(dlEntries.getFirst().offset()).isEqualTo(0L);
+            } finally {
+                flakyRuntime.close();
+            }
+        }
+
+        @Test
+        void skip_holdsCursor_untilSinkAccepts() throws Exception {
+            createTestStream("orders");
+
+            var sink = new FlakyDeadLetterSink(1);
+            var flakyRuntime = streamConsumerRuntime(manager, sink);
+
+            try {
+                var deliveredOffsets = new CopyOnWriteArrayList<Long>();
+                var tailLatch = new CountDownLatch(1);
+                var config = ConsumerConfig.consumerConfig("group-skip", 1,
+                    ProcessingMode.ORDERED, ErrorStrategy.SKIP);
+
+                flakyRuntime.subscribe("orders", 0, config, (offset, payload, ts) -> {
+                    deliveredOffsets.add(offset);
+                    if (offset == 0L) {
+                        return StreamError.General.BUFFER_EMPTY.promise();
+                    }
+                    tailLatch.countDown();
+                    return Promise.unitPromise();
+                });
+
+                manager.publishLocal("orders", 0, "poison".getBytes(UTF_8), 1000L);
+
+                assertThat(sink.failedAttempts.await(5, TimeUnit.SECONDS)).isTrue();
+                assertThat(flakyRuntime.cursorPosition("orders", 0, "group-skip")
+                                       .or(-1L)).isEqualTo(0L);
+
+                sink.recover();
+                manager.publishLocal("orders", 0, "next".getBytes(UTF_8), 2000L);
+
+                assertThat(tailLatch.await(10, TimeUnit.SECONDS)).isTrue();
+                assertThat(deliveredOffsets).containsExactly(0L, 1L);
+                assertThat(flakyRuntime.deadLetterHandler().read("orders", 10)).hasSize(1);
+            } finally {
+                flakyRuntime.close();
+            }
+        }
+    }
+
+    /// Sink that refuses appends until [#recover] is called, then delegates to the in-memory
+    /// default. The volatile default can never fail, so it can never exercise the failure-aware
+    /// contract — this stub is the adversarial half. `failedAttempts` counts down once per refused
+    /// append, letting a test await proof that the retry loop ran.
+    static final class FlakyDeadLetterSink implements DeadLetterHandler {
+        final CountDownLatch failedAttempts;
+        private final AtomicBoolean failing = new AtomicBoolean(true);
+        private final DeadLetterHandler delegate = DeadLetterHandler.deadLetterHandler();
+
+        FlakyDeadLetterSink(int failuresToAwait) {
+            this.failedAttempts = new CountDownLatch(failuresToAwait);
+        }
+
+        void recover() {
+            failing.set(false);
+        }
+
+        @Override
+        public Promise<Unit> append(String streamName,
+                                    int partition,
+                                    long offset,
+                                    byte[] payload,
+                                    String errorMessage,
+                                    int attemptCount) {
+            if (failing.get()) {
+                failedAttempts.countDown();
+                return StreamError.General.BUFFER_FULL.promise();
+            }
+
+            return delegate.append(streamName, partition, offset, payload, errorMessage, attemptCount);
+        }
+
+        @Override
+        public List<DeadLetterEntry> read(String streamName, int maxCount) {
+            return delegate.read(streamName, maxCount);
         }
     }
 

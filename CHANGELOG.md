@@ -6,6 +6,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Added (2026-08-28 — #386 D1: topic durability declaration, parse-enforced)
+- **A topic's `resources.toml` section now declares its durability class** (durable-pubsub-spec §3,
+  D1 of the 2026-07-18 ratified set): `durability = "ephemeral"` (default) keeps today's RPC
+  fan-out; `durability = "durable"` declares the stream-backed tier and accepts `partitions`
+  (default 1), `replicas` (default 2), `min_sync_replicas` (default = replicas), `retention`
+  (default 7d). The v1 durable constraint is **rejected at parse**, not weakened silently:
+  `replicas >= 2` and `min_sync_replicas == replicas` — exactly the configuration whose lossless
+  owner-kill failover is proven (streaming-spec §10.5); the rejection message cites the spec
+  section and #411, whose landing is the constraint's relaxation path. Stream knobs declared on an
+  ephemeral topic are rejected as inert (#576 config-honesty stance) rather than ignored. Both TOML
+  binders invoke the validating `TopicConfig.topicConfig` factory, so every bound declaration
+  passes through it; the `SpiResourceProvider` missing-section fallback (#396) now recovers ONLY
+  `SectionNotFound` — a section that exists but fails validation fails slice activation loudly
+  instead of silently downgrading a declared-durable topic to fire-and-forget. Legacy single-field
+  declarations (`topic_name = "..."`) keep binding unchanged, and every existing construction site
+  keeps compiling via the retained single-arg constructor. Delivery semantics are UNCHANGED by this
+  commit — the declaration surface lands ahead of the durable substrate (D2), and `guarantees.md`
+  §5 remains the truthful description of every topic today.
+  [verified: `aether/resource/api/.../TopicConfigTest.java` — TOML round-trips through
+  `TomlConfigService` prove the binder invokes the factory: durable-outside-constraint rejected,
+  inert-ephemeral-keys rejected, missing `topic_name` stays loud, legacy shape binds ephemeral]
+
+### Changed (2026-08-28 — #386 D2 substrate: dead-letter sink append is failure-aware; cursor never advances past an unaccepted entry)
+- **`DeadLetterHandler.record` (void, fire-and-forget) is replaced by `append` returning
+  `Promise<Unit>`, and the stream consumer runtime holds the group cursor until the sink accepts
+  the entry** (durable-pubsub-spec §9/§12; also the seam half of the rc3 audit note on #386 —
+  retry-exhausted events were skipped past a sink whose write had no failure channel). On retry
+  exhaustion (RETRY) and on SKIP, the cursor now advances only after a successful append; a failed
+  append retries with backoff indefinitely while an in-flight guard holds that partition's delivery
+  loop (without it the un-advanced cursor would re-deliver the exhausted event to the handler).
+  Capping the retries and advancing anyway was rejected: that IS the silent loss the contract
+  exists to prevent — the stall is deliberate, partition-scoped, and bounded by the operator loop
+  (`DLQ_STALL` alarm surface arrives with the D3 management batch). The in-memory default sink is
+  unchanged in behavior (its append cannot fail) and now carries the loud volatility statement the
+  audit note demanded at the class level; the durable DLQ-stream sink lands with D3.
+  [verified: `StreamConsumerRuntimeTest.DeadLetterAppendContract` — failing-sink stub: cursor and
+  loop held across two failed appends with no handler re-delivery, resume on sink recovery,
+  exactly one dead-letter entry (retry loop mints no duplicates); SKIP variant likewise]
+
 ### Fixed (2026-08-28 — #712: slice jars ship the message classes their manifests declare)
 - **A slice jar now contains the topic message and stream event classes its own manifest
   declares, plus the full sibling `shared` package tree.** Two packaging gaps compounded:

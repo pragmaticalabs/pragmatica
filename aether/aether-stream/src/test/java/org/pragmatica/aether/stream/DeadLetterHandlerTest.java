@@ -22,11 +22,11 @@ class DeadLetterHandlerTest {
     }
 
     @Nested
-    class RecordAndRead {
+    class AppendAndRead {
 
         @Test
-        void read_returnsRecordedEntry_afterRecord() {
-            handler.record("orders", 0, 42L, "payload".getBytes(), "processing failed", 3);
+        void read_returnsRecordedEntry_afterAppend() {
+            handler.append("orders", 0, 42L, "payload".getBytes(), "processing failed", 3).await().onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()));
 
             var entries = handler.read("orders", 10);
             assertThat(entries).hasSize(1);
@@ -41,9 +41,9 @@ class DeadLetterHandlerTest {
 
         @Test
         void read_respectsMaxCount_whenMoreEntriesExist() {
-            handler.record("orders", 0, 1L, "a".getBytes(), "err", 1);
-            handler.record("orders", 0, 2L, "b".getBytes(), "err", 1);
-            handler.record("orders", 0, 3L, "c".getBytes(), "err", 1);
+            handler.append("orders", 0, 1L, "a".getBytes(), "err", 1).await().onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()));
+            handler.append("orders", 0, 2L, "b".getBytes(), "err", 1).await().onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()));
+            handler.append("orders", 0, 3L, "c".getBytes(), "err", 1).await().onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()));
 
             var entries = handler.read("orders", 2);
             assertThat(entries).hasSize(2);
@@ -57,8 +57,8 @@ class DeadLetterHandlerTest {
 
         @Test
         void read_isolatesStreams_differentStreamNames() {
-            handler.record("orders", 0, 1L, "a".getBytes(), "err", 1);
-            handler.record("events", 0, 2L, "b".getBytes(), "err", 1);
+            handler.append("orders", 0, 1L, "a".getBytes(), "err", 1).await().onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()));
+            handler.append("events", 0, 2L, "b".getBytes(), "err", 1).await().onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()));
 
             assertThat(handler.read("orders", 10)).hasSize(1);
             assertThat(handler.read("events", 10)).hasSize(1);
@@ -66,7 +66,7 @@ class DeadLetterHandlerTest {
 
         @Test
         void read_returnsAll_whenMaxCountExceedsEntries() {
-            handler.record("orders", 0, 1L, "a".getBytes(), "err", 1);
+            handler.append("orders", 0, 1L, "a".getBytes(), "err", 1).await().onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()));
 
             var entries = handler.read("orders", 100);
             assertThat(entries).hasSize(1);

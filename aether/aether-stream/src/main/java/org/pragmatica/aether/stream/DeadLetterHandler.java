@@ -7,12 +7,23 @@ package org.pragmatica.aether.stream;
 import java.util.Arrays;
 import java.util.List;
 
-import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 
 
 public interface DeadLetterHandler {
-    @Contract
-    void record(String streamName, int partition, long offset, byte[] payload, String errorMessage, int attemptCount);
+    /// Failure-aware append (durable-pubsub-spec §12): resolves when the sink has ACCEPTED the
+    /// entry — for a durable sink that means durably stored, for the in-memory default merely
+    /// recorded in process memory. The consumer runtime holds the source cursor until this promise
+    /// resolves successfully (spec §9 — an event is never skipped past a dead-letter sink that has
+    /// not accepted it), which the previous fire-and-forget `void record` made unimplementable:
+    /// a sink whose write can fail had no channel to say so.
+    Promise<Unit> append(String streamName,
+                         int partition,
+                         long offset,
+                         byte[] payload,
+                         String errorMessage,
+                         int attemptCount);
 
     List<DeadLetterEntry> read(String streamName, int maxCount);
 
@@ -69,6 +80,9 @@ public interface DeadLetterHandler {
         }
     }
 
+    /// The volatile default: entries live in process memory ONLY and are lost on restart —
+    /// suitable for Forge and tests, a documented data-loss surface anywhere else (rc3 audit note
+    /// on #386). Production durable sinks arrive with the durable-pubsub D3 work.
     static DeadLetterHandler deadLetterHandler() {
         return new InMemoryDeadLetterHandler();
     }

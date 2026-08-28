@@ -304,7 +304,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// consumer's error strategy ([#handleDeliveryFailure]) and deliberately never surfaces here, so a
     /// handler error cannot be mistaken for an unreachable partition.
     private Promise<Unit> pollCycle(ConsumerKey key, ConsumerState state) {
-        if (closed.get() || state.isCancelled() || state.isStalled()) {
+        if (closed.get() || state.isCancelled() || state.isStalled() || state.isDeadLetterInFlight()) {
             return Promise.unitPromise();
         }
 
@@ -346,7 +346,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                            ConsumerState state,
                                            List<OffHeapRingBuffer.RawEvent> events,
                                            int index) {
-        if (index >= events.size() || state.isCancelled() || state.isStalled()) {
+        if (index >= events.size() || state.isCancelled() || state.isStalled() || state.isDeadLetterInFlight()) {
             return Promise.unitPromise();
         }
 
@@ -395,8 +395,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         var attempt = state.incrementRetryCount();
 
         if (attempt >= state.maxRetries()) {
-            recordDeadLetter(key, event, errorMessage, attempt);
-            advanceCursor(key, state, event.offset());
+            appendDeadLetterThenAdvance(key, state, event, errorMessage, attempt, 1);
 
             return;
         }
@@ -432,8 +431,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         var attempt = state.incrementRetryCount();
 
         if (attempt >= state.maxRetries()) {
-            recordDeadLetter(key, event, errorMessage, attempt);
-            advanceCursor(key, state, event.offset());
+            appendDeadLetterThenAdvance(key, state, event, errorMessage, attempt, 1);
 
             return;
         }
@@ -454,8 +452,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                 key.partition(),
                 event.offset(),
                 errorMessage);
-        recordDeadLetter(key, event, errorMessage, 1);
-        advanceCursor(key, state, event.offset());
+        appendDeadLetterThenAdvance(key, state, event, errorMessage, 1, 1);
     }
 
     private void handleStall(ConsumerKey key,
@@ -471,11 +468,81 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         state.stall();
     }
 
-    private void recordDeadLetter(ConsumerKey key,
-                                  OffHeapRingBuffer.RawEvent event,
-                                  String errorMessage,
-                                  int attemptCount) {
-        dlHandler.record(key.streamName(), key.partition(), event.offset(), event.data(), errorMessage, attemptCount);
+    /// Dead-lettering an event and advancing past it is ONE unit: the cursor moves only after the
+    /// sink has accepted the entry (durable-pubsub-spec §9 — no event is skipped past a sink that
+    /// has not stored it). While the append is unresolved the partition's delivery loop is held by
+    /// [ConsumerState#isDeadLetterInFlight] — without that guard the next poll cycle would re-read
+    /// from the un-advanced cursor and re-deliver the exhausted event to the handler. A failed
+    /// append retries with backoff indefinitely: capping and advancing anyway would BE the silent
+    /// loss this contract exists to prevent; the stall is deliberate and operator-visible via the
+    /// held cursor (the §9 `DLQ_STALL` alarm surface arrives with the D3 batch).
+    private void appendDeadLetterThenAdvance(ConsumerKey key,
+                                             ConsumerState state,
+                                             OffHeapRingBuffer.RawEvent event,
+                                             String errorMessage,
+                                             int attemptCount,
+                                             int appendAttempt) {
+        state.markDeadLetterInFlight();
+        dlHandler.append(key.streamName(),
+                         key.partition(),
+                         event.offset(),
+                         event.data(),
+                         errorMessage,
+                         attemptCount)
+                 .onSuccess(_ -> completeDeadLetter(key, state, event))
+                 .onFailure(cause -> retryDeadLetterAppend(key,
+                                                           state,
+                                                           event,
+                                                           errorMessage,
+                                                           attemptCount,
+                                                           appendAttempt,
+                                                           cause));
+    }
+
+    private void completeDeadLetter(ConsumerKey key, ConsumerState state, OffHeapRingBuffer.RawEvent event) {
+        advanceCursor(key, state, event.offset());
+        state.clearDeadLetterInFlight();
+        resumeAfterDeadLetter(key, state);
+    }
+
+    /// A push-mode consumer is only ever driven by append notifications, and every notification
+    /// that arrived while the dead-letter append was in flight was absorbed by the guard — so
+    /// releasing the hold must also re-drive the loop, or events already in the ring sit
+    /// undelivered until the NEXT append happens to arrive. Poll-mode consumers resume on their
+    /// own schedule and treat this as one extra cycle.
+    @Contract
+    private void resumeAfterDeadLetter(ConsumerKey key, ConsumerState state) {
+        pollCycle(key, state).onFailure(cause -> logPollFailure(key, cause));
+    }
+
+    private void retryDeadLetterAppend(ConsumerKey key,
+                                       ConsumerState state,
+                                       OffHeapRingBuffer.RawEvent event,
+                                       String errorMessage,
+                                       int attemptCount,
+                                       int appendAttempt,
+                                       Cause cause) {
+        LOG.log(System.Logger.Level.WARNING,
+                "Dead-letter append failed for {0}[{1}]@{2} (attempt {3}), holding cursor: {4}",
+                key.streamName(),
+                key.partition(),
+                event.offset(),
+                appendAttempt,
+                cause.message());
+        if (state.isCancelled()) {
+            return;
+        }
+        // computeBackoff shifts 1L << (attempt - 1); an uncapped attempt count overflows the shift
+        // at 64 and the min() then picks the negative product, so the argument is clamped below it.
+        var cappedAttempt = Math.min(appendAttempt, 30);
+
+        SharedScheduler.schedule(() -> appendDeadLetterThenAdvance(key,
+                                                                   state,
+                                                                   event,
+                                                                   errorMessage,
+                                                                   attemptCount,
+                                                                   appendAttempt + 1),
+                                 TimeSpan.timeSpan(computeBackoff(cappedAttempt)).millis());
     }
 
     private static long computeBackoff(int attempt) {
@@ -511,6 +578,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         private final AtomicBoolean stalled = new AtomicBoolean(false);
         private final AtomicBoolean cancelled = new AtomicBoolean(false);
         private final AtomicBoolean cursorInitialized = new AtomicBoolean(false);
+        private final AtomicBoolean deadLetterInFlight = new AtomicBoolean(false);
         private volatile ScheduledFuture<?> future;
         private volatile LongConsumer pushListenerRef;
         private final AtomicLong currentPollMs = new AtomicLong(MIN_POLL_MS);
@@ -603,6 +671,24 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
 
         boolean isStalled() {
             return stalled.get();
+        }
+
+        /// True while a dead-letter append for this consumer's current head event is unresolved.
+        /// Holds the delivery loop so the un-advanced cursor cannot re-deliver the exhausted event
+        /// (see [ConsumerRuntimeState#appendDeadLetterThenAdvance]). Cleared strictly AFTER the
+        /// cursor advance, so a loop that observes the flag clear always reads the moved cursor.
+        boolean isDeadLetterInFlight() {
+            return deadLetterInFlight.get();
+        }
+
+        @Contract
+        void markDeadLetterInFlight() {
+            deadLetterInFlight.set(true);
+        }
+
+        @Contract
+        void clearDeadLetterInFlight() {
+            deadLetterInFlight.set(false);
         }
 
         @Contract
