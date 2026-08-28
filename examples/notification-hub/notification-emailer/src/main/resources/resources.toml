@@ -23,7 +23,7 @@ max-event-size = "64KB"
 # binder does not yet recurse Option<Record> components (NotificationConfig
 # declares the SMTP block as Option<SmtpConfig>), so the SMTP backend cannot
 # be provisioned from TOML until that lands. Shape below is the documented
-# target shape (docs/slice-developers/resource-reference.md).
+# target shape (aether/docs/slice-developers/resource-reference.md).
 #
 # TODO(example-coverage, #672): add a Mailpit/MailHog container to the parent
 # example so `./run-forge.sh` actually delivers and captures these emails.
