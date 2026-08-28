@@ -93,13 +93,15 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// The committed-state fence, shared by [#handlePut] and [#handleRemove] (#345 piece 1a, #379):
     /// a mutation (a `Put` value or a `Remove` witness) is rejected when it is either a stale
     /// `LeaderKey` write (H4 leader fence), a stale-epoch write to any [EpochBearing] value
-    /// (ownership fence), or a non-successor write to a [VersionFenced] value (lost-update fence,
-    /// RFC-0018 #570). All arms are pure functions of the committed storage content and the
+    /// (ownership fence), a non-successor write to a [VersionFenced] value (lost-update fence,
+    /// RFC-0018 #570), or a regressive write to a [MonotonicFenced] value (running-max fence,
+    /// #700). All arms are pure functions of the committed storage content and the
     /// incoming value alone, so every replica decides identically inside the consensus applier.
     /// Snapshot restore ([#restoreSnapshot]) intentionally bypasses all fences: a restored snapshot
     /// is the authoritative committed state, not a competing write.
     private boolean staleWrite(K key, Object incoming) {
-        return staleLeaderWrite(key, incoming) || staleEpochWrite(key, incoming) || staleSuccessorWrite(key, incoming);
+        return staleLeaderWrite(key, incoming) || staleEpochWrite(key, incoming) || staleSuccessorWrite(key, incoming)
+               || regressiveWatermarkWrite(key, incoming);
     }
 
     /// H4 leader fence (cluster-topology-overhaul §Wave 8.2): `LeaderKey` writes are
@@ -154,6 +156,20 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         return incoming instanceof VersionFenced in
                && storage.get(key) instanceof VersionFenced stored
                && in.fenceVersion() != stored.fenceVersion() + 1;
+    }
+
+    /// Running-max fence (#700): [MonotonicFenced] values are advance-only — the write is rejected
+    /// iff its watermark is STRICTLY LOWER than the committed one. Equal is ACCEPTED (unlike the
+    /// successor arm): re-publishing the same coverage with fresh contents is legitimate; only
+    /// regression loses data, because the retention floor may already have reclaimed the log below
+    /// the committed claim, and a lower claim landing second would leave those records reachable
+    /// from nowhere. First write passes (no claim yet). Deterministic like the arms above: reads
+    /// only committed storage and the incoming value. A rejected write mutates nothing and emits NO
+    /// notification (see [MonotonicFenced] for the caller-side detection caveat).
+    private boolean regressiveWatermarkWrite(K key, Object incoming) {
+        return incoming instanceof MonotonicFenced in
+               && storage.get(key) instanceof MonotonicFenced stored
+               && in.fenceWatermark() < stored.fenceWatermark();
     }
 
     private Option<V> handleRemove(Remove<K> remove) {

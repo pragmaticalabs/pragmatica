@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Fixed (2026-08-29 — #700: entity checkpoint claims are advance-only in the KV substrate)
+- **A checkpoint write that would LOWER the committed `throughOffset` is refused by the Rabia
+  applier itself** — the third arm of the applier's value-driven fence family (`EpochBearing`
+  guards authority, `VersionFenced` guards a chain, new `MonotonicFenced` guards a running max).
+  The retention floor reclaims entity-log segments below the committed claim, so two honest folds
+  either side of a partition handover could previously overwrite a higher claim with a lower one
+  AFTER the log between them was reclaimed — leaving those records on no reachable node, a
+  recovery hole the I4 intra-node guard could narrow but not close (different JVMs share no
+  memory, and a caller-side read-then-write reintroduces the race one layer up). Equal watermarks
+  are ACCEPTED (a fresh snapshot at unchanged coverage replaces the block pointer harmlessly);
+  strictly-lower rejected, deterministically, from committed storage + the incoming value alone.
+  Rejections are silent like the sibling fences; the driver doc records the consequence for its
+  local advance map. The retention-floor reliance is now stated at the write site
+  (`StreamEntityLogSubstrate.publishCheckpointPointer`), and `EntityCheckpointDriver`'s
+  "not attempted here" note — the stale surface that described the gap — is corrected.
+  [verified: `KVStoreWatermarkFenceTest` — the ticket's exact race (two writers, lower offset
+  arrives last, higher claim intact), equal-accepted, first-write-passes, non-fenced-untouched,
+  no-notification-on-rejection; zero behavior change for existing value types is structural
+  (sole implementor, pattern-matched arm)]
+
 ### Added (2026-08-29 — #386 durable-topic dispatch WIRED: declared-durable topics now deliver at-least-once with a durable group-attributed DLQ)
 - **A topic declared `durability = "durable"` is now a working durable delivery system end to
   end on a node**: publish appends the KSUID-stamped envelope to the replicated `topic:<address>`

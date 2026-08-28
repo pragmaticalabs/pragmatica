@@ -1887,7 +1887,17 @@ public sealed interface AetherValue {
     /// @param blockIdHex    content id of the snapshot block in stream storage
     /// @param timestamp     wall-clock ms the checkpoint was written, for operator diagnosis only —
     ///                      never for ordering, which is `throughOffset`'s job
-    record EntityFoldCheckpointValue(long throughOffset, String blockIdHex, long timestamp) implements AetherValue {
+    /// [org.pragmatica.cluster.state.kvstore.MonotonicFenced]: the checkpoint claim is a running
+    /// max — the retention floor reclaims log segments below it, so the applier refuses a Put that
+    /// would LOWER the committed `throughOffset` (#700; a lower honest claim landing after a higher
+    /// one would leave the records between them on no reachable node). Equal offsets are accepted:
+    /// a fresh snapshot at unchanged coverage replaces the block pointer harmlessly.
+    record EntityFoldCheckpointValue(long throughOffset, String blockIdHex, long timestamp) implements AetherValue, org.pragmatica.cluster.state.kvstore.MonotonicFenced {
+        @Override
+        public long fenceWatermark() {
+            return throughOffset;
+        }
+
         public static EntityFoldCheckpointValue entityFoldCheckpointValue(long throughOffset, String blockIdHex) {
             return new EntityFoldCheckpointValue(throughOffset, blockIdHex, System.currentTimeMillis());
         }

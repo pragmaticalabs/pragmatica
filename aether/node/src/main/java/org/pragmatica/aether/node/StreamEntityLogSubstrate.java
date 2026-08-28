@@ -329,6 +329,13 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
                       .flatMap(blockId -> publishCheckpointPointer(keyspace, partition, throughOffset, blockId));
     }
 
+    /// **This pointer is what the retention floor trusts** when reclaiming entity-log segments
+    /// below it — which is why regression is refused by the SUBSTRATE, not here: the value is
+    /// [org.pragmatica.cluster.state.kvstore.MonotonicFenced], so the consensus applier rejects a
+    /// Put that would lower the committed `throughOffset` (#700). Two honest writers either side of
+    /// a partition handover therefore cannot re-expose reclaimed offsets; the lower claim is simply
+    /// refused (silently — rejected fenced writes emit no notification; the committed claim is then
+    /// at least as advanced as what was attempted, which is exactly what this writer wanted).
     private Promise<Unit> publishCheckpointPointer(String keyspace,
                                                    int partition,
                                                    long throughOffset,

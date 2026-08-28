@@ -194,9 +194,13 @@ public final class EntityCheckpointDriver {
     /// It also makes the "if it has anything new to record" above true: an idle partition re-encoded and
     /// re-wrote its entire fold on every tick.
     ///
-    /// Scoped to what THIS node wrote, because that is what it can know locally. Two nodes that both fold
-    /// the partition can still overwrite each other's pointers; closing that needs a conditional write in
-    /// the substrate and is not attempted here.
+    /// Scoped to what THIS node wrote, because that is what it can know locally. The cross-node half is
+    /// closed in the SUBSTRATE (#700): the checkpoint value is `MonotonicFenced`, so the consensus
+    /// applier refuses a Put that would lower the committed offset — two nodes either side of a
+    /// handover cannot regress each other's claims. One consequence worth stating: a refused write
+    /// still resolves the apply successfully (fenced rejections are silent), so [#recordWrite] may
+    /// record a locally-lower value than what is committed — harmless, since this local map only
+    /// widens the next [#isAdvancing] admission and the applier holds the real line.
     private static boolean isAdvancing(Registration registration,
                                        int partition,
                                        EntityFold.CheckpointCandidate candidate) {

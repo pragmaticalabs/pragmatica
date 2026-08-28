@@ -2,6 +2,20 @@
 
 Append-only signal log between aether-main and the design/second stream.
 
+## 2026-08-29 stream-b (data-plane) — CLAIM (CTO-granted, #700): one fence arm in integrations/cluster + one value in aether/slice, landing in this push
+
+CTO affirmative grant (durable copy on #386's thread context). Scope, exactly: (1)
+`integrations/cluster/.../kvstore/MonotonicFenced.java` (new marker: running-max fence, equal
+accepted / lower rejected) + ONE arm in `KVStore.staleWrite` (`regressiveWatermarkWrite`,
+deterministic-in-applier like its EpochBearing/VersionFenced siblings) + mirrored
+`KVStoreWatermarkFenceTest`; (2) `aether/slice/.../kvstore/AetherValue.java` —
+`EntityFoldCheckpointValue implements MonotonicFenced` over `throughOffset`, one method + doc.
+Zero behavior change for existing value types (sole implementor, pattern-match arm). Cluster-core
+and operator get CTO awareness notes; neither's active surface touches these files. Evidence:
+KVStoreWatermarkFenceTest 6/6 incl. the #700 acceptance race (lower claim arriving LAST is refused,
+higher stands, no notification leak); integrations/cluster 125/0, aether/slice 757/0,
+durable-entity 267/0.
+
 ## 2026-08-29 stream-b (data-plane) — three-seam claim CLOSED (landed); DOCS-STREAM WAKE: delivery semantics changed, guarantees.md §5 rewritten
 
 **Claim below closed, landed as committed:** the three seams went in as claimed, plus one
