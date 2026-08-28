@@ -46,7 +46,7 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 
-/// #569 — `POST /api/deploy` answered `500 Internal Server Error` for client errors. Both halves of
+/// #569 — `POST /api/v1/deploy` answered `500 Internal Server Error` for client errors. Both halves of
 /// the funnel were status-blind: the domain causes ([DeploymentError]) were typed but status-less,
 /// and the route's own request-validation failures were bare `Causes.cause(...)` constants.
 /// `ProblemResponses.resolveStatus` tests `cause instanceof HttpStatusAware` and silently defaults
@@ -74,8 +74,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class DeployRouteStatusTest {
     private static final String COORDS = "org.example:orders-app:1.0.0";
     private static final String DEPLOYMENT_ID = "deploy-7f3a";
-    private static final String START_INSTANCE = "/api/deploy";
-    private static final String STATUS_INSTANCE = "/api/deploy/" + DEPLOYMENT_ID;
+    private static final String START_INSTANCE = "/api/v1/deploy";
+    private static final String STATUS_INSTANCE = "/api/v1/deploy/" + DEPLOYMENT_ID;
     private static final String REQUEST_ID = "req-1";
 
     private static final Cause BLUEPRINT_NOT_FOUND = DeploymentError.BlueprintNotFound.blueprintNotFound(COORDS);
@@ -137,7 +137,7 @@ class DeployRouteStatusTest {
                                                                                                               null,
                                                                                                               null);
 
-    /// THE variant behind #569: `POST /api/deploy` naming a blueprint the cluster does not hold. The
+    /// THE variant behind #569: `POST /api/v1/deploy` naming a blueprint the cluster does not hold. The
     /// caller addressed a resource that does not exist, which is 404, not "the cluster broke".
     @Nested
     class BlueprintMissing {
@@ -163,7 +163,7 @@ class DeployRouteStatusTest {
         }
     }
 
-    /// `GET /api/deploy/{id}` for an id the manager does not know. The cause is minted per request via
+    /// `GET /api/v1/deploy/{id}` for an id the manager does not know. The cause is minted per request via
     /// `DeploymentNotFound.deploymentNotFound(id)` — it used to be an id-less shared constant, so the
     /// operator could not tell WHICH deployment the 404 referred to.
     @Nested

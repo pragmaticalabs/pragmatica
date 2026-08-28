@@ -26,28 +26,28 @@ public sealed interface RoutePermissionRegistry {
     final class Prefixes {
         private Prefixes() {}
 
-        static final List<String> ADMIN = List.of("/api/blueprints",
-                                                  "/api/nodes/shutdown",
-                                                  "/api/backups/restore",
-                                                  "/api/logging/levels",
-                                                  "/api/observability/depth");
+        static final List<String> ADMIN = List.of("/api/v1/blueprints",
+                                                  "/api/v1/nodes/shutdown",
+                                                  "/api/v1/backups/restore",
+                                                  "/api/v1/logging/levels",
+                                                  "/api/v1/observability/depth");
 
-        static final List<String> OPERATOR = List.of("/api/nodes/drain",
-                                                     "/api/nodes/activate",
-                                                     "/api/schema",
-                                                     "/api/canary",
-                                                     "/api/blue-green",
-                                                     "/api/rolling-update",
-                                                     "/api/ab-tests",
-                                                     "/api/backups",
-                                                     "/api/scale",
-                                                     "/api/scheduled-tasks",
-                                                     "/api/controller",
-                                                     "/api/thresholds",
-                                                     "/api/alerts/clear",
-                                                     "/api/config",
-                                                     "/api/invocations/metrics/strategy",
-                                                     "/api/streams",
+        static final List<String> OPERATOR = List.of("/api/v1/nodes/drain",
+                                                     "/api/v1/nodes/activate",
+                                                     "/api/v1/schema",
+                                                     "/api/v1/canary",
+                                                     "/api/v1/blue-green",
+                                                     "/api/v1/rolling-update",
+                                                     "/api/v1/ab-tests",
+                                                     "/api/v1/backups",
+                                                     "/api/v1/scale",
+                                                     "/api/v1/scheduled-tasks",
+                                                     "/api/v1/controller",
+                                                     "/api/v1/thresholds",
+                                                     "/api/v1/alerts/clear",
+                                                     "/api/v1/config",
+                                                     "/api/v1/invocations/metrics/strategy",
+                                                     "/api/v1/streams",
                                                      "/repository/");
 
         static RoutePermission resolveMutationPermission(String path) {
@@ -63,11 +63,11 @@ public sealed interface RoutePermissionRegistry {
         }
 
         static RoutePermission resolveAdminOverrides(String path) {
-            if (path.startsWith("/api/blueprints/deploy")) {
+            if (path.startsWith("/api/v1/blueprints/deploy")) {
                 return OPERATOR_AND_ABOVE;
             }
 
-            if (path.startsWith("/api/blueprints/validate")) {
+            if (path.startsWith("/api/v1/blueprints/validate")) {
                 return ALL_AUTHENTICATED;
             }
 

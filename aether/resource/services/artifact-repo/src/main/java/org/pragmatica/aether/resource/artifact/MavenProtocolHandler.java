@@ -100,7 +100,7 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
                                                            + "GET /repository/{groupPath}/{artifactId}/maven-metadata.xml "
                                                            + "('aether artifacts versions <group:artifact>') lists the versions of a known artifact; "
                                                            + "GET /repository/info/{groupPath}/{artifactId}/{version} ('aether artifacts info <coords>') "
-                                                           + "describes one artifact; GET /api/artifacts/metrics ('aether artifacts metrics') reports "
+                                                           + "describes one artifact; GET /api/v1/artifacts/metrics ('aether artifacts metrics') reports "
                                                            + "repository totals.";
 
     private final ArtifactStore store;

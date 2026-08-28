@@ -53,8 +53,8 @@ class BlueprintPublishConflictStatusTest {
                                                                                                                CURRENT_OWNER,
                                                                                                                REJECTED);
 
-    /// Both blueprint entry points run the gate — `/api/blueprints/deploy` and
-    /// `/api/blueprints/publish` share `publishFromArtifact`, so both must answer 409.
+    /// Both blueprint entry points run the gate — `/api/v1/blueprints/deploy` and
+    /// `/api/v1/blueprints/publish` share `publishFromArtifact`, so both must answer 409.
     @Test
     void deployRoute_respondsConflict_whenDatasourceIsOwnedByAnotherBlueprint() {
         assertRespondsConflict(ManagementRoute.BLUEPRINT_DEPLOY);
@@ -78,7 +78,7 @@ class BlueprintPublishConflictStatusTest {
     private static void assertRespondsConflict(ManagementRoute route) {
         var recorder = new RecordingResponseWriter();
 
-        ProblemResponses.writeProblem(recorder, causeFrom(route), "/api/blueprints", "req-1");
+        ProblemResponses.writeProblem(recorder, causeFrom(route), "/api/v1/blueprints", "req-1");
 
         assertThat(recorder.status.get()).as("a rejected publish is a state conflict, not a server fault")
                                          .isEqualTo(HttpStatus.CONFLICT);
@@ -95,7 +95,7 @@ class BlueprintPublishConflictStatusTest {
 
         ProblemResponses.writeProblem(recorder,
                                       causeFrom(ManagementRoute.BLUEPRINT_PUBLISH_ARTIFACT),
-                                      "/api/blueprints",
+                                      "/api/v1/blueprints",
                                       "req-1");
 
         assertThat(recorder.body()).contains(DATASOURCE)
@@ -111,7 +111,7 @@ class BlueprintPublishConflictStatusTest {
 
         ProblemResponses.writeProblem(recorder,
                                       Causes.cause("plain failure"),
-                                      "/api/blueprints",
+                                      "/api/v1/blueprints",
                                       "req-1");
 
         assertThat(recorder.status.get()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);

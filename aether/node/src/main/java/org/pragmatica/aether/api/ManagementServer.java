@@ -1300,9 +1300,9 @@ class ManagementServerImpl implements ManagementServer {
     ///
     /// Returns `true` (and writes the 405) when the request is a mutating verb targeting a
     /// `system`-namespace stream, in either the path-based shape
-    /// (`/api/streams/{publish,publish-batch,delete}/system/...`,
-    /// `/api/streams/groups/{create,delete}/system/...`) or the legacy colon-form
-    /// (`/api/streams/...` with a `system:<stream>:<version>` name segment).
+    /// (`/api/v1/streams/{publish,publish-batch,delete}/system/...`,
+    /// `/api/v1/streams/groups/{create,delete}/system/...`) or the legacy colon-form
+    /// (`/api/v1/streams/...` with a `system:<stream>:<version>` name segment).
     private boolean rejectSystemStreamWrite(HttpRequest ctx, ResponseWriter response, String path, String methodName) {
         if (!isSystemStreamWriteOverHttp(methodName, path)) {
             return false;
@@ -1360,7 +1360,7 @@ class ManagementServerImpl implements ManagementServer {
         return false;
     }
 
-    private static final String STREAM_WRITE_PATH_PREFIX = "/api/streams";
+    private static final String STREAM_WRITE_PATH_PREFIX = "/api/v1/streams";
 
     private static final String SYSTEM_NAMESPACE_COLON = org.pragmatica.aether.slice.resource.ResourceAddress.SYSTEM_NAMESPACE
                                                        + ":";

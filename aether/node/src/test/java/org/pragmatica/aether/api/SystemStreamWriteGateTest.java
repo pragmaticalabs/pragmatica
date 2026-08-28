@@ -21,43 +21,43 @@ class SystemStreamWriteGateTest {
         @Test
         void pathBased_publish_toSystemNamespace_isGated() {
             assertThat(ManagementServerImpl.isSystemStreamWriteOverHttp(
-                    "POST", "/api/streams/publish/system/cluster-events/1.0.0")).isTrue();
+                    "POST", "/api/v1/streams/publish/system/cluster-events/1.0.0")).isTrue();
         }
 
         @Test
         void pathBased_publishBatch_toSystemNamespace_isGated() {
             assertThat(ManagementServerImpl.isSystemStreamWriteOverHttp(
-                    "POST", "/api/streams/publish-batch/system/cluster-events/1.0.0")).isTrue();
+                    "POST", "/api/v1/streams/publish-batch/system/cluster-events/1.0.0")).isTrue();
         }
 
         @Test
         void pathBased_delete_systemStream_isGated() {
             assertThat(ManagementServerImpl.isSystemStreamWriteOverHttp(
-                    "DELETE", "/api/streams/delete/system/cluster-events/1.0.0")).isTrue();
+                    "DELETE", "/api/v1/streams/delete/system/cluster-events/1.0.0")).isTrue();
         }
 
         @Test
         void groupCreate_onSystemStream_isGated() {
             assertThat(ManagementServerImpl.isSystemStreamWriteOverHttp(
-                    "POST", "/api/streams/groups/create/system/cluster-events/1.0.0")).isTrue();
+                    "POST", "/api/v1/streams/groups/create/system/cluster-events/1.0.0")).isTrue();
         }
 
         @Test
         void legacyColonForm_systemName_isGated() {
             assertThat(ManagementServerImpl.isSystemStreamWriteOverHttp(
-                    "POST", "/api/streams/publish/system:cluster-events:1.0.0")).isTrue();
+                    "POST", "/api/v1/streams/publish/system:cluster-events:1.0.0")).isTrue();
         }
 
         @Test
         void legacyColonForm_urlEncoded_isGated() {
             assertThat(ManagementServerImpl.isSystemStreamWriteOverHttp(
-                    "POST", "/api/streams/publish/system%3Acluster-events%3A1.0.0")).isTrue();
+                    "POST", "/api/v1/streams/publish/system%3Acluster-events%3A1.0.0")).isTrue();
         }
 
         @Test
         void caseInsensitive_namespace_isGated() {
             assertThat(ManagementServerImpl.isSystemStreamWriteOverHttp(
-                    "POST", "/api/streams/publish/System/audit/1.0.0")).isTrue();
+                    "POST", "/api/v1/streams/publish/System/audit/1.0.0")).isTrue();
         }
     }
 
@@ -67,27 +67,27 @@ class SystemStreamWriteGateTest {
         @Test
         void appNamespace_publish_isNotGated() {
             assertThat(ManagementServerImpl.isSystemStreamWriteOverHttp(
-                    "POST", "/api/streams/publish/com.example.app/orders/1.0.0")).isFalse();
+                    "POST", "/api/v1/streams/publish/com.example.app/orders/1.0.0")).isFalse();
         }
 
         @Test
         void systemNamespace_read_isNotGated() {
             // GET reads of system streams are allowed; the gate is write-only.
             assertThat(ManagementServerImpl.isSystemStreamWriteOverHttp(
-                    "GET", "/api/streams/events/system/cluster-events/1.0.0")).isFalse();
+                    "GET", "/api/v1/streams/events/system/cluster-events/1.0.0")).isFalse();
         }
 
         @Test
         void appNamespaceContainingSystemSubstring_isNotGated() {
             // "systemic" must not be mistaken for the reserved "system" namespace.
             assertThat(ManagementServerImpl.isSystemStreamWriteOverHttp(
-                    "POST", "/api/streams/publish/systemic/orders/1.0.0")).isFalse();
+                    "POST", "/api/v1/streams/publish/systemic/orders/1.0.0")).isFalse();
         }
 
         @Test
         void nonStreamPath_isNotGated() {
             assertThat(ManagementServerImpl.isSystemStreamWriteOverHttp(
-                    "POST", "/api/deploy")).isFalse();
+                    "POST", "/api/v1/deploy")).isFalse();
         }
     }
 }

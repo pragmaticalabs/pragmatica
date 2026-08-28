@@ -219,7 +219,7 @@ sealed interface BootstrapPhaseFormation {
             return ClusterBootstrapOrchestrator.httpGet(readyUrl).isSuccess();
         }
 
-        var healthUrl = scheme + "://" + endpoint + ":" + managementPort + "/api/health";
+        var healthUrl = scheme + "://" + endpoint + ":" + managementPort + "/api/v1/health";
 
         return ClusterBootstrapOrchestrator.httpGet(healthUrl, apiKey)
                                            .flatMap(JSON::readTree)
@@ -253,7 +253,7 @@ sealed interface BootstrapPhaseFormation {
         var configJson = buildConfigJson(persistedToml);
         var configuredKey = extractConfiguredApiKey(ctx.config());
 
-        return retryFormationPost(endpoint + "/api/cluster/config", configJson, "cluster config", configuredKey).onSuccess(_ -> System.out.println("  Cluster config stored in KV-Store"));
+        return retryFormationPost(endpoint + "/api/v1/cluster/config", configJson, "cluster config", configuredKey).onSuccess(_ -> System.out.println("  Cluster config stored in KV-Store"));
     }
 
     @SuppressWarnings("JBCT-EX-01")
@@ -273,8 +273,8 @@ sealed interface BootstrapPhaseFormation {
                     + "\",\"authorizationRole\":\"ADMIN\",\"gracePeriodMs\":300000,\"auditAction\":\"CREATED\",\"operatorHint\":\"bootstrap\"}";
         var configuredKey = extractConfiguredApiKey(ctx.config());
 
-        return retryFormationPost(endpoint + "/api/cluster/keys", keyJson, "API key", configuredKey).onSuccess(_ -> System.out.printf("  API key stored (keyId=%s)%n",
-                                                                                                                                      keyId));
+        return retryFormationPost(endpoint + "/api/v1/cluster/keys", keyJson, "API key", configuredKey).onSuccess(_ -> System.out.printf("  API key stored (keyId=%s)%n",
+                                                                                                                                         keyId));
     }
 
     private static Option<String> extractConfiguredApiKey(ClusterBootstrapConfig config) {

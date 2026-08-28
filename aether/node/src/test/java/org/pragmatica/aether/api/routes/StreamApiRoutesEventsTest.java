@@ -28,7 +28,7 @@ class StreamApiRoutesEventsTest {
         void streamsEvents_routeRegistered_hasExpectedShape() {
             var route = ManagementRoute.STREAMS_EVENTS;
             assertThat(route.method().name()).isEqualTo("GET");
-            assertThat(route.prefix()).isEqualTo("/api/streams/events");
+            assertThat(route.prefix()).isEqualTo("/api/v1/streams/events");
         }
 
         @Test
@@ -37,7 +37,7 @@ class StreamApiRoutesEventsTest {
                     .assemble("com.example.app", "orders", "1.0.0");
             assertThat(assembled.isSuccess()).isTrue();
             assembled.onSuccess(path -> assertThat(path)
-                    .isEqualTo("/api/streams/events/com.example.app/orders/1.0.0"));
+                    .isEqualTo("/api/v1/streams/events/com.example.app/orders/1.0.0"));
         }
 
         @Test
@@ -57,7 +57,7 @@ class StreamApiRoutesEventsTest {
         void streamsEvents_get_resolvesToAllAuthenticated() {
             var perm = RoutePermissionRegistry.resolve(
                     "GET",
-                    "/api/streams/events/com.example.app/orders/1.0.0");
+                    "/api/v1/streams/events/com.example.app/orders/1.0.0");
             assertThat(perm).isEqualTo(RoutePermission.ALL_AUTHENTICATED);
         }
 
@@ -65,7 +65,7 @@ class StreamApiRoutesEventsTest {
         void streamsTail_get_resolvesToAllAuthenticated() {
             var perm = RoutePermissionRegistry.resolve(
                     "GET",
-                    "/api/streams/tail/com.example.app/orders/1.0.0");
+                    "/api/v1/streams/tail/com.example.app/orders/1.0.0");
             assertThat(perm).isEqualTo(RoutePermission.ALL_AUTHENTICATED);
         }
     }

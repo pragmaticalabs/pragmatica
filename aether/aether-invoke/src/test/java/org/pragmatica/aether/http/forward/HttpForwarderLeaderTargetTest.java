@@ -43,13 +43,13 @@ class HttpForwarderLeaderTargetTest {
     private static final NodeId LEADER = nodeId("node-leader").unwrap();
     private static final NodeId OTHER = nodeId("node-other").unwrap();
 
-    private static final String REASSIGN_PATH = "/api/nodes/promote/node-other";
+    private static final String REASSIGN_PATH = "/api/v1/nodes/promote/node-other";
 
-    private static final String SCALE_PATH = "/api/cluster/scale";
+    private static final String SCALE_PATH = "/api/v1/cluster/scale";
 
     @Test
     void clusterScale_followerReceiver_returnsConflict() {
-        // Defense-in-depth: when a follower receives /api/cluster/scale (which now routes
+        // Defense-in-depth: when a follower receives /api/v1/cluster/scale (which now routes
         // to LEADER), the forwarder must signal NotLeader so the local handler is bypassed.
         // The local handler running on a follower would observe `CTM.active=false` and
         // silently drop the request — the original bug. Surfacing NotLeader (mapped to 409

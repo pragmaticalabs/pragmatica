@@ -73,7 +73,7 @@ class SchemaRouteStatusTest {
     private static final String DATASOURCE = "orders_db";
     private static final String COORDS = "org.example:orders-app:1.0.0";
     private static final BlueprintId OWNER = BlueprintId.blueprintId(COORDS).unwrap();
-    private static final String INSTANCE = "/api/schema/status/" + DATASOURCE;
+    private static final String INSTANCE = "/api/v1/schema/status/" + DATASOURCE;
     private static final String REQUEST_ID = "req-1";
 
     private InMemoryKvStore store;

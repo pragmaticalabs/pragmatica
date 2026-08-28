@@ -326,7 +326,7 @@ public sealed interface ClusterHttpClient {
 
     /// #209: scheme-aware variant — operational commands against a TLS-on cluster must use `https`.
     static Result<Unit> drainNode(String scheme, String address, int managementPort, String nodeId) {
-        var url = scheme + "://" + address + ":" + managementPort + "/api/nodes/drain/" + nodeId;
+        var url = scheme + "://" + address + ":" + managementPort + "/api/v1/nodes/drain/" + nodeId;
 
         return postDirect(url, "{}").mapToUnit();
     }
@@ -355,7 +355,7 @@ public sealed interface ClusterHttpClient {
     }
 
     static Result<String> checkClusterHealth(String scheme, String address, int managementPort) {
-        var url = scheme + "://" + address + ":" + managementPort + "/api/health";
+        var url = scheme + "://" + address + ":" + managementPort + "/api/v1/health";
 
         return getDirect(url);
     }
@@ -369,7 +369,7 @@ public sealed interface ClusterHttpClient {
                                              int managementPort,
                                              String nodeId,
                                              long timeoutMs) {
-        var url = scheme + "://" + address + ":" + managementPort + "/api/nodes/lifecycle/" + nodeId;
+        var url = scheme + "://" + address + ":" + managementPort + "/api/v1/nodes/lifecycle/" + nodeId;
         var deadline = System.currentTimeMillis() + timeoutMs;
 
         while (System.currentTimeMillis() < deadline) {

@@ -18,21 +18,21 @@ class RouteAssemblerTest {
     @Test
     void assemble_parameterlessRoute_returnsPrefixUnchanged() {
         var path = ManagementRoute.CLUSTER_STATUS.assemble(List.of());
-        path.onSuccess(p -> assertThat(p).isEqualTo("/api/cluster/status"));
+        path.onSuccess(p -> assertThat(p).isEqualTo("/api/v1/cluster/status"));
         assertThat(path.isSuccess()).isTrue();
     }
 
     @Test
     void assemble_singleParam_appendsToTail() {
         var path = ManagementRoute.DEPLOY_PROMOTE.assemble("dep-1");
-        path.onSuccess(p -> assertThat(p).isEqualTo("/api/deploy/promote/dep-1"));
+        path.onSuccess(p -> assertThat(p).isEqualTo("/api/v1/deploy/promote/dep-1"));
         assertThat(path.isSuccess()).isTrue();
     }
 
     @Test
     void assemble_multipleParams_appendsInOrder() {
         var path = ManagementRoute.STREAM_READ.assemble("orders", "3");
-        path.onSuccess(p -> assertThat(p).isEqualTo("/api/streams/read/orders/3"));
+        path.onSuccess(p -> assertThat(p).isEqualTo("/api/v1/streams/read/orders/3"));
         assertThat(path.isSuccess()).isTrue();
     }
 
@@ -40,7 +40,7 @@ class RouteAssemblerTest {
     void assemble_urlEncodesSegments() {
         // `/` is preserved so callers can pass pre-joined path fragments (e.g. Maven group paths).
         var path = ManagementRoute.DEPLOY_STATUS.assemble("a b/c");
-        path.onSuccess(p -> assertThat(p).isEqualTo("/api/deploy/a%20b/c"));
+        path.onSuccess(p -> assertThat(p).isEqualTo("/api/v1/deploy/a%20b/c"));
         assertThat(path.isSuccess()).isTrue();
     }
 
@@ -51,7 +51,7 @@ class RouteAssemblerTest {
     void assemble_blueprintIdWithColons_percentEncodesThemIntoOneSegment() {
         var path = ManagementRoute.BLUEPRINT_STATUS.assemble("org.example:hello:1.0.0-SNAPSHOT");
         path.onSuccess(p -> assertThat(p)
-                .isEqualTo("/api/blueprints/status/org.example%3Ahello%3A1.0.0-SNAPSHOT"));
+                .isEqualTo("/api/v1/blueprints/status/org.example%3Ahello%3A1.0.0-SNAPSHOT"));
         assertThat(path.isSuccess()).isTrue();
     }
 

@@ -76,7 +76,7 @@ class MavenProtocolHandlerTest {
                    assertThat(body).contains("listing is not implemented");
                    assertThat(body).contains("maven-metadata.xml");
                    assertThat(body).contains("/repository/info/");
-                   assertThat(body).contains("/api/artifacts/metrics");
+                   assertThat(body).contains("/api/v1/artifacts/metrics");
                    assertThat(body).contains("#527");
                });
     }
