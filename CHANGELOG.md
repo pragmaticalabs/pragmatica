@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Fixed (2026-08-28 — #712: slice jars ship the message classes their manifests declare)
+- **A slice jar now contains the topic message and stream event classes its own manifest
+  declares, plus the full sibling `shared` package tree.** Two packaging gaps compounded:
+  `SliceManifest.allImplClasses()` — the single source `PackageSlicesMojo` packages from — merged
+  only impl/request/response classes, never the manifest's own `publish.message.classes` and
+  `stream.event.classes` (publisher message types are constructor-injected `MessagePublisher<T>` /
+  `StreamPublisher<T>` type arguments, so they appear in no method-derived list); and the sibling
+  `shared` package walk was non-recursive (`Files.list`) while the slice-subpackage walk was
+  recursive, so records in `shared.event` and their component types in other `shared.*`
+  subpackages never reached the jar. Evidence: ticketing-sweep-holds' jar omitted the declared
+  `shared.event.SeatReleased` and slice activation died with `NoClassDefFoundError`;
+  notification-hub's `NotificationEvent` was present in the module jar but absent from the slice
+  jars. Closure depth: declared classes by name plus their nested/member classes plus the entire
+  sibling `shared` tree — no bytecode reference walk, matching the existing convention-based
+  closure. Manifest keys are unchanged (consumption-side fix only), so the envelope format is
+  untouched. Same-module subscribers were already covered via `request.classes` (reactive methods
+  are interface methods); cross-module message-type delivery is the dependency-edge sibling #717.
+  [verified: `jbct/jbct-core/src/test/java/org/pragmatica/jbct/slice/SliceManifestTest.java` and
+  `jbct/jbct-maven-plugin/src/test/java/org/pragmatica/jbct/maven/PackageSlicesMessageClassesTest.java`
+  (red against unfixed code, green after; jar-level assertion on a built archive); final e2e
+  against the #704 rf=1 reproduction runs in the coordinating session before #712 closes]
+
 ### Fixed (2026-08-28 — #644: periodic tasks arm in start(), not at assembly)
 - **A created-but-never-started node now performs no periodic work and holds no timers.**
   `AetherNode.assembleNode` used to hand all fourteen of the node's recurring tasks to
