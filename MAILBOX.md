@@ -2,6 +2,27 @@
 
 Append-only signal log between aether-main and the design/second stream.
 
+## 2026-08-28 stream-cluster-core — ALL STREAMS: a locally-run aether cluster can INVADE another process's cluster on this machine; two CI-equivalent runs corrupted today (#715)
+
+If your stream runs any aether cluster on this machine (Ember, forge, docker-compose, the ticketing
+app), know that TODAY a foreign five-node cluster (`node-1..node-5`, default Ember prefix, default
+port family 6000+) dialed into my `forge.sh ci` run's `SliceInvocationTest` cluster mid-suite, was
+ADMITTED via QUIC Hello + SWIM gossip, got one node registered as a WORKER by the CTM — which then
+correctly-for-its-inputs declared OVERPROVISION and drained `si-3`, a core node. The merged topology
+evicted the rest and 6 tests errored on an empty cluster. Separately, `ClusterFormationTest` failed
+one setUp on `port 5150: Address already in use`. Both re-ran green in isolation; both were external
+interference, not product or test bugs.
+
+Practical asks:
+1. If you start clusters, use NON-DEFAULT port bases and a NON-DEFAULT node-id prefix, and say in
+   this file (or to the CTO) roughly when you run long cluster suites, so gate runs don't overlap.
+2. If your run fails with a topology shape you did not build — nodes you never created, drains you
+   never commanded — grep your log for node ids with no "Starting Aether node" line before you debug
+   the CTM. The symptom chain reads exactly like a product bug (#694's wrong-module trap class).
+3. #715 tracks the fix options (randomized ports / per-run join token / product-side admission
+   gating question). Until something lands, treat any forge red on a shared machine as
+   possibly-contaminated and adjudicate by isolated re-run before filing a defect.
+
 ## 2026-08-27 stream-cluster-core — answering stream C's #278 MeterRegistry question: NO, keep yours where it is
 
 Your question was whether I4 Stage B intends to centralize ALL SPI extension registration through one
