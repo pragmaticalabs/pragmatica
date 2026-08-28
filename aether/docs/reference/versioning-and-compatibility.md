@@ -6,7 +6,7 @@ each other because they all use the word "version"; they are independent by desi
 
 | Surface | What it versions | Status |
 |---|---|---|
-| Product release (`1.0.0-rc3`) | The whole codebase, as a release artifact | rc series, pre-GA |
+| Product release (`1.0.0-rc3`) | The whole codebase, as a release artifact | rc series, pre-GA; SemVer committed from GA (#321) |
 | Envelope format (`ENVELOPE_FORMAT_VERSION`) | Slice-processor generated-code structure | Built, frozen at `1000` until GA |
 | Slice HTTP API versions (`v1`, `v2`, ...) (#198) | An individual slice's own routes | Built |
 | Management HTTP API (`/api/v1/...`) (#300) | The cluster's control-plane routes | **Draft — not implemented** |
@@ -17,18 +17,39 @@ version skew."
 
 ## Product release versioning
 
-Aether is pre-GA — `1.0.0-rc3` at this writing — with one active release line and no formal
-backport/LTS policy [mechanism: `CHANGELOG.md`, current branch]. **No SemVer commitment for the
-product as a whole has been published anywhere in this repository** [design intent — unverified:
-checked `README.md`, `LICENSE`, `CHANGELOG.md` — none states one]. Treat every rc as able to break
-compatibility with the previous one until a GA versioning policy is written and linked here.
+Aether is pre-GA — `1.0.0-rc3` at this writing — with one active release line
+[mechanism: `CHANGELOG.md`, current branch]. **Aether commits to semantic versioning for the
+product release from GA (`v1.0.0`) onward** [owner ruling 2026-08-28, #321]: minor releases
+(`1.x.0`) are additive only — no removed or renamed public surface, no breaking behavior change;
+breaking changes are reserved for major releases (`2.0.0`, ...). This governs the "Product
+release" row in the table above. It is a separate axis from, and does not itself change, the
+management API's own version axis (`/api/v1`, `/api/v2`, ...): that surface keeps its own
+additive/breaking rules independently, per
+[`../specs/management-api-versioning-spec.md`](../specs/management-api-versioning-spec.md) §2.6 —
+an additive management-API change never mints a new API version, and an API major bump is not
+*required* to coincide with a product major (though in practice a `v2` would normally coincide
+with one).
 
-What *is* an explicit, recorded policy — but scoped to the management API surface only, and still
-in Draft — is a **pre-GA no-backward-compatibility stance**: "pre-GA, a rename is free (no-compat
-policy)" [mechanism: `aether/docs/specs/management-api-versioning-spec.md` §1, §2.3]. Do not read
-that as a blanket statement about every surface in the codebase (the envelope format, for
-instance, already carries an explicit accept-set across rc's — see below); it is that one Draft
-spec's stated design principle for its own surface.
+**Pre-GA, this commitment does not apply.** Every rc may still break compatibility with the
+previous one until GA ships — treat `1.0.0-rc3` and any later rc that way until the product
+version itself reaches `1.0.0`.
+
+**Not decided by the ruling, and still an open gap:** the *compatibility window* once a major
+ships — how long a superseded major keeps receiving fixes, whether there is a backport or LTS
+line, what a deprecation/EOL timeline looks like. The SemVer commitment above says how a version
+number must behave; it does not by itself say how long an old one is supported. No such policy is
+published anywhere in this repository today [checked `README.md`, `LICENSE`, `CHANGELOG.md` — none
+states one], and this page will not invent a duration. Candidate for its own tracking ticket,
+parallel to how the version-skew gap below was tracked as #666, rather than being decided
+silently in a docs pass — flagged here, not filed.
+
+Separately, what *is* an explicit, recorded policy — scoped to the management API surface only,
+and still in Draft — is a **pre-GA no-backward-compatibility stance**: "pre-GA, a rename is free
+(no-compat policy)" [mechanism: `aether/docs/specs/management-api-versioning-spec.md` §1, §2.3].
+Do not read that as a blanket statement about every surface in the codebase (the envelope format,
+for instance, already carries an explicit accept-set across rc's — see below); it is that one
+Draft spec's stated design principle for its own surface, and it does not conflict with the
+product-level SemVer commitment above — both apply pre-GA, to different axes.
 
 For the authoritative statement of what "pre-GA" means for production-readiness (not a versioning
 question, a scope one), see [`known-limitations.md`](known-limitations.md#release-maturity--rc-series-toward-ga)

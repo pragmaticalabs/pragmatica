@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Changed (2026-08-28 — #321: SemVer commitment ruled for GA)
+- `aether/docs/reference/versioning-and-compatibility.md` updated with the owner ruling: Aether
+  commits to semantic versioning for the product release from GA (`v1.0.0`) onward — additive
+  changes only in minors, breaking changes reserved for majors — independent of the management
+  API's own version axis (`management-api-versioning-spec.md` §2.6). Pre-GA rc's remain outside
+  the commitment. Flags the one thing the ruling did *not* settle: the compatibility window once a
+  major ships (backport/LTS/EOL policy) is still undecided and unpublished — noted as a candidate
+  for its own tracking ticket, not filed, parallel to how the version-skew gap became #666.
+
 ### Added (2026-08-27 — #351 / #345 I4: durable entity timers, end to end)
 - **A timer scheduled on an entity is a record in that entity's own fenced, replicated log**, so it
   survives its owner being replaced and the whole cluster restarting. `scheduleTimer` / `cancelTimer`
