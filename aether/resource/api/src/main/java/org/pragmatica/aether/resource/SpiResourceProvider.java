@@ -13,6 +13,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 
+import org.pragmatica.config.ConfigError;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.config.ProviderBasedConfigService;
@@ -283,6 +284,11 @@ public final class SpiResourceProvider implements ResourceProvider {
     /// resources.toml `[section]` — the author no longer writes `topic_name` — defaults to a topic
     /// named after the section instead of failing slice activation. Non-topic resources are unaffected.
     ///
+    /// Only [ConfigError.SectionNotFound] takes the fallback: a section that EXISTS but fails
+    /// validation (the durable-pubsub §3 constraint, inert ephemeral keys) must fail activation
+    /// loudly — recovering it into an ephemeral default would silently downgrade a declared-durable
+    /// topic to fire-and-forget delivery.
+    ///
     /// This is the intentional exception to #547's "no resource type silently synthesises
     /// configuration" gate: `TopicConfig` is a single-field record whose value the runtime already
     /// knows independently of `resources.toml` (the topic name), so there is nothing to synthesise —
@@ -291,8 +297,15 @@ public final class SpiResourceProvider implements ResourceProvider {
     /// topic/stream sections at all; only generic [SliceTopology.ResourceDep] resources are gated.
     private static Result<Object> topicNameFallback(String section, Class<?> configType, Result<Object> loaded) {
         return configType.equals(TopicConfig.class)
-               ? loaded.recover(_ -> new TopicConfig(section))
+               ? loaded.fold(cause -> recoverMissingTopicSection(section, cause), Result::success)
                : loaded;
+    }
+
+    private static Result<Object> recoverMissingTopicSection(String section, Cause cause) {
+        return switch (cause) {
+            case ConfigError.SectionNotFound _ -> Result.success(new TopicConfig(section));
+            default -> cause.result();
+        };
     }
 
     /// Resolve the configuration loader for this provisioning call.
