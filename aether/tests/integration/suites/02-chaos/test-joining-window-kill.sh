@@ -17,8 +17,8 @@
 #   domain event. A killed node simply LEAVES the SWIM-fed membership. The
 #   v2-correct "node was removed" signal (already verified elsewhere) is twofold,
 #   either being sufficient:
-#     - /api/nodes/lifecycle/<R> returns HTTP 404 (LIFECYCLE_NOT_FOUND), AND/OR
-#     - R is absent from /api/nodes/status cluster.nodes[].
+#     - /api/v1/nodes/lifecycle/<R> returns HTTP 404 (LIFECYCLE_NOT_FOUND), AND/OR
+#     - R is absent from /api/v1/nodes/status cluster.nodes[].
 #
 # Acceptance contract (spec §16 row S01):
 #   "R is removed from membership within the S01 budget" of kill, observable via
@@ -37,15 +37,15 @@
 #   4. Kill R immediately (target: within ~2-3s of its container start, well
 #      before SWIM would have marked it HEALTHY).
 #   5. Record kill timestamp; assert R is REMOVED from membership (404 from
-#      /api/nodes/lifecycle/<R> OR absent from /api/nodes/status cluster.nodes[])
+#      /api/v1/nodes/lifecycle/<R> OR absent from /api/v1/nodes/status cluster.nodes[])
 #      within the 90s S01 budget.
 #   6. Hygiene: pick_non_leader() must NOT return R after its removal.
 #
 # Why this catches a regression:
 #   * If SWIM departure detection regresses: R will not be removed within the
-#     budget — it lingers in cluster.nodes[] and /api/nodes/lifecycle keeps
+#     budget — it lingers in cluster.nodes[] and /api/v1/nodes/lifecycle keeps
 #     returning a live state — and the budget assertion fails.
-#   * If the /api/nodes/status projection regresses (e.g. stale membership
+#   * If the /api/v1/nodes/status projection regresses (e.g. stale membership
 #     overlay): R stays visible in cluster.nodes[] past the budget.
 
 set -euo pipefail
@@ -122,7 +122,7 @@ RACE_TO_READY_FILE="/tmp/s01-race-to-ready.$$"
 #   topology presence, which wins ~2-5s of catch window for the JOINING-window kill.
 # cloud: there is NO local/remote docker daemon and per-node container labels do
 #   not exist (each node is a separate Hetzner VM). Identity comes from the
-#   cluster's own membership projection: /api/nodes/status cluster.nodes[].nodeId
+#   cluster's own membership projection: /api/v1/nodes/status cluster.nodes[].nodeId
 #   (status_node_ids, lib/topology.sh). The trade-off: a replacement appears in the
 #   API only once it has surfaced in membership (JOINING), slightly later than the
 #   docker label — but it is the only cloud-reliable identity source, and the
@@ -186,7 +186,7 @@ wait_for_replacement_in_kv() {
 #     DockerComputeProvider BEFORE R has any SWIM/topology presence; this label
 #     wins us 2-5s, the difference between "kill R in the JOINING window" and
 #     "kill R after it transitioned to ON_DUTY".
-#   cloud — /api/nodes/status cluster.nodes[].nodeId (no container labels on a
+#   cloud — /api/v1/nodes/status cluster.nodes[].nodeId (no container labels on a
 #     fresh VM); R surfaces here once it enters membership (JOINING).
 wait_for_new_node_id_label() {
     local baseline_file="$1" timeout="${2:-60}"
@@ -216,7 +216,7 @@ wait_for_new_node_id_label() {
 # cloud: there is no local container to look up by label; delegate to the
 #   env-aware kill_node (lib/cluster.sh), which SSHes to the node's VM and kills
 #   the container (or JVM, per CLOUD_RUNTIME). The node-id discovered on cloud is
-#   the runtime NodeId (from /api/nodes/status), which kill_node accepts directly.
+#   the runtime NodeId (from /api/v1/nodes/status), which kill_node accepts directly.
 kill_by_node_id_label() {
     local node_id="$1"
     if [ "${CLOUD_MODE:-false}" = "true" ]; then
@@ -307,13 +307,13 @@ test_catch_replacement_in_joining_window() {
     priming_victim=$(cat "$PRIMING_VICTIM_FILE")
     assert_ne "$replacement" "$priming_victim" "Replacement NodeId ${replacement} is fresh (not the priming victim ${priming_victim})"
 
-    # CRITICAL — wait for R to appear in /api/nodes/lifecycle reporting a live
+    # CRITICAL — wait for R to appear in /api/v1/nodes/lifecycle reporting a live
     # work-state (NodeReportedState = SYNCING or READY). Without this gate, the
     # post-kill removal check is ambiguous: R might never have surfaced in
     # membership at all, in which case "removed" reads as either "removal worked"
     # OR "R died too fast to ever be tracked".
     #
-    # The endpoint `/api/nodes/lifecycle/<R>` reports the node's own reported state
+    # The endpoint `/api/v1/nodes/lifecycle/<R>` reports the node's own reported state
     # (leader-forwarded). A just-provisioned replacement reports SYNCING first, then
     # READY once it has caught up on consensus.
     #
@@ -325,7 +325,7 @@ test_catch_replacement_in_joining_window() {
     # kill never landed and the next test failed with "S01 kill timestamp missing".
     local pre_kill_state
     if ! pre_kill_state=$(wait_for_replacement_in_kv "$replacement" "$(replacement_discovery_base_timeout)"); then
-        log_fail "Replacement ${replacement} never reported SYNCING/READY in /api/nodes/lifecycle/${replacement} within $(replacement_discovery_base_timeout)s — CTM provisioned the container but the node never surfaced in membership (consensus stuck? leader churn? node failed to start?). Cannot exercise S01."
+        log_fail "Replacement ${replacement} never reported SYNCING/READY in /api/v1/nodes/lifecycle/${replacement} within $(replacement_discovery_base_timeout)s — CTM provisioned the container but the node never surfaced in membership (consensus stuck? leader churn? node failed to start?). Cannot exercise S01."
         return 1
     fi
     case "$pre_kill_state" in
@@ -371,8 +371,8 @@ test_decommission_within_budget() {
     # Authoritative v2 assertion: poll until R is REMOVED from membership,
     # capped at the spec budget. v2 has no DECOMMISSIONED lifecycle state — a
     # killed node simply leaves the SWIM-fed membership. Removal is observed
-    # via /api/nodes/lifecycle/<R> returning HTTP 404 (LIFECYCLE_NOT_FOUND) OR
-    # R being absent from /api/nodes/status cluster.nodes[]. See
+    # via /api/v1/nodes/lifecycle/<R> returning HTTP 404 (LIFECYCLE_NOT_FOUND) OR
+    # R being absent from /api/v1/nodes/status cluster.nodes[]. See
     # wait_for_node_removed for the dual signal.
     if ! wait_for_node_removed "$replacement" "$DECOMMISSION_BUDGET_S"; then
         # Diagnostic: show R's current lifecycle state so the failure log
@@ -381,7 +381,7 @@ test_decommission_within_budget() {
         stuck_state=$(kv_lifecycle_state "$replacement")
         now=$(date +%s)
         elapsed=$((now - kill_ts))
-        log_fail "S01 budget violated: ${replacement} not removed from membership within ${DECOMMISSION_BUDGET_S}s (elapsed=${elapsed}s, lifecycle_state='${stuck_state:-<404/absent>}'; still present in /api/nodes/status). The SWIM failure detector did not drop the killed peer in time — likely a regression in SWIM departure detection or NTT eviction (R lingers in cluster.nodes[] past the budget)."
+        log_fail "S01 budget violated: ${replacement} not removed from membership within ${DECOMMISSION_BUDGET_S}s (elapsed=${elapsed}s, lifecycle_state='${stuck_state:-<404/absent>}'; still present in /api/v1/nodes/status). The SWIM failure detector did not drop the killed peer in time — likely a regression in SWIM departure detection or NTT eviction (R lingers in cluster.nodes[] past the budget)."
         return 1
     fi
 
@@ -395,7 +395,7 @@ test_decommission_within_budget() {
     if ! assert_ge "$DECOMMISSION_BUDGET_S" "$elapsed" "Replacement ${replacement} removed from membership within ${DECOMMISSION_BUDGET_S}s budget (actual=${elapsed}s)"; then
         return 1
     fi
-    log_pass "S01 timing budget met: ${replacement} left the cluster (404 from /api/nodes/lifecycle OR absent from /api/nodes/status) in ${elapsed}s (within ${DECOMMISSION_BUDGET_S}s budget)"
+    log_pass "S01 timing budget met: ${replacement} left the cluster (404 from /api/v1/nodes/lifecycle OR absent from /api/v1/nodes/status) in ${elapsed}s (within ${DECOMMISSION_BUDGET_S}s budget)"
 }
 
 # (removed) transport-unreachable smoking-gun test — v2 has no decommission-reason event; node departure is observed via membership-absence (see test_decommission_within_budget).

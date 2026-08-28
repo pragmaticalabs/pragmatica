@@ -11,7 +11,7 @@ DATASOURCE=""
 
 discover_tracked_datasource() {
     local body
-    body=$(api_get "/api/schema/status" 2>/dev/null) || return 1
+    body=$(api_get "/api/v1/schema/status" 2>/dev/null) || return 1
     # #598: the status list is CLUSTER-GLOBAL and url-shortener's datasource is tracked
     # too when cluster-A suites run in parallel — select THIS blueprint's row, never
     # the first row (head -1 grabbed whichever blueprint published first).

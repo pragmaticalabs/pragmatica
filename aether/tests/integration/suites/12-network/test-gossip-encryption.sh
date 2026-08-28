@@ -18,23 +18,23 @@ test_cluster_formed_with_encryption() {
     # producing 6-7 even though only 5 nodes are actively serving. The test's intent
     # is "the cluster formed with 5 operational nodes under encryption" — the right
     # signal for that is the transport-honest healthy core count exposed by
-    # /api/cluster/topology.coreCount (the same metric restore_cluster_baseline gates on).
+    # /api/v1/cluster/topology.coreCount (the same metric restore_cluster_baseline gates on).
     local count
     count=$(cluster_active_core_count)
     assert_eq "$count" "5" "Cluster formed with 5 healthy cores (encryption enabled)"
 }
 
 test_gossip_encryption_active_via_config() {
-    # `quic_handshake_total` from /api/metrics/transport is the deterministic positive
+    # `quic_handshake_total` from /api/v1/metrics/transport is the deterministic positive
     # signal: every QUIC connection requires a TLS handshake (QuicSslContext is
     # mandatory in `QuicClusterNetwork`). A non-zero handshake count between cluster
     # bring-up and the time of this assertion proves the cluster transport is
     # TLS-encrypted — there is no QUIC-without-TLS code path. This replaces the
     # config-flag fishing expedition with a runtime fact.
     local metrics handshake_count
-    metrics=$(api_get "/api/metrics/transport")
+    metrics=$(api_get "/api/v1/metrics/transport")
     if [ -z "$metrics" ]; then
-        log_fail "GET /api/metrics/transport returned empty — cannot read QUIC handshake counter"
+        log_fail "GET /api/v1/metrics/transport returned empty — cannot read QUIC handshake counter"
         return 1
     fi
     handshake_count=$(json_value "$metrics" "quic_handshake_total")
@@ -53,9 +53,9 @@ test_gossip_encryption_via_transport() {
     # mismatches). The ratio is the canonical "are encrypted handshakes succeeding"
     # signal — not just "are encryption-related metrics present".
     local metrics handshake_total handshake_failures
-    metrics=$(api_get "/api/metrics/transport")
+    metrics=$(api_get "/api/v1/metrics/transport")
     if [ -z "$metrics" ]; then
-        log_fail "GET /api/metrics/transport returned empty"
+        log_fail "GET /api/v1/metrics/transport returned empty"
         return 1
     fi
     handshake_total=$(json_value "$metrics" "quic_handshake_total")

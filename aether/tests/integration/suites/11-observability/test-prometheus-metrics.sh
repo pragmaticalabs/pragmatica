@@ -13,7 +13,7 @@ test_cluster_ready() {
 
 test_prometheus_endpoint_responds() {
     local status
-    status=$(http_status "${CLUSTER_ENDPOINT}/api/metrics/prometheus" -H "X-API-Key: ${API_KEY}")
+    status=$(http_status "${CLUSTER_ENDPOINT}/api/v1/metrics/prometheus" -H "X-API-Key: ${API_KEY}")
     if [ "$status" -ge 200 ] && [ "$status" -lt 300 ] 2>/dev/null; then
         log_pass "Prometheus endpoint returns ${status}"
         return 0
@@ -24,7 +24,7 @@ test_prometheus_endpoint_responds() {
 
 test_valid_prometheus_format() {
     local body
-    body=$(api_get "/api/metrics/prometheus")
+    body=$(api_get "/api/v1/metrics/prometheus")
     assert_ne "$body" "" "Prometheus body is non-empty"
     # Prometheus text format: lines are either comments (# ...) or metric lines (name value).
     # Use a sentinel so a grep pipeline error is distinguishable from "0 matches".
@@ -37,7 +37,7 @@ test_valid_prometheus_format() {
 # request metrics indicates the Micrometer wiring is broken.
 test_http_request_metrics() {
     local body
-    body=$(api_get "/api/metrics/prometheus")
+    body=$(api_get "/api/v1/metrics/prometheus")
     if echo "$body" | grep -qE 'http_request|aether_http_requests|http_server_requests'; then
         log_pass "HTTP request metrics present"
         return 0
@@ -51,7 +51,7 @@ test_http_request_metrics() {
 # means the JVM binders failed to register.
 test_jvm_metrics() {
     local body
-    body=$(api_get "/api/metrics/prometheus")
+    body=$(api_get "/api/v1/metrics/prometheus")
     if echo "$body" | grep -qE 'jvm_memory|jvm_threads|jvm_gc'; then
         log_pass "JVM metrics present"
         return 0
@@ -64,7 +64,7 @@ test_jvm_metrics() {
 # the runtime exposes cluster state via these prefixes.
 test_cluster_metrics() {
     local body
-    body=$(api_get "/api/metrics/prometheus")
+    body=$(api_get "/api/v1/metrics/prometheus")
     if echo "$body" | grep -qE 'aether_|cluster_|node_'; then
         log_pass "Cluster-specific metrics present"
         return 0
@@ -78,7 +78,7 @@ test_cluster_metrics() {
 # from "grep crashed" by setting an explicit sentinel.
 test_no_empty_metric_values() {
     local body
-    body=$(api_get "/api/metrics/prometheus")
+    body=$(api_get "/api/v1/metrics/prometheus")
     local bad_lines
     if bad_lines=$(echo "$body" | grep -cvE '^#|^$|[0-9]'); then
         :

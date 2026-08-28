@@ -155,7 +155,7 @@ class DeclarativeConsumerPlacementTest {
         if (cluster != null) {
             var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
 
-            httpDelete(leaderPort, "/api/blueprints/" + BLUEPRINT_ID);
+            httpDelete(leaderPort, "/api/v1/blueprints/" + BLUEPRINT_ID);
             cluster.stop()
                    .await();
         }
@@ -290,7 +290,7 @@ class DeclarativeConsumerPlacementTest {
 
     private int totalAttachedSubscriptions() {
         return mgmtPorts().stream()
-                          .map(port -> httpGet(port, "/api/streams/declarative-consumers"))
+                          .map(port -> httpGet(port, "/api/v1/streams/declarative-consumers"))
                           .mapToInt(body -> firstInt(ATTACHED_FIELD, body))
                           .sum();
     }
@@ -309,7 +309,7 @@ class DeclarativeConsumerPlacementTest {
     /// assignment, but only the host can report `sliceDeployedLocally` and the forwarding diagnostic.
     private String spreadFragment() {
         return mgmtPorts().stream()
-                          .map(port -> consumerFragment(httpGet(port, "/api/streams/declarative-consumers"),
+                          .map(port -> consumerFragment(httpGet(port, "/api/v1/streams/declarative-consumers"),
                                                         SPREAD_EVENTS_STREAM))
                           .filter(fragment -> fragment.contains("\"sliceDeployedLocally\":true"))
                           .findFirst()
@@ -345,7 +345,7 @@ class DeclarativeConsumerPlacementTest {
             instances = %d
             """.formatted(BLUEPRINT_ID, CONSUMER_SLICE, INSTANCES);
         var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
-        var response = httpPostToml(leaderPort, "/api/blueprints", blueprint);
+        var response = httpPostToml(leaderPort, "/api/v1/blueprints", blueprint);
 
         assertThat(response).describedAs("placement-restricted consumer slice deployment")
                             .doesNotContain("\"error\"")
@@ -414,7 +414,7 @@ class DeclarativeConsumerPlacementTest {
 
     private boolean checkNodeHealth(int port) {
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + "/api/health"))
+                                 .uri(URI.create("http://localhost:" + port + "/api/v1/health"))
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();

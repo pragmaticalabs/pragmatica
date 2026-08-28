@@ -3,8 +3,8 @@
 # a departure event within the detection window, then wait for full recovery.
 #
 # Event-driven instead of snapshot polling: auto-heal is fast enough that
-# /api/cluster/topology can show the replacement before the poll sees the
-# drop. /api/events gives us an ordered, stable record of what happened.
+# /api/v1/cluster/topology can show the replacement before the poll sees the
+# drop. /api/v1/events gives us an ordered, stable record of what happened.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

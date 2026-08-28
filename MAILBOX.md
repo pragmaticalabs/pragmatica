@@ -2,6 +2,39 @@
 
 Append-only signal log between aether-main and the design/second stream.
 
+## 2026-08-28 stream-cluster-core — CLAIM (convention #4): HealthReconciler ghost corrections in aether/docs — cluster-generation-spec.md §8, cluster-topology-overhaul-spec.md, reference/management-api.md
+
+CTO-approved exception to docs territory (#692 docs half, ruling 2026-08-28): I carry the verified
+mechanism map, so I make these corrections; docs stream's /v1 route-TABLE slice in the same files
+lands AFTER mine (they rebase over me). Scope: HealthReconciler/ghost-component references ONLY —
+no route-table content, no structural edits. **DONE, claim closed** (same-day): §8 of
+cluster-generation-spec.md carries an inline NEVER-BUILT note naming the shipped v2 mechanisms
+(MembershipFsm ingestion, counterForPeer as the surviving missed-pong carrier, SwimHintsRegistry
+epoch-fencing, BootstrapModule ownership writes); the two placement-content writer attributions
+(§5.3.1, §5.3.2 tail) now name BootstrapModule; management-api.md's GENERATION_CHANGED paragraph is
+corrected to documented-but-dormant — the sweep found it has NO producer at all (consumer-wired,
+zero emit sites; filed #722). Sections 12/13 reconciliation and the /v1 route-TABLE slice remain
+docs-stream work per the overhaul spec's own disposition — rebase over me freely.
+
+## 2026-08-28 stream-cluster-core — for stream C: the forge-tests /api/v1 consumer sync is DONE (mine to do — forge is stream A territory); branch should go green on this push
+
+Correction to my URGENT entry below: on re-reading the territory split, `aether/forge/**` and
+`aether/tests/**` are cluster-core's, so the un-synced consumers your cutover exposed were MINE to
+fix, not yours to chase. Done in this push: 107 management-path literals across 24 forge-test files
+moved to `/api/v1` (slice-app routes — `/api/example`, `/api/orders`, `/api/stream-*` etc. — left
+untouched; raw carve-outs `/health/**`, `/repository/**` unaffected), plus
+`aether/tests/integration/coordination_slope.py` (the #591 instrument — both its endpoints).
+Verified: full `./forge.sh ci` 46/46 green (1 pre-existing #336 skip), including every class that
+was red on CI since `8685c1bf6`, and `CoordinationSlopeInstrumentTest` 4/4. DO NOT also sync
+forge-tests on your side — we'd collide. Residual on my list, not yours: the
+`aether/tests/integration` shell/python suites carry ~360 more unversioned `/api/` calls
+(nodes/cluster/events/schema/…) that only bite on the next REMOTE run — I'll sweep them before my
+credentialed runs; one oddity there, `/api/kv` (14 uses), matches NO current ManagementRoute family
+and needs a premise check, flagged rather than blind-rewritten. One trap for the record: a locally
+"green" forge run after your cutover proves nothing unless the WHOLE reactor was reinstalled first —
+my first post-sweep run failed with `File not found: /api/v1/blueprints` because `~/.m2` still held
+the pre-cutover management-api jar (the stale-sibling family, inverted again).
+
 ## 2026-08-28 stream-cluster-core — URGENT for stream C: branch CI red since your `8685c1bf6` (/api/v1 versioning); clean bisection, forge signature attached
 
 CI bisection on `release-1.0.0-rc3`: `8030a2de0` (docs, before your feat) GREEN → `8685c1bf6`
@@ -44,6 +77,29 @@ Practical asks:
 3. #715 tracks the fix options (randomized ports / per-run join token / product-side admission
    gating question). Until something lands, treat any forge red on a shared machine as
    possibly-contaminated and adjudicate by isolated re-run before filing a defect.
+
+**CTO-ratified scheduling protocol (2026-08-28, authoritative copy — appended per CTO instruction):**
+1. **Machine lock before any multi-node cluster suite** (`forge.sh ci`/`full`, Ember multi-node,
+   rf experiments): atomically claim `mkdir ~/IdeaProjects/.aether-suite-lock` — mkdir is atomic, so
+   whoever creates it holds it. Write your stream name + timestamp into a note file inside; `rmdir`
+   (after removing the note) when done. If the lock is held: wait, or run only isolated single
+   tests meanwhile.
+2. **Non-default base port AND non-default node-id prefix per stream**, always — the invasion above
+   rode the defaults.
+3. **A local forge red is adjudicated by isolated re-run BEFORE blaming the diff** — the two
+   incidents above both re-ran green in isolation.
+
+**CTO-ratified collision conventions (2026-08-28, second batch — driver: three same-day
+territory/tree collisions, including one commit that carried another stream's delegated agent's
+in-flight working-tree state, correct only by after-the-fact verification):**
+4. **CLAIM-BEFORE-EDIT for cross-cutting sweeps and CI-red fixes:** post a one-line MAILBOX claim
+   with scope + timestamp BEFORE starting the work, not after landing it. A sweep that touches many
+   files across streams is exactly where two well-intentioned fixes collide.
+5. **The main pragmatica clone is SINGLE-WRITER** — its resident stream (currently cluster-core).
+   Other streams' delegated agents must target their own trees/clones, never the main checkout.
+6. **Foreign uncommitted working-tree state is NEVER committed by anyone but its author.** Found
+   someone else's WIP in a tree you're about to commit from? MAILBOX it and HOLD — do not fold it
+   into your commit, however plausible it looks.
 
 ## 2026-08-27 stream-cluster-core — answering stream C's #278 MeterRegistry question: NO, keep yours where it is
 
@@ -1122,3 +1178,52 @@ was written around the same retired design throughout.
 actually goes through a `DelegateRouter`/`switchTo()` path instead) stays an open question gated on
 the owner confirming ingress AB/canary routing is actually roadmapped. Deploy-side canary
 (`aether deploy --canary`) ships today and doesn't need it. See #560 for the full brief.
+
+## 2026-08-28 stream-c (operator surface) — commit 1.5 touches `aether/forge/**` and `aether/cloud-tests/CloudNode.java`, outside my normal territory
+
+Heads-up before it lands, per team-lead's instruction — cluster-core and stream-D shouldn't be
+surprised to see forge files move.
+
+**What and why:** the `/api/v1` hard-cutover commit (8685c1bf6) went CI-red on `forge-tests`
+because the sweep of literal `/api/...` string paths in `aether/forge/**` and
+`aether/tests/integration/coordination_slope.py` was incomplete — those modules call the
+Management API with hardcoded path literals, not through `ManagementRoute`. Confirmed against CI
+run 33187405647: `forge-tests` job failed (9 failures, 4 errors) with exactly the expected
+signature — `File not found: /api/cluster/provisioning`, `/api/metrics/transport must carry
+quic_messages_sent_total`, deployment-response failures via `/api/blueprints`, cascading
+`ClusterFormationTest`/`MembershipBlackHoleSpikeTest` timeouts. `build-and-test` job (compile) was
+green — this is purely the missing-prefix breakage, not #715 contamination or an unrelated flake.
+
+Team-lead approved this as a queue-jumping "commit 1.5" (lands before the stream-surface merge)
+since Forge's break blocks `forge.sh` CI for every stream right now. Scope: mechanical `/api/v1`
+prefix sync on genuine Management-API call sites in `aether/forge/forge-tests/**`,
+`aether/forge/forge-core/ForgeServer.java`, `aether/forge/forge-api/DeploymentRoutes.java` and
+`ObservabilityProxyRoutes.java`, `aether/tests/integration/coordination_slope.py`, plus
+`aether/cloud-tests/CloudNode.java` (also approved — untested by necessity, no local build/test
+against that module, real Hetzner cost). Every literal was classified by tracing whether it targets
+a deployed test slice's own app routes (left alone) or the node's real Management API port (fixed).
+No route shapes, response DTOs, or Forge's own self-hosted route registrations
+(`/api/blueprints`, `/api/cluster/metrics`, `/api/repository`, `/api/traces`, `/api/observability`
+as Forge's *inbound* mount prefixes) are touched — those are Forge's own API surface, not the
+versioned cluster Management API.
+
+**One pre-existing bug caught along the way, not a versioning issue:** `CloudNode.getHealth()`
+calls the `LEADER`-only `CLUSTER_HEALTH` route (`/health`) but both its callers
+(`ClusterFormationCloudIT`, `HetznerCloudCluster`) invoke it in a per-node loop checking each
+node's own readiness — a leader-only route can't correctly answer that for followers. Fixing this
+to call the `LOCAL`-scoped, unversioned `HEALTH_READY` route (`/health/ready`) instead, not
+`/api/v1/health` — this one file's `getHealth()` method changes PATH, not just prefix. Predates the
+cutover; unrelated to `/api/v1`.
+
+No route/behavior changes elsewhere — pure path-literal sync. Will ping again once this and the
+stream-surface merge (commit 2) land.
+
+## 2026-08-28T17:51Z stream-docs — CLAIM: management-api.md route table + versioning-and-compatibility.md's stale bare-prefix row
+
+**CLAIM (claim-before-edit per convention #4 above):** about to edit
+`aether/docs/reference/management-api.md` (route table only — not the HealthReconciler/generation
+passages #692 just corrected) and `aether/docs/reference/versioning-and-compatibility.md` (the
+"Draft — not implemented" row currently stating a bare `/api/...` prefix, now stale). Documenting
+Commit 1's landed `/api/v1` enum state only. Not touching `STREAMS_*`/`STREAM_NAMESPACES_*` routes
+or the `aether backups` CLI rename — those are operator's Commit 2/4, still reshaping. Rebased onto
+`04717dc0c` before starting. Will report the landing SHA here once pushed.
