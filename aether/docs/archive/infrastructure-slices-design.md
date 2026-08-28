@@ -698,7 +698,10 @@ public record StateInfo(
 
 ### Outbox Pattern
 
-Reliable event publishing with exactly-once delivery.
+**Planned / not implemented** — no `Outbox` slice exists in the runtime (unimplemented per
+`infra-slices-progress.md`). The design below is aspirational; "exactly-once delivery" describes
+the intended effectively-once outcome of this pattern (persist-then-deliver-then-mark, with retry
+on failure) if it were built, not a shipped guarantee.
 
 **API:**
 ```java

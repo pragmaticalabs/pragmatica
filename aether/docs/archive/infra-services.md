@@ -343,7 +343,9 @@ The artifact repository is built into AetherNode rather than deployed as a slice
 
 1. **Bootstrap problem**: Can't load slice JARs from repository if repository isn't running
 2. **Simpler operations**: No separate deployment/upgrade path
-3. **Always available**: Every node can serve artifacts
+3. **Always available**: Every node can serve artifacts — **superseded claim**: a minority/partitioned
+   node halts and serves nothing (see guarantees.md §3); the property this section actually relies on
+   is "no separate slice-deployment bootstrap dependency," not universal availability
 4. **Testing parity**: Same code path in production and Forge
 
 ### Why Not External Solutions?

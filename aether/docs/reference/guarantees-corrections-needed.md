@@ -74,6 +74,13 @@
 > all (empty `git log --all` for that path, `.claude/` gitignored here); it lives only in the
 > separate main `pragmatica` clone and local skill-cache directories. Flagged to team-lead for
 > routing rather than silently edited cross-repo or silently dropped.
+>
+> **#496 progress, 2026-08-28 (archive — D17/D19) —** cheap, closed. **Applied:** D17 (Outbox
+> "exactly-once" — confirmed genuinely unimplemented via `infra-slices-progress.md`'s unchecked box
+> and a repo-wide search finding no `Outbox` class, then marked "Planned / not implemented"), D19
+> (artifact-repository "Always available" — annotated as superseded, with the design decision's real
+> justification named instead of the false universal-availability claim). All D-rows gated on another
+> stream (D8–D13/D16, management-API routes, backup) remain correctly untouched.
 
 ### Surface 3 file audit (2026-08-28) — deployment/blueprint, per-file disposition
 
@@ -152,10 +159,10 @@ Two kinds of item:
 | D14 | `operators/monitoring.md:322` | "No single point of failure" | ✅ **APPLIED 2026-08-28** — rescoped to the write path specifically (thresholds aren't leader-pinned, unlike deploy/scale/auto-heal, so the original suggested rewrite here would have misfit the section); added the local-read-may-lag caveat. |
 | D15 | `guides/rolling-upgrade.md:3` | "zero downtime" | ✅ **APPLIED 2026-08-28** — scoped to app-downtime; added the core-node quorum-margin caveat, which the guide previously never stated at all. |
 | D16 | `streaming-performance-analysis.md:130` | "supporting exactly-once processing" | "**effectively-once** for same-DB side effects, **when** `PgTransactionalCursorCommit` is wired (not in node bootstrap today)." |
-| D17 | `archive/infrastructure-slices-design.md:701,767` | "Reliable event publishing with **exactly-once** delivery" (Outbox) | Mark "Planned / not implemented" (archived/aspirational). |
+| D17 | `archive/infrastructure-slices-design.md:701,767` | "Reliable event publishing with **exactly-once** delivery" (Outbox) | ✅ **APPLIED 2026-08-28** — marked "Planned / not implemented" (confirmed: unchecked in `infra-slices-progress.md`, no `Outbox` class anywhere in the runtime), "exactly-once" reframed as the intended effectively-once outcome of the (unbuilt) pattern, not a shipped guarantee. |
 | D18 | skill `aether-coder/.../pub-sub.md:52` | use case "Notifications, **broadcasts**" | ⛔ **TERRITORY-BLOCKED, 2026-08-28** — the target file does not exist anywhere in this repo's git history (`git log --all -- .claude/skills/aether-coder` is empty) and `.claude/` is itself gitignored here; it only lives in the separate main `pragmatica` clone and in local, non-version-controlled skill-cache directories. Not committable from `pragmatica-stream-e`. Flagged to team-lead for routing to whichever stream/session owns the skill's actual source; honest rewrite unchanged from the row above pending that routing. |
 | D21 | `slice-developers/resource-reference.md:1034-1039` (Pub-Sub Messaging → Behavior) | (implicit, by omission) — Behavior list described registration and routing but said nothing about delivery loss, reading as if delivery were reliable | ✅ **APPLIED 2026-08-28** (new finding, not from the original rc2 grounding pass) — added an explicit at-most-once/no-persistence/no-retry/dropped-if-no-live-instance bullet, and reworded "routed to any node with a subscriber loaded" (ambiguous, readable as broadcast) to state one delivery per subscribing slice, round-robined across that slice's live instances. Cites guarantees.md §5. |
-| D19 | `archive/infra-services.md:346` | "Always available: Every node can serve artifacts" | Archived — annotate as superseded (a minority/partitioned node halts and serves nothing). |
+| D19 | `archive/infra-services.md:346` | "Always available: Every node can serve artifacts" | ✅ **APPLIED 2026-08-28** — annotated as a superseded claim (a minority/partitioned node halts and serves nothing, guarantees.md §3), with the actual property this design decision relies on named instead (no separate slice-deployment bootstrap dependency). |
 | D20 | `architecture/01-consensus.md`, `contributors/consensus.md` — leader-election table/prose | "Strong (all nodes agree)" / "Strong consistency required" | ✅ **APPLIED 2026-08-28** (new finding, not from the original rc2 grounding pass) — the commit itself is linearizably ordered (same Rabia log + `viewSequence` fence as any KV write), but each node applies it as its own consensus round completes, not simultaneously — same-order, not same-instant. Both docs now state this and cite guarantees.md §1. |
 
 ### Already honest (no change — credit where due)
