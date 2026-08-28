@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.stream.IntStream;
@@ -55,6 +56,22 @@ import org.slf4j.LoggerFactory;
 /// stale record on a LIVE node would otherwise keep it a placement candidate for a keyspace it can no
 /// longer serve.
 ///
+/// **The prune gate (#702).** The two directions of half 1 carry asymmetric evidence. A `Put`
+/// re-asserts what this node's declared set CONTAINS — self-correcting, and deliberately kept firing
+/// through unquorate windows so a registration can never strand. A `Remove` asserts an ABSENCE, and an
+/// empty declared set on a node that is not a live cluster participant is not evidence of absence: a
+/// constructed-but-never-started node (the #644 family) holds an empty declared set beside whatever
+/// committed self-registrations its KV replica carries, and without a gate every one of them reads as
+/// stale and becomes a mass-removal issued into consensus. The removal half is therefore gated on the
+/// live consensus-active sample (`clusterNode::isActive`, the same accessor the activation heal and
+/// leader election read): a node that never started — or dropped out of quorum, where its local view
+/// is suspect anyway — collects NO removals, and the gate DEFERS the prune rather than cancelling it,
+/// so the restart-without-the-slice heal fires on the first tick after the node is genuinely active.
+/// Residual, accepted: on a restarted ACTIVE node the window between activation and slice redeploy
+/// still prunes-then-reasserts (the level-triggered heal; during that window the node genuinely
+/// cannot serve the keyspace). The puts and the minting half are NOT behind this gate — the put half
+/// must keep asserting, and the minting half has its own leader gate.
+///
 /// **Half 2, leader only:** mint the ownership records. Every COMMITTED registration (not just this
 /// node's, so any leader can drive any keyspace) expands to its `entity:<keyspace>` arcs, and the
 /// entity-specific [StreamPartitionOwnershipWriter] decides each one over the keyspace's hosting set
@@ -76,6 +93,7 @@ public final class EntityOwnershipReconciler implements EntityKeyspaceRegistrar 
     private final KVStore<AetherKey, AetherValue> kvStore;
     private final NodeId self;
     private final Supplier<List<NodeId>> membersSupplier;
+    private final BooleanSupplier consensusActive;
     private final StreamPartitionOwnershipWriter writer;
     private final Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier;
     /// The registration view the writer's [HrwOwner] reads, refreshed ONCE per tick — the writer asks
@@ -85,11 +103,13 @@ public final class EntityOwnershipReconciler implements EntityKeyspaceRegistrar 
     private EntityOwnershipReconciler(KVStore<AetherKey, AetherValue> kvStore,
                                       NodeId self,
                                       Supplier<List<NodeId>> membersSupplier,
+                                      BooleanSupplier consensusActive,
                                       Function<HrwOwner, StreamPartitionOwnershipWriter> writerFactory,
                                       Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier) {
         this.kvStore = kvStore;
         this.self = self;
         this.membersSupplier = membersSupplier;
+        this.consensusActive = consensusActive;
         this.writer = writerFactory.apply(this::snapshotArcOwner);
         this.applier = applier;
     }
@@ -97,12 +117,14 @@ public final class EntityOwnershipReconciler implements EntityKeyspaceRegistrar 
     /// `writerFactory` receives the hosting-set [HrwOwner] this reconciler computes and returns the
     /// writer to drive with it — the node passes the real `StreamPartitionOwnershipWriter` factory
     /// (keeping its leader/term/clock suppliers in the wiring), tests pass a recording or throwing one.
+    /// `consensusActive` is the removal half's prune gate (see the type comment's "The prune gate").
     static EntityOwnershipReconciler entityOwnershipReconciler(KVStore<AetherKey, AetherValue> kvStore,
                                                                NodeId self,
                                                                Supplier<List<NodeId>> membersSupplier,
+                                                               BooleanSupplier consensusActive,
                                                                Function<HrwOwner, StreamPartitionOwnershipWriter> writerFactory,
                                                                Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier) {
-        return new EntityOwnershipReconciler(kvStore, self, membersSupplier, writerFactory, applier);
+        return new EntityOwnershipReconciler(kvStore, self, membersSupplier, consensusActive, writerFactory, applier);
     }
 
     /// One keyspace's committed registration view: the hosting set, the arc span, and whether the
@@ -158,7 +180,7 @@ public final class EntityOwnershipReconciler implements EntityKeyspaceRegistrar 
         // keeps the driver alive and names the failure. This is an adapter-boundary lift, not business
         // logic swallowing an error.
         try {
-            var registrationChanges = registrationDelta(kvStore, entityKeyspaces, self);
+            var registrationChanges = registrationDelta(kvStore, entityKeyspaces, self, consensusActive.getAsBoolean());
 
             if (!registrationChanges.isEmpty()) {
                 LOG.info("Entity keyspace: committing {} registration change(s)", registrationChanges.size());
@@ -276,12 +298,17 @@ public final class EntityOwnershipReconciler implements EntityKeyspaceRegistrar 
     }
 
     /// The delta between `self`'s declared keyspaces and its committed per-node records: a `Put` for
-    /// each declared keyspace whose record is missing or carries a different partition count, a
-    /// `Remove` for each committed self-record whose keyspace is no longer declared. A converged node
-    /// yields an empty delta, so a steady-state cluster does no consensus work per tick.
+    /// each declared keyspace whose record is missing or carries a different partition count, and —
+    /// only when `mayPruneStale` holds — a `Remove` for each committed self-record whose keyspace is no
+    /// longer declared. `mayPruneStale` is the tick's consensus-active sample (see the type comment's
+    /// "The prune gate": an absence read off a non-participating node's empty declared set is not
+    /// evidence, and #702 is what an ungated removal half does with it). The puts are DELIBERATELY not
+    /// behind the gate. A converged node yields an empty delta, so a steady-state cluster does no
+    /// consensus work per tick.
     static List<KVCommand<AetherKey>> registrationDelta(KVStore<AetherKey, AetherValue> kvStore,
                                                         Map<String, Integer> entityKeyspaces,
-                                                        NodeId self) {
+                                                        NodeId self,
+                                                        boolean mayPruneStale) {
         var puts = entityKeyspaces.entrySet()
                                   .stream()
                                   .filter(entry -> !isRegistrationCommitted(kvStore,
@@ -292,6 +319,10 @@ public final class EntityOwnershipReconciler implements EntityKeyspaceRegistrar 
                                                                                        self,
                                                                                        entry.getValue()))
                                   .toList();
+
+        if (!mayPruneStale) {
+            return puts;
+        }
 
         return Stream.concat(puts.stream(),
                              staleSelfRemovals(kvStore, entityKeyspaces, self).stream())

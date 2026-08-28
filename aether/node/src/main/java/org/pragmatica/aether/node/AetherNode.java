@@ -3888,10 +3888,14 @@ public interface AetherNode extends ManageableNode {
         // ownership driver). Its writer shares the stream writer's leader gate, epoch discipline and
         // record family; it differs ONLY in the HrwOwner, which the reconciler binds to the keyspace's
         // registered hosts ∩ the SAME reconciled member snapshot stream placement uses (#445 single
-        // placement view).
+        // placement view). The clusterNode::isActive argument is the removal half's prune gate (#702) —
+        // the same live consensus-active sample reconcileNodeActivation reads. Without it, a
+        // constructed-but-never-started node whose KV replica carries committed self-registrations
+        // mass-removes them into consensus off its empty declared set.
         var entityOwnershipReconciler = EntityOwnershipReconciler.entityOwnershipReconciler(kvStore,
                                                                                             config.self(),
                                                                                             streamReplicaSetController::reconciledMembers,
+                                                                                            clusterNode::isActive,
                                                                                             entityArcOwner -> StreamPartitionOwnershipWriter.streamPartitionOwnershipWriter(isLeaderSupplier,
                                                                                                                                                                             rabiaTermSupplier,
                                                                                                                                                                             hlcClock,

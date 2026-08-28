@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Fixed (2026-08-28 — #702: entity registration removals gated on live consensus-activity)
+- **A node that is not a live cluster participant can no longer mass-remove its own committed entity
+  keyspace registrations.** `EntityOwnershipReconciler`'s removal half read an empty declared-keyspace
+  set as evidence of absence and turned every committed self-registration into a KV `Remove` issued
+  into consensus — on a constructed-but-never-started node (the #644 family) that state is the boot
+  window, not a retraction, and the removal path was inert only by coincidence of construction order.
+  The removal half is now gated on the same live consensus-active sample (`clusterNode::isActive`)
+  the activation heal reads; the gate DEFERS the prune rather than cancelling it, so the
+  restart-without-the-slice heal fires on the first genuinely-active tick. The put half is
+  deliberately NOT behind the gate (a registration keeps re-asserting until it sticks), and the
+  minting half keeps its existing leader gate — a leader gate on removals was evaluated and rejected,
+  because removals are per-node self-authority and a worker that never becomes leader could never
+  shed a stale registration. Residual, accepted and documented: on a restarted ACTIVE node the window
+  between activation and slice redeploy still prunes-then-reasserts (the level-triggered heal).
+  [verified: `aether/node/src/test/java/org/pragmatica/aether/node/EntityOwnershipReconcilerTest.java`
+  — closed-gate suppression, defer-not-cancel across an activation flip, and the put-half exemption
+  are each pinned, with both mutations (gate removed / gate widened over puts) demonstrated red]
+
 ### Changed (2026-08-28 — #496 scoped audit, surfaces 2 & 3 closed: KV/durability, deployment/blueprint)
 - GA claims-vs-reality audit (#496), remaining two of three green-lit surfaces. No doc content
   changed this pass — both surfaces audited clean; recorded here so the "zero findings" result is a

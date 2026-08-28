@@ -7,6 +7,7 @@ package org.pragmatica.aether.node;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import java.util.stream.IntStream;
 
@@ -147,7 +148,18 @@ class EntityOwnershipReconcilerTest {
     class RegistrationDelta {
         @Test
         void registrationDelta_declaredButUncommitted_putsTheSelfRecord() {
-            var delta = EntityOwnershipReconciler.registrationDelta(emptyStore(), Map.of(KEYSPACE, PARTITIONS), N1);
+            var delta = EntityOwnershipReconciler.registrationDelta(emptyStore(), Map.of(KEYSPACE, PARTITIONS), N1, true);
+
+            assertThat(delta).containsExactly(registrationPut(KEYSPACE, N1, PARTITIONS));
+        }
+
+        /// The put half must NOT sit behind the prune gate: a registration is deliberately re-asserted
+        /// until it sticks, including through windows where the node is not (yet) consensus-active —
+        /// gating it would re-open the strand-forever failure the keep-asserting shape exists to close.
+        /// Pinned so a future tidy-up cannot widen the #702 gate over the puts.
+        @Test
+        void registrationDelta_declaredButUncommitted_putsEvenWhenPruneGateIsClosed() {
+            var delta = EntityOwnershipReconciler.registrationDelta(emptyStore(), Map.of(KEYSPACE, PARTITIONS), N1, false);
 
             assertThat(delta).containsExactly(registrationPut(KEYSPACE, N1, PARTITIONS));
         }
@@ -159,7 +171,7 @@ class EntityOwnershipReconcilerTest {
 
             seedRegistration(store, KEYSPACE, N1, PARTITIONS);
 
-            assertThat(EntityOwnershipReconciler.registrationDelta(store, Map.of(KEYSPACE, PARTITIONS), N1)).isEmpty();
+            assertThat(EntityOwnershipReconciler.registrationDelta(store, Map.of(KEYSPACE, PARTITIONS), N1, true)).isEmpty();
         }
 
         /// A redeployed slice that changed its partition count must re-assert, or the leader keeps minting
@@ -170,21 +182,38 @@ class EntityOwnershipReconcilerTest {
 
             seedRegistration(store, KEYSPACE, N1, 4);
 
-            assertThat(EntityOwnershipReconciler.registrationDelta(store, Map.of(KEYSPACE, PARTITIONS), N1))
+            assertThat(EntityOwnershipReconciler.registrationDelta(store, Map.of(KEYSPACE, PARTITIONS), N1, true))
                 .containsExactly(registrationPut(KEYSPACE, N1, PARTITIONS));
         }
 
         /// The pruning direction: a record this node committed for a keyspace it no longer declares — a
         /// retraction, or a restart without the slice. Leaving it would keep this node a placement
-        /// candidate for a keyspace it can no longer serve.
+        /// candidate for a keyspace it can no longer serve. Doubles as the arming counterpart of the
+        /// closed-gate test below: the same seed IS prunable when the gate is open.
         @Test
         void registrationDelta_committedForSelfButUndeclared_removesTheRecord() {
             var store = emptyStore();
 
             seedRegistration(store, KEYSPACE, N1, PARTITIONS);
 
-            assertThat(EntityOwnershipReconciler.registrationDelta(store, Map.of(), N1))
+            assertThat(EntityOwnershipReconciler.registrationDelta(store, Map.of(), N1, true))
                 .containsExactly(new KVCommand.Remove<AetherKey>(registrationKey(KEYSPACE, N1)));
+        }
+
+        /// The #702 pin. An empty declared set on a node that is not consensus-active is not evidence of
+        /// absence — a constructed-but-never-started node holds exactly this state beside whatever
+        /// committed self-registrations its KV replica carries, and an ungated removal half turns it
+        /// into a mass-removal issued into consensus. Armed by the open-gate test above: the identical
+        /// seed produces the Remove there, so the emptiness here is the gate and not an empty scan.
+        @Test
+        void registrationDelta_committedForSelfButUndeclared_keepsTheRecordWhenPruneGateIsClosed() {
+            var store = emptyStore();
+
+            seedRegistration(store, KEYSPACE, N1, PARTITIONS);
+
+            assertThat(EntityOwnershipReconciler.registrationDelta(store, Map.of(), N1, false))
+                .as("a non-participating node must never prune its committed registrations")
+                .isEmpty();
         }
 
         /// Another host's record is that host's own statement about itself. Judging it from here would
@@ -197,10 +226,10 @@ class EntityOwnershipReconcilerTest {
 
             seedRegistration(store, KEYSPACE, N2, PARTITIONS);
 
-            assertThat(EntityOwnershipReconciler.registrationDelta(store, Map.of(), N1))
+            assertThat(EntityOwnershipReconciler.registrationDelta(store, Map.of(), N1, true))
                 .as("N1 must never prune N2's registration")
                 .isEmpty();
-            assertThat(EntityOwnershipReconciler.registrationDelta(store, Map.of(), N2))
+            assertThat(EntityOwnershipReconciler.registrationDelta(store, Map.of(), N2, true))
                 .as("the same record IS prunable by its own node — else the assertion above is vacuous")
                 .containsExactly(new KVCommand.Remove<AetherKey>(registrationKey(KEYSPACE, N2)));
         }
@@ -311,6 +340,7 @@ class EntityOwnershipReconcilerTest {
             var reconciler = EntityOwnershipReconciler.entityOwnershipReconciler(store,
                                                                                  N1,
                                                                                  () -> MEMBERS,
+                                                                                 () -> true,
                                                                                  hrwOwner -> observingWriter(hrwOwner, observed),
                                                                                  recordingApplier(applied));
 
@@ -329,12 +359,45 @@ class EntityOwnershipReconcilerTest {
                               node -> node);
         }
 
+        /// The #702 defect at tick level, and the gate's DEFER-not-cancel contract in one run. While the
+        /// node is not consensus-active (never started, or dropped out of quorum) a tick over committed
+        /// self-registrations and an empty declared set must reach consensus with NOTHING; the moment
+        /// the node is active, the SAME state must produce the removal — so the restart-without-the-slice
+        /// heal survives the gate, merely deferred to the first active tick.
+        @Test
+        void tick_suppressesStaleSelfRemovals_untilConsensusIsActive() {
+            var store = emptyStore();
+
+            seedRegistration(store, KEYSPACE, N1, PARTITIONS);
+
+            var applied = new ArrayList<List<KVCommand<AetherKey>>>();
+            var active = new AtomicBoolean(false);
+            var reconciler = EntityOwnershipReconciler.entityOwnershipReconciler(store,
+                                                                                 N1,
+                                                                                 () -> MEMBERS,
+                                                                                 active::get,
+                                                                                 _ -> followerWriter(),
+                                                                                 recordingApplier(applied));
+
+            reconciler.tick();
+
+            assertThat(applied).as("a non-participating node must not issue removals into consensus")
+                               .isEmpty();
+
+            active.set(true);
+            reconciler.tick();
+
+            assertThat(applied).as("the same state must prune on the first ACTIVE tick — the gate defers, never cancels")
+                               .containsExactly(List.of(new KVCommand.Remove<AetherKey>(registrationKey(KEYSPACE, N1))));
+        }
+
         private static EntityOwnershipReconciler reconciler(KVStore<AetherKey, AetherValue> store,
                                                             StreamPartitionOwnershipWriter writer,
                                                             List<List<KVCommand<AetherKey>>> applied) {
             return EntityOwnershipReconciler.entityOwnershipReconciler(store,
                                                                        N1,
                                                                        () -> MEMBERS,
+                                                                       () -> true,
                                                                        _ -> writer,
                                                                        recordingApplier(applied));
         }
