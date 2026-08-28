@@ -149,6 +149,7 @@ import org.pragmatica.aether.repository.RepositoryFactory;
 import org.pragmatica.aether.slice.*;
 import org.pragmatica.aether.storage.DelegatedStorageAdapter;
 import org.pragmatica.storage.StorageInstance;
+import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.StreamPublisher;
 import org.pragmatica.aether.stream.DefaultStreamPublisher;
 import org.pragmatica.aether.stream.StreamError;
@@ -161,6 +162,7 @@ import org.pragmatica.aether.stream.LinearizableOwnerServe;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.node.stream.ClusterCursorStore;
 import org.pragmatica.aether.node.stream.StreamConsumerManager;
+import org.pragmatica.aether.node.stream.TopicGroupDeclarationSource;
 import org.pragmatica.aether.node.stream.StreamConsumerRegistry;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamReadRouter;
@@ -180,6 +182,9 @@ import org.pragmatica.aether.stream.replication.PartitionBackfill;
 import org.pragmatica.aether.stream.replication.PartitionKey;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.aether.stream.DeadLetterHandler;
+import org.pragmatica.aether.stream.topic.DlqEnvelope;
+import org.pragmatica.aether.stream.topic.DlqStreamSink;
+import org.pragmatica.aether.stream.topic.RoutingDeadLetterSink;
 import org.pragmatica.aether.stream.StreamConsumerRuntime;
 import org.pragmatica.aether.stream.replication.ReplicaSetController;
 import org.pragmatica.aether.stream.replication.StreamPartitionOwnershipWriter;
@@ -3787,24 +3792,52 @@ public interface AetherNode extends ManageableNode {
                                                                                                  .map(AetherValue.StreamCursorCheckpointValue::committedOffset),
                                                                              command -> clusterNode.apply(List.of(command))
                                                                                                    .mapToUnit());
+        // #386 durable pub-sub: dead letters for `topic:*` streams are durable — re-enveloped
+        // group-attributed and appended to the topic's `.dlq` stream through the same min-sync
+        // barrier as the source (publisher memoized per DLQ stream, full owner-forward routing so a
+        // dispatch node that does not own the DLQ partition forwards instead of stalling). All
+        // other streams keep the in-memory default; its durability question is a separate ticket's
+        // business (ruling on #386).
+        var topicDlqPublishers = new ConcurrentHashMap<String, StreamPublisher<DlqEnvelope>>();
+        var streamDeadLetterSink = new RoutingDeadLetterSink(new DlqStreamSink(nodeCodec,
+                                                                               streamPartitionManager,
+                                                                               dlqStream -> topicDlqPublishers.computeIfAbsent(dlqStream,
+                                                                                                                               name -> DefaultStreamPublisher.streamPublisher(streamPartitionManager,
+                                                                                                                                                                              nodeCodec,
+                                                                                                                                                                              name,
+                                                                                                                                                                              1,
+                                                                                                                                                                              Option.none(),
+                                                                                                                                                                              ConsistencyMode.EVENTUAL,
+                                                                                                                                                                              Option.none(),
+                                                                                                                                                                              streamPartitionManager.minSyncReplicasFor(name),
+                                                                                                                                                                              Option.some(streamForwardClient),
+                                                                                                                                                                              Option.some(() -> taskGroupOwnerResolver.apply(TaskGroup.STREAMING)
+                                                                                                                                                                                                                      .option()),
+                                                                                                                                                                              Option.some(partition -> streamReplicaSetController.ownerFor(name,
+                                                                                                                                                                                                                                           partition)),
+                                                                                                                                                                              Option.some(config.self())))),
+                                                             DeadLetterHandler.deadLetterHandler());
         var streamConsumerRuntime = StreamConsumerRuntime.streamConsumerRuntime(streamPartitionManager,
-                                                                                DeadLetterHandler.deadLetterHandler(),
+                                                                                streamDeadLetterSink,
                                                                                 streamClusterCursorStore,
                                                                                 (stream, partition, fromOffset, maxEvents) -> streamReadRouter.read(stream,
                                                                                                                                                     partition,
                                                                                                                                                     fromOffset,
                                                                                                                                                     maxEvents,
                                                                                                                                                     ReadPreference.GOVERNOR));
+        var streamConsumerOwnership = streamConsumerOwnership(streamPartitionManager, streamReplicaSetController);
         var streamConsumerManager = StreamConsumerManager.streamConsumerManager(streamConsumerRegistry,
                                                                                 streamConsumerRuntime,
                                                                                 sliceInvoker,
                                                                                 invocationHandler,
                                                                                 nodeCodec,
-                                                                                streamConsumerOwnership(streamPartitionManager,
-                                                                                                        streamReplicaSetController),
+                                                                                streamConsumerOwnership,
                                                                                 artifact -> sliceDeploymentStates(deploymentMap,
                                                                                                                   artifact),
-                                                                                config.self());
+                                                                                config.self(),
+                                                                                TopicGroupDeclarationSource.topicGroupDeclarationSource(topicSubscriptionRegistry,
+                                                                                                                                        streamName -> streamConsumerOwnership.partitionCount(streamName)
+                                                                                                                                                                             .isPresent()));
         // #499: the handle is retained in `periodicTasks`, which stop() cancels wholesale. A declarative
         // consumer that outlived its node would deliver into a torn-down slice.
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(streamConsumerManager::reconcile,

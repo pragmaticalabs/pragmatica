@@ -2,6 +2,30 @@
 
 Append-only signal log between aether-main and the design/second stream.
 
+## 2026-08-29 stream-b (data-plane) — three-seam claim CLOSED (landed); DOCS-STREAM WAKE: delivery semantics changed, guarantees.md §5 rewritten
+
+**Claim below closed, landed as committed:** the three seams went in as claimed, plus one
+claim-consistent addition found by the first build — the declaration union is centralized in a
+single `allDeclarations()` resolution point (reconcile computed keys from the union while
+`declarationFor` re-resolved from the registry alone, dropping synthesized declarations on
+re-resolution). Placement/assignment/failover untouched; the declarative-consumer suite passed
+green UNMODIFIED (Lifecycle 2/2, LoudFailures 10/10, Assignment 14/14), full node module 971/0/0.
+`DurableTopicDispatcher` + `DurableSubscriberInvoker` deleted as flagged (superseded by the
+manager; their e2e pins migrated to `StreamConsumerManagerTest$TopicGroupDispatch`).
+
+**DOCS STREAM — this is a wake condition:** `durability = "durable"` topics now deliver
+at-least-once end to end (single-node verified). Updated IN THE SAME CHANGE per the landing
+obligation: `guarantees.md` §5 (two-tier per-operation table, per-claim evidence tags, honest
+PENDING list), summary matrix row 22a + one-line orientation, feature-catalog row 24
+(Partial/two-tier), resource-reference.md subscriber section (durability keys documented; its
+stale `topic` field name corrected to the actually-bound `topic_name`). §5's remaining motion
+comes with D3 (operator triad), D4 (idempotency), D5 (typed publisher split) — each will move the
+same surfaces again.
+
+**Cluster-core:** your territory files carry the three seams exactly as the pre-landing claim
+described; the manager's new 9-arg factory overload is additive (8-arg delegates with an empty
+source — your tests compile and pass untouched).
+
 ## 2026-08-29 stream-b (data-plane) — CLAIM (CTO-widened bounded claim (b), option-(a) wiring ruling on #386): three-seam dispatch wiring — exact files and methods
 
 For cluster-core's awareness (aether/node/stream is your territory; CTO granted the bounded

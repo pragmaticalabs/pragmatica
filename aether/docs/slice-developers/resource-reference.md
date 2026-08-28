@@ -1022,22 +1022,47 @@ public interface OrderProcessor {
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `topic` | `String` | required | Topic name for message routing |
+| `topic_name` | `String` | required | Topic name for message routing |
+| `durability` | `String` | `"ephemeral"` | Delivery tier (#386): `"ephemeral"` keeps the RPC fan-out; `"durable"` backs the topic with a replicated stream |
+| `partitions` | `Integer` | `1` | Durable only. Partition count of the backing stream (per-partition ordering unit) |
+| `replicas` | `Integer` | `2` | Durable only. Copies of each partition, owner included. Must be `>= 2` |
+| `min_sync_replicas` | `Integer` | = `replicas` | Durable only. Write-ack floor, owner included. v1 constraint: MUST equal `replicas` (rejected at parse otherwise; relaxes when #411 lands) |
+| `retention` | `Duration` | `"7d"` | Durable only. Time retention of the backing stream (e.g. `"7d"`, `"12h"`). The effective replay window is min(this, the stream's ring count/byte sizing caps) |
+
+Declaring any of the four stream knobs on an ephemeral topic is a **deploy-time error** (the keys
+would be inert — same stance as #576): either declare `durability = "durable"` or remove them. An
+invalid durable declaration fails slice activation loudly; it never silently downgrades to
+ephemeral delivery.
 
 ### TOML Example
 
 ```toml
 [orders]
-topic = "order-events"
+topic_name = "order-events"
+
+[audit]
+topic_name = "audit-events"
+durability = "durable"
+partitions = 4
+retention = "14d"
 ```
 
 ### Behavior
 
 - The runtime registers the handler in the cluster KV-Store when the slice activates (Rabia-replicated write — the registration itself is crash-durable and survives leader change)
-- On publish, each subscribing slice receives one delivery, round-robined across that slice's live instances — not broadcast to every node that happens to have the handler loaded
 - Multiple slices can subscribe to the same topic; each is delivered to independently
 - Subscriptions are automatically removed when the slice deactivates
-- **Delivery itself is at-most-once, unordered, and best-effort — not durable.** A publish that finds no live instance of a subscribing slice drops the message silently (the publish call still reports success); a delivery that fails mid-flight is not retried. Nothing is queued or persisted, so a subscriber that is down when a message is published misses it permanently, even after it comes back up. If your handler needs guaranteed processing, build idempotent recovery on top (e.g. reconcile against a durable source) rather than relying on delivery. See `guarantees.md` §5.
+
+**Ephemeral topics (the default):**
+- On publish, each subscribing slice receives one delivery, round-robined across that slice's live instances — not broadcast to every node that happens to have the handler loaded
+- **Delivery is at-most-once, unordered, and best-effort — not durable.** A publish that finds no live instance of a subscribing slice drops the message silently (the publish call still reports success); a delivery that fails mid-flight is not retried. Nothing is queued or persisted, so a subscriber that is down when a message is published misses it permanently, even after it comes back up. If your handler needs guaranteed processing, declare the topic durable — or build idempotent recovery on top (e.g. reconcile against a durable source). See `guarantees.md` §5.
+
+**Durable topics (`durability = "durable"`, #386):**
+- `publish` resolves when the event is persisted at the declared replication floor (owner + `min_sync_replicas − 1` peer acks) — NOT when subscribers process it. A subscriber down at publish time reads the event from the log when it returns.
+- Delivery is **at-least-once per subscribing slice**: your handler's returned `Promise<Unit>` IS the acknowledgment — success advances the group cursor, failure or timeout triggers redelivery (5 attempts with backoff), and an event that exhausts its retries lands in the topic's durable dead-letter stream (`topic:<address>.dlq`) attributed to your consumer group, never silently dropped.
+- Events of one partition are processed **in order** by your group; different partitions process independently. **Duplicates are possible** (crash-window redelivery, retry racing a slow attempt) — write handlers idempotent; the framework idempotency aspect for topics arrives with a later batch.
+- A slice upgrade keeps its consumer position (groups are version-stable) — no reprocessing storm on deploy.
+- Operator surfaces for the DLQ (list/inspect/redrive) and lag/stall alarms are a pending batch; see `guarantees.md` §5 for the current per-operation contract and its verification status.
 
 ---
 

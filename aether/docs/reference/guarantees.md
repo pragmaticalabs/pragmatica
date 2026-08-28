@@ -23,7 +23,7 @@
 **Durability:** *process-durable* (survives process restart; in-mem replicated) · *crash-durable* (fsync-before-ack) · *quorum-durable* (committed on N replicas).
 **Delivery:** *at-most-once* · *at-least-once* · *effectively-once* (at-least-once + dedup/idempotency key). True exactly-once over a network does not exist.
 
-**One-line orientation:** Aether is **CP on the write/metadata path** (leaderless Rabia consensus; the minority of a partition self-fences) with **eventual, local reads**, a **separate eventual DHT plane** for routing/endpoint state, **crash-durable single-owner streams** (default RF=1), and **best-effort at-most-once** pub/sub. **Durable-entity is node-wired** (`aether/node` depends on `resource-durable-entity`; default RF=3, fsync-before-ack, epoch-fenced writes forwarded to the committed owner from any node — #596) with **per-call read consistency** (`BOUNDED_STALE` default, `LINEARIZABLE` on request).
+**One-line orientation:** Aether is **CP on the write/metadata path** (leaderless Rabia consensus; the minority of a partition self-fences) with **eventual, local reads**, a **separate eventual DHT plane** for routing/endpoint state, **crash-durable single-owner streams** (default RF=1), and pub/sub in two DECLARED tiers — **best-effort at-most-once** by default, **at-least-once over replicated streams with a durable group-attributed DLQ** for `durability = "durable"` topics (#386, §5). **Durable-entity is node-wired** (`aether/node` depends on `resource-durable-entity`; default RF=3, fsync-before-ack, epoch-fenced writes forwarded to the committed owner from any node — #596) with **per-call read consistency** (`BOUNDED_STALE` default, `LINEARIZABLE` on request).
 
 ---
 
@@ -52,7 +52,8 @@
 | 19 | Streams | `stream.consume` | per-partition order | **framework-driven auto-resume for the app `StreamAccess` path** (`fetchFromCommitted` resolves the committed cursor and reads from it; the cursor is durable **after the next metadata snapshot** — ≤100 mutations / 30 s — an un-snapshotted commit resumes from the prior cursor or 0; no cursor → from 0; explicit `fetch(offset)` overrides); **declarative `[streams.X]` consumers get a separate, consensus-KV-backed checkpoint** (`ClusterCursorStore`, resume = `max(local,cluster)`, survives an ownership change) — see §4 for the failure-edge nuance; **system consumers still replay from 0** | **at-least-once** (app commits + `fetchFromCommitted`; declarative consumers) / **replay-from-0** (non-committing app, system consumers, Forge) | owner side; **RF=1: empty after failover** | LIVE |
 | 20 | Streams | `cursor.commit` (PG-tx) | — | — | **effectively-once** (dedup `(group,stream,partition)`) | — | PLANNED (not wired in bootstrap) |
 | 21 | Streams | `publish` (STRONG / consensus) | total order across nodes | — | — | — | PLANNED (unwired) |
-| 22 | Pub-sub | `topic.publish` / `deliver` | **unordered** | **none** (never persisted) | **at-most-once** (no retry) | best-effort, no consensus on hot path | LIVE |
+| 22 | Pub-sub | `topic.publish` / `deliver` (EPHEMERAL topics — the default) | **unordered** | **none** (never persisted) | **at-most-once** (no retry) | best-effort, no consensus on hot path | LIVE |
+| 22a | Pub-sub | `topic.publish` / `deliver` (DURABLE topics — declared, #386) | per-partition within a group | replicated stream (`min-sync == replicas >= 2`, parse-enforced) | **at-least-once** per group; bounded retries → group-attributed durable DLQ | min-sync peer acks on publish | LIVE (single-node verified; multi-node e2e + D3 operator surface pending — §5) |
 | 23 | Pub-sub | `subscription.register` | — | **crash-durable** (Rabia KV) | — | majority for the registration write | LIVE |
 | 24 | Pub-sub | `config.notifyInitial` | — | process-local | fire-once on activate | — | LIVE |
 | 25 | Pub-sub | `config.notifyChange` (runtime push) | — | — | — | — | ⚠ DEFECT (machinery present, **no caller**) |
@@ -155,8 +156,38 @@ A default app stream is **partitioned, per-partition totally ordered, and crash-
 
 ## 5. Pub-sub & notifications
 
-- **Topic `publish` / `deliver`** — **at-most-once, unordered, best-effort.** `publish()` resolves currently-registered subscribers and fires one RPC per subscriber slice (round-robin across that slice's live instances via the endpoint registry), **returning success even when nothing is delivered**. Messages are **never persisted or queued**; a subscriber down at publish time misses the message permanently, and a mid-flight failure is **not retried** (the path uses `invoke`, not `invokeWithRetry`). No dedup key anywhere.
-- **`subscription.register`** — **crash-durable**: the `TopicSubscriptionKey` is a Rabia-replicated KV write, so subscriptions and endpoint membership survive node restart and leader change (the topology self-heals even though in-flight messages do not).
+Topics now carry a **declared durability class** (`durability = "ephemeral"` (default) `| "durable"`
+in the topic's resources.toml section — #386, durable-pubsub-spec). The two tiers are different
+delivery systems behind one declaration surface; the per-operation table below is the contract, per
+tier, each cell naming the guarantee AND the mechanism that earns it.
+
+**The declaration cannot silently weaken.** A durable declaration outside the proven
+`min-sync-replicas == replicas >= 2` configuration is **rejected at parse** (`TopicConfig.topicConfig`,
+pointer to spec §3; the constraint relaxes only when #411 lands, by amendment). Stream knobs on an
+ephemeral topic are rejected as inert (#576 stance). Only config ABSENCE (missing section, no
+ConfigService) falls back to the ephemeral default — an existing-but-invalid section (including a
+mistyped `durability` value) **fails slice activation loudly** rather than downgrading a
+declared-durable topic to fire-and-forget `[verified: PublisherFactoryTest — TopicNameFallbackDelivery
++ DurableTierProvisioning]`.
+
+| Operation | Ephemeral (default) | Durable |
+|-----------|--------------------|---------|
+| `publish` returns | `Promise<Unit>` resolving after dispatch is attempted to currently-registered subscriber groups — **success even when nothing is delivered** (zero subscribers = no-op success). Best-effort RPC; registry is KV-propagated and may lag. | `Promise<Unit>` resolving when the event is **persisted at the declared floor**: owner append + `min-sync − 1` distinct peer acks `[mechanism: DefaultStreamPublisher awaitReplication — the #410 two-knob barrier; min-sync == replicas >= 2 parse-enforced]`. **Not processing.** Failure means the append genuinely failed (e.g. `NOT_ENOUGH_REPLICAS`); the event is NOT in the log. |
+| Zero subscribers at publish | No-op success (documented). | Event persisted and retained; consumers attached later read it from the log `[mechanism: stream retention + earliest-offset consumer attach]`. |
+| Delivery to a subscriber group | **At-most-once per group** — single `invoke`, round-robin instance; drops on RPC failure, crash, or absence; never retried, never persisted. | **At-least-once per group**: group cursor + bounded redelivery (5 attempts, exponential backoff), then the group-attributed DLQ (below) `[verified (single-node): StreamConsumerManagerTest$TopicGroupDispatch, StreamConsumerRuntimeTest$DeadLetterAppendContract; multi-node composed path (publish node ≠ dispatch node, failover): design intent — unverified pending a forge e2e]`. |
+| Ordering | None. | **Per-partition processing order within a group** — dispatch is strictly serial per (group × partition): event N+1 is not dispatched until N is acked or dead-lettered `[mechanism: one consumer-runtime serial chain per subscription]`. No cross-partition order. |
+| Duplicate exposure | None (0 or 1 deliveries). | On crash/restart: up to the cursor-checkpoint window (≤1000 acks / 500 ms per partition) redelivered `[mechanism: checkpointed group cursor, max(local, cluster) resume]`. A timed-out attempt may still execute concurrently with its retry (zombie attempt — stated, not hidden). The §8 idempotency aspect is NOT yet wired for topics (D4 pending) — handlers must tolerate duplicates. |
+| Subscriber failure | Invisible to the runtime (logged; no redelivery). | Bounded retries, then the event lands in `topic:<address>.dlq` as a group-attributed envelope (original `messageId`, source position, failing group, attempt count, last cause) `[verified (single-node): DlqStreamSinkTest, manager poison-path]`. The source cursor does NOT advance past an event whose DLQ append has not succeeded — a stalled DLQ stalls the partition VISIBLY instead of dropping the event `[verified: DeadLetterAppendContract]`. |
+| Consumer-group identity | n/a (no cursors). | Version-stable: `groupId:artifactId#method` — a slice upgrade keeps its cursor and DLQ attribution; a blue-green window collapses to one dispatch loop per (group × partition) `[verified: StreamConsumerManagerTest blue-green pin]`. |
+| Loss window | Any drop point above. | **Event** loss requires losing the owner and all `replicas − 1` sync replicas below the floor `[mechanism: #410 barrier under the §3 constraint; streaming-spec §10.5 scoping]`. **Processing** loss beyond retention: a cursor falling behind the retained window resumes at the earliest retained offset per existing stream semantics — the dedicated `CURSOR_GAP` event/alarm surface is **not yet built** (D3 pending), so this state is currently visible only via lag observation. Effective replay window = min(declared time retention, ring count/byte caps) until #349's tiered floor. |
+
+**Operator surface honesty (D3 pending):** DLQ inspection/redrive routes, `DLQ_STALL` and lag/gap
+alarms, and per-topic DLQ retention overrides are NOT yet shipped; the DLQ is durable and
+group-attributed on disk today, but redrive is not yet an offered operation. Until the D3 batch
+lands, dead letters are recoverable data awaiting their management surface, and `dlq` entries can
+be read only via stream reads on the `.dlq` stream.
+
+- **`subscription.register`** — **crash-durable**: the `TopicSubscriptionKey` is a Rabia-replicated KV write, so subscriptions and endpoint membership survive node restart and leader change (the topology self-heals even though ephemeral in-flight messages do not).
 - **`config.notifyInitial`** — fires once, process-local, on activation. ⚠ **`config.notifyChange` (runtime push) has no caller** — runtime config changes do **not** push to slice callbacks via this path.
 - **`pg.notify`** (PG LISTEN/NOTIFY) — **at-most-once**, per-channel FIFO while connected; **no replay** across a disconnect.
 - **`@Notify`** (email/HTTP) — a **separate outbound surface**, not pub-sub: **at-least-once** with retries (may duplicate), no DLQ/persistence; the slice owns policy.

@@ -12,6 +12,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.invoke.InvocationHandler;
@@ -24,6 +25,9 @@ import org.pragmatica.aether.stream.StreamConsumerRuntime;
 import org.pragmatica.aether.stream.StreamConsumerRuntime.ConsumerCallback;
 import org.pragmatica.aether.stream.StreamConsumerRuntime.IdlePolicy;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement;
+import org.pragmatica.aether.stream.topic.DurableGroupIdentity;
+import org.pragmatica.aether.stream.topic.DurableTopicNames;
+import org.pragmatica.aether.stream.topic.TopicEventEnvelope;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement.Placement;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
@@ -186,6 +190,29 @@ public interface StreamConsumerManager {
                                                        PartitionOwnership ownership,
                                                        SlicePlacement placement,
                                                        NodeId self) {
+        return streamConsumerManager(registry,
+                                     runtime,
+                                     invoker,
+                                     invocationHandler,
+                                     nodeCodec,
+                                     ownership,
+                                     placement,
+                                     self,
+                                     TopicGroupDeclarationSource.none());
+    }
+
+    /// #386 registration entry point (option-(a) ruling): durable-topic groups join the reconcile
+    /// as synthesized declarations from `topicGroups`. An empty source reproduces the 8-arg
+    /// behavior exactly — placement, assignment, and failover logic are untouched by construction.
+    static StreamConsumerManager streamConsumerManager(StreamConsumerRegistry registry,
+                                                       StreamConsumerRuntime runtime,
+                                                       SliceInvoker invoker,
+                                                       InvocationHandler invocationHandler,
+                                                       SliceCodec nodeCodec,
+                                                       PartitionOwnership ownership,
+                                                       SlicePlacement placement,
+                                                       NodeId self,
+                                                       TopicGroupDeclarationSource topicGroups) {
         var manager = new ManagerState(registry,
                                        runtime,
                                        invoker,
@@ -193,7 +220,8 @@ public interface StreamConsumerManager {
                                        nodeCodec,
                                        ownership,
                                        placement,
-                                       self);
+                                       self,
+                                       topicGroups);
 
         registry.setChangeListener(manager::onDeclarationChange);
 
@@ -213,6 +241,7 @@ public interface StreamConsumerManager {
         private final PartitionOwnership ownership;
         private final SlicePlacement placement;
         private final NodeId self;
+        private final TopicGroupDeclarationSource topicGroups;
         private final Map<SubscriptionKey, ConsumerDeclaration> active = new ConcurrentHashMap<>();
         private final Map<String, Diagnosis> diagnoses = new ConcurrentHashMap<>();
 
@@ -223,7 +252,8 @@ public interface StreamConsumerManager {
                      SliceCodec nodeCodec,
                      PartitionOwnership ownership,
                      SlicePlacement placement,
-                     NodeId self) {
+                     NodeId self,
+                     TopicGroupDeclarationSource topicGroups) {
             this.registry = registry;
             this.runtime = runtime;
             this.invoker = invoker;
@@ -232,6 +262,7 @@ public interface StreamConsumerManager {
             this.ownership = ownership;
             this.placement = placement;
             this.self = self;
+            this.topicGroups = topicGroups;
         }
 
         private void onDeclarationChange(Object key, Option<ConsumerDeclaration> declaration) {
@@ -241,10 +272,7 @@ public interface StreamConsumerManager {
         @Contract
         @Override
         public void reconcile() {
-            var desired = registry.allDeclarations()
-                                  .stream()
-                                  .flatMap(declaration -> desiredFor(declaration).stream())
-                                  .toList();
+            var desired = allDeclarations().stream().flatMap(declaration -> desiredFor(declaration).stream()).toList();
 
             desired.forEach(this::subscribeIfAbsent);
             dropStale(desired);
@@ -416,15 +444,25 @@ public interface StreamConsumerManager {
             declarationFor(key).onPresent(declaration -> attach(key, declaration));
         }
 
+        /// The ONE declaration-resolution point (#386 seam): declarative registrations UNION the
+        /// synthesized durable-topic declarations. Every consumer of "what declarations exist" —
+        /// the reconcile's desired set and the key->declaration re-resolution below — reads this,
+        /// so a source declaration can never be computed into a subscription key and then dropped
+        /// on re-resolution.
+        private List<ConsumerDeclaration> allDeclarations() {
+            return Stream.concat(registry.allDeclarations().stream(),
+                                 topicGroups.declarations().stream())
+                         .toList();
+        }
+
         private Option<ConsumerDeclaration> declarationFor(SubscriptionKey key) {
-            return registry.allDeclarations()
-                           .stream()
-                           .filter(declaration -> declaration.streamName()
-                                                             .equals(key.streamName()) && declaration.consumerGroup()
-                                                                                                     .equals(key.consumerGroup()))
-                           .findFirst()
-                           .map(Option::some)
-                           .orElseGet(Option::none);
+            return allDeclarations().stream()
+                                  .filter(declaration -> declaration.streamName()
+                                                                    .equals(key.streamName()) && declaration.consumerGroup()
+                                                                                                            .equals(key.consumerGroup()))
+                                  .findFirst()
+                                  .map(Option::some)
+                                  .orElseGet(Option::none);
         }
 
         private void attach(SubscriptionKey key, ConsumerDeclaration declaration) {
@@ -440,7 +478,7 @@ public interface StreamConsumerManager {
         private void doSubscribe(SubscriptionKey key, ConsumerDeclaration declaration, SliceBridge bridge) {
             runtime.subscribe(key.streamName(),
                               key.partition(),
-                              ConsumerConfig.consumerConfig(declaration.consumerGroup()),
+                              consumerConfigFor(key, declaration),
                               callbackFor(declaration, bridge),
                               IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED)
                    .onSuccess(_ -> logAttached(key, declaration))
@@ -475,8 +513,31 @@ public interface StreamConsumerManager {
             return (_, payload, _) -> deliver(declaration, bridge, payload);
         }
 
+        /// Durable-topic groups take the spec-cadence config (durable-pubsub-spec §6/§7 — 5
+        /// attempts, 500ms checkpoint); declarative consumers keep the defaults they always had.
+        private static ConsumerConfig consumerConfigFor(SubscriptionKey key, ConsumerDeclaration declaration) {
+            return DurableTopicNames.isTopicStream(key.streamName())
+                   ? DurableGroupIdentity.consumerConfig(declaration.consumerGroup())
+                   : ConsumerConfig.consumerConfig(declaration.consumerGroup());
+        }
+
         private Promise<Unit> deliver(ConsumerDeclaration declaration, SliceBridge bridge, byte[] payload) {
-            return bridge.decode(payload)
+            return DurableTopicNames.isTopicStream(declaration.streamName())
+                   ? deliverTopicEvent(declaration, bridge, payload)
+                   : bridge.decode(payload)
+                           .flatMap(event -> invokeConsumer(declaration, event));
+        }
+
+        /// Durable-topic events arrive wrapped (durable-pubsub-spec §8): the [TopicEventEnvelope]
+        /// is a NODE-codec system type (tag-pinned), decoded here; the PAYLOAD inside it was
+        /// encoded by the PUBLISHING slice's codec and is decoded with the SUBSCRIBING slice's
+        /// bridge, the same cross-slice type contract every RPC message already rides. The
+        /// handler's promise is the ack — nothing else about delivery differs from a declarative
+        /// consumer, which is the point of the option-(a) reuse.
+        private Promise<Unit> deliverTopicEvent(ConsumerDeclaration declaration, SliceBridge bridge, byte[] rawEvent) {
+            return Result.lift(() -> nodeCodec.<TopicEventEnvelope> decode(rawEvent))
+                         .async()
+                         .flatMap(envelope -> bridge.decode(envelope.payload()))
                          .flatMap(event -> invokeConsumer(declaration, event));
         }
 

@@ -5,6 +5,9 @@
 package org.pragmatica.aether.stream.topic;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.slice.ConsumerConfig;
+import org.pragmatica.aether.slice.ConsumerConfig.ErrorStrategy;
+import org.pragmatica.aether.slice.ConsumerConfig.ProcessingMode;
 import org.pragmatica.aether.slice.MethodName;
 
 
@@ -19,6 +22,15 @@ public sealed interface DurableGroupIdentity {
     static String groupId(Artifact subscriber, MethodName method) {
         return subscriber.base()
                          .asString() + "#" + method.name();
+    }
+
+    /// The durable group's consumer configuration (durable-pubsub-spec §6/§7): 5 attempts, serial
+    /// ORDERED dispatch, RETRY-then-dead-letter, 500ms checkpoint interval (§7's time bound). Batch
+    /// size 1 keeps the ack-by-ack contract visible in the config itself. Cadence deltas from the
+    /// spec's normative defaults (backoff base/cap, checkpoint event-count) ride the consumer
+    /// runtime's constants and are stated where the dispatch attaches, not hidden.
+    static ConsumerConfig consumerConfig(String groupId) {
+        return ConsumerConfig.consumerConfig(groupId, 1, ProcessingMode.ORDERED, ErrorStrategy.RETRY, 500L, 5, "");
     }
 
     record unused() implements DurableGroupIdentity {}

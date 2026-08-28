@@ -6,6 +6,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Added (2026-08-29 — #386 durable-topic dispatch WIRED: declared-durable topics now deliver at-least-once with a durable group-attributed DLQ)
+- **A topic declared `durability = "durable"` is now a working durable delivery system end to
+  end on a node**: publish appends the KSUID-stamped envelope to the replicated `topic:<address>`
+  stream and resolves at the min-sync floor; subscriber dispatch rides `StreamConsumerManager`'s
+  EXISTING placement machinery per the option-(a) ruling — three bounded seams only (topic-stream
+  envelope-unwrap in `deliver`, durable `ConsumerConfig` selection in `doSubscribe`, and a
+  declaration-source union centralized in one `allDeclarations()` resolution point after the
+  first build caught reconcile computing keys from the union while `declarationFor` re-resolved
+  from the registry alone), with placement/assignment/failover logic untouched by construction
+  and the pre-existing declarative-consumer suite green unmodified as the regression fence.
+  Durable-topic subscriptions synthesize consumer declarations when their `topic:*` stream exists
+  (stream existence IS the durability declaration made real; ephemeral subscriptions never
+  synthesize); groups are version-stable, and a blue-green window collapses to ONE dispatch loop
+  per (group × partition). Dead letters for topic streams route through `RoutingDeadLetterSink`
+  to the durable `DlqStreamSink` (owner-forwarding publishers, source floor inherited) while
+  every other stream keeps the in-memory default unchanged. The interim `DurableTopicDispatcher`
+  and its invoker seam are DELETED — superseded by the manager, so exactly one envelope-unwrap
+  implementation exists. Docs moved in this same change per the landing obligation:
+  `guarantees.md` §5 is rewritten as the per-operation two-tier table with per-claim evidence
+  tags (including the no-silent-downgrade property and the honest PENDING list: multi-node forge
+  e2e, D3 operator triad, D4 idempotency wiring, D5 publisher split), summary-matrix row 22a
+  added, feature-catalog row 24 re-statused to Partial/two-tier, and resource-reference's
+  subscriber section documents the durability keys (fixing its stale `topic` field name to the
+  actually-bound `topic_name`).
+  [verified (single-node): `StreamConsumerManagerTest$TopicGroupDispatch` — version-stable
+  attach with durable config, ephemeral-ignored, blue-green collapse, envelope-unwrap delivery
+  with the application payload reaching the invoker; `DlqStreamSinkTest` — group-attributed
+  re-enveloping preserving messageId, DLQ-stream read-back, family routing; full node module
+  971/0/0. Multi-node composed path: design intent — unverified pending forge e2e]
+
 ### Added (2026-08-29 — #386 publisher tier switch: durable topics provision the stream-backed publisher)
 - **`PublisherFactory` now selects the publisher by the topic's declared durability class** (D1/D5
   substrate half): a DURABLE declaration provisions the envelope-wrapping stream-backed publisher —

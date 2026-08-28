@@ -11,10 +11,6 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.IntStream;
 
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Test;
-
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.invoke.InvocationHandler;
 import org.pragmatica.aether.invoke.SliceInvoker;
@@ -42,10 +38,15 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
 
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
+
 
 /// Partition ASSIGNMENT for declarative `[streams.X]` consumers (#488 gating, #535 placement repair).
 ///
@@ -65,23 +66,21 @@ class StreamConsumerManagerTest {
 
     private static final String APP_EVENT_TYPE = AppEvent.class.getName();
 
-    private static final SliceCodec.TypeCodec<AppEvent> APP_EVENT_CODEC =
-        new SliceCodec.TypeCodec<>(AppEvent.class,
-                                   SliceCodec.deterministicTag(APP_EVENT_TYPE),
-                                   (codec, buf, value) -> codec.write(buf, value.id()),
-                                   (codec, buf) -> new AppEvent(codec.read(buf)));
+    private static final SliceCodec.TypeCodec<AppEvent> APP_EVENT_CODEC = new SliceCodec.TypeCodec<>(AppEvent.class,
+                                                                                                     SliceCodec.deterministicTag(APP_EVENT_TYPE),
+                                                                                                     (codec, buf, value) -> codec.write(buf,
+                                                                                                                                        value.id()),
+                                                                                                     (codec, buf) -> new AppEvent(codec.read(buf)));
 
     private static final Artifact ARTIFACT = Artifact.artifact("org.example:orders:1.0.0").unwrap();
     private static final MethodName METHOD = MethodName.methodName("onOrderEvent").unwrap();
     private static final NodeId SELF = NodeId.nodeId("node-1").unwrap();
     private static final NodeId PEER = NodeId.nodeId("node-2").unwrap();
     private static final NodeId THIRD = NodeId.nodeId("node-3").unwrap();
-
     /// A live member that never hosts the slice — the node that can OWN a partition without being able
     /// to consume it. That combination is the whole of #535, and no test of the repair can express it
     /// without a node outside the placement set.
     private static final NodeId OUTSIDER = NodeId.nodeId("node-4").unwrap();
-
     /// The nodes that host the slice under [#deploySliceEverywhere] — everything except [#OUTSIDER].
     private static final List<NodeId> CANDIDATES = List.of(SELF, PEER, THIRD);
     private static final List<NodeId> CLUSTER = List.of(SELF, PEER, THIRD, OUTSIDER);
@@ -89,7 +88,6 @@ class StreamConsumerManagerTest {
     private static final String CONFIG_SECTION = "streams.orders";
     private static final String GROUP = "orders-onOrderEvent";
     private static final int PARTITION_COUNT = 4;
-
     /// Wide enough that HRW concentrating every partition on one of three candidates has probability
     /// 3 x (1/3)^32 — the point at which a distribution assertion stops being a coin flip.
     private static final int WIDE_PARTITION_COUNT = 32;
@@ -167,19 +165,15 @@ class StreamConsumerManagerTest {
 
     @Nested
     class Assignment {
-
         @Test
         void reconcile_subscribesOwnedPartitionsOnly_whenSliceActiveOnEveryOwner() {
             declareStringConsumer();
             deploySliceEverywhere();
             ownership.ownedBySelf(0, 2);
             ownership.ownedBy(PEER, 1, 3);
-
             manager().reconcile();
-
-            assertThat(runtime.subscribedPartitions())
-                    .describedAs("the owner can run the slice, so the owner consumes — the #488 case, unchanged")
-                    .containsExactlyInAnyOrder(0, 2);
+            assertThat(runtime.subscribedPartitions()).describedAs("the owner can run the slice, so the owner consumes — the #488 case, unchanged")
+                      .containsExactlyInAnyOrder(0, 2);
         }
 
         @Test
@@ -187,12 +181,9 @@ class StreamConsumerManagerTest {
             declareStringConsumer();
             deploySliceEverywhere();
             ownership.ownedBy(PEER, 0, 1, 2, 3);
-
             manager().reconcile();
-
-            assertThat(runtime.subscribedPartitions())
-                    .describedAs("every partition's owner can run the slice itself — nothing for this node to do")
-                    .isEmpty();
+            assertThat(runtime.subscribedPartitions()).describedAs("every partition's owner can run the slice itself — nothing for this node to do")
+                      .isEmpty();
         }
 
         /// The #535 defect, inverted into a guarantee: at default placement the owner usually does NOT
@@ -202,12 +193,9 @@ class StreamConsumerManagerTest {
             declareStringConsumer();
             deploySliceLocally();
             ownership.ownedBy(PEER, 0, 1, 2, 3);
-
             manager().reconcile();
-
-            assertThat(runtime.subscribedPartitions())
-                    .describedAs("no owner can run the slice, so the only node that can consumes them all, reading remotely")
-                    .containsExactlyInAnyOrder(0, 1, 2, 3);
+            assertThat(runtime.subscribedPartitions()).describedAs("no owner can run the slice, so the only node that can consumes them all, reading remotely")
+                      .containsExactlyInAnyOrder(0, 1, 2, 3);
         }
 
         @Test
@@ -215,12 +203,9 @@ class StreamConsumerManagerTest {
             declareStringConsumer();
             placement.activeOn(PEER);
             ownership.ownedBySelf(0, 1, 2, 3);
-
             manager().reconcile();
-
-            assertThat(runtime.subscribedPartitions())
-                    .describedAs("owning a partition is not enough — the slice must be here to invoke")
-                    .isEmpty();
+            assertThat(runtime.subscribedPartitions()).describedAs("owning a partition is not enough — the slice must be here to invoke")
+                      .isEmpty();
         }
 
         @Test
@@ -228,12 +213,9 @@ class StreamConsumerManagerTest {
             declareStringConsumer();
             deploySliceLocally();
             ownership.forgetStream();
-
             manager().reconcile();
-
-            assertThat(runtime.subscribedPartitions())
-                    .describedAs("a stream whose config has not reached this node yet is a transient state, not an error")
-                    .isEmpty();
+            assertThat(runtime.subscribedPartitions()).describedAs("a stream whose config has not reached this node yet is a transient state, not an error")
+                      .isEmpty();
         }
 
         @Test
@@ -241,12 +223,9 @@ class StreamConsumerManagerTest {
             declareStringConsumer();
             deploySliceLocally();
             ownership.forgetMembership();
-
             manager().reconcile();
-
-            assertThat(runtime.subscribedPartitions())
-                    .describedAs("assigning against an unresolved member view would claim partitions on guesswork")
-                    .isEmpty();
+            assertThat(runtime.subscribedPartitions()).describedAs("assigning against an unresolved member view would claim partitions on guesswork")
+                      .isEmpty();
         }
 
         @Test
@@ -259,14 +238,11 @@ class StreamConsumerManagerTest {
 
             manager.reconcile();
             assertThat(runtime.subscribedPartitions()).containsExactlyInAnyOrder(0, 1);
-
             ownership.ownedBySelf(1);
             ownership.ownedBy(PEER, 0, 2, 3);
             manager.reconcile();
-
-            assertThat(runtime.subscribedPartitions())
-                    .describedAs("losing ownership of partition 0 detaches only that partition")
-                    .containsExactly(1);
+            assertThat(runtime.subscribedPartitions()).describedAs("losing ownership of partition 0 detaches only that partition")
+                      .containsExactly(1);
         }
 
         /// A placement change moves the consumer even though ownership did not: the node that was the
@@ -280,13 +256,10 @@ class StreamConsumerManagerTest {
 
             manager.reconcile();
             assertThat(runtime.subscribedPartitions()).containsExactlyInAnyOrder(0, 1, 2, 3);
-
             placement.activeOn(SELF, PEER);
             manager.reconcile();
-
-            assertThat(runtime.subscribedPartitions())
-                    .describedAs("once the owner can run the slice it takes its own partitions back")
-                    .isEmpty();
+            assertThat(runtime.subscribedPartitions()).describedAs("once the owner can run the slice it takes its own partitions back")
+                      .isEmpty();
         }
 
         @Test
@@ -299,7 +272,6 @@ class StreamConsumerManagerTest {
             manager.reconcile();
             undeclare();
             manager.reconcile();
-
             assertThat(runtime.subscribedPartitions()).isEmpty();
         }
 
@@ -314,10 +286,8 @@ class StreamConsumerManagerTest {
             manager.reconcile();
             manager.reconcile();
             manager.reconcile();
-
-            assertThat(runtime.subscribeCalls)
-                    .describedAs("reconcile is idempotent — a re-tick must not re-subscribe")
-                    .isEqualTo(2);
+            assertThat(runtime.subscribeCalls).describedAs("reconcile is idempotent — a re-tick must not re-subscribe")
+                      .isEqualTo(2);
             assertThat(manager.activeSubscriptionCount()).isEqualTo(2);
         }
 
@@ -345,7 +315,7 @@ class StreamConsumerManagerTest {
             }
 
             assertThat(claimed).describedAs("every partition consumed exactly once cluster-wide — no gap, no duplicate")
-                               .containsExactlyInAnyOrder(0, 1, 2, 3);
+                      .containsExactlyInAnyOrder(0, 1, 2, 3);
         }
 
         /// Every assignee must be a node that can actually run the slice. An assignment naming a
@@ -359,12 +329,12 @@ class StreamConsumerManagerTest {
             var manager = manager();
 
             manager.reconcile();
-
             assertThat(manager.statuses()).singleElement()
-                                          .satisfies(status -> assertThat(status.partitionAssignments())
-                                                  .allSatisfy(assignment -> assertThat(assignment.consumerNode())
-                                                          .describedAs("partition %s assigned outside the candidate set", assignment.partition())
-                                                          .isIn(CANDIDATES.stream().map(Option::some).toList())));
+                      .satisfies(status -> assertThat(status.partitionAssignments()).allSatisfy(assignment -> assertThat(assignment.consumerNode()).describedAs("partition %s assigned outside the candidate set",
+                                                                                                                                                                assignment.partition())
+                                                                                                                        .isIn(CANDIDATES.stream()
+                                                                                                                                        .map(Option::some)
+                                                                                                                                        .toList())));
         }
 
         /// The distribution property, asserted where it is not a coin flip: over 32 partitions and 3
@@ -388,8 +358,7 @@ class StreamConsumerManagerTest {
                              : 1;
             }
 
-            assertThat(busyNodes).describedAs("HRW must not pile every partition on one node")
-                                 .isGreaterThan(1);
+            assertThat(busyNodes).describedAs("HRW must not pile every partition on one node").isGreaterThan(1);
         }
 
         private static int[] allPartitions(int count) {
@@ -403,18 +372,14 @@ class StreamConsumerManagerTest {
             declareStringConsumer();
             deploySliceEverywhere();
             ownership.ownedBySelf(0, 1, 2, 3);
-
             manager().reconcile();
-
-            assertThat(runtime.subscribedPartitions())
-                    .describedAs("the owner reads locally and pushes — never hand its partitions to a remote reader")
-                    .containsExactlyInAnyOrder(0, 1, 2, 3);
+            assertThat(runtime.subscribedPartitions()).describedAs("the owner reads locally and pushes — never hand its partitions to a remote reader")
+                      .containsExactlyInAnyOrder(0, 1, 2, 3);
         }
     }
 
     @Nested
     class LoudFailures {
-
         @Test
         void statuses_reportUnassignedPartitions_whenSliceIsActiveNowhere() {
             declareStringConsumer();
@@ -422,17 +387,14 @@ class StreamConsumerManagerTest {
             var manager = manager();
 
             manager.reconcile();
-
             assertThat(manager.statuses()).singleElement()
-                                          .satisfies(status -> {
-                                              assertThat(status.sliceDeployedLocally()).isFalse();
-                                              assertThat(status.unassignedPartitions())
-                                                      .describedAs("the gap must be named, not silent: nothing can run this handler")
-                                                      .containsExactlyInAnyOrder(0, 1, 2, 3);
-                                              assertThat(status.diagnostic().or(""))
-                                                      .contains("ACTIVE on no live node")
-                                                      .contains("NOT being consumed");
-                                          });
+                      .satisfies(status -> {
+                                     assertThat(status.sliceDeployedLocally()).isFalse();
+                                     assertThat(status.unassignedPartitions()).describedAs("the gap must be named, not silent: nothing can run this handler")
+                                               .containsExactlyInAnyOrder(0, 1, 2, 3);
+                                     assertThat(status.diagnostic().or("")).contains("ACTIVE on no live node")
+                                               .contains("NOT being consumed");
+                                 });
         }
 
         @Test
@@ -443,14 +405,12 @@ class StreamConsumerManagerTest {
             var manager = manager();
 
             manager.reconcile();
-
             assertThat(manager.statuses()).singleElement()
-                                          .satisfies(status -> {
-                                              assertThat(status.unassignedPartitions())
-                                                      .describedAs("owning a partition another node consumes is not a gap — since #535 the owner need not host the slice")
-                                                      .isEmpty();
-                                              assertThat(status.diagnostic()).isEqualTo(Option.none());
-                                          });
+                      .satisfies(status -> {
+                                     assertThat(status.unassignedPartitions()).describedAs("owning a partition another node consumes is not a gap — since #535 the owner need not host the slice")
+                                               .isEmpty();
+                                     assertThat(status.diagnostic()).isEqualTo(Option.none());
+                                 });
         }
 
         /// The endpoint must name WHO consumes each partition, so an operator can answer "who has
@@ -463,14 +423,20 @@ class StreamConsumerManagerTest {
             var manager = manager();
 
             manager.reconcile();
-
             assertThat(manager.statuses()).singleElement()
-                                          .satisfies(status -> assertThat(status.partitionAssignments())
-                                                  .describedAs("consumer and owner are both named, and they differ — so reads are forwarded")
-                                                  .containsExactly(new PartitionAssignment(0, Option.some(SELF), Option.some(PEER)),
-                                                                   new PartitionAssignment(1, Option.some(SELF), Option.some(PEER)),
-                                                                   new PartitionAssignment(2, Option.some(SELF), Option.some(PEER)),
-                                                                   new PartitionAssignment(3, Option.some(SELF), Option.some(PEER))));
+                      .satisfies(status -> assertThat(status.partitionAssignments()).describedAs("consumer and owner are both named, and they differ — so reads are forwarded")
+                                                     .containsExactly(new PartitionAssignment(0,
+                                                                                              Option.some(SELF),
+                                                                                              Option.some(PEER)),
+                                                                      new PartitionAssignment(1,
+                                                                                              Option.some(SELF),
+                                                                                              Option.some(PEER)),
+                                                                      new PartitionAssignment(2,
+                                                                                              Option.some(SELF),
+                                                                                              Option.some(PEER)),
+                                                                      new PartitionAssignment(3,
+                                                                                              Option.some(SELF),
+                                                                                              Option.some(PEER))));
         }
 
         /// Routine forwarding is normal operation, not a fault, so it must stay OUT of `diagnostic` —
@@ -484,19 +450,16 @@ class StreamConsumerManagerTest {
             var manager = manager();
 
             manager.reconcile();
-
             assertThat(manager.statuses()).singleElement()
-                                          .satisfies(status -> {
-                                              assertThat(status.diagnostic())
-                                                      .describedAs("forwarding is not a fault — the fault channel must stay clean")
-                                                      .isEqualTo(Option.none());
-                                              assertThat(status.partitionAssignments())
-                                                      .describedAs("and it must still be visible: consumer differs from owner on every forwarded partition")
-                                                      .allSatisfy(assignment -> {
-                                                          assertThat(assignment.consumerNode()).isEqualTo(Option.some(SELF));
-                                                          assertThat(assignment.ownerNode()).isEqualTo(Option.some(PEER));
-                                                      });
-                                          });
+                      .satisfies(status -> {
+                                     assertThat(status.diagnostic()).describedAs("forwarding is not a fault — the fault channel must stay clean")
+                                               .isEqualTo(Option.none());
+                                     assertThat(status.partitionAssignments()).describedAs("and it must still be visible: consumer differs from owner on every forwarded partition")
+                                               .allSatisfy(assignment -> {
+                                                               assertThat(assignment.consumerNode()).isEqualTo(Option.some(SELF));
+                                                               assertThat(assignment.ownerNode()).isEqualTo(Option.some(PEER));
+                                                           });
+                                 });
         }
 
         /// A deployment still activating produces the SAME empty candidate set as a slice that is
@@ -510,17 +473,14 @@ class StreamConsumerManagerTest {
             var manager = manager();
 
             manager.reconcile();
-
             assertThat(manager.statuses()).singleElement()
-                                          .satisfies(status -> {
-                                              assertThat(status.unassignedPartitions())
-                                                      .describedAs("nothing consumes them yet — that part is still true")
-                                                      .containsExactlyInAnyOrder(0, 1, 2, 3);
-                                              assertThat(status.diagnostic().or(""))
-                                                      .describedAs("a deploy in flight must not read like a slice that is nowhere")
-                                                      .contains("not being consumed YET")
-                                                      .doesNotContain("NOT being consumed by anyone");
-                                          });
+                      .satisfies(status -> {
+                                     assertThat(status.unassignedPartitions()).describedAs("nothing consumes them yet — that part is still true")
+                                               .containsExactlyInAnyOrder(0, 1, 2, 3);
+                                     assertThat(status.diagnostic().or("")).describedAs("a deploy in flight must not read like a slice that is nowhere")
+                                               .contains("not being consumed YET")
+                                               .doesNotContain("NOT being consumed by anyone");
+                                 });
         }
 
         /// An owner that has not resolved yet is the bootstrap window, not a forwarding condition.
@@ -533,19 +493,16 @@ class StreamConsumerManagerTest {
             var manager = manager();
 
             manager.reconcile();
-
             assertThat(manager.statuses()).singleElement()
-                                          .satisfies(status -> {
-                                              assertThat(status.diagnostic())
-                                                      .describedAs("no owner is known, so nothing may be claimed about where reads go")
-                                                      .isEqualTo(Option.none());
-                                              assertThat(status.partitionAssignments())
-                                                      .describedAs("this node is still assigned the work — an unknown owner does not block consumption")
-                                                      .allSatisfy(assignment -> {
-                                                          assertThat(assignment.consumerNode()).isEqualTo(Option.some(SELF));
-                                                          assertThat(assignment.ownerNode()).isEqualTo(Option.none());
-                                                      });
-                                          });
+                      .satisfies(status -> {
+                                     assertThat(status.diagnostic()).describedAs("no owner is known, so nothing may be claimed about where reads go")
+                                               .isEqualTo(Option.none());
+                                     assertThat(status.partitionAssignments()).describedAs("this node is still assigned the work — an unknown owner does not block consumption")
+                                               .allSatisfy(assignment -> {
+                                                               assertThat(assignment.consumerNode()).isEqualTo(Option.some(SELF));
+                                                               assertThat(assignment.ownerNode()).isEqualTo(Option.none());
+                                                           });
+                                 });
         }
 
         @Test
@@ -556,17 +513,14 @@ class StreamConsumerManagerTest {
             var manager = manager();
 
             manager.reconcile();
-
             assertThat(manager.statuses()).singleElement()
-                                          .satisfies(status -> {
-                                              assertThat(status.eventTypePublishable())
-                                                      .describedAs("no codec anywhere knows this type, so it cannot be published at all")
-                                                      .isEqualTo(Option.some(false));
-                                              assertThat(status.diagnostic().or(""))
-                                                      .describedAs("the operator must learn the real reason, naming the type")
-                                                      .contains(APP_EVENT_TYPE)
-                                                      .contains("cannot be PUBLISHED");
-                                          });
+                      .satisfies(status -> {
+                                     assertThat(status.eventTypePublishable()).describedAs("no codec anywhere knows this type, so it cannot be published at all")
+                                               .isEqualTo(Option.some(false));
+                                     assertThat(status.diagnostic().or("")).describedAs("the operator must learn the real reason, naming the type")
+                                               .contains(APP_EVENT_TYPE)
+                                               .contains("cannot be PUBLISHED");
+                                 });
         }
 
         /// The #526 payoff on the operator surface: once a slice's resources are provisioned with the
@@ -580,14 +534,12 @@ class StreamConsumerManagerTest {
             var manager = manager();
 
             manager.reconcile();
-
             assertThat(manager.statuses()).singleElement()
-                                          .satisfies(status -> {
-                                              assertThat(status.eventTypePublishable())
-                                                      .describedAs("the slice's own codec registers this type, so publishing works")
-                                                      .isEqualTo(Option.some(true));
-                                              assertThat(status.diagnostic()).isEqualTo(Option.none());
-                                          });
+                      .satisfies(status -> {
+                                     assertThat(status.eventTypePublishable()).describedAs("the slice's own codec registers this type, so publishing works")
+                                               .isEqualTo(Option.some(true));
+                                     assertThat(status.diagnostic()).isEqualTo(Option.none());
+                                 });
         }
 
         @Test
@@ -598,12 +550,11 @@ class StreamConsumerManagerTest {
             var manager = manager();
 
             manager.reconcile();
-
             assertThat(manager.statuses()).singleElement()
-                                          .satisfies(status -> {
-                                              assertThat(status.eventTypePublishable()).isEqualTo(Option.some(true));
-                                              assertThat(status.diagnostic()).isEqualTo(Option.none());
-                                          });
+                      .satisfies(status -> {
+                                     assertThat(status.eventTypePublishable()).isEqualTo(Option.some(true));
+                                     assertThat(status.diagnostic()).isEqualTo(Option.none());
+                                 });
         }
 
         /// A node without the slice has no slice codec to probe, so it cannot know whether the type is
@@ -617,17 +568,14 @@ class StreamConsumerManagerTest {
             var manager = manager();
 
             manager.reconcile();
-
             assertThat(manager.statuses()).singleElement()
-                                          .satisfies(status -> assertThat(status.eventTypePublishable())
-                                                  .describedAs("this node cannot know, and must not invent an answer")
-                                                  .isEqualTo(Option.none()));
+                      .satisfies(status -> assertThat(status.eventTypePublishable()).describedAs("this node cannot know, and must not invent an answer")
+                                                     .isEqualTo(Option.none()));
         }
     }
 
     @Nested
     class Lifecycle {
-
         @Test
         void stop_unsubscribesEverySubscription() {
             declareStringConsumer();
@@ -637,12 +585,9 @@ class StreamConsumerManagerTest {
 
             manager.reconcile();
             assertThat(manager.activeSubscriptionCount()).isEqualTo(4);
-
             manager.stop();
-
-            assertThat(runtime.subscribedPartitions())
-                    .describedAs("a stopped node must leave nothing attached — #499 zombie lesson")
-                    .isEmpty();
+            assertThat(runtime.subscribedPartitions()).describedAs("a stopped node must leave nothing attached — #499 zombie lesson")
+                      .isEmpty();
             assertThat(manager.activeSubscriptionCount()).isZero();
         }
 
@@ -739,7 +684,10 @@ class StreamConsumerManagerTest {
         }
 
         @Override
-        public Result<Unit> subscribe(String streamName, int partition, ConsumerConfig config, ConsumerCallback callback) {
+        public Result<Unit> subscribe(String streamName,
+                                      int partition,
+                                      ConsumerConfig config,
+                                      ConsumerCallback callback) {
             return subscribe(streamName, partition, config, callback, IdlePolicy.REAP_WHEN_IDLE);
         }
 
@@ -782,11 +730,11 @@ class StreamConsumerManagerTest {
             return subscriptions.entrySet()
                                 .stream()
                                 .map(entry -> new SubscriptionSnapshot(STREAM,
-                                                                      entry.getKey(),
-                                                                      entry.getValue(),
-                                                                      0L,
-                                                                      false,
-                                                                      IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED))
+                                                                       entry.getKey(),
+                                                                       entry.getValue(),
+                                                                       0L,
+                                                                       false,
+                                                                       IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED))
                                 .toList();
         }
 
@@ -798,6 +746,266 @@ class StreamConsumerManagerTest {
     /// probe runs against a real class lookup. `sliceCodec` mirrors what a deployed slice carries:
     /// present means the slice has its own codec registry, absent means the probe falls back to the
     /// node codec.
+    /// #386 option-(a) wiring: durable-topic groups ride THIS manager — synthesized declarations,
+    /// the same assignment machinery, and an envelope-unwrap in delivery. These tests pin the three
+    /// seams and ONLY the seams; every declarative-consumer test above is the untouched regression
+    /// fence proving placement/assignment/failover logic did not move.
+    @Nested
+    class TopicGroupDispatch {
+        private static final String TOPIC_ADDRESS = "org.example:order-events:1.0.0";
+        private static final String TOPIC_STREAM = "topic:" + TOPIC_ADDRESS;
+        private static final String TOPIC_GROUP = "org.example:orders#" + METHOD.name();
+
+        private org.pragmatica.aether.endpoint.TopicSubscriptionRegistry topicRegistry;
+        private CapturingRuntime capturingRuntime;
+        private SliceCodec topicAwareCodec;
+
+        @BeforeEach
+        void setUpTopics() {
+            topicRegistry = org.pragmatica.aether.endpoint.TopicSubscriptionRegistry.topicSubscriptionRegistry();
+            capturingRuntime = new CapturingRuntime();
+            topicAwareCodec = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(),
+                                                    org.pragmatica.aether.stream.topic.TopicCodecsStream.CODECS);
+        }
+
+        private void subscribeTopic(Artifact artifact) {
+            var address = org.pragmatica.aether.slice.resource.ResourceAddress.resourceAddress(TOPIC_ADDRESS).unwrap();
+            var key = org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey.topicSubscriptionKey(address,
+                                                                                                              artifact,
+                                                                                                              METHOD);
+            var value = org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue.topicSubscriptionValue(SELF);
+
+            topicRegistry.onSubscriptionPut(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none()));
+        }
+
+        private StreamConsumerManager topicManager() {
+            return StreamConsumerManager.streamConsumerManager(registry,
+                                                               capturingRuntime,
+                                                               invoker,
+                                                               invocationHandler,
+                                                               topicAwareCodec,
+                                                               ownership,
+                                                               placement,
+                                                               SELF,
+                                                               TopicGroupDeclarationSource.topicGroupDeclarationSource(topicRegistry,
+                                                                                                                       name -> ownership.partitionCount(name)
+                                                                                                                                        .isPresent()));
+        }
+
+        private void deployDecodingSliceLocally() {
+            var sliceCodec = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(), List.of(APP_EVENT_CODEC));
+
+            placement.activeOn(SELF);
+            when(invocationHandler.localSlice(ARTIFACT)).thenReturn(Option.some(new DecodingBridge(sliceCodec)));
+        }
+
+        @Test
+        void reconcile_attachesTopicGroup_withVersionStableGroupAndDurableConfig() {
+            subscribeTopic(ARTIFACT);
+            deployDecodingSliceLocally();
+            ownership.ownedBySelf(0, 1, 2, 3);
+            topicManager().reconcile();
+            assertThat(capturingRuntime.streams()).containsOnly(TOPIC_STREAM);
+            assertThat(capturingRuntime.groups()).containsOnly(TOPIC_GROUP);
+            assertThat(capturingRuntime.configs()).allSatisfy(config -> {
+                assertThat(config.maxRetries()).isEqualTo(5);
+                assertThat(config.checkpointInterval().millis()).isEqualTo(500L);
+            });
+        }
+
+        @Test
+        void reconcile_ignoresSubscription_whenTopicStreamDoesNotExist() {
+            subscribeTopic(ARTIFACT);
+            deployDecodingSliceLocally();
+            ownership.ownedBySelf(0, 1, 2, 3);
+            ownership.forgetStream();
+            topicManager().reconcile();
+            assertThat(capturingRuntime.streams()).describedAs("an ephemeral topic never gets a topic:* stream — no declaration, no loop")
+                      .isEmpty();
+        }
+
+        @Test
+        void reconcile_collapsesBlueGreenVersions_toOneGroupLoop() {
+            var upgraded = Artifact.artifact("org.example:orders:1.1.0").unwrap();
+
+            subscribeTopic(ARTIFACT);
+            subscribeTopic(upgraded);
+            deployDecodingSliceLocally();
+            when(invocationHandler.localSlice(upgraded)).thenReturn(Option.none());
+            ownership.ownedBySelf(0, 1, 2, 3);
+            topicManager().reconcile();
+            assertThat(capturingRuntime.subscribeCallsPerKey().values()).describedAs("two artifact VERSIONS share the version-stable group; the key-level dedup admits one loop each")
+                      .allSatisfy(calls -> assertThat(calls).isEqualTo(1));
+            assertThat(capturingRuntime.groups()).containsOnly(TOPIC_GROUP);
+        }
+
+        /// The unwrap seam end to end at the delivery boundary: the captured callback receives a
+        /// node-codec-encoded [TopicEventEnvelope]; the slice's invoker must see the DECODED
+        /// application payload — never the envelope, never raw bytes.
+        @Test
+        void delivery_unwrapsEnvelope_andInvokesSliceWithApplicationPayload() {
+            subscribeTopic(ARTIFACT);
+            deployDecodingSliceLocally();
+            ownership.ownedBySelf(0);
+            ownership.withPartitionCount(1);
+            when(invoker.invokeLocal(any(), any(), any(), any())).thenAnswer(_ -> Promise.unitPromise());
+            topicManager().reconcile();
+            var appEvent = new AppEvent("order-42");
+            var sliceCodec = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(), List.of(APP_EVENT_CODEC));
+            var envelope = new org.pragmatica.aether.stream.topic.TopicEventEnvelope("msg-1",
+                                                                                     1234L,
+                                                                                     sliceCodec.encode(appEvent));
+
+            capturingRuntime.callbackFor(TOPIC_STREAM, 0)
+                            .onEvent(0L,
+                                     topicAwareCodec.encode(envelope),
+                                     1234L)
+                            .await()
+                            .onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()));
+            var payload = org.mockito.ArgumentCaptor.forClass(Object.class);
+
+            org.mockito.Mockito.verify(invoker)
+                               .invokeLocal(org.mockito.ArgumentMatchers.eq(ARTIFACT),
+                                            org.mockito.ArgumentMatchers.eq(METHOD),
+                                            payload.capture(),
+                                            any());
+            assertThat(payload.getValue()).isEqualTo(appEvent);
+        }
+
+        private record DecodingBridge(SliceCodec codec) implements SliceBridge {
+            @Override
+            public Option<SliceCodec> sliceCodec() {
+                return Option.some(codec);
+            }
+
+            @Override
+            public Promise<Object> decode(byte[] bytes) {
+                return Result.lift(() -> codec.<Object> decode(bytes)).async();
+            }
+
+            @Override
+            public Promise<byte[]> invoke(String methodName, byte[] input) {
+                return Promise.success(input);
+            }
+
+            @Override
+            public Promise<Unit> start() {
+                return Promise.unitPromise();
+            }
+
+            @Override
+            public Promise<Unit> stop() {
+                return Promise.unitPromise();
+            }
+
+            @Override
+            public ClassLoader classLoader() {
+                return StreamConsumerManagerTest.class.getClassLoader();
+            }
+
+            @Override
+            public List<String> methodNames() {
+                return List.of(METHOD.name());
+            }
+
+            @Override
+            public Option<ObservabilityStrategyCell> observabilityCell(String methodName) {
+                return Option.none();
+            }
+        }
+
+        private static final class CapturingRuntime implements StreamConsumerRuntime {
+            private final Map<String, ConsumerCallback> callbacks = new ConcurrentHashMap<>();
+            private final Map<String, ConsumerConfig> byKey = new ConcurrentHashMap<>();
+            private final Map<String, Integer> subscribeCalls = new ConcurrentHashMap<>();
+
+            ConsumerCallback callbackFor(String streamName, int partition) {
+                return callbacks.get(streamName + "[" + partition + "]");
+            }
+
+            List<String> streams() {
+                return byKey.keySet()
+                            .stream()
+                            .map(key -> key.substring(0,
+                                                      key.indexOf('[')))
+                            .distinct()
+                            .toList();
+            }
+
+            List<String> groups() {
+                return byKey.values()
+                            .stream()
+                            .map(ConsumerConfig::groupId)
+                            .distinct()
+                            .toList();
+            }
+
+            List<ConsumerConfig> configs() {
+                return List.copyOf(byKey.values());
+            }
+
+            Map<String, Integer> subscribeCallsPerKey() {
+                return Map.copyOf(subscribeCalls);
+            }
+
+            @Override
+            public Result<Unit> subscribe(String streamName,
+                                          int partition,
+                                          ConsumerConfig config,
+                                          ConsumerCallback callback) {
+                return subscribe(streamName, partition, config, callback, IdlePolicy.REAP_WHEN_IDLE);
+            }
+
+            @Override
+            public Result<Unit> subscribe(String streamName,
+                                          int partition,
+                                          ConsumerConfig config,
+                                          ConsumerCallback callback,
+                                          IdlePolicy idlePolicy) {
+                var key = streamName + "[" + partition + "]";
+
+                subscribeCalls.merge(key, 1, Integer::sum);
+                callbacks.put(key, callback);
+                byKey.put(key, config);
+
+                return Result.unitResult();
+            }
+
+            @Override
+            public Result<Unit> unsubscribe(String streamName, int partition, String consumerGroup) {
+                var key = streamName + "[" + partition + "]";
+
+                callbacks.remove(key);
+                byKey.remove(key);
+
+                return Result.unitResult();
+            }
+
+            @Override
+            public Option<Long> cursorPosition(String streamName, int partition, String consumerGroup) {
+                return Option.none();
+            }
+
+            @Override
+            public Option<TransactionalCursorCommit> transactionalCursorCommit() {
+                return Option.none();
+            }
+
+            @Override
+            public DeadLetterHandler deadLetterHandler() {
+                return DeadLetterHandler.deadLetterHandler();
+            }
+
+            @Override
+            public List<SubscriptionSnapshot> subscriptions() {
+                return List.of();
+            }
+
+            @Override
+            public void close() {}
+        }
+    }
+
     private record StubBridge(Option<SliceCodec> codec) implements SliceBridge {
         @Override
         public Option<SliceCodec> sliceCodec() {
