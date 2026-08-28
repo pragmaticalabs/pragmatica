@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Fixed (2026-08-28 — #694: Ember instances round-trip the CTM's tag selector)
+- **In-JVM worker reconcile can now see its own inventory.** `EmberComputeProvider.toInstanceInfo`
+  returned an EMPTY tag map for every instance; an instance with no tags matches no non-empty
+  selector, so the CTM's worker reconcile — which counts ACTUAL inventory through the
+  `aether-cluster`/`aether-source`/`aether-role` filter — read `actual = 0` forever in-JVM,
+  re-provisioning every pass and never able to see a scale-down victim, with a symptom that pointed
+  the next investigation at the CTM instead of the harness (the #590 family, one layer up). Tags are
+  now built from the `ProvisionContext` AT PROVISION TIME and stored per node (the ticket's ordering
+  constraint: `toInstanceInfo` is also reached from `listInstances`/`instanceStatus`, which hold no
+  request), mirroring `HetznerComputeProvider.labelsFor` — the three selector keys with the blank
+  role defaulting to `core`, plus the provider-agnostic dotted `aether.node-id`. Nodes created
+  OUTSIDE the provider (initial cluster, direct `addNode`) stay untagged — the pre-#694 shape,
+  preserved deliberately and pinned. One recorded divergence: an absent cluster name stamps `""`
+  where cloud providers refuse the create outright (RFC-0017 C2) — the CTM selector renders an
+  unresolvable name as the same `""`, so the round-trip holds either way.
+  [verified: `aether/forge/forge-tests/.../EmberInstanceTagRoundTripTest.java` — same-context
+  selector finds the instance with the exact four-entry map; selectors differing in any ONE field do
+  not; blank role stamps the production `core` default; untagged initial nodes match no non-empty
+  selector while staying listed. Mutation (stamp propagation removed): exactly the two positive
+  guards red. The three CTM-provisioning probes (`MembershipChaosCycleTest`,
+  `ProvisioningRecoveryAfterFailureBurstProbeTest`, `PostRestartSlowRejoinDeficitFillProbeTest`)
+  re-run green against the stamped provider.]
+
 ### Fixed (2026-08-28 — #644: periodic tasks arm in start(), not at assembly)
 - **A created-but-never-started node now performs no periodic work and holds no timers.**
   `AetherNode.assembleNode` used to hand all fourteen of the node's recurring tasks to
