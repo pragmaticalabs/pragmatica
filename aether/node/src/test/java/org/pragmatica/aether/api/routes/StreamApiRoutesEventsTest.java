@@ -28,7 +28,7 @@ class StreamApiRoutesEventsTest {
         void streamsEvents_routeRegistered_hasExpectedShape() {
             var route = ManagementRoute.STREAMS_EVENTS;
             assertThat(route.method().name()).isEqualTo("GET");
-            assertThat(route.prefix()).isEqualTo("/api/v1/streams/events");
+            assertThat(route.prefix()).isEqualTo("/api/v1/streams");
         }
 
         @Test
@@ -37,7 +37,7 @@ class StreamApiRoutesEventsTest {
                     .assemble("com.example.app", "orders", "1.0.0");
             assertThat(assembled.isSuccess()).isTrue();
             assembled.onSuccess(path -> assertThat(path)
-                    .isEqualTo("/api/v1/streams/events/com.example.app/orders/1.0.0"));
+                    .isEqualTo("/api/v1/streams/com.example.app/orders/1.0.0/events"));
         }
 
         @Test
