@@ -22,6 +22,7 @@ import org.pragmatica.aether.config.PlacementPolicy;
 import org.pragmatica.aether.deployment.AuditLog;
 import org.pragmatica.aether.deployment.cluster.AllocationPool;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
+import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.Blueprint;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.ReconciliationAdjustment;
@@ -40,6 +41,7 @@ import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Memb
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.SelfShutdownReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.VersionRoutingPutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.VersionRoutingRemoveReceived;
+import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.WorkerJoinReceived;
 import org.pragmatica.aether.deployment.schema.SchemaEvent.ActivationBlocked;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.DeploymentFailed;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.DeploymentStarted;
@@ -229,6 +231,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 case VersionRoutingRemoveReceived(ValueRemove<VersionRoutingKey, VersionRoutingValue> valueRemove) -> handleVersionRoutingRemove(valueRemove,
                                                                                                                                                  tx);
                 case MembershipDecisionReceived(MembershipDecision decision) -> handleMembershipDecision(decision, tx);
+                case WorkerJoinReceived(WorkerJoinDecision decision) -> handleWorkerJoin(decision, tx);
                 case SelfShutdownReceived(TransportObservation.SelfShutdown selfShutdown) -> handleSelfShutdown(selfShutdown,
                                                                                                                 tx);
                 case ActivationDirectivePutReceived(ValuePut<ActivationDirectiveKey, ActivationDirectiveValue> valuePut) -> handleActivationDirectivePut(valuePut,
@@ -294,6 +297,25 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         private void handleMembershipDecision(MembershipDecision decision,
                                               TransitionRequest<ClusterDeploymentState, ClusterFsmEvent> tx) {
             tx.handle(() -> processMembershipDecision(decision));
+        }
+
+        /// The non-core join channel (#728). A worker never appears in `MembershipDecision`, so
+        /// without this arm `assignNodeRole` was unreachable for the only nodes that actually need
+        /// a community: labelled workers reached FSM Member and were never assigned a role, never
+        /// minted a community, and never activated.
+        ///
+        /// Routed straight to [`#assignNodeRole`] rather than through [`#handleNodeAdded`]: the
+        /// seed-node guard there is a CORE concern (seeds are SWIM-derived to present by the
+        /// membership-v2 view and need no directive), and `reconcile()` is driven by the core
+        /// delta, which a worker join deliberately does not perturb.
+        private void handleWorkerJoin(WorkerJoinDecision decision,
+                                      TransitionRequest<ClusterDeploymentState, ClusterFsmEvent> tx) {
+            tx.handle(() -> processWorkerJoin(decision));
+        }
+
+        private void processWorkerJoin(WorkerJoinDecision decision) {
+            log.info("Received worker join: {} (role={})", decision.nodeId(), decision.role());
+            assignNodeRole(decision.nodeId());
         }
 
         private void handleSelfShutdown(TransportObservation.SelfShutdown selfShutdown,

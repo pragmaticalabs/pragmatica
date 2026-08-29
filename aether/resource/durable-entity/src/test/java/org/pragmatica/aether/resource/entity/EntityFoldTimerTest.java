@@ -130,17 +130,29 @@ class EntityFoldTimerTest {
             assertThat(fold.isTimerPending(PARTITION, "order-2", "tok-2")).isTrue();
         }
 
-        /// A payload this build cannot parse must not silently arm nothing and move on unnoticed: the
-        /// append path logs it and keeps the watermark moving (the record IS in the log), and the replay
-        /// path fails the fold outright — see [RefusesMalformedPayloads].
+        /// #701 disposition, decided rather than flipped: this pin previously asserted the watermark
+        /// STILL ADVANCED past a malformed record — the exact behaviour #701 was filed against, where
+        /// "silently advancing is the one option that makes the watermark a false claim".
+        ///
+        /// The malformed payload needs no poison-pill arm of its own: an unparseable payload is simply a
+        /// failing `applyToState`, so it takes the same hold-and-park path as any other failed apply, and
+        /// the ticket's blocking option covers it. What the old pin encoded was not an escape hatch worth
+        /// keeping — advancing here lost the record's effect permanently once a checkpoint let retention
+        /// reclaim its log copy. The real escape is the one the hold preserves: a build that can apply the
+        /// record replays it from the retention floor the frozen checkpoint holds in place.
+        ///
+        /// The refusal is reachable, not theoretical: every entity operation gates through
+        /// `PartitionFencedDurableEntity#readyPartition`, which chains `ready` into `caughtUp` — so the
+        /// held watermark makes the next read replay this record and fail loudly. See
+        /// [RefusesMalformedPayloads] for the replay half.
         @Test
-        void apply_malformedTimerPayload_armsNothing_andStillAdvancesTheWatermark() {
+        void apply_malformedTimerPayload_armsNothing_andHoldsTheWatermark() {
             var fold = readyFold();
 
             fold.apply(PARTITION, 0, new EntityLogRecord(EntityLogRecord.Op.TIMER_SCHEDULE, KEY, bytes("junk")));
 
             assertThat(fold.dueTimers(PARTITION, Long.MAX_VALUE)).isEmpty();
-            assertThat(fold.checkpointableThrough(PARTITION)).isEqualTo(0L);
+            assertThat(fold.checkpointableThrough(PARTITION)).isEqualTo(-1L);
         }
     }
 

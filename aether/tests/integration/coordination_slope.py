@@ -10,12 +10,21 @@ WHAT THIS MEASURES, AND WHAT IT DOES NOT
   Does NOT : bytes (no byte counter reaches the wire — NetworkMetrics lives only inside
              ComprehensiveSnapshot, which the HTTP DTO drops, see #674); per-peer attribution
              (the counters are node-level totals); consensus-specific load (decisions/proposals
-             are collected but never serialised, also #674); community count (group splitting is
-             dead code, so communities are pinned at 1 per source, see #673).
+             are collected but never serialised, also #674).
 
   The deliverable is therefore a WORKER-COUNT slope for the shipping topology, not a
   community-count slope. That distinction is the whole point of the #591 re-scope — do not let a
   reader infer the latter from this table.
+
+WORKER PARTICIPATION IS MEASURED, NOT ASSUMED (#728)
+  This script used to emit a hard-coded `"communities": 1` in every row. It read as data and was
+  never read from anything, and it hid a real defect: the published 4/8/12 slope was measured
+  against workers that had never been activated and never joined a community, so it recorded
+  MEMBERSHIP GOSSIP rather than worker coordination — a FLOOR, which under-provisions anything
+  extrapolated from it. The constant is gone. `communitiesObserved` / `workersInCommunities` are
+  now read from the leader's /api/workers view, and a row whose participating-worker count falls
+  short of --workers is flagged loudly, exactly like the saturation guard. See community_census()
+  for what that number can and cannot prove.
 
 SATURATION GUARD
   A slope measured while backpressure climbs is measuring congestion, not coordination cost. The
@@ -192,9 +201,58 @@ def selftest():
     check("absent guard keys default to 0 without masking present ones",
           g["quic_backpressure_drops_total"] == 3 and g["quic_write_failures_total"] == 0)
 
+    # #728: the participation census must COUNT, never assume. The old hard-coded
+    # `"communities": 1` passed every run because it never looked at anything.
+    census = census_from_workers([{"nodeId": "w-1", "community": "src-a-w-0"},
+                                  {"nodeId": "w-2", "community": "src-a-w-0"},
+                                  {"nodeId": "w-3", "community": "src-b-w-0"}])
+    check("counts DISTINCT communities, not worker rows",
+          census["communitiesObserved"] == 2 and census["workersInCommunities"] == 3)
+
+    empty = census_from_workers([])
+    check("an empty worker roster reports 0 communities, not the assumed 1",
+          empty["communitiesObserved"] == 0 and empty["workersInCommunities"] == 0)
+
     print("SELF-TEST:", "OK" if ok else "FAILED")
 
     return 0 if ok else 1
+
+
+def census_from_workers(workers):
+    """Pure parse of the /api/workers payload, so the selftest can exercise it without a cluster."""
+    return {"communitiesObserved": len({w.get("community") for w in workers if w.get("community")}),
+            "workersInCommunities": len(workers)}
+
+
+def community_census(base):
+    """Observed community/worker participation, read from the leader's /workers view.
+
+    Replaces the hard-coded `"communities": 1` this script shipped with until #728. That constant
+    read as data in every published row and was never read from anything — the instrument-illusion
+    family in its purest form. It also hid the #728 defect: the 4/8/12 slope was measured against
+    workers that had never been activated, and nothing in the output could show it.
+
+    HONEST LIMITS OF THIS NUMBER, because they decide what it may be used for. `/api/workers` is
+    built by iterating GovernorAnnouncementKey and expanding each community roster
+    (`WorkerRoutes.buildWorkersResponse`) — and so is every other observable surface: cluster
+    generation and community ownership are governor-keyed too. NO management endpoint reports the
+    CommunityKey entries themselves, so a community that has been MINTED but is still FORMING (no
+    governor yet) is invisible here.
+
+    Therefore: a worker that APPEARS here is definitely participating — it is in a committed
+    community roster under an announced governor. A worker that is ABSENT is either a
+    non-participating node (the #728 shape) or a member of a community that has not yet elected a
+    governor. Presence proves participation; absence is a flag to investigate, never by itself a
+    proof of the defect. Reported as observed counts, never as an assumed topology.
+    """
+    try:
+        workers = fetch(base, "/api/workers").get("workers", [])
+    except Exception as exc:                                    # noqa: BLE001 - report, never abort a sweep
+        return {"communitiesObserved": None,
+                "workersInCommunities": None,
+                "censusError": str(exc)}
+
+    return census_from_workers(workers)
 
 
 def main():
@@ -237,10 +295,10 @@ def main():
         heaps.append(heap)
 
     total_rate = sum(s["messagesPerSecond"] for s in samples)
+    census = community_census(bases[0])
     row = {
         "workers": args.workers,
         "cores": len(samples),
-        "communities": 1,
         "totalCoreMessagesPerSecond": round(total_rate, 2),
         "perCoreMessagesPerSecond": round(total_rate / len(samples), 2),
         "meanCoreCpuUsage": round(sum(cpus) / len(cpus), 4),
@@ -248,12 +306,30 @@ def main():
         "anyCoreSaturated": any(s["saturated"] for s in samples),
         "samples": samples,
     }
+    row.update(census)
 
     print(json.dumps(row, indent=2))
     if row["anyCoreSaturated"]:
         print("\nWARNING: backpressure or write failures moved during this window. This row measures "
               "congestion, not coordination cost — do not put it in the slope without saying so.",
               file=sys.stderr)
+
+    # The participation guard (#728). A slope measured against workers that never joined a
+    # community measures MEMBERSHIP GOSSIP, not worker coordination — and gossip is a FLOOR, so
+    # extrapolating it under-provisions. That is exactly what #591 published before the defect was
+    # found, and nothing in the row could show it. Loud, and never silently averaged.
+    observed = row.get("workersInCommunities")
+    if observed is None:
+        print("\nWARNING: could not read /api/workers ({}). Worker participation is UNVERIFIED for "
+              "this row — do not claim it measures coordination cost."
+              .format(row.get("censusError")), file=sys.stderr)
+    elif observed < args.workers:
+        print("\nWARNING: {} of {} workers appear in a community roster. The rest are either "
+              "non-participating (the #728 shape) or in a still-FORMING community. This row may be "
+              "measuring membership gossip rather than worker coordination — verify before putting "
+              "it in a slope, and never extrapolate it to a larger round."
+              .format(observed, args.workers), file=sys.stderr)
+
     if args.out:
         with open(args.out, "a") as fh:
             fh.write(json.dumps(row) + "\n")

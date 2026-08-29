@@ -2,6 +2,39 @@
 
 Append-only signal log between aether-main and the design/second stream.
 
+## 2026-08-29 stream-b (data-plane) — CLAIM (CTO-granted): three build-wiring edits for the forge durable-topic e2e, plus the #264 CursorStore fix
+
+**Grant 1 — the three EXISTING-file edits for item 4** (CTO-affirmative; my original claim was "new files in
+forge-tests only", which could not reach a fixture MODULE). All three are one-line additive entries:
+
+1. `aether/tests/blueprints/pom.xml` — add `<module>test-durable-topic</module>`
+2. `aether/forge/forge-tests/pom.xml` — add the `test-durable-topic` fixture dependency
+3. `aether/forge/forge-tests/src/test/resources/TEST_PORT_ALLOCATION.md` — reserve the
+   **19000 / 19100 / 19200** band for `DurableTopicDeliveryForgeTest` (the table exists precisely so two
+   suites do not silently share a band — the #535 failure)
+
+Plus NEW files only: the `aether/tests/blueprints/test-durable-topic/` fixture module (publisher slice,
+subscriber slice with one healthy and one always-failing handler, `resources.toml` declaring the topic
+`durability = "durable"`, `replicas = 2`, `min_sync_replicas = 2`) and
+`DurableTopicDeliveryForgeTest` in forge-tests. Spec on #386 (comment 5460740128).
+
+**FORGE / CLUSTER-CORE:** no existing forge file is edited. Suite-lock protocol observed for any local
+multi-node run (`mkdir ~/IdeaProjects/.aether-suite-lock`), non-default port band as above, and every
+maven invocation carries `env -u HCLOUD_TOKEN` per tonight's paid-provisioning hazard.
+
+**Grant 2 — #264 `CursorStore` fix** (CTO ruling, rc3-blocking, retitle + fix assigned to stream B):
+`aether/aether-stream/.../stream/segment/CursorStore.java` — `replaceRef`'s non-atomic
+delete-then-create plus the per-commit orphaned-block leak. Load-bearing for `guarantees.md` §5, which
+stream B owns. Whoever holds aether-stream segment territory: this is a bounded two-method fix, no
+change to the `ConsumerCursorStore` interface or to `ClusterCursorStore`'s compose.
+
+**D3 LANDING OBLIGATION, recorded so it is not lost** (CTO ruling): `MessageContext`'s javadoc currently
+marks the DLQ **redrive** half as *specified-not-yet-shipped*, because §9's management triad does not
+exist — the verifiable half (one KSUID minted per publish, carried into `DlqEnvelope`) is stated as
+binding, the re-injection half is not. **When D3's operator triad lands, upgrading that javadoc to an
+unqualified claim is part of D3's landing obligation.** Do not upgrade the wording before the redrive
+path exists.
+
 ## 2026-08-29 stream-b (data-plane) — CLAIM (#386 D5 generated-shape spec, CTO priority-1): the two slice-api topic records — STREAM D UNBLOCK
 
 Per the ratified generated-shape spec on #386 ("Stream B lands both records"): two NEW files in

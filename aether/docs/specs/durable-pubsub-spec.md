@@ -93,7 +93,7 @@ The subscriber handler shape stays `Fn1<Promise<Unit>, T>` in both tiers: in the
 
 ## 8. Idempotency (opt-in) — and its honest bounds
 
-- Every durable event carries a publisher-assigned `messageId` (ULID) plus `(topic, partition, offset)`; `messageId` survives DLQ redrive (§9), offsets do not.
+- Every durable event carries a publisher-assigned `messageId` (KSUID) plus `(topic, partition, offset)`; `messageId` survives DLQ redrive (§9), offsets do not.
 - Subscribers opt in through the existing `IdempotencyMethodInterceptor` (claim/run/finalize over a `CacheBackend`), with a `keyExtractor` reading the envelope `messageId`.
 - **Bounded claim (normative wording):** with the aspect applied, processing is *effectively-once EXCEPT*: (i) **concurrent cross-instance attempts** — a zombie attempt (§6) racing its retry on another instance; claim/run/finalize suppresses re-execution only if the backend's claim is atomic and shared, which the in-process default is not; and (ii) **beyond the idempotency store's retention/durability** — evicted or lost claims re-admit duplicates. Deployments wanting the strongest form must back the aspect with a shared, durable, atomic-claim `CacheBackend`. Never advertised as exactly-once delivery.
 

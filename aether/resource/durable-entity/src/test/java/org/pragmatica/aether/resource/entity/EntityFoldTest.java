@@ -5,13 +5,14 @@
 package org.pragmatica.aether.resource.entity;
 
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -31,6 +32,118 @@ import static org.junit.jupiter.api.Assertions.fail;
 class EntityFoldTest {
     private static final String KEYSPACE = "orders";
     private static final int PARTITION = 3;
+
+    /// #701 — the watermark never asserts coverage the fold does not have. Of the ticket's two honest
+    /// options (block, or advance and record the gap explicitly) the BLOCKING one is taken, matching the
+    /// fold's existing refuse-over-lie posture: a failed apply HOLDS the watermark, which freezes the
+    /// checkpoint below the hole so retention keeps the record replayable, and makes the next operation's
+    /// catch-up gate replay it through the path that propagates the failure loudly.
+    ///
+    /// The outage that buys — a permanently unapplicable record blocks its partition until a build that
+    /// can apply it is deployed — is the ticket's own named-and-bounded requirement, not a regression: the
+    /// behaviour it replaces advanced past the record and then let a checkpoint reclaim the only replayable
+    /// copy, losing the write for good while still reporting coverage.
+    ///
+    /// The ticket's second half (the lost-CAS NPE in [EntityFold#caughtUp]) is covered here with its
+    /// evidence split honestly: the abandoned-slot HANG is pinned deterministically below, while the
+    /// null-slot dereference itself is closed BY CONSTRUCTION — the failed-CAS path re-enters the gate
+    /// instead of dereferencing the slot, so no read remains that could return null.
+    ///
+    /// A concurrency hammer aimed at that race was written, MEASURED, and deleted rather than shipped.
+    /// Instrumenting it over ~2400 calls showed 99.1% short-circuiting at the `appliedThrough >= head`
+    /// gate, the CAS reached 3 times per run and lost 0–1 times, and the null-slot precondition never
+    /// occurring once — a start latch and a yield inside every substrate read moved none of those numbers,
+    /// because the appender's in-memory backlog drains in a single pass and leaves later callers nothing
+    /// to do. It was a test whose name was a claim the code did not support. Recorded here so it is not
+    /// reintroduced on the assumption that nobody checked.
+    @Nested
+    class WatermarkHonesty {
+        private static final byte[] MALFORMED_TIMER_PAYLOAD = {1, 2, 3, 4};
+
+        /// The write-path pin: a failed apply at offset 1 holds the watermark at 0 even though offset 2
+        /// applies successfully afterwards — the later success PARKS instead of stepping the claim over
+        /// the hole, exactly as an out-of-order arrival would.
+        @Test
+        void apply_holdsWatermark_atFailedRecord_andLaterSuccessParks() {
+            var substrate = new FakeSubstrate();
+            var fold = EntityFold.entityFold(KEYSPACE, substrate);
+
+            awaitReady(fold);
+
+            fold.apply(PARTITION, 0, EntityLogRecord.upsert("a", bytes("1")));
+            fold.apply(PARTITION,
+                       1,
+                       new EntityLogRecord(EntityLogRecord.Op.TIMER_SCHEDULE, "poison", MALFORMED_TIMER_PAYLOAD));
+            fold.apply(PARTITION, 2, EntityLogRecord.upsert("b", bytes("2")));
+
+            fold.checkpointCandidate(PARTITION)
+                .onPresent(candidate -> assertThat(candidate.throughOffset())
+                        .as("the claim must stop BELOW the unapplied record — a checkpoint past it would let"
+                            + " retention reclaim the only replayable copy")
+                        .isEqualTo(0L))
+                .onEmpty(() -> fail("offset 0 was applied — a candidate must exist"));
+        }
+
+        /// The catch-up-path pin: a record the fold cannot apply makes replay REFUSE rather than silently
+        /// skip and serve state missing it.
+        ///
+        /// Scope, stated because it is easy to over-read: this passes against the PRE-#701 code too — the
+        /// replay path already advanced only on success, so it is a regression fence around behaviour the
+        /// fix did not change, NOT evidence for the fix. The fix's own evidence is the two watermark pins,
+        /// which flip when `apply` is reverted.
+        @Test
+        void ready_refusesLoudly_whenLogHoldsUnapplicableRecord() {
+            var substrate = new FakeSubstrate();
+
+            substrate.append(EntityLogRecord.upsert("a", bytes("1")));
+            substrate.append(new EntityLogRecord(EntityLogRecord.Op.TIMER_SCHEDULE, "poison", MALFORMED_TIMER_PAYLOAD));
+            substrate.append(EntityLogRecord.upsert("b", bytes("2")));
+
+            EntityFold.entityFold(KEYSPACE, substrate)
+                      .ready(PARTITION)
+                      .await()
+                      .onSuccess(_ -> fail("a fold that cannot apply a committed record must refuse,"
+                                           + " not serve state missing it"));
+        }
+
+        /// #701 item 2's liveness sibling, and the half of it a test can pin deterministically. A
+        /// SYNCHRONOUS throw out of `runCatchUp` used to escape between the won CAS and the `onResult`
+        /// attach, leaving the slot holding a promise nothing would ever resolve — so the failure was not
+        /// the end of it: every LATER caller waited on that abandoned promise forever.
+        ///
+        /// The assertion that matters is therefore the SECOND call, not the first. It must make its own
+        /// attempt rather than inherit a slot the first call walked away from, and the third — once the
+        /// substrate is healthy again — must actually drain the gap.
+        @Test
+        @Timeout(30)
+        void caughtUp_synchronousSubstrateThrow_failsAndLeavesTheSlotReusable() {
+            var substrate = new FakeSubstrate();
+
+            substrate.append(EntityLogRecord.upsert("a", bytes("1")));
+
+            var fold = EntityFold.entityFold(KEYSPACE, substrate);
+
+            awaitReady(fold);
+
+            substrate.append(EntityLogRecord.upsert("b", bytes("2")));
+            substrate.readThrows = new IllegalStateException("substrate threw instead of failing its promise");
+
+            assertThat(fold.caughtUp(PARTITION).await().isFailure())
+                    .as("a synchronous throw must arrive as a resolved failure, not escape the gate")
+                    .isTrue();
+            assertThat(fold.caughtUp(PARTITION).await().isFailure())
+                    .as("the slot must be clear — a second caller inheriting an abandoned promise hangs")
+                    .isTrue();
+
+            substrate.readThrows = null;
+
+            fold.caughtUp(PARTITION)
+                .await()
+                .onFailure(cause -> fail("a recovered substrate must let catch-up drain: " + cause.message()));
+
+            assertThat(text(fold, "b")).isEqualTo("2");
+        }
+    }
 
     @Nested
     class Replay {
@@ -344,13 +457,22 @@ class EntityFoldTest {
     /// A log modelled as records from `baseOffset` onward, so retention is REAL: [#trimBefore] genuinely
     /// removes the ability to read what it drops, and `earliestRetainedOffset` reports it.
     private static final class FakeSubstrate implements EntityLogSubstrate {
-        private final List<byte[]> records = new ArrayList<>();
+        // Copy-on-write, and every read SNAPSHOTS before slicing (see #read). The fold's own machinery
+        // resolves catch-up continuations off the calling thread, so this fake is not reliably
+        // single-threaded even in tests that look sequential; a plain list threw
+        // ConcurrentModificationException from inside runCatchUp, which poisoned the catch-up slot and
+        // hung the suite rather than failing it.
+        private final List<byte[]> records = new CopyOnWriteArrayList<>();
         private final AtomicInteger checkpointLoads = new AtomicInteger();
         private long baseOffset;
         private long checkpointThrough = -1L;
         private byte[] checkpointSnapshot;
         private boolean localLogComplete = true;
         private boolean holdsPartition = true;
+        // Inert by default, so every other test in this file sees the substrate unchanged. Models a
+        // substrate that fails SYNCHRONOUSLY rather than returning a failed promise — the window
+        // Result.lift closes in caughtUp.
+        private RuntimeException readThrows;
 
         void append(EntityLogRecord record) {
             records.add(record.encode());
@@ -389,13 +511,21 @@ class EntityFoldTest {
 
         @Override
         public Promise<List<byte[]>> read(String keyspace, int partition, long fromOffset, int maxRecords) {
+            if (readThrows != null) {
+                throw readThrows;
+            }
+
+            // Snapshot FIRST: copy-on-write covers the list, not the views it hands out. A subList of a
+            // CopyOnWriteArrayList is a LIVE view, so slicing before copying reintroduces exactly the
+            // ConcurrentModificationException the copy-on-write list was chosen to avoid.
+            var snapshot = List.copyOf(records);
             var start = (int) (fromOffset - baseOffset);
 
-            if (start < 0 || start >= records.size()) {
+            if (start < 0 || start >= snapshot.size()) {
                 return Promise.success(List.of());
             }
 
-            return Promise.success(List.copyOf(records.subList(start, Math.min(records.size(), start + maxRecords))));
+            return Promise.success(snapshot.subList(start, Math.min(snapshot.size(), start + maxRecords)));
         }
 
         @Override

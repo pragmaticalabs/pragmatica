@@ -26,10 +26,12 @@ import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Sche
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.SliceTargetPutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.SliceTargetRemoveReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.MembershipDecisionReceived;
+import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.WorkerJoinReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.SelfShutdownReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.VersionRoutingPutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.VersionRoutingRemoveReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentState;
+import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -112,6 +114,12 @@ public interface ClusterDeploymentManager {
     @Contract
     @MessageReceiver
     void onMembershipDecision(MembershipDecision decision);
+
+    /// The non-core join channel (#728). Separate receiver from [`#onMembershipDecision`] because
+    /// worker joins deliberately never travel on the core `MembershipDecision` stream.
+    @Contract
+    @MessageReceiver
+    void onWorkerJoin(WorkerJoinDecision decision);
 
     @Contract
     @MessageReceiver
@@ -540,6 +548,12 @@ public interface ClusterDeploymentManager {
         @Override
         public void onMembershipDecision(MembershipDecision decision) {
             ctx.dispatch(new MembershipDecisionReceived(decision));
+        }
+
+        @Contract
+        @Override
+        public void onWorkerJoin(WorkerJoinDecision decision) {
+            ctx.dispatch(new WorkerJoinReceived(decision));
         }
 
         @Contract

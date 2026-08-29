@@ -206,10 +206,18 @@ final class EntityFold {
     /// states, on the other side of the same race.
     ///
     /// The apply can fail only on a timer record whose payload this build cannot parse, which on THIS
-    /// path means bytes this same process encoded moments ago — a build defect, not data it met. It is
-    /// logged rather than propagated because the caller's promise already reports the append's outcome
-    /// and there is nothing it could do differently; the replay paths, which meet bytes written by other
-    /// builds, DO propagate it and fail the fold.
+    /// path means bytes this same process encoded moments ago — a build defect, not data it met. The
+    /// caller's promise already reports the append's outcome, so nothing is propagated here — but the
+    /// watermark is NOT advanced past the failure (#701): a watermark that steps over an unapplied
+    /// record asserts coverage the fold does not have, and everything downstream trusts that claim.
+    /// Holding it makes the failure compose into the existing honest machinery instead of a silent
+    /// permanent divergence: the checkpoint candidate cannot advance past the record (so the
+    /// retention floor HOLDS and the log copy stays replayable), and the next [#caughtUp] gate finds
+    /// the fold behind head and replays the record through the path that DOES propagate the failure
+    /// — reads refuse loudly rather than serving state missing a committed write. The outage mode,
+    /// named and bounded: that partition refuses reads and freezes its checkpoint from the poison
+    /// offset until a build that can apply the record replays it (restart/catch-up) — bounded by the
+    /// held retention floor, never by luck.
     @Contract
     void apply(int partition, long offset, EntityLogRecord record) {
         var data = publishedFold(partition);
@@ -218,18 +226,18 @@ final class EntityFold {
             return;
         }
 
-        applyToState(data, record).onFailure(cause -> logUnapplicable(offset, record, cause));
-        advanceApplied(data, offset);
+        applyToState(data, record).onSuccess(_ -> advanceApplied(data, offset))
+                    .onFailure(cause -> logUnapplicable(offset, record, cause));
     }
 
     @Contract
     private void logUnapplicable(long offset, EntityLogRecord record, Cause cause) {
         LOG.error("Entity keyspace '{}' could not apply its OWN {} record for key '{}' at offset {}: {}"
-                 + " — this node's fold now disagrees with the log it recovers from, and the divergence is"
-                 + " PERMANENT once a checkpoint is taken past this offset: the checkpoint pins retention"
-                 + " above it, so the log copy of this record becomes reclaimable and no later replay can"
-                 + " recover it. Restart this node before the next checkpoint interval to rebuild the"
-                 + " partition from the log while the record is still there",
+                 + " — the applied watermark HOLDS below this record (#701): this partition's checkpoint is"
+                 + " frozen here (the retention floor holds, so the log copy stays replayable) and the next"
+                 + " read gate will replay the record and refuse loudly rather than serve state missing a"
+                 + " committed write. Recovery: deploy a build that can apply the record (or repair it) and"
+                 + " restart/catch-up replays it from the retained log",
                   keyspace,
                   record.op(),
                   record.key(),
@@ -423,13 +431,21 @@ final class EntityFold {
         }
 
         var started = Promise.<Unit> promise();
-
+        // Lost the CAS: another runner won — and may ALREADY have completed and nulled the slot, so
+        // re-reading it here can NPE (#701). Re-entering re-checks the watermark (the winner may have
+        // finished the work outright) and re-reads the slot under the same guards as any fresh call.
         if (!fold.catchUp.compareAndSet(null, started)) {
-            return fold.catchUp.get()
-                               .flatMap(_ -> caughtUp(partition));
+            return caughtUp(partition);
         }
-
-        runCatchUp(partition, fold, data, head).onResult(result -> completeCatchUp(fold, started, result));
+        // A synchronous throw out of runCatchUp would otherwise escape BETWEEN the won CAS and the
+        // onResult attach, leaving the slot holding a promise nothing will ever resolve — every
+        // later caller then waits on it forever (#701's liveness sibling: same window, hang instead
+        // of NPE). Lifting converts the throw into a resolved failure through the same completion.
+        Result.lift(() -> runCatchUp(partition, fold, data, head))
+              .onSuccess(run -> run.onResult(result -> completeCatchUp(fold, started, result)))
+              .onFailure(cause -> completeCatchUp(fold,
+                                                  started,
+                                                  cause.result()));
 
         return started;
     }

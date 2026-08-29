@@ -4,7 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.topic;
 
-
 /// Carrier pairing a decoded durable-topic event with the [MessageContext] describing the delivery
 /// it arrived on (durable-pubsub-spec §8).
 ///
