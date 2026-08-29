@@ -58,6 +58,15 @@ goal — it fails on formatting drift but does not fix it for you [mechanism:
 `process` goal, which reformats in place. Running `build.sh` locally first means you fix
 formatting issues once, locally, instead of round-tripping through a CI failure.
 
+**What the JBCT gate does and does not cover:** it examines `src/main/java` only. Test sources are
+excluded from every JBCT goal by default (`jbct.includeTests=false`), so a **test-only** module —
+`aether/forge/forge-tests`, for instance — is not format- or lint-checked at all, and running
+`jbct:check` there is a no-op. That is deliberate policy, not an oversight (#624, #740); whether the
+gate should extend to test trees is an open question, not a settled yes. The goals now say so out
+loud rather than reporting a bare success: when files exist but were excluded, they warn that the
+module was **not** examined and name the reason, so a green result is never mistaken for coverage.
+Pass `-Djbct.includeTests=true` to check a test tree by hand.
+
 For quick iteration on a single module: `mvn test -pl <module>`. The full matrix CI actually runs
 is in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) — format+lint check, `mvn install
 -pl '!examples'`, the postgres-async integration suite, an end-to-end `mvn verify` over
