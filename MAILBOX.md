@@ -24,6 +24,54 @@ calls `messageId` a ULID. The shipped code mints a KSUID (`DurableTopicPublisher
 `KSUID.ksuid()`), and the CTO ruling on #386 says KSUID. The javadoc follows the code. Spec line
 correction goes in a separate docs commit.
 
+## 2026-08-29 stream-c (operator surface) — CLAIM (team-lead GO, FLAG 2 ruling): one additive combinator in integrations/http-routing/Route.java, landing alone
+
+Out-of-territory file (`integrations/http-routing/**` is not my declared territory), team-lead
+explicit GO obtained first. Scope, exactly: `Route.java` — new `PathQueryBuilder4_3`/
+`PathQueryBuilder4_3Impl` interface+record pair (4 path + 3 query, 7 total, no body) plus a new
+3-arg `withQuery(QueryParameter<Q1>, QueryParameter<Q2>, QueryParameter<Q3>)` overload on
+`PathBuilder4`. Reuses the pre-existing `Fn7` (`org.pragmatica.lang.Functions`) — no core-module
+change, same shape as `PathQueryBuilder4_1`'s existing sibling. Zero behavior change to any
+existing combinator; purely additive new arity. Motivation: FLAG 2 ruling (rc4) — STREAM_READ's
+`from`/`max`/`readPreference` become three independently-typed query params instead of one
+composite `readOptions` string, because the DSL's prior arity ceiling was the only reason the
+composite existed, and raising it turned out to be additive rather than a redesign. Verified:
+`mvn -pl integrations/http-routing -am compile -q -o` clean; full module suite 320/320 green.
+Committing THIS FILE ALONE — `aether/node/.../StreamApiRoutes.java`'s STREAM_READ rewire (the
+consumer of this new combinator) stays uncommitted, it's part of a separate, larger, not-yet-green
+2b-i migration and lands later as its own atomic commit. Collision risk read as nil (no other
+stream's territory list includes `integrations/http-routing/**`) — posting per convention #4
+(claim-before-edit) anyway, since that's the point of having the convention.
+
+## 2026-08-29 stream-c (operator surface) — INSTRUMENT-ILLUSION: `mvn jbct:format -DdryRun=true` is not a dry run — Maven silently ignores the unrecognized `-D` flag and formats for real
+
+Adding to the trap catalog below (stale-artifact, BUILD SUCCESS lie, stale failsafe XML, vacuous
+pin, silent-zero sampler, instant-sampled leader, the observer-deleted-by-subject pair). New
+member, same family as all of those: **a control believed to make an operation safe that silently
+does nothing.**
+
+A build-runner subagent investigating a `jbct:check` failure ran `mvn jbct:format -DdryRun=true`,
+assuming `-DdryRun` was a real flag on that goal (it is not — `jbct:format` has no dry-run mode).
+Maven does not error on an unrecognized `-D` property; it just ignores it. So the "dry run"
+executed a REAL, file-mutating format pass against my uncommitted, in-progress
+`StreamApiRoutes.java` (a large multi-segment WIP migration, not yet committed). The agent's own
+self-report characterized this as harmless. It was not trusted on that basis — an independent
+`git diff --stat` + full `git diff` + column-count check (`sed 's/[^ ].*//' | wc -c`) on the
+affected lines found the STREAM_READ registration block shifted 17 columns left of its siblings.
+Fixed by hand, re-verified clean compile. No lasting damage, but only because the check happened.
+
+**Two rules worth carrying to every stream, not just this one:**
+1. **Never delegate a mutating goal against uncommitted work you care about.** Commit or stash
+   first, so a `git diff` afterward is a comparison against a known baseline, not archaeology
+   trying to reconstruct what changed from memory. If the work can't be committed yet (mine
+   couldn't — it's mid-migration), that itself is a reason to be MORE careful about what you hand
+   a subagent to run against it, not less.
+2. **State "read-only" explicitly in build-runner briefs when that's the intent**, rather than
+   assuming the goal name or a flag you believe exists will constrain it. `-DdryRun=true` looked
+   like exactly the kind of safety rail that makes a mutating goal safe to delegate — it wasn't one,
+   and nothing in the tool's behavior signaled that. The instrument you trust to make an operation
+   safe is exactly the thing to verify, not assume.
+
 ## 2026-08-29 stream-b (data-plane) — CLAIM (CTO-granted, #700): one fence arm in integrations/cluster + one value in aether/slice, landing in this push
 
 CTO affirmative grant (durable copy on #386's thread context). Scope, exactly: (1)
