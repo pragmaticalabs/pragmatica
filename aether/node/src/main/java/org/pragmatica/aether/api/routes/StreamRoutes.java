@@ -81,14 +81,6 @@ public final class StreamRoutes implements RouteSource {
         return new StreamRoutes(nodeSupplier, coordinator, registry);
     }
 
-    record StreamListResponse(List<StreamSummary> streams) {}
-
-    record StreamSummary(String name, int partitions, long totalEvents, long totalBytes) {
-        static StreamSummary fromStreamInfo(StreamInfo info) {
-            return new StreamSummary(info.name(), info.partitions(), info.totalEvents(), info.totalBytes());
-        }
-    }
-
     record StreamInfoResponse(String name,
                               int partitions,
                               long totalEvents,
@@ -135,7 +127,6 @@ public final class StreamRoutes implements RouteSource {
                                          .withBody(StreamCreateRequest.class)
                                          .toResult(this::createStream)
                                          .asJson(),
-                         ManagementRoutes.<StreamListResponse> route(ManagementRoute.STREAM_LIST).toJson(this::listStreams),
                          ManagementRoutes.<StreamInfoResponse> route(ManagementRoute.STREAM_GET)
                                          .withPath(PathParameter.aString())
                                          .toResult(this::streamInfo)
@@ -195,12 +186,6 @@ public final class StreamRoutes implements RouteSource {
                                          .asJson());
     }
 
-    private StreamListResponse listStreams() {
-        var streams = streamManager().listStreams().stream().map(StreamSummary::fromStreamInfo).toList();
-
-        return new StreamListResponse(streams);
-    }
-
     private Result<StreamInfoResponse> streamInfo(String name) {
         return streamManager().streamInfo(name)
                             .toResult(STREAM_NOT_FOUND)
@@ -232,7 +217,9 @@ public final class StreamRoutes implements RouteSource {
         return Result.success(toReplicasResponse(streamReadRouter().replicaSnapshot(name, partition)));
     }
 
-    private static StreamReplicasResponse toReplicasResponse(ReplicaSetView view) {
+    /// Package-visible: reused by [StreamApiRoutes]'s catalog-scoped `STREAM_REPLICAS` handler so the
+    /// view-to-DTO mapping has one definition, not a parallel copy per route surface.
+    static StreamReplicasResponse toReplicasResponse(ReplicaSetView view) {
         return new StreamReplicasResponse(view.streamName(),
                                           view.partition(),
                                           view.ownerNodeId().or(""),
