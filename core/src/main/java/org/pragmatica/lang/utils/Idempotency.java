@@ -18,7 +18,9 @@ package org.pragmatica.lang.utils;
 
 import java.lang.ref.WeakReference;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 import org.pragmatica.lang.Cause;
@@ -251,22 +253,45 @@ public interface Idempotency {
         var cleanupIntervalNanos = Math.min(ttl.nanos() / 5, oneMinuteNanos);
         var cleanupInterval = timeSpan(cleanupIntervalNanos).nanos();
         // Schedule periodic cleanup using WeakReference to allow GC of the Idempotency instance.
-        // When the entries map is GC'd, the cleanup task becomes a no-op.
+        // The reference is also the task's LIFETIME (#714): the map's reachability is the only
+        // lifecycle this cache has — there is no owner to call a stop hook — so once the map is
+        // collected the task cancels itself rather than ticking forever over a dead reference.
+        // Before #714 the ScheduledFuture was discarded outright, so nothing COULD cancel it: the
+        // task became a no-op on GC, as the comment here claimed, and then ran for the life of the
+        // JVM, once per Idempotency instance ever created.
         var log = LoggerFactory.getLogger(Idempotency.class);
         var entriesRef = new WeakReference<>(entries);
+        var cleanupTaskRef = new AtomicReference<ScheduledFuture<?>>();
 
-        SharedScheduler.scheduleAtFixedRate(() -> cleanupExpiredEntries(entriesRef, timeSource, log), cleanupInterval);
+        cleanupTaskRef.set(SharedScheduler.scheduleAtFixedRate(() -> cleanupExpiredEntries(entriesRef,
+                                                                                           timeSource,
+                                                                                           log,
+                                                                                           cleanupTaskRef),
+                                                               cleanupInterval));
 
         return new idempotency(ttl.nanos(), timeSource, entries);
     }
 
-    private static void cleanupExpiredEntries(WeakReference<ConcurrentHashMap<String, CachedEntry<?>>> entriesRef,
-                                              TimeSource timeSource,
-                                              Logger log) {
+    /// Package-private rather than private so the #714 self-cancel contract can be tested
+    /// deterministically. The alternative — forcing a real GC and waiting for the weak reference to
+    /// clear — is exactly the kind of timing-dependent test that pins nothing.
+    static void cleanupExpiredEntries(WeakReference<ConcurrentHashMap<String, CachedEntry<?>>> entriesRef,
+                                      TimeSource timeSource,
+                                      Logger log,
+                                      AtomicReference<ScheduledFuture<?>> cleanupTaskRef) {
         try {
             var map = entriesRef.get();
 
             if (map == null) {
+                // The owning cache has been collected. Stop ticking instead of no-opping forever.
+                // The task may fire once before the ref is populated; a null holder simply means
+                // "not armed yet", and the map is strongly reachable at that point anyway.
+                var task = cleanupTaskRef.get();
+
+                if (task != null) {
+                    task.cancel(false);
+                }
+
                 return;
             }
 

@@ -167,7 +167,20 @@ public class RabiaEngine<C extends Command> {
     private final AtomicReference<Promise<Unit>> startPromise = new AtomicReference<>(Promise.promise());
     // Per Rabia spec: after a decision, the next phase inherits this value for round 1 vote
     private final AtomicReference<Option<StateValue>> lockedValue = new AtomicReference<>(Option.none());
-    private final Option<ScheduledFuture<?>> cleanupTask;
+    /// The old-phase sweep, armed on ACTIVATION rather than in the constructor (#714).
+    ///
+    /// Constructor-arming leaked this task forever on the failed-boot path: it is cancelled only by
+    /// [#stop], reached via `clusterNode.stop()`, and `AetherNode.cancelArmedWork` deliberately does
+    /// not attempt a teardown of a cluster stack that never started. An engine that was constructed
+    /// and then refused therefore kept ticking for the life of the JVM.
+    ///
+    /// Deferring costs nothing, because it is BEHAVIOUR-PRESERVING by construction rather than a
+    /// trade-off: [#doCleanupOldPhases] already returns immediately unless the engine is active or
+    /// observing, so an unarmed pre-activation engine and an armed one do exactly the same thing —
+    /// nothing. Arming at activation only stops burning a scheduler slot to reach that early return.
+    /// `phases` cannot grow unswept either: entries are created on the consensus path, which the
+    /// same state guard gates.
+    private final AtomicReference<ScheduledFuture<?>> cleanupTask = new AtomicReference<>();
     private final AtomicLong quorumSequence = new AtomicLong();
 
     /// Current cluster membership (consensus-level view).
@@ -356,8 +369,6 @@ public class RabiaEngine<C extends Command> {
         this.persistence = persistence;
         this.phaseStallCheck = phaseStallCheck;
         this.consensusEventListener = Option.option(consensusEventListener).or(RabiaEngine::ignoreConsensusEvent);
-        this.cleanupTask = Option.some(SharedScheduler.scheduleAtFixedRate(this::cleanupOldPhases,
-                                                                           config.cleanupInterval()));
     }
 
     @Contract
@@ -817,7 +828,9 @@ public class RabiaEngine<C extends Command> {
     }
 
     private void performStop(Promise<Unit> promise) {
-        cleanupTask.onPresent(task -> task.cancel(false));
+        // Clear as well as cancel (#714): the reference is the arm guard, so leaving a cancelled
+        // future in place would stop a restarted engine from ever re-arming its sweep.
+        Option.option(cleanupTask.getAndSet(null)).onPresent(task -> task.cancel(false));
         var oldState = engineState.getAndSet(new EngineState.Stopped());
 
         exitState(oldState);
@@ -1310,6 +1323,7 @@ public class RabiaEngine<C extends Command> {
         var oldState = engineState.getAndSet(new EngineState.Idle());
 
         exitState(oldState);
+        armCleanupTask();
         notifyConsensusStateTransition();
         startPromise.get().succeed(Unit.unit());
         syncResponses.clear();
@@ -1327,6 +1341,7 @@ public class RabiaEngine<C extends Command> {
         var oldState = engineState.getAndSet(new EngineState.Observing());
 
         exitState(oldState);
+        armCleanupTask();
         notifyConsensusStateTransition();
         startPromise.get().succeed(Unit.unit());
         syncResponses.clear();
@@ -1537,6 +1552,31 @@ public class RabiaEngine<C extends Command> {
     /// Cleans up old phase data to prevent memory leaks.
     private void cleanupOldPhases() {
         safeExecute(this::doCleanupOldPhases);
+    }
+
+    /// Test-only view of the #714 arming state. Package-private deliberately: the arming point is
+    /// the contract this ticket changed, and it is not observable any other way — `SharedScheduler`
+    /// exposes no introspection, so without this a test could only assert the arming indirectly
+    /// through timing, which would pin nothing.
+    boolean cleanupArmed() {
+        return cleanupTask.get() != null;
+    }
+
+    /// Idempotent arm for the old-phase sweep (#714). Activation is reached repeatedly — every
+    /// re-activation after a reconfigure or a quorum-loss pause runs through it — so this must arm
+    /// exactly once per running engine. The CAS is the guard; a caller that loses the race cancels
+    /// the future it just created rather than leaking it, which is the same leak class this ticket
+    /// is about and would be an embarrassing way to reintroduce it.
+    private void armCleanupTask() {
+        if (cleanupTask.get() != null) {
+            return;
+        }
+
+        var task = SharedScheduler.scheduleAtFixedRate(this::cleanupOldPhases, config.cleanupInterval());
+
+        if (!cleanupTask.compareAndSet(null, task)) {
+            task.cancel(false);
+        }
     }
 
     private void doCleanupOldPhases() {
