@@ -19,6 +19,7 @@ import javax.tools.StandardLocation;
 import java.io.IOException;
 import java.nio.file.FileSystemNotFoundException;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -37,6 +38,8 @@ import org.pragmatica.jbct.slice.routing.RouteConfig;
 import org.pragmatica.jbct.slice.routing.RouteConfigLoader;
 import org.pragmatica.jbct.slice.routing.RouteCoverageValidator;
 import org.pragmatica.jbct.slice.routing.RouteSourceGenerator;
+import org.pragmatica.jbct.slice.topic.MessageContextRule;
+import org.pragmatica.jbct.slice.topic.TopicDurabilityLoader;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -179,6 +182,14 @@ public class SliceProcessor extends AbstractProcessor {
             return;
         }
 
+        var contextViolations = messageContextViolations(sliceModel, topicBindings.bindings());
+
+        if (!contextViolations.isEmpty()) {
+            contextViolations.forEach(message -> error(interfaceElement, message));
+
+            return;
+        }
+
         generateFactory(interfaceElement,
                         sliceModel,
                         topicBindings.bindings()).flatMap(_ -> generateRoutesAndManifest(interfaceElement,
@@ -224,6 +235,86 @@ public class SliceProcessor extends AbstractProcessor {
                                 .onSuccess(_ -> note(interfaceElement,
                                                      "Generated slice manifest: META-INF/slice/" + sliceModel.simpleName()
                                                     + ".manifest"));
+    }
+
+    /// #386 D5 type-level honesty: a subscriber may declare the `(T event, MessageContext context)`
+    /// shape only on a topic declared `durability = "durable"` — see [MessageContextRule], which owns
+    /// the decision and its wording. This method's job is only to find the sites and supply the
+    /// durability view.
+    ///
+    /// The view is loaded once, and only when the slice actually declares a context-carrying
+    /// subscriber, so slices using the 1-arg shape pay nothing.
+    private List<String> messageContextViolations(SliceModel sliceModel,
+                                                  Map<String, ResolvedTopicConstant> topicBindings) {
+        var sites = new ArrayList<SubscriptionSite>();
+
+        sliceModel.methods()
+                  .stream()
+                  .filter(MethodModel::hasMessageContext)
+                  .forEach(method -> sites.add(new SubscriptionSite(method.name(), method, true)));
+        sliceModel.transitiveReactiveMethods()
+                  .stream()
+                  .filter(transitive -> transitive.method().hasMessageContext())
+                  .forEach(transitive -> sites.add(new SubscriptionSite(transitive.qualifiedMethodName(),
+                                                                        transitive.method(),
+                                                                        false)));
+
+        if (sites.isEmpty()) {
+            return List.of();
+        }
+
+        var durability = loadTopicDurability();
+        var violations = new ArrayList<String>();
+
+        for (var site : sites) {
+            // Scope matters here. The interceptor wrapper is generated per SLICE (any method
+            // carrying one) and then walks EVERY direct method, so an interceptor on an unrelated
+            // method still drags this handler through it. A per-method check misses exactly that.
+            // Transitive handlers are not in the wrapper, so only their own interceptors count.
+            if (site.method().hasInterceptors()
+                || (site.direct() && sliceModel.hasMethodInterceptors())) {
+                violations.add(MessageContextRule.interceptorViolation(site.displayName()));
+            }
+
+            for (var binding : site.method().reactiveOfCategory("subscription")) {
+                var section = topicSection(binding.qualifier().configSection(), topicBindings);
+
+                MessageContextRule.durabilityViolation(site.displayName(), section, durability)
+                                  .onPresent(violations::add);
+            }
+        }
+
+        return List.copyOf(violations);
+    }
+
+    /// A subscription method paired with the name it is reported and dispatched under — its own name
+    /// for a direct method, the step-qualified name for a transitive one. `direct` distinguishes the
+    /// two because the interceptor wrapper only ever walks the slice's own methods.
+    private record SubscriptionSite(String displayName, MethodModel method, boolean direct) {}
+
+    /// The `resources.toml` section that configures a subscription's topic. Mirrors the manifest's
+    /// `writeTopicConfig`: a `config` that resolved to a `Topic<T>` constant is configured under the
+    /// resolved topic name, a legacy lowercase `config` under itself.
+    private static String topicSection(String configSection, Map<String, ResolvedTopicConstant> topicBindings) {
+        return Option.option(topicBindings.get(configSection))
+                     .flatMap(ResolvedTopicConstant::topicName)
+                     .or(configSection);
+    }
+
+    /// Read the slice's declared topic durability from `resources.toml` on the class output, where
+    /// Maven's `process-resources` has already placed it by the time annotation processing runs.
+    /// An unreadable file yields `none()` — deliberately distinct from "read, declares ephemeral".
+    private Option<TopicDurabilityLoader.TopicDurabilityIndex> loadTopicDurability() {
+        try {
+            var resource = processingEnv.getFiler()
+                                        .getResource(StandardLocation.CLASS_OUTPUT,
+                                                     "",
+                                                     TopicDurabilityLoader.CONFIG_FILE);
+
+            return TopicDurabilityLoader.load(Path.of(resource.toUri())).option();
+        } catch (IOException | IllegalArgumentException | UnsupportedOperationException | FileSystemNotFoundException _) {
+            return Option.none();
+        }
     }
 
     private Result<Option<RouteConfig>> loadRouteConfig(String packageName) {

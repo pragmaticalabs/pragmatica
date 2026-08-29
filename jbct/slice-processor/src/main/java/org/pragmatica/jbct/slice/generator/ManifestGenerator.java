@@ -306,7 +306,12 @@ public class ManifestGenerator {
             case "subscription" -> {
                 if (method.hasSingleParam()) {
                     metadata.put("messageType",
-                                 getQualifiedTypeName(method.parameters().getFirst().type()));
+                                 getQualifiedTypeName(method.payloadParameters().getFirst().type()));
+                }
+                // #386 D5: additive marker for the context-carrying shape. Absent means the legacy
+                // 1-arg subscriber, so an older runtime reading this manifest is unaffected.
+                if (method.hasMessageContext()) {
+                    metadata.put("context", "message");
                 }
             }
             case "stream" -> {
@@ -440,10 +445,14 @@ public class ManifestGenerator {
         }
     }
 
+    /// Request types the runtime is told to register codecs for. Driven by the PAYLOAD view so a
+    /// context-carrying subscriber contributes its event type alone: `MessageContext` arrives inside
+    /// the dispatcher's `ContextualEvent`, is never a request in its own right, and advertising it
+    /// here would name a type the generated `codec()` deliberately does not register.
     private List<String> collectRequestTypes(SliceModel model) {
         return model.methods()
                     .stream()
-                    .flatMap(m -> m.parameters()
+                    .flatMap(m -> m.payloadParameters()
                                    .stream()
                                    .map(MethodModel.MethodParameterInfo::type))
                     .map(this::getQualifiedTypeName)

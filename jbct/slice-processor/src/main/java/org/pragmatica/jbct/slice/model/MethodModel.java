@@ -42,6 +42,11 @@ public record MethodModel(String name,
 
     private static final String RESOURCE_QUALIFIER_ANNOTATION = "org.pragmatica.aether.slice.annotation.ResourceQualifier";
 
+    /// The second parameter of the D5 context-carrying subscriber shape (#386 durable-pubsub-spec).
+    /// Matched by exact FQN: a same-named type from another package is an ordinary business
+    /// parameter, not the envelope context.
+    public static final String MESSAGE_CONTEXT_TYPE = "org.pragmatica.aether.slice.topic.MessageContext";
+
     private static final String SUBSCRIBER_TYPE = "org.pragmatica.aether.slice.Subscriber";
     private static final String SCHEDULED_TYPE = "org.pragmatica.aether.slice.Scheduled";
     private static final String STREAM_SUBSCRIBER_TYPE = "org.pragmatica.aether.slice.StreamSubscriber";
@@ -103,6 +108,26 @@ public record MethodModel(String name,
     /// Check if this method has any topic subscriptions.
     public boolean hasSubscriptions() {
         return hasReactiveOfCategory("subscription");
+    }
+
+    /// True when this subscription method declares the D5 context-carrying shape
+    /// `Promise<Unit> handler(T event, MessageContext context)` rather than the default 1-arg shape.
+    ///
+    /// The runtime hands such a handler a `ContextualEvent` which the generated adapter unpacks, and
+    /// the manifest marks it with `reactive.N.context = "message"`. Only legal on a topic declared
+    /// `durability = "durable"` — an ephemeral dispatch carries no envelope, so the context would be
+    /// a lie. That check needs the slice's `resources.toml` and therefore lives in the processor,
+    /// not here.
+    public boolean hasMessageContext() {
+        return hasSubscriptions() && isContextualSubscription(parameters);
+    }
+
+    /// The event type a subscription method consumes is its first parameter in both the 1-arg and
+    /// the 2-arg context-carrying shape — see [#payloadParameters].
+    private static boolean isContextualSubscription(List<MethodParameterInfo> params) {
+        return params.size() == 2 && MESSAGE_CONTEXT_TYPE.equals(params.get(1)
+                                                                       .type()
+                                                                       .toString());
     }
 
     /// Check if this method has any scheduled invocations.
@@ -211,19 +236,33 @@ public record MethodModel(String name,
         return Option.none();
     }
 
-    /// Returns true if this method has zero parameters.
+    /// The parameters that carry this method's payload.
+    ///
+    /// For the D5 context-carrying subscription shape the trailing `MessageContext` is injected by
+    /// the dispatcher out of the delivery envelope rather than carried in the request, so it is not
+    /// a payload parameter. Stating that once here is what keeps every generation site that asks
+    /// "how many parameters?" — request-record synthesis, codec registration, `Topic<T>` payload
+    /// matching — seeing the event type alone, exactly as it does for the 1-arg shape. Only the
+    /// adapter needs to know about the context, and it asks [#hasMessageContext] directly.
+    public List<MethodParameterInfo> payloadParameters() {
+        return hasMessageContext()
+               ? List.of(parameters.getFirst())
+               : parameters;
+    }
+
+    /// Returns true if this method has zero payload parameters.
     public boolean hasNoParams() {
-        return parameters.isEmpty();
+        return payloadParameters().isEmpty();
     }
 
-    /// Returns true if this method has exactly one parameter.
+    /// Returns true if this method has exactly one payload parameter.
     public boolean hasSingleParam() {
-        return parameters.size() == 1;
+        return payloadParameters().size() == 1;
     }
 
-    /// Returns true if this method has more than one parameter.
+    /// Returns true if this method has more than one payload parameter.
     public boolean hasMultipleParams() {
-        return parameters.size() > 1;
+        return payloadParameters().size() > 1;
     }
 
     /// Returns the single parameter type (for backwards compatibility with single-param methods).
@@ -548,10 +587,11 @@ public record MethodModel(String name,
         if (subscriptions.isEmpty()) {
             return Result.unitResult();
         }
-        // Subscription methods must have exactly one parameter
-        if (params.size() != 1) {
+        // Subscription methods take the message type alone, or the message type plus a MessageContext
+        if (params.size() != 1 && !isContextualSubscription(params)) {
             return Causes.cause("Subscription method '" + methodName
-                               + "' must have exactly one parameter (the message type), found: " + params.size()).result();
+                               + "' must have exactly one parameter (the message type), or two whose second is "
+                               + MESSAGE_CONTEXT_TYPE + ", found: " + params.size()).result();
         }
         // Return type must be Promise<Unit>
         if (returnType instanceof DeclaredType dt && !dt.getTypeArguments().isEmpty()) {

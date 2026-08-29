@@ -39,6 +39,7 @@ import org.pragmatica.jbct.slice.model.PlainInterfaceModel;
 import org.pragmatica.jbct.slice.model.ResolvedTopicConstant;
 import org.pragmatica.jbct.slice.model.ResourceQualifierModel;
 import org.pragmatica.jbct.slice.model.SliceModel;
+import org.pragmatica.jbct.slice.topic.MessageContextRule;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -58,6 +59,10 @@ import org.pragmatica.lang.utils.Causes;
 /// Method interceptors (annotations with @ResourceQualifier on methods) use ctx.resources().provide()
 /// and compose via interceptor.intercept(impl::method).
 public class FactoryClassGenerator {
+    /// Carrier the runtime hands a context-carrying subscriber (#386 D5): the adapter accepts it,
+    /// unpacks it, and invokes the user method with `(T event, MessageContext context)`.
+    private static final String CONTEXTUAL_EVENT_TYPE = "org.pragmatica.aether.slice.topic.ContextualEvent";
+
     private final ProcessingEnvironment processingEnv;
     private final Filer filer;
     private final Elements elements;
@@ -279,6 +284,13 @@ public class FactoryClassGenerator {
                    + ")");
         out.println("               implements " + sliceName + " {");
         // Generate method implementations
+        //
+        // These branch on the PAYLOAD view, and a context-carrying subscriber (#386 D5) never
+        // reaches here: the processor refuses MessageContext combined with method interceptors, and
+        // this record is only generated when the slice has interceptors. That refusal is load-bearing,
+        // not incidental. Do not "fix" this branching to accept the 2-arg shape — every Fn1 component
+        // above is typed on the payload alone, so the only way to make it compile is to drop the
+        // context on the floor, which is precisely the lie D5 exists to prevent.
         for (var method : model.methods()) {
             var responseType = importTracker.use(method.responseType().toString());
 
@@ -1041,6 +1053,15 @@ public class FactoryClassGenerator {
                     continue;
                 }
 
+                // A dependency method taking a MessageContext cannot be proxied: the caller has no
+                // envelope to draw one from. Left unchecked this generates silently — a phantom
+                // request record pairing the event with a context nobody can supply.
+                if (takesMessageContext(resolved)) {
+                    reportContextTakingDependencyMethod(dep, method);
+
+                    continue;
+                }
+
                 extractPromiseTypeArg(resolved.getReturnType())
                                      .map(responseType -> toProxyMethodInfo(method, resolved, responseType))
                                      .onPresent(methods::add)
@@ -1283,30 +1304,32 @@ public class FactoryClassGenerator {
             out.println();
             out.println("            @Override");
             var responseType = importTracker.use(method.responseType().toString());
+            // These overrides mirror the interface signature, so they branch on the DECLARED
+            // parameters rather than the payload view: a context-carrying subscriber declares two
+            // parameters and must be overridden with both, or the record fails to implement it.
+            var declared = method.parameters();
 
-            if (method.hasNoParams()) {
+            if (declared.isEmpty()) {
                 out.println("            public Promise<" + responseType + "> " + method.name() + "() {");
                 out.println("                return delegate." + method.name() + "();");
-            } else if (method.hasSingleParam()) {
-                var paramType = importTracker.use(method.parameters().getFirst().type().toString());
+            } else if (declared.size() == 1) {
+                var paramType = importTracker.use(declared.getFirst().type().toString());
 
                 out.println("            public Promise<" + responseType
                            + "> " + method.name()
                            + "(" + paramType
-                           + " " + method.parameters().getFirst().name()
+                           + " " + declared.getFirst().name()
                            + ") {");
                 out.println("                return delegate." + method.name()
-                           + "(" + method.parameters().getFirst().name()
+                           + "(" + declared.getFirst().name()
                            + ");");
             } else {
-                var paramList = method.parameters()
-                                      .stream()
-                                      .map(p -> importTracker.use(p.type().toString()) + " " + p.name())
+                var paramList = declared.stream()
+                                        .map(p -> importTracker.use(p.type().toString()) + " " + p.name())
+                                        .collect(Collectors.joining(", "));
+                var argList = declared.stream()
+                                      .map(MethodParameterInfo::name)
                                       .collect(Collectors.joining(", "));
-                var argList = method.parameters()
-                                    .stream()
-                                    .map(MethodParameterInfo::name)
-                                    .collect(Collectors.joining(", "));
 
                 out.println("            public Promise<" + responseType
                            + "> " + method.name()
@@ -1512,7 +1535,22 @@ public class FactoryClassGenerator {
         out.println("                        MethodName.methodName(\"" + escapedMethodName
                    + "\").expect(\"method name literal: " + escapedMethodName
                    + "\"),");
-        if (method.hasNoParams()) {
+        if (method.hasMessageContext()) {
+            // #386 D5: the dispatcher delivers a ContextualEvent; the adapter unpacks it so the user
+            // method keeps its declared (T event, MessageContext context) shape.
+            var contextualEvent = importTracker.use(CONTEXTUAL_EVENT_TYPE);
+            var eventType = importTracker.use(method.payloadParameters()
+                                                    .getFirst()
+                                                    .type()
+                                                    .toString());
+
+            out.println("                        contextual -> " + delegateExpr
+                       + "." + method.name()
+                       + "((" + eventType
+                       + ") contextual.event(), contextual.context()),");
+            out.println("                        new TypeToken<" + responseType + ">() {},");
+            out.println("                        new TypeToken<" + contextualEvent + ">() {}");
+        } else if (method.hasNoParams()) {
             out.println("                        _unit -> " + delegateExpr + "." + method.name() + "(),");
             out.println("                        new TypeToken<" + responseType + ">() {},");
             out.println("                        new TypeToken<Unit>() {}");
@@ -1589,6 +1627,27 @@ public class FactoryClassGenerator {
         }
 
         return Option.none();
+    }
+
+    /// True when a dependency method's last parameter is the delivery context (#386 D5). Matched on
+    /// the resolved parameter types so a generic super-interface substitution is seen correctly.
+    private boolean takesMessageContext(ExecutableType resolved) {
+        var params = resolved.getParameterTypes();
+
+        return !params.isEmpty()
+               && MethodModel.MESSAGE_CONTEXT_TYPE.equals(types.erasure(params.getLast()).toString());
+    }
+
+    private void reportContextTakingDependencyMethod(DependencyModel dep, ExecutableElement method) {
+        var declaringInterface = ((TypeElement) method.getEnclosingElement()).getQualifiedName()
+                                                                             .toString();
+
+        processingEnv.getMessager()
+                     .printMessage(Diagnostic.Kind.ERROR,
+                                   MessageContextRule.dependencyMethodViolation(declaringInterface,
+                                                                                 method.getSimpleName().toString(),
+                                                                                 dep.interfaceQualifiedName()),
+                                   method);
     }
 
     /// #612: silence was the failure mode — a non-Promise method vanished from the generated
