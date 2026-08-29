@@ -8,9 +8,12 @@ package org.pragmatica.aether.forge;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.ClassOrderer;
 import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestClassOrder;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.parallel.Execution;
@@ -90,11 +93,13 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 ///   - **No owner-loss arm** — the SIGKILL failover case is tracked as #739; without it this suite
 ///     does not prove survival of a partition owner's death.
 @Tag("Heavy")
-@Disabled("never executed; enable on first green run — this suite has never been observed doing what it"
-          + " claims, and an enabled-but-unrun test on a shared branch is an assertion of evidence that"
-          + " does not exist. Enabling it IS the acceptance criterion for the first run.")
+@Disabled("never observed fully green; enable on first green run — run 2 executed all five arms and"
+          + " proved the durable tier is dispatching (20 retries where ephemeral gives 1), but three"
+          + " arms failed on test-side baseline carryover and the group-isolation arm was vacuous."
+          + " Enabling it IS the acceptance criterion.")
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
+@TestClassOrder(ClassOrderer.OrderAnnotation.class)
 class DurableTopicDeliveryForgeTest {
     private static final int BASE_PORT = 19000;
     private static final int BASE_MGMT_PORT = 19100;
@@ -173,6 +178,39 @@ class DurableTopicDeliveryForgeTest {
                .pollInterval(POLL_INTERVAL)
                .failFast(this::failIfSliceFailed)
                .until(this::poisonPublishReady);
+
+        // DRAIN BOTH WARM-UPS BEFORE ANY ARM RUNS. The two gates above publish REAL events, and the
+        // first run of this suite failed three arms because those events were still in flight when the
+        // arms captured their baselines — the warm-up order landed inside arm 2's window (21 delivered
+        // against an expected 20) and the warm-up poison's five retries were counted by a later arm.
+        // Nothing was wrong with the runtime; the test was measuring its own setup.
+        //
+        // Draining rather than removing the gates: the gates exist because a publish can land before
+        // the backing stream's owner has materialized its ring, and dropping them would trade a
+        // measurable pollution for a flaky first publish. Waiting for the warm-ups to be fully
+        // PROCESSED makes the system quiescent instead, so every baseline below starts from a settled
+        // state.
+        //
+        // This also localises the poison-dispatch stall observed on run 2 (240s+ with zero poison
+        // invocations while order-events flowed): if it recurs, THIS gate fails naming it directly,
+        // instead of scattering the symptom across three arms that each blame something else.
+        await().atMost(WAIT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .failFast(this::failIfSliceFailed)
+               .untilAsserted(() -> assertThat(totalOrdersDelivered())
+                       .describedAs("the order-events warm-up must be delivered before any arm measures"
+                                    + " delivery")
+                       .isGreaterThanOrEqualTo(1));
+
+        await().atMost(WAIT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .failFast(this::failIfSliceFailed)
+               .untilAsserted(() -> assertThat(failingAttempts())
+                       .describedAs("the poison-events warm-up must exhaust its %d-attempt budget before"
+                                    + " any arm measures retries — if this times out, poison dispatch"
+                                    + " stalled, which is a RUNTIME signal and not a baseline problem",
+                                    EXPECTED_ATTEMPTS_PER_EVENT)
+                       .isGreaterThanOrEqualTo(EXPECTED_ATTEMPTS_PER_EVENT));
     }
 
     @AfterAll
@@ -187,6 +225,7 @@ class DurableTopicDeliveryForgeTest {
     }
 
     @Nested
+    @Order(1)
     class DurableTier {
         /// The guard every other assertion rests on: proof that the DURABLE tier is the one dispatching,
         /// not the ephemeral default.
@@ -224,6 +263,7 @@ class DurableTopicDeliveryForgeTest {
     }
 
     @Nested
+    @Order(2)
     class Delivery {
         /// Delivery AND duplication in one assertion — see the class doc: one partition, slice on every
         /// node, so an ungated consumer would return a multiple of ORDER_COUNT.
@@ -263,6 +303,7 @@ class DurableTopicDeliveryForgeTest {
     }
 
     @Nested
+    @Order(3)
     class DeadLetterPath {
         /// The DLQ arm. A handler that can never ack must be retried a BOUNDED number of times and then
         /// stop — and stopping is the dead-letter boundary observed from outside: the runtime gave up on
@@ -310,16 +351,41 @@ class DurableTopicDeliveryForgeTest {
         /// progress over the SAME events. This is what "no cross-group duplication by construction,
         /// not by dedup" (§9) means operationally, and it is also the partition-unblock proof — a DLQ
         /// that stalled the shared partition would freeze this count too.
+        ///
+        /// **The dispatch-started gate is load-bearing and was missing on run 2.** That run sampled
+        /// `healthyCount` before poison dispatch had begun at all, so it observed 0 and could not
+        /// distinguish a BROKEN healthy group from a LATE one — the arm was vacuous in exactly the way
+        /// this suite exists to prevent, in its own assertion. Waiting for the failing group to be
+        /// invoked first establishes that the topic is being dispatched AT ALL; only then does the
+        /// healthy group's count mean anything, because only then is its absence attributable.
         @Test
         void healthyGroup_processesTheSameEvents_unaffectedByTheFailingGroup() {
+            var failingBaseline = failingAttempts();
+            var healthyBaseline = healthyCount();
+
+            publishPoison("isolation-probe");
+
+            // Dispatch is happening: the failing group has been invoked for this arm's event. Until
+            // this holds, a zero healthyCount says nothing about the healthy group.
             await().atMost(DELIVERY_TIMEOUT)
                    .pollInterval(POLL_INTERVAL)
                    .failFast(DurableTopicDeliveryForgeTest.this::failIfSliceFailed)
-                   .untilAsserted(() -> assertThat(healthyCount())
+                   .untilAsserted(() -> assertThat(failingAttempts() - failingBaseline)
+                           .describedAs("poison-events dispatch must be observed BEFORE the healthy"
+                                        + " group's progress can be judged — otherwise a zero below is"
+                                        + " indistinguishable from 'not started yet'")
+                           .isGreaterThan(0));
+
+            // Now it is attributable: the same event reached the failing group, so the healthy group
+            // must see it too. A stall here is a real isolation failure, not a timing artefact.
+            await().atMost(DELIVERY_TIMEOUT)
+                   .pollInterval(POLL_INTERVAL)
+                   .failFast(DurableTopicDeliveryForgeTest.this::failIfSliceFailed)
+                   .untilAsserted(() -> assertThat(healthyCount() - healthyBaseline)
                            .describedAs("the healthy group shares the topic with a group that can never"
                                         + " ack; separate cursors and retry budgets mean it must still"
-                                        + " process every event")
-                           .isGreaterThanOrEqualTo(POISON_COUNT));
+                                        + " process the event the failing group is choking on")
+                           .isGreaterThanOrEqualTo(1));
         }
     }
 
@@ -348,13 +414,23 @@ class DurableTopicDeliveryForgeTest {
                       .sum();
     }
 
+    /// Sequences as delivered, read from whichever node actually dispatched them.
+    ///
+    /// It scans every node rather than the first available one. With `partitions = 1` exactly ONE node
+    /// owns the partition and records deliveries, and that node is not necessarily the one
+    /// [#appPort] happens to return — so reading a single node passes only when the owner is the one
+    /// polled. Run 2's ordering arm passed that way, which is luck rather than evidence.
     private List<Integer> deliveredSequences() {
-        var body = httpPost(appPort(), "/api/durable-topic/order-status", "{}");
-        var matcher = SEQUENCE_FIELD.matcher(body);
-
-        return matcher.results()
-                      .map(result -> Integer.parseInt(result.group(1)))
-                      .toList();
+        return cluster.getAvailableAppHttpPorts()
+                      .stream()
+                      .map(port -> httpPost(port, "/api/durable-topic/order-status", "{}"))
+                      .map(body -> SEQUENCE_FIELD.matcher(body)
+                                                 .results()
+                                                 .map(result -> Integer.parseInt(result.group(1)))
+                                                 .toList())
+                      .filter(sequences -> !sequences.isEmpty())
+                      .findFirst()
+                      .orElseGet(List::of);
     }
 
     private int failingAttempts() {
