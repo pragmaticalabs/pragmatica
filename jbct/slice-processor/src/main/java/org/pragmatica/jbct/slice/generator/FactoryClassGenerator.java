@@ -58,6 +58,10 @@ import org.pragmatica.lang.utils.Causes;
 /// Method interceptors (annotations with @ResourceQualifier on methods) use ctx.resources().provide()
 /// and compose via interceptor.intercept(impl::method).
 public class FactoryClassGenerator {
+    /// Carrier the runtime hands a context-carrying subscriber (#386 D5): the adapter accepts it,
+    /// unpacks it, and invokes the user method with `(T event, MessageContext context)`.
+    private static final String CONTEXTUAL_EVENT_TYPE = "org.pragmatica.aether.slice.topic.ContextualEvent";
+
     private final ProcessingEnvironment processingEnv;
     private final Filer filer;
     private final Elements elements;
@@ -1512,7 +1516,22 @@ public class FactoryClassGenerator {
         out.println("                        MethodName.methodName(\"" + escapedMethodName
                    + "\").expect(\"method name literal: " + escapedMethodName
                    + "\"),");
-        if (method.hasNoParams()) {
+        if (method.hasMessageContext()) {
+            // #386 D5: the dispatcher delivers a ContextualEvent; the adapter unpacks it so the user
+            // method keeps its declared (T event, MessageContext context) shape.
+            var contextualEvent = importTracker.use(CONTEXTUAL_EVENT_TYPE);
+            var eventType = importTracker.use(method.payloadParameters()
+                                                    .getFirst()
+                                                    .type()
+                                                    .toString());
+
+            out.println("                        contextual -> " + delegateExpr
+                       + "." + method.name()
+                       + "((" + eventType
+                       + ") contextual.event(), contextual.context()),");
+            out.println("                        new TypeToken<" + responseType + ">() {},");
+            out.println("                        new TypeToken<" + contextualEvent + ">() {}");
+        } else if (method.hasNoParams()) {
             out.println("                        _unit -> " + delegateExpr + "." + method.name() + "(),");
             out.println("                        new TypeToken<" + responseType + ">() {},");
             out.println("                        new TypeToken<Unit>() {}");

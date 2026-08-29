@@ -4247,6 +4247,274 @@ class SliceProcessorTest {
         assertThat(manifestContent).contains("reactive.0.messageType=test.dto.OrderEvent");
     }
 
+    /// #386 D5: the envelope context a durable subscriber may declare. Stubbed here exactly as the
+    /// other framework types are, so these pins do not wait on slice-api.
+    private static final JavaFileObject MESSAGE_CONTEXT = JavaFileObjects.forSourceString(
+            "org.pragmatica.aether.slice.topic.MessageContext",
+            """
+            package org.pragmatica.aether.slice.topic;
+
+            public record MessageContext(String messageId, String topic, int partition, long offset) {}
+            """);
+
+    private static final JavaFileObject CONTEXTUAL_EVENT = JavaFileObjects.forSourceString(
+            "org.pragmatica.aether.slice.topic.ContextualEvent",
+            """
+            package org.pragmatica.aether.slice.topic;
+
+            public record ContextualEvent(Object event, MessageContext context) {}
+            """);
+
+    private JavaFileObject orderTopicAnnotation() {
+        return JavaFileObjects.forSourceString("test.annotation.OrderTopic",
+                                               """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.Subscriber;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = Subscriber.class, config = "order-events")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.METHOD)
+            public @interface OrderTopic {}
+            """);
+    }
+
+    private JavaFileObject orderEventRecord() {
+        return JavaFileObjects.forSourceString("test.dto.OrderEvent",
+                                               """
+            package test.dto;
+            public record OrderEvent(String orderId) {}
+            """);
+    }
+
+    /// #386 D5 type-level honesty. `resources.toml` is unreadable in the in-memory compile-testing
+    /// file manager, so no topic can be shown durable here — which is precisely the fail-closed case
+    /// this pin covers: absent evidence of durability, the context-carrying shape is refused rather
+    /// than generated.
+    ///
+    /// The consequence is that the ACCEPTANCE half of D5 — the generated ContextualEvent adapter and
+    /// the `reactive.N.context` manifest key — is unreachable from this suite and is NOT yet proven
+    /// anywhere. It needs a real `resources.toml` on the class output, which means a fixture in
+    /// slice-processor-tests, which in turn needs `MessageContext` / `ContextualEvent` to exist in
+    /// slice-api. They do not yet (stream B owns them). That fixture is the remaining work.
+    @Test
+    void should_reject_message_context_subscriber_on_non_durable_topic() {
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.aether.slice.topic.MessageContext;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.lang.Unit;
+            import test.annotation.OrderTopic;
+            import test.dto.OrderEvent;
+            @Slice
+            public interface OrderService {
+                @OrderTopic
+                Promise<Unit> onOrderPlaced(OrderEvent event, MessageContext context);
+                static OrderService orderService() { return null; }
+            }
+            """);
+
+        var sources = subscriberSources();
+        sources.add(MESSAGE_CONTEXT);
+        sources.add(CONTEXTUAL_EVENT);
+        sources.add(orderTopicAnnotation());
+        sources.add(orderEventRecord());
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+
+        assertCompilation(compilation).failed();
+        assertCompilation(compilation).hadErrorContaining("MessageContext requires a durable topic");
+    }
+
+    /// The refusal must state WHY, because the fix differs by intent: declare the topic durable, or
+    /// stop asking for a context. A bare "not allowed" sends the reader to the source of the
+    /// processor to find out which.
+    @Test
+    void should_explain_why_message_context_needs_a_durable_topic() {
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.aether.slice.topic.MessageContext;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.lang.Unit;
+            import test.annotation.OrderTopic;
+            import test.dto.OrderEvent;
+            @Slice
+            public interface OrderService {
+                @OrderTopic
+                Promise<Unit> onOrderPlaced(OrderEvent event, MessageContext context);
+                static OrderService orderService() { return null; }
+            }
+            """);
+
+        var sources = subscriberSources();
+        sources.add(MESSAGE_CONTEXT);
+        sources.add(CONTEXTUAL_EVENT);
+        sources.add(orderTopicAnnotation());
+        sources.add(orderEventRecord());
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+
+        assertCompilation(compilation).hadErrorContaining("ephemeral dispatch carries no envelope");
+        assertCompilation(compilation).hadErrorContaining("order-events");
+    }
+
+    /// A second parameter that is not the envelope context is not the D5 shape — it is an ordinary
+    /// arity error, and must stay one rather than being waved through by the new branch.
+    @Test
+    void should_reject_two_arg_subscriber_whose_second_param_is_not_message_context() {
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.lang.Unit;
+            import test.annotation.OrderTopic;
+            import test.dto.OrderEvent;
+            @Slice
+            public interface OrderService {
+                @OrderTopic
+                Promise<Unit> onOrderPlaced(OrderEvent event, String trailer);
+                static OrderService orderService() { return null; }
+            }
+            """);
+
+        var sources = subscriberSources();
+        sources.add(MESSAGE_CONTEXT);
+        sources.add(orderTopicAnnotation());
+        sources.add(orderEventRecord());
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+
+        assertCompilation(compilation).failed();
+        assertCompilation(compilation).hadErrorContaining("must have exactly one parameter");
+    }
+
+    /// A same-named `MessageContext` from another package is a business parameter, not the envelope
+    /// context: detection matches the exact FQN, so this stays an arity error.
+    @Test
+    void should_reject_two_arg_subscriber_with_lookalike_message_context() {
+        var lookalike = JavaFileObjects.forSourceString("test.dto.MessageContext",
+                                                        """
+            package test.dto;
+            public record MessageContext(String messageId) {}
+            """);
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.lang.Unit;
+            import test.annotation.OrderTopic;
+            import test.dto.MessageContext;
+            import test.dto.OrderEvent;
+            @Slice
+            public interface OrderService {
+                @OrderTopic
+                Promise<Unit> onOrderPlaced(OrderEvent event, MessageContext context);
+                static OrderService orderService() { return null; }
+            }
+            """);
+
+        var sources = subscriberSources();
+        sources.add(lookalike);
+        sources.add(orderTopicAnnotation());
+        sources.add(orderEventRecord());
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+
+        assertCompilation(compilation).failed();
+        assertCompilation(compilation).hadErrorContaining("must have exactly one parameter");
+    }
+
+    /// The 1-arg subscriber path must be untouched by D5: same method-reference adapter, same
+    /// TypeTokens, and no trace of the contextual machinery in the generated factory.
+    @Test
+    void should_leave_single_arg_subscriber_adapter_unchanged() throws Exception {
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.lang.Unit;
+            import test.annotation.OrderTopic;
+            import test.dto.OrderEvent;
+            @Slice
+            public interface OrderService {
+                @OrderTopic
+                Promise<Unit> onOrderPlaced(OrderEvent event);
+                static OrderService orderService() { return null; }
+            }
+            """);
+
+        var sources = subscriberSources();
+        sources.add(MESSAGE_CONTEXT);
+        sources.add(CONTEXTUAL_EVENT);
+        sources.add(orderTopicAnnotation());
+        sources.add(orderEventRecord());
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.OrderServiceFactory")
+                                        .get().getCharContent(false).toString();
+
+        assertThat(factoryContent).contains("delegate::onOrderPlaced,");
+        assertThat(factoryContent).contains("new TypeToken<OrderEvent>() {}");
+        assertThat(factoryContent).doesNotContain("ContextualEvent");
+        assertThat(factoryContent).doesNotContain("contextual ->");
+
+        var manifestContent = compilation.generatedFile(StandardLocation.CLASS_OUTPUT,
+                                                        "META-INF/slice/OrderService.manifest")
+                                         .get().getCharContent(false).toString();
+
+        assertThat(manifestContent).contains("reactive.0.category=subscription");
+        assertThat(manifestContent).contains("reactive.0.messageType=test.dto.OrderEvent");
+        assertThat(manifestContent).doesNotContain("context=message");
+    }
+
+    /// The manifest addition is additive only: the envelope format stays frozen at 1000 (#386
+    /// no-bump ruling), so an older runtime keeps reading manifests it already understands.
+    @Test
+    void should_keep_envelope_version_frozen_for_single_arg_subscriber() throws Exception {
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.lang.Unit;
+            import test.annotation.OrderTopic;
+            import test.dto.OrderEvent;
+            @Slice
+            public interface OrderService {
+                @OrderTopic
+                Promise<Unit> onOrderPlaced(OrderEvent event);
+                static OrderService orderService() { return null; }
+            }
+            """);
+
+        var sources = subscriberSources();
+        sources.add(orderTopicAnnotation());
+        sources.add(orderEventRecord());
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        var manifestContent = compilation.generatedFile(StandardLocation.CLASS_OUTPUT,
+                                                        "META-INF/slice/OrderService.manifest")
+                                         .get().getCharContent(false).toString();
+
+        assertThat(manifestContent).contains("envelope.version=1000");
+    }
+
     @Test
     void should_include_transitive_methods_in_slice_adapter() throws Exception {
         var orderTopic = JavaFileObjects.forSourceString("test.annotation.OrderTopic",

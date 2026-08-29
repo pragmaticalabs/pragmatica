@@ -306,7 +306,12 @@ public class ManifestGenerator {
             case "subscription" -> {
                 if (method.hasSingleParam()) {
                     metadata.put("messageType",
-                                 getQualifiedTypeName(method.parameters().getFirst().type()));
+                                 getQualifiedTypeName(method.payloadParameters().getFirst().type()));
+                }
+                // #386 D5: additive marker for the context-carrying shape. Absent means the legacy
+                // 1-arg subscriber, so an older runtime reading this manifest is unaffected.
+                if (method.hasMessageContext()) {
+                    metadata.put("context", "message");
                 }
             }
             case "stream" -> {
