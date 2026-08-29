@@ -4201,7 +4201,7 @@ public class AetherCli implements Runnable {
 
             @Override
             public Integer call() {
-                var response = streamParent.parent.fetch(STREAM_LIST);
+                var response = streamParent.parent.fetch(STREAMS_LIST);
 
                 return OutputFormatter.printQuery(response, streamParent.parent.outputOptions());
             }
