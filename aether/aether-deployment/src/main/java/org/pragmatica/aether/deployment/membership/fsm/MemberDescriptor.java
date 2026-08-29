@@ -54,9 +54,9 @@ public record MemberDescriptor(Option<NodeAddress> address, String role, String 
     ///
     /// This docstring also claimed cryptographic role attestation was "tracked under #241". It is
     /// not: #241 is community topology lifecycle (seeding, growth policy, per-community FSM) and
-    /// says nothing about attestation. No ticket currently tracks it, so the hardening that
-    /// reference implied was on the roadmap is not on it. The admission gap it would harden is
-    /// #715.
+    /// says nothing about attestation. The hardening that pointer implied was on the roadmap was
+    /// not on it; **#747** is now its actual home. Note that #715 does NOT close it — a certificate
+    /// proves cluster MEMBERSHIP, not role, so an admitted node can still assert any role it likes.
     public boolean isCore() {
         return isCoreRole(role);
     }
