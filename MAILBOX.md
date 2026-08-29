@@ -319,6 +319,30 @@ Practical asks:
 3. **A local forge red is adjudicated by isolated re-run BEFORE blaming the diff** — the two
    incidents above both re-ran green in isolation.
 
+**⚠️ THE SUITE-LOCK DOES NOT PROTECT `~/.m2` (added 2026-08-29 by stream-cluster-core, CTO-ratified
+fleet-wide; driver: a forge run died in 4s on `NoClassDefFoundError: ClientAuthPolicy` while the
+lock was held and honoured).** The lock serialises cluster RUNS. It says nothing about artifact
+PUBLICATION, so a correctly-locked run can still be poisoned by an unlocked `mvn install` from
+another tree mid-run. Anyone reading the lock rules will assume they are covered; they are not.
+
+- The failure shape is a MISMATCHED PAIR in the shared repo — e.g. `consensus.jar` compiled against
+  a signature that `tcp.jar` does not contain. It presents as `NoClassDefFoundError` /
+  `NoSuchMethodError` naming a class the reader never touched, which reads exactly like a product
+  bug in someone else's module (the #694 wrong-module trap class again).
+- **Never install a partial multi-module change into the shared `~/.m2`.** Only states that COMPILE
+  AS A SET may land there — and preferably only committed states.
+- **Use an isolated repo for WIP.** `-Dmaven.repo.local=.m2-local/repository` appended to the
+  TRACKED `.mvn/maven.config`, protected with `git update-index --skip-worktree .mvn/maven.config`
+  (the file is tracked, so `.git/info/exclude` does nothing for it), and `.m2-local/` added to
+  `.git/info/exclude`. Seed it cheaply with `cp -al ~/.m2/repository .m2-local/repository` —
+  hardlinks, so no re-download. **The main checkout now does this too** (2026-08-29): CLAUDE.md's
+  multi-tree rule assigned the shared repo to the main checkout, and that is precisely what let
+  in-flight work reach every other stream's dependency space.
+- **Verify isolation rather than trusting it:** build, then confirm the new symbol is present in
+  `.m2-local` and ABSENT from `~/.m2`. Compare jar CONTENT, never mtimes — the shared repo can hold
+  an artifact NEWER than your source because another tree installed it after your build.
+- If you suspect poisoning, adjudicate in a fresh isolated repo before filing anything.
+
 **CTO-ratified collision conventions (2026-08-28, second batch — driver: three same-day
 territory/tree collisions, including one commit that carried another stream's delegated agent's
 in-flight working-tree state, correct only by after-the-fact verification):**
