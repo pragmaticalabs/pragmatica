@@ -51,7 +51,12 @@ public record MemberDescriptor(Option<NodeAddress> address, String role, String 
     /// membership, and a node that claims `worker` is excluded from the core set while one that
     /// claims nothing is included. The structured [`NodeInfo.NodeRole`] is a SEPARATE axis
     /// (transport active/passive); classification deliberately uses the self-asserted label.
-    /// Cryptographic role attestation is tracked under #241, whose motivation is this gap.
+    ///
+    /// This docstring also claimed cryptographic role attestation was "tracked under #241". It is
+    /// not: #241 is community topology lifecycle (seeding, growth policy, per-community FSM) and
+    /// says nothing about attestation. No ticket currently tracks it, so the hardening that
+    /// reference implied was on the roadmap is not on it. The admission gap it would harden is
+    /// #715.
     public boolean isCore() {
         return isCoreRole(role);
     }
