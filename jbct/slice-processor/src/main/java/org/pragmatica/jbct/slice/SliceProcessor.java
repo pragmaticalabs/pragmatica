@@ -38,6 +38,7 @@ import org.pragmatica.jbct.slice.routing.RouteConfig;
 import org.pragmatica.jbct.slice.routing.RouteConfigLoader;
 import org.pragmatica.jbct.slice.routing.RouteCoverageValidator;
 import org.pragmatica.jbct.slice.routing.RouteSourceGenerator;
+import org.pragmatica.jbct.slice.topic.MessageContextRule;
 import org.pragmatica.jbct.slice.topic.TopicDurabilityLoader;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -237,13 +238,12 @@ public class SliceProcessor extends AbstractProcessor {
     }
 
     /// #386 D5 type-level honesty: a subscriber may declare the `(T event, MessageContext context)`
-    /// shape only on a topic declared `durability = "durable"`. Ephemeral dispatch carries no
-    /// envelope, so a context handed to such a handler would be fabricated.
+    /// shape only on a topic declared `durability = "durable"` — see [MessageContextRule], which owns
+    /// the decision and its wording. This method's job is only to find the sites and supply the
+    /// durability view.
     ///
-    /// Fail-closed: when `resources.toml` cannot be read at all, no topic counts as durable. A check
-    /// that disappears when it cannot see is exactly the failure this rule exists to prevent. The
-    /// file is read only when the slice actually declares a context-carrying subscriber, so slices
-    /// that use the 1-arg shape pay nothing.
+    /// The view is loaded once, and only when the slice actually declares a context-carrying
+    /// subscriber, so slices using the 1-arg shape pay nothing.
     private List<String> messageContextViolations(SliceModel sliceModel,
                                                   Map<String, ResolvedTopicConstant> topicBindings) {
         var sites = new ArrayList<SubscriptionSite>();
@@ -266,31 +266,15 @@ public class SliceProcessor extends AbstractProcessor {
         var violations = new ArrayList<String>();
 
         for (var site : sites) {
-            // The interceptor chain is typed on the payload alone (`Fn1<Promise<Unit>, T>`), so it
-            // has nowhere to carry the context. Generating the combination anyway would either drop
-            // the context silently or emit a wrapper that does not implement the declared signature.
             if (site.method().hasInterceptors()) {
-                violations.add("Subscription method '" + site.displayName()
-                              + "' declares a " + MethodModel.MESSAGE_CONTEXT_TYPE
-                              + " parameter and also carries method interceptors. The interceptor chain is typed on"
-                              + " the event alone and cannot carry the delivery context, so the context would be"
-                              + " silently dropped. Remove the interceptors from this handler, or drop the"
-                              + " MessageContext parameter.");
+                violations.add(MessageContextRule.interceptorViolation(site.displayName()));
             }
 
             for (var binding : site.method().reactiveOfCategory("subscription")) {
                 var section = topicSection(binding.qualifier().configSection(), topicBindings);
 
-                if (!durability.map(index -> index.isDurable(section)).or(false)) {
-                    violations.add("Subscription method '" + site.displayName()
-                                  + "' declares a " + MethodModel.MESSAGE_CONTEXT_TYPE
-                                  + " parameter, but topic '" + section
-                                  + "' is not declared durable. MessageContext requires a durable topic:"
-                                  + " ephemeral dispatch carries no envelope, so the message id, partition"
-                                  + " and offset would be fabricated. Either declare durability = \"durable\""
-                                  + " in the '" + section
-                                  + "' section of resources.toml, or drop the MessageContext parameter.");
-                }
+                MessageContextRule.durabilityViolation(site.displayName(), section, durability)
+                                  .onPresent(violations::add);
             }
         }
 

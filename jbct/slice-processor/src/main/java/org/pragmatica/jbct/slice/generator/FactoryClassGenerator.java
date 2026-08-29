@@ -283,6 +283,13 @@ public class FactoryClassGenerator {
                    + ")");
         out.println("               implements " + sliceName + " {");
         // Generate method implementations
+        //
+        // These branch on the PAYLOAD view, and a context-carrying subscriber (#386 D5) never
+        // reaches here: the processor refuses MessageContext combined with method interceptors, and
+        // this record is only generated when the slice has interceptors. That refusal is load-bearing,
+        // not incidental. Do not "fix" this branching to accept the 2-arg shape — every Fn1 component
+        // above is typed on the payload alone, so the only way to make it compile is to drop the
+        // context on the floor, which is precisely the lie D5 exists to prevent.
         for (var method : model.methods()) {
             var responseType = importTracker.use(method.responseType().toString());
 

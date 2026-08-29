@@ -4287,18 +4287,18 @@ class SliceProcessorTest {
             """);
     }
 
-    /// #386 D5 type-level honesty. `resources.toml` is unreadable in the in-memory compile-testing
-    /// file manager, so no topic can be shown durable here — which is precisely the fail-closed case
-    /// this pin covers: absent evidence of durability, the context-carrying shape is refused rather
-    /// than generated.
+    /// #386 D5 type-level honesty, exercised end-to-end through the processor. `resources.toml` is
+    /// unreadable in the in-memory compile-testing file manager, so durability here is always
+    /// UNDETERMINED rather than ephemeral — which is precisely the fail-closed case: absent evidence
+    /// of durability the context-carrying shape is refused rather than generated.
     ///
-    /// The consequence is that the ACCEPTANCE half of D5 — the generated ContextualEvent adapter and
-    /// the `reactive.N.context` manifest key — is unreachable from this suite and is NOT yet proven
-    /// anywhere. It needs a real `resources.toml` on the class output, which means a fixture in
-    /// slice-processor-tests, which in turn needs `MessageContext` / `ContextualEvent` to exist in
-    /// slice-api. They do not yet (stream B owns them). That fixture is the remaining work.
+    /// Two consequences, both deliberate. The declared-ephemeral and declared-durable branches are
+    /// unreachable from this suite and are pinned directly in `MessageContextRuleTest`. And the
+    /// ACCEPTANCE half — the generated ContextualEvent adapter and the `reactive.N.context` manifest
+    /// key — is likewise unreachable here, so it is proven by real-compile fixtures in
+    /// slice-processor-tests, where the module compiles its own generated sources.
     @Test
-    void should_reject_message_context_subscriber_on_non_durable_topic() {
+    void should_reject_message_context_subscriber_when_durability_is_undetermined() {
         var source = JavaFileObjects.forSourceString("test.OrderService",
                                                      """
             package test;
@@ -4329,11 +4329,11 @@ class SliceProcessorTest {
         assertCompilation(compilation).hadErrorContaining("MessageContext requires a durable topic");
     }
 
-    /// The refusal must state WHY, because the fix differs by intent: declare the topic durable, or
-    /// stop asking for a context. A bare "not allowed" sends the reader to the source of the
-    /// processor to find out which.
+    /// The refusal must name the REAL cause. Here the configuration could not be read, so reporting
+    /// the topic as ephemeral would send the author to fix a declaration that may already say
+    /// `durable`. The two causes must not be conflated (#386 ruling condition).
     @Test
-    void should_explain_why_message_context_needs_a_durable_topic() {
+    void should_report_unreadable_configuration_rather_than_claiming_ephemeral() {
         var source = JavaFileObjects.forSourceString("test.OrderService",
                                                      """
             package test;
@@ -4360,7 +4360,8 @@ class SliceProcessorTest {
 
         Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
 
-        assertCompilation(compilation).hadErrorContaining("ephemeral dispatch carries no envelope");
+        assertCompilation(compilation).hadErrorContaining("could not be read");
+        assertCompilation(compilation).hadErrorContaining("refused rather than assumed");
         assertCompilation(compilation).hadErrorContaining("order-events");
     }
 

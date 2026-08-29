@@ -74,11 +74,50 @@ class GeneratedContextualSubscriberTest {
         assertThat(factory).doesNotContain("record OnOrderPlaced");
     }
 
+    /// The other half of the same rule (#386 required pin): codec registration must not register a
+    /// synthesized request record either. The codec block registers the event type and nothing
+    /// invented — a phantom record here would be a class the runtime is told to serialize and that
+    /// no publisher will ever send.
+    @Test
+    void generatedCodec_registersTheEventTypeAndNoSynthesizedRecord() {
+        var codecBlock = factory.substring(factory.indexOf("public SliceCodec codec("));
+
+        assertThat(codecBlock).contains("TypeCodec<com.example.durabletopic.OrderPlaced>");
+        assertThat(codecBlock).doesNotContain("Request>");
+        assertThat(codecBlock).doesNotContain("OnOrderPlacedRequest");
+    }
+
+    /// And the manifest side of codec registration: `request.classes` drives what the runtime
+    /// registers, so a synthesized record must not appear there either.
+    @Test
+    void manifest_requestClassesCarryNoSynthesizedRecord() {
+        var requestClasses = manifest.lines()
+                                     .filter(line -> line.startsWith("request.classes="))
+                                     .findFirst()
+                                     .orElse("");
+
+        assertThat(requestClasses).contains("com.example.durabletopic.OrderPlaced");
+        assertThat(requestClasses).doesNotContain("OnOrderPlacedRequest");
+    }
+
     /// The additive manifest marker, emitted only for this shape.
     @Test
     void manifest_marksSubscriptionAsContextCarrying() {
         assertThat(manifest).contains("reactive.0.category=subscription");
         assertThat(manifest).contains("reactive.0.context=message");
+    }
+
+    /// `MessageContext(String messageId, String topic, int partition, long offset)` has two ADJACENT
+    /// String components, so transposing them at a construction site compiles cleanly and silently
+    /// keys idempotency by topic name — collapsing a whole topic into one dedup key with nothing ever
+    /// thrown. The generated adapter is safe from that by shape, not by luck: it PASSES THROUGH the
+    /// context the runtime built and never constructs one. This pin fails if that ever changes, which
+    /// is the point at which the hazard would become reachable and would need argument-order proof.
+    @Test
+    void generatedAdapter_passesContextThrough_ratherThanConstructingOne() {
+        assertThat(factory).contains("contextual.context()");
+        assertThat(factory).doesNotContain("new MessageContext(");
+        assertThat(factory).doesNotContain("MessageContext.messageContext(");
     }
 
     /// The event type still travels for codec registration — the context parameter must not have

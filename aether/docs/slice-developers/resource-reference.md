@@ -809,6 +809,12 @@ mode = "TIERED"
 
 Aspects are cross-cutting concerns applied to slice method invocations via configuration. Each aspect is a `ResourceFactory` that provisions a method interceptor.
 
+> **Limitation on pub-sub handlers:** an interceptor wraps a handler as `Fn1<Promise<Unit>, T>`,
+> typed on the event alone. A subscriber that takes a
+> [`MessageContext`](#delivery-context-durable-topics-only-386) therefore cannot also carry
+> interceptors — the chain has nowhere to put the context. Declaring both is a compile error rather
+> than a silent loss of the context.
+
 ### Retry
 
 **Resource type:** `RetryMethodInterceptor`
@@ -1017,6 +1023,35 @@ public interface OrderProcessor {
     Promise<Unit> handleOrderEvent(OrderEvent event);
 }
 ```
+
+### Delivery context (durable topics only, #386)
+
+A handler on a **durable** topic may take a second parameter to receive the delivery's envelope:
+
+```java
+@Slice
+public interface OrderProcessor {
+    @OrderEvents
+    Promise<Unit> handleOrderEvent(OrderEvent event, MessageContext context);
+}
+```
+
+`MessageContext(String messageId, String topic, int partition, long offset)` — `messageId` is the
+publisher-assigned identity of the EVENT and is the key to deduplicate on; it survives dead-letter
+redrive. `partition` and `offset` locate *this delivery* and are not identities — a redelivery or a
+redrive can present different values for the same event, so never key on them.
+
+The one-argument shape remains the default and is unchanged. Two rules apply to the two-argument
+shape, both enforced at compile time:
+
+- **The topic must declare `durability = "durable"`.** On an ephemeral topic the declaration is a
+  compile error: ephemeral dispatch carries no envelope, so the message id, partition and offset
+  would be fabricated. If the processor cannot read `resources.toml` at all it refuses too, and says
+  so distinctly — an unreadable declaration is not evidence of an ephemeral one.
+- **A handler cannot carry both interceptors and `MessageContext`.** Aspects (`@WithRetry`,
+  `@WithCache`, and the rest of the [Aspects](#aspects-interceptors) section) wrap a handler as
+  `Fn1<Promise<Unit>, T>` — typed on the event alone, with nowhere to carry the context. Declaring
+  both is a compile error rather than a silent loss of the context. Use one or the other.
 
 ### Configuration
 
