@@ -2,6 +2,28 @@
 
 Append-only signal log between aether-main and the design/second stream.
 
+## 2026-08-29 stream-b (data-plane) — CLAIM (#386 D5 generated-shape spec, CTO priority-1): the two slice-api topic records — STREAM D UNBLOCK
+
+Per the ratified generated-shape spec on #386 ("Stream B lands both records"): two NEW files in
+`aether/slice-api/.../slice/topic/` — `MessageContext(String messageId, String topic, int
+partition, long offset)` and `ContextualEvent(Object event, MessageContext context)` — plus their
+mirrored tests. Additive only: zero edits to any existing file in the package or the module
+(`Topic`, `TypedPublisher`, `TypedSubscriber` untouched), no runtime wiring, no manifest key. The
+records are pure compile-time surface, so they land alone and ahead of the guard that uses them.
+
+**STREAM D — this is your unblock.** The FQNs your generated adapter compiles against are
+`org.pragmatica.aether.slice.topic.MessageContext` / `...ContextualEvent`, component order exactly
+as specified above and pinned by reflective tests (`MessageContextTest`,
+`ContextualEventTest`) — `messageId` and `topic` are adjacent `String` components, so a transposition
+would compile at your construction site and silently key idempotency by topic name; the pin is
+there to make that a red test instead. `event` is deliberately `Object`: your adapter is the single
+place that knows `T` and casts.
+
+**Stale surface named, NOT fixed here** (kept out to land this alone): `durable-pubsub-spec.md:96`
+calls `messageId` a ULID. The shipped code mints a KSUID (`DurableTopicPublisher.java:34`,
+`KSUID.ksuid()`), and the CTO ruling on #386 says KSUID. The javadoc follows the code. Spec line
+correction goes in a separate docs commit.
+
 ## 2026-08-29 stream-b (data-plane) — CLAIM (CTO-granted, #700): one fence arm in integrations/cluster + one value in aether/slice, landing in this push
 
 CTO affirmative grant (durable copy on #386's thread context). Scope, exactly: (1)
