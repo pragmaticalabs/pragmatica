@@ -70,11 +70,13 @@ class SliceInvocationTest {
                    throw new AssertionError("Cluster start failed: " + cause.message());
                });
 
-        await().atMost(WAIT_TIMEOUT)
+        await().alias("cluster leader elected (3 nodes, ports " + BASE_PORT + "+)")
+               .atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
                .until(() -> cluster.currentLeader().isPresent());
 
-        await().atMost(WAIT_TIMEOUT)
+        await().alias("all 3 nodes report healthy after leader election")
+               .atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
                .until(this::allNodesHealthy);
     }

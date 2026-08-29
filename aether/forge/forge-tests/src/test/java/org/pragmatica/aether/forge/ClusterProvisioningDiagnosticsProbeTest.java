@@ -71,8 +71,10 @@ class ClusterProvisioningDiagnosticsProbeTest {
                .await()
                .onFailure(ClusterProvisioningDiagnosticsProbeTest::failStart);
 
-        await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> cluster.currentLeader().isPresent());
-        await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> countedCores() == CORES);
+        await().alias("cluster leader elected")
+               .atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> cluster.currentLeader().isPresent());
+        await().alias("counted cores reached " + CORES)
+               .atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> countedCores() == CORES);
         log.info("PROVISIONING-PROBE: {}-core cluster formed, leader={}, countedCores={}",
                  CORES, cluster.currentLeader().or("none"), countedCores());
     }
