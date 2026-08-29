@@ -1629,13 +1629,6 @@ public class FactoryClassGenerator {
         return Option.none();
     }
 
-    /// #612: silence was the failure mode — a non-Promise method vanished from the generated
-    /// proxy (or, worse, a generic non-Promise one was misread as a Promise) and the caller found
-    /// out at runtime. Same policy as codec tag collisions and unregistered resources: refuse
-    /// loudly at compile time, anchored on the offending method element. #663 extends the gate to
-    /// inherited methods: the message names the declaring interface (where the signature lives)
-    /// and, when that differs from the dependency the slice factory takes, the inheriting
-    /// dependency; the return type is reported after `asMemberOf` substitution.
     /// True when a dependency method's last parameter is the delivery context (#386 D5). Matched on
     /// the resolved parameter types so a generic super-interface substitution is seen correctly.
     private boolean takesMessageContext(ExecutableType resolved) {
@@ -1657,7 +1650,15 @@ public class FactoryClassGenerator {
                                    method);
     }
 
-    private void reportNonPromiseDependencyMethod(DependencyModel dep, ExecutableElement method, ExecutableType resolved) {        var declaringInterface = ((TypeElement) method.getEnclosingElement()).getQualifiedName()
+    /// #612: silence was the failure mode — a non-Promise method vanished from the generated
+    /// proxy (or, worse, a generic non-Promise one was misread as a Promise) and the caller found
+    /// out at runtime. Same policy as codec tag collisions and unregistered resources: refuse
+    /// loudly at compile time, anchored on the offending method element. #663 extends the gate to
+    /// inherited methods: the message names the declaring interface (where the signature lives)
+    /// and, when that differs from the dependency the slice factory takes, the inheriting
+    /// dependency; the return type is reported after `asMemberOf` substitution.
+    private void reportNonPromiseDependencyMethod(DependencyModel dep, ExecutableElement method, ExecutableType resolved) {
+        var declaringInterface = ((TypeElement) method.getEnclosingElement()).getQualifiedName()
                                                                              .toString();
         var inheritedNote = declaringInterface.equals(dep.interfaceQualifiedName())
                             ? ""
