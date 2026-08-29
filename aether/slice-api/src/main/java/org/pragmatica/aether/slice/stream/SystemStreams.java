@@ -31,7 +31,9 @@ public final class SystemStreams {
     /// `StreamManager#engineKey`'s reduction for the `system` namespace; recomputed locally here
     /// since this module cannot depend on `aether-node`, where `StreamManager` lives).
     public static boolean isForbiddenEngineKey(String engineKey) {
-        return ALL.stream().anyMatch(address -> address.name().value().equals(engineKey));
+        return ALL.stream().anyMatch(address -> address.name()
+                                                       .value()
+                                                       .equals(engineKey));
     }
 
     private SystemStreams() {}
