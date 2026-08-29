@@ -16,6 +16,7 @@
 
 package org.pragmatica.consensus.net.quic;
 
+import org.pragmatica.net.tcp.TlsConfig;
 import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.List;
@@ -46,7 +47,6 @@ import org.pragmatica.lang.utils.Retry.BackoffStrategy;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.messaging.StreamType;
 import org.pragmatica.net.tcp.NodeAddress;
-import org.pragmatica.net.tcp.TlsConfig;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
 
@@ -459,12 +459,12 @@ class QuicConsensusBackpressureTest {
     }
 
     private static QuicSslContext serverSsl() {
-        return QuicTlsProvider.serverContext(TlsConfig.selfSignedServer())
+        return QuicTlsProvider.serverContext(ClusterTestTls.clusterTls("test-server"))
                               .fold(_ -> fail("Server SSL failed"), ssl -> ssl);
     }
 
     private static QuicSslContext clientSsl() {
-        return QuicTlsProvider.clientContext(TlsConfig.insecureClient())
+        return QuicTlsProvider.clientContext(ClusterTestTls.clusterTls("test-client"))
                               .fold(_ -> fail("Client SSL failed"), ssl -> ssl);
     }
 

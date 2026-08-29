@@ -16,6 +16,7 @@
 
 package org.pragmatica.consensus.net.quic;
 
+import org.pragmatica.net.tcp.TlsConfig;
 import io.netty.handler.codec.quic.QuicChannel;
 import io.netty.handler.codec.quic.QuicSslContext;
 import org.junit.jupiter.api.AfterEach;
@@ -41,7 +42,6 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.messaging.StreamType;
 import org.pragmatica.net.tcp.NodeAddress;
-import org.pragmatica.net.tcp.TlsConfig;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
 
@@ -79,9 +79,9 @@ class QuicClusterNetworkReconcilerTest {
     @BeforeEach
     void setUp() {
         codec = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(), combinedCodecs());
-        serverSsl = QuicTlsProvider.serverContext(TlsConfig.selfSignedServer())
+        serverSsl = QuicTlsProvider.serverContext(ClusterTestTls.clusterTls("test-server"))
                                     .fold(_ -> fail("Server SSL failed"), ssl -> ssl);
-        clientSsl = QuicTlsProvider.clientContext(TlsConfig.insecureClient())
+        clientSsl = QuicTlsProvider.clientContext(ClusterTestTls.clusterTls("test-client"))
                                     .fold(_ -> fail("Client SSL failed"), ssl -> ssl);
     }
 

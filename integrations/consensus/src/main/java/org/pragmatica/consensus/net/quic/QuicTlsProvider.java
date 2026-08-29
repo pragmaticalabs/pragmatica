@@ -16,6 +16,7 @@
 package org.pragmatica.consensus.net.quic;
 
 import org.pragmatica.lang.Result;
+import org.pragmatica.net.tcp.ClientAuthPolicy;
 import org.pragmatica.net.tcp.QuicSslContextFactory;
 import org.pragmatica.net.tcp.TlsConfig;
 
@@ -36,7 +37,7 @@ public sealed interface QuicTlsProvider {
 
     /// Obtain a QUIC server SSL context for cluster transport.
     static Result<QuicSslContext> serverContext(TlsConfig tlsConfig) {
-        return QuicSslContextFactory.createServer(tlsConfig, CLUSTER_PROTOCOL);
+        return QuicSslContextFactory.createServer(tlsConfig, ClientAuthPolicy.REQUIRED, CLUSTER_PROTOCOL);
     }
 
     /// Obtain a QUIC client SSL context for cluster transport.

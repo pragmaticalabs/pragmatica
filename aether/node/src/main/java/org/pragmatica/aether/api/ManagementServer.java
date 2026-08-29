@@ -102,6 +102,7 @@ import org.pragmatica.http.server.HttpServer;
 import org.pragmatica.http.server.HttpServerConfig;
 import org.pragmatica.http.HttpRequest;
 import org.pragmatica.http.server.ResponseWriter;
+import org.pragmatica.net.tcp.ClientAuthPolicy;
 import org.pragmatica.net.tcp.QuicSslContextFactory;
 import org.pragmatica.http.websocket.WebSocketEndpoint;
 import org.pragmatica.json.JsonMapper;
@@ -422,7 +423,8 @@ class ManagementServerImpl implements ManagementServer {
     }
 
     private Promise<Unit> startH3Server() {
-        var quicTls = tls.map(QuicSslContextFactory::createServer).or(QuicSslContextFactory.createSelfSignedServer());
+        var quicTls = tls.map(cfg -> QuicSslContextFactory.createServer(cfg, ClientAuthPolicy.NOT_REQUESTED))
+                         .or(QuicSslContextFactory.createSelfSignedServer());
 
         return quicTls.onFailure(cause -> log.error("Failed to create QUIC SSL context for management server: {}",
                                                     cause.message()))
@@ -551,7 +553,7 @@ class ManagementServerImpl implements ManagementServer {
     }
 
     private Promise<Unit> restartH3WithBundle(org.pragmatica.net.tcp.security.CertificateBundle newBundle) {
-        var quicTls = QuicSslContextFactory.createServerFromBundle(newBundle);
+        var quicTls = QuicSslContextFactory.createServerFromBundle(newBundle, ClientAuthPolicy.NOT_REQUESTED);
 
         return quicTls.map(this::startH3WithSslContext)
                       .onFailure(cause -> log.error("Failed to create QUIC SSL context for management server rotation: {}",
@@ -1362,14 +1364,14 @@ class ManagementServerImpl implements ManagementServer {
     /// framework stream (or the route matched but the params didn't resolve at all — fail closed).
     static boolean isSystemStreamWriteOverHttp(String methodName, String path) {
         return parseRoutingMethod(methodName).flatMap(m -> ManagementRoute.match(m, path).option())
-                                             .filter(matched -> STREAM_IDENTITY_WRITE_ROUTES.contains(matched.route()))
-                                             .map(ManagementServerImpl::isForbiddenWrite)
-                                             .or(false);
+                                 .filter(matched -> STREAM_IDENTITY_WRITE_ROUTES.contains(matched.route()))
+                                 .map(ManagementServerImpl::isForbiddenWrite)
+                                 .or(false);
     }
 
     private static boolean isForbiddenWrite(MatchedRoute matched) {
         return resolveEngineKey(matched).map(SystemStreams::isForbiddenEngineKey)
-                                        .or(true);
+                               .or(true);
     }
 
     /// Mirrors [StreamManager#engineKey]'s two-shape resolution off a [MatchedRoute]'s raw params
@@ -1377,13 +1379,11 @@ class ManagementServerImpl implements ManagementServer {
     private static Option<String> resolveEngineKey(MatchedRoute matched) {
         return switch (matched.route()) {
             case STREAM_PUBLISH, STREAM_DELETE -> matched.param("name");
-            case STREAMS_PUBLISH, STREAMS_DELETE, STREAMS_GROUP_CREATE, STREAMS_GROUP_DELETE ->
-                    matched.param("namespace")
-                          .flatMap(ns -> matched.param("stream")
-                                                .flatMap(stream -> matched.param("version")
-                                                                          .flatMap(ver -> ResourceAddress.resourceAddress(ns, stream, ver)
-                                                                                                         .option())))
-                          .map(StreamManager::engineKey);
+            case STREAMS_PUBLISH, STREAMS_DELETE, STREAMS_GROUP_CREATE, STREAMS_GROUP_DELETE -> matched.param("namespace").flatMap(ns -> matched.param("stream")
+                                                                                                                                                .flatMap(stream -> matched.param("version")
+                                                                                                                                                                          .flatMap(ver -> ResourceAddress.resourceAddress(ns,
+                                                                                                                                                                                                                          stream,
+                                                                                                                                                                                                                          ver).option()))).map(StreamManager::engineKey);
             default -> Option.empty();
         };
     }

@@ -256,6 +256,7 @@ import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.net.tcp.ClientAuthPolicy;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
 import org.pragmatica.consensus.topology.TopologyObserver;
@@ -5184,7 +5185,9 @@ public interface AetherNode extends ManageableNode {
         var log = LoggerFactory.getLogger(AetherNode.class);
 
         log.info("Certificate renewed, valid until {}", newBundle.notAfter());
-        Result.all(QuicSslContextFactory.createServerFromBundle(newBundle, QuicTlsProvider.CLUSTER_PROTOCOL),
+        Result.all(QuicSslContextFactory.createServerFromBundle(newBundle,
+                                                                ClientAuthPolicy.REQUIRED,
+                                                                QuicTlsProvider.CLUSTER_PROTOCOL),
                    QuicSslContextFactory.createClientFromBundle(newBundle, QuicTlsProvider.CLUSTER_PROTOCOL))
               .id()
               .onSuccess(tuple -> triggerCertRotation(clusterNode,

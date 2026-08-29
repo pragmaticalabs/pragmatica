@@ -18,7 +18,6 @@ package org.pragmatica.consensus.net.quic;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.pragmatica.net.tcp.TlsConfig;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -29,7 +28,7 @@ class QuicTlsProviderTest {
     class ServerContext {
         @Test
         void serverContext_withSelfSignedConfig_usesConfig() {
-            var tlsConfig = TlsConfig.selfSignedServer();
+            var tlsConfig = ClusterTestTls.clusterTls("test-server");
             var result = QuicTlsProvider.serverContext(tlsConfig);
 
             result.onFailure(_ -> fail("Expected successful context creation from config"))

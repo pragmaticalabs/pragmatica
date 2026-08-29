@@ -77,6 +77,7 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Deadline;
 import org.pragmatica.messaging.MessageReceiver;
+import org.pragmatica.net.tcp.ClientAuthPolicy;
 import org.pragmatica.net.tcp.QuicSslContextFactory;
 import org.pragmatica.net.tcp.TlsConfig;
 import org.pragmatica.net.tcp.security.CertificateBundle;
@@ -484,7 +485,8 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     private Promise<Unit> startH3Server() {
-        var quicTls = tls.map(QuicSslContextFactory::createServer).or(QuicSslContextFactory.createSelfSignedServer());
+        var quicTls = tls.map(cfg -> QuicSslContextFactory.createServer(cfg, ClientAuthPolicy.NOT_REQUESTED))
+                         .or(QuicSslContextFactory.createSelfSignedServer());
 
         return quicTls.onFailure(cause -> log.error("Failed to create QUIC SSL context: {}",
                                                     cause.message()))
@@ -630,7 +632,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     private Promise<Option<HttpServer>> restartH3WithBundle(CertificateBundle newBundle) {
-        var quicTls = QuicSslContextFactory.createServerFromBundle(newBundle);
+        var quicTls = QuicSslContextFactory.createServerFromBundle(newBundle, ClientAuthPolicy.NOT_REQUESTED);
 
         return quicTls.onFailure(cause -> log.error("Failed to create QUIC SSL context for app server rotation: {}",
                                                     cause.message()))

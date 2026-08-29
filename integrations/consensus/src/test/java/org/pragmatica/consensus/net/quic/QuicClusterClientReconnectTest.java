@@ -31,7 +31,6 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.NodeAddress;
-import org.pragmatica.net.tcp.TlsConfig;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
 
@@ -167,7 +166,7 @@ class QuicClusterClientReconnectTest {
     }
 
     private void startServer() {
-        var serverSsl = QuicTlsProvider.serverContext(TlsConfig.selfSignedServer())
+        var serverSsl = QuicTlsProvider.serverContext(ClusterTestTls.clusterTls("test-server"))
                                        .fold(_ -> fail("server SSL failed"), ssl -> ssl);
         server = QuicClusterServer.quicClusterServer(
             SERVER_NODE, SERVER_ADDRESS, Map.of(), codec, codec, serverSsl, Option.empty(),
@@ -178,7 +177,7 @@ class QuicClusterClientReconnectTest {
     }
 
     private QuicClusterClient createClient() {
-        var clientSsl = QuicTlsProvider.clientContext(TlsConfig.insecureClient())
+        var clientSsl = QuicTlsProvider.clientContext(ClusterTestTls.clusterTls("test-client"))
                                        .fold(_ -> fail("client SSL failed"), ssl -> ssl);
         return QuicClusterClient.quicClusterClient(
             CLIENT_NODE, CLIENT_ADDRESS, Map.of(), codec, codec, clientSsl, Option.empty(),
