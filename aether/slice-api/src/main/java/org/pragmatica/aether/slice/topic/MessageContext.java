@@ -4,7 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.topic;
 
-
 /// Delivery context handed to a durable-topic subscriber alongside the event it is processing
 /// (durable-pubsub-spec §8). A subscriber opts in by declaring the two-argument handler shape
 /// `Promise<Unit> handler(T event, MessageContext context)`; the one-argument shape is the default
