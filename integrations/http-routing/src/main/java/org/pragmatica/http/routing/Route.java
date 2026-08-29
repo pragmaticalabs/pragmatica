@@ -21,7 +21,13 @@ import static org.pragmatica.http.HttpMethod.*;
 /// Type-safe HTTP route definition with support for path parameters, query parameters, and request body.
 ///
 /// Routes are built using a fluent builder API that ensures compile-time type safety for all parameter
-/// combinations. The total number of parameters (path + query + body) is limited to 5.
+/// combinations. The total number of parameters (path + query + body) is limited to 5, with one
+/// additional combination — 4 path + 3 query, no body (7 total) — added for routes whose identity
+/// shape already spends 4 path segments and whose read-control fields must stay independently typed
+/// and named rather than packed into one composite query string (rc4: `STREAM_READ`'s `from`/`max`/
+/// `readPreference`). Raising this ceiling further as new call sites need it is additive: the
+/// underlying `Fn6..Fn15` functional interfaces already exist in `org.pragmatica.lang.Functions`, so
+/// each new combination is one more hand-written interface + record, not a framework redesign.
 ///
 /// Example usage:
 /// ```{@code
@@ -528,6 +534,10 @@ public interface Route<T> extends RouteSource {
         }
 
         <Q1> PathQueryBuilder4_1<R, P1, P2, P3, P4, Q1> withQuery(QueryParameter<Q1> q1);
+
+        <Q1, Q2, Q3> PathQueryBuilder4_3<R, P1, P2, P3, P4, Q1, Q2, Q3> withQuery(QueryParameter<Q1> q1,
+                                                                                  QueryParameter<Q2> q2,
+                                                                                  QueryParameter<Q3> q3);
     }
 
     interface PathBuilder5<R, P1, P2, P3, P4, P5> {
@@ -888,6 +898,20 @@ public interface Route<T> extends RouteSource {
 
         default ContentTypeBuilder<R> toValue(Fn5<R, P1, P2, P3, P4, Option<Q1>> fn) {
             return to((p1, p2, p3, p4, q1) -> Promise.success(fn.apply(p1, p2, p3, p4, q1)));
+        }
+    }
+
+    // 4 path + 3 query (7 total, no body — ceiling raised for STREAM_READ's independently-typed
+    // from/max/readPreference; see class doc)
+    interface PathQueryBuilder4_3<R, P1, P2, P3, P4, Q1, Q2, Q3> {
+        ContentTypeBuilder<R> to(Fn7<Promise<R>, P1, P2, P3, P4, Option<Q1>, Option<Q2>, Option<Q3>> fn);
+
+        default ContentTypeBuilder<R> toResult(Fn7<Result<R>, P1, P2, P3, P4, Option<Q1>, Option<Q2>, Option<Q3>> fn) {
+            return to((p1, p2, p3, p4, q1, q2, q3) -> Promise.resolved(fn.apply(p1, p2, p3, p4, q1, q2, q3)));
+        }
+
+        default ContentTypeBuilder<R> toValue(Fn7<R, P1, P2, P3, P4, Option<Q1>, Option<Q2>, Option<Q3>> fn) {
+            return to((p1, p2, p3, p4, q1, q2, q3) -> Promise.success(fn.apply(p1, p2, p3, p4, q1, q2, q3)));
         }
     }
 
@@ -1329,6 +1353,13 @@ public interface Route<T> extends RouteSource {
         public <Q1> PathQueryBuilder4_1<R, P1, P2, P3, P4, Q1> withQuery(QueryParameter<Q1> q1) {
             return new PathQueryBuilder4_1Impl<>(parent, p1, p2, p3, p4, q1);
         }
+
+        @Override
+        public <Q1, Q2, Q3> PathQueryBuilder4_3<R, P1, P2, P3, P4, Q1, Q2, Q3> withQuery(QueryParameter<Q1> q1,
+                                                                                          QueryParameter<Q2> q2,
+                                                                                          QueryParameter<Q3> q3) {
+            return new PathQueryBuilder4_3Impl<>(parent, p1, p2, p3, p4, q1, q2, q3);
+        }
     }
 
     record PathBuilder5Impl<R, P1, P2, P3, P4, P5>(ParameterBuilder<R> parent,
@@ -1633,6 +1664,30 @@ public interface Route<T> extends RouteSource {
             return parent.to(ctx -> ctx.matchPath(p1, p2, p3, p4)
                                        .flatMap((pv1, pv2, pv3, pv4) -> ctx.matchQuery(q1)
                                                                            .map(qv -> fn.apply(pv1, pv2, pv3, pv4, qv)))
+                                       .async()
+                                       .flatMap(p -> p));
+        }
+    }
+
+    record PathQueryBuilder4_3Impl<R, P1, P2, P3, P4, Q1, Q2, Q3>(ParameterBuilder<R> parent,
+                                                                  PathParameter<P1> p1,
+                                                                  PathParameter<P2> p2,
+                                                                  PathParameter<P3> p3,
+                                                                  PathParameter<P4> p4,
+                                                                  QueryParameter<Q1> q1,
+                                                                  QueryParameter<Q2> q2,
+                                                                  QueryParameter<Q3> q3) implements PathQueryBuilder4_3<R, P1, P2, P3, P4, Q1, Q2, Q3> {
+        @Override
+        public ContentTypeBuilder<R> to(Fn7<Promise<R>, P1, P2, P3, P4, Option<Q1>, Option<Q2>, Option<Q3>> fn) {
+            return parent.to(ctx -> ctx.matchPath(p1, p2, p3, p4)
+                                       .flatMap((pv1, pv2, pv3, pv4) -> ctx.matchQuery(q1, q2, q3)
+                                                                           .map((qv1, qv2, qv3) -> fn.apply(pv1,
+                                                                                                            pv2,
+                                                                                                            pv3,
+                                                                                                            pv4,
+                                                                                                            qv1,
+                                                                                                            qv2,
+                                                                                                            qv3)))
                                        .async()
                                        .flatMap(p -> p));
         }
