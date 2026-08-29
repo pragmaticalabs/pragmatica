@@ -46,14 +46,13 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 /// ack, and a handler that keeps failing exhausts the bounded retries into a group-attributed
 /// dead-letter stream.
 ///
-/// **The durability guard comes first, because everything else depends on it.** A durable topic is
-/// backed by a real `topic:<address>` stream; an EPHEMERAL topic has no backing stream at all — it
-/// fans out through SliceInvoker and persists nothing. The fixture's topic sections use UNDERSCORE
-/// keys (`topic_name`, `min_sync_replicas`) while `[streams.X]` sections use DASHES, so a single
-/// mistyped key would parse as absent, silently default `durability` to "ephemeral", and make every
-/// assertion below vacuously green against a tier that was never engaged.
-/// [DurableTier#durableTopic_isBackedByARealStream] therefore proves the tier from the RUNTIME's
-/// stream listing rather than trusting the config file.
+/// **The durability guard comes first, because everything else depends on it.** The fixture's topic
+/// sections use UNDERSCORE keys (`topic_name`, `min_sync_replicas`) while `[streams.X]` sections use
+/// DASHES, so a single mistyped key parses as absent, silently defaults `durability` to "ephemeral",
+/// and makes every assertion below vacuously green against a tier that was never engaged (#738).
+/// [DurableTier#failingHandlerIsRETRIED_whichEphemeralDispatchNeverDoes] proves the tier from
+/// BEHAVIOUR the two tiers cannot share: ephemeral delivery invokes a failing handler exactly once and
+/// never retries, so an observed retry cannot be ephemeral dispatch.
 ///
 /// **Non-vacuity of the delivery count.** `order-events` declares `partitions = 1` and the blueprint
 /// deploys the slice to EVERY node. Exactly one node owns that partition, so a correctly gated
@@ -67,6 +66,13 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 /// ack. If attribution is real the failing group dead-letters while the healthy group processes the
 /// identical events untouched.
 ///
+/// **Everything here is observed through the FIXTURE's own HTTP surface, never the management API.**
+/// That is not a stylistic choice. The first run of this suite died in `@BeforeAll` against a guard
+/// that read `GET /api/v1/streams` looking for the topic's `topic:<address>` backing stream — which
+/// that endpoint can never show, because it lists blueprint-declared `[streams.X]` resources keyed by
+/// `ResourceAddress`, and `ResourceAddress` parses exactly three colon-separated parts while a topic
+/// stream name has four. The guard was unsatisfiable by construction; every arm below it never ran.
+///
 /// **HONEST SCOPE — what a green run here does NOT prove.** Stated up front so the tick is not
 /// over-read:
 ///
@@ -74,13 +80,15 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 ///     Duplicate exposure on redelivery (spec §7) stands until the D4 idempotency guard is wired;
 ///     the delivery-count arm runs without induced failures, where at-least-once and exactly-once
 ///     are indistinguishable.
+///   - **The `.dlq` stream's CONTENTS are not asserted** — only that the retry budget is bounded and
+///     then stops, which is the dead-letter boundary as seen from outside. The envelope's shape
+///     (messageId, failing group, attempt count) is unit-covered by `DlqStreamSinkTest`.
 ///   - **Redrive is not exercised.** Spec §9's management triad (DLQ list/inspect/redrive) does not
-///     exist yet, so there is nothing to drive. This test asserts events ARRIVE in the DLQ, never
-///     that they can be replayed out of it.
+///     exist yet, so there is nothing to drive.
 ///   - **Zombie / concurrent cross-instance attempts (§6) are not reproduced.** A timed-out attempt
 ///     still executing while its retry runs elsewhere is not constructible in this harness.
-///   - **No idempotency-key assertion.** `MessageContext.messageId` survival across the dead-letter
-///     hop is unit-tested; this suite does not observe message ids.
+///   - **No owner-loss arm** — the SIGKILL failover case is tracked as #739; without it this suite
+///     does not prove survival of a partition owner's death.
 @Tag("Heavy")
 @Disabled("never executed; enable on first green run — this suite has never been observed doing what it"
           + " claims, and an enabled-but-unrun test on a shared branch is an assertion of evidence that"
@@ -101,9 +109,6 @@ class DurableTopicDeliveryForgeTest {
     /// handler records every invocation, so this is observed rather than assumed.
     private static final int EXPECTED_ATTEMPTS_PER_EVENT = 5;
 
-    private static final String ORDER_TOPIC = "order-events";
-    private static final String POISON_TOPIC = "poison-events";
-
     /// Declared alongside every other fixture coordinate in [TestArtifacts], where its rationale lives.
     private static final String DURABLE_TOPIC_SLICE = TestArtifacts.DURABLE_TOPIC_SLICE;
     private static final String BLUEPRINT_ID = "forge.test:durable-topic:1.0.0";
@@ -117,7 +122,6 @@ class DurableTopicDeliveryForgeTest {
     private static final Pattern FAILING_ATTEMPTS = Pattern.compile("\"failingAttempts\"\\s*:\\s*(\\d+)");
     private static final Pattern HEALTHY_COUNT = Pattern.compile("\"healthyCount\"\\s*:\\s*(\\d+)");
     private static final Pattern SEQUENCE_FIELD = Pattern.compile("\"sequence\"\\s*:\\s*(\\d+)");
-    private static final Pattern STREAM_NAME = Pattern.compile("\"name\"\\s*:\\s*\"(topic:[^\"]+)\"");
 
     private EmberCluster cluster;
     private final HttpOperations http = jdkHttpOperations();
@@ -162,12 +166,13 @@ class DurableTopicDeliveryForgeTest {
                .until(this::publishReady);
 
         // Durable subscriptions attach on the manager's ownership tick, independently of publish
-        // readiness. Gate on BOTH topics' backing streams existing, so a delivery assertion measures
-        // delivery rather than attach timing.
+        // readiness, and a subscription attaches at the stream TAIL — an event published before its
+        // group attached is skipped, not queued. Gate on a poison publish resolving too, so BOTH
+        // topics are live before any assertion measures delivery rather than attach timing.
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
                .failFast(this::failIfSliceFailed)
-               .until(() -> topicStreamFor(ORDER_TOPIC).isPresent() && topicStreamFor(POISON_TOPIC).isPresent());
+               .until(this::poisonPublishReady);
     }
 
     @AfterAll
@@ -183,18 +188,38 @@ class DurableTopicDeliveryForgeTest {
 
     @Nested
     class DurableTier {
-        /// The guard every other assertion rests on. A durable topic is backed by a real
-        /// `topic:<address>` stream; an ephemeral one has none, because it fans out through
-        /// SliceInvoker and persists nothing. Reading the backing stream out of the runtime's own
-        /// listing proves the durable tier engaged — a mistyped key in the fixture's topic section
-        /// would silently downgrade it to ephemeral and this assertion is what catches that.
+        /// The guard every other assertion rests on: proof that the DURABLE tier is the one dispatching,
+        /// not the ephemeral default.
+        ///
+        /// The discriminator is the retry budget, because it is the one behaviour the two tiers cannot
+        /// share. Ephemeral delivery is a *single* `invoke` that is "never retried, never persisted"
+        /// (guarantees.md §5): a handler that fails is logged and the event is gone. Durable delivery
+        /// retries a failing handler a bounded 5 times before dead-lettering. So a failing handler
+        /// invoked MORE THAN ONCE cannot be ephemeral dispatch, and exactly 5 invocations is the durable
+        /// budget observed directly.
+        ///
+        /// This replaced an earlier guard that looked for the topic's `topic:<address>` backing stream in
+        /// `GET /api/v1/streams`. That endpoint cannot ever show it: the listing is a registry of
+        /// blueprint-declared `[streams.X]` resources keyed by `ResourceAddress`, and `ResourceAddress`
+        /// parses exactly three colon-separated parts (`ResourceAddress.java:73-77`) while a topic stream
+        /// name has four (`topic:` + `namespace:name:version`). The guard was unsatisfiable by
+        /// construction, not merely mis-parsed — and being unsatisfiable in `@BeforeAll`, it burned the
+        /// full timeout and prevented every arm below from running at all.
         @Test
-        void durableTopic_isBackedByARealStream() {
-            assertThat(topicStreamFor(ORDER_TOPIC).isPresent())
-                    .describedAs("a durable topic must have a topic:<address> backing stream;"
-                                 + " an ephemeral one has none, so its absence means the tier never engaged")
-                    .isTrue();
-            assertThat(topicStreamFor(POISON_TOPIC).isPresent()).isTrue();
+        void failingHandlerIsRETRIED_whichEphemeralDispatchNeverDoes() {
+            var baseline = failingAttempts();
+
+            publishPoison("tier-probe");
+
+            await().atMost(DELIVERY_TIMEOUT)
+                   .pollInterval(POLL_INTERVAL)
+                   .failFast(DurableTopicDeliveryForgeTest.this::failIfSliceFailed)
+                   .untilAsserted(() -> assertThat(failingAttempts() - baseline)
+                           .describedAs("the durable tier retries a failing handler %d times; ephemeral"
+                                        + " delivery invokes it ONCE and never retries, so anything above"
+                                        + " 1 proves the durable tier is dispatching",
+                                        EXPECTED_ATTEMPTS_PER_EVENT)
+                           .isEqualTo(EXPECTED_ATTEMPTS_PER_EVENT));
         }
     }
 
@@ -239,13 +264,23 @@ class DurableTopicDeliveryForgeTest {
 
     @Nested
     class DeadLetterPath {
-        /// The DLQ arm, with the assertion that matters most LAST. A handler that can never ack must be
-        /// retried a bounded number of times and the event must land in the topic's `.dlq` stream — but
-        /// a dead-letter implementation that swallows the message and WEDGES the partition also
-        /// satisfies "the entry landed". The partition must unblock, which is what the final assertion
-        /// checks: the healthy group keeps making progress over the same topic afterwards.
+        /// The DLQ arm. A handler that can never ack must be retried a BOUNDED number of times and then
+        /// stop — and stopping is the dead-letter boundary observed from outside: the runtime gave up on
+        /// the event and moved it aside rather than retrying it forever or silently dropping it on the
+        /// first failure.
+        ///
+        /// The `.dlq` stream itself is deliberately NOT asserted here. It is a runtime-created stream
+        /// named `topic:<address>.dlq`, which the management stream listing cannot show (see
+        /// [DurableTier#failingHandlerIsRETRIED_whichEphemeralDispatchNeverDoes] for why), so asserting
+        /// on it from this suite would mean asserting on something unobservable. Its contents are
+        /// unit-covered by `DlqStreamSinkTest.append_reEnvelopesWithGroupAttribution_preservingMessageId`;
+        /// what this suite adds is that the boundary is reached on a real cluster and the partition
+        /// survives it — the second half being
+        /// [#healthyGroup_processesTheSameEvents_unaffectedByTheFailingGroup].
         @Test
-        void poisonEvent_isRetriedABoundedNumberOfTimes_thenDeadLettered() {
+        void poisonEvent_isRetriedABoundedNumberOfTimes_thenStops() {
+            var baseline = failingAttempts();
+
             for (var i = 0; i < POISON_COUNT; i++) {
                 publishPoison("poison-" + i);
             }
@@ -253,15 +288,22 @@ class DurableTopicDeliveryForgeTest {
             await().atMost(DELIVERY_TIMEOUT)
                    .pollInterval(POLL_INTERVAL)
                    .failFast(DurableTopicDeliveryForgeTest.this::failIfSliceFailed)
-                   .untilAsserted(() -> assertThat(failingAttempts())
+                   .untilAsserted(() -> assertThat(failingAttempts() - baseline)
                            .describedAs("the never-acking handler must be retried a BOUNDED number of"
                                         + " times (%d per event), not forever and not once",
                                         EXPECTED_ATTEMPTS_PER_EVENT)
                            .isEqualTo(POISON_COUNT * EXPECTED_ATTEMPTS_PER_EVENT));
 
-            assertThat(dlqStreamFor(POISON_TOPIC).isPresent())
-                    .describedAs("exhausted retries must land in the topic's group-attributed .dlq stream")
-                    .isTrue();
+            // The boundary HOLDS: having given up, the runtime must not resume retrying. A count that
+            // keeps climbing here would mean the event was never dead-lettered, only endlessly retried.
+            var settled = failingAttempts();
+
+            sleep(Duration.ofSeconds(10));
+
+            assertThat(failingAttempts())
+                    .describedAs("retries must STOP once the budget is exhausted — a climbing count means"
+                                 + " the event was never moved aside")
+                    .isEqualTo(settled);
         }
 
         /// Group attribution: the failing group's exhaustion must not touch the healthy group's
@@ -331,37 +373,6 @@ class DurableTopicDeliveryForgeTest {
                       .sum();
     }
 
-    // --- stream discovery ----------------------------------------------------
-
-    /// The topic's backing stream, discovered from the runtime rather than reconstructed. The address
-    /// is `topic:<namespace>:<name>:<version>` with the namespace derived from the blueprint's Maven
-    /// coordinates (`DurableTopicNames`), so matching on the bare topic name inside a `topic:`-prefixed
-    /// stream avoids hard-coding a derivation this test does not own.
-    private Option<String> topicStreamFor(String topicName) {
-        return listedTopicStreams().stream()
-                                   .filter(name -> name.contains(topicName) && !name.endsWith(".dlq"))
-                                   .findFirst()
-                                   .map(Option::some)
-                                   .orElseGet(Option::none);
-    }
-
-    private Option<String> dlqStreamFor(String topicName) {
-        return listedTopicStreams().stream()
-                                   .filter(name -> name.contains(topicName) && name.endsWith(".dlq"))
-                                   .findFirst()
-                                   .map(Option::some)
-                                   .orElseGet(Option::none);
-    }
-
-    private List<String> listedTopicStreams() {
-        var body = httpGet(cluster.getLeaderManagementPort().or(anyMgmtPort()), "/api/v1/streams");
-
-        return STREAM_NAME.matcher(body)
-                          .results()
-                          .map(result -> result.group(1))
-                          .toList();
-    }
-
     // --- cluster plumbing ----------------------------------------------------
 
     private void deployDurableTopicSlice() {
@@ -404,6 +415,28 @@ class DurableTopicDeliveryForgeTest {
                                 "{\"orderId\":\"__warmup__\",\"sequence\":0}");
 
         return !response.contains("\"error\"") && response.contains("published");
+    }
+
+    /// The `poison-events` half of the readiness gate. Its warm-up event WILL be dead-lettered by the
+    /// failing group and counted by the healthy one — harmless, because every arm takes a baseline
+    /// before publishing rather than assuming a zero start.
+    private boolean poisonPublishReady() {
+        var ports = cluster.getAvailableAppHttpPorts();
+
+        if (ports.isEmpty()) {
+            return false;
+        }
+
+        var response = httpPost(ports.getFirst(), "/api/durable-topic/publish-poison", "{\"payload\":\"__warmup__\"}");
+
+        return !response.contains("\"error\"") && response.contains("published");
+    }
+
+    /// Deliberately a park rather than an awaitility gate: the assertion it serves is that a count does
+    /// NOT move, and there is no condition to poll for that — only elapsed time in which movement would
+    /// have shown up.
+    private static void sleep(Duration duration) {
+        java.util.concurrent.locks.LockSupport.parkNanos(duration.toNanos());
     }
 
     private void failIfSliceFailed() {
@@ -478,19 +511,6 @@ class DurableTopicDeliveryForgeTest {
                                  .header("Content-Type", "application/json")
                                  .POST(HttpRequest.BodyPublishers.ofString(body))
                                  .timeout(Duration.ofSeconds(15))
-                                 .build();
-
-        return http.sendString(request)
-                   .await()
-                   .map(HttpResult::body)
-                   .or(ERROR_FALLBACK);
-    }
-
-    private String httpGet(int port, String path) {
-        var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + path))
-                                 .GET()
-                                 .timeout(Duration.ofSeconds(10))
                                  .build();
 
         return http.sendString(request)
