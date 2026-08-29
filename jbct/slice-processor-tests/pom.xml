@@ -86,6 +86,45 @@
                     <skipPublishing>true</skipPublishing>
                 </configuration>
             </plugin>
+            <!--
+              This module's whole purpose is to prove slice-processor codegen against real javac, so a
+              green run here must mean "the CURRENT processor generated this". Without the clean below
+              it can mean "a PREVIOUS processor generated this", silently.
+
+              maven-compiler-plugin (3.14.0 here — jbct/pom.xml overrides the root's version) decides
+              staleness from what changed IN THE CURRENT BUILD RUN. The annotation processor is not a
+              tracked input at all: it reaches javac through <annotationProcessorPaths>, and the
+              `provided` dependency does not trigger the dependency-changed path either. So when the
+              processor was rebuilt by an EARLIER run that never reached this module — a gate that died
+              in slice-processor's own test phase, or a build scoped with -pl to the processor alone —
+              the next run sees nothing changed in ITSELF and logs "Nothing to compile - all classes are
+              up to date", leaving the fixtures to re-validate the previous processor's output. Note it
+              is not a disk-timestamp check: at the skip, the processor's classes were NEWER than these
+              outputs and it skipped anyway.
+
+              That sequence is the ordinary edit-fix-gate loop, which is exactly when someone is
+              changing the processor and most needs this module to be telling the truth. Verified live
+              on #386 D5 (PR #730), where a fix looked unapplied because the manifest under test was an
+              hour older than the edit.
+
+              Clearing the module's output makes the skip impossible rather than documented. It costs a
+              full recompile of ~47 fixture sources on every build — measured at roughly two seconds,
+              which is the correct price for a gate that is otherwise able to pass without checking
+              anything. See #736.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-clean-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>always-reprocess-fixtures</id>
+                        <phase>initialize</phase>
+                        <goals>
+                            <goal>clean</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
