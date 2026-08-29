@@ -181,14 +181,21 @@ consistency = "strong"           # produce path goes through Rabia
 
 Consumer groups can be declared in the blueprint (static) or created at runtime by slices (dynamic):
 
+> **⚠️ REJECTED AT DEPLOY TIME TODAY (#576).** Neither key below is read at runtime, so a blueprint
+> containing this block does not deploy — it is failed as inert configuration. `auto-offset-reset`
+> accepts only `"earliest"`, because a never-committed consumer always starts at offset 0 permanently
+> by the **#478 ruling**, so the `"latest"` shown here is the value that gets refused. Retained as the
+> design target for **#677**; see `streaming-spec.md` §3.2/§3.3 for the full per-key status.
+
 ```toml
+# DESIGN TARGET — does not deploy today (#576, #677).
 [streams.order-events.consumer-groups.analytics]
-auto-offset-reset = "latest"     # "latest" or "earliest"
-commit-interval = "1s"           # cursor commit frequency
+auto-offset-reset = "latest"     # REJECTED: only "earliest" is accepted (#478 makes it permanent)
+commit-interval = "1s"           # REJECTED as inert: not read at runtime
 
 [streams.order-events.consumer-groups.audit]
-auto-offset-reset = "earliest"
-commit-interval = "5s"
+auto-offset-reset = "earliest"   # the one accepted value
+commit-interval = "5s"           # REJECTED as inert
 ```
 
 ### 4.3 Consistency Levels
