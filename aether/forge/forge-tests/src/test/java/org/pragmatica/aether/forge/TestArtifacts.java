@@ -74,5 +74,22 @@ final class TestArtifacts {
     /// Maven repo).
     static final String ENTITY_SLICE = "org.pragmatica.aether.test:test-entity-entity-slice:1.0.0";
 
+    /// The FIRST blueprint in the repository that declares a topic with `durability = "durable"`
+    /// (`aether/tests/blueprints/test-durable-topic`, #386 D-series). Every other fixture declares
+    /// `[streams.X]` sections; this one declares TOPIC sections, which are a different resource with a
+    /// different key convention — underscores (`topic_name`, `min_sync_replicas`) rather than the
+    /// streams family's dashes.
+    ///
+    /// Both its topics are `partitions = 1, replicas = 2, min_sync_replicas = 2`. That is the durable
+    /// tier's only proven scoping (a durable declaration outside `min-sync == replicas >= 2` is
+    /// rejected at parse), and the single partition is what makes the delivery count a discriminator:
+    /// with the slice on every node, a correctly gated consumer records each event once cluster-wide
+    /// while an ungated one records it once per node. Two subscriber methods bind to the SAME
+    /// `poison-events` topic — one that can never ack and one that always can — making them two
+    /// consumer groups over one event sequence, which is the arrangement the group-attribution and
+    /// dead-letter claims need. Mirrors the [#STREAM_CONSUMER_SLICE] coordinate (fixed `1.0.0`
+    /// blueprint version, resolved from the local Maven repo).
+    static final String DURABLE_TOPIC_SLICE = "org.pragmatica.aether.test:test-durable-topic-durable-topic-slice:1.0.0";
+
     private TestArtifacts() {}
 }

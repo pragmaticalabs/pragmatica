@@ -71,7 +71,7 @@ mvn_quiet compile test-compile -Pwith-e2e -pl aether/e2e-tests,aether/forge/forg
 # envelope-1005/Aspect-param factories shipped against a 1007 runtime, rejected at slice load).
 echo ""
 echo "Step 5/6: Build test blueprints..."
-for bp in aether/tests/blueprints/test-echo aether/tests/blueprints/test-persistence aether/tests/blueprints/test-full aether/tests/blueprints/test-stream aether/tests/blueprints/test-stream-repl aether/tests/blueprints/test-stream-multipart aether/tests/blueprints/test-stream-consumer aether/tests/blueprints/test-entity; do
+for bp in aether/tests/blueprints/test-echo aether/tests/blueprints/test-persistence aether/tests/blueprints/test-full aether/tests/blueprints/test-stream aether/tests/blueprints/test-stream-repl aether/tests/blueprints/test-stream-multipart aether/tests/blueprints/test-stream-consumer aether/tests/blueprints/test-entity aether/tests/blueprints/test-durable-topic; do
     mvn_quiet -f "$bp/pom.xml" clean install -DskipTests
 done
 

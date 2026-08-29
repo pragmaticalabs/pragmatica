@@ -7,6 +7,7 @@ package org.pragmatica.aether.forge;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -81,6 +82,9 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 ///   - **No idempotency-key assertion.** `MessageContext.messageId` survival across the dead-letter
 ///     hop is unit-tested; this suite does not observe message ids.
 @Tag("Heavy")
+@Disabled("never executed; enable on first green run — this suite has never been observed doing what it"
+          + " claims, and an enabled-but-unrun test on a shared branch is an assertion of evidence that"
+          + " does not exist. Enabling it IS the acceptance criterion for the first run.")
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class DurableTopicDeliveryForgeTest {
@@ -100,11 +104,8 @@ class DurableTopicDeliveryForgeTest {
     private static final String ORDER_TOPIC = "order-events";
     private static final String POISON_TOPIC = "poison-events";
 
-    /// The fixture's coordinate is defined here rather than in `TestArtifacts` deliberately: stream B's
-    /// claim for this work covers NEW files only, and `TestArtifacts` is an existing forge file. This
-    /// test is the sole consumer of the coordinate, so the locality costs nothing.
-    private static final String DURABLE_TOPIC_SLICE =
-            "org.pragmatica.aether.test:test-durable-topic-durable-topic-slice:1.0.0";
+    /// Declared alongside every other fixture coordinate in [TestArtifacts], where its rationale lives.
+    private static final String DURABLE_TOPIC_SLICE = TestArtifacts.DURABLE_TOPIC_SLICE;
     private static final String BLUEPRINT_ID = "forge.test:durable-topic:1.0.0";
     private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
 
