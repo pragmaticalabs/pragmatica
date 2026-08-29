@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Fixed (2026-08-29 — #701: the entity fold's watermark never asserts coverage it does not have; caughtUp cannot NPE or hang on a lost CAS)
+- **Blocking chosen, deliberately** (the ticket's own fork; matches the fold's existing
+  refuse-over-lie posture): a failed `applyToState` on the write path now HOLDS the applied
+  watermark instead of advancing past the record. The hold composes into existing machinery
+  rather than adding new: later successes PARK behind the hole (contiguous drain), the checkpoint
+  candidate cannot pass it (so the retention floor HOLDS and the log copy stays replayable — the
+  outage is bounded by retained log, never by luck), and the next read gate replays the record
+  through the path that propagates the failure loudly. The poison outage mode, named: that
+  partition refuses reads and freezes its checkpoint from the poison offset until a build that can
+  apply the record replays it. The prior malformed-timer-payload pin asserted the advance-past
+  behavior the ticket was FILED against — rewritten to pin hold-not-advance, with the disposition
+  reasoning in its doc (the malformed case IS the park path's case; the old "escape" was the
+  false coverage itself). `logUnapplicable`'s message — which described the old
+  divergence-then-permanent-loss behavior — rewritten to describe the hold and its recovery.
+- **Two `caughtUp` liveness defects closed**: the lost-CAS path re-enters instead of
+  dereferencing a slot the winner may already have nulled (the filed NPE); and the `runCatchUp`
+  invocation is lifted so a synchronous throw between the WON CAS and the completion attach
+  resolves the slot as a failure instead of leaving a promise nothing resolves — every later
+  caller previously hung on it forever (found when the new hammer test hung the suite: same
+  window as the NPE, worse outcome).
+  [verified: `EntityFoldTest$WatermarkHonesty` — write-path hold with later-success parking,
+  loud replay refusal on a log-held unapplicable record, and a 4-thread × 200-call hammer with a
+  concurrent appender (all calls resolve, `@Timeout`-bounded); rewritten
+  `EntityFoldTimerTest` pin holds at −1; durable-entity 270/0, node entity suite 48/48]
+
 ### Added (2026-08-29 — #386 D4 substrate: Projection facade — fold, rebuild lifecycle, honest at-least-once until the guard lands)
 - **`Projection.of(topic).into(store, key).apply(fold)`** (spec §10, guard-independent half per
   the CTO's option-(a) parallelization): keyed fold-and-write on each durably-delivered event over
