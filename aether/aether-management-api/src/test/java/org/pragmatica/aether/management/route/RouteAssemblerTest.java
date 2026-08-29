@@ -29,10 +29,14 @@ class RouteAssemblerTest {
         assertThat(path.isSuccess()).isTrue();
     }
 
+    /// STREAM_READ is interleaved (identity params, then the "read" literal, then partition), so
+    /// assembly no longer merely appends values to a static prefix -- each value must land at its
+    /// own `Param` position with the literal preserved between `version` and `partition`. Four
+    /// distinct values pin that ordering: any permutation, or a misplaced "read", changes the path.
     @Test
-    void assemble_multipleParams_appendsInOrder() {
-        var path = ManagementRoute.STREAM_READ.assemble("orders", "3");
-        path.onSuccess(p -> assertThat(p).isEqualTo("/api/v1/streams/read/orders/3"));
+    void assemble_multipleParams_interleavesValuesInOrder() {
+        var path = ManagementRoute.STREAM_READ.assemble("orders", "events", "v2", "3");
+        path.onSuccess(p -> assertThat(p).isEqualTo("/api/v1/streams/orders/events/v2/read/3"));
         assertThat(path.isSuccess()).isTrue();
     }
 

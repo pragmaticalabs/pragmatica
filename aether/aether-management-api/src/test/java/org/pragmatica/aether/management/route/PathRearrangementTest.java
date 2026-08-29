@@ -21,10 +21,16 @@ import static org.pragmatica.aether.management.route.ManagementRoute.SCHEDULED_T
 import static org.pragmatica.aether.management.route.ManagementRoute.STORAGE_SNAPSHOT;
 import static org.pragmatica.aether.management.route.ManagementRoute.STREAM_PUBLISH;
 import static org.pragmatica.aether.management.route.ManagementRoute.STREAM_READ;
+import static org.pragmatica.aether.management.route.PathToken.param;
+import static org.pragmatica.aether.management.route.PathToken.spacer;
 
 
-/// Verifies all routes from the plan's "Path Rearrangement" table have the new shape:
-/// fixed prefix segments first, all path parameters at the tail.
+/// Verifies the routes from the plan's "Path Rearrangement" table have the shape their migration
+/// gave them: fixed prefix segments first, then path parameters at the tail -- except where a route
+/// has since moved to the identity-first catalog shape, whose params are followed by a literal
+/// (see [#streamRead_identityParamsThenReadLiteralThenPartition]). The one invariant that still
+/// holds for EVERY route is that `prefix()` never contains placeholder syntax
+/// (see [#allRoutes_obeyTailParamsInvariant]).
 class PathRearrangementTest {
 
     @Test
@@ -69,10 +75,25 @@ class PathRearrangementTest {
         assertThat(STREAM_PUBLISH.paramNames()).containsExactly("name");
     }
 
+    /// STREAM_READ migrated to the identity-first catalog shape (management-api-versioning-spec.md
+    /// Sections 3.2/3.3): it is the one route in this table whose params are NO LONGER all at the
+    /// tail, so it is pinned by exact token layout rather than by prefix+paramNames -- that pair
+    /// cannot express a literal sitting between params, which is precisely the property at stake.
+    /// `prefix()` is now the leading literal run only ("/api/v1/streams", stopping at `namespace`);
+    /// "read" is an interior spacer between `version` and `partition`, not part of the prefix and
+    /// not trailing.
     @Test
-    void streamRead_paramsAtTail() {
-        assertThat(STREAM_READ.prefix()).isEqualTo("/api/v1/streams/read");
-        assertThat(STREAM_READ.paramNames()).containsExactly("name", "partition");
+    void streamRead_identityParamsThenReadLiteralThenPartition() {
+        assertThat(STREAM_READ.prefix()).isEqualTo("/api/v1/streams");
+        assertThat(STREAM_READ.paramNames()).containsExactly("namespace", "stream", "version", "partition");
+        assertThat(STREAM_READ.tokens()).containsExactly(spacer("api"),
+                                                         spacer("v1"),
+                                                         spacer("streams"),
+                                                         param("namespace"),
+                                                         param("stream"),
+                                                         param("version"),
+                                                         spacer("read"),
+                                                         param("partition"));
     }
 
     @Test

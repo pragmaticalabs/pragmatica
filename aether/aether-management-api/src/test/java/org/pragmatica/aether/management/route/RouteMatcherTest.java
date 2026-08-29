@@ -49,13 +49,34 @@ class RouteMatcherTest {
 
     @Test
     void match_returnsRoute_forMultipleParams() {
-        var result = matcher.match(GET, "/api/v1/streams/orders/4");
+        // STREAM_PARTITION is identity-first: /streams/{namespace}/{stream}/{version}/partitions/
+        // {partition} -- four params with the discriminating literal sitting AFTER three of them.
+        var result = matcher.match(GET, "/api/v1/streams/orders/events/v2/partitions/4");
         assertThat(result.isSuccess()).isTrue();
         result.onSuccess(matched -> {
             assertThat(matched.route()).isEqualTo(ManagementRoute.STREAM_PARTITION);
-            assertThat(matched.param("name").or((String) null)).isEqualTo("orders");
+            assertThat(matched.param("namespace").or((String) null)).isEqualTo("orders");
+            assertThat(matched.param("stream").or((String) null)).isEqualTo("events");
+            assertThat(matched.param("version").or((String) null)).isEqualTo("v2");
             assertThat(matched.param("partition").or((String) null)).isEqualTo("4");
         });
+
+        // STREAM_PARTITION, STREAM_READ and STREAM_REPLICAS are structurally identical -- same
+        // method, same 8-token length, same param positions -- and differ ONLY in the text of that
+        // interior literal. Selecting the right one is therefore the whole job here, and asserting
+        // STREAM_PARTITION alone would not prove it: with positional literal matching disabled all
+        // three still "match", and STREAM_PARTITION wins the resulting tie purely by being declared
+        // first. Pinning the two siblings that are NOT declaration-order winners is what makes this
+        // test fail if the matcher ever stops discriminating on interior literal text. Each is
+        // guarded by isSuccess() so a route that stops matching entirely fails here rather than
+        // silently skipping its assertion.
+        var read = matcher.match(GET, "/api/v1/streams/orders/events/v2/read/4");
+        assertThat(read.isSuccess()).isTrue();
+        read.onSuccess(m -> assertThat(m.route()).isEqualTo(ManagementRoute.STREAM_READ));
+
+        var replicas = matcher.match(GET, "/api/v1/streams/orders/events/v2/replicas/4");
+        assertThat(replicas.isSuccess()).isTrue();
+        replicas.onSuccess(m -> assertThat(m.route()).isEqualTo(ManagementRoute.STREAM_REPLICAS));
     }
 
     @Test
