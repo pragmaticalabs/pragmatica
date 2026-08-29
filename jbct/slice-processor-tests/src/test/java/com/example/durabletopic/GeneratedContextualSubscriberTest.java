@@ -27,11 +27,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// incorrectly, `DurableOrderSliceFactory` would not compile, the module build would fail, and these
 /// tests would never run.
 ///
-/// ⚠ Running these against a PROCESSOR-ONLY change locally will lie to you. Maven skips annotation
-/// processing here when this module's own sources have not changed, so the fixtures are re-validated
-/// against the artifacts a PREVIOUS processor generated — a green run proving nothing about the
-/// change under test. Delete `jbct/slice-processor-tests/target` before gating a slice-processor
-/// change. CI is unaffected (fresh checkout, nothing to reuse).
+/// That guarantee used to be conditional, and the condition was invisible: the module could skip
+/// annotation processing and re-validate a PREVIOUS processor's output. The module's pom now clears
+/// its own target before every build so the skip cannot happen — see the comment there and #736. It
+/// is a mechanism, not a convention, so nothing here depends on remembering it.
 class GeneratedContextualSubscriberTest {
 
     private static String factory;
