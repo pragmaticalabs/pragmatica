@@ -54,7 +54,7 @@ public class ScoreMojo extends AbstractJbctMojo {
         var filesToProcess = collectJavaFiles(jbctConfig.files(), includeTests);
 
         if (filesToProcess.isEmpty()) {
-            getLog().info("No Java files found.");
+            reportNothingToCheck("score", includeTests);
 
             return;
         }

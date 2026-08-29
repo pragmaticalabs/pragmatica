@@ -42,7 +42,7 @@ public class LintMojo extends AbstractJbctMojo {
         var filesToProcess = collectJavaFiles(jbctConfig.files(), includeTests);
 
         if (filesToProcess.isEmpty()) {
-            getLog().info("No Java files found.");
+            reportNothingToCheck("lint", includeTests);
 
             return;
         }

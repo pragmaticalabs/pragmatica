@@ -40,7 +40,7 @@ public class FormatCheckMojo extends AbstractJbctMojo {
         var filesToProcess = collectJavaFiles(config.files(), includeTests);
 
         if (filesToProcess.isEmpty()) {
-            getLog().info("No Java files found.");
+            reportNothingToCheck("format check", includeTests);
 
             return;
         }

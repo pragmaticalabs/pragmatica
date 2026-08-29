@@ -68,7 +68,7 @@ public class ProcessMojo extends AbstractJbctMojo {
         var filesToProcess = collectJavaFiles(jbctConfig.files(), includeTests);
 
         if (filesToProcess.isEmpty()) {
-            getLog().info("No Java files found.");
+            reportNothingToCheck("process", includeTests);
 
             return;
         }

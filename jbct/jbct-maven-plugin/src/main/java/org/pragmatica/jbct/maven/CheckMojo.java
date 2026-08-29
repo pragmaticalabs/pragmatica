@@ -44,7 +44,7 @@ public class CheckMojo extends AbstractJbctMojo {
         var filesToProcess = collectJavaFiles(jbctConfig.files(), includeTests);
 
         if (filesToProcess.isEmpty()) {
-            getLog().info("No Java files found.");
+            reportNothingToCheck("check", includeTests);
 
             return;
         }
