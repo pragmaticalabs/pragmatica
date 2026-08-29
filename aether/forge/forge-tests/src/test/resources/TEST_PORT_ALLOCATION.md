@@ -91,4 +91,6 @@ When adding a new test class:
 - 18000+ / 18100+: Allocated to DeclarativeStreamConsumerTest (app-http 18200) — moved off 14000, which it
   silently shared with StreamOwnerFailoverTest while absent from this table (#535)
 - 18500+ / 18600+: Allocated to DeclarativeConsumerPlacementTest (app-http 18700)
-- 19000+: Reserved for future tests
+- 19000+ / 19100+: Allocated to DurableTopicDeliveryForgeTest (app-http 19200) — the #386 composed
+  durable pub/sub path
+- 19500+: Reserved for future tests
