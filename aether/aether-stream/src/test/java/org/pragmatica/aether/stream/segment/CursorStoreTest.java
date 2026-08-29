@@ -8,9 +8,15 @@ package org.pragmatica.aether.stream.segment;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.storage.BlockId;
+import org.pragmatica.storage.BlockMetadata;
 import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.StorageInstance;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -104,6 +110,119 @@ class CursorStoreTest {
 
             resultA.onSuccess(opt -> opt.onPresent(offset -> assertThat(offset).isEqualTo(10L)));
             resultB.onSuccess(opt -> opt.onPresent(offset -> assertThat(offset).isEqualTo(20L)));
+        }
+    }
+
+    @Nested
+    class RefReplacementLeavesNoAbsentWindow {
+
+        /// #264 — a committed cursor must never pass through a state where its ref does not exist.
+        ///
+        /// The crash window itself is not observable from a test, so what is pinned is the mechanism that
+        /// removes it: the replacement must be a single upsert. The previous implementation removed the
+        /// ref and then recreated it, and a crash in between left the ref ABSENT — which [CursorStore#fetch]
+        /// reports as `Option.empty()`, indistinguishable from "this group never committed", so the group
+        /// resumed from the earliest RETAINED offset and redelivered the whole window.
+        ///
+        /// Two independent assertions, because either alone can be satisfied by accident: no `deleteRef`
+        /// is issued for the cursor at all, and at the instant the replacing `createRef` runs the previous
+        /// ref is still resolvable.
+        @Test
+        void commit_overExistingCursor_neverRemovesTheRef_andTheOldValueStandsUntilReplaced() {
+            var observing = new RefObservingStorage(storage);
+            var observed = cursorStore(observing);
+
+            observed.commit(GROUP, STREAM, PARTITION, 10L).await();
+            observed.commit(GROUP, STREAM, PARTITION, 100L).await();
+
+            assertThat(observing.refOperations)
+                    .as("replacing a cursor must not remove its ref — the gap between remove and recreate"
+                        + " is the #264 window, and an absent ref resumes from the earliest retained offset")
+                    .noneMatch(operation -> operation.startsWith("deleteRef"));
+
+            assertThat(observing.previousRefAtCreate)
+                    .as("the second commit is the replacement; the old ref must still be in place when it runs")
+                    .hasSize(2);
+            assertThat(observing.previousRefAtCreate.get(1).isPresent())
+                    .as("the ref was absent at replacement time — that is exactly the window #264 closes")
+                    .isTrue();
+
+            observed.fetch(GROUP, STREAM, PARTITION)
+                    .await()
+                    .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("Expected success"))
+                    .onSuccess(opt -> opt.onPresent(offset -> assertThat(offset).isEqualTo(100L)));
+        }
+    }
+
+    /// Delegating [StorageInstance] that records the ref operations a commit performs, and the ref's state
+    /// at the moment each `createRef` is issued. Everything else passes straight through.
+    private static final class RefObservingStorage implements StorageInstance {
+        private final StorageInstance delegate;
+        private final List<String> refOperations = new ArrayList<>();
+        private final List<Option<BlockId>> previousRefAtCreate = new ArrayList<>();
+
+        private RefObservingStorage(StorageInstance delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public Promise<Unit> createRef(String refName, BlockId id) {
+            refOperations.add("createRef:" + refName);
+            previousRefAtCreate.add(delegate.resolveRef(refName));
+
+            return delegate.createRef(refName, id);
+        }
+
+        @Override
+        public Promise<Unit> deleteRef(String refName) {
+            refOperations.add("deleteRef:" + refName);
+
+            return delegate.deleteRef(refName);
+        }
+
+        @Override
+        public Option<BlockId> resolveRef(String refName) {
+            return delegate.resolveRef(refName);
+        }
+
+        @Override
+        public Promise<BlockId> put(byte[] content) {
+            return delegate.put(content);
+        }
+
+        @Override
+        public Promise<BlockId> put(byte[] content, BlockMetadata metadata) {
+            return delegate.put(content, metadata);
+        }
+
+        @Override
+        public Promise<Option<byte[]>> get(BlockId id) {
+            return delegate.get(id);
+        }
+
+        @Override
+        public Promise<Boolean> exists(BlockId id) {
+            return delegate.exists(id);
+        }
+
+        @Override
+        public Promise<Unit> delete(BlockId id) {
+            return delegate.delete(id);
+        }
+
+        @Override
+        public String name() {
+            return delegate.name();
+        }
+
+        @Override
+        public List<TierInfo> tierInfo() {
+            return delegate.tierInfo();
+        }
+
+        @Override
+        public void shutdown() {
+            delegate.shutdown();
         }
     }
 
