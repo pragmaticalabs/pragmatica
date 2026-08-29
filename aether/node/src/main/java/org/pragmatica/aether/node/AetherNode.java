@@ -69,6 +69,7 @@ import org.pragmatica.aether.deployment.membership.fsm.MembershipDeltaProjector;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipTransitionRecord;
 import org.pragmatica.aether.deployment.membership.fsm.PeerTarget;
+import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
 import org.pragmatica.aether.deployment.membership.ntt.DrainProcedure;
 import org.pragmatica.aether.deployment.membership.ntt.LeaderReconciler;
 import org.pragmatica.aether.deployment.membership.ntt.QuorumCoConfirmation;
@@ -2938,6 +2939,7 @@ public interface AetherNode extends ManageableNode {
                                                                                          snapshotSource::observedRabiaTerm,
                                                                                          hlcClock::now,
                                                                                          delegateRouter::route,
+                                                                                         delegateRouter::route,
                                                                                          topologyObserver::pruneDeparted);
 
         membershipFsm.onMembershipDelta(membershipDeltaProjector::onDelta);
@@ -5549,6 +5551,10 @@ public interface AetherNode extends ManageableNode {
                                               clusterDeploymentManager::onMembershipDecision));
         entries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,
                                               clusterDeploymentManager::onMembershipDecision));
+        // #728: the non-core join channel. Workers never appear in MembershipDecision (the core
+        // topology stream), so without this route assignNodeRole is unreachable for exactly the
+        // nodes that need a community — they reach FSM Member and are never assigned a role.
+        entries.add(MessageRouter.Entry.route(WorkerJoinDecision.class, clusterDeploymentManager::onWorkerJoin));
         // RC1 Step 2: route the new lifecycle-projection variants into CDM so the
         // dropped `onNodeLifecyclePut` listener's work (drain eviction, etc.) is
         // covered through the single canonical MembershipDecision channel.

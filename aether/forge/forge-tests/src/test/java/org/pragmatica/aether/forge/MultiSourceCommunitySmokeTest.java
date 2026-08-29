@@ -18,7 +18,6 @@ import org.pragmatica.lang.Option;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.parallel.Execution;
@@ -54,36 +53,28 @@ import static org.awaitility.Awaitility.await;
 /// single-source-proven mechanism applied per community; what was UNPROVEN about multi-source —
 /// distinct minting, correct assignment, no cross-source interference — is exactly what this
 /// smoke pins. The first Hetzner rung observes ACTIVE per community on real hardware.
-/// ## MEASURED RESULT: RED — this test found #728, a release-blocking defect
+/// ## This test found #728, and is the gate that closes it
 ///
-/// Ran twice (2026-08-29), isolated under the machine suite-lock, non-default ports and prefix.
-/// Both runs failed identically at the mint await after 120s. Measured signature, both runs:
-/// four workers joined; `DHT: Node added msrc-6/7/8/9` = 0/0/0/0; `Received membership decision`
-/// = 0; mint + assign + promote lines = 0. Contamination ruled out — every NodeId in both logs is
-/// `msrc-*`, no foreign ids, no node lacking a startup line.
+/// It ran RED twice on 2026-08-29 (isolated, under the machine suite-lock, non-default ports and
+/// prefix). Measured signature, both runs: four workers joined; `DHT: Node added msrc-6/7/8/9` =
+/// 0/0/0/0; `Received membership decision` = 0; mint + assign + promote lines = 0. Contamination
+/// ruled out — every NodeId in both logs was `msrc-*`.
 ///
-/// The cause is NOT this test. `MembershipDeltaProjector.processJoined` returns early for any
+/// The cause was never this test. `MembershipDeltaProjector.processJoined` returned early for any
 /// non-core role ("Wave 2 — a worker join never perturbs the core delta"), and its `emitJoin` is
-/// the sole production emitter of `MembershipDecision.NodeJoined` — the only event that reaches
-/// `ClusterDeploymentState.assignNodeRole`, which is the only writer of community keys and worker
-/// activation directives. So a node labelled `role=worker` — what every CTM-provisioned worker is —
-/// never mints a community and never activates.
+/// the sole production emitter of `MembershipDecision.NodeJoined` — the only event reaching
+/// `ClusterDeploymentState.assignNodeRole`, the only writer of community keys and worker
+/// activation directives. So a node labelled `role=worker`, which is what every CTM-provisioned
+/// worker is, never minted a community and never activated.
 ///
-/// A positive control pinned that to the label alone: byte-identical run with the source label ONLY
-/// and no role label minted BOTH communities with correct source names, proving the mint path is
-/// alive in-JVM and the source label round-trips. Single-variable isolation; the role label is the
-/// cut.
+/// A positive control isolated it to that single label: a byte-identical run advertising the
+/// source label ONLY minted both communities with correct source names, proving the mint path was
+/// alive and the source label round-tripped.
 ///
-/// `@Disabled` rather than deleted or left red: a red test pinning a real defect is an asset, but a
-/// red test on a shared release branch is a liability for four streams. **Enabling this test green
-/// is the stated acceptance criterion of #728** — the instrument that found the defect closes it.
-@Disabled("#728: RED — pins a real release-blocking defect. Labelled workers (role=worker) never "
-          + "mint communities: MembershipDeltaProjector.processJoined drops non-core joins, so no "
-          + "MembershipDecision.NodeJoined is emitted, assignWorkerRole never runs, and no "
-          + "ActivationDirective is ever written. Measured twice: 4 workers joined, 0 membership "
-          + "decisions, 0 DHT ring additions, 0 mints. Positive control with the role label removed "
-          + "minted both communities correctly, isolating the label as the sole cause. ENABLE THIS "
-          + "TEST as the acceptance criterion when #728 is fixed.")
+/// #728 fixed it by routing non-core joins onto a separate [`WorkerJoinDecision`] channel that
+/// `assignNodeRole` consumes, leaving the core delta pure. This test is that fix's stated
+/// acceptance criterion, so it runs ENABLED — a green run here is the end-to-end proof that a
+/// labelled worker reaches role assignment through the real projector path.
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class MultiSourceCommunitySmokeTest {

@@ -30,7 +30,8 @@ import static org.pragmatica.aether.deployment.membership.fsm.MembershipDeltaPro
 /// projecting the [`MembershipFsm`] JOINED/REMOVED delta edge (cluster-topology-overhaul spec,
 /// Wave 4 / #245). Covers the moved `TopologyObserver.MembershipDecisionEmission` contract:
 /// (logIndex, stampedAt) stamping, removal emission + prune, minority-side suppression, worker
-/// core-scoping, and exactly-once idempotence — PLUS the follower-starvation fix (live-gate
+/// core-scoping AND the separate non-core worker channel (#728), and exactly-once idempotence —
+/// PLUS the follower-starvation fix (live-gate
 /// CRITICAL): drainage must not depend on the one-shot `ClusterStateNotification` ACTIVE echo.
 /// The FIFO queue is the pending store, the DRAINER is the only place that consults
 /// `inQuorum()`, and a deduped one-shot flush retry re-pokes the drainer while suppressed work
@@ -45,6 +46,7 @@ class MembershipDeltaProjectorTest {
     private static final HlcTimestamp HLC = new HlcTimestamp(HlcTimestamp.pack(12_345L, 0), new NodeId("node-self"));
 
     private final List<MembershipDecision> decisions = new ArrayList<>();
+    private final List<WorkerJoinDecision> workerJoins = new ArrayList<>();
     private final List<NodeId> pruned = new ArrayList<>();
     private final AtomicBoolean quorate = new AtomicBoolean(true);
     private final AtomicLong logIndex = new AtomicLong(42L);
@@ -54,6 +56,7 @@ class MembershipDeltaProjectorTest {
     @BeforeEach
     void setUp() {
         decisions.clear();
+        workerJoins.clear();
         pruned.clear();
         quorate.set(true);
         logIndex.set(42L);
@@ -62,6 +65,7 @@ class MembershipDeltaProjectorTest {
                                              logIndex::get,
                                              () -> HLC,
                                              decisions::add,
+                                             workerJoins::add,
                                              pruned::add,
                                              Runnable::run,
                                              retryScheduler);
@@ -127,10 +131,21 @@ class MembershipDeltaProjectorTest {
     @Nested
     class WorkerScoping {
         @Test
-        void workerJoin_emitsNothing_coreDeltaUnperturbed() {
+        void workerJoin_emitsOnWorkerChannelOnly_coreDeltaUnperturbed() {
             projector.onDelta(joined(W, "worker"));
 
-            assertThat(decisions).isEmpty();
+            assertThat(decisions)
+                .as("a worker must never travel on the core MembershipDecision stream")
+                .isEmpty();
+            assertThat(workerJoins)
+                .as("#728: the worker join must still be emitted — on its own channel")
+                .hasSize(1);
+            assertThat(workerJoins.getFirst().nodeId()).isEqualTo(W);
+            assertThat(workerJoins.getFirst().role()).isEqualTo("worker");
+            assertThat(workerJoins.getFirst().stampedAt()).isEqualTo(HLC);
+            assertThat(projector.announcedCoreMembers())
+                .as("the core baseline must stay worker-free")
+                .isEmpty();
 
             projector.onDelta(joined(A, "core"));
 
@@ -140,6 +155,42 @@ class MembershipDeltaProjectorTest {
                 .containsExactly(A);
         }
 
+        /// #728 regression: the defect was that this emitted NOTHING ANYWHERE, so a labelled
+        /// worker was never assigned a role, never minted a community, and never activated. The
+        /// core-channel emptiness above is the Wave-2 invariant; this is the bug.
+        @Test
+        void workerJoin_reachesTheRoleAssignmentChannel_ratherThanBeingDropped() {
+            projector.onDelta(joined(W, "worker"));
+
+            assertThat(workerJoins).extracting(WorkerJoinDecision::nodeId).containsExactly(W);
+        }
+
+        @Test
+        void workerJoin_repeated_emitsExactlyOnce() {
+            projector.onDelta(joined(W, "worker"));
+            projector.onDelta(joined(W, "worker"));
+            projector.onDelta(joined(W, "worker"));
+
+            assertThat(workerJoins)
+                .as("the worker baseline mirrors the core arm's exactly-once guard")
+                .hasSize(1);
+        }
+
+        /// The worker baseline MUST be pruned on removal even though removal emits nothing on
+        /// either channel. Without the prune, a worker that departs stays in the once-only guard
+        /// forever and its rejoin is silently swallowed — never re-assigned a role. That is the
+        /// same silent non-participation #728 was, reintroduced by the fix's own dedup set.
+        @Test
+        void workerRejoinAfterRemoval_emitsAgain_becauseTheWorkerBaselineIsPruned() {
+            projector.onDelta(joined(W, "worker"));
+            projector.onDelta(removed(W, "worker"));
+            projector.onDelta(joined(W, "worker"));
+
+            assertThat(workerJoins)
+                .as("a departed worker must be re-assignable on rejoin")
+                .hasSize(2);
+        }
+
         @Test
         void workerRemoval_neverAnnounced_emitsNothing() {
             projector.onDelta(joined(W, "worker"));
@@ -147,6 +198,27 @@ class MembershipDeltaProjectorTest {
 
             assertThat(decisions).isEmpty();
             assertThat(pruned).isEmpty();
+        }
+
+        /// The worker channel is emitted from the drain path, so it inherits the quorum gate.
+        /// This matters because the consumer answers a worker join by submitting KV commands into
+        /// consensus — emitting while non-quorate would produce writes that cannot commit.
+        @Test
+        void workerJoin_whileNonQuorate_isSuppressedThenDrainedInOrder() {
+            quorate.set(false);
+            projector.onDelta(joined(W, "worker"));
+
+            assertThat(workerJoins)
+                .as("a non-quorate node must not emit worker joins either")
+                .isEmpty();
+
+            quorate.set(true);
+            projector.onDelta(joined(A, "core"));
+
+            assertThat(workerJoins)
+                .as("the suppressed worker join drains once quorum returns")
+                .hasSize(1);
+            assertThat(decisions).hasSize(1);
         }
     }
 
