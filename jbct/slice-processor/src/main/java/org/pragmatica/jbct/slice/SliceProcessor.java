@@ -266,6 +266,18 @@ public class SliceProcessor extends AbstractProcessor {
         var violations = new ArrayList<String>();
 
         for (var site : sites) {
+            // The interceptor chain is typed on the payload alone (`Fn1<Promise<Unit>, T>`), so it
+            // has nowhere to carry the context. Generating the combination anyway would either drop
+            // the context silently or emit a wrapper that does not implement the declared signature.
+            if (site.method().hasInterceptors()) {
+                violations.add("Subscription method '" + site.displayName()
+                              + "' declares a " + MethodModel.MESSAGE_CONTEXT_TYPE
+                              + " parameter and also carries method interceptors. The interceptor chain is typed on"
+                              + " the event alone and cannot carry the delivery context, so the context would be"
+                              + " silently dropped. Remove the interceptors from this handler, or drop the"
+                              + " MessageContext parameter.");
+            }
+
             for (var binding : site.method().reactiveOfCategory("subscription")) {
                 var section = topicSection(binding.qualifier().configSection(), topicBindings);
 

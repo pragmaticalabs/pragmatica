@@ -4515,6 +4515,56 @@ class SliceProcessorTest {
         assertThat(manifestContent).contains("envelope.version=1000");
     }
 
+    /// A context-carrying handler cannot also be intercepted: the interceptor chain is typed
+    /// `Fn1<Promise<Unit>, T>` on the payload alone, so there is nowhere to put the context. Left
+    /// ungated the generator emits a wrapper that does not implement the declared two-argument
+    /// signature — a javac error inside generated code. Refusing it names the real problem.
+    @Test
+    void should_reject_message_context_subscriber_carrying_interceptors() {
+        var withRetry = JavaFileObjects.forSourceString("test.annotation.WithRetry",
+                                                        """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.MethodInterceptor;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = MethodInterceptor.class, config = "retry.orders")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.METHOD)
+            public @interface WithRetry {}
+            """);
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.aether.slice.topic.MessageContext;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.lang.Unit;
+            import test.annotation.OrderTopic;
+            import test.annotation.WithRetry;
+            import test.dto.OrderEvent;
+            @Slice
+            public interface OrderService {
+                @OrderTopic
+                @WithRetry
+                Promise<Unit> onOrderPlaced(OrderEvent event, MessageContext context);
+                static OrderService orderService() { return null; }
+            }
+            """);
+
+        var sources = subscriberSources();
+        sources.add(MESSAGE_CONTEXT);
+        sources.add(CONTEXTUAL_EVENT);
+        sources.add(withRetry);
+        sources.add(orderTopicAnnotation());
+        sources.add(orderEventRecord());
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+
+        assertCompilation(compilation).failed();
+        assertCompilation(compilation).hadErrorContaining("cannot carry the delivery context");
+    }
+
     @Test
     void should_include_transitive_methods_in_slice_adapter() throws Exception {
         var orderTopic = JavaFileObjects.forSourceString("test.annotation.OrderTopic",

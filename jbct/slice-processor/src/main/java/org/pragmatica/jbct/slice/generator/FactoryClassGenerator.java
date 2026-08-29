@@ -1287,30 +1287,32 @@ public class FactoryClassGenerator {
             out.println();
             out.println("            @Override");
             var responseType = importTracker.use(method.responseType().toString());
+            // These overrides mirror the interface signature, so they branch on the DECLARED
+            // parameters rather than the payload view: a context-carrying subscriber declares two
+            // parameters and must be overridden with both, or the record fails to implement it.
+            var declared = method.parameters();
 
-            if (method.hasNoParams()) {
+            if (declared.isEmpty()) {
                 out.println("            public Promise<" + responseType + "> " + method.name() + "() {");
                 out.println("                return delegate." + method.name() + "();");
-            } else if (method.hasSingleParam()) {
-                var paramType = importTracker.use(method.parameters().getFirst().type().toString());
+            } else if (declared.size() == 1) {
+                var paramType = importTracker.use(declared.getFirst().type().toString());
 
                 out.println("            public Promise<" + responseType
                            + "> " + method.name()
                            + "(" + paramType
-                           + " " + method.parameters().getFirst().name()
+                           + " " + declared.getFirst().name()
                            + ") {");
                 out.println("                return delegate." + method.name()
-                           + "(" + method.parameters().getFirst().name()
+                           + "(" + declared.getFirst().name()
                            + ");");
             } else {
-                var paramList = method.parameters()
-                                      .stream()
-                                      .map(p -> importTracker.use(p.type().toString()) + " " + p.name())
+                var paramList = declared.stream()
+                                        .map(p -> importTracker.use(p.type().toString()) + " " + p.name())
+                                        .collect(Collectors.joining(", "));
+                var argList = declared.stream()
+                                      .map(MethodParameterInfo::name)
                                       .collect(Collectors.joining(", "));
-                var argList = method.parameters()
-                                    .stream()
-                                    .map(MethodParameterInfo::name)
-                                    .collect(Collectors.joining(", "));
 
                 out.println("            public Promise<" + responseType
                            + "> " + method.name()
