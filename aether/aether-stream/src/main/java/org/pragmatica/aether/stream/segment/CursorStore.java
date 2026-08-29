@@ -37,13 +37,31 @@ public final class CursorStore implements ConsumerCursorStore {
         return new CursorStore(storage);
     }
 
+    /// Replaces the committed offset with a SINGLE ref write (#264).
+    ///
+    /// The ref is upserted, never removed first. The previous form was `deleteRef` then `createRef`, which
+    /// left a window in which the ref did not exist at all — and for a cursor, absent is much worse than
+    /// stale: [#fetch] answers `Option.empty()`, which the caller reads as "this group has never
+    /// committed" and resumes from the earliest RETAINED offset. So a crash in that window did not cost a
+    /// few events, it redelivered the entire retained window. A single upsert has no such window: the ref
+    /// resolves to either the old offset or the new one at every instant.
+    ///
+    /// What this deliberately does NOT do, stated because the accounting is now asymmetric: the superseded
+    /// block is not reclaimed, so each commit leaves one behind. It cannot be reclaimed here. Blocks are
+    /// CONTENT-ADDRESSED, and a cursor block is just the 8-byte offset — so every cursor in the node
+    /// sitting at offset N shares one block, and deleting "the old block" would pull it out from under any
+    /// other group or partition currently at that offset. Releasing it correctly needs a refcount-aware
+    /// replace on [StorageInstance] (put-ref + increment-new + decrement-old as one step), which does not
+    /// exist today; note also that [org.pragmatica.storage.BlockLifecycle#isUnreferenced] currently has NO
+    /// callers, so the decrement the old code performed reclaimed nothing either. The leak predates this
+    /// change and is unchanged by it — see #264.
     @Override
     public Promise<Unit> commit(String consumerGroup, String streamName, int partition, long offset) {
         var refName = buildRefName(consumerGroup, streamName, partition);
         var payload = encodeOffset(offset);
 
         return storage.put(payload)
-                      .flatMap(blockId -> replaceRef(refName, blockId))
+                      .flatMap(blockId -> storage.createRef(refName, blockId))
                       .onSuccess(_ -> logCommit(consumerGroup, streamName, partition, offset));
     }
 
@@ -54,11 +72,6 @@ public final class CursorStore implements ConsumerCursorStore {
         return storage.resolveRef(refName)
                       .map(this::readOffset)
                       .or(Promise.success(Option.empty()));
-    }
-
-    private Promise<Unit> replaceRef(String refName, BlockId blockId) {
-        return storage.deleteRef(refName)
-                      .flatMap(_ -> storage.createRef(refName, blockId));
     }
 
     private Promise<Option<Long>> readOffset(BlockId blockId) {
