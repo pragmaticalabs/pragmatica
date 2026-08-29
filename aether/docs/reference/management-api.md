@@ -4604,7 +4604,7 @@ Replication/backfill-health sensor for the stream-replication class (#260/#261/#
 ### Partition Replica State (per-node local view)
 
 ```
-GET /api/streams/replicas/local/{name}/{partition}
+GET /api/v1/streams/{name}/{partition}/replicas-local
 ```
 
 **Auth:** ALL_AUTHENTICATED · **Routing:** LOCAL (answered by the receiving node, never delegated)

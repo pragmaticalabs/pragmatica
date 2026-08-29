@@ -206,7 +206,7 @@ EVERY stream, app or system, which the split design could not offer.
 |---|---|---|
 | `STREAM_CREATE` | `POST /api/streams` | `POST /api/v1/streams/system` (mints `system/{name}/1`; body unchanged) |
 | `STREAM_LIST` | `GET /api/streams` | **merged** into `STREAMS_LIST` `GET /api/v1/streams` (now lists all namespaces incl. `system`) |
-| `STREAM_GET` | `GET /api/streams/{name}` | `GET /api/v1/streams/{ns}/{stream}/{ver}/partitions` (detail = partitions sub-resource) |
+| `STREAM_GET` | `GET /api/streams/{name}` | `GET /api/v1/streams/{ns}/{stream}/{ver}/info` (nudged from `.../partitions` — the handler returns `StreamInfoResponse`, not a partition list, which "partitions" as a trailing verb misdescribed; the rename also cleared a `(GET, 7-token)` bucket collision with `STREAM_REPLICAS_LOCAL`'s old flat shape, see §3.2's LOCAL-diagnostics note below) |
 | `STREAM_PARTITION` | `GET /api/streams/{name}/{partition}` | `GET /api/v1/streams/{ns}/{stream}/{ver}/partitions/{p}` |
 | `STREAM_DELETE` | `DELETE /api/streams/{name}` | **merged** into catalog `STREAMS_DELETE` (system ns) |
 | `STREAM_PUBLISH` | `POST /api/streams/publish/{name}` | **merged** into `STREAMS_PUBLISH` `POST /api/v1/streams/{ns}/{stream}/{ver}/publish` (identity-first, §3.4) |

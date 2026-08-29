@@ -13,6 +13,8 @@ import org.pragmatica.http.HttpMethod;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
+import static org.pragmatica.aether.management.route.PathToken.param;
+import static org.pragmatica.aether.management.route.PathToken.spacer;
 import static org.pragmatica.aether.management.route.RouteTarget.ANY;
 import static org.pragmatica.aether.management.route.RouteTarget.LEADER;
 import static org.pragmatica.aether.management.route.RouteTarget.LOCAL;
@@ -151,29 +153,90 @@ public enum ManagementRoute {
     STORAGE_RETENTION(GET, "/storage/retention", List.of(), LOCAL),
     CLUSTER_STORAGE_LIST(GET, "/cluster/storage", List.of(), LEADER),
     CLUSTER_STORAGE_GET(GET, "/cluster/storage", List.of("name"), LEADER),
+    // Deferred pending write-gate ruling (management-api-versioning-spec.md §3.2/§3.4): the
+    // ManagementServer write-gate blocks any write whose path contains a literal "system" segment.
+    // STREAM_CREATE, STREAM_PUBLISH, and STREAM_DELETE stay on their current flat, name-based shape
+    // until that conflict is resolved — reshaping them into the `system` catalog namespace below would
+    // 405 every call.
     STREAM_CREATE(POST, "/streams", List.of(), taskGroup(STREAMING)),
-    STREAM_LIST(GET, "/streams", List.of(), taskGroup(STREAMING)),
-    STREAM_GET(GET, "/streams", List.of("name"), taskGroup(STREAMING)),
-    STREAM_PARTITION(GET, "/streams", List.of("name", "partition"), taskGroup(STREAMING)),
+    // Catalog-scoped read-only ports (management-api-versioning-spec.md §3.2): identity params
+    // (namespace, stream, version) sit right after "streams"; the verb that used to be the whole
+    // second path segment moves to a trailing literal instead. Trailing verb is "info" (not
+    // "partitions" — that literal belongs to STREAM_PARTITION's own trailing segment below): this
+    // is the stream-metadata port, "partitions" was a stale name that also happened to collide with
+    // STREAM_REPLICAS_LOCAL (see that route's comment) at the (GET, 7-token) bucket.
+    STREAM_GET(GET,
+               List.of(spacer("streams"), param("namespace"), param("stream"), param("version"), spacer("info")),
+               taskGroup(STREAMING)),
+    STREAM_PARTITION(GET,
+                     List.of(spacer("streams"),
+                             param("namespace"),
+                             param("stream"),
+                             param("version"),
+                             spacer("partitions"),
+                             param("partition")),
+                     taskGroup(STREAMING)),
     STREAM_PUBLISH(POST, "/streams/publish", List.of("name"), taskGroup(STREAMING)),
     STREAM_DELETE(DELETE, "/streams", List.of("name"), taskGroup(STREAMING)),
-    STREAM_CONSUMERS(GET, "/streams/consumers", List.of("name"), taskGroup(STREAMING)),
-    STREAM_READ(GET, "/streams/read", List.of("name", "partition"), taskGroup(STREAMING)),
+    STREAM_CONSUMERS(GET,
+                     List.of(spacer("streams"),
+                             param("namespace"),
+                             param("stream"),
+                             param("version"),
+                             spacer("consumers")),
+                     taskGroup(STREAMING)),
+    STREAM_READ(GET,
+                List.of(spacer("streams"),
+                        param("namespace"),
+                        param("stream"),
+                        param("version"),
+                        spacer("read"),
+                        param("partition")),
+                taskGroup(STREAMING)),
     // #260/#261/#333 replica-state observability. taskGroup(STREAMING) lands the request on a
     // STREAMING-capable node; the handler then resolves the partition's deterministic HRW owner and
     // assembles the replica-set view from the local `ReplicaRegistry` (authoritative only ON the
     // owner — see `servedByOwner` in the response). Per-partition-owner management forwarding is not
     // a `RouteTarget` variant (the owner is computed from name+partition, not a path param), so the
     // response is owner-aware rather than owner-forwarded.
-    STREAM_REPLICAS(GET, "/streams/replicas", List.of("name", "partition"), taskGroup(STREAMING)),
+    STREAM_REPLICAS(GET,
+                    List.of(spacer("streams"),
+                            param("namespace"),
+                            param("stream"),
+                            param("version"),
+                            spacer("replicas"),
+                            param("partition")),
+                    taskGroup(STREAMING)),
     // #490 per-node LOCAL variant of STREAM_REPLICAS (the membership-endpoint pattern): the RECEIVING
     // node answers from its OWN ReplicaRegistry/owner resolver — never delegate-routed — so querying a
     // specific node's management port observes THAT node's view, and `servedByOwner=true` is actually
     // reachable over HTTP by querying the resolved owner's port. The delegate-routed variant above
     // structurally cannot return it unless the delegate happens to be the owner (probe-proven: all 5
-    // ports answered with one identical delegate view). Static prefix `/api/streams/replicas/local` is
-    // matched before `/api/streams/replicas/{name}/{partition}` by the longest-static-prefix rule.
-    STREAM_REPLICAS_LOCAL(GET, "/streams/replicas/local", List.of("name", "partition"), LOCAL),
+    // ports answered with one identical delegate view).
+    //
+    // Shape nudge (rc4, this migration): the old flat shape ("/streams/replicas/local" + 2 trailing
+    // params) put this route at (GET, 7 tokens) — the SAME bucket as the 5 catalog verb-suffix routes
+    // (STREAM_GET/STREAM_CONSUMERS/STREAMS_TAIL/STREAMS_EVENTS/STREAMS_GROUPS_LIST, all
+    // streams/{ns}/{stream}/{version}/<verb>): RouteMatcher.build() correctly rejected it as ambiguous
+    // against STREAM_GET, since neither route's literal-token set dominates the other (this route's
+    // literals sit at "replicas"/"local", STREAM_GET's sole literal sits at the trailing verb — no
+    // superset relation either way). Fix: move the disambiguating literal to TRAIL both params instead
+    // of leading them (`/streams/{name}/{partition}/replicas-local`), shrinking to (GET, 6 tokens) — a
+    // DIFFERENT bucket, so the original 5-route collision is structurally impossible now. That bucket
+    // already holds STREAMS_LATEST (.../{namespace}/{stream}/latest) and STREAMS_METADATA
+    // (.../{namespace}/{stream}/{version}); collapsing to a LEADING literal instead (e.g.
+    // "/streams/replicas-local/{name}/{partition}") was tried by hand-tracing RouteMatcher's
+    // domination check first and rejected — it would have traded the STREAM_GET collision for a new
+    // one against STREAMS_LATEST (same bucket, neither route's literal set a superset of the other's).
+    // The trailing-literal shape avoids that: its final segment is a literal at the SAME position
+    // STREAMS_LATEST's "latest" occupies, and "replicas-local" != "latest" makes the two routes
+    // incompatible (not merely non-dominating) at that position, which is what RouteMatcher.ambiguous
+    // requires to rule them out. "replicas" as a namespace name still shadows this route the same way
+    // "hydration"/"declarative-consumers"/"namespaces" are reserved elsewhere in this file — an
+    // accepted, already-documented trade-off, not a new one.
+    STREAM_REPLICAS_LOCAL(GET,
+                          List.of(spacer("streams"), param("name"), param("partition"), spacer("replicas-local")),
+                          LOCAL),
     // #345 I3 per-node durable-entity checkpoint observability. LOCAL, not delegate-routed: each node
     // checkpoints only the partitions IT folds, so a delegate's answer would describe a different node's
     // work. The surface exists because a checkpoint driver that silently stopped is otherwise
@@ -181,44 +244,80 @@ public enum ManagementRoute {
     // entity log that is never reclaimed, surfacing hours later as disk growth.
     ENTITY_CHECKPOINTS(GET, "/entity/checkpoints", List.of(), LOCAL),
     ENTITY_KEYSPACES(GET, "/entity/keyspaces", List.of(), LOCAL),
-    // #265 increment 0 per-node hydration observability. Static prefix `/api/streams/hydration` (0
-    // params) is matched before `/api/streams/{name}` (STREAM_GET, 1 param) by the longest-static-prefix
-    // rule in RouteMatcher, so there is no collision. taskGroup(STREAMING) lands it on a STREAMING-capable
-    // node; the handler assembles the snapshot from that node's local StreamPartitionManager (per-node
+    // #265 increment 0 per-node hydration observability. rc4 decision-record (management-api-versioning-
+    // spec.md §3.2 hybrid): STREAM_HYDRATION, STREAM_DECLARATIVE_CONSUMERS, and STREAM_REPLICAS_LOCAL are
+    // the 3 LOCAL, node-internal diagnostics left unmigrated — structurally unsuited to catalog identity
+    // (per-node truth, not per-stream). taskGroup(STREAMING) lands it on a STREAMING-capable node; the
+    // handler assembles the snapshot from that node's local StreamPartitionManager (per-node
     // materialized-ring / floor-byte / placement-role view — the §6 regression sensor).
     STREAM_HYDRATION(GET, "/streams/hydration", List.of(), taskGroup(STREAMING)),
     // #488 declarative-consumer observability: which `[streams.X]` consumers this node has actually
     // attached, on which partitions, at which committed offsets — plus the two ways a declared consumer
     // ends up receiving nothing (this node owns partitions whose slice is not deployed here, or the
     // event type is unpublishable per #526). LOCAL, not taskGroup: subscriptions are per-node truth,
-    // since a node consumes exactly the partitions it owns. Static prefix
-    // `/api/streams/declarative-consumers` (0 params) is matched before `/api/streams/{name}`
-    // (STREAM_GET) by the longest-static-prefix rule, and shares no segment with
-    // `/api/streams/consumers/{name}` (STREAM_CONSUMERS), so neither collides.
+    // since a node consumes exactly the partitions it owns. rc4 decision-record: stays flat, one of the
+    // 3 unmigrated LOCAL diagnostics (see STREAM_HYDRATION above).
     STREAM_DECLARATIVE_CONSUMERS(GET, "/streams/declarative-consumers", List.of(), LOCAL),
     CONSUMER_GROUP_JOIN(POST, "/streams/groups/join", List.of(), taskGroup(STREAMING)),
     CONSUMER_GROUP_LEAVE(POST, "/streams/groups/leave", List.of(), taskGroup(STREAMING)),
     CONSUMER_GROUP_STATUS(GET, "/streams/groups", List.of("id"), taskGroup(STREAMING)),
-    STREAMS_LIST(GET, "/streams/list", List.of(), taskGroup(STREAMING)),
-    STREAMS_VERSIONS_LIST(GET, "/streams/versions", List.of("namespace", "stream"), taskGroup(STREAMING)),
-    STREAMS_LATEST(GET, "/streams/latest", List.of("namespace", "stream"), taskGroup(STREAMING)),
-    STREAMS_METADATA(GET, "/streams/metadata", List.of("namespace", "stream", "version"), taskGroup(STREAMING)),
-    STREAMS_TAIL(GET, "/streams/tail", List.of("namespace", "stream", "version"), taskGroup(STREAMING)),
-    STREAMS_EVENTS(GET, "/streams/events", List.of("namespace", "stream", "version"), taskGroup(STREAMING)),
-    STREAMS_GROUPS_LIST(GET, "/streams/groups", List.of("namespace", "stream", "version"), taskGroup(STREAMING)),
-    STREAMS_PUBLISH(POST, "/streams/publish", List.of("namespace", "stream", "version"), taskGroup(STREAMING)),
+    // Catalog identity-first shape (management-api-versioning-spec.md §3.3): every route below
+    // addresses a stream as `(namespace, stream[, version])`, reshaped so the identity params sit
+    // immediately after the "streams" literal instead of behind a verb segment. Where a verb is still
+    // needed to disambiguate from a sibling route sharing the same param count, it moves to a trailing
+    // literal (`.../tail`, `.../publish`, ...); where the HTTP method alone disambiguates (GET vs
+    // DELETE, same path), the verb is dropped entirely. STREAM_LIST merged into STREAMS_LIST below — no
+    // new route, same GET-vs-POST-with-STREAM_CREATE 0-param shape it always had.
+    STREAMS_LIST(GET, "/streams", List.of(), taskGroup(STREAMING)),
+    STREAMS_VERSIONS_LIST(GET, "/streams", List.of("namespace", "stream"), taskGroup(STREAMING)),
+    STREAMS_LATEST(GET,
+                   List.of(spacer("streams"), param("namespace"), param("stream"), spacer("latest")),
+                   taskGroup(STREAMING)),
+    STREAMS_METADATA(GET, "/streams", List.of("namespace", "stream", "version"), taskGroup(STREAMING)),
+    STREAMS_TAIL(GET,
+                 List.of(spacer("streams"), param("namespace"), param("stream"), param("version"), spacer("tail")),
+                 taskGroup(STREAMING)),
+    STREAMS_EVENTS(GET,
+                   List.of(spacer("streams"), param("namespace"), param("stream"), param("version"), spacer("events")),
+                   taskGroup(STREAMING)),
+    STREAMS_GROUPS_LIST(GET,
+                        List.of(spacer("streams"),
+                                param("namespace"),
+                                param("stream"),
+                                param("version"),
+                                spacer("groups")),
+                        taskGroup(STREAMING)),
+    STREAMS_PUBLISH(POST,
+                    List.of(spacer("streams"), param("namespace"), param("stream"), param("version"), spacer("publish")),
+                    taskGroup(STREAMING)),
     STREAMS_PUBLISH_BATCH(POST,
-                          "/streams/publish-batch",
-                          List.of("namespace", "stream", "version"),
+                          List.of(spacer("streams"),
+                                  param("namespace"),
+                                  param("stream"),
+                                  param("version"),
+                                  spacer("publish-batch")),
                           taskGroup(STREAMING)),
-    STREAMS_GROUP_CREATE(POST, "/streams/groups/create", List.of("namespace", "stream", "version"), taskGroup(STREAMING)),
-    STREAMS_GROUP_DELETE(DELETE,
-                         "/streams/groups/delete",
-                         List.of("namespace", "stream", "version", "group"),
+    STREAMS_GROUP_CREATE(POST,
+                         List.of(spacer("streams"),
+                                 param("namespace"),
+                                 param("stream"),
+                                 param("version"),
+                                 spacer("groups")),
                          taskGroup(STREAMING)),
-    STREAMS_DELETE(DELETE, "/streams/delete", List.of("namespace", "stream", "version"), taskGroup(STREAMING)),
-    STREAM_NAMESPACES_LIST(GET, "/stream-namespaces/list", List.of(), LOCAL),
-    STREAM_NAMESPACES_GET(GET, "/stream-namespaces/get", List.of("namespace", "stream", "version"), LOCAL),
+    STREAMS_GROUP_DELETE(DELETE,
+                         List.of(spacer("streams"),
+                                 param("namespace"),
+                                 param("stream"),
+                                 param("version"),
+                                 spacer("groups"),
+                                 param("group")),
+                         taskGroup(STREAMING)),
+    STREAMS_DELETE(DELETE, "/streams", List.of("namespace", "stream", "version"), taskGroup(STREAMING)),
+    // "namespaces" is a reserved first-segment literal here, same precedence pattern already accepted
+    // above for "hydration"/"declarative-consumers": a real namespace literally named "namespaces" would
+    // be shadowed by these two routes ahead of STREAMS_VERSIONS_LIST's `{namespace}` branch.
+    STREAM_NAMESPACES_LIST(GET, "/streams/namespaces", List.of(), LOCAL),
+    STREAM_NAMESPACES_GET(GET, "/streams/namespaces", List.of("namespace"), LOCAL),
     SCHEDULED_TASKS_LIST(GET, "/scheduled-tasks", List.of(), LEADER),
     SCHEDULED_TASKS_BY_SECTION(GET, "/scheduled-tasks", List.of("section"), LEADER),
     SCHEDULED_TASK_STATE(GET, "/scheduled-tasks/state", List.of("section", "artifact", "methodName"), LEADER),
