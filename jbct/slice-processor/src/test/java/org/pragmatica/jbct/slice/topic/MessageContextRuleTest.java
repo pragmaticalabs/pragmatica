@@ -119,8 +119,59 @@ class MessageContextRuleTest {
 
             assertThat(message).contains(METHOD);
             assertThat(message).contains("cannot carry the delivery context");
-            assertThat(message).contains("Remove the interceptors");
+            assertThat(message).contains("Remove the slice's method interceptors");
             assertThat(message).contains("drop the MessageContext parameter");
+        }
+
+        /// The scope is the slice, not the handler — an interceptor on any other method still
+        /// generates the wrapper that walks this one. The message must say so, because an author
+        /// looking only at their handler will otherwise see no interceptor and conclude the error is
+        /// wrong.
+        @Test
+        void interceptorViolation_saysTheInterceptorNeedNotBeOnThisHandler() {
+            var message = MessageContextRule.interceptorViolation(METHOD);
+
+            assertThat(message).contains("does not have to be on this handler");
+            assertThat(message).contains("EVERY method");
+        }
+    }
+
+    @Nested
+    class DependencyMethods {
+
+        /// A context-carrying method reached through a slice-to-slice proxy: the caller has no
+        /// envelope, so it could only fabricate a context.
+        @Test
+        void dependencyMethodViolation_explainsThatACallerCouldOnlyFabricateAContext() {
+            var message = MessageContextRule.dependencyMethodViolation("test.OrderListener",
+                                                                        METHOD,
+                                                                        "test.OrderListener");
+
+            assertThat(message).contains("test.OrderListener");
+            assertThat(message).contains(METHOD);
+            assertThat(message).contains("fabricate");
+            assertThat(message).contains("not remotely invocable");
+        }
+
+        /// An inherited method must name the dependency that pulled it in, or the author is sent to
+        /// an interface they never mentioned.
+        @Test
+        void dependencyMethodViolation_namesTheInheritingDependency_whenInherited() {
+            var message = MessageContextRule.dependencyMethodViolation("test.BaseListener",
+                                                                        METHOD,
+                                                                        "test.OrderListener");
+
+            assertThat(message).contains("test.BaseListener");
+            assertThat(message).contains("inherited by dependency test.OrderListener");
+        }
+
+        @Test
+        void dependencyMethodViolation_omitsTheInheritedNote_whenDeclaredDirectly() {
+            var message = MessageContextRule.dependencyMethodViolation("test.OrderListener",
+                                                                        METHOD,
+                                                                        "test.OrderListener");
+
+            assertThat(message).doesNotContain("inherited by dependency");
         }
     }
 }

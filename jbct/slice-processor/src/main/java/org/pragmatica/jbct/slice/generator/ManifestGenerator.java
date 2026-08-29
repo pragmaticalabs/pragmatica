@@ -445,10 +445,14 @@ public class ManifestGenerator {
         }
     }
 
+    /// Request types the runtime is told to register codecs for. Driven by the PAYLOAD view so a
+    /// context-carrying subscriber contributes its event type alone: `MessageContext` arrives inside
+    /// the dispatcher's `ContextualEvent`, is never a request in its own right, and advertising it
+    /// here would name a type the generated `codec()` deliberately does not register.
     private List<String> collectRequestTypes(SliceModel model) {
         return model.methods()
                     .stream()
-                    .flatMap(m -> m.parameters()
+                    .flatMap(m -> m.payloadParameters()
                                    .stream()
                                    .map(MethodModel.MethodParameterInfo::type))
                     .map(this::getQualifiedTypeName)

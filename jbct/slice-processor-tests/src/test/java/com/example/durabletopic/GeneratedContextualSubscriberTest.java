@@ -26,6 +26,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// adapter emitted the wrong unpacking shape, the wrong cast, or referenced `ContextualEvent`
 /// incorrectly, `DurableOrderSliceFactory` would not compile, the module build would fail, and these
 /// tests would never run.
+///
+/// ⚠ Running these against a PROCESSOR-ONLY change locally will lie to you. Maven skips annotation
+/// processing here when this module's own sources have not changed, so the fixtures are re-validated
+/// against the artifacts a PREVIOUS processor generated — a green run proving nothing about the
+/// change under test. Delete `jbct/slice-processor-tests/target` before gating a slice-processor
+/// change. CI is unaffected (fresh checkout, nothing to reuse).
 class GeneratedContextualSubscriberTest {
 
     private static String factory;
@@ -88,9 +94,11 @@ class GeneratedContextualSubscriberTest {
     }
 
     /// And the manifest side of codec registration: `request.classes` drives what the runtime
-    /// registers, so a synthesized record must not appear there either.
+    /// registers, so neither a synthesized record nor the MessageContext itself may appear there.
+    /// The context arrives inside the dispatcher's `ContextualEvent` and is never a request in its
+    /// own right — advertising it would name a type the generated `codec()` deliberately omits.
     @Test
-    void manifest_requestClassesCarryNoSynthesizedRecord() {
+    void manifest_requestClassesCarryNeitherSynthesizedRecordNorContext() {
         var requestClasses = manifest.lines()
                                      .filter(line -> line.startsWith("request.classes="))
                                      .findFirst()
@@ -98,6 +106,7 @@ class GeneratedContextualSubscriberTest {
 
         assertThat(requestClasses).contains("com.example.durabletopic.OrderPlaced");
         assertThat(requestClasses).doesNotContain("OnOrderPlacedRequest");
+        assertThat(requestClasses).doesNotContain("MessageContext");
     }
 
     /// The additive manifest marker, emitted only for this shape.

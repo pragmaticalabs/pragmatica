@@ -251,12 +251,13 @@ public class SliceProcessor extends AbstractProcessor {
         sliceModel.methods()
                   .stream()
                   .filter(MethodModel::hasMessageContext)
-                  .forEach(method -> sites.add(new SubscriptionSite(method.name(), method)));
+                  .forEach(method -> sites.add(new SubscriptionSite(method.name(), method, true)));
         sliceModel.transitiveReactiveMethods()
                   .stream()
                   .filter(transitive -> transitive.method().hasMessageContext())
                   .forEach(transitive -> sites.add(new SubscriptionSite(transitive.qualifiedMethodName(),
-                                                                        transitive.method())));
+                                                                        transitive.method(),
+                                                                        false)));
 
         if (sites.isEmpty()) {
             return List.of();
@@ -266,7 +267,12 @@ public class SliceProcessor extends AbstractProcessor {
         var violations = new ArrayList<String>();
 
         for (var site : sites) {
-            if (site.method().hasInterceptors()) {
+            // Scope matters here. The interceptor wrapper is generated per SLICE (any method
+            // carrying one) and then walks EVERY direct method, so an interceptor on an unrelated
+            // method still drags this handler through it. A per-method check misses exactly that.
+            // Transitive handlers are not in the wrapper, so only their own interceptors count.
+            if (site.method().hasInterceptors()
+                || (site.direct() && sliceModel.hasMethodInterceptors())) {
                 violations.add(MessageContextRule.interceptorViolation(site.displayName()));
             }
 
@@ -282,8 +288,9 @@ public class SliceProcessor extends AbstractProcessor {
     }
 
     /// A subscription method paired with the name it is reported and dispatched under — its own name
-    /// for a direct method, the step-qualified name for a transitive one.
-    private record SubscriptionSite(String displayName, MethodModel method) {}
+    /// for a direct method, the step-qualified name for a transitive one. `direct` distinguishes the
+    /// two because the interceptor wrapper only ever walks the slice's own methods.
+    private record SubscriptionSite(String displayName, MethodModel method, boolean direct) {}
 
     /// The `resources.toml` section that configures a subscription's topic. Mirrors the manifest's
     /// `writeTopicConfig`: a `config` that resolved to a `Topic<T>` constant is configured under the

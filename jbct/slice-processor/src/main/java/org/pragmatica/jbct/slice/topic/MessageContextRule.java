@@ -39,15 +39,45 @@ public final class MessageContextRule {
                                         : Option.some(ephemeralTopic(methodName, topicSection)));
     }
 
-    /// The interceptor chain is typed `Fn1<Promise<Unit>, T>` on the payload alone, so it has
-    /// nowhere to carry the context. Generating the combination would either drop the context
-    /// silently or emit a wrapper that does not implement the declared two-argument signature.
+    /// Interceptors generate a wrapper record implementing the slice interface over EVERY method,
+    /// with one `Fn1<Promise<R>, T>` component per method — typed on the payload alone. A
+    /// context-carrying handler cannot be represented there: the override must take two arguments
+    /// while the function accepts one, and the only way to make that compile is to drop the context.
+    ///
+    /// The scope is the SLICE, not the handler. An interceptor on any other method of the same slice
+    /// still generates the wrapper, and the wrapper still walks this handler — which is exactly the
+    /// case a per-method check misses.
     public static String interceptorViolation(String methodName) {
         return "Subscription method '" + methodName
              + "' declares a " + MethodModel.MESSAGE_CONTEXT_TYPE
-             + " parameter and also carries method interceptors. The interceptor chain is typed on the"
-             + " event alone and cannot carry the delivery context, so the context would be silently"
-             + " dropped. Remove the interceptors from this handler, or drop the MessageContext parameter.";
+             + " parameter, but the slice declares method interceptors. Interceptors generate a wrapper"
+             + " implementing the slice over EVERY method, whose function components are typed on the"
+             + " event alone and cannot carry the delivery context — it would be silently dropped."
+             + " The interceptor does not have to be on this handler: one anywhere in the slice"
+             + " generates the wrapper. Remove the slice's method interceptors, or drop the"
+             + " MessageContext parameter.";
+    }
+
+    /// A context-carrying handler reached through a slice DEPENDENCY proxy. The proxy exists to let
+    /// one slice call another remotely, and a caller has no envelope to draw a context from — it
+    /// would have to fabricate one, which is the lie this rule exists to prevent. Refusing also
+    /// removes the phantom `dep_<Method>Request(T, MessageContext)` record the proxy would otherwise
+    /// synthesize: a type the runtime is told to serialize that nothing will ever send.
+    public static String dependencyMethodViolation(String declaringInterface,
+                                                   String methodName,
+                                                   String dependencyInterface) {
+        var inherited = declaringInterface.equals(dependencyInterface)
+                        ? ""
+                        : " (inherited by dependency " + dependencyInterface + ")";
+
+        return "Slice dependency method " + declaringInterface + "." + methodName
+             + " takes a " + MethodModel.MESSAGE_CONTEXT_TYPE
+             + " parameter" + inherited
+             + ". Delivery context is supplied by the dispatcher from the envelope of an actual"
+             + " delivery, so a caller invoking this method through the slice-to-slice proxy could only"
+             + " fabricate one. A context-carrying subscriber is not remotely invocable: keep it as a"
+             + " subscription handler, or drop the MessageContext parameter from the dependency"
+             + " interface.";
     }
 
     private static String unreadableConfig(String methodName, String topicSection) {

@@ -4435,8 +4435,21 @@ class SliceProcessorTest {
         assertCompilation(compilation).hadErrorContaining("must have exactly one parameter");
     }
 
-    /// The 1-arg subscriber path must be untouched by D5: same method-reference adapter, same
-    /// TypeTokens, and no trace of the contextual machinery in the generated factory.
+    /// Leading indentation is not the subject of these comparisons — the emitted text is. Stripping
+    /// it lets an expected block be written as a readable text block while still comparing the WHOLE
+    /// contiguous emission rather than a handful of substrings that could each stay green while
+    /// something new appeared beside them.
+    private static String strippedLines(String text) {
+        return text.lines()
+                   .map(String::strip)
+                   .filter(line -> !line.isEmpty())
+                   .collect(Collectors.joining("\n"));
+    }
+
+    /// The 1-arg subscriber path must be untouched by D5. This compares the COMPLETE emitted
+    /// `SliceMethod` entry and the COMPLETE delegate override, contiguously, rather than probing for
+    /// fragments. It is an equality-grade claim about those blocks modulo indentation — not the
+    /// literal byte-for-byte claim, which four substring assertions never supported.
     @Test
     void should_leave_single_arg_subscriber_adapter_unchanged() throws Exception {
         var source = JavaFileObjects.forSourceString("test.OrderService",
@@ -4469,8 +4482,18 @@ class SliceProcessorTest {
         var factoryContent = compilation.generatedSourceFile("test.OrderServiceFactory")
                                         .get().getCharContent(false).toString();
 
-        assertThat(factoryContent).contains("delegate::onOrderPlaced,");
-        assertThat(factoryContent).contains("new TypeToken<OrderEvent>() {}");
+        assertThat(strippedLines(factoryContent)).contains(strippedLines("""
+                new SliceMethod<>(
+                    MethodName.methodName("onOrderPlaced").expect("method name literal: onOrderPlaced"),
+                    delegate::onOrderPlaced,
+                    new TypeToken<Unit>() {},
+                    new TypeToken<OrderEvent>() {}
+                )"""));
+        assertThat(strippedLines(factoryContent)).contains(strippedLines("""
+                @Override
+                public Promise<Unit> onOrderPlaced(OrderEvent event) {
+                    return delegate.onOrderPlaced(event);
+                }"""));
         assertThat(factoryContent).doesNotContain("ContextualEvent");
         assertThat(factoryContent).doesNotContain("contextual ->");
 
@@ -4481,6 +4504,7 @@ class SliceProcessorTest {
         assertThat(manifestContent).contains("reactive.0.category=subscription");
         assertThat(manifestContent).contains("reactive.0.messageType=test.dto.OrderEvent");
         assertThat(manifestContent).doesNotContain("context=message");
+        assertThat(manifestContent).doesNotContain("MessageContext");
     }
 
     /// The manifest addition is additive only: the envelope format stays frozen at 1000 (#386
@@ -4564,6 +4588,108 @@ class SliceProcessorTest {
 
         assertCompilation(compilation).failed();
         assertCompilation(compilation).hadErrorContaining("cannot carry the delivery context");
+    }
+
+    /// The SCOPE case, and the one my first interceptor test could not see: the interceptor is on a
+    /// DIFFERENT method. The wrapper record is generated per slice (any method carrying an
+    /// interceptor) and then walks every method, so it drags the context-carrying handler through a
+    /// payload-typed function anyway. Ungated this emitted a 1-arg override inside a record declared
+    /// `implements OrderService`, plus `Fn1<Promise<Unit>, OrderEvent> = impl::onOrderPlaced` against
+    /// a two-argument method — non-compiling generated code the author never wrote.
+    @Test
+    void should_reject_message_context_subscriber_when_interceptor_is_on_another_method() {
+        var withRetry = JavaFileObjects.forSourceString("test.annotation.WithRetry",
+                                                        """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.MethodInterceptor;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = MethodInterceptor.class, config = "retry.orders")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.METHOD)
+            public @interface WithRetry {}
+            """);
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.aether.slice.topic.MessageContext;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.lang.Unit;
+            import test.annotation.OrderTopic;
+            import test.annotation.WithRetry;
+            import test.dto.OrderEvent;
+            @Slice
+            public interface OrderService {
+                @WithRetry
+                Promise<String> placeOrder(String orderId);
+
+                @OrderTopic
+                Promise<Unit> onOrderPlaced(OrderEvent event, MessageContext context);
+
+                static OrderService orderService() { return null; }
+            }
+            """);
+
+        var sources = subscriberSources();
+        sources.add(MESSAGE_CONTEXT);
+        sources.add(CONTEXTUAL_EVENT);
+        sources.add(withRetry);
+        sources.add(orderTopicAnnotation());
+        sources.add(orderEventRecord());
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+
+        assertCompilation(compilation).failed();
+        assertCompilation(compilation).hadErrorContaining("does not have to be on this handler");
+    }
+
+    /// The SILENT one. A slice depending on another slice whose interface declares a context-carrying
+    /// method used to generate cleanly: the proxy synthesized `dep_OnOrderPlacedRequest(OrderEvent,
+    /// MessageContext)` and a MethodHandle over it — a type the runtime is told to serialize that no
+    /// publisher will ever send, and a call a caller could only make by fabricating a context.
+    /// Nothing failed, which is why it needed finding rather than waiting for.
+    @Test
+    void should_reject_slice_dependency_method_taking_message_context() {
+        var listener = JavaFileObjects.forSourceString("test.dep.OrderListener",
+                                                        """
+            package test.dep;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.aether.slice.topic.MessageContext;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.lang.Unit;
+            import test.dto.OrderEvent;
+            @Slice
+            public interface OrderListener {
+                Promise<Unit> onOrderPlaced(OrderEvent event, MessageContext context);
+                static OrderListener orderListener() { return null; }
+            }
+            """);
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import test.dep.OrderListener;
+            @Slice
+            public interface OrderService {
+                Promise<String> placeOrder(String orderId);
+                static OrderService orderService(OrderListener listener) { return null; }
+            }
+            """);
+
+        var sources = subscriberSources();
+        sources.add(MESSAGE_CONTEXT);
+        sources.add(CONTEXTUAL_EVENT);
+        sources.add(orderEventRecord());
+        sources.add(listener);
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+
+        assertCompilation(compilation).failed();
+        assertCompilation(compilation).hadErrorContaining("not remotely invocable");
     }
 
     @Test

@@ -39,6 +39,7 @@ import org.pragmatica.jbct.slice.model.PlainInterfaceModel;
 import org.pragmatica.jbct.slice.model.ResolvedTopicConstant;
 import org.pragmatica.jbct.slice.model.ResourceQualifierModel;
 import org.pragmatica.jbct.slice.model.SliceModel;
+import org.pragmatica.jbct.slice.topic.MessageContextRule;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -1052,6 +1053,15 @@ public class FactoryClassGenerator {
                     continue;
                 }
 
+                // A dependency method taking a MessageContext cannot be proxied: the caller has no
+                // envelope to draw one from. Left unchecked this generates silently — a phantom
+                // request record pairing the event with a context nobody can supply.
+                if (takesMessageContext(resolved)) {
+                    reportContextTakingDependencyMethod(dep, method);
+
+                    continue;
+                }
+
                 extractPromiseTypeArg(resolved.getReturnType())
                                      .map(responseType -> toProxyMethodInfo(method, resolved, responseType))
                                      .onPresent(methods::add)
@@ -1626,8 +1636,28 @@ public class FactoryClassGenerator {
     /// inherited methods: the message names the declaring interface (where the signature lives)
     /// and, when that differs from the dependency the slice factory takes, the inheriting
     /// dependency; the return type is reported after `asMemberOf` substitution.
-    private void reportNonPromiseDependencyMethod(DependencyModel dep, ExecutableElement method, ExecutableType resolved) {
+    /// True when a dependency method's last parameter is the delivery context (#386 D5). Matched on
+    /// the resolved parameter types so a generic super-interface substitution is seen correctly.
+    private boolean takesMessageContext(ExecutableType resolved) {
+        var params = resolved.getParameterTypes();
+
+        return !params.isEmpty()
+               && MethodModel.MESSAGE_CONTEXT_TYPE.equals(types.erasure(params.getLast()).toString());
+    }
+
+    private void reportContextTakingDependencyMethod(DependencyModel dep, ExecutableElement method) {
         var declaringInterface = ((TypeElement) method.getEnclosingElement()).getQualifiedName()
+                                                                             .toString();
+
+        processingEnv.getMessager()
+                     .printMessage(Diagnostic.Kind.ERROR,
+                                   MessageContextRule.dependencyMethodViolation(declaringInterface,
+                                                                                 method.getSimpleName().toString(),
+                                                                                 dep.interfaceQualifiedName()),
+                                   method);
+    }
+
+    private void reportNonPromiseDependencyMethod(DependencyModel dep, ExecutableElement method, ExecutableType resolved) {        var declaringInterface = ((TypeElement) method.getEnclosingElement()).getQualifiedName()
                                                                              .toString();
         var inheritedNote = declaringInterface.equals(dep.interfaceQualifiedName())
                             ? ""
