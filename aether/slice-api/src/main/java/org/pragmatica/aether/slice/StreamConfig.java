@@ -28,7 +28,19 @@ public record StreamConfig(String name,
                            StreamCompression compression,
                            Option<String> encryptionKeyId) {
     private static final int DEFAULT_PARTITIONS = 4;
-    private static final String DEFAULT_AUTO_OFFSET_RESET = "latest";
+    /// `"earliest"` is the only value the system accepts, so it is the only honest default (#677).
+    ///
+    /// This read `"latest"` until 2026-08-29, which made the record's own factories hand out a value
+    /// `StreamResourceValidator` REJECTS — "auto-offset-reset 'latest' has no runtime effect". A
+    /// never-committed consumer always starts at offset 0 (earliest), permanently, by the **#478
+    /// ruling**, not as a gap to be closed later.
+    ///
+    /// The two paths did not meet in practice — deployed configs come from `StreamConfigParser`, which
+    /// already defaulted to `"earliest"`, while this default only reached programmatic construction,
+    /// which is not validated — so the contradiction was latent rather than live. It was still a trap
+    /// sitting under a public factory: two authorities declaring different defaults for one field, with
+    /// the validator agreeing only with the other one.
+    private static final String DEFAULT_AUTO_OFFSET_RESET = "earliest";
     private static final long DEFAULT_MAX_EVENT_SIZE_BYTES = 1_048_576L;
     private static final int DEFAULT_REPLICAS = 1;
     private static final int DEFAULT_MIN_SYNC_REPLICAS = 0;
