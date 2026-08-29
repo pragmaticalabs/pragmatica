@@ -29,6 +29,7 @@ import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
+import org.pragmatica.aether.slice.stream.SystemStreams;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.stream.StreamCreateOutcome;
 import org.pragmatica.aether.stream.StreamPartitionManager;
@@ -60,6 +61,7 @@ import org.pragmatica.lang.utils.Causes;
 public final class StreamRoutes implements RouteSource {
     private static final Cause STREAM_NOT_FOUND = Causes.cause("Stream not found");
     private static final Cause MISSING_STREAM_NAME = Causes.cause("Missing stream name");
+    private static final Cause SYSTEM_STREAM_NAME_FORBIDDEN = Causes.cause("Cannot create a stream using a reserved system stream name");
     private static final int DEFAULT_MAX_EVENTS = 100;
     private static final int DEFAULT_PARTITIONS = 4;
 
@@ -344,7 +346,9 @@ public final class StreamRoutes implements RouteSource {
                                 .map(PublishResponse::new);
     }
 
-    private Result<StreamCreateResponse> createStream(StreamCreateRequest request) {
+    /// Package-visible for direct unit coverage of the system-stream-name guard in
+    /// [#createFreshStream] — the entry point a real `POST /streams` request also goes through.
+    Result<StreamCreateResponse> createStream(StreamCreateRequest request) {
         return Option.option(request.name())
                      .toResult(MISSING_STREAM_NAME)
                      .flatMap(name -> createStreamWithConfig(name, request));
@@ -360,7 +364,22 @@ public final class StreamRoutes implements RouteSource {
                             .or(() -> createFreshStream(name, partitions));
     }
 
+    /// [ManagementServer]'s HTTP-path write-gate is pre-auth and reuses the dispatch path's route
+    /// canonicalization (condition 1) — a parallel body parser inside the gate would violate that.
+    /// `STREAM_CREATE`'s target name is body-carried, not path-carried, so the gate structurally
+    /// cannot see it; this method is the sole call site that ever mints a stream
+    /// ([StreamManager#createStream]), so the guard sits here, first, unconditionally, with no
+    /// branch that reaches the mint below it — the handler-level equivalent of the gate's pre-auth
+    /// placement, honest about running post-auth since body-carried identity leaves no earlier hook.
+    /// This closes the narrow window `createStreamWithConfig`'s idempotent "already exists" check
+    /// does not: a create racing ahead of [SystemStreamBootstrap]'s registration at cluster startup
+    /// would otherwise find `streamManager().streamInfo(name)` empty and mint a caller-controlled
+    /// config under a reserved name.
     private Result<StreamCreateResponse> createFreshStream(String name, int partitions) {
+        if (SystemStreams.isForbiddenEngineKey(name)) {
+            return Result.failure(SYSTEM_STREAM_NAME_FORBIDDEN);
+        }
+
         var config = StreamConfig.streamConfig(name, partitions, MANAGEMENT_API_RETENTION, "latest");
 
         return streamManager().createStream(config)

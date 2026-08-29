@@ -68,4 +68,24 @@ class StreamApiRoutesDeleteStreamTest {
             manager.close();
         }
     }
+
+    /// `system`-namespace regression: the engine keys an operator-created flat stream by its bare
+    /// name (the shape `STREAM_CREATE` materializes it under), not the full catalog address. Before
+    /// the fix `destroyAtAddress` used `addr.asString()` ("system:diagnostics:1.0.0") as the engine
+    /// key, so this deleted a stream that was never created and surfaced as a failure instead of
+    /// "deleted" — the same silent-wrong-state failure mode this file already guards, one level up.
+    @Test
+    void deleteStream_systemNamespace_resolvesEngineKeyToBareName() {
+        var manager = streamPartitionManager(Long.MAX_VALUE);
+        try {
+            manager.createStream(StreamConfig.streamConfig("diagnostics"))
+                   .onFailure(_ -> fail("stream create must succeed"));
+
+            routesFor(manager).deleteStream("system", "diagnostics", "1.0.0")
+                              .onFailure(_ -> fail("destroy of a system-namespace stream must resolve to its bare engine key"))
+                              .onSuccess(response -> assertThat(response.status()).isEqualTo("deleted"));
+        } finally {
+            manager.close();
+        }
+    }
 }

@@ -5202,12 +5202,39 @@ not registered. Each entry carries `namespace`, `stream`, `version`, `registered
 Mutating HTTP requests (`POST`/`PUT`/`PATCH`/`DELETE`) that target a stream in the `system`
 namespace are rejected with **`405 Method Not Allowed`, regardless of role** — even when
 management security is disabled. The check runs ahead of the role/auth pipeline in
-`ManagementServer`, so it short-circuits before role evaluation. Both route shapes are covered:
-the path-segment form (`/api/streams/publish/system/...`,
-`/api/streams/groups/create/system/...`) and the legacy colon form where the name segment is
-`system:<stream>:<version>` (including URL-encoded `system%3A...`). Reads of `system:*` streams
-(e.g. `system:cluster-events`) are unaffected; only writes are gated. The compile-time SPI split
-already blocks application code from producing into system streams; this is the HTTP-path guard.
+`ManagementServer`, so it short-circuits before role evaluation.
+
+Each identity-bearing write route — the flat-form `STREAM_PUBLISH`/`STREAM_DELETE` and the
+catalog-form `STREAMS_PUBLISH`/`STREAMS_DELETE`/`STREAMS_GROUP_CREATE`/`STREAMS_GROUP_DELETE` —
+resolves its target through the same `ManagementRoute` route-match the real dispatch path uses
+(never a raw path-segment scan), reduces the match to an engine key, and rejects when that key
+names one of `SystemStreams.ALL`. A route match whose params fail to resolve to a valid identity
+(e.g. a malformed version) fails closed — denied, not passed through.
+
+`STREAM_CREATE` is excluded from this **pre-auth, path-based** gate: its target name is a JSON
+body field (`StreamCreateRequest`), not a path param, so the gate — which resolves identity from
+route-match + path params only, by design (no parallel body parser) — structurally cannot see it.
+CREATE is protected instead by a **separate, post-auth, handler-level guard**: `StreamRoutes`
+rejects a reserved system-stream name unconditionally, as the first statement of the sole method
+that ever mints a stream, before any state change. This closes the window `createStreamWithConfig`'s
+idempotent create-if-absent behavior does not cover on its own — a create racing ahead of
+`SystemStreamBootstrap` registering `SystemStreams.ALL` at cluster startup would otherwise find no
+existing stream and mint a caller-controlled config under the reserved name. Being honest about the
+mechanism: this protection runs **after** authentication, not before it — auth level does not
+change the outcome (an authenticated caller with full privileges naming a framework stream in the
+body is rejected the same as anyone else), but it is not the same short-circuit-before-role-check
+guarantee the path-based gate above gives the other write routes.
+
+`CONSUMER_GROUP_JOIN`/`CONSUMER_GROUP_LEAVE` carry their target
+stream name in the request body rather than the path — a known, currently open gap this path-only
+gate cannot see, closed once these routes gain path-resolvable identity via the catalog-form
+reshape (management-api-versioning-spec.md §3.3). Tracked as its own ticket (rc4 provisional,
+cross-referencing #300), pending an evidence-based answer to whether joining/leaving a consumer
+group on a framework stream actually mutates state or is merely untidy.
+
+Reads of `system:*` streams (e.g. `system:cluster-events`) are unaffected; only writes are gated.
+The compile-time SPI split already blocks application code from producing into system streams;
+this is the HTTP-path guard.
 
 ### Stream metadata registries
 

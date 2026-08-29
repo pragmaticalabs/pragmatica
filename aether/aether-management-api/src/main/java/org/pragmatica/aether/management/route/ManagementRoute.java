@@ -153,11 +153,16 @@ public enum ManagementRoute {
     STORAGE_RETENTION(GET, "/storage/retention", List.of(), LOCAL),
     CLUSTER_STORAGE_LIST(GET, "/cluster/storage", List.of(), LEADER),
     CLUSTER_STORAGE_GET(GET, "/cluster/storage", List.of("name"), LEADER),
-    // Deferred pending write-gate ruling (management-api-versioning-spec.md §3.2/§3.4): the
-    // ManagementServer write-gate blocks any write whose path contains a literal "system" segment.
-    // STREAM_CREATE, STREAM_PUBLISH, and STREAM_DELETE stay on their current flat, name-based shape
-    // until that conflict is resolved — reshaping them into the `system` catalog namespace below would
-    // 405 every call.
+    // STREAM_CREATE's target name is a JSON body field (StreamCreateRequest), not a path param —
+    // the same body-carried-identity shape as CONSUMER_GROUP_JOIN/LEAVE. ManagementServer's
+    // pre-auth write-gate (STREAM_IDENTITY_WRITE_ROUTES) resolves identity from route-match + path
+    // params, so it structurally cannot see a body-carried name; CREATE is protected instead by a
+    // separate, post-auth, handler-level guard in StreamRoutes#createFreshStream (see
+    // ManagementServer's rejectSystemStreamWrite doc for the full argument). STREAM_PUBLISH and
+    // STREAM_DELETE stay on their flat shape too, but unlike CREATE they already carry a "name"
+    // path param and are covered by the pre-auth gate as-is — reshaping them into the catalog
+    // namespace below is tracked separately (management-api-versioning-spec.md §3.2/§3.4) and is
+    // not required for write-gate coverage.
     STREAM_CREATE(POST, "/streams", List.of(), taskGroup(STREAMING)),
     // Catalog-scoped read-only ports (management-api-versioning-spec.md §3.2): identity params
     // (namespace, stream, version) sit right after "streams"; the verb that used to be the whole

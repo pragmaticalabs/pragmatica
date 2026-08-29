@@ -4,7 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api;
 
-import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -21,8 +20,10 @@ import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
 import org.pragmatica.aether.http.forward.HttpForwarder;
 import org.pragmatica.aether.management.route.ManagementRoute;
+import org.pragmatica.aether.management.route.MatchedRoute;
 import org.pragmatica.aether.management.route.RouteTarget;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
+import org.pragmatica.aether.slice.stream.SystemStreams;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.http.CommonContentType;
 import org.pragmatica.http.ContentCategory;
@@ -57,6 +58,7 @@ import org.pragmatica.aether.api.routes.SliceRoutes;
 import org.pragmatica.aether.api.routes.StatusRoutes;
 import org.pragmatica.aether.api.routes.RetentionRoutes;
 import org.pragmatica.aether.api.routes.StorageRoutes;
+import org.pragmatica.aether.api.routes.StreamManager;
 import org.pragmatica.aether.api.routes.StreamRoutes;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardRequest;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardResponse;
@@ -1304,11 +1306,42 @@ class ManagementServerImpl implements ManagementServer {
     /// guard. It runs ahead of (and independent of) the role/auth pipeline so a `system:*` publish
     /// returns 405 Method Not Allowed even when management security is disabled.
     ///
-    /// Returns `true` (and writes the 405) when the request is a mutating verb targeting a
-    /// `system`-namespace stream, in either the path-based shape
-    /// (`/api/v1/streams/{publish,publish-batch,delete}/system/...`,
-    /// `/api/v1/streams/groups/{create,delete}/system/...`) or the legacy colon-form
-    /// (`/api/v1/streams/...` with a `system:<stream>:<version>` name segment).
+    /// Identity resolution reuses the same canonicalization the dispatch path uses:
+    /// [ManagementRoute#match] resolves the concrete route + params (the same call
+    /// [#resolvePermission] makes for the same request), and the target engine key is derived the
+    /// same way [StreamManager#engineKey] derives it for the real handler — a bare name for the
+    /// legacy flat routes ([ManagementRoute#STREAM_PUBLISH]/[ManagementRoute#STREAM_DELETE]), a
+    /// canonical `(namespace, stream, version)` [ResourceAddress] for the catalog-form routes. A key
+    /// is forbidden iff it names one of [SystemStreams#ALL].
+    ///
+    /// [ManagementRoute#STREAM_CREATE] is deliberately excluded from
+    /// [#STREAM_IDENTITY_WRITE_ROUTES]: its target name is a JSON body field (`StreamCreateRequest`),
+    /// not a path param, so this pre-auth gate cannot see it without a second, parallel body parser —
+    /// which condition 1 rules out (identity resolution must reuse the dispatch path's
+    /// canonicalization, not grow a private one). The honest consequence: CREATE's protection is
+    /// **not pre-auth**. It is a separate, handler-level guard —
+    /// `StreamRoutes#createFreshStream` — that runs unconditionally as the first statement of the
+    /// sole method that ever mints a stream, before any state change, with no early-return path
+    /// around it. That guard exists in addition to (not instead of) `createStreamWithConfig`'s
+    /// idempotent create-if-absent behavior: idempotency alone only protects a name collision
+    /// *after* `SystemStreamBootstrap` has registered [SystemStreams#ALL] at cluster startup: a
+    /// CREATE racing ahead of bootstrap would otherwise find `streamInfo(name)` empty and mint a
+    /// caller-controlled config under a reserved name. The handler-level guard is pinned
+    /// adversarially in `StreamRoutesCreateSystemStreamTest`, including against a caller with full
+    /// privileges naming a framework stream in the body — auth level does not matter here because
+    /// the check runs regardless of it.
+    ///
+    /// [ManagementRoute#CONSUMER_GROUP_JOIN]/[ManagementRoute#CONSUMER_GROUP_LEAVE] are a known,
+    /// currently open gap, not covered here: their target stream name travels in the request body
+    /// (`JoinGroupRequest`/`LeaveGroupRequest`), not the path, and this gate only inspects
+    /// method+path. It closes once these routes gain path-resolvable identity per the catalog-form
+    /// reshape (management-api-versioning-spec.md §3.3). Tracked separately from this gate's own
+    /// gap list because whether it needs closing at all is still an open evidence question (does
+    /// joining/leaving a consumer group on a framework stream actually mutate state, or is it
+    /// merely untidy) — see the dedicated ticket cross-referencing #300.
+    ///
+    /// A route match whose params fail to resolve to a [ResourceAddress] (malformed namespace or
+    /// version) fails closed — treated as forbidden, not passed through.
     private boolean rejectSystemStreamWrite(HttpRequest ctx, ResponseWriter response, String path, String methodName) {
         if (!isSystemStreamWriteOverHttp(methodName, path)) {
             return false;
@@ -1325,51 +1358,46 @@ class ManagementServerImpl implements ManagementServer {
 
     /// Pure decision used by [#rejectSystemStreamWrite] — package-visible so the 405 gate can be
     /// unit-tested without standing up the HTTP pipeline. A request is a system-stream write iff it
-    /// uses a mutating verb, targets the `/api/streams` surface, and names the `system` namespace
-    /// in either route shape.
+    /// route-matches one of [#STREAM_IDENTITY_WRITE_ROUTES] and the resolved engine key names a
+    /// framework stream (or the route matched but the params didn't resolve at all — fail closed).
     static boolean isSystemStreamWriteOverHttp(String methodName, String path) {
-        return isMutatingMethod(methodName)
-               && path.startsWith(STREAM_WRITE_PATH_PREFIX)
-               && targetsSystemNamespace(path);
+        return parseRoutingMethod(methodName).flatMap(m -> ManagementRoute.match(m, path).option())
+                                             .filter(matched -> STREAM_IDENTITY_WRITE_ROUTES.contains(matched.route()))
+                                             .map(ManagementServerImpl::isForbiddenWrite)
+                                             .or(false);
     }
 
-    private static boolean isMutatingMethod(String methodName) {
-        return "POST".equalsIgnoreCase(methodName) || "PUT".equalsIgnoreCase(methodName) || "DELETE".equalsIgnoreCase(methodName) || "PATCH".equalsIgnoreCase(methodName);
+    private static boolean isForbiddenWrite(MatchedRoute matched) {
+        return resolveEngineKey(matched).map(SystemStreams::isForbiddenEngineKey)
+                                        .or(true);
     }
 
-    /// Detect the `system` namespace in either route shape. Path-based routes carry the namespace
-    /// as a dedicated segment (`.../publish/system/...`); the legacy flat routes carry it inside a
-    /// single colon-delimited name segment (`system:audit:1.0.0`, possibly URL-encoded as
-    /// `system%3Aaudit%3A1.0.0`). Matching any decoded segment that equals `system` or begins with
-    /// `system:` covers both without parsing the full address.
-    private static boolean targetsSystemNamespace(String path) {
-        var withoutQuery = path.indexOf('?') >= 0
-                           ? path.substring(0, path.indexOf('?'))
-                           : path;
-
-        for (var raw : withoutQuery.split("/")) {
-            if (raw.isEmpty()) {
-                continue;
-            }
-
-            var seg = URLDecoder.decode(raw, StandardCharsets.UTF_8);
-
-            if (ResourceAddress.SYSTEM_NAMESPACE.equalsIgnoreCase(seg) || seg.regionMatches(true,
-                                                                                            0,
-                                                                                            SYSTEM_NAMESPACE_COLON,
-                                                                                            0,
-                                                                                            SYSTEM_NAMESPACE_COLON.length())) {
-                return true;
-            }
-        }
-
-        return false;
+    /// Mirrors [StreamManager#engineKey]'s two-shape resolution off a [MatchedRoute]'s raw params
+    /// instead of an already-built [ResourceAddress].
+    private static Option<String> resolveEngineKey(MatchedRoute matched) {
+        return switch (matched.route()) {
+            case STREAM_PUBLISH, STREAM_DELETE -> matched.param("name");
+            case STREAMS_PUBLISH, STREAMS_DELETE, STREAMS_GROUP_CREATE, STREAMS_GROUP_DELETE ->
+                    matched.param("namespace")
+                          .flatMap(ns -> matched.param("stream")
+                                                .flatMap(stream -> matched.param("version")
+                                                                          .flatMap(ver -> ResourceAddress.resourceAddress(ns, stream, ver)
+                                                                                                         .option())))
+                          .map(StreamManager::engineKey);
+            default -> Option.empty();
+        };
     }
 
-    private static final String STREAM_WRITE_PATH_PREFIX = "/api/v1/streams";
-
-    private static final String SYSTEM_NAMESPACE_COLON = org.pragmatica.aether.slice.resource.ResourceAddress.SYSTEM_NAMESPACE
-                                                       + ":";
+    /// Identity-bearing write routes this pre-auth path gate covers — see
+    /// [#rejectSystemStreamWrite]'s doc for why [ManagementRoute#STREAM_CREATE] (covered instead by
+    /// a separate, post-auth, handler-level guard) and the `CONSUMER_GROUP_*` routes (an open gap)
+    /// are excluded.
+    private static final Set<ManagementRoute> STREAM_IDENTITY_WRITE_ROUTES = Set.of(ManagementRoute.STREAM_PUBLISH,
+                                                                                    ManagementRoute.STREAM_DELETE,
+                                                                                    ManagementRoute.STREAMS_PUBLISH,
+                                                                                    ManagementRoute.STREAMS_DELETE,
+                                                                                    ManagementRoute.STREAMS_GROUP_CREATE,
+                                                                                    ManagementRoute.STREAMS_GROUP_DELETE);
 
     private Result<SecurityContext> validateManagementSecurity(HttpRequest ctx,
                                                                ResponseWriter response,
