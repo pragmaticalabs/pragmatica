@@ -71,4 +71,31 @@ class GeneratedTransitiveContextualSubscriberTest {
         assertThat(factory).contains("delegate::report");
         assertThat(manifest).contains("envelope.version=1000");
     }
+
+    /// THE FALSIFIER for the interceptor rule's scope. `report` carries an interceptor, so the
+    /// wrapper record IS generated for this slice — and the context-carrying subscriber sits beside
+    /// it, reached transitively.
+    ///
+    /// This combination is legal precisely because the wrapper walks the slice's OWN methods and
+    /// never the step's. The proof is that this module compiles at all: were the refusal widened
+    /// bluntly to "the slice declares interceptors", this slice would be rejected and these tests
+    /// would not run. Were the wrapper instead to walk transitive methods, it would emit a one-argument
+    /// override of a two-argument handler and javac would reject the generated file.
+    ///
+    /// So the claim "the wrapper cannot see a transitive contextual subscriber" is held here by a
+    /// build that must succeed, rather than by an argument in a comment.
+    ///
+    /// This falsifier is ONE-DIRECTIONAL and is half of a pair. It catches WIDENING the refusal
+    /// (dropping `site.direct()` fails this module at compile time). It cannot catch NARROWING —
+    /// dropping the model-scope disjunct would leave this fixture green, because this handler carries
+    /// no interceptor of its own. That direction is held by
+    /// `SliceProcessorTest.should_reject_message_context_subscriber_when_interceptor_is_on_another_method`,
+    /// which puts a DIRECT contextual subscriber beside an interceptor on another method. Change
+    /// either side of the guard and one of the two goes red; neither test alone is sufficient.
+    @Test
+    void interceptedHostMethod_coexistsWithTransitiveContextualSubscriber() {
+        assertThat(factory).contains("Wrapper");
+        assertThat(factory).contains("contextual -> listener.onOrderPlaced");
+        assertThat(manifest).contains("reactive.0.context=message");
+    }
 }
