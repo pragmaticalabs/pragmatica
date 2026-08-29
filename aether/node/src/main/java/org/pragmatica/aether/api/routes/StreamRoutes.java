@@ -135,7 +135,6 @@ public final class StreamRoutes implements RouteSource {
                                          .withBody(StreamCreateRequest.class)
                                          .toResult(this::createStream)
                                          .asJson(),
-                         ManagementRoutes.<StreamListResponse> route(ManagementRoute.STREAM_LIST).toJson(this::listStreams),
                          ManagementRoutes.<StreamInfoResponse> route(ManagementRoute.STREAM_GET)
                                          .withPath(PathParameter.aString())
                                          .toResult(this::streamInfo)
@@ -193,12 +192,6 @@ public final class StreamRoutes implements RouteSource {
                                          .withPath(PathParameter.aString())
                                          .toResult(this::groupStatus)
                                          .asJson());
-    }
-
-    private StreamListResponse listStreams() {
-        var streams = streamManager().listStreams().stream().map(StreamSummary::fromStreamInfo).toList();
-
-        return new StreamListResponse(streams);
     }
 
     private Result<StreamInfoResponse> streamInfo(String name) {
