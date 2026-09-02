@@ -14,7 +14,6 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.jpa;
 
 import org.pragmatica.lang.Functions.Fn0;
@@ -22,10 +21,12 @@ import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
-import jakarta.persistence.EntityManager;
-import jakarta.persistence.EntityTransaction;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.EntityTransaction;
+
 
 /// Aspect decorator for JPA transaction management.
 /// Wraps operations with transaction begin/commit/rollback lifecycle.
@@ -59,6 +60,7 @@ public interface Transactional {
                                                      Fn1<Promise<O>, I> operation) {
         return input -> {
             var tx = em.getTransaction();
+
             return beginTransaction(errorMapper, tx, input).flatMap(operation)
                                    .onFailure(_ -> handleRollback(tx))
                                    .flatMap(result -> handleCommit(errorMapper, tx, result));
@@ -82,8 +84,9 @@ public interface Transactional {
     private static <T> Promise<T> beginTransaction(Fn1<JpaError, Throwable> errorMapper,
                                                    EntityTransaction tx,
                                                    T input) {
-        try{
+        try {
             tx.begin();
+
             return Promise.success(input);
         } catch (Exception e) {
             return Promise.failure(errorMapper.apply(e));
@@ -92,7 +95,7 @@ public interface Transactional {
 
     private static void handleRollback(EntityTransaction tx) {
         if (tx.isActive()) {
-            try{
+            try {
                 tx.rollback();
             } catch (Exception rollbackEx) {
                 log.error("Failed to rollback transaction", rollbackEx);
@@ -101,17 +104,19 @@ public interface Transactional {
     }
 
     private static <O> Promise<O> handleCommit(Fn1<JpaError, Throwable> errorMapper, EntityTransaction tx, O result) {
-        try{
+        try {
             tx.commit();
+
             return Promise.success(result);
         } catch (Exception e) {
             if (tx.isActive()) {
-                try{
+                try {
                     tx.rollback();
                 } catch (Exception rollbackEx) {
                     log.error("Failed to rollback transaction after commit failure", rollbackEx);
                 }
             }
+
             return Promise.failure(errorMapper.apply(e));
         }
     }

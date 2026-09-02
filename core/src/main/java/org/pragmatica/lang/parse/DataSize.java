@@ -13,16 +13,16 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.lang.parse;
+
+import java.util.regex.Pattern;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
-import java.util.regex.Pattern;
-
 import static org.pragmatica.lang.Result.success;
+
 
 /// Human-friendly data size representation with parsing support.
 ///
@@ -39,10 +39,10 @@ import static org.pragmatica.lang.Result.success;
 /// - "1GB" - 1 gigabyte
 /// - "16384" - 16384 bytes (plain number, no unit)
 public sealed interface DataSize {
-
     long KB = 1024L;
     long MB = KB * 1024L;
     long GB = MB * 1024L;
+
     long TB = GB * 1024L;
 
     /// Parse a human-friendly data size string.
@@ -72,13 +72,14 @@ public sealed interface DataSize {
             NULL_INPUT("Input cannot be null"),
             EMPTY_INPUT("Input cannot be empty"),
             NEGATIVE_VALUE("Data size cannot be negative");
-
             private final String message;
-
-            General(String message) { this.message = message; }
-
+            General(String message) {
+                this.message = message;
+            }
             @Override
-            public String message() { return message; }
+            public String message() {
+                return message;
+            }
         }
 
         DataSizeError NULL_INPUT = General.NULL_INPUT;
@@ -87,12 +88,16 @@ public sealed interface DataSize {
 
         record InvalidFormat(String input) implements DataSizeError {
             @Override
-            public String message() { return "Invalid data size format: " + input; }
+            public String message() {
+                return "Invalid data size format: " + input;
+            }
         }
 
         record InvalidValue(String value, String unit) implements DataSizeError {
             @Override
-            public String message() { return "Invalid value '" + value + "' for unit '" + unit + "'"; }
+            public String message() {
+                return "Invalid value '" + value + "' for unit '" + unit + "'";
+            }
         }
     }
 
@@ -112,13 +117,13 @@ public sealed interface DataSize {
         var valueStr = matcher.group(1);
         var unit = Option.option(matcher.group(2)).or("B");
 
-        return parseLongValue(valueStr, unit)
-            .flatMap(DataSize::validateNonNegative);
+        return parseLongValue(valueStr, unit).flatMap(DataSize::validateNonNegative);
     }
 
     private static Result<Long> parseLongValue(String valueStr, String unit) {
         return Result.lift1(Long::parseLong, valueStr)
-                     .map(value -> toBytes(value, unit.toUpperCase()))
+                     .map(value -> toBytes(value,
+                                           unit.toUpperCase()))
                      .mapError(_ -> new DataSizeError.InvalidValue(valueStr, unit));
     }
 
@@ -152,18 +157,23 @@ public sealed interface DataSize {
             if (bytes == 0) {
                 return "0B";
             }
+
             if (bytes % TB == 0) {
                 return (bytes / TB) + "TB";
             }
+
             if (bytes % GB == 0) {
                 return (bytes / GB) + "GB";
             }
+
             if (bytes % MB == 0) {
                 return (bytes / MB) + "MB";
             }
+
             if (bytes % KB == 0) {
                 return (bytes / KB) + "KB";
             }
+
             return bytes + "B";
         }
     }

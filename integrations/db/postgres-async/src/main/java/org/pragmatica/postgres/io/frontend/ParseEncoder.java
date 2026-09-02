@@ -11,15 +11,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.pragmatica.postgres.io.frontend;
+
+import java.nio.ByteBuffer;
+import java.nio.charset.Charset;
 
 import org.pragmatica.postgres.Oid;
 import org.pragmatica.postgres.io.IO;
 import org.pragmatica.postgres.message.frontend.Parse;
 
-import java.nio.ByteBuffer;
-import java.nio.charset.Charset;
 
 /**
  * See <a href="https://www.postgresql.org/docs/11/protocol-message-formats.html">Postgres message formats</a>
@@ -51,26 +51,25 @@ public class ParseEncoder extends ExtendedQueryEncoder<Parse> {
 
     @Override
     protected byte getMessageId() {
-        return (byte) 'P';
+        return (byte)'P';
     }
 
     @Override
     public int estimateSize(Parse msg, Charset encoding) {
-        int size = 1 + 4; // message ID + length
-        size += msg.sname().getBytes(encoding).length + 1; // statement name + null
-        size += msg.query().getBytes(encoding).length + 1; // query + null
-        size += 2 + msg.types().length * 4; // param type count + OIDs
+        int size = 1 + 4;  // message ID + length
+        size += msg.sname().getBytes(encoding).length + 1;  // statement name + null
+        size += msg.query().getBytes(encoding).length + 1;  // query + null
+        size += 2 + msg.types().length * 4;  // param type count + OIDs
         return size;
     }
 
     @Override
     public void writeBody(Parse msg, ByteBuffer buffer, Charset encoding) {
-        IO.putCString(buffer, msg.sname(), encoding); // prepared statement
+        IO.putCString(buffer, msg.sname(), encoding);  // prepared statement
         IO.putCString(buffer, msg.query(), encoding);
-        buffer.putShort((short) msg.types().length); // parameter types count
+        buffer.putShort((short) msg.types().length);  // parameter types count
         for (Oid type : msg.types()) {
             buffer.putInt(type.getId());
         }
     }
-
 }

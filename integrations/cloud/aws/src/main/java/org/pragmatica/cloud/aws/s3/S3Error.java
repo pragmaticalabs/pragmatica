@@ -14,16 +14,15 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.cloud.aws.s3;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.utils.Causes;
 
+
 /// Typed error causes for S3-compatible object storage operations.
 public sealed interface S3Error extends Cause {
-
     /// Object not found (404).
     record NotFound(String key) implements S3Error {
         @Override
@@ -52,8 +51,8 @@ public sealed interface S3Error extends Cause {
     record NetworkError(String context, Option<Throwable> cause) implements S3Error {
         @Override
         public String message() {
-            return "S3 network error: " + context
-                   + cause.map(t -> " - " + Causes.fromThrowable(t).message()).or("");
+            return "S3 network error: " + context + cause.map(t -> " - " + Causes.fromThrowable(t).message())
+                                                         .or("");
         }
     }
 
@@ -76,16 +75,18 @@ public sealed interface S3Error extends Cause {
     /// Maps an HTTP status code and XML response body to an S3Error.
     static S3Error fromResponse(int statusCode, String body, String key) {
         if (statusCode == 404) {
-            return extractXmlCode(body)
-                .filter("NoSuchBucket"::equals)
-                .map(_ -> (S3Error) new BucketNotFound(key))
-                .or(new NotFound(key));
+            return extractXmlCode(body).filter("NoSuchBucket"::equals)
+                                 .map(_ -> (S3Error) new BucketNotFound(key))
+                                 .or(new NotFound(key));
         }
+
         if (statusCode == 403) {
             return new AccessDenied(extractXmlMessage(body).or("Forbidden"));
         }
+
         var code = extractXmlCode(body).or("UnknownError");
         var errorMessage = extractXmlMessage(body).or(body);
+
         return new ApiError(statusCode, code, errorMessage);
     }
 
@@ -101,6 +102,7 @@ public sealed interface S3Error extends Cause {
         var openTag = "<" + elementName + ">";
         var closeTag = "</" + elementName + ">";
         var startIdx = xml.indexOf(openTag);
+
         return Option.option(startIdx)
                      .filter(idx -> idx >= 0)
                      .map(idx -> idx + openTag.length())
@@ -109,6 +111,7 @@ public sealed interface S3Error extends Cause {
 
     private static Option<String> extractUntilClose(String xml, int start, String closeTag) {
         var endIdx = xml.indexOf(closeTag, start);
+
         return Option.option(endIdx)
                      .filter(idx -> idx > start)
                      .map(idx -> xml.substring(start, idx));

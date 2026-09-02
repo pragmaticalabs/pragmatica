@@ -22,6 +22,7 @@ import static org.pragmatica.aether.config.cluster.OperationsConfig.defaultOpera
 import static org.pragmatica.aether.config.cluster.RoleSubTable.roleSubTable;
 import static org.pragmatica.aether.config.cluster.RuntimeProfile.runtimeProfile;
 import static org.pragmatica.aether.config.cluster.SourceProfile.sourceProfile;
+import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 
@@ -31,7 +32,7 @@ class ClusterBootstrapConfigDiffTest {
 
     private static SourceProfile forgeSource(String name, int coreCount) {
         return sourceProfile(
-            name, SourceType.FORGE, none(), none(), none(), none(),
+            sourceNameOrDefault(name), SourceType.FORGE, none(), none(), none(), none(),
             none(), none(), none(), LoadBalancerMode.NONE, List.of(), none(),
             Map.of(),
             Map.of(NodeRole.CORE, roleSubTable(NodeRole.CORE, some(coreCount), none(), none(), RUNTIME_REF)),
@@ -41,7 +42,7 @@ class ClusterBootstrapConfigDiffTest {
 
     private static SourceProfile sourceWithRole(String name, NodeRole role, int count, String runtimeRef) {
         return sourceProfile(
-            name, SourceType.FORGE, none(), none(), none(), none(),
+            sourceNameOrDefault(name), SourceType.FORGE, none(), none(), none(), none(),
             none(), none(), none(), LoadBalancerMode.NONE, List.of(), none(),
             Map.of(),
             Map.of(role, roleSubTable(role, some(count), none(), none(), runtimeRef)),
@@ -51,7 +52,7 @@ class ClusterBootstrapConfigDiffTest {
 
     private static SourceProfile sourceWithRoles(String name, Map<NodeRole, RoleSubTable> roles) {
         return sourceProfile(
-            name, SourceType.FORGE, none(), none(), none(), none(),
+            sourceNameOrDefault(name), SourceType.FORGE, none(), none(), none(), none(),
             none(), none(), none(), LoadBalancerMode.NONE, List.of(), none(),
             Map.of(), roles, List.of()
         );
@@ -116,7 +117,7 @@ class ClusterBootstrapConfigDiffTest {
             assertThat(plan.removals().getFirst()).isInstanceOf(DiffAction.RemoveSource.class);
 
             var remove = (DiffAction.RemoveSource) plan.removals().getFirst();
-            assertThat(remove.sourceName()).isEqualTo("cloud-a");
+            assertThat(remove.sourceName().value()).isEqualTo("cloud-a");
         }
     }
 
@@ -207,14 +208,14 @@ class ClusterBootstrapConfigDiffTest {
         @Test
         void diff_sourceFieldChange_producesModification() {
             var stored = configWithSources(Map.of("forge", sourceProfile(
-                "forge", SourceType.FORGE, none(), some("cred-a"), none(), none(),
+                sourceNameOrDefault("forge"), SourceType.FORGE, none(), some("cred-a"), none(), none(),
                 none(), none(), none(), LoadBalancerMode.NONE, List.of(), none(),
                 Map.of(),
                 Map.of(NodeRole.CORE, roleSubTable(NodeRole.CORE, some(3), none(), none(), RUNTIME_REF)),
                 List.of()
             )));
             var desired = configWithSources(Map.of("forge", sourceProfile(
-                "forge", SourceType.FORGE, none(), some("cred-b"), none(), none(),
+                sourceNameOrDefault("forge"), SourceType.FORGE, none(), some("cred-b"), none(), none(),
                 none(), none(), none(), LoadBalancerMode.NONE, List.of(), none(),
                 Map.of(),
                 Map.of(NodeRole.CORE, roleSubTable(NodeRole.CORE, some(3), none(), none(), RUNTIME_REF)),
@@ -226,7 +227,7 @@ class ClusterBootstrapConfigDiffTest {
             assertThat(plan.modifications().getFirst()).isInstanceOf(DiffAction.SourceFieldChange.class);
 
             var change = (DiffAction.SourceFieldChange) plan.modifications().getFirst();
-            assertThat(change.sourceName()).isEqualTo("forge");
+            assertThat(change.sourceName().value()).isEqualTo("forge");
             assertThat(change.field()).isEqualTo("credentials");
         }
 

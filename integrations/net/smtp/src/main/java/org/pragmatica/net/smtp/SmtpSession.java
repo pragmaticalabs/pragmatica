@@ -13,13 +13,12 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.net.smtp;
+
+import java.util.List;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
-
-import java.util.List;
 
 import io.netty.channel.Channel;
 import io.netty.handler.ssl.SslContext;
@@ -28,6 +27,7 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
+
 
 /// SMTP session state machine.
 /// Drives the SMTP conversation from CONNECT through QUIT, calling back to the promise on completion or failure.
@@ -43,7 +43,16 @@ class SmtpSession {
     private int recipientIndex;
 
     enum State {
-        GREETING, EHLO, STARTTLS, AUTH, MAIL_FROM, RCPT_TO, DATA, DATA_CONTENT, QUIT, DONE
+        GREETING,
+        EHLO,
+        STARTTLS,
+        AUTH,
+        MAIL_FROM,
+        RCPT_TO,
+        DATA,
+        DATA_CONTENT,
+        QUIT,
+        DONE
     }
 
     SmtpSession(SmtpConfig config, SmtpMessage message, Promise<String> promise, Option<SslContext> sslContext) {
@@ -66,7 +75,6 @@ class SmtpSession {
     /// Handle an SMTP response line (code + text).
     void handleResponse(int code, String text) {
         log.debug("SMTP [{}] {} {}", state, code, text);
-
         switch (state) {
             case GREETING -> handleGreeting(code, text);
             case EHLO -> handleEhlo(code, text);
@@ -84,8 +92,10 @@ class SmtpSession {
     private void handleGreeting(int code, String text) {
         if (!isSuccess(code)) {
             failSession(new SmtpError.ConnectionFailed("Server rejected connection: " + code + " " + text));
+
             return;
         }
+
         state = State.EHLO;
         sendCommand("EHLO " + extractLocalHostname());
     }
@@ -93,8 +103,10 @@ class SmtpSession {
     private void handleEhlo(int code, String text) {
         if (!isSuccess(code)) {
             failSession(new SmtpError.ProtocolError("EHLO rejected: " + code + " " + text));
+
             return;
         }
+
         advanceAfterEhlo();
     }
 
@@ -102,16 +114,20 @@ class SmtpSession {
         if (config.tlsMode() == SmtpTlsMode.STARTTLS && sslContext.isPresent()) {
             state = State.STARTTLS;
             sendCommand("STARTTLS");
+
             return;
         }
+
         advanceToAuth();
     }
 
     private void handleStartTls(int code, String text) {
         if (code != 220) {
             failSession(new SmtpError.TlsFailed("STARTTLS rejected: " + code + " " + text));
+
             return;
         }
+
         sslContext.onPresent(ctx -> addSslHandler(ctx));
         // After TLS handshake, re-send EHLO
         state = State.EHLO;
@@ -120,6 +136,7 @@ class SmtpSession {
 
     private void addSslHandler(SslContext ctx) {
         var sslHandler = ctx.newHandler(channel.alloc(), config.host(), config.port());
+
         channel.pipeline().addFirst("ssl", sslHandler);
     }
 
@@ -127,16 +144,20 @@ class SmtpSession {
         if (config.auth().isPresent()) {
             state = State.AUTH;
             config.auth().onPresent(auth -> sendCommand("AUTH PLAIN " + auth.encodePlain()));
+
             return;
         }
+
         advanceToMailFrom();
     }
 
     private void handleAuth(int code, String text) {
         if (code != 235) {
             failSession(new SmtpError.AuthFailed("Authentication failed: " + code + " " + text));
+
             return;
         }
+
         advanceToMailFrom();
     }
 
@@ -148,8 +169,10 @@ class SmtpSession {
     private void handleMailFrom(int code, String text) {
         if (!isSuccess(code)) {
             failSession(new SmtpError.Rejected("MAIL FROM rejected: " + code + " " + text));
+
             return;
         }
+
         recipientIndex = 0;
         advanceToRcptTo();
     }
@@ -157,20 +180,26 @@ class SmtpSession {
     private void advanceToRcptTo() {
         state = State.RCPT_TO;
         var recipients = message.allRecipients();
+
         sendCommand("RCPT TO:<" + recipients.get(recipientIndex) + ">");
     }
 
     private void handleRcptTo(int code, String text) {
         if (!isSuccess(code)) {
             failSession(new SmtpError.Rejected("RCPT TO rejected: " + code + " " + text));
+
             return;
         }
+
         recipientIndex++;
         var recipients = message.allRecipients();
+
         if (recipientIndex < recipients.size()) {
             sendCommand("RCPT TO:<" + recipients.get(recipientIndex) + ">");
+
             return;
         }
+
         state = State.DATA;
         sendCommand("DATA");
     }
@@ -178,8 +207,10 @@ class SmtpSession {
     private void handleData(int code, String text) {
         if (code != 354) {
             failSession(new SmtpError.Rejected("DATA rejected: " + code + " " + text));
+
             return;
         }
+
         state = State.DATA_CONTENT;
         sendDataContent();
     }
@@ -188,15 +219,19 @@ class SmtpSession {
         var rfc5322 = message.toRfc5322();
         // Dot-stuffing: lines starting with "." get an extra "." prepended
         var stuffed = rfc5322.replace("\r\n.", "\r\n..");
+
         channel.writeAndFlush(stuffed + "\r\n.\r\n");
     }
 
     private void handleDataContent(int code, String text) {
         if (!isSuccess(code)) {
             failSession(new SmtpError.Rejected("Message rejected: " + code + " " + text));
+
             return;
         }
+
         var serverResponse = code + " " + text;
+
         state = State.QUIT;
         sendCommand("QUIT");
         // Succeed with the server response from DATA acceptance
@@ -231,13 +266,15 @@ class SmtpSession {
     }
 
     private void sendCommand(String command) {
-        log.debug("SMTP >>> {}", command.startsWith("AUTH") ? "AUTH PLAIN ***" : command);
+        log.debug("SMTP >>> {}",
+                  command.startsWith("AUTH")
+                  ? "AUTH PLAIN ***"
+                  : command);
         channel.writeAndFlush(command + "\r\n");
     }
 
     private void closeChannel() {
-        option(channel).filter(Channel::isOpen)
-                       .onPresent(Channel::close);
+        option(channel).filter(Channel::isOpen).onPresent(Channel::close);
     }
 
     private static boolean isSuccess(int code) {
@@ -245,9 +282,8 @@ class SmtpSession {
     }
 
     private String extractLocalHostname() {
-        return option(channel)
-            .flatMap(ch -> option(ch.localAddress()))
-            .map(Object::toString)
-            .or("localhost");
+        return option(channel).flatMap(ch -> option(ch.localAddress()))
+                     .map(Object::toString)
+                     .or("localhost");
     }
 }

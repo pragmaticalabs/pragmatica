@@ -106,6 +106,8 @@ public final class ProblemResponses {
         return org.pragmatica.http.HttpStatus.INTERNAL_SERVER_ERROR;
     }
 
+    // RET-06: defensive null-coalescing when serializing a possibly-absent string field to JSON.
+    @SuppressWarnings("JBCT-RET-06")
     private static String escapeJson(String s) {
         return s == null
                ? ""

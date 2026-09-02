@@ -25,5 +25,16 @@ public final class SystemStreams {
     /// All system stream addresses that must exist at cluster bootstrap.
     public static final List<ResourceAddress> ALL = List.of(CLUSTER_EVENTS);
 
+    /// Whether `engineKey` names one of [#ALL] — what the management-api write-gate (`ManagementServer`)
+    /// checks a resolved stream identity against. Every member of `ALL` lives in the `system`
+    /// namespace by construction, so its engine key is just its bare stream name (mirrors
+    /// `StreamManager#engineKey`'s reduction for the `system` namespace; recomputed locally here
+    /// since this module cannot depend on `aether-node`, where `StreamManager` lives).
+    public static boolean isForbiddenEngineKey(String engineKey) {
+        return ALL.stream().anyMatch(address -> address.name()
+                                                       .value()
+                                                       .equals(engineKey));
+    }
+
     private SystemStreams() {}
 }

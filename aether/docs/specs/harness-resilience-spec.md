@@ -308,7 +308,7 @@ These items improve harness reliability and developer experience without requiri
 
 **Three independent sub-items:**
 
-**C3a — Hetzner 412 retry.** The `aether cluster bootstrap` cloud provisioner makes a `POST /v1/servers` call per node. Hetzner returns HTTP 412 `resource_unavailable` when zone capacity is momentarily saturated. Add retry with exponential backoff (3 attempts, 5s/15s/45s) in `HetznerCloudProvider.provision()` before propagating the error. This belongs in the product (`aether/aether-cloud`), not the harness.
+**C3a — Hetzner 412 retry.** The `aether cluster bootstrap` cloud provisioner makes a `POST /v1/servers` call per node. Hetzner returns HTTP 412 `resource_unavailable` when zone capacity is momentarily saturated. Add retry with exponential backoff (3 attempts, 5s/15s/45s) in `HetznerComputeProvider.createFrom()` before propagating the error. This belongs in the product (`aether/environment/hetzner`), not the harness. (Corrected 2026-08-12: previously cited `HetznerCloudProvider.provision()` in `aether/aether-cloud`; that class was deleted as dead surface and no such module exists.)
 
 **C3b — Snapshot zone guard.** Before calling `cloud_public_ip` / `aether cluster bootstrap` with a snapshot-based image, validate that the snapshot's `location` field matches the TOML source's `zone` field. Add a pre-flight check (PF-SNAP) to `ClusterBootstrapCommand` that calls `GET /v1/images/{id}` and fails with a clear "snapshot {id} is in zone {actual}, TOML requests zone {expected}" message. Currently the mismatch produces a 422 from Hetzner with an opaque message 20 minutes into bootstrap.
 

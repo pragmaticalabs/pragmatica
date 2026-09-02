@@ -2,6 +2,7 @@ package org.pragmatica.lang;
 
 import java.lang.annotation.*;
 
+
 /// Declares that a method intentionally uses a void return type as part of its contract.
 ///
 /// JBCT requires all business methods to return one of four types: `T`, `Option<T>`,

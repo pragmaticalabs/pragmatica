@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 import static org.pragmatica.lang.Result.success;
 
 
@@ -67,7 +68,7 @@ class BootstrapPhaseProvisionZoneRotationTest {
         void rotateZonesForRoleGroup_rotatesToNextZone_whenFirstZoneCapacityUnavailable() {
             var provisioner = new RecordingProvisioner(Map.of("fsn1", capacity("fsn1").result()));
 
-            var result = BootstrapPhaseProvision.rotateZonesForRoleGroup("src", NodeRole.CORE, 1, 0, ZONES, provisioner);
+            var result = BootstrapPhaseProvision.rotateZonesForRoleGroup(sourceNameOrDefault("src"), NodeRole.CORE, 1, 0, ZONES, provisioner);
 
             result.onFailure(cause -> assertThat(cause).as("rotation to nbg1 should succeed").isNull())
                   .onSuccess(nodes -> assertThat(nodes).hasSize(1));
@@ -83,7 +84,7 @@ class BootstrapPhaseProvisionZoneRotationTest {
             // node 1 must START at nbg1 (cursor advanced past the known-full fsn1).
             var provisioner = new RecordingProvisioner(Map.of("fsn1", capacity("fsn1").result()));
 
-            var result = BootstrapPhaseProvision.rotateZonesForRoleGroup("src", NodeRole.CORE, 2, 0, ZONES, provisioner);
+            var result = BootstrapPhaseProvision.rotateZonesForRoleGroup(sourceNameOrDefault("src"), NodeRole.CORE, 2, 0, ZONES, provisioner);
 
             result.onFailure(cause -> assertThat(cause).isNull())
                   .onSuccess(nodes -> assertThat(nodes).hasSize(2));
@@ -102,7 +103,7 @@ class BootstrapPhaseProvisionZoneRotationTest {
                                                               "nbg1", capacity("nbg1").result(),
                                                               "hel1", capacity("hel1").result()));
 
-            var result = BootstrapPhaseProvision.rotateZonesForRoleGroup("src", NodeRole.CORE, 1, 0, ZONES, provisioner);
+            var result = BootstrapPhaseProvision.rotateZonesForRoleGroup(sourceNameOrDefault("src"), NodeRole.CORE, 1, 0, ZONES, provisioner);
 
             result.onSuccess(nodes -> assertThat(nodes).as("must not provision when all zones full").isNull())
                   .onFailure(cause -> assertThat(cause.message())
@@ -122,7 +123,7 @@ class BootstrapPhaseProvisionZoneRotationTest {
         void rotateZonesForRoleGroup_failsImmediately_onNonCapacityError() {
             var provisioner = new RecordingProvisioner(Map.of("fsn1", auth().result()));
 
-            var result = BootstrapPhaseProvision.rotateZonesForRoleGroup("src", NodeRole.CORE, 1, 0, ZONES, provisioner);
+            var result = BootstrapPhaseProvision.rotateZonesForRoleGroup(sourceNameOrDefault("src"), NodeRole.CORE, 1, 0, ZONES, provisioner);
 
             result.onSuccess(nodes -> assertThat(nodes).isNull())
                   .onFailure(cause -> assertThat(cause).isInstanceOf(EnvironmentError.ProvisionFailed.class));
@@ -140,7 +141,7 @@ class BootstrapPhaseProvisionZoneRotationTest {
         void rotateZonesForRoleGroup_singleZone_attemptsThatZoneOnce() {
             var provisioner = new RecordingProvisioner(Map.of());
 
-            var result = BootstrapPhaseProvision.rotateZonesForRoleGroup("src",
+            var result = BootstrapPhaseProvision.rotateZonesForRoleGroup(sourceNameOrDefault("src"),
                                                                          NodeRole.CORE,
                                                                          1,
                                                                          0,
@@ -158,7 +159,7 @@ class BootstrapPhaseProvisionZoneRotationTest {
         void rotateZonesForRoleGroup_noZones_attemptsOnceWithDefault() {
             var provisioner = new RecordingProvisioner(Map.of());
 
-            var result = BootstrapPhaseProvision.rotateZonesForRoleGroup("src",
+            var result = BootstrapPhaseProvision.rotateZonesForRoleGroup(sourceNameOrDefault("src"),
                                                                          NodeRole.CORE,
                                                                          1,
                                                                          0,

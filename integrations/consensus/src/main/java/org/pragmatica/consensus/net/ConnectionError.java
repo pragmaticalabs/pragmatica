@@ -13,10 +13,10 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.net;
 
 import org.pragmatica.lang.Cause;
+
 
 public sealed interface ConnectionError extends Cause {
     record ConnectionRefused(String address) implements ConnectionError {

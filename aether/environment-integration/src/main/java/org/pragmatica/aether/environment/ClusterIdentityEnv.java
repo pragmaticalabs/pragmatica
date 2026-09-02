@@ -24,12 +24,19 @@ import java.util.List;
 /// production deploy.
 public sealed interface ClusterIdentityEnv {
     /// Cluster-identity env vars propagated by every provider (cloud + Docker).
+    ///
+    /// `AETHER_ZONE` is here because omitting it made the zone knob unreachable END-TO-END (#592): `Main`
+    /// maps it to `NodeInfo.LABEL_ZONE`, the handshake propagates that label into `SwimMember.labels`, and
+    /// worker-community grouping reads it — but both provisioning paths iterate THIS allow-list, so a
+    /// provisioned node never received the variable and every node came up zoneless. Fixing the grouping
+    /// alone would have left the whole chain inert.
     List<String> IDENTITY_VARS = List.of("AETHER_CLUSTER_NAME",
                                          "AETHER_CLUSTER_SECRET",
                                          "AETHER_PROVISIONED_BY",
                                          "AETHER_API_KEY",
                                          "AETHER_SOURCE",
-                                         "AETHER_ROLE");
+                                         "AETHER_ROLE",
+                                         "AETHER_ZONE");
 
     /// Docker-specific infrastructure env vars (network + docker group id).
     List<String> DOCKER_INFRA_VARS = List.of("AETHER_DOCKER_NETWORK", "DOCKER_GID");

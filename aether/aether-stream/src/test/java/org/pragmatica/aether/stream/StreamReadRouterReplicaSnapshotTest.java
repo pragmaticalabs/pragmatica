@@ -75,6 +75,63 @@ class StreamReadRouterReplicaSnapshotTest {
         assertThat(replicaB.state()).isEqualTo("SYNCING");
     }
 
+    /// #593 — the production-realistic case, and the one that was broken live.
+    ///
+    /// NOTE what this test does NOT do: it never calls `updateWatermark` for SELF. Neither does
+    /// production. `registerReplica` seeds every descriptor at `SYNCING`/`-1` and only an ACK
+    /// advances it (`DefaultReplicationManager.handleAck`) — and a node never acks to itself. The
+    /// sibling test above fabricates that call, which is exactly why it stayed green while a live
+    /// owner reported itself `SYNCING`/`-1` for hours while serving a complete partition
+    /// (`ownerHeadOffset` 24, peer `CAUGHT_UP` at 23, all 24 events readable in order).
+    ///
+    /// The answering node must report its OWN row from local truth.
+    @Test
+    void replicaSnapshot_reportsOwnRowFromLocalTruth_whenNoAckEverArrivesForSelf() {
+        publish(3);
+        replicaRegistry.registerReplica(STREAM, PARTITION, SELF);
+        replicaRegistry.registerReplica(STREAM, PARTITION, REPLICA_B);
+        replicaRegistry.updateWatermark(STREAM, PARTITION, REPLICA_B, 2L, ReplicationState.CAUGHT_UP);
+
+        var view = router(SELF).replicaSnapshot(STREAM, PARTITION);
+        var self = byNode(view, SELF.id());
+
+        assertThat(self.state())
+            .as("an owner holding the partition must not report itself SYNCING — it has nothing to sync from")
+            .isEqualTo("CAUGHT_UP");
+        assertThat(self.confirmedOffset())
+            .as("own confirmed offset must come from the local ring head, not from an ack that never arrives")
+            .isEqualTo(2L);
+    }
+
+    /// The substitution is scoped to the answering node. A peer's row must still come from the
+    /// registry, where an ack is the honest source — a node cannot vouch for what a peer holds.
+    @Test
+    void replicaSnapshot_leavesPeerRowsToTheRegistry() {
+        publish(3);
+        replicaRegistry.registerReplica(STREAM, PARTITION, SELF);
+        replicaRegistry.registerReplica(STREAM, PARTITION, REPLICA_B);
+
+        var replicaB = byNode(router(SELF).replicaSnapshot(STREAM, PARTITION), REPLICA_B.id());
+
+        assertThat(replicaB.state())
+            .as("peer row must stay at its registry value — local ring presence says nothing about a peer")
+            .isEqualTo("SYNCING");
+        assertThat(replicaB.confirmedOffset()).isEqualTo(-1L);
+    }
+
+    /// When this node does NOT hold the partition, absence of a local ring is not evidence about
+    /// anything — the registry value stands rather than being overwritten with a fabricated one.
+    @Test
+    void replicaSnapshot_doesNotSubstitute_whenPartitionIsNotHeldLocally() {
+        replicaRegistry.registerReplica("other-stream", 9, SELF);
+
+        var view = router(SELF).replicaSnapshot("other-stream", 9);
+        var self = byNode(view, SELF.id());
+
+        assertThat(self.state()).isEqualTo("SYNCING");
+        assertThat(self.confirmedOffset()).isEqualTo(-1L);
+    }
+
     @Test
     void replicaSnapshot_servedByOwnerFalseAndNamesOwner_whenSelfIsNotHrwOwner() {
         replicaRegistry.registerReplica(STREAM, PARTITION, SELF);
@@ -93,6 +150,13 @@ class StreamReadRouterReplicaSnapshotTest {
         assertThat(view.replicas()).isEmpty();
         assertThat(view.servedByOwner()).isTrue();
         assertThat(view.earliestRetainedOffset()).isEqualTo(-1L);
+    }
+
+    private void publish(int events) {
+        for (var i = 0; i < events; i++) {
+            partitionManager.publishLocal(STREAM, PARTITION, ("e" + i).getBytes(java.nio.charset.StandardCharsets.UTF_8), i)
+                            .onFailure(cause -> { throw new IllegalStateException("publish failed: " + cause.message()); });
+        }
     }
 
     private static ReplicaView byNode(ReplicaSetView view, String nodeId) {

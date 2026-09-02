@@ -4,6 +4,7 @@ import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.List;
 
+
 /// Manages alignment state for the CST printer.
 /// Tracks chain alignment, lambda body alignment columns, and ternary alignment columns.
 ///
@@ -14,9 +15,9 @@ import java.util.List;
 /// during traversal. Create a new instance per formatting operation.
 public final class AlignmentContext {
     private final Deque<Integer> lambdaAlignStack = new ArrayDeque<>();
-    private int chainColumn = - 1;
+    private int chainColumn = -1;
     private boolean inBreakingChain = false;
-    private int ternaryColumn = - 1;
+    private int ternaryColumn = -1;
     private int inlineExpressionDepth = 0;
     private int tailContextDepth = 0;
 
@@ -25,6 +26,7 @@ public final class AlignmentContext {
     /// correctly on close.
     public InlineExprScope enterInlineExpression() {
         inlineExpressionDepth++;
+
         return new InlineExprScope();
     }
 
@@ -33,7 +35,10 @@ public final class AlignmentContext {
     }
 
     public final class InlineExprScope implements AutoCloseable {
-        @Override public void close() { inlineExpressionDepth--; }
+        @Override
+        public void close() {
+            inlineExpressionDepth--;
+        }
     }
 
     /// Enter a "tail expression" context — the expression we're about to print is the
@@ -44,7 +49,9 @@ public final class AlignmentContext {
     public TailScope enterTailContext() {
         tailContextDepth++;
         int suspended = inlineExpressionDepth;
+
         inlineExpressionDepth = 0;
+
         return new TailScope(suspended);
     }
 
@@ -58,6 +65,7 @@ public final class AlignmentContext {
     /// line regardless of operator count — only the `?`/`:` lines break.
     public TernaryCondScope enterTernaryCond() {
         ternaryCond++;
+
         return new TernaryCondScope();
     }
 
@@ -66,13 +74,21 @@ public final class AlignmentContext {
     }
 
     public final class TernaryCondScope implements AutoCloseable {
-        @Override public void close() { ternaryCond--; }
+        @Override
+        public void close() {
+            ternaryCond--;
+        }
     }
 
     public final class TailScope implements AutoCloseable {
         private final int suspendedInline;
-        TailScope(int suspendedInline) { this.suspendedInline = suspendedInline; }
-        @Override public void close() {
+
+        TailScope(int suspendedInline) {
+            this.suspendedInline = suspendedInline;
+        }
+
+        @Override
+        public void close() {
             tailContextDepth--;
             inlineExpressionDepth = suspendedInline;
         }
@@ -83,8 +99,10 @@ public final class AlignmentContext {
     public ChainScope enterChain(int column) {
         int prevColumn = this.chainColumn;
         boolean wasBreaking = this.inBreakingChain;
+
         this.chainColumn = column;
         this.inBreakingChain = true;
+
         return new ChainScope(prevColumn, wasBreaking);
     }
 
@@ -92,6 +110,7 @@ public final class AlignmentContext {
     /// Returns a scope guard that pops on close.
     public LambdaScope pushLambdaAlign(int column) {
         lambdaAlignStack.push(column);
+
         return new LambdaScope();
     }
 
@@ -100,7 +119,9 @@ public final class AlignmentContext {
     /// the scope restores the previous column on close so siblings don't observe it.
     public TernaryScope enterTernary(int column) {
         int prevColumn = this.ternaryColumn;
+
         this.ternaryColumn = column;
+
         return new TernaryScope(prevColumn);
     }
 
@@ -122,7 +143,7 @@ public final class AlignmentContext {
     /// Get the current lambda alignment column, or -1 if none.
     public int lambdaColumn() {
         return lambdaAlignStack.isEmpty()
-               ? - 1
+               ? -1
                : lambdaAlignStack.peek();
     }
 
@@ -154,7 +175,7 @@ public final class AlignmentContext {
         /// `containedLambda` is true if the post-op carries a lambda anywhere inside
         /// (so the multi-line span comes from the lambda body, not broken args).
         public void notePostOpEmitted(boolean spannedLines, boolean containedLambda) {
-            this.lastPostOpSpannedNonLambdaLines = spannedLines && ! containedLambda;
+            this.lastPostOpSpannedNonLambdaLines = spannedLines && !containedLambda;
         }
 
         /// Note that the previous post-op was a bare `(...)` invocation whose args broke
@@ -245,9 +266,11 @@ public final class AlignmentContext {
         // List.copyOf preserves the Deque's iteration order (head-first); push in reverse
         // so the head element ends up back on top.
         var saved = snapshot.lambdaAlignStack();
+
         for (int i = saved.size() - 1; i >= 0; i--) {
             lambdaAlignStack.push(saved.get(i));
         }
+
         this.chainColumn = snapshot.chainColumn();
         this.inBreakingChain = snapshot.inBreakingChain();
         this.ternaryColumn = snapshot.ternaryColumn();

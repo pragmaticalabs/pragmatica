@@ -13,8 +13,14 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.net;
+
+import java.util.Map;
+import java.util.Set;
+import java.util.Collection;
+import java.util.function.Consumer;
+import java.util.function.Function;
+import java.util.function.Supplier;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
@@ -27,14 +33,8 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.net.tcp.Server;
 
-import java.util.Map;
-import java.util.Set;
-import java.util.Collection;
-import java.util.function.Consumer;
-import java.util.function.Function;
-import java.util.function.Supplier;
-
 import static org.pragmatica.consensus.net.NetworkServiceMessage.*;
+
 
 /// Generalized Network API for cluster communication.
 ///
@@ -106,7 +106,9 @@ public interface ClusterNetwork {
     /// already ready when this is called, the hook runs immediately. Default best-effort for
     /// impls without an explicit ready signal: run immediately.
     @Contract
-    default void whenReady(Runnable hook) { hook.run(); }
+    default void whenReady(Runnable hook) {
+        hook.run();
+    }
 
     @Contract
     @MessageReceiver
@@ -137,24 +139,26 @@ public interface ClusterNetwork {
     /// this to short-circuit waiting on a clearly-unreachable replica.
     ///
     /// Default implementation falls back to `send` and returns [WriteOutcome.Sent] —
-    /// transports without per-write outcome tracking remain backward-compatible.
+    /// transports without per-write outcome tracking remain backward-compatible. That
+    /// unconditional `Sent` means an inheritor (e.g. the worker-side DHT network) reports
+    /// success for EVERY refusal class, [WriteOutcome.EncodeFailed] included — a caller's
+    /// fast-fail is blind there until the transport overrides this (recorded #634 review,
+    /// pre-existing).
     ///
     /// See `aether/docs/specs/dht-resilience-spec.md` Layer 1.
     default <M extends ProtocolMessage> Promise<WriteOutcome> sendOutcome(NodeId nodeId, M message) {
         send(nodeId, message);
+
         return Promise.success(new WriteOutcome.Sent(nodeId));
     }
 
     /// Start the network.
     Promise<Unit> start();
-
     /// Stop the network.
     Promise<Unit> stop();
-
     /// Get the number of currently connected peer nodes.
     /// This count does NOT include self - only remote peers with active connections.
     int connectedNodeCount();
-
     /// Get the IDs of currently connected peer nodes.
     /// This set does NOT include self - only remote peers with active connections.
     Set<NodeId> connectedPeers();

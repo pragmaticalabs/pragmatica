@@ -13,18 +13,20 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.hlc;
 
 import org.pragmatica.lang.Cause;
+
 
 /// Error causes for HLC operations.
 public sealed interface HlcError extends Cause {
     record ClockDriftExceeded(long remoteMicros, long localMicros, long maxDrift) implements HlcError {
         @Override
         public String message() {
-            return "Clock drift exceeded: remote=" + remoteMicros + " local=" + localMicros
-                   + " drift=" + (remoteMicros - localMicros) + " max=" + maxDrift;
+            return "Clock drift exceeded: remote=" + remoteMicros
+                 + " local=" + localMicros
+                 + " drift=" + (remoteMicros - localMicros)
+                 + " max=" + maxDrift;
         }
     }
 
@@ -34,8 +36,9 @@ public sealed interface HlcError extends Cause {
     record CounterOverflow(int counter, int maxCounter) implements HlcError {
         @Override
         public String message() {
-            return "HLC counter overflow: " + counter + " exceeds maximum " + maxCounter
-                   + " (more than 65535 events in a single millisecond)";
+            return "HLC counter overflow: " + counter
+                 + " exceeds maximum " + maxCounter
+                 + " (more than 65535 events in a single millisecond)";
         }
     }
 }

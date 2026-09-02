@@ -9,6 +9,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 
 
 /// Membership v2 (B5a) — leader-local registry of nodes the leader wants to command DRAIN.
@@ -53,7 +54,9 @@ public final class DrainCommandRegistry {
 
     /// Whether `node` is currently a DRAIN target. Read by the ping dispatch path.
     public boolean isDrainRequested(NodeId node) {
-        return node != null && targets.contains(node);
+        return Option.option(node)
+                     .map(targets::contains)
+                     .or(false);
     }
 
     /// Immutable snapshot of the current DRAIN target set.

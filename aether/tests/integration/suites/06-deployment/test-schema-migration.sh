@@ -11,10 +11,13 @@ DATASOURCE=""
 
 discover_tracked_datasource() {
     local body
-    body=$(api_get "/api/schema/status" 2>/dev/null) || return 1
+    body=$(api_get "/api/v1/schema/status" 2>/dev/null) || return 1
+    # #598: the status list is CLUSTER-GLOBAL and url-shortener's datasource is tracked
+    # too when cluster-A suites run in parallel — select THIS blueprint's row, never
+    # the first row (head -1 grabbed whichever blueprint published first).
     printf '%s' "$body" | grep -oE '"datasource"[[:space:]]*:[[:space:]]*"[^"]+"' \
-                       | head -1 \
-                       | sed 's/.*"datasource"[[:space:]]*:[[:space:]]*"\([^"]*\)"/\1/'
+                       | sed 's/.*"datasource"[[:space:]]*:[[:space:]]*"\([^"]*\)"/\1/' \
+                       | grep -m1 'testpersistence'
 }
 
 test_cluster_ready() {
@@ -73,7 +76,7 @@ _migration_at_v900() {
 # SchemaVersionKey{status=PENDING} → CDM observes ValuePut → orchestrator runs
 # migrateIfNeeded). The flow takes wall-clock time — variable on slower
 # networks (cloud public-IP QUIC), and racy against any parallel test that
-# POSTs /api/schema/baseline against the same datasource (see investigation
+# POSTs /api/v1/schema/baseline against the same datasource (see investigation
 # 2026-05-10c on JBCT). Poll currentVersion until ≥ 900 with a budget rather
 # than reading once at an arbitrary snapshot.
 test_trigger_migration() {
@@ -98,17 +101,19 @@ test_schema_retry() {
         log_fail "DATASOURCE empty — discovery failed"
         return 1
     fi
-    # Product contract (SchemaOrchestratorService): /api/schema/retry only applies
+    # Product contract (SchemaOrchestratorService): /api/v1/schema/retry only applies
     # to migrations currently in FAILED state. Against a COMPLETED/HEALTHY
     # datasource (the steady-state of test-persistence after V900 ran), the
-    # endpoint returns 500 with body containing "not in FAILED state" — this is
-    # the expected, documented response. A full FAILED → HEALTHY transition
+    # endpoint returns 409 Conflict with body containing "not in FAILED state" —
+    # this is the expected, documented response. A full FAILED → HEALTHY transition
     # requires fault-injection (a slice with a deliberately-failing migration)
     # which is a separate fixture. Accept either:
     #   (a) 2xx — retry was applicable (FAILED state existed), OR
-    #   (b) 500 with body matching "not in FAILED state" — expected per contract.
+    #   (b) non-2xx with body matching "not in FAILED state" — expected per contract.
+    # Matched on the body phrase rather than the numeric code, so the 500 → 409
+    # correction does not churn this assertion.
     local body status
-    body=$(api_post "/api/schema/retry/${DATASOURCE}" "{}" 2>/dev/null || true)
+    body=$(api_post "/api/v1/schema/retry/${DATASOURCE}" "{}" 2>/dev/null || true)
     if [ -n "$body" ]; then
         log_pass "Schema retry endpoint applicable (FAILED state existed) for ${DATASOURCE}"
         return 0
@@ -116,7 +121,7 @@ test_schema_retry() {
     # api_post returned empty → non-2xx. Probe directly to inspect the body.
     local resp
     resp=$(curl -sk -m 10 -X POST -H "X-API-Key: ${API_KEY}" \
-           "${CLUSTER_ENDPOINT}/api/schema/retry/${DATASOURCE}" 2>/dev/null || echo "")
+           "${CLUSTER_ENDPOINT}/api/v1/schema/retry/${DATASOURCE}" 2>/dev/null || echo "")
     if printf '%s' "$resp" | grep -qiE 'not in FAILED state'; then
         log_pass "Schema retry returned expected 'not in FAILED state' for healthy ${DATASOURCE} (contract verified)"
         return 0

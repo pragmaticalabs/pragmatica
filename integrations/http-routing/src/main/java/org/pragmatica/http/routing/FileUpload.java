@@ -4,6 +4,7 @@ import org.pragmatica.lang.Option;
 
 import static org.pragmatica.lang.Option.option;
 
+
 /// Represents an uploaded file from a multipart request.
 ///
 /// @param fieldName   the form field name
@@ -11,12 +12,7 @@ import static org.pragmatica.lang.Option.option;
 /// @param contentType the MIME content type
 /// @param content     the file content bytes
 /// @param size        the file size in bytes
-public record FileUpload(String fieldName,
-                         String filename,
-                         String contentType,
-                         byte[] content,
-                         long size) {
-
+public record FileUpload(String fieldName, String filename, String contentType, byte[] content, long size) {
     /// Factory method for creating a file upload with size derived from content.
     public static FileUpload fileUpload(String fieldName, String filename, String contentType, byte[] content) {
         return new FileUpload(fieldName, filename, contentType, content, content.length);

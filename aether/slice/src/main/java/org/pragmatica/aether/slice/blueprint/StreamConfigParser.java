@@ -26,6 +26,7 @@ import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
 
 import static org.pragmatica.lang.Option.option;
@@ -103,7 +104,7 @@ public interface StreamConfigParser {
     /// Returns [Result#failure] carrying a [org.pragmatica.lang.utils.Causes.CompositeCause]
     /// when any section fails; [Result#success] with the parsed map otherwise.
     static Result<Map<String, StreamResource>> parseResourcesAggregating(String toml, Map<String, String> roleHints) {
-        if (toml == null || toml.isBlank()) {
+        if (!Verify.Is.present(toml)) {
             return success(Map.of());
         }
 
@@ -339,7 +340,14 @@ public interface StreamConfigParser {
     private static StreamConfig parseStreamSection(TomlDocument doc, String section, String streamName) {
         var partitions = doc.getInt(section, "partitions").or(DEFAULT_PARTITIONS);
         var retention = parseRetention(doc, section);
-        var autoOffsetReset = doc.getString(section, "auto-offset-reset").or("latest");
+        // #576: the parsed default used to be "latest", but the runtime never honored a `latest`
+        // start-policy in the first place — StreamAccess#fetchFromCommitted's no-cursor path always
+        // starts at offset 0 per the #478 ruling, permanently, not as a gap to be closed later.
+        // Defaulting to "earliest" here makes the parsed value match what actually happens; it does
+        // not change runtime behavior since nothing reads this field on the hot path (only
+        // KVStoreSerializer round-trips it). An explicit non-"earliest" value is rejected at
+        // StreamResourceValidator (aether-deployment) as inert rather than accepted silently.
+        var autoOffsetReset = doc.getString(section, "auto-offset-reset").or("earliest");
         var maxEventSizeBytes = doc.getString(section, "max-event-size")
                                    .map(StreamConfigParser::parseSizeBytes)
                                    .or(1_048_576L);

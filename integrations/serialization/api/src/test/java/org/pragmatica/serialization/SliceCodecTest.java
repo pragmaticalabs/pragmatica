@@ -21,7 +21,12 @@ import io.netty.buffer.Unpooled;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.pragmatica.serialization.SliceCodec.*;
@@ -170,8 +175,12 @@ class SliceCodecTest {
             assertEquals(tag1, tag2);
         }
 
+        /// Pins the range CONTRACT, not a band that happened to be true: a hash-derived tag must land
+        /// in the USER range and never in the SYSTEM range. That disjointness is what makes a
+        /// slice-generated type structurally unable to collide with a hand-assigned framework tag —
+        /// the guarantee is the point, so it is asserted from both sides.
         @Test
-        void deterministicTag_differentInputs_inRange() {
+        void deterministicTag_differentInputs_landInUserRangeNeverSystem() {
             var names = List.of(
                 "com.example.Alpha",
                 "com.example.Beta",
@@ -183,9 +192,66 @@ class SliceCodecTest {
             for (var name : names) {
                 var tag = SliceCodec.deterministicTag(name);
 
-                assertTrue(tag >= 128, "Tag %d for %s below 128".formatted(tag, name));
-                assertTrue(tag <= 16383, "Tag %d for %s above 16383".formatted(tag, name));
+                assertTrue(tag >= SliceCodec.USER_TAG_BASE,
+                           "Tag %d for %s is in the SYSTEM range — hash-derived tags must never be".formatted(tag, name));
+                assertTrue(tag < SliceCodec.USER_TAG_LIMIT,
+                           "Tag %d for %s is beyond the user range".formatted(tag, name));
+                assertTrue(tag > SliceCodec.SYSTEM_TAG_MAX,
+                           "Tag %d for %s could collide with a hand-assigned system tag".formatted(tag, name));
             }
+        }
+
+        /// The collision that actually cost a debugging cycle (#345 I3): under the old
+        /// `(hashCode % 16256) + 128` derivation these two FQCNs both produced tag 7612, which poisoned
+        /// `NodeCodecs` static init and errored 48 unrelated tests — invisibly to the owning module's
+        /// own build, because only the full node assembly registers both. Pinned so a future change to
+        /// the derivation cannot silently reintroduce it.
+        ///
+        /// Asserted against [SliceCodec#hashedTag], not [SliceCodec#deterministicTag]: both names are
+        /// now pinned in [SystemTags], so going through `deterministicTag` would assert that two table
+        /// entries differ — true, but a different and much weaker claim than the one this test exists
+        /// to make about the hash.
+        @Test
+        void hashedTag_theHistoricalCollisionPair_noLongerCollides() {
+            var checkpointValue = SliceCodec.hashedTag("org.pragmatica.aether.slice.kvstore.AetherValue.EntityCheckpointValue");
+            var healthHint = SliceCodec.hashedTag("org.pragmatica.cluster.metrics.HealthHintWire");
+
+            assertTrue(checkpointValue != healthHint,
+                       "EntityCheckpointValue and HealthHintWire collided again at tag %d".formatted(checkpointValue));
+        }
+
+        /// The slice-processor carries its own copy of this derivation so it can report a collision at
+        /// compile time without dragging `serialization-api` onto every application's annotation
+        /// processor path (see `CodecTagSpace`). Both sides pin this same probe, so a change to either
+        /// copy fails a build rather than silently degrading the compile-time check.
+        @Test
+        void hashedTag_pinnedProbeValue() {
+            assertEquals(1785154, SliceCodec.hashedTag("com.example.CollisionProbe"));
+        }
+
+        /// The pinned table wins over the hash, and it is the SYSTEM range it puts the type in — that
+        /// redirection is the whole of Phase 2, and without it every framework type silently pays three
+        /// wire bytes and stays hostage to a rename.
+        @Test
+        void deterministicTag_pinnedSystemType_returnsHandAssignedTag() {
+            var name = "org.pragmatica.consensus.NodeId";
+            var tag = SliceCodec.deterministicTag(name);
+
+            assertEquals(SystemTags.tagFor(name), tag);
+            assertTrue(tag <= SliceCodec.SYSTEM_TAG_MAX,
+                       "Pinned type %s landed on %d, outside the system range".formatted(name, tag));
+            assertTrue(tag != SliceCodec.hashedTag(name),
+                       "Pinned type %s still came back from the hash".formatted(name));
+        }
+
+        /// A name with no table entry must still reach the hash — the pinning is a lookup in front of
+        /// the derivation, not a replacement for it.
+        @Test
+        void deterministicTag_unpinnedType_fallsThroughToTheHash() {
+            var name = "com.example.NotASystemType";
+
+            assertEquals(SystemTags.NOT_PINNED, SystemTags.tagFor(name));
+            assertEquals(SliceCodec.hashedTag(name), SliceCodec.deterministicTag(name));
         }
     }
 
@@ -306,7 +372,7 @@ class SliceCodecTest {
         void validateRequiredTypes_registeredType_noError() {
             var codec = sliceCodec(List.of(STRING_CODEC));
 
-            assertDoesNotThrow(() -> SliceCodec.validateRequiredTypes(codec, java.util.Set.of(String.class)));
+            assertDoesNotThrow(() -> SliceCodec.validateRequiredTypes(codec, Set.of(String.class)));
         }
 
         @Test
@@ -314,29 +380,183 @@ class SliceCodecTest {
             var codec = sliceCodec(List.of(STRING_CODEC));
 
             var ex = assertThrows(IllegalStateException.class,
-                () -> SliceCodec.validateRequiredTypes(codec, java.util.Set.of(Integer.class)));
+                () -> SliceCodec.validateRequiredTypes(codec, Set.of(Integer.class)));
 
             assertTrue(ex.getMessage().contains("java.lang.Integer"));
-            assertTrue(ex.getMessage().contains("@CodecFor"));
+            assertTrue(ex.getMessage().contains("record or an enum"),
+                       "the message must say how to obtain a codec, not name an annotation the author may never have written");
         }
 
         @Test
         void validateRequiredTypes_emptySet_noError() {
             var codec = sliceCodec(List.of(STRING_CODEC));
 
-            assertDoesNotThrow(() -> SliceCodec.validateRequiredTypes(codec, java.util.Set.of()));
+            assertDoesNotThrow(() -> SliceCodec.validateRequiredTypes(codec, Set.of()));
         }
 
         @Test
         void sliceCodec_withRequiredTypes_validatesOnCreation() {
             assertThrows(IllegalStateException.class,
-                () -> sliceCodec(null, List.of(STRING_CODEC), java.util.Set.of(Integer.class)));
+                () -> sliceCodec(null, List.of(STRING_CODEC), Set.of(Integer.class)));
         }
 
         @Test
         void sliceCodec_withRequiredTypes_succeedsWhenAllRegistered() {
             assertDoesNotThrow(
-                () -> sliceCodec(null, List.of(STRING_CODEC), java.util.Set.of(String.class)));
+                () -> sliceCodec(null, List.of(STRING_CODEC), Set.of(String.class)));
+        }
+    }
+
+    @Nested
+    class SupertypeResolutionTests {
+
+        interface Base {}
+
+        interface Middle extends Base {}
+
+        interface Alpha {}
+
+        interface Beta {}
+
+        interface Marker {}
+
+        record Leaf(String value) implements Middle {}
+
+        record TwoParents(String value) implements Alpha, Beta {}
+
+        static class Root {}
+
+        static class MarkedRoot extends Root implements Marker {}
+
+        /// Test double whose encoded body is the NAME OF THE REGISTERED TYPE, so a round-trip reveals
+        /// which codec the resolver actually selected. #529 is a silently WRONG encoding, not a
+        /// missing one, so asserting on the bytes is the only assertion that can see the defect.
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        private static TypeCodec<?> namingCodec(Class<?> type, int tag) {
+            return new TypeCodec((Class) type,
+                tag,
+                (codec, buf, value) -> SliceCodec.writeString(buf, type.getName()),
+                (codec, buf) -> SliceCodec.readString(buf));
+        }
+
+        private static String encodedBy(SliceCodec codec, Object value) {
+            var buf = Unpooled.buffer();
+
+            try {
+                codec.write(buf, value);
+
+                return codec.read(buf);
+            } finally {
+                buf.release();
+            }
+        }
+
+        @Test
+        void lookupByClass_picksMostSpecificSupertype_whenSeveralAreAssignable() {
+            var codec = sliceCodec(List.of(namingCodec(Base.class, 300), namingCodec(Middle.class, 301)));
+
+            assertEquals(Middle.class.getName(), encodedBy(codec, new Leaf("x")));
+        }
+
+        @Test
+        void lookupByClass_picksSameSupertype_whenRegistrationOrderIsReversed() {
+            var forward = sliceCodec(List.of(namingCodec(Base.class, 300), namingCodec(Middle.class, 301)));
+            var reversed = sliceCodec(List.of(namingCodec(Middle.class, 301), namingCodec(Base.class, 300)));
+
+            assertEquals(Middle.class.getName(), encodedBy(forward, new Leaf("x")));
+            assertEquals(Middle.class.getName(), encodedBy(reversed, new Leaf("x")));
+        }
+
+        @Test
+        void lookupByClass_picksSameSupertype_acrossShuffledRegistries() {
+            var entries = new ArrayList<>(List.of(namingCodec(Base.class, 300),
+                                                  namingCodec(Middle.class, 301),
+                                                  namingCodec(Alpha.class, 302),
+                                                  namingCodec(Marker.class, 305)));
+            var resolved = new HashSet<String>();
+
+            for (int i = 0; i < 32; i++) {
+                Collections.shuffle(entries);
+                resolved.add(encodedBy(sliceCodec(List.copyOf(entries)), new Leaf("x")));
+            }
+
+            assertEquals(Set.of(Middle.class.getName()), resolved);
+        }
+
+        @Test
+        void lookupByClass_failsLoud_whenCandidatesAreUnrelated() {
+            var codec = sliceCodec(List.of(namingCodec(Alpha.class, 302), namingCodec(Beta.class, 303)));
+
+            var ex = assertThrows(IllegalArgumentException.class, () -> encodedBy(codec, new TwoParents("x")));
+
+            assertTrue(ex.getMessage().contains(TwoParents.class.getName()));
+            assertTrue(ex.getMessage().contains(Alpha.class.getName()));
+            assertTrue(ex.getMessage().contains(Beta.class.getName()));
+        }
+
+        @Test
+        void lookupByClass_prefersClass_whenClassAndInterfaceAreEquallySpecific() {
+            var codec = sliceCodec(List.of(namingCodec(Root.class, 304), namingCodec(Marker.class, 305)));
+
+            assertEquals(Root.class.getName(), encodedBy(codec, new MarkedRoot()));
+        }
+
+        @Test
+        void lookupByClass_failsLoud_whenNoSupertypeIsRegistered() {
+            var codec = sliceCodec(List.of(namingCodec(Alpha.class, 302)));
+
+            var ex = assertThrows(IllegalArgumentException.class, () -> encodedBy(codec, new Leaf("x")));
+
+            assertTrue(ex.getMessage().contains("No codec registered for class"));
+            assertTrue(ex.getMessage().contains(Leaf.class.getName()));
+        }
+
+        @Test
+        void frameworkCodecs_resolveImmutableList_viaListSupertype() {
+            var codec = FrameworkCodecs.frameworkCodecs();
+            var buf = Unpooled.buffer();
+
+            try {
+                codec.write(buf, List.of("a", "b"));
+
+                List<String> result = codec.read(buf);
+
+                assertEquals(List.of("a", "b"), result);
+            } finally {
+                buf.release();
+            }
+        }
+
+        @Test
+        void frameworkCodecs_resolveImmutableSet_viaSetSupertype() {
+            var codec = FrameworkCodecs.frameworkCodecs();
+            var buf = Unpooled.buffer();
+
+            try {
+                codec.write(buf, Set.of("a"));
+
+                Set<String> result = codec.read(buf);
+
+                assertEquals(Set.of("a"), result);
+            } finally {
+                buf.release();
+            }
+        }
+
+        @Test
+        void frameworkCodecs_resolveImmutableMap_viaMapSupertype() {
+            var codec = FrameworkCodecs.frameworkCodecs();
+            var buf = Unpooled.buffer();
+
+            try {
+                codec.write(buf, Map.of("k", "v"));
+
+                Map<String, String> result = codec.read(buf);
+
+                assertEquals(Map.of("k", "v"), result);
+            } finally {
+                buf.release();
+            }
         }
     }
 }

@@ -13,8 +13,8 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.http;
+
 /// Content type categories for HTTP payloads.
 ///
 /// Drives output serialization in [ResponseSerializer]: [#JSON] uses the [JsonCodec],

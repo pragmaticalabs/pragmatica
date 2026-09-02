@@ -46,6 +46,18 @@ DHTConfig full = DHTConfig.FULL;                   // All nodes store everything
 DHTConfig single = DHTConfig.SINGLE_NODE;          // For testing
 ```
 
+### Consistency per mode
+
+Replication factor is not the same as consistency — choose a mode by the guarantee it earns, not by replica count:
+
+| Mode | Quorum | Consistency | Notes |
+|------|--------|-------------|-------|
+| `DEFAULT` / `withReplication(n)` | W=R=majority | Quorum overlap (`W+R > N`) — **necessary but not sufficient** for freshness | No read-repair: the read set may still return a stale replica (`hasQuorumOverlap()` is a config check, not a runtime guarantee) |
+| `FULL` | W=R=1 | **Eventually consistent, NOT linearizable** | A write acks after one local put; a read returns the first non-empty response with no version reconciliation. `FULL` also disables anti-entropy and rebalancing — a write lost before async replication is not repaired |
+| `SINGLE_NODE` | W=R=1, RF=1 | Single-replica | Testing only |
+
+The authoritative contract for each mode lives in the `DHTConfig` javadoc (`DHTConfig.FULL`, `hasQuorumOverlap()`). Callers that need freshness or crash-durability from `FULL` must not assume it — see the downstream consumer's own guarantees (e.g. Aether's system maps run over `FULL` and are documented as eventual + not crash-durable).
+
 ## API surface & compatibility
 
 The supported public API of this module is the client-facing surface: `DHTClient`,

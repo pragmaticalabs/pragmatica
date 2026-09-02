@@ -14,15 +14,16 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.cloud.gcp.api;
 
 import java.util.List;
 import java.util.Map;
 
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
-import com.fasterxml.jackson.annotation.JsonIgnore;
 import org.pragmatica.lang.Option;
+
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+
 
 /// Request to insert a new GCP Compute Engine instance.
 @JsonIgnoreProperties(ignoreUnknown = true)
@@ -42,11 +43,10 @@ public record InsertInstanceRequest(String name,
                                  Metadata metadata) {
         this(name, machineType, disks, networkInterfaces, labels, metadata, Option.empty());
     }
+
     /// Disk configuration for instance creation.
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record Disk(boolean autoDelete,
-                       boolean boot,
-                       InitializeParams initializeParams) {}
+    public record Disk(boolean autoDelete, boolean boot, InitializeParams initializeParams) {}
 
     /// Parameters for initializing a disk from an image.
     @JsonIgnoreProperties(ignoreUnknown = true)

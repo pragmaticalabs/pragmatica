@@ -14,12 +14,12 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.jpa;
 
 import org.pragmatica.lang.Cause;
 
 import jakarta.persistence.*;
+
 
 /// Typed error causes for JPA operations.
 /// Maps common JPA exceptions to domain-friendly error types.
@@ -91,10 +91,11 @@ public sealed interface JpaError extends Cause {
         @Override
         public String message() {
             var msg = cause.getMessage();
-            return "Database operation failed: " + ( msg != null
-                                                     ? msg
-                                                     : cause.getClass()
-                                                            .getName());
+
+            return "Database operation failed: " + (msg != null
+                                                    ? msg
+                                                    : cause.getClass()
+                                                           .getName());
         }
     }
 
@@ -112,9 +113,7 @@ public sealed interface JpaError extends Cause {
         return switch (throwable) {
             case EntityNotFoundException _, NoResultException _ -> EntityNotFound.INSTANCE;
             case OptimisticLockException e -> new OptimisticLock(e.getEntity() != null
-                                                                 ? e.getEntity()
-                                                                    .getClass()
-                                                                    .getSimpleName()
+                                                                 ? e.getEntity().getClass().getSimpleName()
                                                                  : "Unknown",
                                                                  e.getEntity());
             case PessimisticLockException e -> new PessimisticLock(e.getMessage());

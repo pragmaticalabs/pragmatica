@@ -7,6 +7,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
+
 /// Metadata snapshot -- a point-in-time capture of all block lifecycle entries and named references.
 /// Used for crash recovery and node restart.
 ///
@@ -22,7 +23,6 @@ public record MetadataSnapshot(long epoch,
                                List<BlockLifecycle> lifecycles,
                                Map<String, BlockId> refs,
                                byte[] contentHash) {
-
     /// Defensive copies.
     public MetadataSnapshot {
         lifecycles = List.copyOf(lifecycles);
@@ -35,10 +35,12 @@ public record MetadataSnapshot(long epoch,
         return contentHash.clone();
     }
 
-    public static MetadataSnapshot metadataSnapshot(long epoch, String nodeId,
+    public static MetadataSnapshot metadataSnapshot(long epoch,
+                                                    String nodeId,
                                                     List<BlockLifecycle> lifecycles,
                                                     Map<String, BlockId> refs) {
         var hash = computeHash(lifecycles, refs);
+
         return new MetadataSnapshot(epoch, System.currentTimeMillis(), nodeId, lifecycles, refs, hash);
     }
 
@@ -47,22 +49,25 @@ public record MetadataSnapshot(long epoch,
         return Arrays.equals(contentHash, computeHash(lifecycles, refs));
     }
 
-    @SuppressWarnings("JBCT-EX-01") // SHA-256 is mandated by the Java platform spec; absence is a JVM defect, not a business failure
+    @SuppressWarnings("JBCT-EX-01")  // SHA-256 is mandated by the Java platform spec; absence is a JVM defect, not a business failure
     private static MessageDigest createSha256() {
-        try { return MessageDigest.getInstance("SHA-256"); }
-        catch (NoSuchAlgorithmException e) { throw new ExceptionInInitializerError(e); }
+        try {
+            return MessageDigest.getInstance("SHA-256");
+        } catch (NoSuchAlgorithmException e) {
+            throw new ExceptionInInitializerError(e);
+        }
     }
 
     private static byte[] computeHash(List<BlockLifecycle> lifecycles, Map<String, BlockId> refs) {
         var digest = createSha256();
+
         lifecycles.stream()
                   .map(BlockLifecycle::blockId)
                   .map(BlockId::hexString)
                   .sorted()
                   .forEach(hex -> digest.update(hex.getBytes(StandardCharsets.UTF_8)));
-        refs.keySet().stream()
-            .sorted()
-            .forEach(key -> digest.update(key.getBytes(StandardCharsets.UTF_8)));
+        refs.keySet().stream().sorted().forEach(key -> digest.update(key.getBytes(StandardCharsets.UTF_8)));
+
         return digest.digest();
     }
 }

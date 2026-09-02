@@ -19,6 +19,7 @@ import org.pragmatica.lang.Promise;
 import java.util.List;
 import java.util.Map;
 
+import static org.pragmatica.aether.environment.ClusterName.clusterName;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.cloud.aws.AwsConfig.awsConfig;
 
@@ -35,7 +36,7 @@ class AwsDiscoveryProviderTest {
     @BeforeEach
     void setUp() {
         testClient = new TestAwsClient();
-        var config = BASE_CONFIG.withDiscovery("test-cluster");
+        var config = BASE_CONFIG.withDiscovery(clusterName("test-cluster").unwrap());
         provider = AwsDiscoveryProvider.awsDiscoveryProvider(testClient, config);
     }
 

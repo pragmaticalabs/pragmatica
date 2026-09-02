@@ -4,8 +4,9 @@
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  */
-
 package org.pragmatica.consensus.fsm;
+
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
@@ -15,7 +16,6 @@ import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.statemachine.Fsm;
 import org.pragmatica.statemachine.FsmState;
 
-import java.util.concurrent.atomic.AtomicLong;
 
 /// Adapter that subscribes a target `Fsm` to cluster-lifecycle notifications from a
 /// `MessageRouter`. Every FSM that reacts to quorum / topology / leader changes calls
@@ -37,8 +37,8 @@ public final class ClusterFsmRouter {
 
     @Contract
     public static <S extends FsmState<S, ClusterFsmEvent>> void wire(MessageRouter.MutableRouter router,
-                                                                      Fsm<S, ClusterFsmEvent> fsm,
-                                                                      AtomicLong quorumSequence) {
+                                                                     Fsm<S, ClusterFsmEvent> fsm,
+                                                                     AtomicLong quorumSequence) {
         router.addRoute(TransportObservation.PeerJoined.class,
                         notification -> fsm.dispatch(new ClusterFsmEvent.NodeAdded(notification.nodeId(),
                                                                                    notification.topology())));
@@ -48,8 +48,7 @@ public final class ClusterFsmRouter {
         router.addRoute(TransportObservation.PeerObservedFaulty.class,
                         notification -> fsm.dispatch(new ClusterFsmEvent.NodeGone(notification.nodeId(),
                                                                                   notification.topology())));
-        router.addRoute(TransportObservation.PeerReconnected.class,
-                        ClusterFsmRouter::ignoreReconnect);
+        router.addRoute(TransportObservation.PeerReconnected.class, ClusterFsmRouter::ignoreReconnect);
         router.addRoute(TransportObservation.SelfShutdown.class,
                         notification -> fsm.dispatch(new ClusterFsmEvent.QuorumDisappeared()));
         router.addRoute(ClusterStateNotification.class,
@@ -60,7 +59,7 @@ public final class ClusterFsmRouter {
     }
 
     private static void ignoreReconnect(TransportObservation.PeerReconnected reconnected) {
-        // Transparent — peer was already known to upstream consumers via prior PeerJoined.
+    // Transparent — peer was already known to upstream consumers via prior PeerJoined.
     }
 
     private static <S extends FsmState<S, ClusterFsmEvent>> void dispatchClusterState(Fsm<S, ClusterFsmEvent> fsm,
@@ -69,6 +68,7 @@ public final class ClusterFsmRouter {
         if (!notification.advanceSequence(quorumSequence)) {
             return;
         }
+
         switch (notification.state()) {
             case ACTIVE -> fsm.dispatch(new ClusterFsmEvent.QuorumEstablished());
             case PASSIVE -> fsm.dispatch(new ClusterFsmEvent.QuorumDisappeared());

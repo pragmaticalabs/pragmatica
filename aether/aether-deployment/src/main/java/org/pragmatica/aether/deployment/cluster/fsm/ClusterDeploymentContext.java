@@ -15,7 +15,6 @@ import java.util.function.Supplier;
 import org.pragmatica.aether.config.CommunitySizing;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
-import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.cluster.node.ClusterNode;
@@ -40,7 +39,6 @@ public final class ClusterDeploymentContext {
     private final MessageRouter router;
     private final TopologyManager topologyManager;
     private final SchemaOrchestratorService schemaOrchestrator;
-    private final HealthSignalSink healthSignalSink;
     private final Supplier<Set<NodeId>> coreCountedMembersSupplier;
     private final Supplier<Set<NodeId>> readyNodesSupplier;
     private final Supplier<Set<NodeId>> drainingNodesSupplier;
@@ -62,6 +60,11 @@ public final class ClusterDeploymentContext {
     /// communities under the default size; legacy constructors default it to
     /// [CommunitySizing#DEFAULT] (target 100, floor 3) so existing call sites are unchanged.
     private final CommunitySizing communitySizing;
+    /// #590 core-absence read-seam. Late-wired rather than constructor-injected, matching the
+    /// `setDrainTargets` / `setColdBootSupplier` idiom: the collector that backs it is built well after
+    /// the deployment context, and every existing call site (production and test) keeps the
+    /// pre-#590 behaviour until `AetherNode` supplies the real view.
+    private volatile CommunityLivenessView communityLiveness = CommunityLivenessView.unwired();
     private final ClusterDeploymentState dormant;
     private final ClusterDeploymentState stopped;
 
@@ -72,7 +75,6 @@ public final class ClusterDeploymentContext {
                                     MessageRouter router,
                                     TopologyManager topologyManager,
                                     SchemaOrchestratorService schemaOrchestrator,
-                                    HealthSignalSink healthSignalSink,
                                     Supplier<Set<NodeId>> coreCountedMembersSupplier,
                                     Supplier<Set<NodeId>> readyNodesSupplier,
                                     Supplier<Set<NodeId>> drainingNodesSupplier,
@@ -87,7 +89,6 @@ public final class ClusterDeploymentContext {
              router,
              topologyManager,
              schemaOrchestrator,
-             healthSignalSink,
              coreCountedMembersSupplier,
              readyNodesSupplier,
              drainingNodesSupplier,
@@ -105,7 +106,6 @@ public final class ClusterDeploymentContext {
                                     MessageRouter router,
                                     TopologyManager topologyManager,
                                     SchemaOrchestratorService schemaOrchestrator,
-                                    HealthSignalSink healthSignalSink,
                                     Supplier<Set<NodeId>> coreCountedMembersSupplier,
                                     Supplier<Set<NodeId>> readyNodesSupplier,
                                     Supplier<Set<NodeId>> drainingNodesSupplier,
@@ -121,7 +121,6 @@ public final class ClusterDeploymentContext {
              router,
              topologyManager,
              schemaOrchestrator,
-             healthSignalSink,
              coreCountedMembersSupplier,
              readyNodesSupplier,
              drainingNodesSupplier,
@@ -140,7 +139,6 @@ public final class ClusterDeploymentContext {
                                     MessageRouter router,
                                     TopologyManager topologyManager,
                                     SchemaOrchestratorService schemaOrchestrator,
-                                    HealthSignalSink healthSignalSink,
                                     Supplier<Set<NodeId>> coreCountedMembersSupplier,
                                     Supplier<Set<NodeId>> readyNodesSupplier,
                                     Supplier<Set<NodeId>> drainingNodesSupplier,
@@ -157,7 +155,6 @@ public final class ClusterDeploymentContext {
              router,
              topologyManager,
              schemaOrchestrator,
-             healthSignalSink,
              coreCountedMembersSupplier,
              readyNodesSupplier,
              drainingNodesSupplier,
@@ -177,7 +174,6 @@ public final class ClusterDeploymentContext {
                                     MessageRouter router,
                                     TopologyManager topologyManager,
                                     SchemaOrchestratorService schemaOrchestrator,
-                                    HealthSignalSink healthSignalSink,
                                     Supplier<Set<NodeId>> coreCountedMembersSupplier,
                                     Supplier<Set<NodeId>> readyNodesSupplier,
                                     Supplier<Set<NodeId>> drainingNodesSupplier,
@@ -195,7 +191,6 @@ public final class ClusterDeploymentContext {
         this.router = router;
         this.topologyManager = topologyManager;
         this.schemaOrchestrator = schemaOrchestrator;
-        this.healthSignalSink = healthSignalSink;
         this.coreCountedMembersSupplier = coreCountedMembersSupplier;
         this.readyNodesSupplier = readyNodesSupplier;
         this.drainingNodesSupplier = drainingNodesSupplier;
@@ -273,10 +268,6 @@ public final class ClusterDeploymentContext {
         return schemaOrchestrator;
     }
 
-    public HealthSignalSink healthSignalSink() {
-        return healthSignalSink;
-    }
-
     public Supplier<Set<NodeId>> coreCountedMembersSupplier() {
         return coreCountedMembersSupplier;
     }
@@ -307,6 +298,19 @@ public final class ClusterDeploymentContext {
     /// [CommunitySizing#DEFAULT] (target 100, floor 3).
     public CommunitySizing communitySizing() {
         return communitySizing;
+    }
+
+    /// The leader's observed community-liveness view (#590). Defaults to
+    /// [CommunityLivenessView#unwired], which reports nothing absent.
+    public CommunityLivenessView communityLiveness() {
+        return communityLiveness;
+    }
+
+    /// Inject the observed community-liveness view. The pre-wiring default is
+    /// [CommunityLivenessView#unwired]; pass that explicitly to restore it rather than clearing.
+    @Contract
+    public void setCommunityLiveness(CommunityLivenessView view) {
+        communityLiveness = view;
     }
 
     public Set<NodeId> seedNodes() {

@@ -1,14 +1,15 @@
 package org.pragmatica.jbct.parser;
 
-import org.pragmatica.peg.v6.cst.CstArray;
-import org.pragmatica.peg.v6.token.TokenArray;
-
 import java.util.Collections;
 import java.util.Optional;
 import java.util.WeakHashMap;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
+
+import org.pragmatica.peg.cst.CstArray;
+import org.pragmatica.peg.token.TokenArray;
+
 
 /// Navigation primitive over the v6 flat-`int[]` CST. A Cursor pairs a `CstArray` with a
 /// node index — 16 bytes per instance, no tree materialization.
@@ -22,9 +23,7 @@ import java.util.stream.StreamSupport;
 /// Exhaustive switches over Cursor are checked at compile time. Switches over `kind()`
 /// (RuleKind enum) likewise.
 public sealed interface Cursor permits Cursor.Leaf, Cursor.Branch, Cursor.ErrorNode {
-
     CstArray cst();
-
     int idx();
 
     default int kindId() {
@@ -41,11 +40,13 @@ public sealed interface Cursor permits Cursor.Leaf, Cursor.Branch, Cursor.ErrorN
 
     default boolean kindIsAny(RuleKind... ks) {
         int my = kindId();
+
         for (var k : ks) {
             if (k.kindId() == my) {
                 return true;
             }
         }
+
         return false;
     }
 
@@ -83,29 +84,44 @@ public sealed interface Cursor permits Cursor.Leaf, Cursor.Branch, Cursor.ErrorN
 
     default Stream<TriviaToken> leadingTrivia() {
         var tokens = cst().tokens();
+
         return leadingTriviaTokens().mapToObj(i -> new TriviaToken(tokens, i));
     }
 
     default Stream<TriviaToken> trailingTrivia() {
         var tokens = cst().tokens();
+
         return trailingTriviaTokens().mapToObj(i -> new TriviaToken(tokens, i));
     }
 
     default Optional<Cursor> parent() {
         int p = cst().parentAt(idx());
-        return p == CstArray.NO_NODE ? Optional.empty() : Optional.of(wrap(cst(), p));
+
+        return p == CstArray.NO_NODE
+               ? Optional.empty()
+               : Optional.of(wrap(cst(), p));
     }
 
     default Stream<Cursor> ancestors() {
         Iterable<Cursor> iter = () -> new java.util.Iterator<Cursor>() {
             Cursor curr = parent().orElse(null);
-            @Override public boolean hasNext() { return curr != null; }
-            @Override public Cursor next() {
+
+            @Override
+            public boolean hasNext() {
+                return curr != null;
+            }
+
+            @Override
+            public Cursor next() {
                 var out = curr;
-                curr = out.parent().orElse(null);
+
+                curr = out.parent()
+                          .orElse(null);
+
                 return out;
             }
         };
+
         return StreamSupport.stream(iter.spliterator(), false);
     }
 
@@ -115,9 +131,11 @@ public sealed interface Cursor permits Cursor.Leaf, Cursor.Branch, Cursor.ErrorN
         if (cst.isError(idx)) {
             return new ErrorNode(cst, idx);
         }
+
         if (cst.firstChildAt(idx) == CstArray.NO_NODE) {
             return new Leaf(cst, idx);
         }
+
         return new Branch(cst, idx);
     }
 
@@ -135,27 +153,37 @@ public sealed interface Cursor permits Cursor.Leaf, Cursor.Branch, Cursor.ErrorN
     record Branch(CstArray cst, int idx) implements Cursor {
         public Optional<Cursor> firstChild() {
             int c = cst.firstChildAt(idx);
-            return c == CstArray.NO_NODE ? Optional.empty() : Optional.of(wrap(cst, c));
+
+            return c == CstArray.NO_NODE
+                   ? Optional.empty()
+                   : Optional.of(wrap(cst, c));
         }
 
         public Optional<Cursor> nextSibling() {
             int s = cst.nextSiblingAt(idx);
-            return s == CstArray.NO_NODE ? Optional.empty() : Optional.of(wrap(cst, s));
+
+            return s == CstArray.NO_NODE
+                   ? Optional.empty()
+                   : Optional.of(wrap(cst, s));
         }
 
         public Stream<Cursor> children() {
-            return cst.children(idx).mapToObj(i -> wrap(cst, i));
+            return cst.children(idx)
+                      .mapToObj(i -> wrap(cst, i));
         }
 
         public Stream<Cursor> descendants() {
-            return cst.descendants(idx).mapToObj(i -> wrap(cst, i));
+            return cst.descendants(idx)
+                      .mapToObj(i -> wrap(cst, i));
         }
 
         public int childCount() {
             int n = 0;
+
             for (int c = cst.firstChildAt(idx); c != CstArray.NO_NODE; c = cst.nextSiblingAt(c)) {
                 n++;
             }
+
             return n;
         }
     }
@@ -167,11 +195,9 @@ public sealed interface Cursor permits Cursor.Leaf, Cursor.Branch, Cursor.ErrorN
     }
 
     // ===== LineIndex cache =====
-
     /// Per-CstArray LineIndex cache. Keyed by identity so concurrent parses don't share.
     /// WeakHashMap so the cached LineIndex is reclaimed when its CstArray is GC'd.
-    java.util.Map<CstArray, LineIndex> LINE_INDEX_CACHE =
-        Collections.synchronizedMap(new WeakHashMap<>());
+    java.util.Map<CstArray, LineIndex> LINE_INDEX_CACHE = Collections.synchronizedMap(new WeakHashMap<>());
 
     private static LineIndex lineIndex(CstArray cst) {
         return LINE_INDEX_CACHE.computeIfAbsent(cst, c -> new LineIndex(c.input()));

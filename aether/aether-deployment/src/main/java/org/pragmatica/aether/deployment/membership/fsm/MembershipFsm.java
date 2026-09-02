@@ -751,6 +751,38 @@ public final class MembershipFsm {
         return coreMembers();
     }
 
+    /// The OBSERVED-REACHABILITY projection (#557 / #558): [`#coreCountedMembers`] narrowed to
+    /// members for which first-hand reachability evidence was latched — a completed QUIC handshake
+    /// or a SWIM ALIVE observation ([`MemberTracking#everReachable`]) — plus `self`, which is
+    /// reachable by definition and never observes itself.
+    ///
+    /// **Why this exists.** [`#coreCountedMembers`] answers "who is configured to be here", because
+    /// [`#seed`] promotes the whole configured core set to MEMBER at wiring time, before any packet
+    /// moves. Wiring that set to quorum made boot-time quorum a statement about CONFIGURATION: on a
+    /// 5-node cluster all five counted immediately, `PresenceGenerationSnapshotSource` latched its
+    /// one-way quorum gate on the first call, `TopologyObserver` flipped BOOTING→NORMAL and declared
+    /// quorum with zero connections — so `RabiaEngine.doClusterConnected` broadcast its `SyncRequest`
+    /// into an empty network.
+    ///
+    /// That also made the BOOTING connectivity fallback UNREACHABLE in production: it runs only
+    /// while `currentMembershipView()` is `none()`, which the seed made false before
+    /// `TopologyObserver` had even started. Feeding THIS projection to the snapshot source restores
+    /// that gate's documented intent — the view stays `none()` until members are genuinely reachable.
+    ///
+    /// Consumers that want "who is configured / who counts for placement and heal-deficit" must keep
+    /// using [`#coreCountedMembers`]. This projection is for the QUORUM numerator only.
+    public Set<NodeId> coreObservedMembers(NodeId self) {
+        return members.entrySet()
+                      .stream()
+                      .filter(entry -> entry.getValue()
+                                            .isCoreCountedMember())
+                      .filter(entry -> entry.getKey()
+                                            .equals(self) || entry.getValue()
+                                                                  .everReachable())
+                      .map(Map.Entry::getKey)
+                      .collect(Collectors.toCollection(LinkedHashSet::new));
+    }
+
     /// The strict quorum numerator for the `QuorumLossDetector` (membership-fsm-unification §6,
     /// adopted by cluster-topology-overhaul Wave 2 / W1): members whose current state is exactly
     /// MEMBER (SUSPECT excluded — strict) AND whose descriptor role is core (unknown / absent
@@ -761,6 +793,31 @@ public final class MembershipFsm {
         return (int) members.values()
                             .stream()
                             .filter(MemberTracking::isStrictCoreMember)
+                            .count();
+    }
+
+    /// [`#strictCoreMemberCount`] narrowed to OBSERVED reachability (#557) — the `QuorumLossDetector`
+    /// numerator. Same relationship to [`#strictCoreMemberCount`] that [`#coreObservedMembers`] has to
+    /// [`#coreCountedMembers`]: `self` always counts, every other member must carry latched first-hand
+    /// reachability evidence ([`MemberTracking#everReachable`]).
+    ///
+    /// **This restores the detector's arm-after-first-quorum latch.** That latch is documented as
+    /// capturing "has this cluster ever been quorate", so that a node booting into a still-forming
+    /// cluster never self-drains. Fed the seed-derived strict count, it armed on the CONFIGURED set
+    /// during construction — before the cluster had formed at all — so the cold-start guard it exists
+    /// to provide was already spent by the time formation started. Fed this projection it arms on
+    /// genuine connectivity, which is what it was always specified to mean.
+    ///
+    /// Firing is unaffected at boot: while unarmed the detector suppresses the check entirely, so a
+    /// count of 1 (self only) during formation cannot drain anything.
+    public int strictCoreObservedMemberCount(NodeId self) {
+        return (int) members.entrySet()
+                            .stream()
+                            .filter(entry -> entry.getValue()
+                                                  .isStrictCoreMember())
+                            .filter(entry -> entry.getKey()
+                                                  .equals(self) || entry.getValue()
+                                                                        .everReachable())
                             .count();
     }
 
@@ -1077,6 +1134,22 @@ public final class MembershipFsm {
         /// family as `swimFaultySeen ∧ livenessGoneSeen`). Transport may VETO a death; it
         /// never promotes anyone toward MEMBER. Mutated only under this monitor.
         private boolean transportConnected = false;
+        /// LATCHING first-hand-reachability evidence (#557). Set by the two events that constitute
+        /// direct evidence this node actually reached the member — a completed QUIC handshake
+        /// ([`PeerConnected`]) or a SWIM ALIVE observation ([`SwimHealthy`]) — and NEVER cleared.
+        ///
+        /// Deliberately NOT set by [`UpHysteresisMet`], which [`MembershipFsm#seedMember`]
+        /// dispatches directly from the CONFIGURED topology at wiring time with no observation
+        /// behind it. That seed is why `coreCountedMembers()` reports the full core set before a
+        /// single packet has moved, which made boot-time quorum a statement about configuration
+        /// rather than about reachability.
+        ///
+        /// Latching (not live) on purpose: this gates FORMATION, not liveness. A live signal here
+        /// would drop members out of the quorum numerator on any transient SUSPECT/flap and emit
+        /// spurious PASSIVE edges — steady-state liveness is already owned by the counted-set
+        /// projections and the SWIM health filter. Once observed, always observed; departure is
+        /// handled by the member leaving [`#coreCountedMembers`] on death.
+        private boolean everReachable = false;
         private long lastDoubtAtMs = 0L;
         private MemberDescriptor descriptor = MemberDescriptor.UNKNOWN;
         /// Pending terminal-eviction backstop (#131 Model C). `Some(future)` while a co-confirmed-death
@@ -1165,6 +1238,7 @@ public final class MembershipFsm {
         @Contract
         synchronized void dispatch(MembershipEvent event) {
             trackTransportConnectivity(event);
+            trackReachabilityEvidence(event);
             var wasDead = isDead();
             var wasDeparting = isDeparting();
             var from = stateName();
@@ -1228,6 +1302,23 @@ public final class MembershipFsm {
                 case PeerDisconnected _, LivenessGone _ -> transportConnected = false;
                 default -> {}
             }
+        }
+
+        /// Latch [`#everReachable`] on first-hand reachability evidence (#557). Kept separate from
+        /// [`#trackTransportConnectivity`] because the two have opposite lifetimes: that flag is a
+        /// LIVE transport state that clears on disconnect, this one is a ONE-WAY formation latch.
+        /// Folding them together is the mistake that would reintroduce quorum flap.
+        private void trackReachabilityEvidence(MembershipEvent event) {
+            switch (event) {
+                case PeerConnected _, SwimHealthy _ -> everReachable = true;
+                default -> {}
+            }
+        }
+
+        /// Whether first-hand reachability evidence was ever observed for this member — see
+        /// [`#everReachable`]. Read by [`MembershipFsm#coreObservedMembers`].
+        synchronized boolean everReachable() {
+            return everReachable;
         }
 
         /// H3 (Wave 7) — symmetric death-flag clearing on EVERY fresh entry into MEMBER: clears

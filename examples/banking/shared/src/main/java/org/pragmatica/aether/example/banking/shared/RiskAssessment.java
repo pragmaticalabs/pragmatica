@@ -1,10 +1,7 @@
 package org.pragmatica.aether.example.banking.shared;
 
 /// Result of fraud risk assessment for a transfer.
-public record RiskAssessment(RiskLevel level,
-                             int score,
-                             String reason) {
-
+public record RiskAssessment(RiskLevel level, int score, String reason) {
     public enum RiskLevel {
         LOW,
         MEDIUM,

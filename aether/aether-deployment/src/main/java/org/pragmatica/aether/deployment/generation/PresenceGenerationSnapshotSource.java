@@ -17,10 +17,24 @@ import org.pragmatica.lang.Option;
 
 /// Presence-derived `GenerationSnapshotSource` that feeds `TopologyObserver`'s quorum
 /// evaluation (and the `MembershipDeltaProjector`'s `observedRabiaTerm` log-index stamp,
-/// Wave 4) from the authoritative membership FSM's core-scoped counting projection
-/// (`MembershipFsm.coreCountedMembers()`, wired as `memberSupplier` — Wave 7 of the
-/// cluster-topology-overhaul spec completed the cutover off `PresenceSampler.currentMembers()`)
-/// instead of the committed `GenerationSnapshot`.
+/// Wave 4) from the authoritative membership FSM's core-scoped OBSERVED-REACHABILITY
+/// projection (`MembershipFsm.coreObservedMembers(self)`, wired as `memberSupplier` in
+/// `AetherNode.presenceMemberSupplier`) instead of the committed `GenerationSnapshot`.
+///
+/// **The supplier is `coreObservedMembers`, NOT `coreCountedMembers` (#557).** This docstring
+/// claimed the latter for some time after the rewire, and that stale text is not harmless: #557's
+/// own diagnosis comment concluded this path used "health assumed, not observed" — reasoning from
+/// the description rather than the wiring. The distinction is the whole point of the fix.
+/// `coreCountedMembers` reports every CONFIGURED core the moment `seed()` runs, so feeding it here
+/// would make boot quorum a statement about configuration and let a node broadcast its
+/// `SyncRequest` into a network it has never contacted. `coreObservedMembers` admits a peer only
+/// on `PeerConnected` or `SwimHealthy` (the `everReachable` latch), so quorum is a reachability
+/// claim. Placement / heal-deficit / role-assignment consumers keep reading `coreCountedMembers` —
+/// a readiness count is not a quorum count.
+///
+/// The composition is pinned by `PresenceGenerationSnapshotSourceQuorumCompositionTest`, which
+/// fails if the supplier is swapped back.
+///
 /// This decouples `NodeRemoved`/`NodeJoined` and quorum from consensus commits
 /// (`aether/docs/specs/membership-placement-split-spec.md` §4.1–4.2, step 2 of §8).
 ///

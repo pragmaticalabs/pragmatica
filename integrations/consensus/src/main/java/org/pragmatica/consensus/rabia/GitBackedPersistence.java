@@ -13,8 +13,14 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.rabia;
+
+import java.nio.file.Path;
+import java.time.Instant;
+import java.util.Collection;
+import java.util.List;
+import java.util.function.Function;
+import java.util.regex.Pattern;
 
 import org.pragmatica.consensus.Command;
 import org.pragmatica.consensus.StateMachine;
@@ -23,28 +29,19 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-
 import org.pragmatica.lang.io.TimeSpan;
-
-import java.nio.file.Path;
 
 import static org.pragmatica.lang.io.FileOps.exists;
 import static org.pragmatica.lang.io.FileOps.readString;
 import static org.pragmatica.lang.io.FileOps.writeString;
-import java.time.Instant;
-import java.util.Collection;
-import java.util.List;
-import java.util.function.Function;
-import java.util.regex.Pattern;
-
 import static org.pragmatica.consensus.rabia.RabiaPersistence.SavedState.savedState;
+
 
 /// Git-backed persistence for Rabia consensus state.
 /// Writes state snapshots as TOML files in a local git repository.
 class GitBackedPersistence<C extends Command> implements RabiaPersistence<C> {
     private static final String STATE_FILE = "state.toml";
     private static final Pattern PHASE_PATTERN = Pattern.compile("^# Phase: (\\d+)$", Pattern.MULTILINE);
-
     /// Default git operation timeout.
     static final TimeSpan DEFAULT_GIT_TIMEOUT = TimeSpan.timeSpan(30).seconds();
 
@@ -74,7 +71,9 @@ class GitBackedPersistence<C extends Command> implements RabiaPersistence<C> {
     }
 
     @Override
-    public Result<Unit> save(StateMachine<C> stateMachine, Phase lastCommittedPhase, Collection<Batch<C>> pendingBatches) {
+    public Result<Unit> save(StateMachine<C> stateMachine,
+                             Phase lastCommittedPhase,
+                             Collection<Batch<C>> pendingBatches) {
         return stateMachine.makeSnapshot()
                            .flatMap(snapshotToToml::apply)
                            .map(toml -> addPhaseHeader(toml, lastCommittedPhase))
@@ -89,22 +88,24 @@ class GitBackedPersistence<C extends Command> implements RabiaPersistence<C> {
     public Option<SavedState<C>> load() {
         var stateFile = backupDir.resolve(STATE_FILE);
 
-        return Option.option(exists(stateFile) ? stateFile : null)
-                     .flatMap(this::readTomlContent);
+        return Option.option(exists(stateFile)
+                             ? stateFile
+                             : null).flatMap(this::readTomlContent);
     }
 
     private Option<SavedState<C>> readTomlContent(Path stateFile) {
-        return readString(stateFile)
-                     .mapError(e -> PersistenceError.ioFailure(new RuntimeException(e.message())))
-                     .flatMap(this::parseTomlContent)
-                     .option();
+        return readString(stateFile).mapError(e -> PersistenceError.ioFailure(new RuntimeException(e.message())))
+                         .flatMap(this::parseTomlContent)
+                         .option();
     }
 
     private Result<SavedState<C>> parseTomlContent(String tomlText) {
         var phase = extractPhase(tomlText);
 
         return tomlToSnapshot.apply(tomlText)
-                             .map(snapshot -> savedState(snapshot, phase, List.of()));
+                             .map(snapshot -> savedState(snapshot,
+                                                         phase,
+                                                         List.of()));
     }
 
     private Phase extractPhase(String tomlText) {
@@ -120,8 +121,7 @@ class GitBackedPersistence<C extends Command> implements RabiaPersistence<C> {
     }
 
     private Result<Unit> writeTomlFile(String toml) {
-        return writeString(backupDir.resolve(STATE_FILE), toml)
-                     .mapError(e -> PersistenceError.ioFailure(new RuntimeException(e.message())));
+        return writeString(backupDir.resolve(STATE_FILE), toml).mapError(e -> PersistenceError.ioFailure(new RuntimeException(e.message())));
     }
 
     private Result<Unit> ensureGitInitialized() {
@@ -130,12 +130,13 @@ class GitBackedPersistence<C extends Command> implements RabiaPersistence<C> {
         return exists(gitDir)
                ? Result.unitResult()
                : runGit("init").flatMap(_ -> configureGitUser())
-                               .mapToUnit();
+                       .mapToUnit();
     }
 
     private Result<String> configureGitUser() {
-        return runGit("config", "user.email", "aether@pragmatica.org")
-            .flatMap(_ -> runGit("config", "user.name", "Aether Backup"));
+        return runGit("config", "user.email", "aether@pragmatica.org").flatMap(_ -> runGit("config",
+                                                                                           "user.name",
+                                                                                           "Aether Backup"));
     }
 
     private Result<Unit> gitAdd() {
@@ -143,38 +144,35 @@ class GitBackedPersistence<C extends Command> implements RabiaPersistence<C> {
     }
 
     private Result<Unit> gitCommit(Phase phase) {
-        return runGit("commit", "-m", "Backup phase " + phase.value() + " at " + Instant.now()).mapToUnit();
+        return runGit("commit",
+                      "-m",
+                      "Backup phase " + phase.value() + " at " + Instant.now()).mapToUnit();
     }
 
     private Result<Unit> pushIfRemoteConfigured() {
-        return remote.fold(() -> Result.unitResult(),
-                           _ -> runGit("push").mapToUnit());
+        return remote.fold(() -> Result.unitResult(), _ -> runGit("push").mapToUnit());
     }
 
     private Result<String> runGit(String... args) {
         var command = new String[args.length + 1];
+
         command[0] = "git";
         System.arraycopy(args, 0, command, 1, args.length);
 
-        return Result.lift(PersistenceError::ioFailure, () -> executeProcess(command))
-                     .flatMap(this::validateExitCode);
+        return Result.lift(PersistenceError::ioFailure, () -> executeProcess(command)).flatMap(this::validateExitCode);
     }
 
     @Contract
     private ProcessResult executeProcess(String[] command) throws Exception {
-        var process = new ProcessBuilder(command)
-            .directory(backupDir.toFile())
-            .redirectErrorStream(false)
-            .start();
-
+        var process = new ProcessBuilder(command).directory(backupDir.toFile()).redirectErrorStream(false).start();
         var timeoutMs = gitTimeout.millis();
         var completed = process.waitFor(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS);
-
         var stdout = new String(process.getInputStream().readAllBytes());
         var stderr = new String(process.getErrorStream().readAllBytes());
 
         if (!completed) {
             process.destroyForcibly();
+
             return new ProcessResult(-1, stdout, "Git command timed out after " + timeoutMs + "ms");
         }
 

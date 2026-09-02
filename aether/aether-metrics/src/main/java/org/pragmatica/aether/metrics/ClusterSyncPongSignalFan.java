@@ -11,16 +11,7 @@ import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
 
-import org.pragmatica.aether.slice.generation.ConnectivityReport;
-import org.pragmatica.aether.slice.generation.Epoch;
-import org.pragmatica.aether.slice.generation.HealthHint;
-import org.pragmatica.aether.slice.generation.HealthSignal;
-import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPong;
-import org.pragmatica.cluster.metrics.ConnectivityState;
-import org.pragmatica.cluster.metrics.HealthHintWire;
-import org.pragmatica.cluster.metrics.PeerConnectivityObservation;
-import org.pragmatica.cluster.metrics.PeerHealthObservation;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.lang.Contract;
@@ -29,7 +20,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Leader-side fan-out of `ClusterSyncPong` observations into `HealthSignal`s, plus the
+/// Leader-side fan-out of `ClusterSyncPong` arrivals: the `readyCandidate` hand-off, plus the
 /// leader's in-memory node-readiness view (membership-architecture-v2-spec §7.5.6).
 ///
 /// The readiness view is an epoch-fenced `NodeId → NodeReportedState` map built purely from
@@ -61,7 +52,7 @@ public interface ClusterSyncPongSignalFan {
     void fan(ClusterSyncPong pong);
 
     /// No-op fan for placeholder wiring (e.g. before `AetherNode` installs the real fan).
-    /// Holds no readiness state and ignores every signal.
+    /// Holds no readiness state and ignores every pong.
     ClusterSyncPongSignalFan NOOP = new ClusterSyncPongSignalFan() {
         @Override
         @Contract
@@ -117,26 +108,24 @@ public interface ClusterSyncPongSignalFan {
     /// Backward-compatible factory: no readiness sink wired — `readyCandidate` arrivals are
     /// observed silently. Preserves pre-Phase-2 behaviour for tests / embeddings that pre-date
     /// the convergence-reconciler wiring.
-    static ClusterSyncPongSignalFan clusterSyncPongSignalFan(HealthSignalSink sink, LeaderManager leaderManager) {
-        return clusterSyncPongSignalFan(sink, leaderManager, ReadyCandidateSink.NOOP);
+    static ClusterSyncPongSignalFan clusterSyncPongSignalFan(LeaderManager leaderManager) {
+        return clusterSyncPongSignalFan(leaderManager, ReadyCandidateSink.NOOP);
     }
 
     /// Phase 2 PR-B factory. The supplied `readySink` is invoked for every non-empty
     /// `ClusterSyncPong.readyCandidate` observed while this node is leader. Idempotency lives
     /// in the downstream reducer — re-signalling an already-present candidate is a no-op there.
-    static ClusterSyncPongSignalFan clusterSyncPongSignalFan(HealthSignalSink sink,
-                                                             LeaderManager leaderManager,
+    static ClusterSyncPongSignalFan clusterSyncPongSignalFan(LeaderManager leaderManager,
                                                              ReadyCandidateSink readySink) {
-        return new StatefulSignalFan(sink, leaderManager, readySink, System::nanoTime);
+        return new StatefulSignalFan(leaderManager, readySink, System::nanoTime);
     }
 
     /// Membership-v2 B2 factory with an injected clock for deterministic testing. The clock
     /// drives `lastSeenNanos` stamping and `sweepStale` age comparison.
-    static ClusterSyncPongSignalFan clusterSyncPongSignalFan(HealthSignalSink sink,
-                                                             LeaderManager leaderManager,
+    static ClusterSyncPongSignalFan clusterSyncPongSignalFan(LeaderManager leaderManager,
                                                              ReadyCandidateSink readySink,
                                                              LongSupplier nowNanos) {
-        return new StatefulSignalFan(sink, leaderManager, readySink, nowNanos);
+        return new StatefulSignalFan(leaderManager, readySink, nowNanos);
     }
 
     /// Per-node readiness entry in the leader's in-memory view. `syncCountdown` is the remaining
@@ -145,7 +134,6 @@ public interface ClusterSyncPongSignalFan {
     record ReadinessEntry(NodeReportedState state, long incarnation, long lastSeenNanos, int syncCountdown) {}
 
     final class StatefulSignalFan implements ClusterSyncPongSignalFan {
-        private final HealthSignalSink sink;
         private final LeaderManager leaderManager;
         private final ReadyCandidateSink readySink;
         private final LongSupplier nowNanos;
@@ -155,11 +143,7 @@ public interface ClusterSyncPongSignalFan {
 
         private volatile BooleanSupplier warmedUp = () -> false;
 
-        private StatefulSignalFan(HealthSignalSink sink,
-                                  LeaderManager leaderManager,
-                                  ReadyCandidateSink readySink,
-                                  LongSupplier nowNanos) {
-            this.sink = sink;
+        private StatefulSignalFan(LeaderManager leaderManager, ReadyCandidateSink readySink, LongSupplier nowNanos) {
             this.leaderManager = leaderManager;
             this.readySink = readySink;
             this.nowNanos = nowNanos;
@@ -172,13 +156,8 @@ public interface ClusterSyncPongSignalFan {
                 return;
             }
 
-            sink.emit(new HealthSignal.SwimHint(pong.sender(),
-                                                HealthHint.HEALTHY,
-                                                Epoch.epoch(pong.observedEpochTerm(), pong.observedEpochCounter())));
             pong.readyCandidate().onPresent(candidate -> readySink.onReadyCandidate(pong.sender(), candidate));
             recordReadiness(pong);
-            pong.peerHealth().forEach(observation -> emitHealth(pong, observation, sink));
-            pong.peerConnectivity().forEach(observation -> emitConnectivity(pong, observation, sink));
         }
 
         @Override
@@ -274,42 +253,6 @@ public interface ClusterSyncPongSignalFan {
 
         private static NodeReportedState parseState(String wire) {
             return NodeReportedState.fromWire(wire);
-        }
-
-        private static void emitHealth(ClusterSyncPong pong, PeerHealthObservation observation, HealthSignalSink sink) {
-            sink.emit(new HealthSignal.RemoteSwimHint(pong.sender(),
-                                                      observation.peerId(),
-                                                      translateHint(observation.hint()),
-                                                      Epoch.epoch(observation.observedEpochTerm(),
-                                                                  observation.observedEpochCounter()),
-                                                      observation.producedAtMs()));
-        }
-
-        private static void emitConnectivity(ClusterSyncPong pong,
-                                             PeerConnectivityObservation observation,
-                                             HealthSignalSink sink) {
-            sink.emit(new HealthSignal.RemoteConnectivity(pong.sender(),
-                                                          observation.peerId(),
-                                                          translateConnectivity(observation.state()),
-                                                          Epoch.epoch(observation.observedEpochTerm(),
-                                                                      observation.observedEpochCounter()),
-                                                          observation.producedAtMs()));
-        }
-
-        private static HealthHint translateHint(HealthHintWire wire) {
-            return switch (wire) {
-                case HEALTHY -> HealthHint.HEALTHY;
-                case SUSPECTED -> HealthHint.SUSPECTED;
-                case FAULTY -> HealthHint.FAULTY;
-            };
-        }
-
-        private static ConnectivityReport translateConnectivity(ConnectivityState state) {
-            return switch (state) {
-                case CONNECTED -> ConnectivityReport.CONNECTED;
-                case DISCONNECTED -> ConnectivityReport.DISCONNECTED;
-                case STALE -> ConnectivityReport.STALE;
-            };
         }
     }
 }

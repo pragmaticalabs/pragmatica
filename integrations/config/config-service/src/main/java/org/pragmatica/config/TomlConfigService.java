@@ -1,14 +1,5 @@
 package org.pragmatica.config;
 
-import org.pragmatica.config.toml.TomlDocument;
-import org.pragmatica.config.toml.TomlParser;
-import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Verify;
-import org.pragmatica.lang.parse.Text;
-import org.pragmatica.lang.parse.TimeSpan;
-
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -21,9 +12,19 @@ import java.time.Duration;
 import java.util.Arrays;
 import java.util.stream.IntStream;
 
+import org.pragmatica.config.toml.TomlDocument;
+import org.pragmatica.config.toml.TomlParser;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
+import org.pragmatica.lang.parse.Text;
+import org.pragmatica.lang.parse.TimeSpan;
+
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
+
 
 /// TOML-based implementation of ConfigService.
 ///
@@ -67,9 +68,9 @@ public final class TomlConfigService implements ConfigService {
     @Override
     public <T> Result<T> config(String section, Class<T> configClass) {
         if (!hasSection(section)) {
-            return ConfigError.sectionNotFound(section)
-                              .result();
+            return ConfigError.sectionNotFound(section).result();
         }
+
         return bindToClass(section, configClass);
     }
 
@@ -81,18 +82,21 @@ public final class TomlConfigService implements ConfigService {
     @Override
     public Option<String> getString(String key) {
         var parts = splitKey(key);
+
         return document.getString(parts.section(), parts.key());
     }
 
     @Override
     public Option<Integer> getInt(String key) {
         var parts = splitKey(key);
+
         return document.getInt(parts.section(), parts.key());
     }
 
     @Override
     public Option<Boolean> getBoolean(String key) {
         var parts = splitKey(key);
+
         return document.getBoolean(parts.section(), parts.key());
     }
 
@@ -103,55 +107,65 @@ public final class TomlConfigService implements ConfigService {
                                             configClass.getSimpleName())
                               .result();
         }
-        try{
+
+        try {
             var components = configClass.getRecordComponents();
             var types = extractComponentTypes(components);
             Constructor<T> constructor = configClass.getDeclaredConstructor(types);
-            return collectComponentArgs(section, components, configClass).flatMap(args -> invokeFactoryOrConstructor(configClass, constructor, types, args));
+
+            return collectComponentArgs(section, components, configClass).flatMap(args -> invokeFactoryOrConstructor(configClass,
+                                                                                                                     constructor,
+                                                                                                                     types,
+                                                                                                                     args));
         } catch (Exception e) {
-            return ConfigError.parseFailed(section, e)
-                              .result();
+            return ConfigError.parseFailed(section, e).result();
         }
     }
 
-    private <T> Result<T> invokeFactoryOrConstructor(Class<T> configClass, Constructor<T> constructor, Class<?>[] types, Object[] args) {
-        return findFactoryMethod(configClass, types)
-            .map(method -> invokeFactory(method, args, configClass))
-            .or(() -> invokeConstructor(constructor, args));
+    private <T> Result<T> invokeFactoryOrConstructor(Class<T> configClass,
+                                                     Constructor<T> constructor,
+                                                     Class<?>[] types,
+                                                     Object[] args) {
+        return findFactoryMethod(configClass, types).map(method -> invokeFactory(method, args, configClass))
+                                .or(() -> invokeConstructor(constructor, args));
     }
 
     @SuppressWarnings("unchecked")
     private static <T> Result<T> invokeFactory(Method method, Object[] args, Class<T> configClass) {
-        try{
+        try {
             return (Result<T>) method.invoke(null, args);
         } catch (Exception e) {
-            return ConfigError.parseFailed(configClass.getSimpleName(), e)
+            return ConfigError.parseFailed(configClass.getSimpleName(),
+                                           e)
                               .result();
         }
     }
 
     private static Option<Method> findFactoryMethod(Class<?> configClass, Class<?>[] types) {
         var name = factoryMethodName(configClass);
-        try{
+
+        try {
             var method = configClass.getDeclaredMethod(name, types);
+
             if (Modifier.isStatic(method.getModifiers()) && method.getReturnType() == Result.class) {
                 return some(method);
             }
         } catch (NoSuchMethodException e) {}
+
         return none();
     }
 
     private static String factoryMethodName(Class<?> configClass) {
         var simpleName = configClass.getSimpleName();
+
         return Character.toLowerCase(simpleName.charAt(0)) + simpleName.substring(1);
     }
 
     private <T> Result<T> invokeConstructor(Constructor<T> constructor, Object[] args) {
-        try{
+        try {
             return success(constructor.newInstance(args));
         } catch (Exception e) {
-            return ConfigError.parseFailed(constructor.getDeclaringClass()
-                                                      .getSimpleName(),
+            return ConfigError.parseFailed(constructor.getDeclaringClass().getSimpleName(),
                                            e)
                               .result();
         }
@@ -165,17 +179,23 @@ public final class TomlConfigService implements ConfigService {
                                 TomlConfigService::mergeArgs);
     }
 
-    private Result<IndexedValue> collectComponentAt(String section, RecordComponent component, int index, Class<?> configClass) {
+    private Result<IndexedValue> collectComponentAt(String section,
+                                                    RecordComponent component,
+                                                    int index,
+                                                    Class<?> configClass) {
         var extracted = extractValue(section, component);
+
         if (extracted.isSuccess()) {
             return extracted.flatMap(v -> IndexedValue.indexedValue(index, v));
         }
         // Convention: derive `name` (String) from the section suffix when it's absent from TOML.
         // Supports blueprint patterns like [streams.test-events] where the trailing segment IS the name.
         var derived = deriveNameFromSectionSuffix(section, component);
+
         if (derived.isPresent()) {
             return IndexedValue.indexedValue(index, derived.unwrap());
         }
+
         return getDefaultComponentValue(configClass, component, index);
     }
 
@@ -183,10 +203,13 @@ public final class TomlConfigService implements ConfigService {
         if (!"name".equals(component.getName()) || component.getType() != String.class) {
             return none();
         }
+
         var lastDot = section.lastIndexOf('.');
+
         if (lastDot < 0 || lastDot == section.length() - 1) {
             return none();
         }
+
         return some(section.substring(lastDot + 1));
     }
 
@@ -196,6 +219,7 @@ public final class TomlConfigService implements ConfigService {
 
     private static Object[] setArrayElement(Object[] args, IndexedValue iv) {
         args[iv.index()] = iv.value();
+
         return args;
     }
 
@@ -210,8 +234,8 @@ public final class TomlConfigService implements ConfigService {
     }
 
     private static Class<?>[] extractComponentTypes(RecordComponent[] components) {
-        var types = Arrays.stream(components)
-                          .map(TomlConfigService::componentType);
+        var types = Arrays.stream(components).map(TomlConfigService::componentType);
+
         return types.toArray(Class[]::new);
     }
 
@@ -223,36 +247,47 @@ public final class TomlConfigService implements ConfigService {
         var key = component.getName();
         var type = component.getType();
         var tomlKey = toSnakeCase(key);
+
         if (type == String.class) {
             return lookupString(section, key, tomlKey);
         }
+
         if (type == int.class || type == Integer.class) {
             return lookupInt(section, key, tomlKey);
         }
+
         if (type == long.class || type == Long.class) {
             return lookupLong(section, key, tomlKey);
         }
+
         if (type == boolean.class || type == Boolean.class) {
             return lookupBoolean(section, key, tomlKey);
         }
+
         if (type == double.class || type == Double.class) {
             return lookupDouble(section, key, tomlKey);
         }
+
         if (type == TimeSpan.class) {
             return lookupTimeSpan(section, key, tomlKey);
         }
+
         if (type == Duration.class) {
             return lookupDuration(section, key, tomlKey);
         }
+
         if (type.isEnum()) {
             return lookupEnum(section, key, tomlKey, type);
         }
+
         if (type.isRecord()) {
             return lookupNestedRecord(section, tomlKey, type);
         }
+
         if (type == Option.class) {
             return extractOptionValue(section, tomlKey, key, component.getGenericType());
         }
+
         return ConfigError.typeMismatch(section + "." + key,
                                         "supported type",
                                         type.getSimpleName())
@@ -292,16 +327,18 @@ public final class TomlConfigService implements ConfigService {
     private Result<Object> lookupTimeSpan(String section, String key, String tomlKey) {
         return document.getString(section, tomlKey)
                        .toResult(ConfigError.sectionNotFound(section + "." + key))
-                       .flatMap(v -> TimeSpan.timeSpan(v)
-                                             .mapError(_ -> ConfigError.typeMismatch(section + "." + key, "TimeSpan", v)))
+                       .flatMap(v -> TimeSpan.timeSpan(v).mapError(_ -> ConfigError.typeMismatch(section + "." + key,
+                                                                                                 "TimeSpan",
+                                                                                                 v)))
                        .map(Object.class::cast);
     }
 
     private Result<Object> lookupDuration(String section, String key, String tomlKey) {
         return document.getString(section, tomlKey)
                        .toResult(ConfigError.sectionNotFound(section + "." + key))
-                       .flatMap(v -> TimeSpan.timeSpan(v)
-                                             .mapError(_ -> ConfigError.typeMismatch(section + "." + key, "Duration", v)))
+                       .flatMap(v -> TimeSpan.timeSpan(v).mapError(_ -> ConfigError.typeMismatch(section + "." + key,
+                                                                                                 "Duration",
+                                                                                                 v)))
                        .map(ts -> (Object) ts.duration());
     }
 
@@ -314,40 +351,46 @@ public final class TomlConfigService implements ConfigService {
     @SuppressWarnings("unchecked")
     private Result<Object> lookupNestedRecord(String section, String tomlKey, Class<?> type) {
         var nestedSection = section + "." + tomlKey;
+
         if (!document.hasSection(nestedSection)) {
             return findDefaultOrError(type, nestedSection);
         }
+
         return (Result<Object>) bindToClass(nestedSection, type);
     }
 
     private static Result<Object> findDefaultOrError(Class<?> type, String nestedSection) {
         return lookupDefaultField(type).map(Result::success)
-                                 .or(ConfigError.sectionNotFound(nestedSection)
-                                                .result());
+                                 .or(ConfigError.sectionNotFound(nestedSection).result());
     }
 
     // --- DEFAULT field lookup ---
     private static Option<Object> lookupDefaultField(Class<?> type) {
         try {
             Field defaultField = type.getField("DEFAULT");
+
             if (isStaticFinalFieldOfType(defaultField, type)) {
                 return Option.option(defaultField.get(type));
             }
         } catch (NoSuchFieldException | IllegalAccessException e) {}
+
         return none();
     }
 
     private static boolean isStaticFinalFieldOfType(Field field, Class<?> type) {
         var modifiers = field.getModifiers();
         var isStaticFinal = Modifier.isStatic(modifiers) && Modifier.isFinal(modifiers);
+
         return isStaticFinal && type.isAssignableFrom(field.getType());
     }
 
-    private static Result<IndexedValue> getDefaultComponentValue(Class<?> configClass, RecordComponent component, int index) {
-        return lookupDefaultField(configClass)
-            .flatMap(defaultInstance -> invokeAccessor(defaultInstance, component))
-            .map(value -> new IndexedValue(index, value))
-            .toResult(ConfigError.sectionNotFound(configClass.getSimpleName() + "." + component.getName()));
+    private static Result<IndexedValue> getDefaultComponentValue(Class<?> configClass,
+                                                                 RecordComponent component,
+                                                                 int index) {
+        return lookupDefaultField(configClass).flatMap(defaultInstance -> invokeAccessor(defaultInstance, component))
+                                 .map(value -> new IndexedValue(index, value))
+                                 .toResult(ConfigError.sectionNotFound(configClass.getSimpleName()
+                                                                      + "." + component.getName()));
     }
 
     private static Option<Object> invokeAccessor(Object instance, RecordComponent component) {
@@ -361,10 +404,12 @@ public final class TomlConfigService implements ConfigService {
     private Result<Object> extractOptionValue(String section, String tomlKey, String key, Type genericType) {
         if (genericType instanceof ParameterizedType paramType) {
             var typeArgs = paramType.getActualTypeArguments();
+
             if (typeArgs.length == 1 && typeArgs[0] instanceof Class<?> innerClass) {
                 return extractOptionalPrimitive(section, tomlKey, key, innerClass);
             }
         }
+
         return success(document.getString(section, tomlKey));
     }
 
@@ -372,43 +417,55 @@ public final class TomlConfigService implements ConfigService {
         if (innerClass == String.class) {
             return success(document.getString(section, tomlKey));
         }
+
         if (innerClass == Integer.class) {
             return success(document.getInt(section, tomlKey));
         }
+
         if (innerClass == Long.class) {
             return success(document.getLong(section, tomlKey));
         }
+
         if (innerClass == Boolean.class) {
             return success(document.getBoolean(section, tomlKey));
         }
+
         if (innerClass == Double.class) {
             return success(document.getDouble(section, tomlKey));
         }
+
         if (innerClass == TimeSpan.class) {
-            return success(document.getString(section, tomlKey)
-                                   .flatMap(v -> TimeSpan.timeSpan(v).option()));
+            return success(document.getString(section, tomlKey).flatMap(v -> TimeSpan.timeSpan(v).option()));
         }
+
         if (innerClass == Duration.class) {
             return success(document.getString(section, tomlKey)
-                                   .flatMap(v -> TimeSpan.timeSpan(v).option().map(TimeSpan::duration)));
+                                   .flatMap(v -> TimeSpan.timeSpan(v)
+                                                         .option()
+                                                         .map(TimeSpan::duration)));
         }
+
         if (innerClass.isEnum()) {
             return handleOptionalEnum(section, tomlKey, key, innerClass);
         }
+
         return success(none());
     }
 
     private Result<Object> handleOptionalEnum(String section, String tomlKey, String key, Class<?> innerClass) {
         var stringOpt = document.getString(section, tomlKey);
+
         if (Verify.Is.none(stringOpt)) {
             return success(none());
         }
+
         return safeParseEnum(stringOpt.unwrap(), innerClass, section + "." + key).map(Option::option);
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
     private static Result<Object> safeParseEnum(String value, Class<?> type, String fullKey) {
         var upperValue = value.toUpperCase();
+
         return Text.parseEnum((Class<Enum>) type,
                               upperValue)
                    .map(Object.class::cast)
@@ -429,11 +486,9 @@ public final class TomlConfigService implements ConfigService {
 
     private static String toSnakeCase(String camelCase) {
         var result = new StringBuilder();
-        IntStream.range(0,
-                        camelCase.length())
-                 .forEach(i -> appendSnakeCaseChar(result,
-                                                   camelCase.charAt(i),
-                                                   i));
+
+        IntStream.range(0, camelCase.length()).forEach(i -> appendSnakeCaseChar(result, camelCase.charAt(i), i));
+
         return result.toString();
     }
 
@@ -441,6 +496,7 @@ public final class TomlConfigService implements ConfigService {
         if (isUpperCaseWithPrefix(c, index)) {
             result.append('_');
         }
+
         result.append(Character.isUpperCase(c)
                       ? Character.toLowerCase(c)
                       : c);
@@ -458,10 +514,11 @@ public final class TomlConfigService implements ConfigService {
 
     private static KeyParts splitKey(String fullKey) {
         int lastDot = fullKey.lastIndexOf('.');
+
         if (Verify.Is.negative(lastDot)) {
-            return KeyParts.keyParts("", fullKey)
-                           .unwrap();
+            return KeyParts.keyParts("", fullKey).unwrap();
         }
+
         return KeyParts.keyParts(fullKey.substring(0, lastDot),
                                  fullKey.substring(lastDot + 1))
                        .unwrap();

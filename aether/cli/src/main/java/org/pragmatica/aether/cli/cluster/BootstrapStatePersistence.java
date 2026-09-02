@@ -7,6 +7,7 @@ package org.pragmatica.aether.cli.cluster;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -27,7 +28,7 @@ sealed interface BootstrapStatePersistence {
         return Result.lift(PersistenceError::new, () -> doSave(state));
     }
 
-    static Option<BootstrapState> load(String clusterName) {
+    static Option<BootstrapState> load(ClusterName clusterName) {
         var path = stateFilePath(clusterName);
 
         if (!Files.exists(path)) {
@@ -41,16 +42,16 @@ sealed interface BootstrapStatePersistence {
                      .option();
     }
 
-    static Result<Unit> delete(String clusterName) {
+    static Result<Unit> delete(ClusterName clusterName) {
         return Result.lift(PersistenceError::new, () -> doDelete(clusterName));
     }
 
-    static Path statePath(String clusterName) {
+    static Path statePath(ClusterName clusterName) {
         return stateFilePath(clusterName);
     }
 
     private static Unit doSave(BootstrapState state) throws Exception {
-        var dir = AETHER_DIR.resolve(state.clusterName());
+        var dir = AETHER_DIR.resolve(state.clusterName().value());
 
         Files.createDirectories(dir);
         Files.writeString(dir.resolve(STATE_FILE_NAME), state.toJson());
@@ -58,7 +59,7 @@ sealed interface BootstrapStatePersistence {
         return Unit.unit();
     }
 
-    private static Unit doDelete(String clusterName) throws Exception {
+    private static Unit doDelete(ClusterName clusterName) throws Exception {
         var path = stateFilePath(clusterName);
 
         Files.deleteIfExists(path);
@@ -66,8 +67,8 @@ sealed interface BootstrapStatePersistence {
         return Unit.unit();
     }
 
-    private static Path stateFilePath(String clusterName) {
-        return AETHER_DIR.resolve(clusterName).resolve(STATE_FILE_NAME);
+    private static Path stateFilePath(ClusterName clusterName) {
+        return AETHER_DIR.resolve(clusterName.value()).resolve(STATE_FILE_NAME);
     }
 
     record PersistenceError(Throwable cause) implements Cause {

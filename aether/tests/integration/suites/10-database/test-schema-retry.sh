@@ -13,10 +13,13 @@ DATASOURCE=""
 
 discover_tracked_datasource() {
     local body
-    body=$(api_get "/api/schema/status" 2>/dev/null) || return 1
+    body=$(api_get "/api/v1/schema/status" 2>/dev/null) || return 1
+    # #598: the status list is CLUSTER-GLOBAL and url-shortener's datasource is tracked
+    # too when cluster-A suites run in parallel — select THIS blueprint's row, never
+    # the first row (head -1 grabbed whichever blueprint published first).
     printf '%s' "$body" | grep -oE '"datasource"[[:space:]]*:[[:space:]]*"[^"]+"' \
-                       | head -1 \
-                       | sed 's/.*"datasource"[[:space:]]*:[[:space:]]*"\([^"]*\)"/\1/'
+                       | sed 's/.*"datasource"[[:space:]]*:[[:space:]]*"\([^"]*\)"/\1/' \
+                       | grep -m1 'testpersistence'
 }
 
 test_cluster_ready() {
@@ -48,9 +51,11 @@ test_schema_status_before_retry() {
 }
 
 # Strict: retry endpoint accepts the call (HTTP 2xx) OR returns the documented
-# "not in FAILED state" message (HTTP 500) — both prove the endpoint contract
+# "not in FAILED state" message (HTTP 409 Conflict) — both prove the endpoint contract
 # is wired. The deeper FAILED → HEALTHY assertion still requires fault-injection
 # (separate TODO), but the endpoint contract is testable now.
+# Matched on the body phrase rather than the numeric code, so the 500 → 409 correction
+# does not churn this assertion.
 test_schema_retry_endpoint() {
     if [ -z "$DATASOURCE" ]; then
         log_fail "DATASOURCE empty — discovery failed"
@@ -63,16 +68,16 @@ test_schema_retry_endpoint() {
     # Non-2xx response — surface body to confirm the contract message.
     local resp
     resp=$(curl -sk -m 10 -X POST -H "X-API-Key: ${API_KEY}" \
-           "${CLUSTER_ENDPOINT}/api/schema/retry/${DATASOURCE}" 2>/dev/null || echo "")
+           "${CLUSTER_ENDPOINT}/api/v1/schema/retry/${DATASOURCE}" 2>/dev/null || echo "")
     if printf '%s' "$resp" | grep -qiE 'not in FAILED state'; then
         log_pass "Schema retry returned expected 'not in FAILED state' for healthy ${DATASOURCE} (contract verified)"
         return 0
     fi
-    log_fail "POST /api/schema/retry/${DATASOURCE} failed unexpectedly: $(printf '%s' "$resp" | head -c 200)"
+    log_fail "POST /api/v1/schema/retry/${DATASOURCE} failed unexpectedly: $(printf '%s' "$resp" | head -c 200)"
     return 1
 }
 
-# Strict (product contract): /api/schema/retry against a healthy/COMPLETED datasource
+# Strict (product contract): /api/v1/schema/retry against a healthy/COMPLETED datasource
 # transitions it to FAILED — the orchestrator interprets the call as "operator forcing
 # a retry" and surfaces FAILED as the visible state until the real retry succeeds. This
 # matches the SchemaOrchestratorService contract ("Schema is not in FAILED state — retry
@@ -103,7 +108,7 @@ test_retry_idempotent() {
         return 1
     fi
     # Same contract as test_schema_retry_endpoint: accept either 2xx or the
-    # documented "not in FAILED state" 500 — both prove the endpoint is wired
+    # documented "not in FAILED state" 409 — both prove the endpoint is wired
     # and idempotent against a healthy datasource.
     if schema_retry "$DATASOURCE" >/dev/null 2>&1; then
         log_pass "Schema retry endpoint is idempotent (second call accepted)"
@@ -111,12 +116,12 @@ test_retry_idempotent() {
     fi
     local resp
     resp=$(curl -sk -m 10 -X POST -H "X-API-Key: ${API_KEY}" \
-           "${CLUSTER_ENDPOINT}/api/schema/retry/${DATASOURCE}" 2>/dev/null || echo "")
+           "${CLUSTER_ENDPOINT}/api/v1/schema/retry/${DATASOURCE}" 2>/dev/null || echo "")
     if printf '%s' "$resp" | grep -qiE 'not in FAILED state'; then
         log_pass "Schema retry second call returned expected 'not in FAILED state' (idempotent against healthy state)"
         return 0
     fi
-    log_fail "POST /api/schema/retry/${DATASOURCE} failed unexpectedly on second call: $(printf '%s' "$resp" | head -c 200)"
+    log_fail "POST /api/v1/schema/retry/${DATASOURCE} failed unexpectedly on second call: $(printf '%s' "$resp" | head -c 200)"
     return 1
 }
 

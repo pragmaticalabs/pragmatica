@@ -1,15 +1,16 @@
 package org.pragmatica.config;
 
+import java.util.Map;
+import java.util.Set;
+
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.parse.Number;
 
-import java.util.Map;
-import java.util.Set;
-
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
+
 
 /// Abstraction for configuration sources.
 ///
@@ -97,27 +98,26 @@ public interface ConfigSource {
     }
 
     private static Option<Integer> safeParseInteger(String value) {
-        return Number.parseInt(value)
-                     .option();
+        return Number.parseInt(value).option();
     }
 
     private static Option<Long> safeParseLong(String value) {
-        return Number.parseLong(value)
-                     .option();
+        return Number.parseLong(value).option();
     }
 
     private static Option<Boolean> safeParseBoolean(String value) {
         if ("true".equalsIgnoreCase(value)) {
             return some(true);
         }
+
         if ("false".equalsIgnoreCase(value)) {
             return some(false);
         }
+
         return none();
     }
 
     private static Option<Double> safeParseDouble(String value) {
-        return Number.parseDouble(value)
-                     .option();
+        return Number.parseDouble(value).option();
     }
 }

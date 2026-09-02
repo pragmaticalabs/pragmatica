@@ -8,6 +8,7 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
@@ -62,7 +63,7 @@ public interface ArtifactMapper {
     }
 
     private static String toKebabCase(String pascalCase) {
-        if (pascalCase == null || pascalCase.isEmpty()) {
+        if (Option.option(pascalCase).map(String::isEmpty).or(true)) {
             return pascalCase;
         }
 
@@ -92,7 +93,7 @@ public interface ArtifactMapper {
     }
 
     private static String toPascalCase(String kebabCase) {
-        if (kebabCase == null || kebabCase.isEmpty()) {
+        if (Option.option(kebabCase).map(String::isEmpty).or(true)) {
             return kebabCase;
         }
 

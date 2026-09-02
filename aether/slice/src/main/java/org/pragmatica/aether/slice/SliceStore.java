@@ -7,10 +7,10 @@ package org.pragmatica.aether.slice;
 import java.io.IOException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
 
@@ -19,6 +19,7 @@ import org.pragmatica.aether.slice.dependency.DependencyResolver;
 import org.pragmatica.aether.slice.dependency.SliceRegistry;
 import org.pragmatica.aether.slice.repository.Location;
 import org.pragmatica.aether.slice.repository.Repository;
+import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.config.IntrinsicConfigProvider;
 import org.pragmatica.config.LayeredConfigProvider;
@@ -41,46 +42,59 @@ import static org.pragmatica.lang.utils.Causes.cause;
 
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-LAM-01", "JBCT-LAM-02", "JBCT-NEST-01", "JBCT-UTIL-02"})
 public interface SliceStore {
-    static SliceStore sliceStore(SliceRegistry registry,
-                                 List<Repository> repositories,
-                                 SharedLibraryClassLoader sharedLibraryLoader,
-                                 SliceInvokerFacade invokerFacade,
-                                 SliceActionConfig config) {
-        return sliceStore(registry, repositories, sharedLibraryLoader, invokerFacade, noOpResourceProvider(), config);
-    }
-
-    static SliceStore sliceStore(SliceRegistry registry,
-                                 List<Repository> repositories,
-                                 SharedLibraryClassLoader sharedLibraryLoader,
-                                 SliceInvokerFacade invokerFacade,
-                                 ResourceProviderFacade resourceFacade,
-                                 SliceActionConfig config) {
+    /// Store with resource provisioning disabled entirely — no node provider, and therefore no
+    /// slice-scoped overlay either.
+    ///
+    /// Named for what it omits, deliberately. `SliceStore` is a public interface, so its statics are
+    /// public and a caller in another module can reach this; if it were just another `sliceStore`
+    /// arm, opting out of resource provisioning would be what you get for writing fewer arguments,
+    /// and #773 is exactly the class of defect that hides in that silence. The name makes the
+    /// omission legible at the call site and greppable across the tree.
+    static SliceStore sliceStoreWithoutResourceProvisioning(SliceRegistry registry,
+                                                            List<Repository> repositories,
+                                                            SharedLibraryClassLoader sharedLibraryLoader,
+                                                            SliceInvokerFacade invokerFacade,
+                                                            SliceActionConfig config) {
         return sliceStore(registry,
                           repositories,
                           sharedLibraryLoader,
                           invokerFacade,
-                          resourceFacade,
+                          noOpResourceProvider(),
                           config,
-                          Option.empty());
+                          Option.empty(),
+                          Option.empty(),
+                          Option.empty(),
+                          SliceLoadingContext.noResourceOverlay());
     }
 
-    /// Constructor variant that accepts the node-composite (`KV-overlay ⊕ node.toml`).
+    /// @param nodeComposite          Layered node-level config (KV-overlay on top, node.toml
+    ///                               beneath); `Option.none()` disables per-slice config.
+    /// @param nodeCodec              Parent codec each slice's own codec is layered on, so a slice's
+    ///                               resources serialize the application's own record types (#526).
+    /// @param secretResolver         Resolves `${secrets:path}` in the slice-intrinsic
+    ///                               `resources.toml` layer (#269), all-or-nothing per key set.
+    /// @param resourceOverlayBuilder Given the slice's classloader, yields the provider that answers
+    ///                               for `ResourceFactory` implementations shipped INSIDE the slice
+    ///                               jar, delegating everything else to the node provider (#773).
+    ///                               This module cannot build one — the resource SPI is not on its
+    ///                               classpath — so it is injected here and passed through, exactly
+    ///                               like the slice-composite builder.
     ///
-    /// When present, each successfully loaded slice gets its own slice-composite
-    /// (`slice.toml ⊕ nodeComposite`) attached to the `LoadedSliceEntry`. The slice.toml
-    /// is the `META-INF/resources.toml` parsed from the slice JAR locally — it never
-    /// round-trips through KV.
-    ///
-    /// @param nodeComposite Layered node-level config (KV-overlay on top, node.toml beneath);
-    ///                      pass `Option.none()` to disable per-slice config (slices receive
-    ///                      no `sliceConfig` on their loaded-context).
+    ///                               REQUIRED, and deliberately not an `Option`: a user-defined
+    ///                               resource type being unreachable is invisible at runtime — the
+    ///                               slice deploys and then fails at load — so the guarantee that
+    ///                               somebody supplied this is worth a compile error. Pass
+    ///                               [SliceLoadingContext#noResourceOverlay] to opt out in writing.
     static SliceStore sliceStore(SliceRegistry registry,
                                  List<Repository> repositories,
                                  SharedLibraryClassLoader sharedLibraryLoader,
                                  SliceInvokerFacade invokerFacade,
                                  ResourceProviderFacade resourceFacade,
                                  SliceActionConfig config,
-                                 Option<ConfigurationProvider> nodeComposite) {
+                                 Option<ConfigurationProvider> nodeComposite,
+                                 Option<SliceCodec> nodeCodec,
+                                 Option<Fn1<Promise<String>, String>> secretResolver,
+                                 Fn1<Option<ResourceProviderFacade>, ClassLoader> resourceOverlayBuilder) {
         return new sliceStore(registry,
                               repositories,
                               sharedLibraryLoader,
@@ -88,6 +102,9 @@ public interface SliceStore {
                               resourceFacade,
                               config,
                               nodeComposite,
+                              nodeCodec,
+                              secretResolver,
+                              resourceOverlayBuilder,
                               new ConcurrentHashMap<>());
     }
 
@@ -164,20 +181,27 @@ public interface SliceStore {
                       ResourceProviderFacade resourceFacade,
                       SliceActionConfig config,
                       Option<ConfigurationProvider> nodeComposite,
+                      Option<SliceCodec> nodeCodec,
+                      Option<Fn1<Promise<String>, String>> secretResolver,
+                      Fn1<Option<ResourceProviderFacade>, ClassLoader> resourceOverlayBuilder,
                       ConcurrentHashMap<Artifact, Promise<LoadedSliceEntry>> entries) implements SliceStore {
         private static final Logger log = LoggerFactory.getLogger(sliceStore.class);
         private static final String SLICE_RESOURCES_TOML = "META-INF/resources.toml";
 
         @Override
         public Promise<LoadedSlice> loadSlice(Artifact artifact) {
+            // Failed-load eviction is attached HERE, after computeIfAbsent returns — attaching it
+            // inside the mapping function would fire synchronously-failed callbacks reentrantly
+            // on the same key (the reason the old code needed a CompletableFuture.runAsync hop).
             return entries.computeIfAbsent(artifact, this::startLoading)
+                          .onFailure(_ -> entries.remove(artifact))
                           .map(entry -> (LoadedSlice) entry);
         }
 
         private Promise<LoadedSliceEntry> startLoading(Artifact artifact) {
             log.debug("Loading slice {}", artifact);
 
-            return loadFromLocation(artifact).onFailure(_ -> CompletableFuture.runAsync(() -> entries.remove(artifact)));
+            return loadFromLocation(artifact);
         }
 
         private Promise<LoadedSliceEntry> loadFromLocation(Artifact artifact) {
@@ -188,7 +212,9 @@ public interface SliceStore {
                                                          invokerFacade,
                                                          resourceFacade,
                                                          Option.some(classLoader -> buildSliceCompositeFromClassLoader(artifact,
-                                                                                                                       classLoader)))
+                                                                                                                       classLoader)),
+                                                         nodeCodec,
+                                                         resourceOverlayBuilder)
                                      .map(resolved -> {
                                               var sliceClassLoader = resolved.slice()
                                                                              .getClass()
@@ -254,22 +280,37 @@ public interface SliceStore {
         /// Emit one INFO log entry per intrinsic key whose value is shadowed by an existing
         /// operator override in the node-composite (typically the KV-overlay layer). Triggered
         /// at slice-load time only; subsequent reads are silent.
+        ///
+        /// Key names only, never values (R5): post-#269 the intrinsic layer can carry a RESOLVED
+        /// secret where before it only ever carried a literal placeholder — a value logged here
+        /// would leak it. [#shadowedKeys] does the comparison and hands back key names only, so a
+        /// value can never reach this call structurally, not merely by care.
         private static void logShadowedKeys(Artifact artifact,
                                             ConfigurationProvider intrinsic,
                                             ConfigurationProvider composite) {
+            for (var key : shadowedKeys(intrinsic, composite)) {
+                log.info("slice {} intrinsic key {} shadowed by operator override", artifact.asString(), key);
+            }
+        }
+
+        /// The shadowed-key comparison, split out from [#logShadowedKeys] so the redaction (key
+        /// names only, never the intrinsic/override values) is pinned directly by SliceStoreTest —
+        /// this codebase's log backend (log4j2) doesn't support capturing appender output in unit
+        /// tests, so the testable surface is this return value, not the log line itself.
+        static List<String> shadowedKeys(ConfigurationProvider intrinsic, ConfigurationProvider composite) {
+            var shadowed = new ArrayList<String>();
+
             for (var key : intrinsic.keys()) {
                 var intrinsicValue = intrinsic.getString(key);
                 var overrideValue = composite.getString(key);
 
                 if (intrinsicValue.isPresent() && overrideValue.isPresent() && !intrinsicValue.unwrap()
                                                                                               .equals(overrideValue.unwrap())) {
-                    log.info("slice {} intrinsic key {} shadowed by operator override (intrinsic={}, override={})",
-                             artifact.asString(),
-                             key,
-                             intrinsicValue.unwrap(),
-                             overrideValue.unwrap());
+                    shadowed.add(key);
                 }
             }
+
+            return shadowed;
         }
 
         private Option<ConfigurationProvider> loadSliceIntrinsicProviderFromClassLoader(Artifact artifact,
@@ -283,15 +324,58 @@ public interface SliceStore {
             }
 
             return tomlContent.flatMap(content -> parseToFlatMap(artifact, content))
-                              .map(values -> {
-                                       log.info("Slice {} intrinsic config loaded from {}: {} keys",
-                                                artifact,
-                                                SLICE_RESOURCES_TOML,
-                                                values.size());
+                              .flatMap(values -> {
+                                           log.info("Slice {} intrinsic config loaded from {}: {} keys",
+                                                    artifact,
+                                                    SLICE_RESOURCES_TOML,
+                                                    values.size());
+                                           var intrinsic = IntrinsicConfigProvider.intrinsicConfigProvider(artifact.asString(),
+                                                                                                           values);
 
-                                       return IntrinsicConfigProvider.intrinsicConfigProvider(artifact.asString(),
-                                                                                              values);
-                                   });
+                                           return resolveIntrinsicSecrets(artifact, intrinsic, secretResolver);
+                                       });
+        }
+
+        /// Resolve `${secrets:...}` placeholders in the slice-intrinsic layer, when a secret
+        /// resolver is configured (#269). All-or-nothing per
+        /// `ConfigurationProvider.withSecretResolution`: one failed key drops the WHOLE intrinsic
+        /// layer — same convention as node.toml's own secret resolution in
+        /// `AetherNode.createResourceProviderFacade`, and as this file's own pre-existing
+        /// malformed-TOML-parse-failure path (see [#parseToFlatMap]) just above it. A dropped layer
+        /// means every resource a slice declares ONLY in its own resources.toml (not overridden by
+        /// node.toml/KV) fails at provision time as not-configured; see
+        /// [#intrinsicSecretsDroppedMessage] for the operator-facing consequence line.
+        ///
+        /// Package-private (not private), static, and takes the resolver as an explicit parameter
+        /// rather than reading `this.secretResolver` so SliceStoreTest can pin the
+        /// success/failure/no-resolver paths directly, without constructing a full sliceStore.
+        static Option<ConfigurationProvider> resolveIntrinsicSecrets(Artifact artifact,
+                                                                     ConfigurationProvider intrinsic,
+                                                                     Option<Fn1<Promise<String>, String>> secretResolver) {
+            return secretResolver.fold(() -> Option.some(intrinsic),
+                                       resolver -> ConfigurationProvider.withSecretResolution(intrinsic, resolver).fold(cause -> {
+                                                                                                                            log.error(intrinsicSecretsDroppedMessage(artifact,
+                                                                                                                                                                     cause));
+
+                                                                                                                            return Option.<ConfigurationProvider> none();
+                                                                                                                        },
+                                                                                                                        Option::some));
+        }
+
+        /// The consequence-naming line for a dropped slice-intrinsic layer: names the slice, the
+        /// failed key/secret path (via `cause.message()` — already safe, `SecretResolutionFailed`
+        /// never carries the resolved value since resolution itself failed), and states plainly
+        /// what breaks downstream so a later "not configured" provisioning error can be traced
+        /// back here.
+        ///
+        /// Package-private (not private) and returns the built String instead of logging directly
+        /// so SliceStoreTest can pin the exact wording without log-scraping — this codebase's log
+        /// backend (log4j2) doesn't support capturing appender output in unit tests.
+        static String intrinsicSecretsDroppedMessage(Artifact artifact, Cause cause) {
+            return "Slice " + artifact.asString()
+                 + " intrinsic config secret resolution failed (" + cause.message()
+                 + "): dropping the ENTIRE slice-shipped config layer — resources declared only in "
+                 + "this slice's resources.toml will fail as not-configured at provision time";
         }
 
         @SuppressWarnings("JBCT-EX-01")

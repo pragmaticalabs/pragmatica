@@ -14,16 +14,16 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.lang.io;
-
-import org.pragmatica.lang.Contract;
-import org.pragmatica.lang.Tuple.Tuple2;
 
 import java.time.Duration;
 import java.util.concurrent.TimeUnit;
 
+import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Tuple.Tuple2;
+
 import static org.pragmatica.lang.Tuple.tuple;
+
 
 /// Representation of time span.
 public sealed interface TimeSpan extends Comparable<TimeSpan> {
@@ -62,6 +62,7 @@ public sealed interface TimeSpan extends Comparable<TimeSpan> {
     }
 
     long NANOS_IN_SECOND = TimeUnit.SECONDS.toNanos(1);
+
     long MILLIS_IN_SECOND = TimeUnit.MILLISECONDS.toNanos(1);
 
     /// Time span value represented as number of whole seconds and remaining nanoseconds. This representation is compatible with many use cases, for
@@ -95,23 +96,21 @@ public sealed interface TimeSpan extends Comparable<TimeSpan> {
     /// If interrupted, restores the interrupt flag and returns immediately.
     @Contract
     default void sleep() {
-        try{
+        try {
             Thread.sleep(millis());
         } catch (InterruptedException e) {
-            Thread.currentThread()
-                  .interrupt();
+            Thread.currentThread().interrupt();
         }
     }
 
     default TimeSpan randomize(double scale) {
         var random = (long)((Math.random() - 0.5) * 2.0 * scale * nanos());
-        return TimeSpan.timeSpan(random + nanos())
-                       .nanos();
+
+        return TimeSpan.timeSpan(random + nanos()).nanos();
     }
 
     static TimeSpan fromDuration(Duration duration) {
-        return TimeSpan.timeSpan(duration.toNanos())
-                       .nanos();
+        return TimeSpan.timeSpan(duration.toNanos()).nanos();
     }
 
     /// Create an instance of time span builder.

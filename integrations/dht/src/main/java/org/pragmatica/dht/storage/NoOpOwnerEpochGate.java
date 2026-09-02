@@ -13,27 +13,24 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.dht.storage;
 
 import org.pragmatica.lang.Contract;
+
 
 /// Fence-free [OwnerEpochGate] for non-cluster DHT paths and tests: nothing is ever stale and no
 /// high-water is recorded (#345 piece 1c). A stateless singleton — see [OwnerEpochGate#noOp].
 enum NoOpOwnerEpochGate implements OwnerEpochGate {
     INSTANCE;
-
     @Override
     public boolean isStale(byte[] key, long epochTerm, long epochCounter) {
         return false;
     }
-
     @Contract
     @Override
     public void advance(byte[] key, long epochTerm, long epochCounter) {
-        // No ownership plane to fence against — nothing to record.
+    // No ownership plane to fence against — nothing to record.
     }
-
     @Override
     public boolean epochOrderingEnabled() {
         return false;

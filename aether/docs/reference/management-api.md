@@ -115,7 +115,7 @@ This is distinct from the authentication 403 (invalid API key). The authorizatio
 
 A management request may land on any core node, but where it is ultimately served depends on the route:
 
-- **Control-plane read/write routes forward to the leader** (the control plane is leader-only). This covers cluster/node/slice status, topology, lifecycle, scheduled-task control-plane reads, config, controller, thresholds, observability depth, routes, workers, and audit endpoints. A request received by a follower is transparently forwarded to the current leader.
+- **Control-plane read/write routes forward to the leader** (the control plane is leader-only). This covers cluster/node/slice status, topology, lifecycle, scheduled-task control-plane reads, config, controller, thresholds, observability depth, routes, and workers. A request received by a follower is transparently forwarded to the current leader.
 - **Per-node diagnostic routes are served node-locally** (metrics, traces, alerts, logs, storage, TTM, DHT replication map, certificates). These report the receiving node's own view and are not forwarded.
 - **Per-node addressed routes** (those with an `{id}` node parameter) are forwarded to the named node.
 
@@ -281,7 +281,7 @@ No authentication required.
   "components": [
     {"name": "consensus", "status": "UP", "detail": "Cluster active"},
     {"name": "routes", "status": "UP", "detail": "Route sync received"},
-    {"name": "quorum", "status": "UP", "detail": "Connected peers: 2"}
+    {"name": "quorum", "status": "UP", "detail": "Reachable core members: 3 / required: 2"}
   ]
 }
 ```
@@ -289,7 +289,9 @@ No authentication required.
 Components checked:
 - **consensus** — Is the node participating in consensus? DOWN during initial cluster formation.
 - **routes** — Has the node received its initial route synchronization from the KV-Store?
-- **quorum** — Does the node have a quorum (at least 2 nodes total)?
+- **quorum** — Does the node hold quorum? True iff its counted strict core-member set meets the
+  consensus simple-majority threshold (`coreCount / 2 + 1`), sourced from the same per-node
+  quorum-loss signal the minority self-drain uses. A minority partition (e.g. 2 of 5) reports DOWN.
 
 ### GET /health/ready/{id}
 
@@ -429,11 +431,23 @@ curl "http://localhost:8080/api/events?sinceEpoch=3&sinceSeq=42"
 - `DEPARTURE_PUSH_INCOMPLETE` -- a gracefully-departing node could not confirm, within the drain grace window, that every locally-held DHT chunk reached a surviving replica (per-node fact, NOT leader-gated; see below). Severity WARNING.
 - `SCALE_CAPPED` -- the leader autoscaler's requested instance count for an artifact was reduced by a cap before being applied (leader-side; emitted only on a real reduction). Severity WARNING.
 
-`GENERATION_CHANGED` events are emitted by the leader's `HealthReconciler` whenever the cluster generation epoch advances. `details` carries `oldEpoch`, `newEpoch`, and `reason` (a `GenerationReason` enum name). See [`cluster-generation-spec.md`](../specs/cluster-generation-spec.md) §14.4.
+`GENERATION_CHANGED` is a **documented-but-dormant** event type: nothing emits it on the current
+codebase. The event record (`OperationalEvent.GenerationChanged`, with `oldEpoch`, `newEpoch`, and
+`reason` — a `GenerationReason` enum name) and its aggregator route both exist, but every emission
+path belonged to the v1 spec's leader-resident reconciler, which was never built (see
+[`cluster-topology-overhaul-spec.md`](../specs/cluster-topology-overhaul-spec.md) W9); the
+`GenerationChangedSink` seam has no live implementation, so generation-epoch advances (which DO
+happen — the leader's per-tenure counter and term bumps) currently produce no operational event.
+Tracked in #722. See [`cluster-generation-spec.md`](../specs/cluster-generation-spec.md) §14.4 for
+the original design intent.
 
 `SELF_DRAIN_INITIATED` (severity `WARNING`) is emitted by the draining node itself when its `SelfDrainCoordinator` flips from `ACTIVE` to `DRAINING` (see `aether/docs/specs/membership-architecture-v2-spec.md`). Unlike most other events, this one is NOT leader-gated — a partition victim is the only authoritative source for "I'm self-draining" and may not be able to reach the leader at all. `details` carries `nodeId` (the draining node), `reason` (one of `sustained-below-quorum`, `quorum-disappeared`, `rabia-paused`), and `graceMs` (the configured in-flight grace before forced halt). Best-effort: if the publish does not reach a quorum before `Runtime.halt(2)` lands, the event is lost.
 
 `DEPARTURE_PUSH_INCOMPLETE` (severity `WARNING`, issue #427) is emitted by a gracefully-departing node when its bounded departure-push (which forwards every locally-held DHT chunk to its new replicas before the node halts) could not confirm all chunks reached a surviving replica within the drain grace window. Like `SELF_DRAIN_INITIATED` it is NOT leader-gated — the leaving node is the only source of truth for its own unpushed chunks. `details` carries `nodeId`, `keysAtRisk` (count of unconfirmed chunks), and `sampleKeys` (a bounded, comma-joined hex sample of the at-risk keys, for operator follow-up). Best-effort: the keys are named rather than silently lost, but if the publish does not land before `Runtime.halt(2)`, the event is lost.
+
+`DEPLOYMENT_FAILED` is emitted **once per (artifact, node) pair** whose deployment attempt failed — `ClusterEventAggregator.handleDeploymentFailed` fires on each node-artifact KV transition to `FAILED`, so a blueprint spread across N nodes that fails deterministically on all of them produces N separate events, each with its own `nodeId` in `details.nodeId` and the failure text in `details.reason`. Because `cluster-events` is a single replicated stream, all N events are visible from `GET /api/events` on **any** node, not only the one that failed.
+
+This matters because none of the other deploy-facing surfaces show it: `POST /api/blueprints` only reports `"status": "applied"` on **acceptance**, before deployment is attempted, and is never updated with the outcome. Under the default `ALL_OR_NOTHING` mode (see [02-deployment.md](../architecture/02-deployment.md#deployment-atomicity)), a deterministic slice-load failure rolls back the entire blueprint and removes the deployment-map entry for that artifact — so `GET /api/slices/status` and `GET /api/blueprints/status/{id}` go back to showing **nothing** for it, not a FAILED status. **`GET /api/events` is the only surface that shows why a blueprint that was accepted never converges** — poll it, filtering for `DEPLOYMENT_FAILED`, when a deploy stays PENDING past its expected time. See the [Failure Almanac](failure-almanac.md#per-node-deployment-failure-under-all_or_nothing-rollback) for the worked example and operator playbook.
 
 **Severity Levels:** `INFO`, `WARNING`, `CRITICAL`
 
@@ -477,7 +491,7 @@ gate on `tlsEnabled` before reading the cert metadata.
 
 ### POST /api/certificates/configure-short-validity
 
-**Dev-mode only.** Reconfigures the `CertificateRenewalScheduler` so the active certificate appears to expire in `validitySeconds` from now, causing the renewal timer to reschedule at the recomputed 40%-of-remaining mark (24s for `validitySeconds=60`). Used by `Strengthen-cert-rotation-trigger` integration tests (see `aether/docs/internal/production-readiness-followup-2026-05-21.md` P-NEW-I) to observe automatic cert rotation in seconds rather than waiting hours.
+**Dev-mode only.** Reconfigures the `CertificateRenewalScheduler` so the active certificate appears to expire in `validitySeconds` from now, causing the renewal timer to reschedule at the recomputed 40%-of-remaining mark (24s for `validitySeconds=60`). Used by `Strengthen-cert-rotation-trigger` integration tests (see `aether/docs/.internal/production-readiness-followup-2026-05-21.md` P-NEW-I) to observe automatic cert rotation in seconds rather than waiting hours.
 
 Gated by the `AETHER_INSECURE_DEV_MODE=true` environment variable on the node. When the gate is closed the endpoint returns a failure response and the scheduler is untouched. Precondition: a node with operator-provided TLS certificates refuses to start in dev-mode, so this route is never reachable on a node configured with real TLS.
 
@@ -727,6 +741,8 @@ Publish (apply) a blueprint definition. The request body is the raw blueprint YA
 }
 ```
 
+> **`"applied"` means accepted, not deployed.** This response is written before allocation runs, and it is never updated with the outcome. Poll [`GET /api/blueprints/status/{id}`](#get-apiblueprintsstatusid) for progress; if a blueprint stays `PENDING` past its expected time, check [`GET /api/events`](#get-apievents) for `DEPLOYMENT_FAILED` — under the default `ALL_OR_NOTHING` mode a failure rolls back the whole blueprint, so the status endpoints go back to showing nothing rather than a FAILED slice, and the event feed is the only place the reason (`details.reason`) appears.
+
 ### GET /api/blueprints
 
 List all published blueprints.
@@ -761,9 +777,16 @@ Get blueprint details including slices and dependencies.
 }
 ```
 
-### GET /api/blueprints/{id}/status
+### GET /api/blueprints/status/{id}
 
-Get deployment status of a blueprint and each of its slices.
+Get deployment status of a blueprint and each of its slices. `{id}` is the
+blueprint id, which is artifact-shaped (`group:artifact:version`), so its
+colons are percent-encoded in the path segment.
+
+This is the surface `aether blueprints deploy --wait` polls. `activeInstances`
+is counted from the same replicated deployment map that backs
+`GET /api/slices/status`, so the two endpoints cannot disagree about whether a
+deployment finished.
 
 **Response:**
 ```json
@@ -810,16 +833,58 @@ Deploy a blueprint from an artifact in the cluster's artifact repository.
 ```json
 {
   "status": "deployed",
-  "blueprintId": "org.example:my-app:1.0.0",
-  "sliceCount": 5
+  "blueprint": "org.example:my-app:1.0.0",
+  "slices": 5
 }
 ```
+
+#### Single-migrator gate (409 Conflict)
+
+Both artifact-based entry points (`/deploy` and `/publish`) refuse a request with **409 Conflict**
+when the artifact declares migrations for a datasource that a **different** blueprint already
+migrates. The refusal happens before any KV command is applied, so a refused publish writes
+nothing.
+
+```json
+{
+  "type": "about:blank",
+  "title": "Conflict",
+  "status": 409,
+  "detail": "Blueprint 'org.example:other-app:1.0.0' rejected — datasource 'database' is already migrated by blueprint 'org.example:my-app:1.0.0'. Declare the migrations in one blueprint only, or give this blueprint its own datasource section."
+}
+```
+
+Rules:
+
+- Ownership is compared on the artifact base (`group:artifact`, version stripped). The **same**
+  blueprint republishing at a newer version is an owner advancing its own schema, not a conflict.
+- A blueprint that declares **no** migrations passes the gate trivially. Sharing a datasource for
+  reads and writes stays legal — only duplicate *migration ownership* is refused.
+- The gate runs for `registerOnly` publishes too, so `POST /api/blueprints/publish` is refused on
+  the same terms as `/deploy`.
+- `POST /api/blueprints` (raw blueprint content) is **not** subject to the gate: migrations are
+  read from the artifact jar's `schema/` directory, so a raw-DSL blueprint carries none.
+
+**What this check does and does not promise.** Both routes are task-group targeted
+(`DEPLOYMENT`), so a request arriving at any node is forwarded to the node that owns the deployment
+task group; the ownership lookup therefore reads that owner's state rather than a possibly-stale
+follower's. The check itself is a read of the existing schema record followed by a write of the
+publish commands — not a compare-and-swap. Two publishes issued **concurrently** for the same
+unclaimed datasource can therefore both observe it unclaimed and both proceed. Sequential
+publishes — the realistic operator case — are reliably refused. This is the same deploy-time
+read-then-write window every other validation on this path uses.
+
+Why refuse rather than namespace: datasource names are cluster-global (the default
+`schema/V001__*.sql` layout yields the name `database` for every blueprint, resolved against the
+same node-global config section), so two blueprints migrating one physical database would
+interleave unrelated version sequences.
 
 ### POST /api/blueprints/publish
 
 Publish a blueprint from an artifact already present in the cluster's artifact
 repository. Orthogonal to `POST /api/blueprints` (which takes raw blueprint
-content in the body). Same body shape as `POST /api/blueprints/deploy`.
+content in the body). Same body shape as `POST /api/blueprints/deploy`, and subject to the same
+[single-migrator gate](#single-migrator-gate-409-conflict).
 
 **Request Body:**
 ```json
@@ -909,6 +974,11 @@ For `strengthen_only` policy, security levels are ordered: `public (0) < authent
 
 Get cluster-wide metrics including per-node load and deployment metrics.
 
+**Scope: cluster-wide, despite the route's `LOCAL` routing declaration** — `LOCAL` governs
+routing (no forwarding), not response scope. Any node answers with a `load` entry for **every**
+node it knows, so fetch this ONCE and select nodes by id; polling it per node returns the same
+cluster-wide map N times (the #591 instrument mis-read exactly this and had to hard-fail on it).
+
 **Response:**
 ```json
 {
@@ -934,7 +1004,17 @@ Get cluster-wide metrics including per-node load and deployment metrics.
 
 ### GET /api/metrics/comprehensive
 
-Get comprehensive minute-aggregated metrics for the most recent minute.
+Get comprehensive metrics. **Scope: node-local** — the answering node reports itself.
+
+The response has two halves with different time semantics, deliberately:
+
+- The top-level fields are **minute-aggregated** (the most recent completed minute bucket); they
+  are zeros until the first bucket exists.
+- The `consensus` block (#674) is **live** — cumulative monotonic totals read from the consensus
+  collector at request time, present from the node's first request. Consumers measuring load
+  difference the totals over their own window (the same contract as `/api/metrics/transport`).
+  `pendingBatches` is a level, not a total; `avgDecisionLatencyMs` is derived over the cumulative
+  counts; `leaderId` is absent until a leader is known.
 
 **Response:**
 ```json
@@ -951,7 +1031,20 @@ Get comprehensive minute-aggregated metrics for the most recent minute.
   "latencyP99": 80.0,
   "errorRate": 0.005,
   "eventCount": 120,
-  "sampleCount": 60
+  "sampleCount": 60,
+  "consensus": {
+    "role": "LEADER",
+    "leaderId": "node-1",
+    "pendingBatches": 0,
+    "decisionsCount": 1042,
+    "proposalsCount": 998,
+    "voteRound1Count": 2084,
+    "voteRound2Count": 2011,
+    "fastPathCount": 812,
+    "syncSuccessCount": 3,
+    "syncFailureCount": 0,
+    "avgDecisionLatencyMs": 4.7
+  }
 }
 ```
 
@@ -985,10 +1078,20 @@ Get Prometheus-format metrics for scraping.
 
 **Content-Type**: `text/plain; version=0.0.4; charset=utf-8`
 
+Includes the consensus-load gauges (#674): `consensus_decisions_total`, `consensus_proposals_total`,
+`consensus_vote_round1_total`, `consensus_vote_round2_total`, `consensus_fast_path_total`,
+`consensus_sync_success_total`, `consensus_sync_failure_total` (monotonic totals) and
+`consensus_pending_batches` (a level) — the same names and values as the comprehensive response's
+`consensus` block.
+
 ### GET /api/metrics/transport
 
-Get transport-layer metrics: per-peer QUIC/Netty connection state, I/O counters,
-backpressure indicators, reconnect attempts.
+Get transport-layer metrics. **Scope: node-local** — a flat map of **node-level** QUIC counters
+(the answering node's own totals; there is no per-peer attribution and no byte counter on this
+surface): `quic_messages_sent_total` / `quic_messages_received_total` (protocol-message counts),
+`quic_active_connections`, handshake totals/failures, backpressure and write-failure indicators,
+stream-zombie heal counters. Message counters are monotonic; consumers difference them over their
+own window.
 
 ### GET /api/metrics/history
 
@@ -1724,7 +1827,7 @@ responsible for replication.
 consistent-hash ring clockwise. `totalKeys` reflects the count of keys
 matching the supplied `prefix` (or full storage size when no prefix is
 given); `returned` is bounded by `limit`. See
-`aether/docs/internal/production-readiness-followup-2026-05-21.md` P-NEW-F.
+`aether/docs/.internal/production-readiness-followup-2026-05-21.md` P-NEW-F.
 
 ### POST /api/dht/inject
 
@@ -1810,7 +1913,17 @@ readiness.
         {"level": "MEMORY",     "usedBytes": 1048576,  "maxBytes": 134217728,   "utilizationPct": 0.8},
         {"level": "LOCAL_DISK", "usedBytes": 52428800, "maxBytes": 10737418240, "utilizationPct": 0.5}
       ],
-      "readiness": {"state": "READY", "isReadReady": true, "isWriteReady": true}
+      "readiness": {"state": "READY", "isReadReady": true, "isWriteReady": true},
+      "wal": null
+    },
+    {
+      "name": "streams",
+      "tiers": [
+        {"level": "MEMORY",     "usedBytes": 2097152,  "maxBytes": 134217728,   "utilizationPct": 1.6},
+        {"level": "LOCAL_DISK", "usedBytes": 31457280, "maxBytes": 10737418240, "utilizationPct": 0.3}
+      ],
+      "readiness": {"state": "READY", "isReadReady": true, "isWriteReady": true},
+      "wal": {"totalBytes": 8388608, "walPartitions": 4}
     }
   ]
 }
@@ -1818,6 +1931,14 @@ readiness.
 
 - `utilizationPct`: `usedBytes / maxBytes` as a percentage rounded to one decimal (`0.0` when `maxBytes` is 0).
 - `readiness.isReadReady` / `isWriteReady`: whether the instance's `StorageReadinessGate` currently admits reads / writes.
+- `wal` (#634-3): live stream-WAL usage — non-`null` **only on the `streams` instance**. The WAL is a
+  sibling directory of the segment store, not a storage tier, so without this field the `streams`
+  instance under-reports its real disk footprint by the entire WAL. Every other instance reports
+  `null` rather than a zero that would read as "has a WAL, currently empty".
+- `wal.totalBytes`: sum of live WAL bytes across every stream partition on this node — derived from
+  the same snapshot as [`GET /api/storage/retention`](#get-apistorageretention)'s `walTotalBytes`,
+  so the two surfaces always agree.
+- `wal.walPartitions`: number of partitions on this node that currently have a WAL.
 
 ### GET /api/storage/{name}
 
@@ -1836,11 +1957,13 @@ exists on the node.
     {"level": "LOCAL_DISK", "usedBytes": 52428800, "maxBytes": 10737418240, "utilizationPct": 0.5}
   ],
   "snapshot": {"lastEpoch": 42, "lastTimestampMs": 1716280000000},
-  "readiness": {"state": "READY", "isReadReady": true, "isWriteReady": true}
+  "readiness": {"state": "READY", "isReadReady": true, "isWriteReady": true},
+  "wal": null
 }
 ```
 
 - `snapshot.lastEpoch` / `lastTimestampMs`: epoch and epoch-millis of the most recent metadata snapshot taken by the instance's `SnapshotManager` (`0` when none has been taken yet).
+- `wal`: same semantics as on `GET /api/storage` — non-`null` only when `{name}` is `streams`.
 
 ### POST /api/storage/snapshot/{name}
 
@@ -1878,6 +2001,7 @@ instance name and reports per-instance totals plus a per-node breakdown.
       "nodeCount": 3,
       "totalUsedBytes": 157286400,
       "totalMaxBytes": 32212254720,
+      "totalWalBytes": 0,
       "nodes": [
         {
           "nodeId": "node-1",
@@ -1885,7 +2009,8 @@ instance name and reports per-instance totals plus a per-node breakdown.
             {"level": "MEMORY",     "usedBytes": 1048576,  "maxBytes": 134217728,   "utilizationPct": 0.8},
             {"level": "LOCAL_DISK", "usedBytes": 52428800, "maxBytes": 10737418240, "utilizationPct": 0.5}
           ],
-          "readiness": {"state": "READY", "isReadReady": true, "isWriteReady": true}
+          "readiness": {"state": "READY", "isReadReady": true, "isWriteReady": true},
+          "walBytes": 0
         }
       ]
     }
@@ -1894,6 +2019,9 @@ instance name and reports per-instance totals plus a per-node breakdown.
 ```
 
 - `totalUsedBytes` / `totalMaxBytes`: sums across every tier of every node hosting the instance.
+- `walBytes` (#634-3): the node's live stream-WAL bytes as published with its storage status — non-zero
+  only on the `streams` instance rows (`0` everywhere else). `totalWalBytes` is the sum of `walBytes`
+  across the instance's nodes: on the `streams` instance it is the cluster's total WAL footprint.
 
 ### GET /api/cluster/storage/{name}
 
@@ -1906,23 +2034,157 @@ that name.
 **Response:**
 ```json
 {
-  "name": "content",
+  "name": "streams",
   "nodeCount": 3,
-  "totalUsedBytes": 157286400,
+  "totalUsedBytes": 94371840,
   "totalMaxBytes": 32212254720,
+  "totalWalBytes": 25165824,
   "nodes": [
     {
       "nodeId": "node-1",
       "tiers": [
-        {"level": "MEMORY",     "usedBytes": 1048576,  "maxBytes": 134217728,   "utilizationPct": 0.8},
-        {"level": "LOCAL_DISK", "usedBytes": 52428800, "maxBytes": 10737418240, "utilizationPct": 0.5}
+        {"level": "MEMORY",     "usedBytes": 2097152,  "maxBytes": 134217728,   "utilizationPct": 1.6},
+        {"level": "LOCAL_DISK", "usedBytes": 31457280, "maxBytes": 10737418240, "utilizationPct": 0.3}
       ],
       "snapshot": {"lastEpoch": 42, "lastTimestampMs": 1716280000000},
-      "readiness": {"state": "READY", "isReadReady": true, "isWriteReady": true}
+      "readiness": {"state": "READY", "isReadReady": true, "isWriteReady": true},
+      "walBytes": 8388608
     }
   ]
 }
 ```
+
+- `walBytes` / `totalWalBytes`: same semantics as on `GET /api/cluster/storage` — per-node live WAL
+  bytes and their sum; non-zero only for the `streams` instance.
+
+### WAL placement (`[storage.streams] wal_path`)
+
+The stream WAL's base directory is configurable per node via the `streams` storage instance's TOML
+section (#634-3):
+
+```toml
+[storage.streams]
+wal_path = "/data/aether/stream-wal"
+```
+
+- **Empty or absent (the default):** the WAL directory is DERIVED as
+  `<sibling of the artifacts instance's disk_path>/stream-segments/<nodeId>/wal` — the pre-#634-3
+  location, byte-identical, so existing deployments need no config change.
+- **Set:** the effective directory is `<wal_path>/<nodeId>`. The node-id suffix is appended
+  unconditionally — multiple nodes on one host (an in-JVM `EmberCluster`, co-located containers)
+  must never share a WAL directory, and the mandatory suffix keeps that invariant independent of
+  operator input.
+
+An unwritable WAL directory is a **boot error** (#634 item 2): a node that cannot honour the
+durability its streams declare refuses to start rather than silently acking publishes without fsync.
+
+### GET /api/storage/retention
+
+The tri-floor retention view (#634-3/4): for every `(stream, partition)` this node holds anything
+for, the local sources of history (WAL, in-memory ring, sealed segments) joined with the two
+retention floors that drive reclamation (the durable sealed bound and the entity checkpoint), plus
+the joint **tri-floor invariant** verdict evaluated over all of them.
+
+**Routing:** LOCAL (per-node view; not forwarded). **RBAC:** VIEWER.
+
+**The tri-floor invariant.** An entity partition with a committed checkpoint must have SOME local
+source starting at or below `checkpoint + 1` — `coveredFrom <= checkpointFloor + 1`, where
+`coveredFrom` is the MINIMUM of the sources' start offsets. This is deliberately the NECESSARY half
+of reachability, not the sufficient one: the check does not prove the union of sources is hole-free
+up to the head (reclamation is oldest-first on every mover, so an interior hole has no producer
+today — a clean verdict means "no source starts too late", not "every record is present"). The
+sources cover: sealed segments `[earliestSegment, sealedThrough]`, the in-memory ring
+`[ringTail, head]`, and the WAL's replayable window `(truncatedUpto, lastOffset]` (records at or
+below the truncation watermark are discarded on replay regardless of their physical presence). A
+MATERIALIZED partition holding nothing at all (`coveredFrom = -1`) under a committed checkpoint is
+also violated — the restarted-empty case. Either way a future fold cannot rebuild the partition
+without serving state that is missing committed writes — so it will REFUSE; this surface reports the
+condition BEFORE that refusal is the first symptom. The three sources are read as a NON-ATOMIC cut
+(WAL snapshot, then segment index, then KV), so a single read can show a transient phantom — the
+periodic watch therefore requires TWO consecutive violated observations before raising.
+
+**Scope: LOCAL.** WAL, ring, and segment offsets describe the node you query. `checkpointFloor` is
+read from replicated KV, so it agrees across nodes; the verdict does not — a partition can be
+violated on one node while a replica still holds the range. That per-node asymmetry is what makes
+the view actionable (see recovery below).
+
+**Response:**
+```json
+{
+  "walTotalBytes": 8388608,
+  "partitions": [
+    {
+      "stream": "entity:orders",
+      "partition": 0,
+      "wal": {
+        "sizeBytes": 2097152,
+        "lastOffset": 1900,
+        "truncatedUpto": 1502,
+        "lastCompactedUpto": 1502,
+        "fsyncCount": 1901,
+        "fsyncMeanMicros": 84.3,
+        "fsyncMaxMicros": 2210.5,
+        "failStopped": false
+      },
+      "ringTail": 1650,
+      "sealedThrough": 1502,
+      "earliestSegment": 0,
+      "checkpointFloor": 1502,
+      "coveredFrom": 0,
+      "violated": false,
+      "violation": ""
+    }
+  ]
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `walTotalBytes` | Total live WAL bytes across every partition on this node — the same number the `streams` storage instance reports as `wal.totalBytes` (both derive from one snapshot) |
+| `partitions[]` | One row per `(stream, partition)` this node holds anything for — materialized (ring/WAL) or held only as sealed segments — sorted by stream, then partition |
+| `stream` / `partition` | The partition coordinate (`entity:`-prefixed streams are durable-entity logs) |
+| `wal` | The partition's live WAL counters; `null` when it has no WAL (non-durable path, or a segment-only row) |
+| `wal.sizeBytes` | End of valid data in the WAL file (live bytes; lazily-truncated records still count until compaction reclaims them) |
+| `wal.lastOffset` | Last appended offset (`-1` when nothing appended yet) |
+| `wal.truncatedUpto` | Truncation watermark — records at or below it are discarded on replay regardless of physical presence, so the replayable window is `(truncatedUpto, lastOffset]`; resets on crash by design (a reclamation hint, not a durability fact) |
+| `wal.lastCompactedUpto` | Last offset physically reclaimed by a compaction rewrite (`-1` when the file was never compacted) |
+| `wal.fsyncCount` | Group commits completed since the WAL was opened |
+| `wal.fsyncMeanMicros` / `fsyncMaxMicros` | Mean / slowest single fsync since open, in microseconds |
+| `wal.failStopped` | `true` when this partition's WAL refused further appends after a failed fsync (#634-7 fail-stop — a retried fsync can falsely succeed after the OS drops the dirty pages, so the WAL stops instead). Every publish on the partition fails until the recovery action: **restart the node** — reopen re-scans the file and trims to the valid prefix; nothing acked is lost |
+| `ringTail` | Earliest offset still in the in-memory ring (`-1` when the materialized ring is EMPTY — has never held a record, e.g. right after a restart; a partition with no ring at all appears only as a segment-only row or not at all) |
+| `sealedThrough` | The durable sealed bound — what WAL truncation chases (`-1` when nothing is sealed) |
+| `earliestSegment` | Earliest sealed-segment start offset still retained (`-1` when no segments are retained) |
+| `checkpointFloor` | The entity checkpoint (`throughOffset`, from replicated KV); `-1` when no fold has ever checkpointed, or the stream is not an entity log |
+| `coveredFrom` | The MINIMUM start offset across local sources (`earliestSegment`, `ringTail`, WAL window start); `-1` when this node holds nothing replayable — which under a committed checkpoint is itself a violation (restarted-empty) |
+| `violated` | The tri-floor invariant failed: a checkpoint exists and either no local source reaches back to `checkpoint + 1` (`coveredFrom > checkpointFloor + 1`) or nothing local exists at all (`coveredFrom = -1`) |
+| `violation` | Human-readable gap description naming the missing offset range (`""` when not violated) |
+
+Absence is data here: `-1` per the table above, and a `null` `wal` on a partition of a durable stream
+means that partition is on the non-durable path on this node.
+
+**Periodic invariant watch.** The metrics-threshold alert path is evaluated only while a dashboard
+client is connected, so a violation nobody polls for would stay invisible. A periodic watch re-runs
+this same assembly **every 5 minutes** and, for each NEWLY violated partition, WARN-logs and raises
+one operator alert — name **`retention-invariant`**, severity **`CRITICAL`** — through the alert
+injection path (visible via `GET /api/alerts/active` and `aether alerts active`). A raise requires the
+SAME partition to be violated on TWO consecutive ticks (the tri-floor join is a non-atomic cut, so a
+truncate landing between reads can synthesize a one-tick phantom). No re-alert while the same
+violation persists; a partition that recovers and later relapses re-earns its two ticks and alerts
+again.
+
+**Operator recovery — what clears a `violated` row.** A violated partition means a fold from the
+checkpoint would refuse on this node: the records in `[checkpointFloor + 1, coveredFrom - 1]` are on
+no local source. Recovery is restoring the missing range from a replica that still holds it
+(re-replication via partition backfill). If no replica holds the range, the remaining option is
+accepting the documented loss and re-baselining the checkpoint. The flag is computed on read: it
+clears on the next read (and the next watch tick) after local sources again cover `checkpoint + 1`.
+
+**Dashboard: dormant slot, decided explicitly (QUAD invariant, #494).** No panel is added. This is a
+PER-NODE coverage diagnostic; per the 2026-07-20 owner ruling a dormant dimension must show a true
+degenerate value rather than a fabricated one, and a cluster aggregate of per-node coverage verdicts
+has no honest degenerate rendering (nodes legitimately differ — that difference is the signal). The
+periodic `retention-invariant` alert is the push-side surface; this endpoint and
+`aether storage retention` are the pull side.
 
 ---
 
@@ -2388,7 +2650,7 @@ Complete the deployment (finalize new version, decommission old). Requires leade
 
 Get live cluster topology with per-node details. Returns core/passive/worker counts from the actual connected topology (not static boot-time config).
 
-When a cluster generation snapshot is available the `coreCount` field is derived from the snapshot's `ON_DUTY`+`HEALTHY` core members, and the response additionally carries the current `epoch` string (`"rabiaTerm:localCounter"`). When no snapshot is available yet, `coreCount` falls back to `topologyManager.healthyActiveNodeCount()` and the `epoch` field is omitted.
+When a cluster generation snapshot is available the `coreCount` field is derived from the snapshot's `ON_DUTY`+`HEALTHY` core members, and the response additionally carries the current `epoch` string (`"rabiaTerm:localCounter"`). When no snapshot is available yet, `coreCount` falls back to `topologyManager.reportedActiveNodeCount()` and the `epoch` field is omitted.
 
 The `fsmMembers` array (Wave-1 diagnostic extension, cluster-topology-overhaul spec item 6) exposes the queried node's authoritative per-member `MembershipFsm` truth: lifecycle state (`Observed` / `Member` / `Suspect` / `Departing` / `Dead`), the SWIM incarnation high-water mark, and the last-known descriptor `role` / `source` labels. DEAD members are included (retained for incarnation-fenced rejoin), so a remote run reads membership truth without `docker logs`.
 
@@ -2409,7 +2671,7 @@ Each `nodeDetails` and `fsmMembers` entry carries BOTH `role` (the self-asserted
       "nodeId": "node-1",
       "role": "ACTIVE",
       "assignedRole": "CORE",
-      "health": "HEALTHY",
+      "health": "CONNECTED",
       "hostname": "aether-node-1",
       "zone": "",
       "address": "aether-node-1:6000"
@@ -2418,7 +2680,7 @@ Each `nodeDetails` and `fsmMembers` entry carries BOTH `role` (the self-asserted
       "nodeId": "lb-passive",
       "role": "PASSIVE",
       "assignedRole": "UNASSIGNED",
-      "health": "HEALTHY",
+      "health": "CONNECTED",
       "hostname": "aether-lb",
       "zone": "",
       "address": "0.0.0.0:7000"
@@ -2494,7 +2756,7 @@ Errors: `layer` values other than `fsm` / `peer` are rejected.
 
 Membership diagnostics — the responding node's authoritative `MembershipFsm` lifecycle view plus its quorum-loss self-drain readiness. Purpose: diagnose SWIM-under-concurrent-loss situations without log-scraping — per survivor, which peers are SUSPECT/DEAD and whether this node's quorum-loss self-drain window is armed and below threshold. **Per-node local view** (each node serves its own membership state); read-only; **not leader-forwarded** — query an individual node to read *that* node's view (e.g. each survivor's view during a multi-core-loss window).
 
-`requiredThreshold` is the simple-majority quorum threshold `coreCount / 2 + 1` (`0` while the core count is still unknown at bootstrap). `armed` is a cold-start latch: a node that has never observed a quorate count never self-drains. DEAD members are retained in `members[]` for incarnation-fenced rejoin.
+`requiredThreshold` is the simple-majority quorum threshold `coreCount / 2 + 1` (`0` while the core count is still unknown at bootstrap). `armed` is a cold-start latch: a node that has never observed a quorate count never self-drains. Since #557 the count behind that latch is the *observed-reachability* core count (`MembershipFsm.strictCoreObservedMemberCount`), not the boot-seeded one — previously every configured core counted from process start, so the latch armed on configuration before the cluster had formed and the cold-start guard was already spent when formation began. DEAD members are retained in `members[]` for incarnation-fenced rejoin.
 
 **RBAC:** VIEWER · **Routing:** LOCAL
 
@@ -2507,6 +2769,13 @@ Membership diagnostics — the responding node's authoritative `MembershipFsm` l
   "requiredThreshold": 3,
   "belowThreshold": true,
   "armed": true,
+  "coreAbsence": {
+    "armed": true,
+    "fenced": false,
+    "sinceLastPingMs": 6200,
+    "remainingMs": 3800,
+    "thresholdMs": 10000
+  },
   "members": [
     {"nodeId": "core-1", "state": "Member",  "incarnation": 1, "role": "core", "strictCore": true,  "countsTowardEffective": true},
     {"nodeId": "core-3", "state": "Suspect", "incarnation": 2, "role": "core", "strictCore": false, "countsTowardEffective": true},
@@ -2522,13 +2791,27 @@ Membership diagnostics — the responding node's authoritative `MembershipFsm` l
 | `countedCoreMemberCount` | Core members counting toward effective membership (`Member` + `Suspect`) |
 | `requiredThreshold` | Simple-majority quorum threshold `coreCount / 2 + 1` (`0` while core count unknown at bootstrap) |
 | `belowThreshold` | Whether the strict count is currently below threshold |
-| `armed` | Whether this node has ever observed a quorate count (cold-start latch; a never-quorate node never self-drains) |
+| `armed` | Whether this node has ever observed a quorate count (cold-start latch; a never-quorate node never self-drains). "Observed" is literal since #557: the count is reachability-derived, so the latch cannot arm on configuration alone |
+| `coreAbsence` | #590 — the COMMUNITY tier's fence, the twin of the core-tier fields above. The core broadcasts `ClusterSyncPing` cluster-wide; a node that stops receiving them has lost the core and dissolves itself locally, without the consensus write an isolated community could never complete |
+| `coreAbsence.armed` | Whether a term-accepted core ping has ever arrived. `false` means this node has never heard the core and is cold-starting — **not** isolated. Without this latch every community would fence itself during formation |
+| `coreAbsence.fenced` | Whether the local dissolve has already fired. Terminal: recovery is a re-join, not a node deciding on its own that it is serving again |
+| `coreAbsence.sinceLastPingMs` | Age of the last term-accepted ping (`-1` if none ever arrived). Pings from a stale leader are rejected by term fencing and do **not** refresh this, so a partitioned-away former leader cannot hold a community open |
+| `coreAbsence.remainingMs` | Time left before this node fences itself (`-1` when unarmed or already fenced). **The field to watch during a suspected partition** |
+| `coreAbsence.thresholdMs` | The configured `timeouts.cluster.core_absence` |
 | `members[]` | Every tracked peer (DEAD retained for incarnation-fenced rejoin) |
 | `members[].state` | FSM lifecycle state (`Observed` / `Member` / `Suspect` / `Departing` / `Dead`) |
 | `members[].incarnation` | Member incarnation |
 | `members[].role` | `core` / `worker` / `unknown` |
 | `members[].strictCore` | In the strict `Member`-only quorum set |
 | `members[].countsTowardEffective` | In the `Member` + `Suspect` counted set |
+
+> **Why core-absence is on a LOCAL endpoint and not the leader's.** A node approaching its core-absence
+> fence is, by definition, one the core is losing contact with — so a leader-forwarded answer is the one
+> answer nobody can obtain during the incident it describes. Query the suspect node's own management
+> port. The leader's complementary view (which communities the core has stopped counting, on the longer
+> `timeouts.cluster.community_absence` window) is what re-places slices; the two windows are ordered
+> `core_absence < community_absence`, refused at config load otherwise, so a community always stops
+> serving before its work is handed to anyone else.
 
 ### GET /api/ownership/{domain}
 
@@ -2686,6 +2969,11 @@ Get the current cluster configuration from the KV-Store.
   "clusterName": "production",
   "version": "0.21.1",
   "coreCount": 5,
+  "desiredTopology": [
+    {"sourceName": "hetzner-eu", "role": "core", "count": 3},
+    {"sourceName": "hetzner-eu", "role": "worker", "count": 4},
+    {"sourceName": "aws-us", "role": "core", "count": 2}
+  ],
   "coreMin": 3,
   "coreMax": 9,
   "deploymentType": "local",
@@ -2693,6 +2981,11 @@ Get the current cluster configuration from the KV-Store.
   "updatedAt": 1711468800000
 }
 ```
+
+`desiredTopology` is the authoritative desired shape, per source and per role. `coreCount` is
+DERIVED from it — the sum of the `core` entries — rather than stored alongside it, so the two
+cannot drift. It is retained because most consumers only need the total, but it cannot say where
+those cores live, which is what `POST /api/cluster/scale` needs in a multi-source cluster.
 
 ### GET /api/cluster/provisioning
 
@@ -2806,27 +3099,75 @@ Apply a cluster configuration change. Computes a diff against the stored config 
 
 ### POST /api/cluster/scale
 
-Scale the cluster core node count. Validates quorum safety (minimum 3, odd count, within min/max bounds).
+Scale one `(source, role)` of the desired cluster topology.
 
-**RBAC:** ADMIN
+Cluster state stores a desired count per source and per role, so a scale request names which
+source absorbs the change. A cluster-wide core count cannot express that: with cores in two
+sources, "scale cores to 7" does not say where the new nodes go.
+
+**RBAC:** ADMIN · **Routing:** LEADER
 
 **Request:**
 ```json
 {
-  "coreCount": 7,
+  "source": "hetzner-eu",
+  "role": "core",
+  "count": 7,
   "expectedVersion": 7
 }
 ```
+
+| Field | Description |
+|-------|-------------|
+| `source` | Source name. Blank asks the server to infer it, which succeeds only when exactly one source declares `role`. |
+| `role` | `core`, `worker` or `spot`. Blank defaults to `core`. |
+| `count` | Target node count for this source and role. |
+| `expectedVersion` | Config version read from `GET /api/cluster/config`; the request is rejected if it no longer matches. |
 
 **Response:**
 ```json
 {
   "success": true,
+  "source": "hetzner-eu",
+  "role": "core",
   "previousCount": 5,
   "newCount": 7,
   "configVersion": 8
 }
 ```
+
+**Validation.** Quorum arithmetic applies to `core` only — it is what keeps a majority reachable,
+and it is checked against the resulting **cluster-wide** core total, not the per-source count.
+Scaling one core source to 1 is accepted when another source carries 2, because the cluster total
+is 3. Worker and spot counts carry no quorum constraint and are required only to be non-negative — scaling a worker tier to zero (drain-all) is legitimate.
+
+**Refusals** (both HTTP 400):
+
+- Undeclared `(source, role)` — the topology is changed with `aether cluster apply`, not with a
+  scale. Adding the pair here would turn a mistyped source name into a real provisioning target.
+- Blank `source` when several sources declare the role. The response names the candidates.
+
+**Conflicts** (HTTP 409):
+
+- `expectedVersion` no longer matches the stored config version (checked before the write).
+- The write itself lost a concurrent race (RFC-0018): the KV applier rejects a config write built on
+  a stale read, and the route confirms the requested count actually landed before reporting success.
+  A `VersionConflict` here means another writer — an operator or the auto-heal reconciler — advanced
+  the config between this request's read and its commit. Recovery: re-read
+  `GET /api/cluster/config` and re-issue the scale with the fresh `expectedVersion`.
+
+**`health` values (changed 2026-08-27, #558).** This field previously reported `NodeState.health`,
+which was `HEALTHY` for every node the observer had ever discovered — nothing ever drove a node out of
+that state, so a dead node still read `HEALTHY`. It now reports what is actually known:
+
+| Value | Meaning |
+|-------|---------|
+| `CONNECTED` | A live transport link to this node is observed right now |
+| `DISCOVERED` | The observer knows this node id, but there is no live link |
+| `UNKNOWN` | The node is not in the observer's map at all |
+
+Note that `DISCOVERED` is not a claim of ill health — it means no live link is currently observed, which
+during formation is routine. For a liveness judgement prefer the membership view's on-duty set.
 
 ### GET /api/cluster/topology/circuit-breaker
 
@@ -2963,19 +3304,22 @@ List all API keys with status.
 
 **RBAC:** ADMIN
 
-**Response:**
+**Response:** a JSON array of key records. Each record carries its own `status`
+(`ACTIVE`, `REVOKED`, or `EXPIRED`) — clients must read the per-record field rather than matching
+a status token against the whole document.
+
 ```json
-{
-  "keys": [
-    {
-      "keyId": "ak_1a2b3c4d",
-      "status": "ACTIVE",
-      "createdAt": 1712000000000,
-      "expiresAt": -1,
-      "revokedAt": -1
-    }
-  ]
-}
+[
+  {
+    "keyId": "ak_1a2b3c4d",
+    "status": "ACTIVE",
+    "createdAt": 1712000000000,
+    "expiresAt": -1,
+    "revokedAt": -1,
+    "gracePeriodMs": 300000,
+    "authorizationRole": "ADMIN"
+  }
+]
 ```
 
 ### POST /api/cluster/keys/{id}/revoke
@@ -3303,50 +3647,53 @@ When no API keys are configured, WebSocket connections are immediately authorize
 
 ### GET /api/workers
 
-List all known worker nodes across all worker groups.
+List worker nodes across all communities, read from committed consensus state (the governor
+announcements written by each community's `GovernorAnnouncer`). One row per worker; a worker that is
+also its community's governor is flagged with `isGovernor`. Members of dissolved communities are
+omitted. Rows are ordered by community, then node id.
 
-**Response:**
-```json
-[
-  {
-    "nodeId": "worker-1",
-    "groupId": "default"
-  },
-  {
-    "nodeId": "worker-2",
-    "groupId": "default"
-  }
-]
-```
-
-### GET /api/workers/health
-
-Get worker pool health summary.
+This is the per-worker projection of the same announcements that `/api/cluster/governors` projects
+per-community.
 
 **Response:**
 ```json
 {
-  "totalWorkers": 5,
-  "totalGroups": 1,
-  "isEmpty": false
+  "workers": [
+    {
+      "nodeId": "governor-1",
+      "community": "east",
+      "governorId": "governor-1",
+      "isGovernor": true,
+      "communityTerm": 7,
+      "announcedAt": 1700000000000
+    },
+    {
+      "nodeId": "worker-a",
+      "community": "east",
+      "governorId": "governor-1",
+      "isGovernor": false,
+      "communityTerm": 7,
+      "announcedAt": 1700000000000
+    }
+  ]
 }
 ```
 
+A cluster running no workers returns `{"workers":[]}`.
+
+### GET /api/workers/health
+
+**Not implemented — returns HTTP 501.** Workers publish only their community roster to consensus
+(`GovernorAnnouncementValue`); no per-worker health fact is replicated, so the leader has nothing to
+report. Use `GET /api/workers` for the roster and `GET /api/cluster/membership` for per-node SWIM
+state. The corresponding `aether workers health` CLI subcommand was removed in #525.
+
 ### GET /api/workers/endpoints
 
-List all worker-hosted slice endpoints across all groups.
-
-**Response:**
-```json
-[
-  {
-    "artifact": "org.example:my-slice:1.0.0",
-    "methodName": "processOrder",
-    "workerNodeId": "worker-1",
-    "instanceNumber": 0
-  }
-]
-```
+**Not implemented — returns HTTP 501.** Only the *governor's* `tcpAddress` is recorded in consensus,
+never per-worker endpoints, so a cluster-wide worker endpoint table cannot be assembled. Use
+`GET /api/routes` for the cluster HTTP route table. The corresponding `aether workers endpoints` CLI
+subcommand was removed in #525.
 
 ---
 
@@ -3469,101 +3816,116 @@ Conclude the A/B test and promote the winning variant. Requires leader node.
 
 ## Endpoint Summary
 
+Every route below is served under the `/api/v1` prefix (landed 2026-08-28, #300), composed at one
+site by `ManagementRoute`'s `API_BASE` constant [mechanism:
+`aether/aether-management-api/.../route/ManagementRoute.java`; design:
+[`management-api-versioning-spec.md`](../specs/management-api-versioning-spec.md) §2.1]. Four
+surfaces are deliberately unversioned carve-outs and stay bare: the health probes
+(`/health/live`, `/health/ready` — spec §2.2), the artifact-repository routes (`/repository/**` —
+spec §2.2), the dashboard (`/dashboard`, a static asset, not a management-API route), and the
+WebSocket endpoints (`/ws/*`, likewise outside the `ManagementRoute` enum). The Stream Management
+and Stream Namespaces sections below are intentionally not covered by this note or this table — a
+separate, still in-flight consolidation effort (spec §3.2–§3.3) owns that surface; see
+[`versioning-and-compatibility.md`](versioning-and-compatibility.md) for status.
+
 | Method | Path | Section |
 |--------|------|---------|
 | GET | `/health/live` | Health Probes |
 | GET | `/health/live/{id}` | Health Probes |
 | GET | `/health/ready` | Health Probes |
 | GET | `/health/ready/{id}` | Health Probes |
-| GET | `/api/nodes/status` | Cluster Status |
-| GET | `/api/health` | Cluster Status |
-| GET | `/api/nodes` | Cluster Status |
-| GET | `/api/events` | Cluster Status |
-| GET | `/api/slices` | Slice Management (cluster-wide) |
-| GET | `/api/nodes/slices` | Slice Management (per-node) |
-| GET | `/api/slices/status` | Slice Management |
-| GET | `/api/slices/config/{id}` | Slice Management |
-| GET | `/api/nodes/routes` | Slice Management (per-node) |
-| GET | `/api/routes` | Slice Management (cluster-wide) |
-| POST | `/api/scale` | Slice Management |
-| POST | `/api/blueprints` | Blueprint Management |
-| GET | `/api/blueprints` | Blueprint Management |
-| GET | `/api/blueprints/{id}` | Blueprint Management |
-| GET | `/api/blueprints/{id}/status` | Blueprint Management |
-| DELETE | `/api/blueprints/{id}` | Blueprint Management |
-| POST | `/api/blueprints/deploy` | Blueprint Management |
-| POST | `/api/blueprints/publish` | Blueprint Management |
-| POST | `/api/blueprints/validate` | Blueprint Management |
-| GET | `/api/metrics` | Metrics |
-| GET | `/api/metrics/comprehensive` | Metrics |
-| GET | `/api/metrics/derived` | Metrics |
-| GET | `/api/metrics/prometheus` | Metrics |
-| GET | `/api/metrics/transport` | Metrics |
-| GET | `/api/metrics/history` | Metrics |
-| GET | `/api/metrics/timeouts` | Metrics |
-| POST | `/api/metrics/backfill` | Metrics (dev-mode only) |
-| GET | `/api/nodes/metrics` | Metrics |
-| GET | `/api/artifacts/metrics` | Metrics |
-| GET | `/api/invocations/metrics` | Metrics |
-| GET | `/api/invocations/metrics/slow` | Metrics |
-| GET | `/api/invocations/metrics/strategy` | Metrics |
-| POST | `/api/invocations/metrics/strategy` | Metrics |
-| GET | `/api/controller/config` | Controller |
-| POST | `/api/controller/config` | Controller |
-| GET | `/api/controller/status` | Controller |
-| GET | `/api/controller/decisions` | Controller |
-| POST | `/api/controller/evaluate` | Controller |
-| GET | `/api/ttm/status` | TTM |
-| GET | `/api/ttm/training-data` | TTM |
-| GET | `/api/alerts` | Alert Management |
-| GET | `/api/alerts/active` | Alert Management |
-| GET | `/api/alerts/history` | Alert Management |
-| POST | `/api/alerts/clear` | Alert Management |
-| GET | `/api/thresholds` | Threshold Configuration |
-| POST | `/api/thresholds` | Threshold Configuration |
-| DELETE | `/api/thresholds/{metric}` | Threshold Configuration |
-| GET | `/api/aspects` | Dynamic Aspects |
-| POST | `/api/aspects` | Dynamic Aspects |
-| DELETE | `/api/aspects/{artifact}/{method}` | Dynamic Aspects |
-| GET | `/api/traces` | Traces |
-| GET | `/api/traces/{id}` | Traces |
-| GET | `/api/traces/stats` | Traces |
-| GET | `/api/observability/depth` | Observability Depth |
-| POST | `/api/observability/depth` | Observability Depth |
-| DELETE | `/api/observability/depth/{artifact}/{method}` | Observability Depth |
-| GET | `/api/observability/config` | Observability Config |
-| GET | `/api/observability/config/{artifactBase}/{methodName}` | Observability Config |
-| POST | `/api/observability/config` | Observability Config |
-| DELETE | `/api/observability/config/{artifactBase}/{methodName}` | Observability Config |
-| GET | `/api/dht/replication-map` | DHT |
-| POST | `/api/dht/inject` | DHT (dev-mode only) |
-| GET | `/api/storage` | Storage (per-node) |
-| GET | `/api/storage/{name}` | Storage (per-node) |
-| POST | `/api/storage/snapshot/{name}` | Storage |
-| GET | `/api/cluster/storage` | Storage (cluster-wide) |
-| GET | `/api/cluster/storage/{name}` | Storage (cluster-wide) |
-| GET | `/api/logging/levels` | Log Level Management |
-| POST | `/api/logging/levels` | Log Level Management |
-| DELETE | `/api/logging/levels/{logger}` | Log Level Management |
-| GET | `/api/config` | Dynamic Configuration |
-| GET | `/api/config/overrides` | Dynamic Configuration |
-| POST | `/api/config` | Dynamic Configuration |
-| DELETE | `/api/config/{key}` | Dynamic Configuration |
-| DELETE | `/api/config/node/{id}/{key}` | Dynamic Configuration |
-| GET | `/api/deploy` | Deployments |
-| GET | `/api/deploy/{id}` | Deployments |
-| GET | `/api/deploy/{id}/health` | Deployments |
-| POST | `/api/deploy` | Deployments |
-| POST | `/api/deploy/{id}/promote` | Deployments |
-| POST | `/api/deploy/{id}/rollback` | Deployments |
-| POST | `/api/deploy/{id}/complete` | Deployments |
-| GET | `/api/ab-tests` | A/B Testing |
-| GET | `/api/ab-tests/{id}` | A/B Testing |
-| GET | `/api/ab-tests/{id}/metrics` | A/B Testing |
-| POST | `/api/ab-tests/create` | A/B Testing |
-| POST | `/api/ab-tests/{id}/conclude` | A/B Testing |
-<!-- Rolling update endpoints replaced by unified /api/deploy above -->
-| GET | `/api/slices/topology` | Topology |
+| GET | `/api/v1/nodes/status` | Cluster Status |
+| GET | `/api/v1/health` | Cluster Status |
+| GET | `/api/v1/nodes` | Cluster Status |
+| GET | `/api/v1/events` | Cluster Status |
+| GET | `/api/v1/slices` | Slice Management (cluster-wide) |
+| GET | `/api/v1/nodes/slices` | Slice Management (per-node) |
+| GET | `/api/v1/slices/status` | Slice Management |
+| GET | `/api/v1/slices/config/{id}` | Slice Management |
+| GET | `/api/v1/nodes/routes` | Slice Management (per-node) |
+| GET | `/api/v1/routes` | Slice Management (cluster-wide) |
+| POST | `/api/v1/scale` | Slice Management |
+| POST | `/api/v1/blueprints` | Blueprint Management |
+| GET | `/api/v1/blueprints` | Blueprint Management |
+| GET | `/api/v1/blueprints/{id}` | Blueprint Management |
+| GET | `/api/v1/blueprints/{id}/status` | Blueprint Management |
+| DELETE | `/api/v1/blueprints/{id}` | Blueprint Management |
+| POST | `/api/v1/blueprints/deploy` | Blueprint Management |
+| POST | `/api/v1/blueprints/publish` | Blueprint Management |
+| POST | `/api/v1/blueprints/validate` | Blueprint Management |
+| GET | `/api/v1/metrics` | Metrics |
+| GET | `/api/v1/metrics/comprehensive` | Metrics |
+| GET | `/api/v1/metrics/derived` | Metrics |
+| GET | `/api/v1/metrics/prometheus` | Metrics |
+| GET | `/api/v1/metrics/transport` | Metrics |
+| GET | `/api/v1/metrics/history` | Metrics |
+| GET | `/api/v1/metrics/timeouts` | Metrics |
+| POST | `/api/v1/metrics/backfill` | Metrics (dev-mode only) |
+| GET | `/api/v1/nodes/metrics` | Metrics |
+| GET | `/api/v1/artifacts/metrics` | Metrics |
+| GET | `/api/v1/invocations/metrics` | Metrics |
+| GET | `/api/v1/invocations/metrics/slow` | Metrics |
+| GET | `/api/v1/invocations/metrics/strategy` | Metrics |
+| POST | `/api/v1/invocations/metrics/strategy` | Metrics |
+| GET | `/api/v1/controller/config` | Controller |
+| POST | `/api/v1/controller/config` | Controller |
+| GET | `/api/v1/controller/status` | Controller |
+| GET | `/api/v1/controller/decisions` | Controller |
+| POST | `/api/v1/controller/evaluate` | Controller |
+| GET | `/api/v1/ttm/status` | TTM |
+| GET | `/api/v1/ttm/training-data` | TTM |
+| GET | `/api/v1/alerts` | Alert Management |
+| GET | `/api/v1/alerts/active` | Alert Management |
+| GET | `/api/v1/alerts/history` | Alert Management |
+| POST | `/api/v1/alerts/clear` | Alert Management |
+| GET | `/api/v1/thresholds` | Threshold Configuration |
+| POST | `/api/v1/thresholds` | Threshold Configuration |
+| DELETE | `/api/v1/thresholds/{metric}` | Threshold Configuration |
+| GET | `/api/v1/aspects` | Dynamic Aspects |
+| POST | `/api/v1/aspects` | Dynamic Aspects |
+| DELETE | `/api/v1/aspects/{artifact}/{method}` | Dynamic Aspects |
+| GET | `/api/v1/traces` | Traces |
+| GET | `/api/v1/traces/{id}` | Traces |
+| GET | `/api/v1/traces/stats` | Traces |
+| GET | `/api/v1/observability/depth` | Observability Depth |
+| POST | `/api/v1/observability/depth` | Observability Depth |
+| DELETE | `/api/v1/observability/depth/{artifact}/{method}` | Observability Depth |
+| GET | `/api/v1/observability/config` | Observability Config |
+| GET | `/api/v1/observability/config/{artifactBase}/{methodName}` | Observability Config |
+| POST | `/api/v1/observability/config` | Observability Config |
+| DELETE | `/api/v1/observability/config/{artifactBase}/{methodName}` | Observability Config |
+| GET | `/api/v1/dht/replication-map` | DHT |
+| POST | `/api/v1/dht/inject` | DHT (dev-mode only) |
+| GET | `/api/v1/storage` | Storage (per-node) |
+| GET | `/api/v1/storage/{name}` | Storage (per-node) |
+| GET | `/api/v1/storage/retention` | Storage (per-node) |
+| POST | `/api/v1/storage/snapshot/{name}` | Storage |
+| GET | `/api/v1/cluster/storage` | Storage (cluster-wide) |
+| GET | `/api/v1/cluster/storage/{name}` | Storage (cluster-wide) |
+| GET | `/api/v1/entity/checkpoints` | Durable Entities (per-node) |
+| GET | `/api/v1/entity/keyspaces` | Durable Entities |
+| GET | `/api/v1/logging/levels` | Log Level Management |
+| POST | `/api/v1/logging/levels` | Log Level Management |
+| DELETE | `/api/v1/logging/levels/{logger}` | Log Level Management |
+| GET | `/api/v1/config` | Dynamic Configuration |
+| GET | `/api/v1/config/overrides` | Dynamic Configuration |
+| POST | `/api/v1/config` | Dynamic Configuration |
+| DELETE | `/api/v1/config/{key}` | Dynamic Configuration |
+| DELETE | `/api/v1/config/node/{id}/{key}` | Dynamic Configuration |
+| GET | `/api/v1/deploy` | Deployments |
+| GET | `/api/v1/deploy/{id}` | Deployments |
+| GET | `/api/v1/deploy/{id}/health` | Deployments |
+| POST | `/api/v1/deploy` | Deployments |
+| POST | `/api/v1/deploy/{id}/promote` | Deployments |
+| POST | `/api/v1/deploy/{id}/rollback` | Deployments |
+| POST | `/api/v1/deploy/{id}/complete` | Deployments |
+| GET | `/api/v1/ab-tests` | A/B Testing |
+| GET | `/api/v1/ab-tests/{id}` | A/B Testing |
+| GET | `/api/v1/ab-tests/{id}/metrics` | A/B Testing |
+| POST | `/api/v1/ab-tests/create` | A/B Testing |
+| POST | `/api/v1/ab-tests/{id}/conclude` | A/B Testing |
+<!-- Rolling update endpoints replaced by unified /api/v1/deploy above -->
+| GET | `/api/v1/slices/topology` | Topology |
 | GET | `/repository/info/{group}/{artifact}/{version}` | Artifact Repository |
 | GET | `/repository/{group}/{artifact}/{version}/{file}` | Artifact Repository |
 | PUT | `/repository/{group}/{artifact}/{version}/{file}` | Artifact Repository |
@@ -3573,23 +3935,24 @@ Conclude the A/B test and promote the winning variant. Requires leader node.
 | WS | `/ws/status` | WebSocket |
 | WS | `/ws/events` | WebSocket |
 
-| GET | `/api/nodes/lifecycle` | Node Lifecycle |
-| GET | `/api/nodes/lifecycle/{id}` | Node Lifecycle |
-| POST | `/api/nodes/drain/{id}` | Node Lifecycle |
-| POST | `/api/nodes/shutdown/{id}` | Node Lifecycle |
-| GET | `/api/audit/commands` | Observability |
-| GET | `/api/scheduled-tasks` | Scheduled Tasks |
-| GET | `/api/scheduled-tasks/{configSection}` | Scheduled Tasks |
-| POST | `/api/scheduled-tasks/{configSection}/{artifact}/{method}/pause` | Scheduled Tasks |
-| POST | `/api/scheduled-tasks/{configSection}/{artifact}/{method}/resume` | Scheduled Tasks |
-| POST | `/api/scheduled-tasks/{configSection}/{artifact}/{method}/trigger` | Scheduled Tasks |
-| GET | `/api/scheduled-tasks/{configSection}/{artifact}/{method}/state` | Scheduled Tasks |
-| POST | `/api/scheduled-tasks/inject` | Scheduled Tasks (dev-mode only) |
-| GET | `/api/scheduled-tasks/executions-by-node/{configSection}/{artifact}/{method}` | Scheduled Tasks |
-| POST | `/api/certificates/configure-short-validity` | Certificates (dev-mode only) |
-| GET | `/api/workers` | Worker Pools |
-| GET | `/api/workers/health` | Worker Pools |
-| GET | `/api/workers/endpoints` | Worker Pools |
+| GET | `/api/v1/nodes/lifecycle` | Node Lifecycle |
+| GET | `/api/v1/nodes/lifecycle/{id}` | Node Lifecycle |
+| POST | `/api/v1/nodes/drain/{id}` | Node Lifecycle |
+| POST | `/api/v1/nodes/shutdown/{id}` | Node Lifecycle |
+| GET | `/api/v1/scheduled-tasks` | Scheduled Tasks |
+| GET | `/api/v1/scheduled-tasks/{configSection}` | Scheduled Tasks |
+| POST | `/api/v1/scheduled-tasks/{configSection}/{artifact}/{method}/pause` | Scheduled Tasks |
+| POST | `/api/v1/scheduled-tasks/{configSection}/{artifact}/{method}/resume` | Scheduled Tasks |
+| POST | `/api/v1/scheduled-tasks/{configSection}/{artifact}/{method}/trigger` | Scheduled Tasks |
+| GET | `/api/v1/scheduled-tasks/{configSection}/{artifact}/{method}/state` | Scheduled Tasks |
+| POST | `/api/v1/scheduled-tasks/inject` | Scheduled Tasks (dev-mode only) |
+| GET | `/api/v1/scheduled-tasks/executions-by-node/{configSection}/{artifact}/{method}` | Scheduled Tasks |
+| POST | `/api/v1/certificates/configure-short-validity` | Certificates (dev-mode only) |
+| GET | `/api/v1/workers` | Worker Pools |
+| GET | `/api/v1/workers/health` | Worker Pools (501 — not implemented) |
+| GET | `/api/v1/workers/endpoints` | Worker Pools (501 — not implemented) |
+| POST | `/api/v1/cluster/migrate` | Cluster Migration (501 — not implemented) |
+| POST | `/api/v1/cluster/migrate/plan` | Cluster Migration (501 — not implemented) |
 
 ---
 
@@ -3652,13 +4015,42 @@ Get membership + readiness for a specific node.
 
 Begin draining a node. The leader delivers a `DRAIN` command on the leader↔node heartbeat; the node self-drains (finishes in-flight requests) and reports `DRAINING` on its heartbeat. The CDM evacuates slices respecting the disruption budget. No node-state KV write happens on this path.
 
-**Response:**
+**Disruption-budget guard — core-scoped, workers bypass entirely.** Workers carry no consensus weight, so the guard applies only to CORE targets: draining a core is refused with `409 Conflict` when it would leave fewer than `coreCount / 2 + 1` core-scoped nodes operational, where `coreCount` and the post-drain count are both computed from `MembershipFsm.coreCountedMembers()` (never from raw presence, which would count workers alongside cores). A **worker** target bypasses this guard entirely rather than being checked against a narrowed worker-only threshold — there is no worker-capacity floor. If operational continuity for workers is ever needed, that is a distinct feature with its own semantics, not an implicit side effect of the core-quorum guard.
+`[mechanism: role resolved via MembershipFsm.memberDescriptor + ActivationDirective override (label-first, directive-overrides), quorum arithmetic in NodeLifecycleRoutes.checkDisruptionBudget]`
+
+Which guard applied — and why — is always visible in `message`, both on success and (implicitly, via `detail`) on rejection, rather than left for the operator to infer from silence:
+- `"...core-guard skipped (role=worker)"` — the target is a worker; the guard did not run.
+- `"...core-guard applied (role=core, available=<n>, min=<m>)"` — the target is core; the guard ran and passed.
+
+**Recovery when a core drain is rejected:** wait for an in-flight core drain to finish departing (it stops counting once membership no longer reports it), or grow core capacity, then retry. There is no override flag — the guard cannot be forced past for a core target.
+
+**Response (success):**
 ```json
 {
   "success": true,
   "nodeId": "node-1",
   "state": "DRAINING",
-  "message": "Node draining initiated"
+  "message": "Drain command enqueued; target will self-drain via heartbeat DRAIN command (core-guard applied (role=core, available=3, min=3))"
+}
+```
+
+**Response (worker target — guard bypassed):**
+```json
+{
+  "success": true,
+  "nodeId": "worker-2",
+  "state": "DRAINING",
+  "message": "Drain command enqueued; target will self-drain via heartbeat DRAIN command (core-guard skipped (role=worker))"
+}
+```
+
+**Response (core target — budget exceeded, 409 Conflict):**
+```json
+{
+  "type": "about:blank",
+  "title": "Conflict",
+  "status": 409,
+  "detail": "Disruption budget exceeded: draining node-3 would leave 2 core-scoped operational nodes, minimum is 3 (role=core; worker drains bypass this guard)"
 }
 ```
 
@@ -3703,68 +4095,6 @@ Accepted values for `targetRole` (case-insensitive): `"CORE"`, `"WORKER"`. Promo
   "message": "Promoted node from CORE to WORKER"
 }
 ```
-
----
-
-## Audit
-
-### GET /api/audit/commands
-
-**Phase 3 PR-C (lifecycle reconciler):** operator inspection surface for the `audit.lifecycle.commands` stream — surfaces the most recent `CommandReceived` / `CommandApplied` events the local node has emitted (via `DirectLifecycleWriter`).
-
-**Scope note:** the backing store is a per-node in-memory ring buffer (capacity 1024 by default), not a full stream subscription. Events survive the lifetime of the JVM only. For cluster-wide audit visibility operators should target the leader (`-c <leader-host>`); a follower will only surface events emitted via writers running on this same node. RC2 follow-up: replace with a proper `StreamReadRouter`-backed subscription so audit history survives node restarts.
-
-**Authorization:** ADMIN (audit channel — operational observability).
-
-**Query parameters (all optional):**
-- `since` — time window. Accepts epoch-millis (e.g., `1700000000000`), ISO-8601 (`2026-05-23T10:00:00Z`), or relative duration with unit suffix:
-  - `<N>s` — N seconds ago
-  - `<N>m` — N minutes ago
-  - `<N>h` — N hours ago
-  - `<N>d` — N days ago
-- `source` — case-insensitive emitter discriminator: `operator`, `reconciler`, `ctm`, `drain_coordinator`, `bootstrap`, `unknown`, or `all` (default).
-- `limit` — most-recent N entries (default 100; capped at buffer capacity).
-
-**Response:**
-```json
-{
-  "events": [
-    {
-      "commandType": "ForceDecommission",
-      "peerId": "node-2",
-      "reasonTag": "FORCED",
-      "justificationMessage": "Operator FORCE_DECOMMISSION: stuck JOINING",
-      "source": "OPERATOR",
-      "timestampMs": 1700000000123
-    },
-    {
-      "commandType": "ForceDecommission",
-      "peerId": "node-2",
-      "reasonTag": "FORCED",
-      "justificationMessage": "Operator FORCE_DECOMMISSION: stuck JOINING",
-      "source": "OPERATOR",
-      "timestampMs": 1700000000125,
-      "accepted": true
-    }
-  ]
-}
-```
-
-Each `LifecycleCommand` that flows through `DirectLifecycleWriter.applyCommand(...)` produces a pair of entries: `CommandReceived` on entry, `CommandApplied` after the underlying KV write resolves (carrying the `accepted` boolean).
-
-**Examples:**
-```bash
-# All events seen by this node in the last 5 minutes
-curl 'http://localhost:8080/api/audit/commands?since=5m'
-
-# Only operator-emitted events
-curl 'http://localhost:8080/api/audit/commands?source=operator'
-
-# Reconciler-emitted events since a specific ISO-8601 timestamp, limit 50
-curl 'http://localhost:8080/api/audit/commands?source=reconciler&since=2026-05-23T10:00:00Z&limit=50'
-```
-
----
 
 ## Scheduled Tasks
 
@@ -3873,7 +4203,7 @@ Get detailed execution state for a specific scheduled task.
 
 ### POST /api/scheduled-tasks/inject
 
-**Dev-mode only.** Synchronously fire a scheduled task and advance its `lastExecutionAt` timestamp, bypassing the normal schedule. Used by integration tests that need a deterministic way to drive scheduled-task assertions — replaces the warn-then-pass demotion described in `aether/docs/internal/audits/integration-test-audit-2026-05-21.md` §2.2 (RC1-blocker #16).
+**Dev-mode only.** Synchronously fire a scheduled task and advance its `lastExecutionAt` timestamp, bypassing the normal schedule. Used by integration tests that need a deterministic way to drive scheduled-task assertions — replaces the warn-then-pass demotion described in `aether/docs/.internal/audits/integration-test-audit-2026-05-21.md` §2.2 (RC1-blocker #16).
 
 Gated by the `AETHER_INSECURE_DEV_MODE=true` environment variable on the node. When the gate is closed the endpoint returns a failure response and the task is not invoked. Precondition: a node with operator-provided TLS certificates refuses to start in dev-mode, so this route is never reachable on a node configured with real TLS.
 
@@ -4006,6 +4336,40 @@ emitted to stderr as a structured `{"error":"<message>"}` object; otherwise the 
 
 Manage datasource schema migrations across the cluster.
 
+### Migration ownership and the activation gate
+
+Every schema record names the blueprint that **owns** it — the blueprint whose artifact declared
+the migration set. Ownership is what scopes the deployment-side activation gate:
+
+> A slice is withheld from activation **if and only if its own blueprint owns a datasource whose
+> migration is in `PENDING`, `MIGRATING` or `FAILED`**. A failed or in-flight migration owned by
+> any *other* blueprint does not affect it.
+
+`COMPLETED` is the only status that releases activation. Ownership is compared on the blueprint's
+artifact base (`group:artifact`, version stripped), so a blueprint that advances from `1.0.0` to
+`1.0.1` still owns the records its earlier version wrote.
+
+**Known limit — this scopes by ownership, not by usage.** The gate matches records to slices via
+the *migrator*, not via the readers. A blueprint that reads or writes a datasource **without
+declaring migrations for it** is never held when that datasource's owner fails. Do not read this
+gate as protecting every consumer of a datasource; it protects the migrator's own slices.
+
+Three further conditions are resolved from deployment state, and a slice for which they cannot be
+resolved is reported ready rather than held: the gate applies only when the slice's blueprint is
+present in the leader's blueprint map, has `schema_required` set, and carries an owner. No record
+can be attributed to a blueprint that carries no owner, so holding it would be an unclearable hold.
+
+Datasource names are **cluster-global** — the default `schema/V001__*.sql` layout yields the name
+`database` for every blueprint, and all of them resolve it against the same node-global config
+section. That is why a publish claiming a datasource another blueprint already migrates is refused
+at deploy time (see [`POST /api/blueprints/deploy`](#post-apiblueprintsdeploy)) rather than
+namespaced per blueprint.
+
+Recovery from a `FAILED` hold: `POST /api/schema/retry/{datasource}` (`FAILED` -> `PENDING` ->
+`COMPLETED`), `POST /api/schema/baseline/{datasource}?version=N` (-> `COMPLETED`), or redeploy the
+owning blueprint. The leader also emits a `SCHEMA_ACTIVATION_BLOCKED` audit entry naming the
+datasource, the owning blueprint, and the held slices when it observes a `FAILED` record.
+
 ### GET /api/schema/status
 
 Returns schema migration status for all datasources.
@@ -4018,11 +4382,20 @@ Returns schema migration status for all datasources.
       "datasource": "orders_db",
       "currentVersion": 3,
       "lastMigration": "V003__add_index.sql",
-      "status": "COMPLETED"
+      "status": "COMPLETED",
+      "owningBlueprint": "org.example:my-app:1.0.0"
     }
   ]
 }
 ```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `datasource` | string | Datasource name (cluster-global) |
+| `currentVersion` | int | Highest version recorded for this datasource |
+| `lastMigration` | string | Filename of the last migration recorded |
+| `status` | string | `PENDING`, `MIGRATING`, `COMPLETED`, `FAILED` |
+| `owningBlueprint` | string | Blueprint id (`group:artifact:version`) that declared the migrations. Whose slices this record holds while `status` is not `COMPLETED` |
 
 ### GET /api/schema/status/{datasource}
 
@@ -4034,17 +4407,22 @@ Returns schema status for a specific datasource.
   "datasource": "orders_db",
   "currentVersion": 3,
   "lastMigration": "V003__add_index.sql",
-  "status": "COMPLETED"
+  "status": "COMPLETED",
+  "owningBlueprint": "org.example:my-app:1.0.0"
 }
 ```
 
+Answers `404 Not Found` when the datasource has no schema record.
+
 ### GET /api/schema/history/{datasource}
 
-Returns migration history for a datasource (placeholder -- currently returns current status).
+Returns migration history for a datasource (placeholder -- currently returns the same body as
+`GET /api/schema/status/{datasource}`, including `owningBlueprint`).
 
 ### POST /api/schema/migrate/{datasource}
 
-Triggers manual schema migration for a datasource. Sets status to `MIGRATING`.
+Triggers manual schema migration for a datasource. Sets status to `MIGRATING`. Preserves the
+existing record's artifact coordinates and owning blueprint.
 
 **Response:**
 ```json
@@ -4057,10 +4435,14 @@ Triggers manual schema migration for a datasource. Sets status to `MIGRATING`.
 ### POST /api/schema/undo/{datasource}?targetVersion=N
 
 Undoes migrations to the specified target version. Sets status to `PENDING` at the target version.
+Preserves the existing record's artifact coordinates and owning blueprint.
+
+Note that `PENDING` is a **blocking** status: while the undo is outstanding, the owning blueprint's
+slices are withheld from activation.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `targetVersion` | int | yes | Version to undo to |
+| `targetVersion` | int | no | Version to undo to (defaults to `0` when absent; a non-integer value is a `400`) |
 
 **Response:**
 ```json
@@ -4072,7 +4454,14 @@ Undoes migrations to the specified target version. Sets status to `PENDING` at t
 
 ### POST /api/schema/retry/{datasource}
 
-Retries a failed schema migration by resetting status from FAILED to PENDING. Only works when the datasource is in FAILED state; returns 409 Conflict otherwise.
+Retries a failed schema migration by resetting status from `FAILED` to `PENDING` and clearing the
+attempt counter. This is the primary operator recovery from a `FAILED` activation hold: the
+migration runs again, and reaching `COMPLETED` releases the owning blueprint's slices.
+
+Only works when the datasource is in `FAILED` state; when it is in any other state the call fails
+with `409 Conflict` and
+``Schema for datasource '<name>' is not in FAILED state (currently <STATUS>) — retry only applies to failed migrations``
+(the observed status is named, so the refusal explains itself without a second call).
 
 **Response:**
 ```json
@@ -4085,10 +4474,19 @@ Retries a failed schema migration by resetting status from FAILED to PENDING. On
 ### POST /api/schema/baseline/{datasource}?version=N
 
 Baselines a datasource at the specified version (marks V001..V{N} as applied without executing).
+Sets status to `COMPLETED`, which releases any activation hold on the owning blueprint's slices.
+
+The existing record's artifact coordinates and owning blueprint are **inherited**, not rewritten.
+A datasource with **no existing schema record cannot be baselined** — the call fails with
+`404 Not Found` and ``Schema status not found for datasource '<name>'`` rather than fabricating an
+unowned record. Publish (or deploy) the owning blueprint first so the record exists.
+
+`version` is optional and defaults to `1` when absent; a present-but-non-integer value is rejected
+with `400 Bad Request`.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `version` | int | yes | Version to baseline at |
+| `version` | int | no | Version to baseline at (defaults to `1` when absent; a non-integer value is a `400`) |
 
 **Response:**
 ```json
@@ -4098,18 +4496,39 @@ Baselines a datasource at the specified version (marks V001..V{N} as applied wit
 }
 ```
 
+> **Status-code contract — applies to every endpoint in this Schema Management group.** The schema
+> failure causes implement `HttpStatusAware`, so the management error funnel renders each as an
+> RFC 9457 ProblemDetail carrying its semantic status. Both the status code and the `detail` message
+> are a stable contract; scripted clients may match on either.
+>
+> | Condition | Status | `detail` |
+> |-----------|--------|----------|
+> | Datasource has no schema record (every route that reads one) | `404 Not Found` | ``Schema status not found for datasource '<name>'`` |
+> | `retry` against a datasource that is not `FAILED` | `409 Conflict` | ``Schema for datasource '<name>' is not in FAILED state (currently <STATUS>) — retry only applies to failed migrations`` |
+> | `?version=` / `?targetVersion=` present but not an integer | `400 Bad Request` | ``Invalid '<parameter>' parameter: '<value>' is not an integer`` |
+>
+> An **absent** `version`/`targetVersion` is not an error — it takes the documented default
+> (`1` for baseline, `0` for undo). Any other failure on these routes remains a `500`.
+
 ---
 
 ## Stream Management
 
 Endpoints for managing event streams. Streams must be created via stream configuration in blueprints.
 
-> **Two route families.** The endpoints in this first group use the legacy flat
-> `/api/streams/{name}` addressing (single stream name, no version). The
-> [Stream Namespaces](#stream-namespaces) group below uses the namespaced
-> `(namespace, stream, version)` addressing introduced with the event-stream-namespaces
-> feature and is the surface the `aether stream` CLI drives. New integrations should prefer the
-> namespaced routes.
+> **Two route families, with three operations migrated.** Endpoints in this first group
+> historically used flat `/api/streams/{name}` addressing (single stream name, no version).
+> **Stream Info**, **Partition Details**, and **Partition Replica State** were folded onto
+> namespaced `(namespace, stream, version)` catalog addressing (management-api-versioning-spec.md
+> §3.2, #742) -- their flat registrations are gone; the URLs below are the current catalog-form
+> ones, kept in this section because the operation itself is unchanged. **Publish Event** and
+> **Delete Stream** were folded the same way but with no in-place replacement here -- use
+> **Publish** / **Delete Stream Version** under [Stream Namespaces](#stream-namespaces) instead.
+> Every other endpoint below (List Streams, Create Stream, Read Events, Join/Leave/Status Consumer
+> Group) remains on flat addressing, unaffected by this fold. The
+> [Stream Namespaces](#stream-namespaces) group uses namespaced `(namespace, stream, version)`
+> addressing throughout and is the surface the `aether stream` CLI drives. New integrations
+> should prefer namespaced routes.
 
 ### List Streams
 
@@ -4136,7 +4555,7 @@ GET /api/streams
 ### Stream Info
 
 ```
-GET /api/streams/{name}
+GET /api/v1/streams/{namespace}/{stream}/{version}/info
 ```
 
 **Auth:** ALL_AUTHENTICATED
@@ -4162,7 +4581,7 @@ GET /api/streams/{name}
 ### Partition Details
 
 ```
-GET /api/streams/{name}/{partition}
+GET /api/v1/streams/{namespace}/{stream}/{version}/partitions/{partition}
 ```
 
 **Auth:** ALL_AUTHENTICATED
@@ -4180,14 +4599,24 @@ GET /api/streams/{name}/{partition}
 ### Partition Replica State
 
 ```
-GET /api/streams/replicas/{name}/{partition}
+GET /api/v1/streams/{namespace}/{stream}/{version}/replicas/{partition}
 ```
 
 **Auth:** ALL_AUTHENTICATED · **Routing:** STREAMING task group
 
 Replication/backfill-health sensor for the stream-replication class (#260/#261/#333). Returns the partition's replica set as seen by the answering node's `ReplicaRegistry`, with the deterministic HRW owner resolved via the read path's owner resolver. Each replica entry carries its replication `state` (`SYNCING` / `CAUGHT_UP` / `LAGGING`), its acked `confirmedOffset`, and whether it `isHrwOwner`. To detect the #333 write-idle residual, compare a `CAUGHT_UP` replica's `confirmedOffset` against the response's `ownerHeadOffset`.
 
-**Owner authority (read this):** the per-peer confirmed-watermark view is advanced by the owner's `DefaultReplicationManager.handleAck`, so the `ReplicaRegistry` is **authoritative only on the partition's HRW owner** — a non-owner mostly knows only itself. The response is therefore **owner-aware, not owner-forwarded**: per-partition-owner forwarding is not a management `RouteTarget` variant (the owner is computed from `name`+`partition`, not a path param), and the stream forward transport carries only event reads. `servedByOwner` is `true` when the answering node IS the resolved owner (then `replicas` is the complete, authoritative set); when `false`, `hrwOwner` names the node to re-query. `name` is the partition manager's local stream name (e.g. `system:cluster-events:1.0.0`).
+**Owner authority (read this):** the per-peer confirmed-watermark view is advanced by the owner's `DefaultReplicationManager.handleAck`, so the `ReplicaRegistry` is **authoritative only on the partition's HRW owner** — a non-owner mostly knows only itself. The response is therefore **owner-aware, not owner-forwarded**: per-partition-owner forwarding is not a management `RouteTarget` variant (the owner is computed from `(namespace, stream, version)`+`partition`, not a single path param), and the stream forward transport carries only event reads. `servedByOwner` is `true` when the answering node IS the resolved owner (then `replicas` is the complete, authoritative set). **Routing caveat (#490):** this route is delegate-routed (STREAMING task group), so the answering node is an arbitrary streaming-capable delegate — re-querying a different management port still lands on a delegate, and `servedByOwner=true` is generally unobservable here. To reach the owner's authoritative view over HTTP, query the **local variant below** against the `hrwOwner` node's own management port.
+
+### Partition Replica State (per-node local view)
+
+```
+GET /api/v1/streams/{name}/{partition}/replicas-local
+```
+
+**Auth:** ALL_AUTHENTICATED · **Routing:** LOCAL (answered by the receiving node, never delegated)
+
+#490 per-node variant of the endpoint above, following the `/api/cluster/membership` pattern: the node whose management port you query answers **from its own** `ReplicaRegistry` and owner resolver. Same response shape. Use it to (a) obtain the owner-authoritative view — query the `hrwOwner` node's port and expect `servedByOwner: true` — or (b) sweep every node's port to compare per-node replica views during failover diagnosis (each node reports what IT believes; divergent views are themselves the operator-meaningful signal). Snapshot read, no hot-path cost.
 
 **Response (served by the owner — authoritative):**
 ```json
@@ -4219,7 +4648,119 @@ Replication/backfill-health sensor for the stream-replication class (#260/#261/#
 | `replicas[].confirmedOffset` | The replica's acked confirmed watermark |
 | `replicas[].isHrwOwner` | Whether this replica is the resolved HRW owner |
 
-### Stream Hydration Snapshot
+### Entity Checkpoints
+
+```
+GET /api/entity/checkpoints
+```
+
+**Auth:** ALL_AUTHENTICATED · **Routing:** LOCAL (never delegate-routed)
+
+Per-node durable-entity checkpoint observability (#345 I3). Each node checkpoints only the partitions it
+FOLDS, so a delegate's answer would describe a different node's work — query a specific node's management
+port to see that node's view.
+
+**Why this surface exists.** A checkpoint is the only thing that ever bounds an entity log: the retention
+floor refuses to reclaim any segment at or above a partition's committed checkpoint, so until one is
+written nothing is reclaimed at all. A checkpoint driver that silently stopped produces no immediate
+symptom — writes succeed, reads succeed, failover still works — and surfaces hours later as unbounded disk
+growth with nothing pointing at the cause. Before this endpoint the driver logged only FAILURES, so a
+driver that never ran and one that ran perfectly produced identical output.
+
+**What to read.** `writes` is the positive signal: it must climb while a keyspace is taking writes. Flat
+`writes` under load is the fault condition. `failures` and `checkpointedThrough` localise it — a partition
+whose offset stops advancing while its siblings move is stuck on its own, not cluster-wide. A partition
+this node has never folded is ABSENT from `checkpointedThrough` rather than reported as `0`: "nothing to
+say about it" and "checkpointed through offset 0" are different claims. An empty `keyspaces` list means
+this node hosts no durable-entity keyspace — a true answer, not an error.
+
+Assembled ON REQUEST from counters the checkpoint tick already maintains; no hot-path accounting is added.
+
+**Dashboard: dormant slot, decided explicitly (QUAD invariant, #494).** No panel is added. The dashboard is
+ontology-shaped — it presents cluster-wide dimensions — and this is a PER-NODE diagnostic whose value is in
+comparing one node's counters against its own history, not in a cluster aggregate. Summing `writes` across
+nodes would produce a number that looks meaningful and is not: nodes checkpoint different partitions, so the
+sum answers no operator question. Per the 2026-07-20 owner ruling, a dormant dimension must show a true
+degenerate value rather than a fabricated one, and there is no honest degenerate rendering here — so the
+slot stays dormant with this decision recorded, and the CLI plus this endpoint are the operator surface.
+Revisit if a cluster-wide "keyspaces with stalled checkpointing" alert is wanted; that is a different
+(aggregatable) question and would earn a panel.
+
+**Response:**
+```json
+{
+  "keyspaces": [
+    {
+      "keyspace": "orders",
+      "partitionCount": 8,
+      "writes": 214,
+      "failures": 0,
+      "checkpointedThrough": {"0": 1841, "3": 990, "5": 1502}
+    }
+  ]
+}
+```
+
+### Entity Keyspaces (hosting view)
+
+```
+GET /api/entity/keyspaces
+```
+
+**Auth:** ALL_AUTHENTICATED · **Routing:** LOCAL (any caught-up node answers identically)
+
+Per-keyspace HOSTING view (#634-3): which nodes hold a committed per-node registration for each
+durable-entity keyspace. **`hosts[]` IS the candidate set the leader mints entity-arc owners over**
+(the 02w hosting-set fix): a keyspace's partition arcs are owned by nodes from this set and no
+others — before the fix ownership was minted over ALL nodes, handing partitions to nodes that had
+never registered the keyspace, and the defect was diagnosed from typed write refusals instead of one
+GET. This endpoint is that missing surface.
+
+Unlike `/api/entity/checkpoints` above (per-node driver state), this view is assembled from the
+committed registration records in **replicated KV**, so any caught-up node answers identically — no
+need to sweep ports. An empty `keyspaces` list means no node in the cluster has registered a
+durable-entity keyspace.
+
+`partitionCountsDisagree: true` marks a rolling-redeploy window: hosts declared different partition
+counts for the keyspace, and `partitionCount` reports the MAX declared — arcs span the max until the
+configs re-converge (the merge mirrors the ownership reconciler's own, so what you read here is what
+the leader acts on). Persistent disagreement outside a deploy window means a node is running a stale
+slice version.
+
+Assembled ON REQUEST from committed records the runtime already maintains; no hot-path accounting.
+
+**Dashboard: dormant slot, decided explicitly (QUAD invariant, #494).** No panel is added. The
+hosting set changes only on deploy/unload/node-restart and is naturally read at those moments through
+this endpoint or `aether entity keyspaces`; a standing panel would show a static list. Per the
+2026-07-20 owner ruling the slot stays dormant with this decision recorded; the CLI plus this
+endpoint are the operator surface. Revisit if hosting-set churn becomes an alertable condition —
+that is a different (event-shaped) question and would earn a panel.
+
+**Response:**
+```json
+{
+  "keyspaces": [
+    {
+      "keyspace": "orders",
+      "partitionCount": 8,
+      "hosts": ["core-1", "core-2", "core-3"],
+      "partitionCountsDisagree": false
+    }
+  ]
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `keyspaces[]` | One row per registered durable-entity keyspace, sorted by keyspace name |
+| `keyspace` | The entity keyspace (its stream is `entity:<keyspace>`) |
+| `partitionCount` | Declared partition count — the max across hosts while a rolling redeploy is in flight |
+| `hosts[]` | Node ids with a committed registration for the keyspace, sorted — the exact candidate set entity-arc owners are minted over |
+| `partitionCountsDisagree` | `true` while hosts declare different partition counts (rolling-redeploy window; arcs span the max until configs re-converge) |
+
+---
+
+### Stream hydration
 
 ```
 GET /api/streams/hydration
@@ -4281,6 +4822,80 @@ Materialization is placement-gated (increment 2): `ringsMaterialized` drops belo
 | `streams[].replicaPartitions` | Partitions this node is a non-owner REPLICA of |
 | `streams[].nonePartitions` | Partitions this node neither owns nor replicates |
 
+### Declarative Stream Consumers
+
+```
+GET /api/streams/declarative-consumers
+```
+
+**Auth:** ALL_AUTHENTICATED · **Routing:** LOCAL (per-node)
+
+**CLI:** `aether streams consumers`
+
+What this node knows about declarative `[streams.X]` consumers — slice methods annotated with a `@ResourceQualifier(type = StreamSubscriber.class)` qualifier, which the runtime invokes for every event on the partitions assigned to them (#488). The declaration itself is cluster-wide committed KV, so **every node answers with the same declarations**; what differs per node is which partitions that node has actually attached.
+
+**Which node consumes which partition (#535).** Exactly one node is assigned per `(stream, partition, consumer group)`. Given the candidate set — nodes where the declaring artifact is `ACTIVE`, intersected with the live member view — the assignee is the partition's HRW owner when the owner is in that set, otherwise the HRW pick over the set itself. An assignee that is not the owner holds no ring for the partition and reads THROUGH the owner. Before #535 the rule was owner-gating alone, which meant a slice deployed at default replication frequently had no node that both owned a partition and hosted the consumer, and such partitions were consumed by nobody while every node truthfully reported `attachedSubscriptions: 0`.
+
+`partitionAssignments` is computed identically on every node, so a single call to any node answers "who consumes partition 3, and does it read locally?" — reads are forwarded whenever `consumerNode` differs from `ownerNode`.
+
+`eventTypePublishable` is absent when this node cannot know: the probe needs the slice's own codec registry, which only a node hosting the slice has, so reporting `false` there would fabricate a value. A deployment still activating produces the same empty candidate set as a slice that is nowhere, so the two are reported differently — "not being consumed YET" (normal, logged at INFO) versus the `unassignedPartitions` gap (logged at ERROR).
+
+**Guarantee.** At-least-once delivery per partition, conditional on the slice being `ACTIVE` on at least one live node. Duplicates arise from redelivery after a handler failure under `RETRY`, from the reconcile-tick window during an ownership or placement change (old and new assignee may both deliver), and from resuming at the last checkpoint (≤1000 events or ≤30s of progress) rather than the last delivered offset after an ungraceful move — a graceful detach flushes the exact cursor. Not effectively-once: there is no fencing token on delivery, and two transiently-divergent assignment views can both deliver and both write the cursor, last write winning.
+
+**Response:**
+```json
+{
+  "attachedSubscriptions": 2,
+  "consumers": [
+    {
+      "stream": "orders",
+      "configSection": "streams.orders",
+      "artifact": "com.example:order-slice:1.0.0",
+      "method": "onOrderPlaced",
+      "consumerGroup": "orders-onOrderPlaced",
+      "batchMode": false,
+      "eventType": "com.example.OrderPlaced",
+      "sliceDeployedLocally": true,
+      "eventTypePublishable": true,
+      "assignedPartitions": [
+        {"partition": 0, "committedOffset": 42, "stalled": false},
+        {"partition": 2, "committedOffset": 17, "stalled": false}
+      ],
+      "partitionAssignments": [
+        {"partition": 0, "consumerNode": "node-1", "ownerNode": "node-1"},
+        {"partition": 1, "consumerNode": "node-3", "ownerNode": "node-2"},
+        {"partition": 2, "consumerNode": "node-1", "ownerNode": "node-4"}
+      ],
+      "diagnostic": "consuming partitions [2] of stream orders whose owner is another node — reads for them are forwarded to the owner"
+    }
+  ]
+}
+```
+
+> **Empty fields are omitted.** The serializer drops empty collections and absent optionals, so a healthy
+> consumer carries no `unassignedPartitions` key at all rather than `[]`, and `eventTypePublishable` is
+> absent (not `false`) on a node that cannot determine it. Check for the field's PRESENCE, not for an
+> empty value.
+
+| Field | Description |
+|-------|-------------|
+| `attachedSubscriptions` | Subscriptions actually attached ON THIS NODE — the number of partitions assigned here, not the stream's partition count |
+| `consumers[].stream` | Stream the consumer is declared against |
+| `consumers[].configSection` | The `[streams.X]` section in the slice's `resources.toml` |
+| `consumers[].artifact` | Artifact declaring the consumer |
+| `consumers[].method` | The slice method the runtime invokes |
+| `consumers[].consumerGroup` | Derived consumer group owning the durable cursor |
+| `consumers[].batchMode` | Whether the method takes `List<T>` (delivered as singleton batches in this release) |
+| `consumers[].eventType` | Declared event type |
+| `consumers[].sliceDeployedLocally` | Whether the declaring slice is loaded on THIS node |
+| `consumers[].eventTypePublishable` | Whether the slice's own codec registry knows the event type (#526). **Absent when this node cannot know** — the probe needs the slice's codec, which only a node hosting the slice has |
+| `consumers[].assignedPartitions` | Live subscriptions on this node: `partition`, `committedOffset` (next offset to read — one past the last delivered), `stalled` |
+| `consumers[].unassignedPartitions` | **The loud gap:** partitions no node can consume because the slice is `ACTIVE` nowhere. Absent when there is no gap. It is NOT a gap for this node to lack the slice — since #535 the owner need not host it. During a deploy the same emptiness is reported as "not being consumed YET" in `diagnostic` rather than as a gap |
+| `consumers[].partitionAssignments` | Full partition→node map: `consumerNode` (who consumes it), `ownerNode` (who owns it). Reads are forwarded whenever they differ. Either is `null` during the bootstrap window; `consumerNode` is also `null` when nothing can consume |
+| `consumers[].diagnostic` | Operator-facing explanation of whichever condition applies; empty when the consumer is healthy and reading locally |
+
+An empty `consumers` list means no slice in the cluster declares a `[streams.X]` consumer — the honest answer; rows are never fabricated.
+
 ### Create Stream
 
 ```
@@ -4310,27 +4925,9 @@ Creates a stream with the given name and optional partition count. Idempotent �
 
 ### Publish Event
 
-```
-POST /api/streams/{name}/publish
-```
-
-**Auth:** OPERATOR_AND_ABOVE
-
-Auto-creates the stream with default config if it does not exist.
-
-**Request:**
-```json
-{
-  "data": "<raw-string-payload>"
-}
-```
-
-**Response:**
-```json
-{
-  "offset": 256
-}
-```
+Folded into the namespaced route family -- see [Publish](#publish) under
+[Stream Namespaces](#stream-namespaces). The flat `POST /api/streams/{name}/publish`
+registration has been removed; nothing serves that path any more.
 
 ### Read Events
 
@@ -4365,26 +4962,10 @@ aether streams read <name> <partition> [--since <offset>] [--limit <count>]
 
 ### Delete Stream
 
-```
-DELETE /api/streams/{name}
-```
-
-**Auth:** OPERATOR_AND_ABOVE
-
-Removes the stream and all of its partitions.
-
-**CLI:**
-```bash
-aether streams delete <name> [--force]
-```
-
-**Response:**
-```json
-{
-  "name": "my-stream",
-  "status": "deleted"
-}
-```
+Folded into the namespaced route family -- see
+[Delete Stream Version](#delete-stream-version) under [Stream Namespaces](#stream-namespaces).
+The flat `DELETE /api/streams/{name}` registration has been removed; nothing serves that path
+any more.
 
 ### Join Consumer Group
 
@@ -4550,8 +5131,8 @@ Reserved for the deferred SSE/WebSocket subscription (#212). Operators tail via 
 ### Publish
 
 ```
-POST /api/streams/publish/{namespace}/{stream}/{version}
-POST /api/streams/publish-batch/{namespace}/{stream}/{version}
+POST /api/v1/streams/{namespace}/{stream}/{version}/publish
+POST /api/v1/streams/{namespace}/{stream}/{version}/publish-batch
 ```
 
 **Auth:** OPERATOR_AND_ABOVE. Publishes one event (or a batch). **Writes to `system:*` streams
@@ -4560,10 +5141,12 @@ are rejected with `405 Method Not Allowed`** — see below.
 ### Delete Stream Version
 
 ```
-DELETE /api/streams/delete/{namespace}/{stream}/{version}
+DELETE /api/v1/streams/{namespace}/{stream}/{version}
 ```
 
 **Auth:** OPERATOR_AND_ABOVE. Force-purges a specific stream version. Rejected for `system:*`.
+Same path as [Stream Metadata](#stream-metadata) — `GET` reads, `DELETE` purges; no separate verb
+segment disambiguates them.
 
 ### Consumer Groups (namespaced)
 
@@ -4594,12 +5177,39 @@ not registered. Each entry carries `namespace`, `stream`, `version`, `registered
 Mutating HTTP requests (`POST`/`PUT`/`PATCH`/`DELETE`) that target a stream in the `system`
 namespace are rejected with **`405 Method Not Allowed`, regardless of role** — even when
 management security is disabled. The check runs ahead of the role/auth pipeline in
-`ManagementServer`, so it short-circuits before role evaluation. Both route shapes are covered:
-the path-segment form (`/api/streams/publish/system/...`,
-`/api/streams/groups/create/system/...`) and the legacy colon form where the name segment is
-`system:<stream>:<version>` (including URL-encoded `system%3A...`). Reads of `system:*` streams
-(e.g. `system:cluster-events`) are unaffected; only writes are gated. The compile-time SPI split
-already blocks application code from producing into system streams; this is the HTTP-path guard.
+`ManagementServer`, so it short-circuits before role evaluation.
+
+Each identity-bearing write route — the catalog-form
+`STREAMS_PUBLISH`/`STREAMS_DELETE`/`STREAMS_GROUP_CREATE`/`STREAMS_GROUP_DELETE` —
+resolves its target through the same `ManagementRoute` route-match the real dispatch path uses
+(never a raw path-segment scan), reduces the match to an engine key, and rejects when that key
+names one of `SystemStreams.ALL`. A route match whose params fail to resolve to a valid identity
+(e.g. a malformed version) fails closed — denied, not passed through.
+
+`STREAM_CREATE` is excluded from this **pre-auth, path-based** gate: its target name is a JSON
+body field (`StreamCreateRequest`), not a path param, so the gate — which resolves identity from
+route-match + path params only, by design (no parallel body parser) — structurally cannot see it.
+CREATE is protected instead by a **separate, post-auth, handler-level guard**: `StreamRoutes`
+rejects a reserved system-stream name unconditionally, as the first statement of the sole method
+that ever mints a stream, before any state change. This closes the window `createStreamWithConfig`'s
+idempotent create-if-absent behavior does not cover on its own — a create racing ahead of
+`SystemStreamBootstrap` registering `SystemStreams.ALL` at cluster startup would otherwise find no
+existing stream and mint a caller-controlled config under the reserved name. Being honest about the
+mechanism: this protection runs **after** authentication, not before it — auth level does not
+change the outcome (an authenticated caller with full privileges naming a framework stream in the
+body is rejected the same as anyone else), but it is not the same short-circuit-before-role-check
+guarantee the path-based gate above gives the other write routes.
+
+`CONSUMER_GROUP_JOIN`/`CONSUMER_GROUP_LEAVE` carry their target
+stream name in the request body rather than the path — a known, currently open gap this path-only
+gate cannot see, closed once these routes gain path-resolvable identity via the catalog-form
+reshape (management-api-versioning-spec.md §3.3). Tracked as its own ticket (rc4 provisional,
+cross-referencing #300), pending an evidence-based answer to whether joining/leaving a consumer
+group on a framework stream actually mutates state or is merely untidy.
+
+Reads of `system:*` streams (e.g. `system:cluster-events`) are unaffected; only writes are gated.
+The compile-time SPI split already blocks application code from producing into system streams;
+this is the HTTP-path guard.
 
 ### Stream metadata registries
 
@@ -4644,9 +5254,9 @@ The app HTTP server (serving slice-generated endpoints) supports configurable au
 
 | Mode | Header | Description |
 |------|--------|-------------|
-| `none` | -- | No authentication (default, backward compatible) |
-| `api-key` | `X-API-Key` | Reuses management API key infrastructure |
+| `api-key` | `X-API-Key` | Reuses management API key infrastructure (**default** when `security_mode` is omitted — issue #290, "secure by default"; a fresh cluster with no provisioned key auto-generates one ADMIN key on first leadership and prints it once, see [SECURITY.md](../../../SECURITY.md#default-security-posture-management-api)) |
 | `jwt` | `Authorization: Bearer <token>` | JWT with JWKS validation (RS256/ES256) |
+| `none` | -- | No authentication — must be set explicitly; dev/eval only, never for anything reachable over an untrusted network |
 
 ### Health Endpoint Bypass
 
@@ -4666,26 +5276,19 @@ Slice handlers can access the security context to make authorization decisions.
 
 ### Configuration
 
-#### Mode: None (Default)
+#### Mode: API Key (Default)
 
-No authentication. All requests are allowed with a system principal.
-
-```toml
-[app-http]
-enabled = true
-port = 8070
-# security_mode defaults to "none" when omitted
-```
-
-#### Mode: API Key
-
-Reuses the same `api-keys` configuration as the management API. Requests must include `X-API-Key` header.
+Reuses the same `api-keys` configuration as the management API. Requests must include an
+`X-API-Key` header. `security_mode` defaults to `api-key` when omitted (issue #290). If no key is
+provisioned, the first elected leader generates one random ADMIN key on first startup and prints
+it once, prominently, to its log -- capture it, since it is not retrievable afterward except by
+rotating it via `/api/cluster/keys`.
 
 ```toml
 [app-http]
 enabled = true
 port = 8070
-security_mode = "api-key"
+# security_mode omitted -> defaults to "api-key"
 
 # Simple key list (all keys get ADMIN authorization)
 api_keys = ["my-secret-key-1", "my-secret-key-2"]
@@ -4710,8 +5313,6 @@ roles = ["service"]
 authorization_role = "VIEWER"
 ```
 
-When `security_mode` is omitted but API keys are present, the mode is automatically upgraded to `api-key` for backward compatibility.
-
 #### Mode: JWT
 
 Token-based authentication using JWKS (JSON Web Key Set) for public key validation. Supports RS256 and ES256 algorithms using JDK crypto (no external libraries).
@@ -4726,6 +5327,21 @@ issuer = "https://auth.example.com/"
 audience = "my-api"
 role_claim = "role"
 jwks_cache_ttl_seconds = 3600
+```
+
+#### Mode: None
+
+No authentication -- all requests are allowed with a system principal. Must be set explicitly
+(`security_mode = "none"`); it is never the default. Appropriate only for a single-node local/dev
+instance, never for anything reachable over an untrusted network -- see the
+[Bootstrap Config Reference](bootstrap-config.md#a-security_mode--none--why-deveval-bootstrap-needs-it)
+for why the dev/eval bootstrap path uses it and what it gives up.
+
+```toml
+[app-http]
+enabled = true
+port = 8070
+security_mode = "none"
 ```
 
 | Field | Required | Default | Description |

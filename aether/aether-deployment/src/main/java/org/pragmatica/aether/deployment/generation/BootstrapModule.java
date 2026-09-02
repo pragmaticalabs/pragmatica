@@ -282,10 +282,13 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
         // and the env-sourced name agree (Main.verifyClusterNamePresent keys on the same env).
         // Empty remains the last-resort fallback for self-bootstrap paths with no env name.
         var seedClusterName = seedClusterName();
+        // The self-bootstrap seed predates any source definition, so the topology entry carries an
+        // empty source name. Bootstrap replaces it with the real per-source spec at formation.
+        var seedTopology = List.of(new AetherValue.TopologyEntry("", AetherValue.TopologyEntry.CORE_ROLE, coreCount));
         var seed = ClusterConfigValue.clusterConfigValue("",
                                                          seedClusterName,
                                                          "1.0.0",
-                                                         coreCount,
+                                                         seedTopology,
                                                          coreMin,
                                                          coreMax,
                                                          "bootstrap-seed",

@@ -7,7 +7,7 @@
 | **Date** | 2026-07-04 |
 | **Author** | design-stream |
 | **Implementation state** | Design approved 2026-06-23 (design walk); implementation **landed** in `130d5c1ee` (2026-06-24) on `release-1.0.0-rc2`. This spec codifies the as-landed design so the issue can be validated and closed against it. |
-| **Companion docs** | [`http-stack-unification-design.md`](../internal/progress/http-stack-unification-design.md) (foundation, APPROVED) · [`media-type-versioning-design-discussion.md`](../internal/progress/media-type-versioning-design-discussion.md) (decision log) · [`api-versioning-and-media-types.md`](../slice-developers/api-versioning-and-media-types.md) (user guide) |
+| **Companion docs** | [`http-stack-unification-design.md`](../.internal/progress/http-stack-unification-design.md) (foundation, APPROVED) · [`media-type-versioning-design-discussion.md`](../.internal/progress/media-type-versioning-design-discussion.md) (decision log) · [`api-versioning-and-media-types.md`](../slice-developers/api-versioning-and-media-types.md) (user guide) |
 
 ---
 

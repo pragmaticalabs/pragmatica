@@ -1,0 +1,600 @@
+# #345 Implementation Plan — Durable Single-Writer Entity (ownership fence + entity primitive)
+
+**Status:** planned, risk-first. Owner: main clone (me); merges driven by me. Runs parallel to #277 (aether-clone) — file-disjoint for the fence phases. Specs: [`durable-entity-primitive-spec.md`](../../specs/durable-entity-primitive-spec.md) (epic, supersedes #190), [`ownership-fence-spec.md`](../../specs/ownership-fence-spec.md) (piece 1).
+
+## Why the fence comes first (composition)
+Today partitioned-key ownership is decided by HRW and is **advisory** — the data-plane write path never checks the owner's epoch, so a **stale owner** (post reshuffle / partition / governor handover) can still commit → two owners double-write → split-brain. The **ownership fence** makes single-writer a *guarantee*: propagate the owner `Epoch` (an existing CP value, already committed to the Rabia-backed KV — **no new consensus**) to data-plane writers, and enforce a per-ownership-domain monotonic high-water at each replica's commit point. The **durable entity** then layers placement + per-key serialization + durability + timers on top of that correctness substrate. So piece 1 (fence) is a hard prerequisite for piece 2 (entity).
+
+**Second foundation gate — #349 (persistent DHT backing):** the DHT is `MemoryStorageEngine` (in-memory), so the entity is **HA, not restart-durable** until #349 lands. The fence needs nothing from #349; only the entity's restart-durability claim does. (See Open Questions.)
+
+## Risk-first phasing
+Ranked by interaction-risk × blast-radius. Phase 1 is consensus-adjacent and **cloud-gated**; Phases 2–3 are additive and Forge-sufficient.
+
+### STEP-0 — split-brain baseline (do FIRST)
+Forge test: two owners for a partition across a forced governor handover; assert the **old owner's write is currently ACCEPTED** (documents the bug the fence must flip) + a within-epoch throughput baseline. Mirror existing Forge consensus tests. This is the regression gate.
+
+### Phase 1 — the fence (foundational, consensus-adjacent, Forge→cloud gated)
+| # | Item | Anchor | Cx | Risk |
+|---|---|---|---|---|
+| 1a | Generalize `staleLeaderWrite` → add an `EpochBearing` accessor across the `AetherValue` sealed types (governor `communityEpoch` + ownership `ownerEpoch`); gate any epoch-bearing key in the Rabia applier | `KVStore.java:111` `staleLeaderWrite` / `:126` `staleEpochWrite`, composed `:102`; `handlePut:81`; `EpochBearing` implementors `AetherValue.java:600,1548,1599` (all corrected 2026-08-10; previously cited `:93-98`/`:76-83` and `:36,460,1274`) | M | **HIGH** — runs inside the Rabia applier on every replica; must stay deterministic |
+| 1b | Per-ownership-domain high-water table (CP-seeded, monotonic, **per-domain not per-key** so it fences new-key inserts too) | new in-memory table | M | **HIGH** — seeding/advance under governor churn (reconciler-under-load class) |
+| 1c | DHT data-plane fence — epoch on `VersionedEntry`; thread through put | `MemoryStorageEngine.java:36,59-76`, `DistributedDHTClient.java:108`, `DHTNode.java:179` | L | **HIGH** — every DHT write; ⚠ replication-payload compat |
+| 1d | **Stream append fence — per-stream-partition reshuffle epoch (#265-entangled).** `ownerEpoch` on `appendToPartition`, gate before `buffer.append` against the **stream-partition** domain high-water. **DONE 2026-07-16** — the consensus-written `StreamPartitionOwnership` record, the leader-gated driver, and the append gate all landed; the #265 reshuffle-ring work this row feared it would "start" was absorbed with it, and same-term reshuffle is proven. Flips STEP-0. | `StreamPartitionManager.java:1215-1223` (was cited `:558-566`) | **L** | **HIGH** |
+| 1e | Owner-routed linearizable reads + takeover catch-up + typed causes (`StaleEpoch`/`NotCurrentOwner`) | `ReplicaSetController.ownerFor:435` (was cited `:329`) | M | MED |
+| 1f | **Ownership/epoch observability triad** — `GET /api/ownership/{domain}` → owner `NodeId` + current `Epoch` per partition/domain (REST→CLI→Docs, invariant #1). Per **observability-first** doctrine; also unblocks the Phase-1 *cloud* handover test (no public owner/epoch accessor exists today — STEP-0 had to reconstruct ownership from pure HRW) | M | LOW |
+
+> **STEP-0 flip (P1d):** the baseline's `publishLocal` call gains the stale `ownerEpoch` argument and the assertion flips from accepted→rejected (`StaleEpochAppend`). This needs the real owner-epoch wiring (STEP-0 uses fabricated `Epoch` constants as modeling stand-ins) — so the flip rides 1b (high-water) + 1d (epoch on the append) and benefits from 1f (real owner/epoch query).
+
+**Gate:** Forge first (STEP-0 flips to *rejected*; read-your-writes across handover; throughput unchanged within a stable epoch) → **then cloud** (deposed-owner write rejected on *every* replica under a real governor handover; linearizable read under load). Do not stack Phase 2 until Phase 1 clears the cloud gate.
+
+### Phase 2 — entity substrate, HA-first (additive, Forge-sufficient)
+- **2a** Per-key serialization queue (owner-side `ConcurrentHashMap<Key,Queue>` + worker).
+- **2b** `DurableEntity<K,S>` core + resource SPI — **new module `aether/resource/durable-entity/`** mirroring `aether/resource/http/` (annotation + `ResourceFactory` + `META-INF/services` entry; no framework edits). **Fenced KV-snapshot state (in-memory, HA-only)** — the spec's "first functional cut on the fence."
+- **2c** Durable per-instance timers (fenced-persisted, handover-rebuilt).
+
+### Phase 3 — restart-durability (#349 path (a), foundational, gated)
+Move the entity's durable state from KV-snapshot to a **fenced log on a stream partition sealed to the existing `LocalDiskTier`/S3 tier** (`integrations/storage/` AHSE — already built). No-replay: the entity folds to a snapshot and tails; the governor owns the fold (no determinism/migration burden). Same `DurableEntity` API → **no author churn** (spec §4.4). **Option (c) — a persistent DHT engine — is explicitly OUT of scope (its own epic, "the single largest storage build").**
+> ⚠ The stream substrate is **success-critical** (see memory `[[project_streaming_is_essential]]`) — build P3 to a high persistence + performance + correctness bar; gate Forge→cloud; **no shortcuts**. Coordinate with the #265/#261 streaming roadmap (shared stream subsystem).
+
+### Phase 4 — facades + ops (additive)
+- **4a** Workflow facade (`PersistentWorkflow` over `StateMachineDefinition`) — supersedes #190.
+- **4b** Saga facade + run-once journaled step + audit stream + operator API (full REST→CLI→Docs **triad**, invariant #1).
+
+## Risk hotspots
+1. **1a in the Rabia applier** — determinism across replicas; a non-deterministic guard diverges state.
+2. **High-water seeding/advance under governor churn** — the reconciler-under-load class (see memory). Cloud-validate.
+3. **`VersionedEntry` epoch field = DHT replication-payload compat** (distinct from envelope versioning) — needs a compat story: readers tolerate a missing/old epoch, or the payload is versioned. Treat as a wire-compat decision, not a silent change.
+4. **Owner-handover catch-up correctness** — new owner must catch up before serving linearizable reads.
+
+## Reusable vs net-new
+- **Reuse:** the `Epoch` CP token; governor/ownership consensus commit (Rabia `KVCommand.Put`); the `staleLeaderWrite` monotonic-CAS pattern; HRW placement + `ReplicaSetController` owner resolution; governor-change epoch propagation; `StateMachineDefinition`; the resource SPI; `SliceInvoker`; DHT quorum put/get; core JBCT types.
+- **Net-new:** per-domain high-water table; epoch in `VersionedEntry` + DHT/stream commit-point gate; owner-routed reads + takeover catch-up; the `EpochBearing` interface; per-key serialization queue; durable per-instance timers; `DurableEntity`/`PersistentWorkflow`/`Saga` resources + facades; audit stream.
+
+## Coordination with #277 (parallel)
+- **Parallel-safe for Phase 1.** The fence touches `KVStore`, `MemoryStorageEngine`, `DistributedDHTClient`, `DHTNode`, `StreamPartitionManager`, `ReplicaSetController`, `AetherValue` — **disjoint** from #277's set (`SliceFactory`, `FactoryClassGenerator`, `InvocationHandler`, `SliceInvoker`, `AetherNode`, `AetherKey`, `ObservabilityRoutes`).
+- `AetherKey` (#277) vs `AetherValue` (#345) = same `kvstore` dir, **different files** — package-adjacency only.
+- **Only watch:** the late entity-facade phase (2b/3) may add resource wiring near `AetherNode` (which #277 touches) → sequence after #277's `AetherNode` work or worktree-isolate then.
+
+## Verification
+- **Unit:** `KVStore` stale-epoch reject per epoch-bearing type; `computeVersionedEntry` epoch gate; high-water monotonicity/re-seed.
+- **Forge (primary gate, single-JVM):** STEP-0 repro flips to rejected; read-your-writes across handover; within-epoch throughput unchanged.
+- **Cloud (REQUIRED, Phase 1 only):** deposed-owner rejected on every replica under real governor handover; linearizable read across handover under load. Forge first, cloud as final gate per item.
+- Acceptance: fence §10 + entity §13 (sample workflow+saga survive `kill -9` of owner; 100k entities within budget on a 5-node cluster).
+
+## Commit / merge model
+I own merges → commit directly on `release-1.0.0-rc2` in risk-first **gated batches** (STEP-0 → 1a → 1b → … each behind its Forge gate; the whole of Phase 1 behind the cloud gate before Phase 2 stacks). No feature branch for my own work per project convention; each batch single-line-committed and verified.
+
+## Resolved decisions (2026-06-24)
+1. **Durability sequencing** — entity is **HA-first** (KV-snapshot, P2), then **restart-durable** (fenced log on durable stream, P3) — both behind one API, no author churn (spec §4.4).
+2. **Cloud gating** — Phase 1 (1a–1e) runs a Hetzner cloud pass as the *terminal* gate (reconciler-under-load class). Forge first, cloud last.
+3. **Wire compat — collapsed.** No backward-compat constraint → add `ownerEpoch` directly to the wire `DHTMessage` put-request and the in-memory `VersionedEntry`; no tolerant-reader / versioned-message / two-phase rollout. The entry carries two orthogonal numbers: HLC `version` (last-write-wins) + `ownerEpoch` (fence).
+4. **#349 scope** — include **path (a)** (fenced log on the existing `LocalDiskTier`/S3 stream substrate) as **P3** → the entity ships restart-durable. **Defer option (c)** (persistent DHT engine) to its own epic.
+
+
+---
+
+# OWNER RULING 2026-08-10 — Option A: full epic, entity + durability + workflow + saga
+
+Scope decision after a costed four-way assessment (A full epic / B durability-only / C wire the
+already-built fence / D ship as-is): **Option A. Production readiness matters.**
+
+Consistent with the GA north star (2026-07-20: no time pressure, quality primary, four axes).
+This epic stays on **rc3** — it is feature work, and rc4 is explicitly "no new features", so rc3
+does not close until this lands.
+
+## Re-grounding — what changed since the June plan
+
+`issue-345-implementation-plan.md` was written 2026-06-24. Four things are different now:
+
+1. **Phase 3's prerequisite is DONE.** The plan's Phase 3 targets "a fenced log on a stream
+   partition sealed to the existing `LocalDiskTier`/S3 tier". In June that seal was
+   `EvictionListener.NOOP`. It is now wired: `StorageFactory` composes memory + DHT + `LocalDiskTier`
+   for streams, `SnapshotManager.restoreFromLatest()` runs at boot, and `PartitionWal` is on the
+   production write path. Observed initializing on live cloud nodes 2026-08-09.
+2. **Phase 2a is DONE** — `PerKeySerialExecutor` (lock-free tail-chaining) is real and shared by all
+   three entity impls. Spec §11's table still marks piece 2 MISSING; the table is stale.
+3. **The envelope freeze applies and is NOT threatened.** `@DurableEntity` involves zero
+   slice-processor code (verified: no hits in `jbct/slice-processor/src/main`), so this arc needs no
+   `ENVELOPE_FORMAT_VERSION` bump. The freeze at 1000 holds.
+4. **The #277 coordination section is obsolete** — #277 is closed.
+
+## Verified starting state
+
+| Piece | State |
+|---|---|
+| 1a KV fence | code-present (`staleEpochWrite`/`EpochBearing`) |
+| 1b per-domain high-water table | **DONE** — `OwnershipEpochHighWater`, built `AetherNode:437`, fed by KV put handlers `:4967-4971` |
+| 1d stream-path fence | **DONE 2026-07-16** — see the correction below; this row read "MISSING" until 2026-08-10 |
+| 2a per-key serialization | **DONE** |
+| 2b entity core + SPI | code-present, **structurally unreachable** — see below |
+| 2c durable timers (#351) | zero code — every impl hard-fails `TimerNotSupported` |
+| 3 restart-durability | zero code; prerequisite now met |
+| 4a PersistentWorkflow (#353) | zero code |
+| 4b Saga + audit (#354/#355) | zero code |
+
+**The unreachability is the load-bearing fact.** `DurableEntityFactory.provision()` unconditionally
+returns the *no-arg* `InMemoryDurableEntity` — a bare `ConcurrentHashMap`, `linearizableServe =
+none()`. The wired constructor, `FencedDurableEntity` and `PartitionFencedDurableEntity` are fully
+coded and tested, and their only non-test callers are three test files. `grep -rl "DurableEntity"
+aether/node` returns nothing. Every ownership input those variants need already exists
+(`EntityPartitionArc`, `CommittedPartitionOwnerSource`, `PartitionOwnerEpochGate`,
+`OwnershipEpochHighWater`) and the node already constructs the epoch gate at `AetherNode:428`.
+
+**No slice anywhere declares a DurableEntity resource** — no TOML, no example, no fixture. Nothing
+would run this code even if it were wired. That governs increment 0 below.
+
+## Increment ladder (risk-first, one gate each, no big-bang)
+
+**I0 — a fixture that RUNS.** An example slice declaring and exercising a DurableEntity, driven in
+Forge. Without it every later increment is unfalsifiable — this project has shipped silently-inert
+features precisely because `build.sh` stayed green with no consumer running.
+*Gate: entity ops observable in a Forge run.*
+
+**I1 — wire the fenced entity. Do these IN ORDER; the order is load-bearing.**
+
+**(a) Make the deploy failure observable to the operator — but NOT as originally written.**
+
+> **Correction 2026-08-10, from live diagnosis.** The first version of this step said "activation
+> failure never reaches the cluster slice-status surface" and called it an observability hole. That
+> premise was an inference from I0 and it is WRONG. Verified mechanism, with live 5-node evidence:
+>
+> 1. `NodeDeploymentState.handleLoadingFailure` (`:394`) → `transitionToFailed` → FAILED **is** written to KV.
+> 2. `ClusterDeploymentState.Active.handleDeterministicFailure` (`:1300`) routes a `DeploymentFailed`
+>    event via `ctx.router()`, and then — because atomicity is `ALL_OR_NOTHING` — calls
+>    `rollbackBlueprintForArtifact` (`:2004`).
+> 3. Rollback issues `KVCommand.Remove` per instance (`removeNodeArtifactKey`, `:1518`);
+>    `IndexedDeploymentMap.onNodeArtifactRemove` (`DeploymentMap.java:58`) does `index.remove(...)`.
+> 4. `allDeployments()` therefore has nothing to group, so the `.reduce(FAILED, higherState)`
+>    aggregation — which is correct code — never runs on a non-empty list.
+>
+> Observed live: `slicesStatus()` reports `size=1, state=UNLOADING` for ~5s, then `size=0` for the
+> rest of the run. The artifact string matches `ENTITY_SLICE` byte-for-byte, so the predicate was
+> never the problem.
+>
+> **`slicesStatus()` emptying is arguably CORRECT** — under `ALL_OR_NOTHING` the deployment did not
+> happen, and that surface reports current state, not history. So there is no "make slicesStatus show
+> FAILED" fix to make, and doing it would fight the atomicity contract.
+
+What the step actually is, therefore:
+
+- **Fix the fixture to poll the right surface.** `failIfSliceFailed` polls `slicesStatus()`, a
+  current-state view that a rolled-back deploy correctly empties. It must instead watch the failure
+  record — the `DeploymentFailed` cluster event. This is what converts I0's 4-minute timeout red into
+  a fast red, and it is a fixture fix, not a product fix.
+- **Then settle the one open product question** (see below) and fix only what it exposes.
+
+**RESOLVED 2026-08-10 — the operator-facing surface works; there is no product defect here.**
+Same reproduction, polling `/api/events` on all five management ports instead of `slicesStatus()`:
+
+- A `DEPLOYMENT_FAILED` event appears for the artifact on **every** node and is identical across all
+  five, so it is not a single-node artifact.
+- **The diagnostic detail survives verbatim** — `No resource provider registered for resource type:
+  …DurableEntity. Bundle the module supplying a ResourceFactory for this type on the runtime
+  classpath.` appears in both `summary` and `details.reason`, not flattened to a bare state change.
+  Corroborated by construction: `ClusterEventAggregator.handleDeploymentFailed` (`:639`) reads
+  `value.failureReason()` into the summary and `buildFailedMetadata`.
+- **Path B delivered it** (the `ClusterEventAggregator` KV-watch), definitively — Path A's
+  `DeploymentEvent.DeploymentFailed` is a structurally different class that cannot produce this
+  shape. The owner-gate suppression seen for other event types did not affect it.
+- **Rollback does NOT retract it.** This is an append to the replicated `system:cluster-events`
+  stream, not a mutable status entry — which is precisely why it behaves differently from the
+  `slicesStatus()` case above. Polled every 3s for 227s: identical content, byte-identical length,
+  on all five ports, zero flicker.
+- Not tested: survival across a node restart / stream replay. Distinct question from the one H3
+  raised; note it rather than claim it.
+
+**So step (a) is a FIXTURE fix plus a docs note, and no product code:**
+
+1. Repoint `failIfSliceFailed` from `slicesStatus()` (a current-state view that a rolled-back deploy
+   correctly empties) to the `DEPLOYMENT_FAILED` event for the artifact. That is what converts I0's
+   4-minute timeout red into a fast red.
+2. Record the operator-facing reality in the docs: `POST /api/blueprints` answers `"applied"` on
+   acceptance, and a per-node deployment failure surfaces afterwards in the cluster-event feed, NOT
+   in slice status — which under `ALL_OR_NOTHING` correctly shows nothing, because the deployment did
+   not happen. Anyone diagnosing "deploy said applied, nothing serves" needs to be told where to look.
+
+**(b)** Add `resource-durable-entity` to `aether/node/pom.xml`, mirroring `resource-http`. It is
+today depended on by no pom but its own, which is why nothing ships.
+
+**(c)** Add a first-class `@Entity`-style qualifier to the resource module — there is no counterpart
+to `@Http`/`@Notify`, so every author must hand-roll one (I0's fixture does exactly that).
+
+> **OWNER RULING 2026-08-10 — (c) REVERSED. There is no qualifier to ship; hand-rolling IS the pattern.**
+>
+> The framing above is wrong. `@Http` and `@Notify` are **parameterless** —
+> `@ResourceQualifier(type = HttpClient.class, config = "http")` bakes the section into the
+> meta-annotation at the DECLARATION site, so the use site is a bare `@Http` with no strings. That
+> works because there is one HTTP client and one `http` section. Durable entities are **per-keyspace**
+> (`entities.orders`, `entities.payments`), so one shipped qualifier cannot cover them — which is why
+> the first attempt grew a `config()` String member. **Strings at the use site are not this codebase's
+> style.**
+>
+> Correct shape: one author-declared annotation per keyspace, exactly as the fixture originally had.
+>
+> ```java
+> @ResourceQualifier(type = DurableEntity.class, config = "entities.orders")
+> @Retention(RUNTIME) @Target(PARAMETER)
+> public @interface OrderEntity {}
+> ```
+>
+> Used bare: `@OrderEntity DurableEntity<String, OrderState> orders`. A slice with several families
+> declares several qualifiers — better than repeated `config = "entities.x"` strings, and the section
+> name lives in exactly one place per keyspace.
+>
+> Actions: delete `Durable.java`, restore the fixture's `@OrderEntity`, and ship DOCUMENTATION of the
+> pattern in the resource module rather than an annotation.
+
+### Codec derivation — how entity state becomes serializable (OWNER RULING 2026-08-10)
+
+`PartitionFencedDurableEntity.commit` encodes state through the slice serializer, so the state type
+needs a registered codec. Measured on the forge run: four non-owners rejected correctly with
+`NotCurrentOwner` while the OWNER died on `StorageFailed: No codec registered for class …OrderState`.
+
+Why the obvious fixes are rejected:
+- **`@Codec` on the state type — inert AND wrong.** `FactoryClassGenerator.collectCodecTypeEntries`
+  walks `model.methods()` parameters and return types; it never scans for the annotation. Verified:
+  the factory regenerated with `@Codec` present and contained zero `OrderState`. Separately, `@Codec`
+  is INTERNAL and must not be exposed to users.
+- **Forcing the state type into a slice method signature** — makes users contort their API to satisfy
+  serialization, and destroys the fixture's property that entity state never crosses the boundary.
+- **A serialization path bypassing the slice registry** — no reflective/generic record codec exists;
+  `SliceCodec` resolves strictly by registered type. A runtime registration API would have the entity
+  minting codec tags, colliding with #582's tag-space problem.
+
+**Ruling: derive the codec from the resource-qualified parameter's TYPE ARGUMENTS.** The author
+already writes `@OrderEntity DurableEntity<String, OrderState> orders`, and the processor already
+parses that parameter (it generates the `provide(...)` call from it via
+`ResourceQualifierModel.fromParameter`) — it simply discards the type arguments, though
+`param.asType()` carries them. Collect them as codec types, exactly as `@CodecFor` does for external
+types (it already *"generates codecs automatically for enums and records"* and adds them to the
+startup validation checklist).
+
+Nothing internal is exposed, no string appears at a use site, no user annotation is required, and
+types that cannot be auto-generated fail on the existing startup checklist instead of at first write.
+
+**`ENVELOPE_FORMAT_VERSION` stays 1000 — do NOT bump.** The stamp is a set-membership compatibility
+gate on the manifest (its own comment: *"not a structural dispatch"*); this changes generated FACTORY
+code, not manifest structure, and name-derived codec tags mean adding a type shifts no existing tag.
+
+**(d)** Wire the factory to a fenced variant via the resource SPI's context channel.
+
+> **Correction 2026-08-10.** An earlier draft of this step said "constructs `PartitionFencedDurableEntity`
+> from `EntityPartitionArc`, `CommittedPartitionOwnerSource`, `OwnershipEpochHighWater`". Those are
+> **the wrong collaborators** — they belong to `InMemoryDurableEntity`'s wired constructor, not to
+> `PartitionFencedDurableEntity`. Two distinct wired variants exist and they are not interchangeable:
+>
+> | | `InMemoryDurableEntity` (wired ctor) | `PartitionFencedDurableEntity` |
+> |---|---|---|
+> | Needs | `NodeId`, `EntityPartitionArc`, `CommittedPartitionOwnerSource`, `Option<OwnershipEpochHighWater>`, `Option<EntityLinearizableBarrier>` | `StorageEngine`, `PartitionOwnerEpochSource`, `EntityPartitionArc`, `Serializer`, `Deserializer` |
+> | Fence | coarse — the single `"core"` governor arc; MISSES a same-generation owner reshuffle | per-`(keyspace, partition)` owner epoch; CATCHES that reshuffle |
+> | Reads | `LinearizableEntityServe` — owner-routed, barrier round, epoch guard | **no override of `get(K, ReadConsistency)`** — inherits `DurableEntity:86`'s default and serves a bare local `storage.get` even when LINEARIZABLE is requested |
+> | Storage | in-process map | `StorageEngine` — today only `MemoryStorageEngine`, so still not restart-durable |
+>
+> Neither is complete. The stronger fence and the linearizable read pipeline live in *different*
+> classes, and no variant has both.
+
+**Mechanism (verified, no new seam):** `ResourceFactory:17` already exposes
+`default Promise<T> provision(C config, ProvisioningContext context)`; `SpiResourceProvider.registerExtension`
+fills a node-wide map merged into every context. `StreamAccessFactory` is the working template — though
+**not**, as this paragraph claimed until 2026-08-10, "wired in `AetherNode.registerForwardExtensionsOnSpi`":
+it is a `META-INF/services` `ResourceFactory`, and what that method registers (`:5448-5450`) are the
+extensions it *consumes*. The comment naming **"#345 item 1e-c"** is at `AetherNode:5443` — this
+epic's own stream side already landed the pattern. `Serializer` and `Deserializer` are already
+registered there; `NodeId` and `OwnershipEpochHighWater` too.
+
+**Decision required before coding:** which variant does I1 wire? The I1 gate is about the FENCE
+(`create_succeedsOnEveryNode_forTheSameKey` flipping), which argues for `PartitionFencedDurableEntity`
+and its stronger per-partition epoch. The cost of that choice is that a caller requesting
+`ReadConsistency.LINEARIZABLE` silently gets a local read — a claim-vs-reality gap that must then be
+either closed (port `LinearizableEntityServe` onto it) or documented as a known limitation. Do not
+paper over it.
+
+> **OWNER RULING 2026-08-10: `PartitionFencedDurableEntity` AND port `LinearizableEntityServe` onto
+> it.** One class ends up with both properties rather than a gate that passes without earning its
+> guarantee, and no shipped API is left silently ignoring a `ReadConsistency` argument.
+>
+> Consequence — the collaborator set is the UNION of the two variants:
+> `StorageEngine`, `PartitionOwnerEpochSource`, `EntityPartitionArc`, `Serializer`, `Deserializer`
+> (already required) plus `NodeId`, `CommittedPartitionOwnerSource`, `Option<OwnershipEpochHighWater>`,
+> `Option<EntityLinearizableBarrier>` (needed by `LinearizableEntityServe`).
+>
+> Already registered as SPI extensions: `NodeId`, `OwnershipEpochHighWater`, `Serializer`,
+> `Deserializer`. To construct and register: `KvCommittedPartitionOwnerSource` (needs only the built
+> `kvStore`; zero call sites today) and `EntityLinearizableBarrier` — which has **no factory at all**,
+> only a bare `@FunctionalInterface` whose javadoc says the production binding arrives "with the
+> durable-entity node wiring". It needs a ~10-line factory mirroring
+> `LinearizableBarrier.noOpRound(applier, timeout)`, reusing the node-wide `clusterCommandApplier`
+> (`AetherNode:1951`, `KVCommand`-generic so it is directly reusable) plus a timeout —
+> `DurableEntityConfig` carries no timeout knob today, so either add one or borrow an existing value.
+> `EntityPartitionArc` stays per-config, built inside `provision` from `keyspace`/`partitionCount`.
+>
+> **OWNER RULING 2026-08-10 — absence policy, per collaborator, because they are not equivalent:**
+>
+> | Absent | Cost | Behaviour |
+> |---|---|---|
+> | Fence (`PartitionOwnerEpochSource` / epoch gate) | **safety** — accepts writes from a deposed owner; the five-writers-per-key case I0 measured | **Refuse provisioning, loudly.** A slice declaring a durable entity fails to start rather than starting wrong. Silent fallback would reintroduce the defect behind a green build, and a future refactor dropping one `registerExtension` would do it invisibly. |
+> | Barrier (`EntityLinearizableBarrier`) | **freshness only** — `roundThenServe` skips the round, still runs `guardOwnerEpoch`, serves locally | **Provision normally. `BOUNDED_STALE` reads work. `LINEARIZABLE` returns a typed failure** — a new `DurableEntityError` variant; the sealed type has `StaleOwner` / `NotCurrentOwner` / `StaleEpochRead` but nothing for "the guarantee you asked for cannot be met here". |
+>
+> This is the consistency-lens rule applied literally: name the precise guarantee per OPERATION rather
+> than one label for the resource. The entity can honestly offer bounded-stale reads while refusing to
+> pretend about linearizable ones. Refusing the whole resource over a freshness loss overstates the
+> harm; serving a silently weaker read than the caller requested is the thing this ruling exists to
+> prevent.
+>
+> Consequence: `EntityLinearizableBarrier`'s factory is load-bearing for a fully working feature, so it
+> lands in I1 rather than being deferred.
+>
+> **OWNER RULING 2026-08-10 — how the gate actually gets earned (A + C).**
+>
+> Found during implementation, verified in code: **the specified gate was impossible.** An epoch fence
+> is staleness rejection, not admission control. `PartitionOwnerEpochGate` rejects only a *strictly
+> older* stamp, so it rejects a DEPOSED owner — five LIVE nodes all read the same committed epoch,
+> stamp the same value, and all commit. `PartitionFencedDurableEntity` has zero references to
+> `NotCurrentOwner`/`committedOwner`/`selfNodeId`. Worse, no ownership record exists for an entity
+> keyspace at all: `driveStreamOwnership` (`AetherNode:990`) is fed solely by `ReplicaSetController`'s
+> reconciled `(stream, partition)` list, so on a real node `currentOwnerEpoch → Epoch.ZERO` and
+> `committedOwner → none()` everywhere, leaving the fence wired but inert.
+>
+> Ruling — both halves:
+> - **(A) Write-path owner admission.** `create`/`update`/`delete` reject when the committed owner of
+>   the key's arc is not self, with `NotCurrentOwner`. Uses `NodeId` + `CommittedPartitionOwnerSource`,
+>   both already in the union collaborator set. This is what actually produces one-accepted-four-rejected.
+> - **(C) Mint ownership records by reusing the stream driver** — register the entity keyspace in the
+>   `StreamPartitionOwnershipKey` family so the proven leader-only `ReplicaSetController` +
+>   `StreamPartitionOwnershipWriter` path commits the records the entity classes already read, rather
+>   than building an entity-specific driver.
+>
+> Rationale for C over a bespoke driver: **I3 puts entity state on a stream partition anyway.** Reusing
+> the stream ownership family is convergent with where this epic lands, not a shortcut toward it — the
+> rings/WAL allocation that looks like a side effect in I1 becomes the substrate in I3. A bespoke
+> entity driver is the part most likely to be discarded. HRW-resolved ownership (option B) was rejected:
+> it reintroduces the on-the-fly HRW that `CommittedPartitionOwnerSource` exists to replace, trading a
+> guarantee for speed there is no schedule pressure to buy.
+>
+> **REFINEMENT 2026-08-10 — "C" means NARROW C: extend the writer's partition list, do NOT create a
+> stream per keyspace.** Found while building it, verified in code.
+>
+> `createStream(StreamConfig)` is the only door into the reconcile loop, and per keyspace it performs
+> partition-cap admission against the cluster-wide aggregate guard, reserves off-heap ring memory
+> (`perPartitionFloorBytes × partitions held`, failing the keyspace outright when the stream pool is
+> full), commits a `StreamConfigKey`, and enrols every held partition in reshuffle, backfill, retention,
+> watermark tracking, WAL truncation, replication and the tiered reader.
+>
+> In I3 that allocation is load-bearing — the rings and WAL carry the entity's own log. **In I1 the
+> stream would carry zero appends, permanently.** We would pay for an empty log purely to make a leader
+> write one ownership record, and we would add N empty partitions per keyspace to the reshuffle /
+> deficit-fill loop — the reconciler-under-load class that is still unconverged and has dragged
+> unrelated suites red before. That asymmetry, not the convergence argument, is what fails.
+>
+> The writer does not need any of it: `writeOwnershipChanges(List<PartitionKey>)` takes an arbitrary
+> partition list and `decide(...)` is pure — neither references `StreamPartitionManager` or
+> `StreamCatalog`. So hand the writer the entity keyspaces' arcs alongside the stream partitions. Same
+> record family, same leader-only gate, same batching, same `OwnershipEpochHighWater` — everything the
+> convergence argument was actually about — with none of the empty-log cost. When I3 makes the keyspace
+> a real stream, the records are already in the right family under the right key, so nothing is discarded.
+>
+> **Namespacing is mandatory, not cosmetic.** `StreamPartitionOwnershipKey(name, partition)` keys on a
+> bare name, so entity keyspace `orders` and stream `orders` collide. Under `createStream` that collision
+> is SILENT AND WRONG: `ensureConfigCommitted` makes the entity adopt the *stream's* partition count
+> while `EntityPartitionArc` is built from the entity's own, so the write fence and the ownership arcs
+> would key different partitions. Prefix entity arcs as `entity:<keyspace>`; I3's stream adopts the same
+> prefix.
+>
+> **Irreducible under either variant:** a cluster-wide registry of live entity keyspaces and their
+> partition counts, because `DurableEntityConfig` is per-slice and node-local while the writer is
+> leader-only.
+>
+> **Interim state, accepted deliberately:** (A) lands before the ownership mechanism, so until narrow C
+> is in, every entity write on a real node fails with the transient no-owner cause. That is
+> loud-and-non-functional instead of silent-and-wrong, and it closes the hazard the accidental
+> `pom.xml` commit opened. Forge test 10 measures 0-accepted / 5-rejected in that window and is NOT
+> rewritten to 1/4 until narrow C makes that outcome real.
+
+**(e)** Either honor `DurableEntityConfig.replicationFactor` or refuse it loudly — today it is
+accepted and silently ignored.
+
+*Gate: `DurableEntityForgeTest` test 10 `create_succeedsOnEveryNode_forTheSameKey` MUST flip to
+failing — five nodes each accepting a create for the same key must become one accepted and four
+rejected. A deposed partition owner is REJECTED on a same-generation reshuffle (the STEP-0 repro
+flips). Then the cloud gate the plan requires for fence work.*
+
+**I2 — the stream-path fence. SATISFIED BY PRIOR WORK (verified 2026-08-10 at `0b265154f`). Do not build.**
+
+> **Correction 2026-08-10.** This entry previously read "I2 — piece 1b, the stream-path fence. Required
+> before entity state may live on a log." Two errors: it mislabelled the item (**1b** is the per-domain
+> high-water table; **1d** is the stream fence), and it described as unbuilt something that landed
+> **2026-07-16**. Grounded against the tree, not the doc:
+>
+> - **The fence is at the commit point.** `appendToPartition` (`StreamPartitionManager.java:1215`) opens
+>   with `ensureNotStale` (`:1221`) — ahead of both `buffer.append` (`:1223`) and the WAL fsync
+>   (`:1224`), as spec §5b requires.
+> - **It is armed on real nodes.** `ensureNotStale` folds on an `Option`, so an absent high-water would
+>   silently pass — but the production factory (`:316-325`) takes a non-`Option` high-water and wraps it
+>   `Option.some(...)`, and `AetherNode:3038-3046` passes the real one. The `none()` branch is the
+>   secondary/test factory only.
+> - **Ownership is consensus-written, not HRW-on-the-fly.** `StreamPartitionOwnershipWriter` is
+>   leader-gated (`AetherNode:3283`) and driven from the reconcile seam (`:3301` → `driveStreamOwnership`
+>   `:1009`). HRW only *proposes* (`ReplicaSetController.ownerFor:435`); the writer commits.
+> - **Replication fences identically** — `appendReplicated` (`:1186`) gates the sending owner's token.
+>
+> Residual, recorded not papered over: the gate is **check-then-act**, so an epoch advance racing
+> `:1221`→`:1223` can admit one write. Inherent to the design; not an I2 gap.
+>
+> The only unfenced stream write path is `StreamConsensusCommand` (no `Epoch`, spec Open Question 5), and
+> it is **moot — dead surface**: `StreamPublisherFactory:88,117` always passes `Option.none()`, so
+> `publishStrong` fails `CONSENSUS_PATH_UNAVAILABLE` on every real node. File separately as dead surface;
+> Open Question 5 is unresolvable as written.
+
+*Gate (already exists): `StreamOwnershipDriverFenceTest` — the driver auto-commits ownership on a real
+`NodeRemoved` reconcile, then a stale-epoch append is rejected with `StaleEpochAppend`. It proves the hard
+case: same-term transfer with the deposed owner **still alive** (`:242`). Delete `ensureNotStale` and it
+goes red. `OwnershipFenceBaselineTest` is the STEP-0 scaffolding.*
+
+> ⚠ **The gate is green, but NOT continuously guarded.** forge-tests sets surefire `<skip>true</skip>`
+> (correct — the module holds only integration tests), and failsafe's `**/*Test.java` include does pick
+> this class up (it carries no `@Tag`, and `${failsafe.excludedGroups}` is defined in no pom, so nothing
+> excludes it). But `build.sh` only `compile test-compile`s forge-tests (`build.sh:65`) and never runs
+> them — its own closing text tells you to invoke it by hand (`build.sh:90`). **So a green `build.sh`
+> says nothing about this fence.** Same trap as the declarative-consumers regression.
+>
+> **Executed 2026-08-11 on the LAN build host** (x86_64, Java 25, Maven 3.9.12), module-scoped so the
+> reactor — and therefore `HetznerCloudIT` — is never touched:
+>
+> ```
+> mvn -f aether/forge/forge-tests/pom.xml verify \
+>     -Dit.test=StreamOwnershipDriverFenceTest -Dfailsafe.excludedGroups=
+> ```
+>
+> Result: **Tests run: 2, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 36.16 s** — both
+> `driverAutoCommitsOwnership_andStaleEpochAppendIsRejected` and
+> `sameTermOwnerTransfer_deposedButAliveOwnerIsFenced`, confirmed against
+> `target/failsafe-reports/…StreamOwnershipDriverFenceTest.txt`, not console output alone. The 36 s
+> elapsed is itself evidence the 5-node Ember formation really ran rather than skipping.
+> `[verified: aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/StreamOwnershipDriverFenceTest.java]`
+>
+> Still open: nothing re-runs this on every build. Wiring it into a CI gate remains a separate decision.
+
+**I3 — Phase 3, fenced log on a stream partition → disk tier. LANDED 2026-08-13.** Entity state moved
+from a process-local `StorageEngine` to a fenced, fsync-durable, REPLICATED log; the in-memory state is
+a fold of it; same `DurableEntity` API, no author churn (spec §4.4).
+
+*Gate as executed:* `DurableEntityForgeTest` **11/11 on a live 5-node Ember cluster** — after the owning
+node is killed, survivors serve the exact written value. Note this is a FAILOVER gate, not kill-9: Forge
+cannot hard-kill (`stop()` always closes the WAL), which is why #508's SIGKILL evidence lives in the
+docker `02y-stream-crash` suite. The SIGKILL tier for entities remains outstanding.
+
+**Corrections to this entry's original text, from building it:**
+
+- *"governor owns the fold"* (spec §4.4) was NOT followed. The partition OWNER already holds the folded
+  state; a governor-owned fold would mean shipping it. Owner-driven, deliberately.
+- *"fold-to-snapshot and tail"* understated the dependency. A checkpoint is not an optimisation here —
+  `RetentionEnforcer` is built once per node with ONE age policy and never reads per-stream config, so
+  without a checkpoint-derived retention floor an entity's segments are deleted a fixed interval after
+  its last write. Snapshot + floor are what make the log safe to trim at all.
+- **The replication decision was not in this plan and changes the guarantee.** Owner ruling 2026-08-13:
+  entity streams replicate (`replicas = replicationFactor`, `minSyncReplicas = min(2, rf)`), because the
+  un-sealed tail lives only in the owner's local WAL and a new owner cannot reach it — `replicas = 1`
+  yields "survives restart", not "survives node loss". `replication_factor` is therefore HONOURED, not
+  refused as I1(e) had it.
+- **The registry did NOT need to carry `replicationFactor`**, contrary to the narrow-C note calling a
+  cluster-wide registry irreducible for this: the provisioning node holds the bound config and
+  `createStream` commits a `StreamConfigKey` that propagates. No sealed-`AetherValue` change was needed
+  for it. (One WAS added for the checkpoint POINTER — see below.)
+- **`ReplicaSetController.reconcile()` is event-driven only**, so the entity tick's minting half was NOT
+  retired as the narrow-C expiry note implied. Retiring it would strand a keyspace deployed into a
+  steady-state cluster with writes refusing forever. The two drivers differ in TRIGGER, not decision.
+
+**Traps found while building, recorded so they are not re-learned:**
+
+- `RetentionPolicy.maxCount` is the RING CAPACITY — `buildRing` passes it straight to
+  `OffHeapRingBuffer`, and `floorBytes = HEADER + 24 * capacity + firstSegment`. A `Long.MAX_VALUE`
+  "infinite retention" OVERFLOWS that into a ~40-byte control segment and throws on the first index
+  write. It is not a config that retains everything; it is a config that cannot allocate.
+- Codec tags are `(fqcn.hashCode() & 0x7FFFFFFF) % 16256 + 128`. `AetherValue.EntityCheckpointValue`
+  collided with `HealthHintWire` at tag 7612 and poisoned `NodeCodecs` static init — invisible to the
+  owning module's own 731-test build, because only the full node assembly registers both. Renamed to
+  `EntityFoldCheckpointValue`. `@Codec.tag()` exists but is DEAD SURFACE: the generator emits
+  `deterministicTag(fqn)` unconditionally and never reads it.
+- A node outside a partition's replica set must report a STABLE cause (`PartitionNotHeld`), not
+  `FoldInProgress` — the latter is a "retry me" that never clears.
+
+**Known gaps, explicitly not closed by this increment:**
+
+1. **SIGKILL crash durability for entities** — belongs beside #508's `02y-stream-crash` docker suite.
+   **CLOSED 2026-08-13**: `02w-entity-crash` hard-killed (`docker kill`) the owner with creates in
+   flight; **56 ACKED entities read back with their exact written values, 0 missing, 0 corrupted**
+   (suite 1 passed / 0 failed). The assertions are gated on a CONFIRMED kill — an earlier run passed
+   them without any kill having happened, because the node-pick fail-fasted and nothing checked that
+   the crash occurred.
+   Getting there required fixing the harness twice over, and both bugs were self-inflicted measurement
+   errors rather than product faults: it drove the LB-fronted app endpoint, which PINS to one slice
+   instance (all 42 failure bodies carried one `"instance"` id), so 37 of 40 creates were refused by a
+   non-owner; and its convergence probe re-created the SAME keys every poll, so after the first success
+   every later poll got `KeyAlreadyExists` and counted it a failure, making convergence unreachable by
+   construction. Ack rate went 4/40 → 40/40 once it addressed owners directly.
+2. **Owner-forwarding — WIDER than recorded here, now #596.** This gap was written as
+   `BOUNDED_STALE` read forwarding only. The `02w` run showed the WRITE path has the same hole and it
+   bites harder: a durable entity is reachable only on its partition owner, there is no forwarding and
+   no client-side resolution, so behind the LB-fronted app endpoint (which pins to one instance) 37 of
+   40 creates were refused `NotCurrentOwner`. Streams already have `ForwardingReadRouter`; entities
+   have no equivalent. Cross-node slice code is refused for the same reason.
+3. **Checkpoint writes are not directly evidenced.** **CLOSED 2026-08-13**: `GET /api/entity/checkpoints`
+   + `aether entity checkpoints` report per-keyspace `writes`/`failures`/`checkpointedThrough`, and the
+   `02w` suite reads them as a liveness sensor (`node-1=34w/0f` live). Writes must be summed
+   CLUSTER-WIDE: a node hosting the keyspace but folding no partition correctly reports zero.
+4. **Simultaneous restart of the owner AND every replica** can leave the post-checkpoint tail
+   recoverable only on the original owner; ownership landing elsewhere refuses loudly rather than
+   losing data quietly.
+
+**I4 — durable per-entity timers (#351).** *Gate: timer survives owner handover AND restart.*
+
+**I5 — PersistentWorkflow facade (#353).**
+
+**I6 — Saga + journaled run-once step + audit stream + operator API (#354, #355).** The operator API
+is subject to the QUAD invariant — REST + CLI + docs + dashboard surface (or a recorded dormant-slot
+decision).
+*Gate: the plan's acceptance bar — a sample workflow and saga survive `kill -9` of the owner, and
+100k entities stay within budget on a 5-node cluster.*
+
+## Standing constraints for this arc
+
+- **Claim discipline per increment**: catalog row 217 and `guarantees.md` get an evidence tag as each
+  gate passes — never ahead of it. Row 217 stays "Partial" until I3 is cloud-green.
+- **The spec's rejected alternative stays rejected**: a durable default on fenced-KV-on-DHT "quietly
+  assumes a durable DHT that does not exist". Option (c), a persistent DHT `StorageEngine`, remains
+  out of scope as its own epic.
+- Separately and independently: `StorageBackedPersistence` (AHSE-backed Rabia snapshots) is built,
+  unit-tested and orphaned. Wiring it bounds consensus-KV loss on full-cluster restart. It is NOT a
+  substitute for anything above — snapshot granularity, not per-write durability.
+
+---
+
+## Narrow C — decomposition and the publish-seam ruling (2026-08-10)
+
+Six steps. 1, 4 and 6 are mechanical; 2 is the substantial one; 3 carried the only judgement call.
+
+1. **Namespacing inside `EntityPartitionArc`** — store `entity:` + keyspace internally and expose the
+   arc name, so `dhtKey`, `arcOf(String)`, `arcOf(byte[])` (the gate's parse site) and the ownership
+   key agree by construction. One construction site, no call site able to forget it. `parseArc` splits
+   on `/`, so `:` in the name is safe.
+2. **Registry key/value** — a new `AetherKey` + `AetherValue` variant carrying `(keyspace, partitionCount)`.
+   The irreducible piece: both types are sealed, so `KVStoreSerializer` needs the type tag, the snapshot
+   writer and a `parse*Entry` reader. Load-bearing consensus serialization; mechanical but not small.
+   **Watch for dead surface** — #538 records that `KVStoreSerializer`'s TOML arm has ~1,535 lines and
+   zero production callers, so adding a variant may touch one live path and one dead one. Say which.
+3. **Publish / unpublish seam — at PROVISIONING, not in the deployment FSM.** See ruling below.
+4. **Leader driver** — append registered keyspaces' arcs to the list handed to `writeOwnershipChanges`,
+   so entity arcs ride the existing leader gate and the existing single consensus batch. This is the
+   entirety of "reuse the stream driver". **Correction 2026-08-10:** this step said "at the
+   `driveStreamOwnership` call site"; as landed, the tree uses a *separate* scheduled
+   `reconcileEntityOwnership` (`AetherNode:3576`, body `:5531`) that reuses `writeOwnershipChanges`.
+   Same reuse, different seam — entity arcs are deliberately not minted through the stream driver.
+5. **Fixture rewrite** — admission changes the contract for tests 1–7 and 9–11, not just #10: writes
+   must reach the committed owner, which differs per key. Use an **exactly-one-acceptance** create
+   helper (attempt on all nodes, require exactly one success) rather than resolving the owner with the
+   same logic production uses — the latter is self-confirming, the former is independent of it AND
+   makes every test that creates anything a continuous fence assertion. Poll for ownership convergence;
+   never sleep.
+6. **Flip test 10** to one-accepted / four-rejected, and re-audit the other ten against the actual run.
+
+### Ruling — why the publish seam is at provisioning
+
+The deployment FSM is the architecturally correct home (it mirrors `StreamRegistrationKey`), and it is
+**foreclosed by the envelope freeze**, not chosen against on merit. `partitionCount` lives in
+`resources.toml` and is known only after the config binds inside `provision`; the manifest carries only
+the config SECTION name. Carrying it through the deployment layer would require either adding it to the
+manifest — a `ManifestGenerator` output-structure change, hence an `ENVELOPE_FORMAT_VERSION` bump, which
+is FROZEN at 1000 until GA by owner ruling — or teaching `NodeDeploymentState` to parse
+`META-INF/resources.toml` and duplicate the binder inside the control plane.
+
+So the factory takes a commit seam as an extension and `ResourceFactory.close` unpublishes. Writes are
+idempotent LWW, so N nodes registering the same keyspace is harmless.
+
+**Expiry condition, recorded so this does not become folklore: move the seam into the deployment FSM
+once the envelope unfreezes post-GA.** A layering compromise with its expiry written down is
+acceptable; an unexplained one calcifies.
+
+**Known limitation of this seam:** `ResourceFactory.close` does not run when a node dies, so a keyspace
+can remain registered with nothing using it and the leader will keep minting ownership records for it.
+No correctness impact — wasted records only. Decide follow-up issue vs documented-and-accepted once the
+increment lands.

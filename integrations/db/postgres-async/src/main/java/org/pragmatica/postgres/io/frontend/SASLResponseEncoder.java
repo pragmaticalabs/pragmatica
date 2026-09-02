@@ -1,9 +1,10 @@
 package org.pragmatica.postgres.io.frontend;
 
-import org.pragmatica.postgres.message.frontend.SASLResponse;
-
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
+
+import org.pragmatica.postgres.message.frontend.SASLResponse;
+
 
 public class SASLResponseEncoder extends SkipableEncoder<SASLResponse> {
     @Override
@@ -14,6 +15,7 @@ public class SASLResponseEncoder extends SkipableEncoder<SASLResponse> {
     @Override
     protected void writeBody(SASLResponse msg, ByteBuffer buffer, Charset encoding) {
         String clientFinalMessage = msg.clientFinalMessage(SASLResponse.HMAC256_NAME, SASLResponse.SHA256_DIGEST_NAME);
+
         buffer.put(clientFinalMessage.getBytes(encoding));
     }
 

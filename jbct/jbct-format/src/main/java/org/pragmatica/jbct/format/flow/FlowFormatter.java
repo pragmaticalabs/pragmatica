@@ -7,6 +7,7 @@ import org.pragmatica.jbct.parser.Java25Parser;
 import org.pragmatica.jbct.shared.SourceFile;
 import org.pragmatica.lang.Result;
 
+
 /// Flow-based JBCT formatter.
 ///
 /// Single-pass approach: format purely from code structure + width measurement.
@@ -54,13 +55,18 @@ public class FlowFormatter {
 
     /// Check if a source file is already formatted.
     public Result<Boolean> isFormatted(SourceFile source) {
-        return format(source).map(formatted -> formatted.content().equals(source.content()));
+        return format(source).map(formatted -> formatted.content()
+                                                        .equals(source.content()));
     }
 
     private Result<Cursor> parse(SourceFile source) {
         var parser = new Java25Parser();
+
         return parser.parse(source.content())
-            .mapError(cause -> FormattingError.parseFailed(source.fileName(), 1, 1, cause.message()));
+                     .mapError(cause -> FormattingError.parseFailed(source.fileName(),
+                                                                    1,
+                                                                    1,
+                                                                    cause.message()));
     }
 
     private String formatCst(Cursor root, String source) {
@@ -68,6 +74,7 @@ public class FlowFormatter {
         // `flattenZomWrappers`. Each node carries its own leadingTrivia natively.
         var printer = new FlowPrinter(config, source);
         var flowResult = printer.print(root);
+
         return flowResult.formatted();
     }
 }

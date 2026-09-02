@@ -1,15 +1,16 @@
 package org.pragmatica.storage;
 
+import org.pragmatica.lang.Result;
+
 import net.jpountz.lz4.LZ4Compressor;
 import net.jpountz.lz4.LZ4Factory;
 import net.jpountz.lz4.LZ4FastDecompressor;
-import org.pragmatica.lang.Result;
 
 import static org.pragmatica.lang.Result.lift;
 
+
 /// LZ4 compression codec using the fastest available implementation.
 final class Lz4Codec implements CompressionCodec {
-
     static final Lz4Codec INSTANCE = new Lz4Codec();
 
     private final LZ4Compressor compressor;
@@ -17,6 +18,7 @@ final class Lz4Codec implements CompressionCodec {
 
     private Lz4Codec() {
         var factory = LZ4Factory.fastestInstance();
+
         this.compressor = factory.fastCompressor();
         this.decompressor = factory.fastDecompressor();
     }

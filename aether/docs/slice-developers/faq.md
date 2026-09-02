@@ -55,12 +55,12 @@ Requests to slices on the failed node are automatically retried on other nodes h
 
 Two-tier system:
 1. **Reactive** (1-second interval) -- responds to current CPU, latency, queue depth, error rate
-2. **Predictive** (60-second interval) -- ONNX ML model forecasts load from 2-hour history, pre-scales before spikes
+2. **Predictive** (60-second interval) -- ONNX ML model forecasts load from a rolling history window (default 1 hour, configurable up to 2 hours via `inputWindowMinutes`), pre-scales before spikes
 
 Configure per-blueprint via CLI: `aether scale <artifact> --min 2 --max 10 --target-cpu 60`
 
 ## What serialization format is used?
 
-- **Inter-node (slice-to-slice)**: Fury binary serialization (high performance, schema evolution)
+- **Inter-node (slice-to-slice)**: a custom binary codec (`SliceCodec`, `@CodecFor`-generated) -- not a third-party library; hand-written compact encoding per type with explicit schema evolution support
 - **HTTP (external clients)**: JSON via Jackson
 - **No serialization code required** -- the annotation processor generates everything from your request/response records

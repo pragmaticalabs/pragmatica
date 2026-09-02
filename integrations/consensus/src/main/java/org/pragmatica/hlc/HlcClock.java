@@ -13,7 +13,6 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.hlc;
 
 import java.time.Instant;
@@ -24,6 +23,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Result;
 
 import static org.pragmatica.hlc.HlcTimestamp.pack;
+
 
 /// Hybrid Logical Clock implementation providing causally consistent timestamps.
 ///
@@ -98,6 +98,7 @@ public final class HlcClock {
         lock.lock();
         try {
             latestPacked = pack(physicalClock.getAsLong(), 0);
+
             return new HlcTimestamp(latestPacked, nodeId);
         } finally {
             lock.unlock();
@@ -136,7 +137,6 @@ public final class HlcClock {
 
         var latestPhysical = physicalMillis(latestPacked);
         var maxPhysical = Math.max(physicalNow, Math.max(remotePhysical, latestPhysical));
-
         var counter = computeMergedCounter(maxPhysical, latestPhysical, remotePhysical, remote);
 
         if (counter > MAX_COUNTER) {
@@ -144,6 +144,7 @@ public final class HlcClock {
         }
 
         latestPacked = pack(maxPhysical, counter);
+
         return Result.success(new HlcTimestamp(latestPacked, nodeId));
     }
 
@@ -168,7 +169,7 @@ public final class HlcClock {
     }
 
     private static int counter(long packed) {
-        return (int) (packed & COUNTER_MASK);
+        return (int)(packed & COUNTER_MASK);
     }
 
     private static long systemMillis() {

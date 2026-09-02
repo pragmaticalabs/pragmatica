@@ -2,8 +2,8 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.jbct.slice.routing;
+
 /// Matches type names against glob-like patterns for error type discovery.
 ///
 /// Supported pattern formats:
@@ -33,38 +33,47 @@ public final class ErrorTypeMatcher {
         if (typeName == null || pattern == null) {
             return false;
         }
+
         if (pattern.isEmpty()) {
             return typeName.isEmpty();
         }
+
         var startsWithWildcard = pattern.startsWith("*");
         var endsWithWildcard = pattern.endsWith("*");
+
         if (startsWithWildcard && endsWithWildcard) {
             return matchContains(typeName, pattern);
         }
+
         if (startsWithWildcard) {
             return matchEndsWith(typeName, pattern);
         }
+
         if (endsWithWildcard) {
             return matchStartsWith(typeName, pattern);
         }
+
         return matchExact(typeName, pattern);
     }
 
     private static boolean matchContains(String typeName, String pattern) {
         // Pattern: *Contains* -> strip both wildcards
         var literal = pattern.substring(1, pattern.length() - 1);
+
         return typeName.contains(literal);
     }
 
     private static boolean matchEndsWith(String typeName, String pattern) {
         // Pattern: *Suffix -> strip leading wildcard
         var suffix = pattern.substring(1);
+
         return typeName.endsWith(suffix);
     }
 
     private static boolean matchStartsWith(String typeName, String pattern) {
         // Pattern: Prefix* -> strip trailing wildcard
         var prefix = pattern.substring(0, pattern.length() - 1);
+
         return typeName.startsWith(prefix);
     }
 
@@ -97,12 +106,15 @@ public final class ErrorTypeMatcher {
         if (pattern == null) {
             return false;
         }
+
         if (!isExactReference(pattern)) {
             return matches(simpleName, pattern);
         }
+
         if (qualifiedName == null || pattern.isEmpty()) {
             return false;
         }
+
         return qualifiedName.equals(pattern) || qualifiedName.endsWith("." + pattern);
     }
 
@@ -115,12 +127,14 @@ public final class ErrorTypeMatcher {
         if (pattern == null || pattern.isEmpty()) {
             return "";
         }
+
         var start = pattern.startsWith("*")
                     ? 1
                     : 0;
         var end = pattern.endsWith("*")
                   ? pattern.length() - 1
                   : pattern.length();
+
         return start < end
                ? pattern.substring(start, end)
                : "";

@@ -23,6 +23,8 @@ public sealed interface StreamHttpResponse {
 
     /// `null` and `""` short-circuit to absent — the CLI HTTP layer never returns either,
     /// but defensive against synthetic test input.
+    // RET-06: `responseJson` null/empty guard is a defensive parse boundary (see doc above).
+    @SuppressWarnings("JBCT-RET-06")
     static Option<Integer> extractHttpStatus(String responseJson) {
         if (responseJson == null || responseJson.isEmpty()) {
             return Option.none();

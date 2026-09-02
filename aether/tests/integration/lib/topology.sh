@@ -2,7 +2,7 @@
 # topology.sh — Semantic topology helpers for membership + departure waits
 #
 # Departure oracle: the AUTHORITATIVE, leaderless source for "node X is gone"
-# is the membership projection at GET /api/cluster/membership. Every node serves
+# is the membership projection at GET /api/v1/cluster/membership. Every node serves
 # its own MembershipFsm view (route RBAC=VIEWER, scope=LOCAL — no leader hop), so
 # a single GET against ANY surviving node reports the victim's membership `state`.
 # When the FSM moves the victim to its terminal `Dead` record, the member's entry
@@ -11,13 +11,13 @@
 # (incarnation-fenced rejoin), so departure is detected by the victim's entry
 # being `state=="Dead"` — NOT by the victim being absent from the array.
 #
-# Why membership, not /api/events: the per-node in-heap event buffer that the old
+# Why membership, not /api/v1/events: the per-node in-heap event buffer that the old
 # departure oracle scanned was DELETED when NODE_FAILED emission moved to the
 # ungated MembershipFsm DEAD edge (publishing into the replicated
 # `system:cluster-events:1.0.0` stream). That events path is now LEADER-GATED — if
 # the killed victim was the leader, the NODE_FAILED publish waits for re-election,
-# so an /api/events scan is flaky as a primary departure signal. We keep a cheap
-# /api/events NODE_FAILED/NODE_LEFT scan as a belt-and-suspenders SECONDARY signal,
+# so an /api/v1/events scan is flaky as a primary departure signal. We keep a cheap
+# /api/v1/events NODE_FAILED/NODE_LEFT scan as a belt-and-suspenders SECONDARY signal,
 # but membership `state=="Dead"` is the primary success condition.
 #
 # Survivor-pinned by construction: membership reads go through api_get →
@@ -26,7 +26,7 @@
 # discovery). So the membership poll never targets the victim — it reflects a
 # surviving node's own FSM view.
 #
-# The legacy /api/events union helpers below (topology_events_since and the
+# The legacy /api/v1/events union helpers below (topology_events_since and the
 # count/observe helpers) remain for the quorum-window + replacement + self-drain
 # waits that still read the cluster-events stream; each node's view is unioned
 # across all node ports there.
@@ -34,7 +34,7 @@
 LIB_DIR_TOPOLOGY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${LIB_DIR_TOPOLOGY}/common.sh"
 
-# Current UTC timestamp in the ISO-8601 form accepted by /api/events?since=
+# Current UTC timestamp in the ISO-8601 form accepted by /api/v1/events?since=
 # Usage: ts=$(topology_now)
 topology_now() {
     date -u +%Y-%m-%dT%H:%M:%SZ
@@ -42,11 +42,42 @@ topology_now() {
 
 # Fetch raw events since baseline, UNIONED across all core nodes.
 # Each node maintains a per-node ring buffer (notifications are local). The LB
-# picks a random backend, so a single GET /api/events on the LB only sees one
+# picks a random backend, so a single GET /api/v1/events on the LB only sees one
 # node's view — and if that node was the one we killed and restarted, the
 # departure event isn't there. We query every direct node port and concatenate.
 # Empty string for $since means "all buffered".
 # Usage: topology_events_since "$baseline"
+# Cache for the CTM-replacement port discovery below. The discovery costs an SSH
+# roundtrip plus a `docker ps` and one `docker port` per container, and
+# `topology_events_since` is called from 1-second poll loops — so an uncached call
+# put an SSH roundtrip on a hot path, once per second, at exactly the moment the
+# host is least responsive (immediately after a chaos test SIGKILLed several nodes
+# and auto-heal is provisioning replacements).
+#
+# Measured 2026-08-13: this turned a step budgeted at 240s into 3176s, and that step
+# only ever emits a soft `log_warn` — 53 minutes spent on a signal the test states is
+# not its contract. Ephemeral replacement ports do not change on a 1-second cadence,
+# so a short TTL loses nothing and removes the roundtrip from the loop.
+_TOPOLOGY_PORTS_CACHE=""
+_TOPOLOGY_PORTS_CACHE_AT=0
+_TOPOLOGY_PORTS_TTL="${TOPOLOGY_PORTS_TTL:-30}"
+
+_topology_discover_replacement_ports() {
+    local now=$SECONDS
+    if [ -n "$_TOPOLOGY_PORTS_CACHE" ] && [ $((now - _TOPOLOGY_PORTS_CACHE_AT)) -lt "$_TOPOLOGY_PORTS_TTL" ]; then
+        printf '%s' "$_TOPOLOGY_PORTS_CACHE"
+        return 0
+    fi
+
+    local found
+    found=$(remote_exec "docker ps --filter 'label=aether.cluster=${CLUSTER_ID}' --format '{{.Names}}' | while read -r n; do docker port \"\$n\" 8080/tcp 2>/dev/null | sed -n '1s/.*:\\([0-9][0-9]*\\)\$/\\1/p'; done" 2>/dev/null || true)
+
+    _TOPOLOGY_PORTS_CACHE="$found"
+    _TOPOLOGY_PORTS_CACHE_AT=$now
+
+    printf '%s' "$found"
+}
+
 topology_events_since() {
     local since="${1:-}"
     local count="${NODE_COUNT:-5}"
@@ -87,7 +118,7 @@ topology_events_since() {
         # maps back to a fixed slot.
         if [ -n "${CLUSTER_ID:-}" ] && command -v remote_exec >/dev/null 2>&1; then
             local discovered hp u
-            discovered=$(remote_exec "docker ps --filter 'label=aether.cluster=${CLUSTER_ID}' --format '{{.Names}}' | while read -r n; do docker port \"\$n\" 8080/tcp 2>/dev/null | sed -n '1s/.*:\\([0-9][0-9]*\\)\$/\\1/p'; done" 2>/dev/null || true)
+            discovered=$(_topology_discover_replacement_ports)
             for hp in $discovered; do
                 u="http://${TARGET_HOST}:${hp}"
                 case " ${base_urls[*]-} " in
@@ -99,7 +130,7 @@ topology_events_since() {
     fi
 
     for base_url in "${base_urls[@]}"; do
-        url="${base_url}/api/events"
+        url="${base_url}/api/v1/events"
         if [ -n "$since" ]; then
             url="${url}?since=${since}"
         fi
@@ -129,7 +160,7 @@ topology_count_node_events() {
     # boundary between events — nested `at`/`details` objects close with `}}`/`}`,
     # never `},{` — so splitting on `},{` yields exactly one event per line. Count
     # events carrying BOTH the requested `type` (self-describing field, added to the
-    # /api/events payload) AND the victim's flat `details.nodeId` (the emitter id is
+    # /api/v1/events payload) AND the victim's flat `details.nodeId` (the emitter id is
     # `"nodeId":{"id":...}` — an object — so `"nodeId":"<id>"` matches only details).
     printf '%s' "$events_json" \
         | sed 's/},{/}\n{/g' \
@@ -159,7 +190,7 @@ topology_count_other_node_events() {
     printf '%s\n' "$all_ids" | grep -vFx -- "$exclude_id" | wc -l | tr -d ' '
 }
 
-# Extract the membership `state` of one node from a /api/cluster/membership body.
+# Extract the membership `state` of one node from a /api/v1/cluster/membership body.
 # The response is { ..., "members":[ {"nodeId":"X","state":"S",...}, ... ] } where
 # each member object is brace-delimited and carries NO nested braces, so we split
 # the array into one object per line, keep only the victim's object, and read its
@@ -186,7 +217,7 @@ membership_node_state() {
 }
 
 # Extract a top-level boolean field (e.g. "belowThreshold") from a
-# /api/cluster/membership body. Prints "true"/"false" on stdout, empty when
+# /api/v1/cluster/membership body. Prints "true"/"false" on stdout, empty when
 # absent/unparseable — callers must treat empty as UNKNOWN, never as false.
 # Usage: membership_bool_field "$membership_json" belowThreshold
 membership_bool_field() {
@@ -198,7 +229,7 @@ membership_bool_field() {
 }
 
 # Extract a top-level integer field (e.g. "requiredThreshold") from a
-# /api/cluster/membership body. Prints the number on stdout, empty when
+# /api/v1/cluster/membership body. Prints the number on stdout, empty when
 # absent/unparseable.
 # Usage: membership_int_field "$membership_json" strictCoreMemberCount
 membership_int_field() {
@@ -213,7 +244,7 @@ membership_int_field() {
 # numerator (MembershipFsm#strictCoreMembers: state exactly MEMBER, core
 # role — ClusterTopologyRoutes wires this straight into each member's
 # "strictCore" boolean, so no separate state check is needed here) from a
-# /api/cluster/membership body, one per line. Used to detect a NEWCOMER — a
+# /api/v1/cluster/membership body, one per line. Used to detect a NEWCOMER — a
 # node counted toward quorum that was not part of a previously captured
 # roster — e.g. an auto-heal replacement that joined and is already
 # strict-core before a kill-detection race was decided.
@@ -229,15 +260,15 @@ membership_live_member_ids() {
 
 # Wait until the given node is observed DEPARTED since the supplied baseline.
 # Returns 0 on success, 1 on timeout. Signature + timeout/scale behaviour are
-# unchanged from the old /api/events oracle so callers need no edit.
+# unchanged from the old /api/v1/events oracle so callers need no edit.
 # Usage: wait_for_node_departure node-3 "$baseline" 60
 #
-# PRIMARY (authoritative, leaderless): poll GET /api/cluster/membership on a
+# PRIMARY (authoritative, leaderless): poll GET /api/v1/cluster/membership on a
 # SURVIVING node (api_get resolves a live endpoint, never the just-killed victim)
 # and succeed when the victim's membership entry reports `state=="Dead"` — the
 # terminal FSM state. DEAD members are retained in `members[]`, so we key on the
 # Dead state, not on absence.
-# SECONDARY (belt-and-suspenders): the legacy /api/events NODE_FAILED/NODE_LEFT
+# SECONDARY (belt-and-suspenders): the legacy /api/v1/events NODE_FAILED/NODE_LEFT
 # union scan. Cheap and kept as a corroborating signal, but it is leader-gated
 # (the stream publish waits for re-election if the victim was leader), so it is
 # NOT relied on as the sole condition.
@@ -256,14 +287,14 @@ wait_for_node_departure() {
         # + non-zero rc on transport failure; ignore rc, parse stdout (empty → keep
         # polling). A victim entry of state "Dead" is the authoritative departure.
         local membership state
-        membership=$(api_get "/api/cluster/membership" 2>/dev/null) || membership=""
+        membership=$(api_get "/api/v1/cluster/membership" 2>/dev/null) || membership=""
         if [ -n "$membership" ]; then
             state=$(membership_node_state "$membership" "$node_id")
             if [ "$state" = "Dead" ]; then
                 return 0
             fi
         fi
-        # SECONDARY: corroborating /api/events scan (cheap, leader-gated). A
+        # SECONDARY: corroborating /api/v1/events scan (cheap, leader-gated). A
         # NODE_LEFT/NODE_FAILED for the victim is also sufficient.
         local events
         events=$(topology_events_since "$baseline" 2>/dev/null) || events=""
@@ -376,7 +407,7 @@ observe_quorum_window() {
 # It is NOT leader-gated because a partition victim is the only
 # authoritative source for "I'm self-draining" — and may not be able to reach the
 # leader at all. The event therefore must be polled from the survivor's own
-# /api/events buffer (or any node that observed the replicated commit before the
+# /api/v1/events buffer (or any node that observed the replicated commit before the
 # survivor halted). `topology_events_since` already unions across all node
 # endpoints, so a single call is enough.
 #
@@ -385,11 +416,23 @@ observe_quorum_window() {
 # lost (the scenario this event covers), the publish may not commit before the
 # halt lands. We therefore poll on a generous budget and tolerate timeout — the
 # CALLER decides whether timeout is a test failure or a known limitation.
+# Poll /api/v1/events for this node's SELF_DRAIN_INITIATED, bounded by wall clock.
+#
+# The deadline is checked BEFORE and AFTER the fetch. Checking only before bounds when
+# an iteration may START, not when the loop ends — so one slow fetch overshoots the
+# budget by however long it takes, and the caller's "within Ns" message becomes a lie.
+# Measured 2026-08-13: a nominal 120s budget ran 1588s per survivor because each
+# iteration carried an SSH roundtrip (since cached — see
+# `_topology_discover_replacement_ports`).
+#
+# Echoes actual elapsed seconds on stdout so callers can report what really happened
+# rather than repeating the budget they asked for.
 wait_for_self_drain_event() {
     local node_id="$1" baseline="$2" timeout="${3:-60}"
     node_id=$(to_node_id "$node_id")
     timeout=$((timeout * ${TIMEOUT_SCALE:-1}))
-    local deadline=$((SECONDS + timeout))
+    local started=$SECONDS
+    local deadline=$((started + timeout))
     while [ $SECONDS -lt $deadline ]; do
         local events
         events=$(topology_events_since "$baseline" 2>/dev/null) || events=""
@@ -397,15 +440,20 @@ wait_for_self_drain_event() {
             local count
             count=$(topology_count_node_events "$events" SELF_DRAIN_INITIATED "$node_id")
             if [ "$count" -gt 0 ]; then
+                SELF_DRAIN_WAIT_ELAPSED=$((SECONDS - started))
                 return 0
             fi
         fi
+        # Post-work deadline check: a single fetch can outlast the whole budget, and
+        # sleeping again after that has already overshot compounds it.
+        [ $SECONDS -lt $deadline ] || break
         sleep 1
     done
+    SELF_DRAIN_WAIT_ELAPSED=$((SECONDS - started))
     return 1
 }
 
-# Read R's KV-backed lifecycle state via /api/nodes/lifecycle/<id>, which reads
+# Read R's KV-backed lifecycle state via /api/v1/nodes/lifecycle/<id>, which reads
 # the lifecycle projection straight out of KV-Store regardless of SWIM state.
 # Returns the state string on stdout (empty when the atom is absent / HTTP 404).
 #
@@ -426,7 +474,7 @@ wait_for_self_drain_event() {
 kv_lifecycle_state() {
     local target="$1"
     local raw status body
-    raw=$(api_get_with_status "/api/nodes/lifecycle/${target}" 2>/dev/null)
+    raw=$(api_get_with_status "/api/v1/nodes/lifecycle/${target}" 2>/dev/null)
     status=$(printf '%s' "$raw" | grep -oE '__API_HTTP_STATUS:[0-9]+__' | tail -1 | sed 's/__API_HTTP_STATUS://;s/__//')
     body=$(printf '%s' "$raw" | sed '$d')
     case "$status" in
@@ -452,7 +500,7 @@ kv_lifecycle_state() {
     esac
 }
 
-# Report whether $target is ABSENT from /api/nodes/status cluster.nodes[].
+# Report whether $target is ABSENT from /api/v1/nodes/status cluster.nodes[].
 # Returns 0 (absent) if the node-id does not appear in the status projection,
 # 1 (present) otherwise. On a transport failure (empty body) we conservatively
 # treat the node as still present (return 1) so the caller keeps polling rather
@@ -477,7 +525,7 @@ node_absent_from_status() {
     return 0  # absent
 }
 
-# Print the set of node-ids currently in /api/nodes/status cluster.nodes[], one
+# Print the set of node-ids currently in /api/v1/nodes/status cluster.nodes[], one
 # per line, sorted+deduped. Empty string (rc 1) on transport failure.
 #
 # This is the cloud-reliable identity source: every node (seed OR CTM replacement,
@@ -488,7 +536,7 @@ node_absent_from_status() {
 # from the API. The output format (sorted unique node-ids, one per line) matches
 # `snapshot_node_id_labels` so the same `comm -13` set-diff works unchanged.
 #
-# PARSE: /api/nodes/status (StatusResponse) renders cluster.nodes[] as NodeInfo
+# PARSE: /api/v1/nodes/status (StatusResponse) renders cluster.nodes[] as NodeInfo
 # records `{"id":"<nodeId>","isLeader":...,"kvState":...,"derivedStatus":...}` — the
 # per-node id field is `"id"`, NOT `"nodeId"`. The payload's only top-level "nodeId"
 # is THIS node's own id (and cluster.leaderId uses key "leaderId"), so the old
@@ -503,7 +551,7 @@ status_node_ids() {
     # (unlike kv_lifecycle_state's 404) — unsuppress stderr so a transport
     # failure or unexpected status surfaces via _api_call's own log_warn
     # instead of vanishing silently.
-    status_payload=$(api_get "/api/nodes/status") || true
+    status_payload=$(api_get "/api/v1/nodes/status") || true
     if [ -z "$status_payload" ]; then
         return 1  # couldn't read
     fi
@@ -519,10 +567,10 @@ status_node_ids() {
 # simply leaves the SWIM-fed membership — there is NO DECOMMISSIONED lifecycle
 # state and NO decommission-reason domain event. The authoritative v2 removal
 # signal is twofold (either is sufficient):
-#   (a) /api/nodes/lifecycle/<R> returns HTTP 404 (LIFECYCLE_NOT_FOUND) — the
+#   (a) /api/v1/nodes/lifecycle/<R> returns HTTP 404 (LIFECYCLE_NOT_FOUND) — the
 #       lifecycle endpoint reports the node as unknown. kv_lifecycle_state
 #       surfaces this as rc=0 + empty stdout (see its contract comment).
-#   (b) R is absent from /api/nodes/status cluster.nodes[].
+#   (b) R is absent from /api/v1/nodes/status cluster.nodes[].
 # Returns 0 as soon as either holds; 1 on timeout.
 wait_for_node_removed() {
     local target="$1" timeout="${2:-8}"

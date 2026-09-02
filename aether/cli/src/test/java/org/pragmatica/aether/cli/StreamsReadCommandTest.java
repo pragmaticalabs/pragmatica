@@ -11,10 +11,13 @@ import picocli.CommandLine;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
-/// Regression tests for `aether streams read <name> <partition>` — Phase 2 item P6
+/// Regression tests for `aether streams read <name|address> <partition>` — Phase 2 item P6
 /// (unblocks RC1-blocker #1 in `aether/docs/internal/audits/integration-test-audit-2026-05-21.md` §2.2).
 /// Verifies that the picocli wiring binds positional + optional fields correctly so the
-/// command can fetch `STREAM_READ` with the expected path + query-string shape.
+/// command can fetch the now-catalog-form `STREAM_READ` with the expected path + query-string
+/// shape. `address` accepts a bare name (client-side default to `system:name:1.0.0` — see
+/// `AetherCli.StreamCommand#resolveStreamAddress`) or a full `namespace:stream:version` address;
+/// this test pins the raw picocli binding, not the resolution, so a bare name is enough here.
 class StreamsReadCommandTest {
 
     @Test
@@ -22,7 +25,7 @@ class StreamsReadCommandTest {
         var cmd = new AetherCli.StreamCommand.ReadCommand();
         new CommandLine(cmd).parseArgs("orders", "3");
 
-        assertEquals("orders", readField(cmd, "name"));
+        assertEquals("orders", readField(cmd, "address"));
         assertEquals("3", readField(cmd, "partition"));
         assertNull(readField(cmd, "since"));
         assertNull(readField(cmd, "limit"));

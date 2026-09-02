@@ -1,8 +1,8 @@
 #!/bin/bash
 # test_events_cluster_ordering.sh — RC1 Step 1 cluster-scoped event log validation.
 #
-# Generates events from each node concurrently (POST /api/alerts/inject from every
-# node), polls /api/events from each node, asserts every node sees the same ordered
+# Generates events from each node concurrently (POST /api/v1/alerts/inject from every
+# node), polls /api/v1/events from each node, asserts every node sees the same ordered
 # subsequence — the OB1 alert/trace race + OB2 NODE_FAILED skew should turn green
 # once the replicated event log is in place.
 set -euo pipefail
@@ -22,7 +22,7 @@ test_cluster_ready() {
 }
 
 # Inject events from every node round-robin so the producer set is distributed.
-# `/api/alerts/inject` is the documented test injection endpoint already used by
+# `/api/v1/alerts/inject` is the documented test injection endpoint already used by
 # test-alerts.sh; alerts are surfaced as cluster events with the alert's name
 # embedded in details.
 test_inject_events_round_robin() {
@@ -36,7 +36,7 @@ test_inject_events_round_robin() {
             if curl -sfk -m 5 -H "X-API-Key: ${API_KEY}" \
                     -H "Content-Type: application/json" \
                     -X POST -d "${body}" \
-                    "${node_endpoint}/api/alerts/inject" >/dev/null 2>&1; then
+                    "${node_endpoint}/api/v1/alerts/inject" >/dev/null 2>&1; then
                 injected=$((injected + 1))
             fi
         done
@@ -57,7 +57,7 @@ test_wait_for_replication() {
         node0=$(node_base_url 0) || { sleep 1; continue; }
         local events
         events=$(curl -sfk -m 5 -H "X-API-Key: ${API_KEY}" \
-                        "${node0}/api/events" 2>/dev/null || true)
+                        "${node0}/api/v1/events" 2>/dev/null || true)
         if printf '%s' "${events}" | grep -q "${MARKER}"; then
             log_pass "Replication confirmed (marker visible on node 0)"
             return 0
@@ -77,7 +77,7 @@ test_wait_for_replication() {
 _count_marker_events() {
     local base="$1"
     curl -sfk -m 5 -H "X-API-Key: ${API_KEY}" \
-            "${base}/api/events" 2>/dev/null \
+            "${base}/api/v1/events" 2>/dev/null \
         | grep -oE "\"name\"[[:space:]]*:[[:space:]]*\"[^\"]*${MARKER}[^\"]*\"" \
         | wc -l \
         | tr -d ' '
@@ -112,7 +112,7 @@ test_wait_for_marker_count_convergence() {
     log_warn "Marker counts did not converge within 30s; proceeding with last observation"
 }
 
-# Read /api/events from every node, extract just the marker-bearing entries, and
+# Read /api/v1/events from every node, extract just the marker-bearing entries, and
 # assert all nodes agree on the same ordered subsequence. We compare summaries +
 # originEpoch/originSeq stamps that the new aggregator's `projectToEvent` adds
 # to details.
@@ -126,8 +126,8 @@ test_all_nodes_agree_on_order() {
         node_endpoint=$(node_base_url "$i") || { log_fail "node_base_url failed for node ${i}"; return 1; }
         local events
         if ! events=$(curl -sfk -m 5 -H "X-API-Key: ${API_KEY}" \
-                            "${node_endpoint}/api/events" 2>/dev/null); then
-            log_fail "GET /api/events failed on node ${i} (${node_endpoint})"
+                            "${node_endpoint}/api/v1/events" 2>/dev/null); then
+            log_fail "GET /api/v1/events failed on node ${i} (${node_endpoint})"
             return 1
         fi
         # Extract marker-bearing event names from the details.name field (where the

@@ -3,9 +3,9 @@ package org.pragmatica.storage;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.utils.Causes;
 
+
 /// Snapshot error hierarchy for metadata snapshot operations.
 public sealed interface SnapshotError extends Cause {
-
     SnapshotError INTEGRITY_CHECK_FAILED = new IntegrityCheckFailed();
 
     record DirectoryCreateFailed(Throwable cause) implements SnapshotError {

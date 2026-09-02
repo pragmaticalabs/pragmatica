@@ -13,13 +13,13 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.lang;
-
-import org.pragmatica.lang.Functions.Fn1;
 
 import java.util.Objects;
 import java.util.function.Supplier;
+
+import org.pragmatica.lang.Functions.Fn1;
+
 
 /// Deferred computation with memoization.
 ///
@@ -67,6 +67,7 @@ public interface Lazy<T> {
     /// @return a new Lazy instance
     static <T> Lazy<T> lazy(Supplier<T> supplier) {
         Objects.requireNonNull(supplier, "supplier must not be null");
+
         return new DeferredLazy<>(supplier);
     }
 
@@ -102,6 +103,7 @@ public interface Lazy<T> {
                     }
                 }
             }
+
             return value;
         }
 
@@ -113,12 +115,14 @@ public interface Lazy<T> {
         @Override
         public <R> Lazy<R> map(Fn1<R, ? super T> fn) {
             Objects.requireNonNull(fn, "fn must not be null");
+
             return Lazy.lazy(() -> fn.apply(get()));
         }
 
         @Override
         public <R> Lazy<R> flatMap(Fn1<Lazy<R>, ? super T> fn) {
             Objects.requireNonNull(fn, "fn must not be null");
+
             return Lazy.lazy(() -> fn.apply(get())
                                      .get());
         }
@@ -152,12 +156,14 @@ public interface Lazy<T> {
         @Override
         public <R> Lazy<R> map(Fn1<R, ? super T> fn) {
             Objects.requireNonNull(fn, "fn must not be null");
+
             return Lazy.lazy(() -> fn.apply(value));
         }
 
         @Override
         public <R> Lazy<R> flatMap(Fn1<Lazy<R>, ? super T> fn) {
             Objects.requireNonNull(fn, "fn must not be null");
+
             return Lazy.lazy(() -> fn.apply(value)
                                      .get());
         }

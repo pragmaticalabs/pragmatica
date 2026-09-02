@@ -1,21 +1,20 @@
 package org.pragmatica.email.http;
 
-import org.pragmatica.lang.Option;
-
 import java.util.List;
+
+import org.pragmatica.lang.Option;
 
 import static org.pragmatica.lang.Option.none;
 
+
 /// Immutable email message with sender, recipients, subject, and body.
-public record EmailMessage(
-    String from,
-    List<String> to,
-    String subject,
-    EmailBody body,
-    List<String> cc,
-    List<String> bcc,
-    Option<String> replyTo
-) {
+public record EmailMessage(String from,
+                           List<String> to,
+                           String subject,
+                           EmailBody body,
+                           List<String> cc,
+                           List<String> bcc,
+                           Option<String> replyTo) {
     /// Creates an email message with required fields and sensible defaults.
     public static EmailMessage emailMessage(String from, List<String> to, String subject, EmailBody body) {
         return new EmailMessage(from, to, subject, body, List.of(), List.of(), none());

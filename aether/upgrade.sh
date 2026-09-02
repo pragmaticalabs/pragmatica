@@ -54,19 +54,73 @@ detect_install_mode() {
     echo "Install mode: $INSTALL_MODE"
 }
 
+# Resolve the version tag to install for an unpinned ("latest") request.
+# Reads newline-separated tag names (without a leading "v") from stdin and
+# prints the tag ranked highest by: major.minor.patch (numeric), then
+# maturity class GA > rc-N > beta > alpha (numeric-aware N, so rc10 > rc9).
+# Tags matching *-candidate are always excluded — the candidate tag is a
+# moving pre-release marker, never an installable release. Tags that don't
+# parse as MAJOR.MINOR.PATCH[-suffix] are skipped. Prints nothing if no tag
+# qualifies.
+resolve_latest_tag() {
+    while IFS= read -r tag; do
+        [ -n "$tag" ] || continue
+        case "$tag" in
+            *-candidate) continue ;;
+        esac
+
+        core="${tag%%-*}"
+        case "$tag" in
+            *-*) suffix="${tag#*-}" ;;
+            *)   suffix="" ;;
+        esac
+
+        major=$(echo "$core" | cut -d. -f1)
+        minor=$(echo "$core" | cut -d. -f2)
+        patch=$(echo "$core" | cut -d. -f3)
+        case "$major" in ''|*[!0-9]*) continue ;; esac
+        case "$minor" in ''|*[!0-9]*) continue ;; esac
+        case "$patch" in ''|*[!0-9]*) continue ;; esac
+
+        case "$suffix" in
+            "")     class=4; num=0 ;;
+            rc*)    class=3; num="${suffix#rc}" ;;
+            beta*)  class=2; num="${suffix#beta}" ;;
+            alpha*) class=1; num="${suffix#alpha}" ;;
+            *)      class=0; num=0 ;;
+        esac
+        case "$num" in ''|*[!0-9]*) num=0 ;; esac
+
+        printf '%05d.%05d.%05d.%d.%05d\t%s\n' "$major" "$minor" "$patch" "$class" "$num" "$tag"
+    done | LC_ALL=C sort -r | head -1 | cut -f2
+}
+
+# Confirm a specific version exists as a published release (not just any
+# tag), so an explicitly requested version fails loudly up front instead of
+# falling through to a download 404 buried inside the upgrade steps.
+verify_version_exists() {
+    version="$1"
+    code=$(curl -s -o /dev/null -w '%{http_code}' "https://api.github.com/repos/$REPO/releases/tags/v$version")
+    [ "$code" = "200" ]
+}
+
 determine_target_version() {
     if [ -n "$TARGET_VERSION" ]; then
         echo "Target version: $TARGET_VERSION"
+        if ! verify_version_exists "$TARGET_VERSION"; then
+            echo "Error: version 'v$TARGET_VERSION' not found in $REPO releases."
+            echo "  See: https://github.com/$REPO/releases"
+            exit 1
+        fi
         return
     fi
     echo "Fetching latest version..."
     TARGET_VERSION=$(curl -fsSL "https://api.github.com/repos/$REPO/releases" \
         | grep '"tag_name"' \
         | sed -E 's/.*"v?([^"]+)".*/\1/' \
-        | sort -t. -k1,1rn -k2,2rn -k3,3rn \
-        | head -1)
+        | resolve_latest_tag)
     if [ -z "$TARGET_VERSION" ]; then
-        echo "Error: Could not determine latest version"
+        echo "Error: could not determine latest version (no non-candidate releases found)"
         exit 1
     fi
     echo "Latest version: $TARGET_VERSION"
@@ -175,10 +229,15 @@ swap_binaries() {
 }
 
 swap_archives() {
-    # Remove old versioned directories
+    # Remove old versioned directories (any prior archive-mode generation)
     for component in aether-node aether-cli aether-forge; do
         rm -rf "$INSTALL_DIR"/${component}-*/
     done
+
+    # Remove stale jar-mode remnants so no old jar wrapper survives a
+    # jar -> archive transition.
+    rm -rf "$INSTALL_DIR/lib"
+    rm -f "$INSTALL_DIR/bin/aether" "$INSTALL_DIR/bin/aether-node" "$INSTALL_DIR/bin/aether-forge"
 
     # Extract new archives
     for archive in "$TEMP_DIR"/*.tar.gz; do
@@ -197,25 +256,79 @@ swap_archives() {
     [ -x "$CLI_DIR/bin/aether" ]         && ln -sf "$CLI_DIR/bin/aether" "$INSTALL_DIR/bin/aether"
     [ -x "$FORGE_DIR/bin/aether-forge" ] && ln -sf "$FORGE_DIR/bin/aether-forge" "$INSTALL_DIR/bin/aether-forge"
 
+    for bin in aether aether-node aether-forge; do
+        [ -e "$INSTALL_DIR/bin/$bin" ] || echo "  Warning: $bin archive not available for $TARGET_VERSION; launcher not installed."
+    done
+
     rm -rf "$TEMP_DIR"
 }
 
 swap_jars() {
-    # Backup existing JARs
-    for jar in aether.jar aether-node.jar aether-forge.jar; do
-        if [ -f "$INSTALL_DIR/lib/$jar" ]; then
-            mv "$INSTALL_DIR/lib/$jar" "$INSTALL_DIR/lib/$jar.bak"
-        fi
+    # Remove stale archive-mode remnants so no versioned dist dir or its
+    # bin/ symlink can shadow the jar-mode launchers written here.
+    for component in aether-node aether-cli aether-forge; do
+        rm -rf "$INSTALL_DIR"/${component}-*/
     done
 
-    # Move new JARs into place
+    mkdir -p "$INSTALL_DIR/lib" "$INSTALL_DIR/bin"
+
+    # Move new JARs into place; any jar of any prior generation is simply
+    # overwritten, so no partial state survives.
     for jar in aether.jar aether-node.jar aether-forge.jar; do
+        rm -f "$INSTALL_DIR/lib/$jar"
         mv "$TEMP_DIR/$jar" "$INSTALL_DIR/lib/$jar"
     done
 
-    # Clean up backups and temp dir
-    rm -f "$INSTALL_DIR/lib/"*.bak
+    # Regenerate launcher wrappers unconditionally so a stale bin/ entry
+    # from a prior generation (symlink, archive-mode launcher, hand edit)
+    # never survives an upgrade.
+    write_jar_wrappers
+
     rm -rf "$TEMP_DIR"
+}
+
+# Create wrapper scripts for jar-mode launchers. Each wrapper validates its
+# target jar exists before exec, so a partial or stale install fails with an
+# actionable message instead of a bare "Unable to access jarfile".
+write_jar_wrappers() {
+    # rm -f first: bin/aether* may currently be a symlink left by a prior
+    # archive-mode install (possibly dangling). "cat >" writes THROUGH a
+    # symlink instead of replacing it, which would either fail outright or
+    # silently clobber whatever the symlink still points at. Removing the
+    # entry guarantees each wrapper below is always a fresh regular file.
+    rm -f "$INSTALL_DIR/bin/aether" "$INSTALL_DIR/bin/aether-node" "$INSTALL_DIR/bin/aether-forge"
+
+    cat > "$INSTALL_DIR/bin/aether" << WRAPPER
+#!/bin/sh
+if [ ! -f "$INSTALL_DIR/lib/aether.jar" ]; then
+    echo "Error: $INSTALL_DIR/lib/aether.jar not found." >&2
+    echo "The installation is incomplete or corrupted. Run install.sh again." >&2
+    exit 1
+fi
+exec java -jar "$INSTALL_DIR/lib/aether.jar" "\$@"
+WRAPPER
+
+    cat > "$INSTALL_DIR/bin/aether-node" << WRAPPER
+#!/bin/sh
+if [ ! -f "$INSTALL_DIR/lib/aether-node.jar" ]; then
+    echo "Error: $INSTALL_DIR/lib/aether-node.jar not found." >&2
+    echo "The installation is incomplete or corrupted. Run install.sh again." >&2
+    exit 1
+fi
+exec java -XX:+UseZGC \${AETHER_JAVA_OPTS:-} -jar "$INSTALL_DIR/lib/aether-node.jar" "\$@"
+WRAPPER
+
+    cat > "$INSTALL_DIR/bin/aether-forge" << WRAPPER
+#!/bin/sh
+if [ ! -f "$INSTALL_DIR/lib/aether-forge.jar" ]; then
+    echo "Error: $INSTALL_DIR/lib/aether-forge.jar not found." >&2
+    echo "The installation is incomplete or corrupted. Run install.sh again." >&2
+    exit 1
+fi
+exec java -XX:+UseZGC \${AETHER_JAVA_OPTS:-} -jar "$INSTALL_DIR/lib/aether-forge.jar" "\$@"
+WRAPPER
+
+    chmod +x "$INSTALL_DIR/bin/aether" "$INSTALL_DIR/bin/aether-node" "$INSTALL_DIR/bin/aether-forge"
 }
 
 check_running_processes() {

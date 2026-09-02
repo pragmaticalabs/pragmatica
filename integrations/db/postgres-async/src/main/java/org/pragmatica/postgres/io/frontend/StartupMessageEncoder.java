@@ -11,16 +11,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.pragmatica.postgres.io.frontend;
+
+import java.nio.ByteBuffer;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 
 import org.pragmatica.postgres.io.Encoder;
 import org.pragmatica.postgres.io.IO;
 import org.pragmatica.postgres.message.frontend.StartupMessage;
 
-import java.nio.ByteBuffer;
-import java.nio.charset.Charset;
-import java.nio.charset.StandardCharsets;
 
 /**
  * See <a href="https://www.postgresql.org/docs/11/protocol-message-formats.html">Postgres message formats</a>
@@ -57,12 +57,7 @@ public class StartupMessageEncoder implements Encoder<StartupMessage> {
     public void write(StartupMessage msg, ByteBuffer buffer, Charset encoding) {
         buffer.putInt(0);
         buffer.putInt(msg.getProtocol());
-
-        for (String s : new String[]{
-                "user", msg.getUsername(),
-                "database", msg.getDatabase(),
-                "client_encoding", encoding.name()
-        }) {
+        for (String s : new String[]{"user", msg.getUsername(), "database", msg.getDatabase(), "client_encoding", encoding.name()}) {
             IO.putCString(buffer, s, StandardCharsets.US_ASCII);
         }
 

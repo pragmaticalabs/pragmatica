@@ -222,6 +222,7 @@ public record AetherConfig(ClusterConfig cluster,
         private DhtReplicationConfig dhtReplicationConfig;
         private TimeoutsConfig timeoutsConfig;
         private Integer coreMax;
+        private Integer maxNodes;
         private CloudConfig cloudConfig;
         private Map<String, StorageConfig> storageConfig;
         private Map<String, EndpointConfig> endpointsConfig;
@@ -325,6 +326,13 @@ public record AetherConfig(ClusterConfig cluster,
             return this;
         }
 
+        /// #298 — cluster-wide provisioning ceiling. Absent leaves [ClusterConfig#UNBOUNDED].
+        public Builder maxNodes(int maxNodes) {
+            this.maxNodes = maxNodes;
+
+            return this;
+        }
+
         public Builder cloud(CloudConfig cloudConfig) {
             this.cloudConfig = cloudConfig;
 
@@ -397,9 +405,10 @@ public record AetherConfig(ClusterConfig cluster,
             var withNodes = option(nodes).map(base::withNodes).or(base);
             var withTls = option(tls).map(withNodes::withTls).or(withNodes);
             var withPorts = option(ports).map(withTls::withPorts).or(withTls);
+            var withCoreMax = option(coreMax).map(withPorts::withCoreMax).or(withPorts);
 
-            return option(coreMax).map(withPorts::withCoreMax)
-                         .or(withPorts);
+            return option(maxNodes).map(withCoreMax::withMaxNodes)
+                         .or(withCoreMax);
         }
 
         private NodeConfig applyNodeOverrides(NodeConfig base) {

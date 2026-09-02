@@ -1,9 +1,7 @@
 package org.pragmatica.jbct.format;
+
 /// Configuration for the JBCT formatter.
-public record FormatterConfig(int maxLineLength,
-                              int indentSize,
-                              boolean useTabs,
-                              boolean organizeImports) {
+public record FormatterConfig(int maxLineLength, int indentSize, boolean useTabs, boolean organizeImports) {
     /// Default JBCT formatting configuration.
     public static final FormatterConfig DEFAULT = formatterConfig(120, 4, false, true);
 

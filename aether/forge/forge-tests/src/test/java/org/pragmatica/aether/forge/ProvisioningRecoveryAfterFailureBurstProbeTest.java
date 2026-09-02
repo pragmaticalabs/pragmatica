@@ -7,6 +7,7 @@ package org.pragmatica.aether.forge;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.parallel.Execution;
@@ -17,7 +18,8 @@ import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
-import org.pragmatica.aether.environment.InstanceType;
+import org.pragmatica.aether.environment.ProviderDefaults;
+import org.pragmatica.aether.environment.ProvisionRequest;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
@@ -85,6 +87,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 ///         (recovery works → provisioning logic is sound, #336 is not provider-independent).
 /// FAIL  = breaker tripped but the deficit never refills though the wrapper would now succeed
 ///         (the wedge — capture the stuck breaker state + counters in the dump).
+@Tag("Heavy")
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class ProvisioningRecoveryAfterFailureBurstProbeTest {
@@ -381,12 +384,17 @@ class ProvisioningRecoveryAfterFailureBurstProbeTest {
             }
 
             @Override
-            public Promise<InstanceInfo> provision(InstanceType instanceType) {
+            public ProviderDefaults providerDefaults() {
+                return delegate.providerDefaults();
+            }
+
+            @Override
+            public Promise<InstanceInfo> createFrom(ProvisionRequest request) {
                 calls.incrementAndGet();
 
                 return shouldFail()
                        ? injectFailure()
-                       : delegate.provision(instanceType);
+                       : delegate.createFrom(request);
             }
 
             private boolean shouldFail() {

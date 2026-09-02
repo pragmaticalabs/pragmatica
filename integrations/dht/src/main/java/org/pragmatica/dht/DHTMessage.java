@@ -13,8 +13,9 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.dht;
+
+import java.util.List;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
@@ -22,7 +23,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.StreamType;
 import org.pragmatica.serialization.Codec;
 
-import java.util.List;
 
 /// Messages for DHT operations between nodes.
 @Codec
@@ -48,8 +48,13 @@ public sealed interface DHTMessage extends ProtocolMessage {
     /// `epochCounter`) — the fencing token each replica enforces against its per-partition
     /// high-water (#345 piece 1c). The `Epoch` type that mints these lives in the BSL-1.1
     /// `aether/slice` module, so only the primitives cross this Apache-2.0 wire.
-    record PutRequest(String requestId, NodeId sender, byte[] key, byte[] value,
-                      long version, long epochTerm, long epochCounter) implements DHTMessage {
+    record PutRequest(String requestId,
+                      NodeId sender,
+                      byte[] key,
+                      byte[] value,
+                      long version,
+                      long epochTerm,
+                      long epochCounter) implements DHTMessage {
         public PutRequest {
             key = key.clone();
             value = value.clone();

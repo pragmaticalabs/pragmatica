@@ -9,13 +9,20 @@ import java.util.Map;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
 
 public interface ComputeProvider {
-    Promise<InstanceInfo> provision(InstanceType instanceType);
+    /// The single per-provider provisioning surface (RFC-0016 §2): translate a fully-resolved,
+    /// provider-agnostic [ProvisionRequest] into a native create call. [ProvisionRequest#resolve]
+    /// has already applied the precedence (spec field > provider config > loud fallback), so this
+    /// performs NO re-derivation — every field it needs is on the request. This is the ONLY
+    /// provisioning method a provider implements; [#provision(ProvisionSpec)] is a non-overridable
+    /// boundary that resolves then delegates here.
+    Promise<InstanceInfo> createFrom(ProvisionRequest request);
     Promise<Unit> terminate(InstanceId instanceId);
     Promise<List<InstanceInfo>> listInstances();
     Promise<InstanceInfo> instanceStatus(InstanceId instanceId);
@@ -28,12 +35,104 @@ public interface ComputeProvider {
         return EnvironmentError.operationNotSupported("applyTags").promise();
     }
 
+    /// Ensure ONE ingress rule is in force for `source`, returning the provider resource that
+    /// carries it (spec REQ-5.1.8.4). MUST be create-or-patch and idempotent: a `"tcp+udp"` entry
+    /// expands to two rules (REQ-5.1.8.1) and every rule of a source lands on the SAME provider
+    /// resource, so the second call patches what the first created and returns the same
+    /// [IngressHandle].
+    ///
+    /// The handle exists so the caller can apply the rule AT instance-create. Do NOT implement this
+    /// as a post-create mutation: on Hetzner an unassociated server accepts all inbound traffic
+    /// (§6.2), so opening ingress after the fact leaves the node briefly wide open.
+    ///
+    /// Rules the caller did not name are left untouched (REQ-5.1.8.1) — this never reconciles a
+    /// provider resource down to the requested set.
+    ///
+    /// Defaults to a loud refusal: a provider that cannot manage ingress must FAIL rather than let
+    /// the caller believe a rule is in force. Operators of such providers manage ingress themselves
+    /// (§6.2), and pre-flight rejects the config before this is ever reached.
+    default Promise<IngressHandle> openIngress(SourceName source,
+                                               int port,
+                                               String protocol,
+                                               String sourceCidr,
+                                               String description) {
+        return EnvironmentError.operationNotSupported("openIngress").promise();
+    }
+
+    /// Withdraw one rule previously placed by [#openIngress]. Removing the last rule of a source
+    /// disposes the provider resource itself.
+    ///
+    /// MUST only ever touch resources this provider created — see `CreatedResource` tracking and
+    /// the 2026-08-03 test-pg incident (#572), where an unscoped cleanup deleted standing shared
+    /// infrastructure.
+    default Promise<Unit> closeIngress(SourceName source, int port, String protocol, String sourceCidr) {
+        return EnvironmentError.operationNotSupported("closeIngress").promise();
+    }
+
+    /// Destroy the ingress resource with this id outright, whatever rules it still holds — the teardown
+    /// counterpart of [#openIngress], used by `aether cluster destroy` against the ids recorded in
+    /// `bootstrap-state.json`.
+    ///
+    /// Distinct from [#closeIngress], which withdraws ONE rule and disposes the resource only when its
+    /// last rule goes. Teardown knows the resource must go regardless, and must not have to enumerate
+    /// and withdraw rules one at a time to get there.
+    ///
+    /// Exists as an SPI method rather than a provider branch in the cleanup code because a resource
+    /// created through this interface has to be reclaimable through it too. The alternative — cleanup
+    /// resolving a provider-specific client per provider — is how the teardown path stayed Hetzner-only
+    /// while other providers gained the ability to CREATE firewalls, which leaks paid resources that no
+    /// scoped sweep can find.
+    ///
+    /// Idempotent by contract: an already-absent resource is the outcome asked for, so it MUST resolve
+    /// as success, not as a failure a retry loop then hammers.
+    default Promise<Unit> disposeIngress(FirewallId ingressId) {
+        return EnvironmentError.operationNotSupported("disposeIngress").promise();
+    }
+
     default Promise<List<InstanceInfo>> listInstances(Map<String, String> tagFilter) {
         return listInstances().map(instances -> filterByTags(instances, tagFilter));
     }
 
+    /// Config-level fallbacks consumed by [ProvisionRequest#resolve] — the provider's second
+    /// precedence tier (instance size / image / zone / user-data) plus its stock image fallback and
+    /// image capability. A provider that resolves everything from the spec may keep the inert
+    /// [ProviderDefaults#none]; any provider with config-level defaults overrides this.
+    default ProviderDefaults providerDefaults() {
+        return ProviderDefaults.none();
+    }
+
+    /// The provisioning boundary every producer (bootstrap seed, `CloudProviderSupport`, CTM
+    /// auto-heal) funnels through: the static, non-overridable [ProvisionRequest#resolve] choke then
+    /// [#createFrom]. Providers implement ONLY createFrom — this method is not overridden by any
+    /// provider, so resolution can never be re-opened per-provider (the #442/#459 defect class).
     default Promise<InstanceInfo> provision(ProvisionSpec spec) {
-        return provision(spec.instanceType());
+        return ProvisionRequest.resolve(spec,
+                                        providerDefaults())
+                               .async()
+                               .flatMap(this::createFrom);
+    }
+
+    /// Convenience seed entry (bootstrap primitive / tests): provision a core-role node from the
+    /// provider's defaults, routed through the [#provision(ProvisionSpec)] boundary. A provider that
+    /// needs a provider-specific seed (e.g. Docker's `default` cluster) overrides this; the rest
+    /// inherit the generic core seed. The seed context carries NO cluster name — [Option#empty],
+    /// not a placeholder that a label sweep could later fail to distinguish — and production
+    /// provisioning flows through `buildCloudProvisionSpec`, which stamps the real cluster — and
+    /// [SourceName#DEFAULT] as its source, which no source-scoped selector resolves. The seed used to
+    /// carry a blank source and therefore no `aether-source` label at all; a cloud provider reached
+    /// through here is refused at its cluster-label precondition either way.
+    default Promise<InstanceInfo> provision(InstanceType instanceType) {
+        return seedSpec(instanceType).async()
+                       .flatMap(this::provision);
+    }
+
+    private static Result<ProvisionSpec> seedSpec(InstanceType instanceType) {
+        var context = ProvisionContext.provisionContext(Option.<ClusterName> empty(),
+                                                        "core",
+                                                        SourceName.DEFAULT,
+                                                        ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
+
+        return ProvisionSpec.provisionSpec(instanceType, "", "core", context);
     }
 
     default Promise<List<InstanceInfo>> listInstances(TagSelector selector) {
@@ -41,7 +140,7 @@ public interface ComputeProvider {
     }
 
     @Contract
-    default void resetProvisionerState(String clusterName) {}
+    default void resetProvisionerState(Option<ClusterName> clusterName) {}
 
     /// Confirm INFRASTRUCTURE readiness of a freshly-created instance: poll
     /// [#instanceStatus] (this provider's OWN primitive) until it reports

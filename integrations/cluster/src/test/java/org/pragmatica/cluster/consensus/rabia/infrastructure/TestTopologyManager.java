@@ -52,7 +52,7 @@ public record TestTopologyManager(int clusterSize, NodeInfo self) implements Top
     @Override
     public Option<NodeState> getState(NodeId id) {
         if (id.equals(self.id())) {
-            return Option.option(NodeState.healthy(self, Instant.now()));
+            return Option.option(NodeState.discovered(self, Instant.now()));
         }
         return Option.empty();
     }

@@ -4,18 +4,16 @@ import java.util.Arrays;
 
 import org.pragmatica.lang.Result;
 
+
 /// Encrypts and decrypts block data.
 public interface BlockEncryptor {
-
     /// Encrypt the given data, producing ciphertext and encryption parameters.
     Result<EncryptedData> encrypt(byte[] data);
-
     /// Decrypt the given ciphertext using the provided encryption parameters.
     Result<byte[]> decrypt(byte[] encryptedData, EncryptionParams params);
 
     /// Encrypted data with its associated encryption parameters.
     record EncryptedData(byte[] ciphertext, EncryptionParams params) {
-
         /// Defensive copy of mutable byte array.
         public EncryptedData {
             ciphertext = ciphertext.clone();

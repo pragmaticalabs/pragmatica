@@ -137,6 +137,8 @@ public sealed interface ConfigNotificationManager {
             }
         }
 
+        // JBCT-RET-08: reflective static invoke — null receiver is the JDK Method.invoke contract
+        @SuppressWarnings("JBCT-RET-08")
         private void invokeNotifyMethod(SliceRegistration registration, String section, ConfigFacade config) {
             try {
                 registration.notifyMethod().invoke(null, registration.sliceInstance(), section, config);

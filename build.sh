@@ -71,7 +71,7 @@ mvn_quiet compile test-compile -Pwith-e2e -pl aether/e2e-tests,aether/forge/forg
 # envelope-1005/Aspect-param factories shipped against a 1007 runtime, rejected at slice load).
 echo ""
 echo "Step 5/6: Build test blueprints..."
-for bp in aether/tests/blueprints/test-echo aether/tests/blueprints/test-persistence aether/tests/blueprints/test-full aether/tests/blueprints/test-stream aether/tests/blueprints/test-stream-repl; do
+for bp in aether/tests/blueprints/test-echo aether/tests/blueprints/test-persistence aether/tests/blueprints/test-full aether/tests/blueprints/test-stream aether/tests/blueprints/test-stream-repl aether/tests/blueprints/test-stream-multipart aether/tests/blueprints/test-stream-consumer aether/tests/blueprints/test-entity aether/tests/blueprints/test-durable-topic; do
     mvn_quiet -f "$bp/pom.xml" clean install -DskipTests
 done
 
@@ -85,7 +85,19 @@ echo "Step 6/6: Lint integration tests..."
 echo ""
 echo "=== Build Complete ==="
 echo ""
+echo "NOTHING ABOVE RAN A CLUSTER. Steps 4-5 COMPILE the forge tests; they do not execute them."
+echo "Forge is the only gate that runs real multi-node consensus, streams and the deployment FSM,"
+echo "and it catches what unit tests structurally cannot: a change that compiles, lints, passes"
+echo "every unit suite, and then hangs or livelocks a live cluster."
+echo ""
+echo "  BEFORE PUSHING, run:  ./forge.sh"
+echo ""
+echo "  Required for changes touching aether/aether-deployment, aether/aether-stream,"
+echo "  aether/slice/**/kvstore/**, integrations/consensus, or node runtime wiring."
+echo "  ./forge.sh        smoke set — formation + deployment + one stream path"
+echo "  ./forge.sh ci     what CI runs (everything except Heavy)"
+echo "  ./forge.sh full   everything, Heavy probes included"
+echo ""
 echo "To run tests:        mvn test"
 echo "To run e2e tests:    mvn verify -Pwith-e2e -pl aether/e2e-tests -DskipE2ETests=false"
-echo "To run forge tests:  mvn verify -Pwith-e2e -pl aether/forge/forge-tests"
 echo "To format/lint only: mvn org.pragmatica-lite:jbct-maven-plugin:format org.pragmatica-lite:jbct-maven-plugin:lint -pl '!jbct'"

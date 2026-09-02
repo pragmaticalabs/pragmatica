@@ -1,10 +1,11 @@
 package org.pragmatica.statemachine;
 
+import java.util.List;
+import java.util.Set;
+
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 
-import java.util.List;
-import java.util.Set;
 
 /// Generic state machine service.
 /// Manages state transitions based on events and configured transitions.

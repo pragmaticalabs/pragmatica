@@ -1,21 +1,24 @@
 package org.pragmatica.jbct.upgrade;
 
+import java.net.URI;
+import java.net.http.HttpRequest;
+import java.time.Duration;
+import java.util.regex.Pattern;
+
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
 import org.pragmatica.jbct.shared.HttpClients;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
-import java.net.URI;
-import java.net.http.HttpRequest;
-import java.time.Duration;
-import java.util.regex.Pattern;
 
 /// Checks GitHub Releases for the latest JBCT version.
 public final class GitHubReleaseChecker {
     private static final String GITHUB_API_URL = "https://api.github.com/repos/pragmaticalabs/pragmatica/releases/latest";
     private static final Pattern VERSION_PATTERN = Pattern.compile("\"tag_name\"\\s*:\\s*\"v?([^\"]+)\"");
+
     private static final Pattern ASSET_URL_PATTERN = Pattern.compile("\"browser_download_url\"\\s*:\\s*\"([^\"]+jbct[^\"]*\\.jar)\"");
+
     private static final Duration API_TIMEOUT = Duration.ofSeconds(30);
 
     private final HttpOperations http;
@@ -47,6 +50,7 @@ public final class GitHubReleaseChecker {
                                  .timeout(API_TIMEOUT)
                                  .GET()
                                  .build();
+
         return http.sendString(request)
                    .await()
                    .flatMap(this::handleResponse);
@@ -70,21 +74,25 @@ public final class GitHubReleaseChecker {
         if (response.statusCode() == 404) {
             return new org.pragmatica.http.HttpClientError.RequestFailed(404, "No releases found").result();
         }
+
         return response.toResult()
                        .flatMap(this::parseReleaseInfo);
     }
 
     private Result<ReleaseInfo> parseReleaseInfo(String json) {
         var versionMatcher = VERSION_PATTERN.matcher(json);
+
         if (!versionMatcher.find()) {
             return new org.pragmatica.http.HttpClientError.InvalidResponse("Could not parse version from release",
-                                                                     Option.none()).result();
+                                                                           Option.none()).result();
         }
+
         var version = versionMatcher.group(1);
         var assetMatcher = ASSET_URL_PATTERN.matcher(json);
         var downloadUrl = assetMatcher.find()
                           ? Option.some(assetMatcher.group(1))
-                          : Option.<String>none();
+                          : Option.<String> none();
+
         return Result.success(ReleaseInfo.releaseInfo(version, downloadUrl));
     }
 
@@ -95,6 +103,7 @@ public final class GitHubReleaseChecker {
         var newer = normalizeVersion(newVersion);
         var currentParts = current.split("\\.");
         var newerParts = newer.split("\\.");
+
         for (int i = 0; i < Math.max(currentParts.length, newerParts.length); i++) {
             int currentPart = i < currentParts.length
                               ? parseVersionPart(currentParts[i])
@@ -102,6 +111,7 @@ public final class GitHubReleaseChecker {
             int newerPart = i < newerParts.length
                             ? parseVersionPart(newerParts[i])
                             : 0;
+
             if (newerPart > currentPart) {
                 return true;
             } else if (newerPart < currentPart) {
@@ -111,6 +121,7 @@ public final class GitHubReleaseChecker {
         // If versions are equal, SNAPSHOT is older than release
         boolean currentIsSnapshot = currentVersion.contains("SNAPSHOT");
         boolean newerIsSnapshot = newVersion.contains("SNAPSHOT");
+
         return currentIsSnapshot && !newerIsSnapshot;
     }
 
@@ -124,10 +135,12 @@ public final class GitHubReleaseChecker {
     private static int parseVersionPart(String part) {
         // Extract numeric prefix - non-numeric parts default to 0
         var numericPart = part.replaceAll("[^0-9].*$", "");
+
         if (numericPart.isEmpty()) {
             return 0;
         }
-        try{
+
+        try {
             return Integer.parseInt(numericPart);
         } catch (NumberFormatException e) {
             // Non-numeric version part defaults to 0
@@ -136,8 +149,7 @@ public final class GitHubReleaseChecker {
     }
 
     /// Information about a GitHub release.
-    public record ReleaseInfo(String version,
-                              Option<String> downloadUrl) {
+    public record ReleaseInfo(String version, Option<String> downloadUrl) {
         public static ReleaseInfo releaseInfo(String version, Option<String> downloadUrl) {
             return new ReleaseInfo(version, downloadUrl);
         }

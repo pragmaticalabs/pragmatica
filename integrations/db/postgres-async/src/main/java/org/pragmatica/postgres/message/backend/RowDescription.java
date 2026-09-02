@@ -11,19 +11,17 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.pragmatica.postgres.message.backend;
 
 import org.pragmatica.postgres.Oid;
 import org.pragmatica.postgres.message.BackendMessage;
 
+
 /**
  * @author  Antti Laisi
  */
 public final class RowDescription implements BackendMessage {
-
     public static class ColumnDescription {
-
         final String name;
         final Oid type;
         final short formatCode;

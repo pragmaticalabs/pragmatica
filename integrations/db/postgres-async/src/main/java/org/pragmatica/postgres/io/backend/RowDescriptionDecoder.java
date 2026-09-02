@@ -11,16 +11,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.pragmatica.postgres.io.backend;
+
+import java.nio.ByteBuffer;
+import java.nio.charset.Charset;
 
 import org.pragmatica.postgres.Oid;
 import org.pragmatica.postgres.io.Decoder;
 import org.pragmatica.postgres.io.IO;
 import org.pragmatica.postgres.message.backend.RowDescription;
 
-import java.nio.ByteBuffer;
-import java.nio.charset.Charset;
 
 /**
  * See <a href="https://www.postgresql.org/docs/11/protocol-message-formats.html">Postgres message formats</a>
@@ -64,14 +64,16 @@ public class RowDescriptionDecoder implements Decoder<RowDescription> {
 
         for (int i = 0; i < columns.length; i++) {
             String name = IO.getCString(buffer, encoding);
+
             buffer.position(buffer.position() + 6);
             Oid type = Oid.valueOfId(buffer.getInt());
+
             buffer.position(buffer.position() + 6);
             short formatCode = buffer.getShort();
+
             columns[i] = new RowDescription.ColumnDescription(name, type, formatCode);
         }
 
         return new RowDescription(columns);
     }
-
 }

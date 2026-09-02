@@ -13,12 +13,12 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.serialization;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+
 
 /// Failure causes raised by versioned wire-format decoders.
 ///
@@ -33,7 +33,6 @@ import org.pragmatica.lang.Unit;
 /// - **NodeLifecycleValue v→v+1:** fail-closed. Membership truth is durable
 ///   state; never silently lose data.
 public sealed interface WireFormatError extends Cause {
-
     /// Decoded version byte does not match the receiver's `CURRENT_VERSION`.
     /// A receiver running version `expected` saw a frame stamped `received`.
     record UnsupportedVersion(byte received, byte expected) implements WireFormatError {

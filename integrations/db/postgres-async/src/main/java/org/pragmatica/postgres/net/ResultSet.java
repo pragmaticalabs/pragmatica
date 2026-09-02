@@ -11,14 +11,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.pragmatica.postgres.net;
+
+import java.util.List;
+import java.util.Map;
 
 import org.pragmatica.postgres.PgColumn;
 import org.pragmatica.postgres.PgRow;
 
-import java.util.List;
-import java.util.Map;
 
 /**
  * SQL result set. Consists of 0-n result rows and amount of affected

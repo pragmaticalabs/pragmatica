@@ -14,14 +14,14 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.lang.utils;
-
-import org.pragmatica.lang.Contract;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
+
+import org.pragmatica.lang.Contract;
+
 
 /// Helper class used to track the number of events and trigger action once the threshold is reached. The action is triggered only once when the number of events
 /// exactly matches the configured threshold. It is a non-blocking version of [CountDownLatch] which executes the provided action
@@ -42,6 +42,7 @@ public record ActionableThreshold(AtomicInteger counter, Runnable action) {
     /// @return Current instance
     public ActionableThreshold apply(Consumer<ActionableThreshold> setup) {
         setup.accept(this);
+
         return this;
     }
 
@@ -51,6 +52,7 @@ public record ActionableThreshold(AtomicInteger counter, Runnable action) {
         if (counter.get() <= 0) {
             return;
         }
+
         if (counter.decrementAndGet() == 0) {
             action.run();
         }

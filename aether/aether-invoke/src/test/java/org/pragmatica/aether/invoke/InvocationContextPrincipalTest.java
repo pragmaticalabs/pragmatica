@@ -6,6 +6,7 @@
 package org.pragmatica.aether.invoke;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.lang.utils.Deadline;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -118,7 +119,7 @@ class InvocationContextPrincipalTest {
 
     @Test
     void contextSnapshot_runWithCaptured_nullRequestId_executesDirectly() {
-        var snapshot = new InvocationContext.ContextSnapshot(null, null, null, 0, false, null);
+        var snapshot = new InvocationContext.ContextSnapshot(null, null, null, 0, false, null, Deadline.unbounded());
 
         var result = snapshot.runWithCaptured(() -> "executed");
 

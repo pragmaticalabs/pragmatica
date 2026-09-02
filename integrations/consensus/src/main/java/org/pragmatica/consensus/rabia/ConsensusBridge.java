@@ -13,8 +13,9 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.rabia;
+
+import java.util.function.Consumer;
 
 import org.pragmatica.consensus.rabia.ConsensusEvent.ConsensusActive;
 import org.pragmatica.consensus.rabia.ConsensusEvent.ConsensusPassive;
@@ -22,10 +23,9 @@ import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.messaging.MessageRouter;
 
-import java.util.function.Consumer;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 
 /// Bridges `ConsensusEvent` emissions from `RabiaEngine` onto the cluster-wide
 /// `MessageRouter` as `ClusterStateNotification` instances. This is the SOLE emitter of

@@ -35,6 +35,7 @@ import org.pragmatica.aether.api.ManagementApiResponses.NodesResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ReadinessResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.StatusResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.WhoamiResponse;
+import org.pragmatica.aether.deployment.membership.ntt.QuorumLossSnapshot;
 import org.pragmatica.aether.deployment.membership.view.MembershipView;
 import org.pragmatica.aether.metrics.NodeReportedState;
 import org.pragmatica.net.tcp.security.CertificateRenewalScheduler;
@@ -188,7 +189,7 @@ public final class StatusRoutes implements RouteSource {
                                                             leader,
                                                             kvStateMap.getOrDefault(nodeId, "")))
                                   .toList();
-        var quorate = leader.isPresent() && nodeInfos.size() >= quorumOf(nodeInfos.size());
+        var quorate = leader.isPresent() && quorumStatus(node).held();
         var cluster = new ClusterInfo(nodeInfos.size(), leaderId, quorate, nodeInfos);
         var derived = node.snapshotCollector().derivedMetrics();
         var metrics = new MetricsSummary(derived.requestRate(),
@@ -273,6 +274,53 @@ public final class StatusRoutes implements RouteSource {
         return n / 2 + 1;
     }
 
+    /// Single source of truth for the node's quorum posture, shared by `/api/status`
+    /// (`cluster.quorate`), `/api/health` (`quorum`) and `/health/ready` (the `quorum`
+    /// component) so the three surfaces never disagree. `held` is true iff the OBSERVED strict
+    /// core-member set meets the consensus simple-majority threshold (`coreCount / 2 + 1`) — a
+    /// minority partition (e.g. 2 of 5) correctly reports NOT held, unlike the retired
+    /// "connected to at least one peer" (`>= 2`) check that let a minority claim quorum.
+    ///
+    /// #557: "observed" is load-bearing in that sentence. The count was previously seed-derived,
+    /// so every configured core counted from wiring time and this surface reported quorum held
+    /// before a single peer had connected.
+    record QuorumStatus(boolean held, int observedMembers, int requiredThreshold) {
+        static QuorumStatus from(QuorumLossSnapshot snapshot) {
+            return new QuorumStatus(!snapshot.belowThreshold(),
+                                    snapshot.strictMemberCount(),
+                                    snapshot.requiredThreshold());
+        }
+
+        String detail() {
+            return "Reachable core members: " + observedMembers + " / required: " + requiredThreshold;
+        }
+    }
+
+    /// Prefer the per-node `QuorumLossDetector` snapshot — the SAME signal the minority
+    /// self-drain latches on, so the management surfaces cannot disagree with the consensus
+    /// layer. Before the detector is wired (cold-start window) or on a `ManageableNode` test
+    /// proxy that omits it, fall back to the configured-core simple-majority over the FSM's
+    /// OBSERVED core members (never raw connection counts — a worker must not inflate the numerator).
+    ///
+    /// #557: the fallback counts `coreObservedMembers`, not `coreCountedMembers`. The counted set
+    /// includes every core the boot seed promoted from CONFIGURATION at wiring time, so this
+    /// surface — and therefore `/health/ready` — reported quorum held before a single peer had
+    /// connected. The detector path above is narrowed to the same observed projection at its feed
+    /// (`AetherNode.propagateMemberCount`), so both paths now answer from reachability and the
+    /// three surfaces still cannot disagree with each other or with the consensus layer.
+    static QuorumStatus quorumStatus(ManageableNode node) {
+        return node.quorumLossSnapshot()
+                   .map(QuorumStatus::from)
+                   .or(() -> fallbackQuorumStatus(node));
+    }
+
+    private static QuorumStatus fallbackQuorumStatus(ManageableNode node) {
+        var counted = node.membershipFsm().coreObservedMembers(node.self()).size();
+        var required = quorumOf(node.initialTopology().size());
+
+        return new QuorumStatus(counted >= required, counted, required);
+    }
+
     /// A1 (harness-resilience spec §5) — resolves the requested nodeId to its cluster-transport
     /// `host:port` and a best-effort TCP reachability probe. The `NODE_ENDPOINT_GET` route is
     /// `nodeIdParam`-targeted, so the forwarder has already delivered the request to the named
@@ -348,8 +396,13 @@ public final class StatusRoutes implements RouteSource {
         var swimAlive = view.isPresent(nodeId);
         var address = info.map(i -> i.address()
                                      .asString());
+        // #583 case-mismatch bonus: the label is stored lowercase ("core"/"worker"/"spot", set
+        // from AETHER_ROLE at process start) but this endpoint documents uppercase values
+        // (management-api.md `/api/nodes/live`) — normalize so a labeled node's role matches its
+        // own doc instead of only the no-label default happening to already be uppercase.
         var role = info.map(i -> i.labels()
                                   .getOrDefault(ROLE_LABEL, ActivationDirectiveValue.CORE))
+                       .map(String::toUpperCase)
                        .or(ActivationDirectiveValue.CORE);
 
         return new LiveNodeEntry(nodeId.id(), address, role, swimAlive, reportedState);
@@ -358,6 +411,7 @@ public final class StatusRoutes implements RouteSource {
     private NodesResponse buildNodesResponse() {
         var node = nodeSupplier.get();
         var metrics = node.metricsCollector().allMetrics();
+        var topology = node.topologyManager();
         var nodeIds = new LinkedHashSet<String>();
 
         nodeIds.add(node.self().id());
@@ -369,14 +423,22 @@ public final class StatusRoutes implements RouteSource {
         node.kvStore().forEach(SliceNodeKey.class,
                                SliceNodeValue.class,
                                (key, _) -> nodeIds.add(key.nodeId().id()));
-        var roleMap = collectNodeRoles(node);
+        var roleOverrides = collectRoleOverrides(node);
         var leaderId = node.leader().map(NodeId::id);
-        var enrichedNodes = nodeIds.stream().map(id -> toEnrichedNodeInfo(id, roleMap, leaderId)).toList();
+        var enrichedNodes = nodeIds.stream()
+                                   .map(id -> toEnrichedNodeInfo(id, topology, roleOverrides, leaderId))
+                                   .toList();
 
         return new NodesResponse(enrichedNodes);
     }
 
-    private static Map<String, String> collectNodeRoles(ManageableNode node) {
+    /// #583: demotion/manual-promotion overrides ONLY — not a general role map. The only
+    /// production writers are `ClusterDeploymentState.assignNodeRole`'s demotion path and the
+    /// operator-initiated `NodeLifecycleRoutes.promoteNode`; cluster-minted workers (RFC-0017
+    /// stage 5) never appear here because `MembershipDeltaProjector`'s Wave-2 JOINED filter never
+    /// issues them an `ActivationDirective` by design. `toEnrichedNodeInfo` treats an entry here as
+    /// an override on top of the node's self-reported `role` label, not the primary source.
+    private static Map<String, String> collectRoleOverrides(ManageableNode node) {
         var roleMap = new HashMap<String, String>();
 
         node.kvStore()
@@ -388,10 +450,20 @@ public final class StatusRoutes implements RouteSource {
         return roleMap;
     }
 
+    /// #583: label first (present for every node, including cluster-minted workers that
+    /// structurally never receive an override), the override map on top for an operator's
+    /// explicit demotion/promotion. Uppercase per this endpoint's documented contract
+    /// (management-api.md `/api/nodes`).
     private static EnrichedNodeInfo toEnrichedNodeInfo(String id,
-                                                       Map<String, String> roleMap,
+                                                       TopologyManager topology,
+                                                       Map<String, String> roleOverrides,
                                                        Option<String> leaderId) {
-        var role = roleMap.getOrDefault(id, ActivationDirectiveValue.CORE);
+        var override = Option.option(roleOverrides.get(id));
+        var label = NodeId.nodeId(id)
+                          .option()
+                          .flatMap(topology::get)
+                          .flatMap(info -> Option.option(info.labels().get(ROLE_LABEL)));
+        var role = override.orElse(label).map(String::toUpperCase).or(ActivationDirectiveValue.CORE);
         var isLeader = leaderId.map(id::equals).or(false);
 
         return new EnrichedNodeInfo(id, role, isLeader);
@@ -405,7 +477,7 @@ public final class StatusRoutes implements RouteSource {
         var sliceCount = node.sliceStore().loaded().size();
         var ready = node.isReady();
         var totalNodes = connectedNodeCount + 1;
-        var hasQuorum = totalNodes >= 2;
+        var hasQuorum = quorumStatus(node).held();
         var status = !ready || !hasQuorum
                      ? "unhealthy"
                      : "healthy";
@@ -511,13 +583,12 @@ public final class StatusRoutes implements RouteSource {
     }
 
     private static ComponentHealth buildQuorumHealth(ManageableNode node) {
-        var connectedCount = node.connectedNodeCount();
-        var hasQuorum = connectedCount + 1 >= 2;
+        var quorum = quorumStatus(node);
 
         return new ComponentHealth("quorum",
-                                   hasQuorum
+                                   quorum.held()
                                    ? "UP"
                                    : "DOWN",
-                                   "Connected peers: " + connectedCount);
+                                   quorum.detail());
     }
 }

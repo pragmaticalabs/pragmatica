@@ -14,10 +14,10 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.cloud.gcp.api;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+
 
 /// GCP async operation tracking model.
 @JsonIgnoreProperties(ignoreUnknown = true)

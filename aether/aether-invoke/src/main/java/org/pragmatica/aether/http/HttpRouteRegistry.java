@@ -22,6 +22,7 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Verify;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -251,7 +252,7 @@ public interface HttpRouteRegistry {
             }
 
             private String normalizePath(String path) {
-                if (path == null || path.isBlank()) {
+                if (!Verify.Is.present(path)) {
                     return "/";
                 }
 

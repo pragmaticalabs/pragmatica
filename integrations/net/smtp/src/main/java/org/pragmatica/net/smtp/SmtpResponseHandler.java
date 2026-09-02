@@ -13,13 +13,13 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.net.smtp;
 
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 
 /// Netty handler that parses SMTP multi-line responses and delegates to SmtpSession.
 ///
@@ -41,15 +41,17 @@ class SmtpResponseHandler extends SimpleChannelInboundHandler<String> {
     @Override
     protected void channelRead0(ChannelHandlerContext ctx, String line) {
         log.trace("SMTP <<< {}", line);
-
         if (line.length() < MIN_RESPONSE_LENGTH) {
             session.onException(new IllegalStateException("Malformed SMTP response: " + line));
+
             return;
         }
 
         var parsedCode = parseResponseCode(line);
+
         if (parsedCode < 0) {
             session.onException(new IllegalStateException("Invalid SMTP response code: " + line));
+
             return;
         }
 
@@ -58,12 +60,13 @@ class SmtpResponseHandler extends SimpleChannelInboundHandler<String> {
 
         if (isContinuation(line)) {
             accumulated.append(text).append("\n");
+
             return;
         }
-
         // Final line of response
         accumulated.append(text);
         var fullText = accumulated.toString();
+
         accumulated.setLength(0);
         session.handleResponse(currentCode, fullText);
     }
@@ -83,6 +86,7 @@ class SmtpResponseHandler extends SimpleChannelInboundHandler<String> {
 
     private static int parseResponseCode(String line) {
         var codeStr = line.substring(0, MIN_RESPONSE_LENGTH);
+
         return parseIntSafe(codeStr);
     }
 
@@ -90,6 +94,7 @@ class SmtpResponseHandler extends SimpleChannelInboundHandler<String> {
         if (line.length() > CODE_SEPARATOR_INDEX + 1) {
             return line.substring(CODE_SEPARATOR_INDEX + 1);
         }
+
         return "";
     }
 
@@ -99,13 +104,17 @@ class SmtpResponseHandler extends SimpleChannelInboundHandler<String> {
 
     private static int parseIntSafe(String value) {
         var result = 0;
+
         for (int i = 0; i < value.length(); i++) {
             var ch = value.charAt(i);
-            if (ch < '0' || ch > '9') {
+
+            if (ch < '0' || ch >'9') {
                 return -1;
             }
+
             result = result * 10 + (ch - '0');
         }
+
         return result;
     }
 }

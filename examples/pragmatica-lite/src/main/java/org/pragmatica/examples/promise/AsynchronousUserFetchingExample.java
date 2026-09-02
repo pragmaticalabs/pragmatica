@@ -1,10 +1,11 @@
 package org.pragmatica.examples.promise;
 
+import java.util.List;
+
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
-import java.util.List;
 
 class AsynchronousUserFetchingExample {
     private final UserRepository userRepository = List::of;
@@ -37,8 +38,10 @@ class AsynchronousUserFetchingExample {
 
     // Alternative way using Promise.async
     Promise<List<User>> fetchUsers4() {
-        var promise = Promise.<List<User>>promise();
+        var promise = Promise.<List<User>> promise();
+
         promise.async(p -> p.resolve(Result.lift(Causes::fromThrowable, userRepository::findAll)));
+
         return promise;
     }
 }

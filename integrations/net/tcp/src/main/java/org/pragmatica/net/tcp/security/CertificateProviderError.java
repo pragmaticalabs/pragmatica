@@ -13,15 +13,14 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.net.tcp.security;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.utils.Causes;
 
+
 /// Error types for certificate provider operations.
 public sealed interface CertificateProviderError extends Cause {
-
     /// Failed to generate CA certificate and keypair.
     record CaGenerationFailed(Throwable cause) implements CertificateProviderError {
         @Override

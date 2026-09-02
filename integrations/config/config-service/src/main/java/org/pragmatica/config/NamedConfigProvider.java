@@ -1,11 +1,12 @@
 package org.pragmatica.config;
 
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
-
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+
 
 /// Decorator that wraps a delegate `ConfigurationProvider` with an explicit short display name.
 ///
@@ -75,8 +76,9 @@ public final class NamedConfigProvider implements ConfigurationProvider {
 
     @Override
     public Result<ConfigSource> reload() {
-        return delegate.reload().map(reloaded -> reloaded instanceof ConfigurationProvider cp
-                                                  ? namedConfigProvider(displayName, cp)
-                                                  : reloaded);
+        return delegate.reload()
+                       .map(reloaded -> reloaded instanceof ConfigurationProvider cp
+                                        ? namedConfigProvider(displayName, cp)
+                                        : reloaded);
     }
 }

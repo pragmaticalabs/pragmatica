@@ -16,6 +16,7 @@
 
 package org.pragmatica.consensus.net.quic;
 
+import org.pragmatica.net.tcp.TlsConfig;
 import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.List;
@@ -36,6 +37,7 @@ import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.TopologyObserver;
+import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.consensus.topology.NodeState;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
@@ -47,7 +49,6 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.messaging.StreamType;
 import org.pragmatica.net.tcp.NodeAddress;
-import org.pragmatica.net.tcp.TlsConfig;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
 
@@ -72,9 +73,9 @@ class QuicClusterNetworkTest {
             FrameworkCodecs.frameworkCodecs(),
             combinedCodecs()
         );
-        serverSsl = QuicTlsProvider.serverContext(TlsConfig.selfSignedServer())
+        serverSsl = QuicTlsProvider.serverContext(ClusterTestTls.clusterTls("test-server"))
                                     .fold(_ -> fail("Server SSL failed"), ssl -> ssl);
-        clientSsl = QuicTlsProvider.clientContext(TlsConfig.insecureClient())
+        clientSsl = QuicTlsProvider.clientContext(ClusterTestTls.clusterTls("test-client"))
                                     .fold(_ -> fail("Client SSL failed"), ssl -> ssl);
     }
 
@@ -189,7 +190,8 @@ class QuicClusterNetworkTest {
     /// reconnect path emits a `ConnectionEstablished` and forwards the
     /// `TransportObservation` upward via the peer-state listener — but does NOT call
     /// `registerPeer` on `TopologyObserver` (which has been removed). Authoritative
-    /// membership flows through HealthReconciler → KV → snapshot.
+    /// membership flows through the SWIM/QUIC observation path into Aether's
+    /// `MembershipFsm` and its decision stream (presence-derived, membership v2).
     @Nested
     class ReconnectFinalization {
 
@@ -487,8 +489,134 @@ class QuicClusterNetworkTest {
         }
     }
 
-    // --- Helper methods ---
+    /// #487 — QUIC send-to-self loopback. `peers` never contains self, so before #487 a send-to-self
+    /// hit the null-peer branch and was silently dropped (the #467/#457 root cause). Loopback now
+    /// delivers a self-addressed message to the local handler on the pinned server event loop — the same
+    /// dispatch path (and per-sender FIFO order) real inbound frames use.
+    @Nested
+    class SelfLoopback {
 
+        @Test
+        void send_toSelf_deliversToLocalHandler() {
+            var self = NodeId.randomNodeId();
+            var received = new CopyOnWriteArrayList<StubProtocolMessage>();
+            var router = MessageRouter.mutable();
+            router.addRoute(StubProtocolMessage.class, received::add);
+            var network = createAndStartNetwork(self, List.of(), router);
+
+            network.send(self, stubProtocolMessage(self));
+
+            awaitTrue(() -> received.size() == 1, "self-send is delivered to the local handler");
+            assertThat(received.getFirst().sender()).isEqualTo(self);
+        }
+
+        @Test
+        void sendOutcome_toSelf_deliversAndResolvesSent() {
+            var self = NodeId.randomNodeId();
+            var received = new CopyOnWriteArrayList<StubProtocolMessage>();
+            var router = MessageRouter.mutable();
+            router.addRoute(StubProtocolMessage.class, received::add);
+            var network = createAndStartNetwork(self, List.of(), router);
+
+            var outcome = network.sendOutcome(self, stubProtocolMessage(self)).await(AWAIT_TIMEOUT);
+
+            outcome.onFailure(cause -> fail("sendOutcome to self failed: " + cause.message()))
+                   .onSuccess(result -> assertThat(result)
+                       .as("a tracked send to self resolves as delivered (Sent), not NoPeerState")
+                       .isInstanceOf(WriteOutcome.Sent.class));
+            awaitTrue(() -> received.size() == 1, "tracked self-send is also delivered to the handler");
+        }
+
+        @Test
+        void send_toSelf_preservesOrderForSequentialSends() {
+            var self = NodeId.randomNodeId();
+            var received = new CopyOnWriteArrayList<StubProtocolMessage>();
+            var router = MessageRouter.mutable();
+            router.addRoute(StubProtocolMessage.class, received::add);
+            var network = createAndStartNetwork(self, List.of(), router);
+
+            var count = 50;
+            for (int i = 0; i < count; i++) {
+                network.send(self, stubProtocolMessage(new NodeId("seq-" + i)));
+            }
+
+            awaitTrue(() -> received.size() == count, "all sequential self-sends are delivered");
+            var order = received.stream().map(m -> m.sender().id()).toList();
+            var expected = java.util.stream.IntStream.range(0, count).mapToObj(i -> "seq-" + i).toList();
+            assertThat(order)
+                .as("self-loopback preserves per-sender FIFO order (single pinned event loop)")
+                .containsExactlyElementsOf(expected);
+        }
+
+        @Test
+        void send_toUnknownPeer_dropsWithoutDelivery() {
+            var received = new CopyOnWriteArrayList<StubProtocolMessage>();
+            var router = MessageRouter.mutable();
+            router.addRoute(StubProtocolMessage.class, received::add);
+            var network = createAndStartNetwork(NodeId.randomNodeId(), List.of(), router);
+
+            // A non-self peer with no PeerState (dead or never connected) stays dropped (rate-limited WARN).
+            network.send(NodeId.randomNodeId(), stubProtocolMessage(NodeId.randomNodeId()));
+
+            sleepBriefly();
+            sleepBriefly();
+            assertThat(received)
+                .as("a send to an unknown non-self peer is dropped, not delivered locally")
+                .isEmpty();
+        }
+
+        @Test
+        void sendOutcome_toSelf_beforeStart_reportsDrop_notFalseSent() {
+            var self = NodeId.randomNodeId();
+            // Built but NOT started → no pinned loopback loop (the pre-start / cert-rotation window).
+            var network = createNetworkWithStubTopology(self, MessageRouter.mutable());
+
+            var outcome = network.sendOutcome(self, stubProtocolMessage(self)).await(AWAIT_TIMEOUT);
+
+            outcome.onFailure(cause -> fail("sendOutcome should resolve, not fail: " + cause.message()))
+                   .onSuccess(result -> assertThat(result)
+                       .as("a self-send with no pinned loop must report the drop (NoPeerState), not a false Sent")
+                       .isInstanceOf(WriteOutcome.NoPeerState.class));
+        }
+
+        @Test
+        void send_toUnknownPeer_countsEveryDropInMetric() {
+            var network = createAndStartNetwork(NodeId.randomNodeId(), List.of(), MessageRouter.mutable());
+            var unknown = NodeId.randomNodeId();
+            var before = network.quicMetrics().dropToUnknownPeerCount();
+
+            var sends = 5;
+            for (int i = 0; i < sends; i++) {
+                network.send(unknown, stubProtocolMessage(NodeId.randomNodeId()));
+            }
+
+            assertThat(network.quicMetrics().dropToUnknownPeerCount() - before)
+                .as("every drop to an unknown peer is counted, not just the rate-limited WARNs")
+                .isEqualTo((long) sends);
+        }
+
+        @Test
+        void send_toSelf_afterCertRotation_stillDelivers() {
+            var self = NodeId.randomNodeId();
+            var received = new CopyOnWriteArrayList<StubProtocolMessage>();
+            var router = MessageRouter.mutable();
+            router.addRoute(StubProtocolMessage.class, received::add);
+            var network = createAndStartNetwork(self, List.of(), router);
+
+            // Cert rotation stops+rebuilds the server (new event loop group); the loopback loop is cleared
+            // then re-pinned. A self-send after rotation must deliver on the NEW pinned loop. (The
+            // clear-during-window itself takes the same empty-loop drop path proven by
+            // sendOutcome_toSelf_beforeStart_reportsDrop_notFalseSent — no RejectedExecutionException.)
+            network.rotateCertificate(serverSsl, clientSsl).await(AWAIT_TIMEOUT)
+                   .onFailure(cause -> fail("cert rotation failed: " + cause.message()));
+
+            network.send(self, stubProtocolMessage(self));
+
+            awaitTrue(() -> received.size() == 1, "self-send delivers after cert rotation re-pins the loopback loop");
+        }
+    }
+
+    // --- Helper methods ---
     private QuicClusterNetwork createAndStartNetwork(NodeId nodeId, List<NodeInfo> peers, MessageRouter router) {
         var nodeAddress = NodeAddress.nodeAddress("127.0.0.1", 19999)
                                      .fold(_ -> fail("Invalid address"), addr -> addr);

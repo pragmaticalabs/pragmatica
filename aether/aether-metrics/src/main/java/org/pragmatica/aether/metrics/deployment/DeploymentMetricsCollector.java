@@ -178,6 +178,7 @@ class DeploymentMetricsCollectorImpl implements DeploymentMetricsCollector {
         completed.compute(artifact, (_, list) -> prependAndTrim(list, metrics));
     }
 
+    @SuppressWarnings("JBCT-RET-06")  // JDK Map.compute remap: the existing-list arg is null when the artifact key is absent
     private List<DeploymentMetrics> prependAndTrim(List<DeploymentMetrics> existing, DeploymentMetrics metrics) {
         var newList = new ArrayList<>(existing != null
                                       ? existing

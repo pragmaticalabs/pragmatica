@@ -16,7 +16,6 @@ import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
-import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
@@ -88,7 +87,6 @@ class ClusterDeploymentStateTransactionalTest {
                                                     router,
                                                     stubTopologyManager(SELF),
                                                     stubSchemaOrchestrator(),
-                                                    HealthSignalSink.noop(),
                                                     () -> Set.of(SELF, NODE_A),
                                                     () -> Set.of(SELF, NODE_A),
                                                     Set::of,
@@ -124,7 +122,9 @@ class ClusterDeploymentStateTransactionalTest {
         @Test
         void hasConflictingOwnership_sameNameDifferentVersion_noConflict() {
             var existing = blueprint("app", V1, "slice-a");
-            var ownedSlice = Blueprint.blueprint(artifact("slice-a", V1), 3, 1, Option.some(existing.id()));
+            // #699: schemaRequired is orthogonal to ownership-conflict detection; true preserves
+            // this test's pre-existing behavior.
+            var ownedSlice = Blueprint.blueprint(artifact("slice-a", V1), 3, 1, Option.some(existing.id()), true);
             activeState().blueprints().put(ownedSlice.artifact(), ownedSlice);
 
             var upgrade = blueprint("app", V2, "slice-a");
@@ -135,7 +135,9 @@ class ClusterDeploymentStateTransactionalTest {
         @Test
         void hasConflictingOwnership_differentNameSharedSliceBase_stillConflicts() {
             var owner = blueprint("owner-app", V1, "slice-a");
-            var ownedSlice = Blueprint.blueprint(artifact("slice-a", V1), 3, 1, Option.some(owner.id()));
+            // #699: schemaRequired is orthogonal to ownership-conflict detection; true preserves
+            // this test's pre-existing behavior.
+            var ownedSlice = Blueprint.blueprint(artifact("slice-a", V1), 3, 1, Option.some(owner.id()), true);
             activeState().blueprints().put(ownedSlice.artifact(), ownedSlice);
 
             var intruder = blueprint("other-app", V1, "slice-a");

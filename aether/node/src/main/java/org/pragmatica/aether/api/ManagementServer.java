@@ -4,7 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api;
 
-import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -21,8 +20,10 @@ import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
 import org.pragmatica.aether.http.forward.HttpForwarder;
 import org.pragmatica.aether.management.route.ManagementRoute;
+import org.pragmatica.aether.management.route.MatchedRoute;
 import org.pragmatica.aether.management.route.RouteTarget;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
+import org.pragmatica.aether.slice.stream.SystemStreams;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.http.CommonContentType;
 import org.pragmatica.http.ContentCategory;
@@ -55,7 +56,9 @@ import org.pragmatica.aether.api.routes.SchemaRoutes;
 import org.pragmatica.aether.api.routes.ProblemResponses;
 import org.pragmatica.aether.api.routes.SliceRoutes;
 import org.pragmatica.aether.api.routes.StatusRoutes;
+import org.pragmatica.aether.api.routes.RetentionRoutes;
 import org.pragmatica.aether.api.routes.StorageRoutes;
+import org.pragmatica.aether.api.routes.StreamManager;
 import org.pragmatica.aether.api.routes.StreamRoutes;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardRequest;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardResponse;
@@ -92,11 +95,14 @@ import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.HttpMethod;
 import org.pragmatica.http.HttpStatus;
+import org.pragmatica.aether.api.routes.EntityCheckpointRoutes;
+import org.pragmatica.aether.resource.entity.EntityCheckpointDriver;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.http.server.HttpServer;
 import org.pragmatica.http.server.HttpServerConfig;
 import org.pragmatica.http.HttpRequest;
 import org.pragmatica.http.server.ResponseWriter;
+import org.pragmatica.net.tcp.ClientAuthPolicy;
 import org.pragmatica.net.tcp.QuicSslContextFactory;
 import org.pragmatica.http.websocket.WebSocketEndpoint;
 import org.pragmatica.json.JsonMapper;
@@ -105,9 +111,12 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.lang.utils.Deadline;
 import org.pragmatica.net.tcp.TlsConfig;
 
+import io.micrometer.core.instrument.MeterRegistry;
 import io.netty.channel.EventLoopGroup;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -119,6 +128,10 @@ public interface ManagementServer {
     Promise<Unit> start();
     Promise<Unit> stop();
     Promise<Unit> rotateCertificate(org.pragmatica.net.tcp.security.CertificateBundle newBundle);
+    /// The real (Prometheus-backed) meter registry this server publishes `/metrics` from.
+    /// Exposed so resource provisioning (#278) can inject the node's actual `MeterRegistry` into
+    /// slice-facing interceptors instead of each factory fabricating its own disconnected one.
+    MeterRegistry meterRegistry();
 
     @SuppressWarnings("JBCT-RET-01")
     void onHttpForwardRequest(HttpForwardRequest request);
@@ -128,6 +141,7 @@ public interface ManagementServer {
 
     static ManagementServer managementServer(int port,
                                              Supplier<ManageableNode> nodeSupplier,
+                                             EntityCheckpointDriver entityCheckpointDriver,
                                              AlertManager alertManager,
                                              ObservabilityConfigRegistry configRegistry,
                                              InvocationTraceStore traceStore,
@@ -151,6 +165,7 @@ public interface ManagementServer {
                                              Supplier<Set<NodeId>> pendingDrainsSupplier) {
         return new ManagementServerImpl(port,
                                         nodeSupplier,
+                                        entityCheckpointDriver,
                                         alertManager,
                                         configRegistry,
                                         traceStore,
@@ -203,6 +218,11 @@ class ManagementServerImpl implements ManagementServer {
     private final Option<Serializer> forwardSerializer;
     private final Option<Deserializer> forwardDeserializer;
     private final ForwardingTimeouts forwardingTimeouts;
+
+    /// Below this much remaining wire budget a forwarded management request is refused instead of
+    /// dispatched: the answer cannot reach the sender before its hop timeout fires.
+    private static final TimeSpan RECEIVER_BUDGET_FLOOR = TimeSpan.timeSpan(50).millis();
+
     private final Consumer<NodeId> drainCommandSink;
     private final Supplier<Set<NodeId>> pendingDrainsSupplier;
 
@@ -210,6 +230,10 @@ class ManagementServerImpl implements ManagementServer {
 
     private final AtomicReference<HttpServer> serverRef = new AtomicReference<>();
     private final AtomicReference<HttpServer> h3ServerRef = new AtomicReference<>();
+    /// #642: the only route source that arms a periodic task. Held so stop() can cancel its sweep —
+    /// route sources are otherwise fire-and-forget, and this one outlived its node on the shared
+    /// scheduler.
+    private final AtomicReference<ApiKeyRoutes> apiKeyRoutesRef = new AtomicReference<>();
     private final StaticFileHandler staticFileHandler;
     private final ManagementRouter router;
     private final StatusRoutes statusRoutes;
@@ -218,6 +242,7 @@ class ManagementServerImpl implements ManagementServer {
 
     ManagementServerImpl(int port,
                          Supplier<ManageableNode> nodeSupplier,
+                         EntityCheckpointDriver entityCheckpointDriver,
                          AlertManager alertManager,
                          ObservabilityConfigRegistry configRegistry,
                          InvocationTraceStore traceStore,
@@ -299,6 +324,9 @@ class ManagementServerImpl implements ManagementServer {
         routeSources.add(ClusterTopologyRoutes.clusterTopologyRoutes(nodeSupplier));
         routeSources.add(ClusterJournalRoutes.clusterJournalRoutes(nodeSupplier));
         routeSources.add(ClusterGenerationRoutes.clusterGenerationRoutes(nodeSupplier));
+        routeSources.add(EntityCheckpointRoutes.entityCheckpointRoutes(entityCheckpointDriver,
+                                                                       () -> nodeSupplier.get()
+                                                                                         .kvStore()));
         routeSources.add(ClusterAwaitQuiescedRoute.clusterAwaitQuiescedRoute(nodeSupplier));
         routeSources.add(nodeSupplier.get()
                                      .clusterTopologyManager()
@@ -322,12 +350,27 @@ class ManagementServerImpl implements ManagementServer {
         routeSources.add(org.pragmatica.aether.api.routes.StreamNamespacesRoutes.streamNamespacesRoutes(nodeSupplier.get()
                                                                                                                     .streamNamespacesService()));
         routeSources.add(StorageRoutes.storageRoutes(nodeSupplier));
-        routeSources.add(ApiKeyRoutes.apiKeyRoutes(nodeSupplier));
+        routeSources.add(RetentionRoutes.retentionRoutes(nodeSupplier));
+        var apiKeyRoutes = ApiKeyRoutes.apiKeyRoutes(nodeSupplier);
+
+        apiKeyRoutesRef.set(apiKeyRoutes);
+        routeSources.add(apiKeyRoutes);
         routeSources.add(DhtRoutes.dhtRoutes(nodeSupplier));
         routeSources.add(org.pragmatica.aether.api.routes.VersionRoutes.versionRoutes(nodeSupplier));
+        routeSources.add(org.pragmatica.aether.api.routes.WorkerRoutes.workerRoutes(nodeSupplier));
+        // #525: turns declared-but-unbuilt routes into an honest 501 instead of a bare 404.
+        // Registration order is irrelevant (route names are unique); registration itself is not —
+        // dropping this source silently resurrects the dead-route class. Reasons live per-route in
+        // NotImplementedRoutes, and ManagementRouteCoverageTest fails if a route loses its handler.
+        routeSources.add(org.pragmatica.aether.api.routes.NotImplementedRoutes.notImplementedRoutes());
         dynamicConfigManager.onPresent(dcm -> routeSources.add(ConfigRoutes.configRoutes(dcm, nodeSupplier)));
         this.router = ManagementRouter.managementRouter(routeSources.toArray(RouteSource[]::new));
-        this.legacyRoutes = List.of(MavenProtocolRoutes.mavenProtocolRoutes(nodeSupplier));
+        // #520 — the publication gate inside MavenProtocolRoutes must see the SAME posture this
+        // server gates management auth on. `securityEnabled` is `config.appHttp().securityEnabled()`
+        // (see AetherNode), so `false` means app-HTTP `security_mode = NONE`: no SecurityContext is
+        // ever bound and OPERATOR is structurally unholdable. Passing it here unifies the two
+        // half-overlapping dev switches instead of leaving the route with its own env-only bypass.
+        this.legacyRoutes = List.of(MavenProtocolRoutes.mavenProtocolRoutes(nodeSupplier, () -> securityEnabled));
         installVersioningMetricsSink(nodeSupplier, observability);
     }
 
@@ -343,6 +386,11 @@ class ManagementServerImpl implements ManagementServer {
                     .appHttpServer()
                     .httpRoutePublisher()
                     .onPresent(publisher -> publisher.setVersioningMetricsSink(sink));
+    }
+
+    @Override
+    public MeterRegistry meterRegistry() {
+        return observability.registry();
     }
 
     @Override
@@ -375,7 +423,8 @@ class ManagementServerImpl implements ManagementServer {
     }
 
     private Promise<Unit> startH3Server() {
-        var quicTls = tls.map(QuicSslContextFactory::createServer).or(QuicSslContextFactory.createSelfSignedServer());
+        var quicTls = tls.map(cfg -> QuicSslContextFactory.createServer(cfg, ClientAuthPolicy.NOT_REQUESTED))
+                         .or(QuicSslContextFactory.createSelfSignedServer());
 
         return quicTls.onFailure(cause -> log.error("Failed to create QUIC SSL context for management server: {}",
                                                     cause.message()))
@@ -436,6 +485,7 @@ class ManagementServerImpl implements ManagementServer {
         metricsPublisher.stop();
         statusWsPublisher.stop();
         eventWsPublisher.stop();
+        Option.option(apiKeyRoutesRef.get()).onPresent(ApiKeyRoutes::stop);
         var h1Stop = Option.option(serverRef.get())
                            .map(server -> server.stop()
                                                 .onSuccessRun(() -> log.info("Management HTTP/1.1 server stopped")))
@@ -503,7 +553,7 @@ class ManagementServerImpl implements ManagementServer {
     }
 
     private Promise<Unit> restartH3WithBundle(org.pragmatica.net.tcp.security.CertificateBundle newBundle) {
-        var quicTls = QuicSslContextFactory.createServerFromBundle(newBundle);
+        var quicTls = QuicSslContextFactory.createServerFromBundle(newBundle, ClientAuthPolicy.NOT_REQUESTED);
 
         return quicTls.map(this::startH3WithSslContext)
                       .onFailure(cause -> log.error("Failed to create QUIC SSL context for management server rotation: {}",
@@ -524,6 +574,12 @@ class ManagementServerImpl implements ManagementServer {
         eventWsPublisher.start();
         observability.registerTransportMetrics(() -> nodeSupplier.get()
                                                                  .transportMetrics());
+        // #674: consensus-load counters on the Prometheus surface, same key vocabulary as the
+        // comprehensive response's consensus block (RabiaMetrics.counterMap()).
+        observability.registerConsensusMetrics(() -> nodeSupplier.get()
+                                                                 .snapshotCollector()
+                                                                 .consensusSnapshot()
+                                                                 .counterMap());
         registerStreamMemoryMetrics();
         var transport = tls.isPresent()
                         ? "HTTPS"
@@ -924,18 +980,33 @@ class ManagementServerImpl implements ManagementServer {
         var requestId = ctx.requestId();
 
         ensureMgmtForwarder().fold(() -> sendForwardUnavailable(response, path, requestId, methodName, startTime),
-                                   forwarder -> {
-                                       forwarder.forwardManagement(toManagementRequestContext(ctx, path),
-                                                                   requestId)
-                                                .onSuccess(responseData -> sendForwardedResponse(response, responseData))
-                                                .onFailure(cause -> sendForwardError(response, path, requestId, cause))
-                                                .onResultRun(() -> recordRequestMetrics(methodName,
-                                                                                        path,
-                                                                                        response,
-                                                                                        startTime));
+                                   forwarder -> forwardViaForwarder(forwarder,
+                                                                    ctx,
+                                                                    response,
+                                                                    methodName,
+                                                                    startTime,
+                                                                    path,
+                                                                    requestId));
+    }
 
-                                       return Unit.unit();
-                                   });
+    /// Budget minted at the forward decision: `forwardManagement` captures the ambient deadline
+    /// synchronously at entry, and every hop, task-group retry and re-query under this request
+    /// consumes from that one budget.
+    private Unit forwardViaForwarder(HttpForwarder forwarder,
+                                     HttpRequest ctx,
+                                     InstrumentedResponseWriter response,
+                                     String methodName,
+                                     long startTime,
+                                     String path,
+                                     String requestId) {
+        Deadline.runWith(Deadline.startingNow(forwardingTimeouts.managementRequestBudget()),
+                         () -> forwarder.forwardManagement(toManagementRequestContext(ctx, path),
+                                                           requestId))
+                .onSuccess(responseData -> sendForwardedResponse(response, responseData))
+                .onFailure(cause -> sendForwardError(response, path, requestId, cause))
+                .onResultRun(() -> recordRequestMetrics(methodName, path, response, startTime));
+
+        return Unit.unit();
     }
 
     private Option<HttpForwarder> ensureMgmtForwarder() {
@@ -1067,6 +1138,29 @@ class ManagementServerImpl implements ManagementServer {
                                            HttpForwardRequest request,
                                            ClusterNetwork network,
                                            Serializer ser) {
+        // Stage 2 of deadline propagation, management pipeline: a request whose sender's budget is
+        // already gone is refused before touching the router — its answer has no collector. A live
+        // budget is re-minted and BOUND for the dispatch, so a handler that forwards again or waits
+        // on cluster state consumes the sender's remaining budget instead of its full defaults.
+        var deadline = Deadline.fromWireMillis(request.remainingMillis());
+
+        if (deadline.expired(RECEIVER_BUDGET_FLOOR)) {
+            log.warn("[{}] Management forward arrived with {} budget remaining; refusing without dispatch",
+                     request.requestId(),
+                     deadline.remaining());
+            sendManagementForwardError(network, request, "Sender request budget exhausted before dispatch");
+
+            return;
+        }
+
+        Deadline.runWith(deadline, () -> dispatchManagementForwardWithinBudget(context, request, network, ser));
+    }
+
+    @SuppressWarnings("JBCT-PAT-01")
+    private void dispatchManagementForwardWithinBudget(HttpRequestContext context,
+                                                       HttpForwardRequest request,
+                                                       ClusterNetwork network,
+                                                       Serializer ser) {
         var serverCtx = ForwardedRequestContext.forwardedRequestContext(context);
         var responseCapture = ForwardedResponseWriter.forwardedResponseWriter();
 
@@ -1214,11 +1308,42 @@ class ManagementServerImpl implements ManagementServer {
     /// guard. It runs ahead of (and independent of) the role/auth pipeline so a `system:*` publish
     /// returns 405 Method Not Allowed even when management security is disabled.
     ///
-    /// Returns `true` (and writes the 405) when the request is a mutating verb targeting a
-    /// `system`-namespace stream, in either the path-based shape
-    /// (`/api/streams/{publish,publish-batch,delete}/system/...`,
-    /// `/api/streams/groups/{create,delete}/system/...`) or the legacy colon-form
-    /// (`/api/streams/...` with a `system:<stream>:<version>` name segment).
+    /// Identity resolution reuses the same canonicalization the dispatch path uses:
+    /// [ManagementRoute#match] resolves the concrete route + params (the same call
+    /// [#resolvePermission] makes for the same request), and the target engine key is derived the
+    /// same way [StreamManager#engineKey] derives it for the real handler — a canonical
+    /// `(namespace, stream, version)` [ResourceAddress] for the catalog-form routes. A key is
+    /// forbidden iff it names one of [SystemStreams#ALL].
+    ///
+    /// [ManagementRoute#STREAM_CREATE] is deliberately excluded from
+    /// [#STREAM_IDENTITY_WRITE_ROUTES]: its target name is a JSON body field (`StreamCreateRequest`),
+    /// not a path param, so this pre-auth gate cannot see it without a second, parallel body parser —
+    /// which condition 1 rules out (identity resolution must reuse the dispatch path's
+    /// canonicalization, not grow a private one). The honest consequence: CREATE's protection is
+    /// **not pre-auth**. It is a separate, handler-level guard —
+    /// `StreamRoutes#createFreshStream` — that runs unconditionally as the first statement of the
+    /// sole method that ever mints a stream, before any state change, with no early-return path
+    /// around it. That guard exists in addition to (not instead of) `createStreamWithConfig`'s
+    /// idempotent create-if-absent behavior: idempotency alone only protects a name collision
+    /// *after* `SystemStreamBootstrap` has registered [SystemStreams#ALL] at cluster startup: a
+    /// CREATE racing ahead of bootstrap would otherwise find `streamInfo(name)` empty and mint a
+    /// caller-controlled config under a reserved name. The handler-level guard is pinned
+    /// adversarially in `StreamRoutesCreateSystemStreamTest`, including against a caller with full
+    /// privileges naming a framework stream in the body — auth level does not matter here because
+    /// the check runs regardless of it.
+    ///
+    /// [ManagementRoute#CONSUMER_GROUP_JOIN]/[ManagementRoute#CONSUMER_GROUP_LEAVE] are a known,
+    /// currently open gap, not covered here: their target stream name travels in the request body
+    /// (`JoinGroupRequest`/`LeaveGroupRequest`), not the path, and this gate only inspects
+    /// method+path. It closes once these routes gain path-resolvable identity per the catalog-form
+    /// reshape (management-api-versioning-spec.md §3.3) — deliberately deferred (ruled 2026-08-30,
+    /// #754), not merely untidy: catalog `deleteGroup` evicts every consumer at a stream address,
+    /// so a naive fold of `LEAVE` onto it would be a destructive semantic inversion under the same
+    /// user-facing verb (legacy `LEAVE` removes one named consumer). Closing this gap requires that
+    /// design fix first, not just a path-identity reshape — see #754.
+    ///
+    /// A route match whose params fail to resolve to a [ResourceAddress] (malformed namespace or
+    /// version) fails closed — treated as forbidden, not passed through.
     private boolean rejectSystemStreamWrite(HttpRequest ctx, ResponseWriter response, String path, String methodName) {
         if (!isSystemStreamWriteOverHttp(methodName, path)) {
             return false;
@@ -1235,51 +1360,41 @@ class ManagementServerImpl implements ManagementServer {
 
     /// Pure decision used by [#rejectSystemStreamWrite] — package-visible so the 405 gate can be
     /// unit-tested without standing up the HTTP pipeline. A request is a system-stream write iff it
-    /// uses a mutating verb, targets the `/api/streams` surface, and names the `system` namespace
-    /// in either route shape.
+    /// route-matches one of [#STREAM_IDENTITY_WRITE_ROUTES] and the resolved engine key names a
+    /// framework stream (or the route matched but the params didn't resolve at all — fail closed).
     static boolean isSystemStreamWriteOverHttp(String methodName, String path) {
-        return isMutatingMethod(methodName)
-               && path.startsWith(STREAM_WRITE_PATH_PREFIX)
-               && targetsSystemNamespace(path);
+        return parseRoutingMethod(methodName).flatMap(m -> ManagementRoute.match(m, path).option())
+                                 .filter(matched -> STREAM_IDENTITY_WRITE_ROUTES.contains(matched.route()))
+                                 .map(ManagementServerImpl::isForbiddenWrite)
+                                 .or(false);
     }
 
-    private static boolean isMutatingMethod(String methodName) {
-        return "POST".equalsIgnoreCase(methodName) || "PUT".equalsIgnoreCase(methodName) || "DELETE".equalsIgnoreCase(methodName) || "PATCH".equalsIgnoreCase(methodName);
+    private static boolean isForbiddenWrite(MatchedRoute matched) {
+        return resolveEngineKey(matched).map(SystemStreams::isForbiddenEngineKey)
+                               .or(true);
     }
 
-    /// Detect the `system` namespace in either route shape. Path-based routes carry the namespace
-    /// as a dedicated segment (`.../publish/system/...`); the legacy flat routes carry it inside a
-    /// single colon-delimited name segment (`system:audit:1.0.0`, possibly URL-encoded as
-    /// `system%3Aaudit%3A1.0.0`). Matching any decoded segment that equals `system` or begins with
-    /// `system:` covers both without parsing the full address.
-    private static boolean targetsSystemNamespace(String path) {
-        var withoutQuery = path.indexOf('?') >= 0
-                           ? path.substring(0, path.indexOf('?'))
-                           : path;
-
-        for (var raw : withoutQuery.split("/")) {
-            if (raw.isEmpty()) {
-                continue;
-            }
-
-            var seg = URLDecoder.decode(raw, StandardCharsets.UTF_8);
-
-            if (ResourceAddress.SYSTEM_NAMESPACE.equalsIgnoreCase(seg) || seg.regionMatches(true,
-                                                                                            0,
-                                                                                            SYSTEM_NAMESPACE_COLON,
-                                                                                            0,
-                                                                                            SYSTEM_NAMESPACE_COLON.length())) {
-                return true;
-            }
-        }
-
-        return false;
+    /// Mirrors [StreamManager#engineKey]'s two-shape resolution off a [MatchedRoute]'s raw params
+    /// instead of an already-built [ResourceAddress].
+    private static Option<String> resolveEngineKey(MatchedRoute matched) {
+        return switch (matched.route()) {
+            case STREAMS_PUBLISH, STREAMS_DELETE, STREAMS_GROUP_CREATE, STREAMS_GROUP_DELETE -> matched.param("namespace").flatMap(ns -> matched.param("stream")
+                                                                                                                                                .flatMap(stream -> matched.param("version")
+                                                                                                                                                                          .flatMap(ver -> ResourceAddress.resourceAddress(ns,
+                                                                                                                                                                                                                          stream,
+                                                                                                                                                                                                                          ver).option()))).map(StreamManager::engineKey);
+            default -> Option.empty();
+        };
     }
 
-    private static final String STREAM_WRITE_PATH_PREFIX = "/api/streams";
-
-    private static final String SYSTEM_NAMESPACE_COLON = org.pragmatica.aether.slice.resource.ResourceAddress.SYSTEM_NAMESPACE
-                                                       + ":";
+    /// Identity-bearing write routes this pre-auth path gate covers — see
+    /// [#rejectSystemStreamWrite]'s doc for why [ManagementRoute#STREAM_CREATE] (covered instead by
+    /// a separate, post-auth, handler-level guard) and the `CONSUMER_GROUP_*` routes (an open gap)
+    /// are excluded.
+    private static final Set<ManagementRoute> STREAM_IDENTITY_WRITE_ROUTES = Set.of(ManagementRoute.STREAMS_PUBLISH,
+                                                                                    ManagementRoute.STREAMS_DELETE,
+                                                                                    ManagementRoute.STREAMS_GROUP_CREATE,
+                                                                                    ManagementRoute.STREAMS_GROUP_DELETE);
 
     private Result<SecurityContext> validateManagementSecurity(HttpRequest ctx,
                                                                ResponseWriter response,

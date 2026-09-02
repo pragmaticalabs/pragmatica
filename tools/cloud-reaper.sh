@@ -57,9 +57,21 @@ FLAGS
                        Default: any non-empty aether-cluster OR aether-node-id label.
     --strict-cluster   Used with --cluster <name>: require exact aether-cluster=<name>
                        match. Excludes orphans even if they likely belong to the cluster.
+    --exclude-cluster <name>
+                       Never delete resources labeled aether-cluster=<name>. Repeatable.
+                       Adds to the built-in protected set (see below).
+    --allow-protected  Disable protected-cluster filtering. Required to delete the standing
+                       shared infrastructure listed below. Use deliberately.
     --destroy          Actually delete resources (default is dry-run).
     --force            Skip the 5-second confirmation prompt (CI use).
     --help, -h         Print this help and exit.
+
+PROTECTED BY DEFAULT
+    test-pg            The standing PostgreSQL VM the cloud suites connect to. It is
+                       aether-labeled but owned by NO integration run, so every catch-all
+                       selector matches it. It was deleted this way on 2026-08-03 by a run
+                       that failed before provisioning anything. Protection is enforced here
+                       rather than at call sites because the call sites are what failed.
 
 ENVIRONMENT
     HCLOUD_TOKEN       Required. Hetzner Cloud API token.
@@ -84,6 +96,21 @@ CLUSTER=""
 DESTROY=false
 FORCE=false
 STRICT_CLUSTER=false
+# Long-lived SHARED infrastructure that this reaper must never delete by default.
+#
+# `test-pg` is the standing PostgreSQL VM the cloud suites connect to. It is aether-labeled
+# (`aether-cluster=test-pg`) but is NOT owned by any integration run, so every catch-all
+# selector matches it. On 2026-08-03 a cloud run that failed during bootstrap — before
+# provisioning anything — reached run-tests.sh's bare safety-net reap and deleted both the PG
+# VM and its firewall. Nothing in the tool prevented it; the only protection was the caller
+# remembering to pass --cluster, which the safety-net deliberately does not.
+#
+# Protection lives HERE rather than at each call site because the call sites are exactly what
+# cannot be relied on: the failure above happened in a code path whose own comment asserted
+# "the integration run owns every aether-labeled resource in the account" — a premise that was
+# simply false. Escape hatch: --allow-protected.
+PROTECTED_CLUSTERS=("test-pg")
+ALLOW_PROTECTED=false
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -97,6 +124,8 @@ while [ $# -gt 0 ]; do
             shift
             ;;
         --strict-cluster) STRICT_CLUSTER=true; shift ;;
+        --exclude-cluster) PROTECTED_CLUSTERS+=("$2"); shift 2 ;;
+        --allow-protected) ALLOW_PROTECTED=true; shift ;;
         --destroy) DESTROY=true; shift ;;
         --force)   FORCE=true;   shift ;;
         --help|-h) usage; exit 0 ;;
@@ -246,6 +275,21 @@ list_resource() {
             }')
     else
         filtered="$raw"
+    fi
+
+    # Protected-cluster drop. Applied AFTER every selector mode converges here, so no mode —
+    # including the catch-all no-flag one the run-tests.sh safety net uses — can bypass it.
+    # `--allow-protected` is the deliberate escape hatch.
+    if [ "$ALLOW_PROTECTED" != true ] && [ ${#PROTECTED_CLUSTERS[@]} -gt 0 ]; then
+        protected_csv=$(IFS='|'; printf '%s' "${PROTECTED_CLUSTERS[*]}")
+        filtered=$(printf '%s' "$filtered" | awk -F'\t' -v prot="$protected_csv" '
+            BEGIN { n = split(prot, p, "|") }
+            {
+                for (i = 1; i <= n; i++) {
+                    if ($3 == p[i]) { next }
+                }
+                print
+            }')
     fi
 
     # Dedupe by id (col 1), strip trailing tab columns we no longer need.
@@ -471,6 +515,11 @@ iterate_lines() {
 # Main flow
 # ---------------------------------------------------------------------------
 log_info "selectors: ${SELECTOR_DESC}"
+if [ "$ALLOW_PROTECTED" = true ]; then
+    log_warn "protected-cluster filtering DISABLED (--allow-protected) — shared infrastructure IS deletable"
+else
+    log_info "protected (never deleted): $(IFS=','; printf '%s' "${PROTECTED_CLUSTERS[*]}")"
+fi
 log_info "endpoint: ${API}"
 [ "$DESTROY" = true ] && log_warn "MODE: DESTROY (resources WILL be deleted)" \
                       || log_info "MODE: dry-run (no deletions)"

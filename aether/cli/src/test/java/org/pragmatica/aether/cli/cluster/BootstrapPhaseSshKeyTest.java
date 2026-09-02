@@ -38,9 +38,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
+import static org.pragmatica.aether.environment.ClusterName.clusterName;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 
 class BootstrapPhaseSshKeyTest {
 
@@ -66,7 +68,7 @@ class BootstrapPhaseSshKeyTest {
     }
 
     private static SourceProfile cloudHetznerSource() {
-        return SourceProfile.sourceProfile("eu-1",
+        return SourceProfile.sourceProfile(sourceNameOrDefault("eu-1"),
                                             SourceType.CLOUD,
                                             Option.some(CloudProviderName.HETZNER),
                                             Option.some("dummy-token"),
@@ -100,7 +102,7 @@ class BootstrapPhaseSshKeyTest {
 
     private static BootstrapContext contextWithKeys(List<SshPublicKey> keys) {
         var config = configWithCloudSource();
-        var state = BootstrapState.initialState("test", "h", "now");
+        var state = BootstrapState.initialState(clusterName("test").unwrap(), "h", "now");
         return BootstrapContext.bootstrapContext(config, state, List.of(), List.of()).withSshPublicKeys(keys);
     }
 
@@ -118,6 +120,10 @@ class BootstrapPhaseSshKeyTest {
                      "First created key must get id 1 from the stub");
         assertEquals(1, stub.createdKeys.size(), "Should have called createSshKey once");
         assertEquals(VALID_KEY, stub.createdKeys.getFirst().publicKey());
+        // RFC-0016 W3 §3.3 — uploaded key name is cluster-scoped: aether-bootstrap-<cluster>-<blob8>
+        // (cluster identity name = "test"), never the old bare aether-bootstrap prefix.
+        assertTrue(stub.createdKeys.getFirst().name().startsWith("aether-bootstrap-test-"),
+                   () -> "Uploaded key name must be cluster-scoped: " + stub.createdKeys.getFirst().name());
     }
 
     @Test
@@ -235,6 +241,11 @@ class BootstrapPhaseSshKeyTest {
         @Override public Promise<Network> getNetwork(long networkId) {throw fail("getNetwork");}
         @Override public Promise<List<Firewall>> listFirewalls() {throw fail("listFirewalls");}
         @Override public Promise<Unit> applyFirewall(long firewallId, long serverId) {throw fail("applyFirewall");}
+        @Override public Promise<List<Firewall>> listFirewalls(String labelSelector) {throw fail("listFirewalls(selector)");}
+        @Override public Promise<Firewall> createFirewall(Firewall.CreateFirewallRequest request) {throw fail("createFirewall");}
+        @Override public Promise<Unit> setFirewallRules(long firewallId, List<Firewall.Rule> rules) {throw fail("setFirewallRules");}
+        @Override public Promise<Unit> deleteFirewall(long firewallId) {throw fail("deleteFirewall");}
+        @Override public Promise<Unit> removeFirewallFromResources(long firewallId, long serverId) {throw fail("removeFirewallFromResources");}
         @Override public Promise<LoadBalancer> createLoadBalancer(LoadBalancer.CreateLoadBalancerRequest request) {throw fail("createLoadBalancer");}
         @Override public Promise<Unit> deleteLoadBalancer(long loadBalancerId) {throw fail("deleteLoadBalancer");}
         @Override public Promise<List<LoadBalancer>> listLoadBalancers() {throw fail("listLoadBalancers");}

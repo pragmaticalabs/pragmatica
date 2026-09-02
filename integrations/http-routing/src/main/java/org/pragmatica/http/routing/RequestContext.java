@@ -1,5 +1,8 @@
 package org.pragmatica.http.routing;
 
+import java.util.List;
+import java.util.Map;
+
 import org.pragmatica.http.HttpRequest;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.JsonCodec;
@@ -7,12 +10,10 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.type.TypeToken;
 
-import java.util.List;
-import java.util.Map;
-
 import io.netty.handler.codec.http.HttpHeaders;
 
 import static org.pragmatica.lang.Result.all;
+
 
 /// Request context providing access to HTTP request data and path parameter matching.
 ///
@@ -21,8 +22,7 @@ import static org.pragmatica.lang.Result.all;
 /// multipart parsing and response-header accumulation.
 @SuppressWarnings("unused")
 public interface RequestContext extends HttpRequest {
-    Result<String> NOT_FOUND = HttpStatus.NOT_FOUND.with("Unknown request path")
-                                        .result();
+    Result<String> NOT_FOUND = HttpStatus.NOT_FOUND.with("Unknown request path").result();
     Route<?> route();
     <T> Result<T> fromJson(TypeToken<T> literal);
     List<String> pathParams();
@@ -36,11 +36,13 @@ public interface RequestContext extends HttpRequest {
     /// Request headers as a single-valued map (first value per name). Derived from [#headers].
     default Map<String, String> requestHeaders() {
         return headers().asMap()
-                        .entrySet()
-                        .stream()
-                        .filter(entry -> !entry.getValue().isEmpty())
-                        .collect(java.util.stream.Collectors.toMap(Map.Entry::getKey,
-                                                                   entry -> entry.getValue().getFirst()));
+                      .entrySet()
+                      .stream()
+                      .filter(entry -> !entry.getValue()
+                                             .isEmpty())
+                      .collect(java.util.stream.Collectors.toMap(Map.Entry::getKey,
+                                                                 entry -> entry.getValue()
+                                                                               .getFirst()));
     }
 
     /// Parse multipart form data from this request.
@@ -75,8 +77,7 @@ public interface RequestContext extends HttpRequest {
         return all(pathParam(0).flatMap(p1::parse));
     }
 
-    default <T1, T2> Result.Mapper2<T1, T2> matchPath(PathParameter<T1> p1,
-                                                      PathParameter<T2> p2) {
+    default <T1, T2> Result.Mapper2<T1, T2> matchPath(PathParameter<T1> p1, PathParameter<T2> p2) {
         return all(pathParam(0).flatMap(p1::parse), pathParam(1).flatMap(p2::parse));
     }
 
@@ -112,8 +113,7 @@ public interface RequestContext extends HttpRequest {
         return all(q1.parse(queryParam(q1.name())));
     }
 
-    default <Q1, Q2> Result.Mapper2<Option<Q1>, Option<Q2>> matchQuery(QueryParameter<Q1> q1,
-                                                                       QueryParameter<Q2> q2) {
+    default <Q1, Q2> Result.Mapper2<Option<Q1>, Option<Q2>> matchQuery(QueryParameter<Q1> q1, QueryParameter<Q2> q2) {
         return all(q1.parse(queryParam(q1.name())),
                    q2.parse(queryParam(q2.name())));
     }
@@ -157,12 +157,15 @@ public interface RequestContext extends HttpRequest {
         private final Route<?> route;
         private final JsonCodec jsonCodec;
         private final String requestId;
+
         private final io.netty.handler.codec.http.HttpHeaders responseHeaders = io.netty.handler.codec.http.DefaultHttpHeadersFactory.headersFactory()
-                                                                                 .withCombiningHeaders(true)
-                                                                                 .newHeaders();
+                                                                                                                                     .withCombiningHeaders(true)
+                                                                                                                                     .newHeaders();
 
         private java.util.function.Supplier<List<String>> pathParamsSupplier = Utils.lazy(() -> pathParamsSupplier = Utils.value(initPathParams()));
+
         private java.util.function.Supplier<org.pragmatica.http.QueryParams> queryParamsSupplier = Utils.lazy(() -> queryParamsSupplier = Utils.value(initQueryParams()));
+
         private java.util.function.Supplier<org.pragmatica.http.Headers> headersSupplier = Utils.lazy(() -> headersSupplier = Utils.value(initHeaders()));
 
         private RequestContextImpl(io.netty.handler.codec.http.FullHttpRequest request,
@@ -210,7 +213,8 @@ public interface RequestContext extends HttpRequest {
 
         @Override
         public <T> Result<T> fromJson(TypeToken<T> literal) {
-            return jsonCodec.deserialize(io.netty.buffer.ByteBufUtil.getBytes(request.content()), literal);
+            return jsonCodec.deserialize(io.netty.buffer.ByteBufUtil.getBytes(request.content()),
+                                         literal);
         }
 
         @Override
@@ -234,22 +238,22 @@ public interface RequestContext extends HttpRequest {
         }
 
         private List<String> initPathParams() {
-            var remainder = PathUtils.normalize(request.uri())
-                                     .substring(route.path()
-                                                     .length());
+            var remainder = PathUtils.normalize(request.uri()).substring(route.path().length());
             // Strip leading slash before splitting
             if (remainder.startsWith("/")) {
                 remainder = remainder.substring(1);
             }
+
             if (remainder.isEmpty()) {
                 return List.of();
             }
+
             var elements = remainder.split("/", PATH_PARAM_LIMIT);
             // Remove trailing empty element if path ends with /
             if (elements[elements.length - 1].isEmpty()) {
-                return List.of(elements)
-                           .subList(0, elements.length - 1);
+                return List.of(elements).subList(0, elements.length - 1);
             }
+
             return List.of(elements);
         }
 
@@ -259,9 +263,12 @@ public interface RequestContext extends HttpRequest {
 
         private org.pragmatica.http.Headers initHeaders() {
             var headers = new java.util.HashMap<String, List<String>>();
+
             request.headers()
-                   .forEach(entry -> headers.computeIfAbsent(entry.getKey(), _ -> new java.util.ArrayList<>())
+                   .forEach(entry -> headers.computeIfAbsent(entry.getKey(),
+                                                             _ -> new java.util.ArrayList<>())
                                             .add(entry.getValue()));
+
             return org.pragmatica.http.Headers.headers(headers);
         }
     }

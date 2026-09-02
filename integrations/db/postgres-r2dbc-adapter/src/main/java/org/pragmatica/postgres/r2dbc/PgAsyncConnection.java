@@ -14,8 +14,12 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.postgres.r2dbc;
+
+import java.time.Duration;
+
+import org.pragmatica.postgres.net.Connection;
+import org.pragmatica.postgres.net.Transaction;
 
 import io.r2dbc.spi.Batch;
 import io.r2dbc.spi.ConnectionMetadata;
@@ -23,15 +27,11 @@ import io.r2dbc.spi.IsolationLevel;
 import io.r2dbc.spi.Statement;
 import io.r2dbc.spi.TransactionDefinition;
 import io.r2dbc.spi.ValidationDepth;
-
-import java.time.Duration;
-
-import org.pragmatica.postgres.net.Connection;
-import org.pragmatica.postgres.net.Transaction;
 import org.reactivestreams.Publisher;
 
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.MonoSink;
+
 
 /// R2DBC [io.r2dbc.spi.Connection] backed by a postgres-async [Connection].
 ///
@@ -52,10 +52,9 @@ public final class PgAsyncConnection implements io.r2dbc.spi.Connection {
 
     @Override
     public Publisher<Void> beginTransaction() {
-        return Mono.create(sink ->
-            connection.begin()
-                      .onSuccess(tx -> storeTransactionAndComplete(tx, sink))
-                      .onFailure(cause -> sink.error(new R2dbcAdapterException(cause.message()))));
+        return Mono.create(sink -> connection.begin()
+                                             .onSuccess(tx -> storeTransactionAndComplete(tx, sink))
+                                             .onFailure(cause -> sink.error(new R2dbcAdapterException(cause.message()))));
     }
 
     @Override
@@ -63,10 +62,10 @@ public final class PgAsyncConnection implements io.r2dbc.spi.Connection {
         if (currentTransaction == null) {
             return Mono.empty();
         }
-        return Mono.create(sink ->
-            currentTransaction.commit()
-                              .onSuccess(_ -> clearTransactionAndComplete(sink))
-                              .onFailure(cause -> sink.error(new R2dbcAdapterException(cause.message()))));
+
+        return Mono.create(sink -> currentTransaction.commit()
+                                                     .onSuccess(_ -> clearTransactionAndComplete(sink))
+                                                     .onFailure(cause -> sink.error(new R2dbcAdapterException(cause.message()))));
     }
 
     @Override
@@ -74,18 +73,17 @@ public final class PgAsyncConnection implements io.r2dbc.spi.Connection {
         if (currentTransaction == null) {
             return Mono.empty();
         }
-        return Mono.create(sink ->
-            currentTransaction.rollback()
-                              .onSuccess(_ -> clearTransactionAndComplete(sink))
-                              .onFailure(cause -> sink.error(new R2dbcAdapterException(cause.message()))));
+
+        return Mono.create(sink -> currentTransaction.rollback()
+                                                     .onSuccess(_ -> clearTransactionAndComplete(sink))
+                                                     .onFailure(cause -> sink.error(new R2dbcAdapterException(cause.message()))));
     }
 
     @Override
     public Publisher<Void> close() {
-        return Mono.create(sink ->
-            connection.close()
-                      .onSuccess(_ -> sink.success())
-                      .onFailure(cause -> sink.error(new R2dbcAdapterException(cause.message()))));
+        return Mono.create(sink -> connection.close()
+                                             .onSuccess(_ -> sink.success())
+                                             .onFailure(cause -> sink.error(new R2dbcAdapterException(cause.message()))));
     }
 
     private void storeTransactionAndComplete(Transaction tx, MonoSink<Void> sink) {

@@ -1,10 +1,5 @@
 package org.pragmatica.postgres;
 
-import org.pragmatica.postgres.net.ConnectibleBuilder;
-import org.pragmatica.postgres.net.Connection;
-import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Unit;
-
 import java.util.ArrayDeque;
 import java.util.Queue;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -13,7 +8,13 @@ import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
+import org.pragmatica.postgres.net.ConnectibleBuilder;
+import org.pragmatica.postgres.net.Connection;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
+
 import static org.pragmatica.lang.Unit.unit;
+
 
 /**
  * Transaction-mode connection pool. Multiplexes N logical connections over M physical connections.
@@ -22,7 +23,6 @@ import static org.pragmatica.lang.Unit.unit;
 public class PgTransactionPool extends PgConnectible {
     private final int maxConnections;
     private final int maxStatements;
-
     private final Lock guard = new ReentrantLock();
     private int size;
     private final Queue<Promise<PgConnection>> pendingBorrows = new ArrayDeque<>();
@@ -52,7 +52,9 @@ public class PgTransactionPool extends PgConnectible {
 
     private sealed interface BorrowResult {
         record Closed() implements BorrowResult {}
+
         record Available(PgConnection connection) implements BorrowResult {}
+
         record Pending(Promise<PgConnection> deferred, boolean makeNew) implements BorrowResult {}
     }
 
@@ -65,16 +67,20 @@ public class PgTransactionPool extends PgConnectible {
             }
 
             var conn = firstAliveConnection();
+
             if (conn != null) {
                 return (BorrowResult) new BorrowResult.Available(conn);
             }
 
-            var deferred = Promise.<PgConnection>promise();
+            var deferred = Promise.<PgConnection> promise();
+
             pendingBorrows.add(deferred);
             boolean makeNew = size < maxConnections;
+
             if (makeNew) {
                 size++;
             }
+
             return (BorrowResult) new BorrowResult.Pending(deferred, makeNew);
         });
 
@@ -85,6 +91,7 @@ public class PgTransactionPool extends PgConnectible {
                 if (pending.makeNew()) {
                     createPhysicalConnection();
                 }
+
                 yield pending.deferred();
             }
         };
@@ -93,19 +100,21 @@ public class PgTransactionPool extends PgConnectible {
     private void createPhysicalConnection() {
         obtainStream.get()
                     .flatMap(stream -> {
-                        var conn = new PgConnection(stream, dataConverter, 0);
-                        return conn.connect(username, password, database);
-                    })
+                                 var conn = new PgConnection(stream, dataConverter, 0);
+
+                                 return conn.connect(username, password, database);
+                             })
                     .flatMap(this::validateConnection)
-                    .withResult(result -> result.fold(
-                        cause -> {
-                            propagateFailure(cause);
-                            return null;
-                        },
-                        connected -> {
-                            returnConnection((PgConnection) connected);
-                            return null;
-                        }));
+                    .withResult(result -> result.fold(cause -> {
+                                                          propagateFailure(cause);
+
+                                                          return null;
+                                                      },
+                                                      connected -> {
+                                                          returnConnection((PgConnection) connected);
+
+                                                          return null;
+                                                      }));
     }
 
     private Promise<Connection> validateConnection(Connection connection) {
@@ -113,6 +122,7 @@ public class PgTransactionPool extends PgConnectible {
             return connection.completeScript(validationQuery)
                              .map(_ -> connection);
         }
+
         return Promise.success(connection);
     }
 
@@ -120,29 +130,34 @@ public class PgTransactionPool extends PgConnectible {
         if (connection == null) {
             throw new IllegalArgumentException("'connection' should be not null");
         }
+
         Runnable action = locked(() -> {
             var nextUser = pendingBorrows.poll();
+
             if (nextUser != null) {
                 return () -> nextUser.succeed(connection);
             } else {
                 idle.add(connection);
+
                 return checkClosed();
             }
         });
+
         Promise.async(action);
     }
 
     private void propagateFailure(org.pragmatica.lang.Cause cause) {
         var actions = locked(() -> {
             size--;
-            var unlucky = Stream.concat(
-                                    pendingBorrows.stream()
-                                                  .map(item -> (Runnable) () -> item.fail(cause)),
-                                    Stream.of(checkClosed()))
+            var unlucky = Stream.concat(pendingBorrows.stream().map(item -> (Runnable)() -> item.fail(cause)),
+                                        Stream.of(checkClosed()))
                                 .toList();
+
             pendingBorrows.clear();
+
             return unlucky;
         });
+
         actions.forEach(Promise::async);
     }
 
@@ -151,6 +166,7 @@ public class PgTransactionPool extends PgConnectible {
         return locked(() -> {
             if (closing == null) {
                 closing = allOf(idle.stream().map(PgConnection::shutdown));
+
                 return closing;
             } else {
                 return Promise.failure(SqlError.fromThrowable(new IllegalStateException("Transaction pool is already shutting down")));
@@ -163,41 +179,49 @@ public class PgTransactionPool extends PgConnectible {
     private Runnable checkClosed() {
         if (closing != null && size <= idle.size()) {
             assert pendingBorrows.isEmpty();
+
             return () -> closing.succeed(unit());
         }
+
         return NO_OP;
     }
 
     private PgConnection firstAliveConnection() {
         PgConnection connection = idle.poll();
+
         while (connection != null && !connection.isConnected()) {
             size--;
             connection = idle.poll();
         }
+
         return connection;
     }
 
     private static Promise<Unit> allOf(Stream<? extends Promise<?>> promises) {
         var list = promises.toList();
+
         if (list.isEmpty()) {
             return Promise.success(unit());
         }
-        var result = Promise.<Unit>promise();
+
+        var result = Promise.<Unit> promise();
         var remaining = new AtomicInteger(list.size());
+
         for (var p : list) {
-            p.onResult(r -> r.fold(
-                cause -> {
-                    result.fail(cause);
-                    return null;
-                },
-                _ -> {
-                    if (remaining.decrementAndGet() == 0) {
-                        result.succeed(unit());
-                    }
-                    return null;
-                }
-            ));
+            p.onResult(r -> r.fold(cause -> {
+                                       result.fail(cause);
+
+                                       return null;
+                                   },
+                                   _ -> {
+                                       if (remaining.decrementAndGet() == 0) {
+                                       result.succeed(unit());
+                                   }
+
+                                       return null;
+                                   }));
         }
+
         return result;
     }
 }

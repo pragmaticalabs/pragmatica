@@ -1,0 +1,29 @@
+# Application-level (blueprint) resources for test-stream-multipart.
+#
+# Packaged into the blueprint JAR as META-INF/resources.toml by the JBCT
+# maven-plugin (GenerateBlueprintMojo / PackageBlueprintMojo). At deploy
+# time, BlueprintService stores this content in the KV-Store; each node's
+# slice loader resolves @ResourceQualifier(config = "streams.multipart-events")
+# lookups (see @EventStreamPublisher / @EventStreamReader) against it.
+#
+# Multi-partition, RF=2 / synchronously-replicated config for the #429 multi-partition
+# e2e fixture and the #430 publish-under-reshuffle chaos test:
+#   - partitions        = 4  -> four independent logs; keyless app publishes round-robin
+#     across them (DefaultStreamPublisher#resolvePartition), so a single publisher instance
+#     spreads events over all four partitions and HRW places their owners across the cluster.
+#   - replicas          = 2  -> replication factor (RF): copies incl owner (owner + 1 replica),
+#     so every partition has a promotable CAUGHT_UP non-owner replica for owner-kill failover.
+#   - min-sync-replicas = 2  -> owner + 1 in-sync per write: each publish AWAITs a replica
+#     ack before it returns, so an ACKED write is on >=2 nodes and survives loss of one owner
+#     (synchronous replication). This is the durability guarantee #430 asserts.
+#   - retention  = count     -> count-based eviction (never time-based) so a slow consumer is
+#     never evicted mid-test; retention-value is far larger than any test event count, so
+#     nothing is ever dropped (no spurious CursorExpired).
+
+[streams.multipart-events]
+partitions = 4
+replicas = 2
+min-sync-replicas = 2
+retention = "count"
+retention-value = "100000"
+max-event-size = "64KB"

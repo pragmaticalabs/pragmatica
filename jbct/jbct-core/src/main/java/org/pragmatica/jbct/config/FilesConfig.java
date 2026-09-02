@@ -2,6 +2,7 @@ package org.pragmatica.jbct.config;
 
 import java.util.List;
 
+
 /// Configuration for file filtering (size limits and glob excludes).
 ///
 /// @param maxFileSize Maximum file size in bytes (0 = no limit, default: 1MB)

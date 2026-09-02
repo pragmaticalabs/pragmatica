@@ -106,6 +106,8 @@ public class AlertManager {
         return manager;
     }
 
+    // JBCT-RET-08: standalone (no-cluster) construction — clusterNode absent by design
+    @SuppressWarnings("JBCT-RET-08")
     public static AlertManager readOnly(KVStore<AetherKey, AetherValue> kvStore) {
         var manager = new AlertManager(null, kvStore);
 
@@ -196,6 +198,9 @@ public class AlertManager {
                                      .map(_ -> stampAndStoreInjection(name, severity, message, metric, value));
     }
 
+    // RET-06: `name`/`message` are raw injection-request fields; the null/blank checks ARE the
+    // parse-don't-validate entry validation.
+    @SuppressWarnings("JBCT-RET-06")
     private Result<Unit> validateInjectionInput(String name, String severity, String message) {
         if (name == null || name.isBlank()) {
             return InjectionError.NAME_REQUIRED.result();
@@ -472,6 +477,8 @@ public class AlertManager {
     /// a list. Replaces the JSON-as-String `thresholdsAsJson` path.
     public record ThresholdView(String metric, double warning, double critical) {}
 
+    // JBCT-RET-08: Jackson view DTO — null is the absent-JSON-field representation, wire-contract-fixed
+    @SuppressWarnings("JBCT-RET-08")
     public Promise<List<AlertView>> activeAlertsAsList() {
         var list = new java.util.ArrayList<AlertView>(activeAlerts.size() + injectedAlerts.size());
         var seenInjectedIds = new java.util.HashSet<String>();
@@ -535,7 +542,9 @@ public class AlertManager {
                                                              }));
     }
 
+    // JBCT-RET-08: Jackson view DTO — null is the absent-JSON-field representation, wire-contract-fixed
     @NullReturn
+    @SuppressWarnings("JBCT-RET-08")
     private static AlertView projectClusterEventToAlertView(ClusterEvent event) {
         var details = event.details();
         var alertId = details.get("alertId");
@@ -555,7 +564,9 @@ public class AlertManager {
         return new AlertView(alertId, name, severity, message, "injected", metric, value, null, null, null, timestamp);
     }
 
+    // RET-06: `raw` is a nullable value from a JDK Map.get; the null guard is a framework boundary.
     @NullReturn
+    @SuppressWarnings("JBCT-RET-06")
     private static Double parseDoubleOrNull(String raw) {
         if (raw == null) {
             return null;
@@ -566,7 +577,9 @@ public class AlertManager {
                                                .or((Double) null);
     }
 
+    // RET-06: `raw` is a nullable value from a JDK Map.get; the null guard is a framework boundary.
     @NullReturn
+    @SuppressWarnings("JBCT-RET-06")
     private static Long parseLongOrNull(String raw) {
         if (raw == null) {
             return null;

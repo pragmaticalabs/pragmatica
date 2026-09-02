@@ -13,46 +13,48 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.topology;
-
-import org.pragmatica.consensus.net.NodeInfo;
-import org.pragmatica.lang.Option;
 
 import java.time.Instant;
 
-import static org.pragmatica.lang.Option.none;
-import static org.pragmatica.lang.Option.some;
+import org.pragmatica.consensus.net.NodeInfo;
 
-/// State of a node in the topology, tracking health and connection attempts.
+
+/// A node this observer has DISCOVERED, and when it was first seen.
 ///
-/// @param info             The node information
-/// @param health           Current health status
-/// @param failedAttempts   Number of consecutive failed connection attempts
-/// @param lastAttempt      Timestamp of the last connection attempt
-/// @param nextAttemptAfter Earliest time when next connection attempt is allowed
-public record NodeState(NodeInfo info,
-                        NodeHealth health,
-                        int failedAttempts,
-                        Instant lastAttempt,
-                        Option<Instant> nextAttemptAfter) {
-    /// Creates a healthy node state.
-    public static NodeState healthy(NodeInfo info, Instant now) {
-        return new NodeState(info, NodeHealth.HEALTHY, 0, now, none());
-    }
-
-    /// Creates a suspected node state with backoff.
-    public static NodeState suspected(NodeInfo info, int failedAttempts, Instant lastAttempt, Instant nextAttempt) {
-        return new NodeState(info, NodeHealth.SUSPECTED, failedAttempts, lastAttempt, some(nextAttempt));
-    }
-
-    /// Checks if a connection attempt can be made at the given time.
-    /// Returns true for HEALTHY nodes and for SUSPECTED nodes if now >= nextAttemptAfter.
-    public boolean canAttemptConnection(Instant now) {
-        return switch (health) {
-            case HEALTHY -> true;
-            case SUSPECTED -> nextAttemptAfter.map(next -> now.isAfter(next) || now.equals(next))
-                                              .or(true);
-        };
+/// ## This type deliberately carries no health (#558)
+///
+/// It used to hold `NodeHealth`, `failedAttempts` and `nextAttemptAfter`, with a `suspected(...)`
+/// constructor and a `canAttemptConnection(now)` backoff gate. **None of it was ever driven.**
+/// `suspected(...)` had zero callers repo-wide, and `TopologyObserver.nodeStatesById` has exactly two
+/// mutation sites — `putIfAbsent` of a fresh entry, and `remove`. Every entry was born HEALTHY and
+/// stayed HEALTHY until removed, so `health == HEALTHY` was a constant-true predicate and
+/// `canAttemptConnection` a constant-true gate.
+///
+/// That vocabulary was not harmless. A reader auditing a count sees `filter(health == HEALTHY)` and
+/// reasonably concludes it is reachability-aware; it was not. That misreading reached production:
+/// `ClusterTopologyManagerRecord.buildProvisionContext` filtered a replacement node's PEERS list
+/// through the same predicate and a neighbouring docstring asserted it kept dead hosts out (#678).
+///
+/// ## Why deleted rather than wired
+///
+/// There is exactly ONE re-dial authority, and it is not here. The transport layer owns re-dial
+/// policy — QUIC peer-phase dedup, the in-flight CONNECTING guard, and the per-attempt dial timeout —
+/// while SWIM owns suspicion. Reviving this backoff would install a SECOND authority that nothing
+/// currently exercises, and two mechanisms disagreeing about when to re-dial is worse than one. A
+/// vestigial gate that nothing drives is a standing invitation to wire it someday and create exactly
+/// that disagreement.
+///
+/// Reachability now lives where it is genuinely observed: `TopologyObserver.observedConnections`
+/// (post-handshake CONNECTED peers) for boot quorum, and `MembershipFsm.coreObservedMembers` (QUIC
+/// handshake or SWIM ALIVE) for the steady-state quorum numerator.
+///
+/// @param info      The node information
+/// @param firstSeen When this node was first discovered
+public record NodeState(NodeInfo info, Instant firstSeen) {
+    /// Creates a state for a newly discovered node. Discovery is all this records — it is NOT a
+    /// claim that the node is reachable.
+    public static NodeState discovered(NodeInfo info, Instant now) {
+        return new NodeState(info, now);
     }
 }

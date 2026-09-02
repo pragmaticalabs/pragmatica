@@ -115,15 +115,17 @@ public final class SchemaBuilder {
                     yield SchemaErrors.typeNotFound(enumKey, e.span()).result();
                 }
 
-                var updated = e.before().isPresent()
-                              ? existing.withValueBefore(e.value(),
-                                                         e.before().unwrap())
-                              : e.after().isPresent()
-                                ? existing.withValueAfter(e.value(),
-                                                          e.after().unwrap())
-                                : existing.withValue(e.value());
+                if (e.before().isPresent()) {
+                    yield Result.success(schema.withEnumType(existing.withValueBefore(e.value(),
+                                                                                      e.before().unwrap())));
+                }
 
-                yield Result.success(schema.withEnumType(updated));
+                if (e.after().isPresent()) {
+                    yield Result.success(schema.withEnumType(existing.withValueAfter(e.value(),
+                                                                                     e.after().unwrap())));
+                }
+
+                yield Result.success(schema.withEnumType(existing.withValue(e.value())));
             }
             case SchemaEvent.SchemaCreated e -> Result.success(schema.withSchema(e.schemaName()));
             case SchemaEvent.SchemaDropped e -> Result.success(schema);

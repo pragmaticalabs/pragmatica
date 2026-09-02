@@ -4,7 +4,3080 @@ All notable changes to Pragmatica will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [1.0.0-rc2] - Unreleased
+## [1.0.0-rc3] - 2026-09-02
+
+### Fixed (2026-08-31 — the ticketing example could never complete a purchase: seven defects, each found by running the product and reading what it said about itself)
+- **A scalar `@Query` ignored its own `RETURNING` clause.** `FactoryGenerator.inferScalarColumnName`
+  derived the result column from the SELECT list and never consulted `RETURNING`, so
+  `INSERT ... SELECT :a, :b ... RETURNING version` generated `row.getLong("$1")` — the bind
+  placeholder after rewriting, a column no relation has. Every pricing write failed as
+  `503 "Pricing store is unavailable"`, a fabricated diagnosis: the store was healthy and the
+  query was malformed. Any scalar `INSERT…SELECT…RETURNING` store method was unusable.
+- **The typed row accessor discarded the column's wire format.** `PgRow.get(int, Class)` called the
+  3-arg `toObject`, which hardcodes `binary=false`, while the untyped path passed `col.isBinary()`.
+  A `uuid` returned in binary was decoded as text, so `UPDATE ... RETURNING id` **committed and then
+  reported failure** — the caller saw "store unavailable" for a write that had applied. `DataConverter`
+  now decodes uuid from either format. The breakage was general to binary columns; uuid merely
+  failed loudly enough to be noticed.
+- **The router dispatched requests it could not serve.** `selectBestRoute` returned a lone candidate
+  with no arity check, handing an under-supplied path to a parameterised handler that died at
+  `pathParam()` — surfacing as `404 "Unknown request path"` from the http-routing layer instead of
+  the ordinary no-match. The registry advertises arity-erased prefixes, so `/api/v1/quotes/` looked
+  callable and was not (#764, dispatch half; publishing arity in the route registry remains open).
+- **Local cross-slice calls encoded with the callee's codec.** Slices load in isolated loaders, so a
+  caller holds its OWN copy of a callee's `X.Request`; `invokeViaBridge` encoded that object with the
+  TARGET bridge, whose codec knows only its own copy, failing with "No codec registered for class".
+  Encoding through the target had been introduced to serve request types from a parent loader
+  (`Unit`); sender-bridge resolution still falls back to the target for exactly those. **This was the
+  blocker — no purchase had ever completed.**
+- **A still-activating dependency was classified fatal.** `verifyEndpointExists` returned an untyped
+  `Cause`, which `SliceLoadingFailure.classify` funnels to `Fatal.UnexpectedError`, so a blueprint's
+  slices — which activate concurrently — abandoned each other with "will NOT retry" purely on
+  activation order, collapsing otherwise healthy deployments to zero routes. Now a typed
+  `Intermittent.ResourceUnavailable`.
+- **`findBridgeByClassLoader` threw on a bootstrap-loaded type.** `getClassLoader()` returns null for
+  `Unit`/`String`, and `ConcurrentHashMap.get(null)` NPEs; the null is now lifted into an `Option`
+  where it arises. Latent before — the remote path could reach it — and reachable on every local
+  invoke once local calls routed through sender-bridge selection.
+- **Cross-slice invocation failures were anonymous.** `SliceInvoker.invoke` now logs the failing
+  slice, method and cause; the defect above spent the whole investigation as an empty error.
+  [verified: ticketing walkthrough create → seat → price → open → quote → BUY green on a 3-node
+  Forge cluster over repeated runs, with `/authorize` recorded in a pre-cleared gateway journal and
+  bookings/tickets/payments persisted; full reactor suite 12,680 tests (counted from surefire XML)
+  0 failures / 0 errors; `jbct:check` clean on all four touched modules]
+
+
+### Fixed (2026-08-29 — #701: the entity fold's watermark never asserts coverage it does not have; caughtUp cannot NPE or hang on a lost CAS)
+- **Blocking chosen, deliberately** (the ticket's own fork; matches the fold's existing
+  refuse-over-lie posture): a failed `applyToState` on the write path now HOLDS the applied
+  watermark instead of advancing past the record. The hold composes into existing machinery
+  rather than adding new: later successes PARK behind the hole (contiguous drain), the checkpoint
+  candidate cannot pass it (so the retention floor HOLDS and the log copy stays replayable — the
+  outage is bounded by retained log, never by luck), and the next read gate replays the record
+  through the path that propagates the failure loudly. The poison outage mode, named: that
+  partition refuses reads and freezes its checkpoint from the poison offset until a build that can
+  apply the record replays it. The prior malformed-timer-payload pin asserted the advance-past
+  behavior the ticket was FILED against — rewritten to pin hold-not-advance, with the disposition
+  reasoning in its doc (the malformed case IS the park path's case; the old "escape" was the
+  false coverage itself). `logUnapplicable`'s message — which described the old
+  divergence-then-permanent-loss behavior — rewritten to describe the hold and its recovery.
+- **Two `caughtUp` liveness defects closed**: the lost-CAS path re-enters instead of
+  dereferencing a slot the winner may already have nulled (the filed NPE); and the `runCatchUp`
+  invocation is lifted so a synchronous throw between the WON CAS and the completion attach
+  resolves the slot as a failure instead of leaving a promise nothing resolves — every later
+  caller previously hung on it forever (found when the new hammer test hung the suite: same
+  window as the NPE, worse outcome).
+  [verified: `EntityFoldTest$WatermarkHonesty` — write-path hold with later-success parking,
+  loud replay refusal on a log-held unapplicable record, and a 4-thread × 200-call hammer with a
+  concurrent appender (all calls resolve, `@Timeout`-bounded); rewritten
+  `EntityFoldTimerTest` pin holds at −1; durable-entity 270/0, node entity suite 48/48]
+
+### Added (2026-08-29 — #386 D4 substrate: Projection facade — fold, rebuild lifecycle, honest at-least-once until the guard lands)
+- **`Projection.of(topic).into(store, key).apply(fold)`** (spec §10, guard-independent half per
+  the CTO's option-(a) parallelization): keyed fold-and-write on each durably-delivered event over
+  a backing-agnostic `ProjectionStore` seam. The apply is **loudly documented and TEST-PINNED as
+  at-least-once** — the §8 idempotency guard keyed `(projectionName, generation, messageId)`
+  completes the facade once the context-aware subscriber shape lands (stream D executes the
+  codegen half on the delivered spec); the pinning test is rewritten, not deleted, by that change.
+  Rebuild is one procedure with load-bearing order: generation bumped FIRST (review finding 3 —
+  replayed events must land under fresh idempotency keys, not be dedup'd by the prior pass), then
+  the data reset under the settled §13-item-6 contract (data cleared, generation slot PRESERVED —
+  a reset that wiped the slot would resurrect the prior pass's claims), then the group-cursor
+  reset seam LAST — refused loudly by default until the D3 operator surface wires it, because a
+  rebuild that silently skipped the cursor step would clear the model, replay nothing, and
+  converge to an empty projection that looks caught-up.
+  [verified: `ProjectionTest` — keyed folds, the at-least-once re-application pin, rebuild
+  ordering observed through a recording cursor seam (gen bumped AND reset completed before the
+  seam runs), loud refusal without the seam, name defaulting]
+
+### Fixed (2026-08-29 — #700: entity checkpoint claims are advance-only in the KV substrate)
+- **A checkpoint write that would LOWER the committed `throughOffset` is refused by the Rabia
+  applier itself** — the third arm of the applier's value-driven fence family (`EpochBearing`
+  guards authority, `VersionFenced` guards a chain, new `MonotonicFenced` guards a running max).
+  The retention floor reclaims entity-log segments below the committed claim, so two honest folds
+  either side of a partition handover could previously overwrite a higher claim with a lower one
+  AFTER the log between them was reclaimed — leaving those records on no reachable node, a
+  recovery hole the I4 intra-node guard could narrow but not close (different JVMs share no
+  memory, and a caller-side read-then-write reintroduces the race one layer up). Equal watermarks
+  are ACCEPTED (a fresh snapshot at unchanged coverage replaces the block pointer harmlessly);
+  strictly-lower rejected, deterministically, from committed storage + the incoming value alone.
+  Rejections are silent like the sibling fences; the driver doc records the consequence for its
+  local advance map. The retention-floor reliance is now stated at the write site
+  (`StreamEntityLogSubstrate.publishCheckpointPointer`), and `EntityCheckpointDriver`'s
+  "not attempted here" note — the stale surface that described the gap — is corrected.
+  [verified: `KVStoreWatermarkFenceTest` — the ticket's exact race (two writers, lower offset
+  arrives last, higher claim intact), equal-accepted, first-write-passes, non-fenced-untouched,
+  no-notification-on-rejection; zero behavior change for existing value types is structural
+  (sole implementor, pattern-matched arm)]
+
+### Added (2026-08-29 — #386 durable-topic dispatch WIRED: declared-durable topics now deliver at-least-once with a durable group-attributed DLQ)
+- **A topic declared `durability = "durable"` is now a working durable delivery system end to
+  end on a node**: publish appends the KSUID-stamped envelope to the replicated `topic:<address>`
+  stream and resolves at the min-sync floor; subscriber dispatch rides `StreamConsumerManager`'s
+  EXISTING placement machinery per the option-(a) ruling — three bounded seams only (topic-stream
+  envelope-unwrap in `deliver`, durable `ConsumerConfig` selection in `doSubscribe`, and a
+  declaration-source union centralized in one `allDeclarations()` resolution point after the
+  first build caught reconcile computing keys from the union while `declarationFor` re-resolved
+  from the registry alone), with placement/assignment/failover logic untouched by construction
+  and the pre-existing declarative-consumer suite green unmodified as the regression fence.
+  Durable-topic subscriptions synthesize consumer declarations when their `topic:*` stream exists
+  (stream existence IS the durability declaration made real; ephemeral subscriptions never
+  synthesize); groups are version-stable, and a blue-green window collapses to ONE dispatch loop
+  per (group × partition). Dead letters for topic streams route through `RoutingDeadLetterSink`
+  to the durable `DlqStreamSink` (owner-forwarding publishers, source floor inherited) while
+  every other stream keeps the in-memory default unchanged. The interim `DurableTopicDispatcher`
+  and its invoker seam are DELETED — superseded by the manager, so exactly one envelope-unwrap
+  implementation exists. Docs moved in this same change per the landing obligation:
+  `guarantees.md` §5 is rewritten as the per-operation two-tier table with per-claim evidence
+  tags (including the no-silent-downgrade property and the honest PENDING list: multi-node forge
+  e2e, D3 operator triad, D4 idempotency wiring, D5 publisher split), summary-matrix row 22a
+  added, feature-catalog row 24 re-statused to Partial/two-tier, and resource-reference's
+  subscriber section documents the durability keys (fixing its stale `topic` field name to the
+  actually-bound `topic_name`).
+  [verified (single-node): `StreamConsumerManagerTest$TopicGroupDispatch` — version-stable
+  attach with durable config, ephemeral-ignored, blue-green collapse, envelope-unwrap delivery
+  with the application payload reaching the invoker; `DlqStreamSinkTest` — group-attributed
+  re-enveloping preserving messageId, DLQ-stream read-back, family routing; full node module
+  971/0/0. Multi-node composed path: design intent — unverified pending forge e2e]
+
+### Added (2026-08-29 — #386 publisher tier switch: durable topics provision the stream-backed publisher)
+- **`PublisherFactory` now selects the publisher by the topic's declared durability class** (D1/D5
+  substrate half): a DURABLE declaration provisions the envelope-wrapping stream-backed publisher —
+  topic + DLQ streams activated eagerly at provision in one idempotent step, each `publish`
+  resolving at the `min-sync == replicas >= 2` replication floor — while EPHEMERAL declarations
+  keep today's RPC fan-out byte-for-byte. Wire plumbing landed with it: `aether-invoke` gains a
+  cycle-free dependency on `aether-stream`; `NodeCodecs` registers the
+  `org.pragmatica.aether.stream.topic` aggregate (MAILBOX-announced first); the two envelopes take
+  hand-assigned one-byte SystemTags (110/111 — `TopicEventEnvelope` heads every durable event's
+  payload bytes, and the `aether.stream.*` hot-prefix contract binds `DlqEnvelope` alongside it).
+  **Stated intermediate window:** subscriber-side durable dispatch is the NEXT landing — until it
+  arrives, a topic explicitly declared `durability = "durable"` persists publishes but delivers
+  nothing to subscribers (the RPC fan-out deliberately does not fire for durable topics — replaying
+  through it would fake delivery the moment dispatch lands). Nothing deployed declares durability,
+  so the window is unreachable without opting in; `guarantees.md` §5 continues to describe every
+  DEPLOYED topic truthfully, and its rewrite rides the dispatch landing as one change.
+  [verified: `PublisherFactoryTest$DurableTierProvisioning` — durable declarations provision
+  `DurableTopicPublisher` with both streams activated, §3-invalid bypass declarations refuse
+  loudly; `$TopicNameFallbackDelivery` 3/3 and the ephemeral suite unchanged;
+  `SystemCodecPinningTest` pins the one-byte window]
+
+### Changed (2026-08-29 — #366 re-scope + #591 instrument hardening, per the #367 pole-gate ruling)
+- **#366 re-scoped onto the shipping mechanism** (CTO ruling 2026-08-29, recorded on the ticket):
+  community size in the product that ships is the PER-SOURCE WORKER COUNT — communities are minted
+  one-per-source (`ClusterDeploymentState`, `source + "-w-0"`), and the `max_group_size` knob gates
+  the never-wired splitting mechanism (#673). Three honest fixes ride the re-scope: an explicit
+  `[worker] max_group_size < 2` now REFUSES at parse instead of silently becoming 100 (the #673
+  trap: a typo produced a plausible green run, unobservable precisely because the knob changes no
+  behavior) [verified: `WorkerConfigLoaderMaxGroupSizeTest` — refusal, absent-defaults, and the
+  low-but-valid-survives arming pin]; `configuration.md`'s `max_group_size` row and feature-catalog
+  row 99 no longer describe splitting as live (row 99 drops from Complete to Partial). The
+  wire-or-delete decision on the splitter chain stays with #673, owner-grade.
+- **#591's instrument survived first contact with an RBAC-authed cluster**: `coordination_slope.py`
+  now attaches `X-API-Key` when `AETHER_API_KEY` is set (the live remote cluster 401s bare
+  requests; the 08-27 validation ran unauthed and could not see this), and the new
+  `slope_sweep.sh` driver (BSD-sed-portable, resumable via `COUNTS`) boots raw worker containers
+  through the proven suite-13 join path and produces one slope row per worker-count step. The #591
+  measurement itself is posted on the ticket.
+
+### Added (2026-08-29 — #386 D2/D3 substrate: durable-topic dispatch, group-attributed DLQ stream, version-stable group identity)
+- **The durable-topic dispatch substrate is complete in `aether-stream` (not yet node-wired —
+  delivery semantics of deployed topics are still unchanged).** One strictly serial dispatch loop
+  per (group × partition) over the stream consumer runtime decodes the `TopicEventEnvelope` and
+  hands payload bytes to a `DurableSubscriberInvoker` seam (the node wires it over `SliceInvoker`;
+  the handler promise is the ack, per-attempt timeout stays the slice-invoker call timeout — §6's
+  single source of truth). Retries exhausted → the event is re-enveloped as a GROUP-ATTRIBUTED
+  `DlqEnvelope` (original `messageId` preserved — the §8 idempotency key survives where offsets
+  cannot) and appended to `topic:<address>.dlq` through the same min-sync barrier as the source
+  (`DlqStreamSink`); the source cursor is held until that append resolves, so DLQ-append stalls
+  block the partition visibly instead of dropping events. Consumer-group identity is
+  version-stable (`groupId:artifactId#method`, §6): a slice upgrade keeps its cursor and DLQ
+  attribution. `DeadLetterHandler.append` and `DeadLetterEntry` now carry the failing group —
+  redrive is group-targeted (§9), and an entry without its group could only be redriven by
+  re-publishing, duplicating to groups that already processed the event. Also un-inerted:
+  `ConsumerConfig.checkpointInterval` now actually gates the time half of cursor checkpoints
+  (previously read by nothing; safe — #576's validator rejects non-default declarative values).
+  Two cadence deltas from the spec's normative defaults are stated in
+  `DurableTopicDispatcher`'s doc rather than hidden (backoff base/cap, checkpoint event-count).
+  [verified: `DurableTopicDispatcherTest` — end-to-end over the real generated wire format:
+  in-order payload delivery with cursor advance on ack, idempotent attach/detach, and the §6→§9
+  poison path (5 attempts → group-attributed `DlqEnvelope` in the DLQ stream with the original
+  messageId → partition unblocked, next event dispatched); `DurableGroupIdentityTest` pins
+  upgrade-stability; single-node scope — the replication barrier and multi-node placement are
+  exercised by their own machinery (#410) and the pending node wiring respectively]
+
+### Fixed (2026-08-28 — #674: consensus load metrics reach the wire)
+- **An external observer can now measure coordination load on a core node.** Three disconnects,
+  all fixed: the three vote-traffic recorders (`RabiaMetricsCollector.recordVoteRound1/2`,
+  `recordFastPath`) were EMPTY BODIES — the engine called them all along and every call vanished,
+  so round-1/round-2 vote volume, the quantity that grows with coordination load, was counted
+  nowhere; the comprehensive HTTP DTO had no consensus field, so the collected block was dropped at
+  the boundary; and Prometheus carried none of it. Now: `GET /api/v1/metrics/comprehensive` carries
+  a `consensus` block of LIVE monotonic totals (deliberately not minute-aggregated — a differencing
+  consumer needs raw totals over its own window, the `/metrics/transport` contract; present from a
+  node's first request, before any minute bucket exists), and the same counters serve as
+  `consensus_*` Prometheus gauges with a shared key vocabulary (`RabiaMetrics.counterMap()` — the
+  gauge names ARE the map keys, pinned so a drifted key cannot silently freeze a gauge at 0). The
+  CLI's `aether metrics comprehensive` passes the block through unchanged. Endpoint SCOPE is now
+  documented per the #674 semantics note: `/metrics` is cluster-wide despite its LOCAL routing
+  declaration (fetch once, select by id); `/metrics/comprehensive` and `/metrics/transport` are
+  node-local — and the transport section's stale "per-peer byte counters" description was corrected
+  to what it serves (node-level message counts, no bytes).
+  [verified: `aether/forge/forge-tests/.../ClusterFormationTest.cluster_comprehensiveMetrics_carryLiveConsensusBlock`
+  — live 3-node formed cluster answers with a positive decision count; unit pins in
+  `RabiaMetricsCollectorTest` (counting, snapshot-vs-reset, gauge vocabulary) and
+  `MetricsRoutesTest$ComprehensiveConsensusBlock` (live block on the empty-aggregate branch);
+  mutations red: recorder re-emptied → 4 pins red; counterMap key drifted → vocabulary pin red]
+- **Deliberately NOT exposed: the `NetworkMetrics` byte counters.** Verification found the ticket's
+  scope-growth premise inverted — `NetworkMetricsHandler` is constructed and threaded into the
+  snapshot collector but never installed into any channel pipeline, so its counters are
+  permanently zero; putting them on the wire would ship a silent-zero instrument. The honest
+  byte-counter home is the QUIC transport's own metrics; recorded on #674's close.
+
+
+### Added (2026-08-28 — #386 D1: topic durability declaration, parse-enforced)
+- **A topic's `resources.toml` section now declares its durability class** (durable-pubsub-spec §3,
+  D1 of the 2026-07-18 ratified set): `durability = "ephemeral"` (default) keeps today's RPC
+  fan-out; `durability = "durable"` declares the stream-backed tier and accepts `partitions`
+  (default 1), `replicas` (default 2), `min_sync_replicas` (default = replicas), `retention`
+  (default 7d). The v1 durable constraint is **rejected at parse**, not weakened silently:
+  `replicas >= 2` and `min_sync_replicas == replicas` — exactly the configuration whose lossless
+  owner-kill failover is proven (streaming-spec §10.5); the rejection message cites the spec
+  section and #411, whose landing is the constraint's relaxation path. Stream knobs declared on an
+  ephemeral topic are rejected as inert (#576 config-honesty stance) rather than ignored. Both TOML
+  binders invoke the validating `TopicConfig.topicConfig` factory, so every bound declaration
+  passes through it; the `SpiResourceProvider` missing-section fallback (#396) now recovers ONLY
+  `SectionNotFound` — a section that exists but fails validation fails slice activation loudly
+  instead of silently downgrading a declared-durable topic to fire-and-forget. Legacy single-field
+  declarations (`topic_name = "..."`) keep binding unchanged, and every existing construction site
+  keeps compiling via the retained single-arg constructor. Delivery semantics are UNCHANGED by this
+  commit — the declaration surface lands ahead of the durable substrate (D2), and `guarantees.md`
+  §5 remains the truthful description of every topic today.
+  [verified: `aether/resource/api/.../TopicConfigTest.java` — TOML round-trips through
+  `TomlConfigService` prove the binder invokes the factory: durable-outside-constraint rejected,
+  inert-ephemeral-keys rejected, missing `topic_name` stays loud, legacy shape binds ephemeral]
+
+### Changed (2026-08-28 — #386 D2 substrate: dead-letter sink append is failure-aware; cursor never advances past an unaccepted entry)
+- **`DeadLetterHandler.record` (void, fire-and-forget) is replaced by `append` returning
+  `Promise<Unit>`, and the stream consumer runtime holds the group cursor until the sink accepts
+  the entry** (durable-pubsub-spec §9/§12; also the seam half of the rc3 audit note on #386 —
+  retry-exhausted events were skipped past a sink whose write had no failure channel). On retry
+  exhaustion (RETRY) and on SKIP, the cursor now advances only after a successful append; a failed
+  append retries with backoff indefinitely while an in-flight guard holds that partition's delivery
+  loop (without it the un-advanced cursor would re-deliver the exhausted event to the handler).
+  Capping the retries and advancing anyway was rejected: that IS the silent loss the contract
+  exists to prevent — the stall is deliberate, partition-scoped, and bounded by the operator loop
+  (`DLQ_STALL` alarm surface arrives with the D3 management batch). The in-memory default sink is
+  unchanged in behavior (its append cannot fail) and now carries the loud volatility statement the
+  audit note demanded at the class level; the durable DLQ-stream sink lands with D3.
+  [verified: `StreamConsumerRuntimeTest.DeadLetterAppendContract` — failing-sink stub: cursor and
+  loop held across two failed appends with no handler re-delivery, resume on sink recovery,
+  exactly one dead-letter entry (retry loop mints no duplicates); SKIP variant likewise]
+
+### Fixed (2026-08-28 — #712: slice jars ship the message classes their manifests declare)
+- **A slice jar now contains the topic message and stream event classes its own manifest
+  declares, plus the full sibling `shared` package tree.** Two packaging gaps compounded:
+  `SliceManifest.allImplClasses()` — the single source `PackageSlicesMojo` packages from — merged
+  only impl/request/response classes, never the manifest's own `publish.message.classes` and
+  `stream.event.classes` (publisher message types are constructor-injected `MessagePublisher<T>` /
+  `StreamPublisher<T>` type arguments, so they appear in no method-derived list); and the sibling
+  `shared` package walk was non-recursive (`Files.list`) while the slice-subpackage walk was
+  recursive, so records in `shared.event` and their component types in other `shared.*`
+  subpackages never reached the jar. Evidence: ticketing-sweep-holds' jar omitted the declared
+  `shared.event.SeatReleased` and slice activation died with `NoClassDefFoundError`;
+  notification-hub's `NotificationEvent` was present in the module jar but absent from the slice
+  jars. Closure depth: declared classes by name plus their nested/member classes plus the entire
+  sibling `shared` tree — no bytecode reference walk, matching the existing convention-based
+  closure. Manifest keys are unchanged (consumption-side fix only), so the envelope format is
+  untouched. Same-module subscribers were already covered via `request.classes` (reactive methods
+  are interface methods); cross-module message-type delivery is the dependency-edge sibling #717.
+  [verified: `jbct/jbct-core/src/test/java/org/pragmatica/jbct/slice/SliceManifestTest.java` and
+  `jbct/jbct-maven-plugin/src/test/java/org/pragmatica/jbct/maven/PackageSlicesMessageClassesTest.java`
+  (red against unfixed code, green after; jar-level assertion on a built archive); final e2e
+  against the #704 rf=1 reproduction runs in the coordinating session before #712 closes]
+### Changed (2026-08-28 — #692: HealthReconciler ghost-comment sweep, Java surfaces)
+- **Zero `HealthReconciler` references remain in Java sources.** 21 comment/docstring references
+  across `integrations/consensus`, `integrations/swim`, and `integrations/cluster` described a type
+  deleted in the membership-v2 migration — the largest single stale-describing-surface cluster on
+  the branch, and exactly the shape that minted five wrong ticket premises on 2026-08-27. Each was
+  corrected against the verified current mechanism, not search-replaced: SWIM `FaultyObserved` edges
+  drive `MembershipFsm.onSwimFaulty` via the observation listener (no `DECOMMISSIONED` node-state KV
+  write exists in v2); `PeerHealthObservation`'s epoch-fencing consumer is `SwimHintsRegistry`;
+  connectivity observations ride `PeerObservationBuffer` → cluster-sync pong (the leader-side
+  `ReachabilityAggregator` fold named by one comment is ALSO gone — P3 removed it, SWIM is the
+  single liveness signal); leader-term consumers are Aether's generation/ownership epoch suppliers;
+  `NodeLifecycleKey` is itself deleted. 1012 tests green across the three modules after the sweep.
+- **#692's rename item was a stale premise, corrected rather than executed:**
+  `ClusterSyncContext.emitPingTimeoutIfExceeded` does NOT "emit nothing" on current HEAD — the
+  S01/Option-1 wiring gives it a live effect (`collector.reportUnreachable`, the SWIM
+  transport-unreachable hint path), pinned by `ClusterSyncFsmTest`'s
+  `emitPingTimeout_*` tests. The name matches the behavior; no rename shipped. Remaining #692
+  surfaces live under `aether/docs/**` (docs-stream territory) and are routed, not swept here.
+
+### Fixed (2026-08-28 — #694: Ember instances round-trip the CTM's tag selector)
+- **In-JVM worker reconcile can now see its own inventory.** `EmberComputeProvider.toInstanceInfo`
+  returned an EMPTY tag map for every instance; an instance with no tags matches no non-empty
+  selector, so the CTM's worker reconcile — which counts ACTUAL inventory through the
+  `aether-cluster`/`aether-source`/`aether-role` filter — read `actual = 0` forever in-JVM,
+  re-provisioning every pass and never able to see a scale-down victim, with a symptom that pointed
+  the next investigation at the CTM instead of the harness (the #590 family, one layer up). Tags are
+  now built from the `ProvisionContext` AT PROVISION TIME and stored per node (the ticket's ordering
+  constraint: `toInstanceInfo` is also reached from `listInstances`/`instanceStatus`, which hold no
+  request), mirroring `HetznerComputeProvider.labelsFor` — the three selector keys with the blank
+  role defaulting to `core`, plus the provider-agnostic dotted `aether.node-id`. Nodes created
+  OUTSIDE the provider (initial cluster, direct `addNode`) stay untagged — the pre-#694 shape,
+  preserved deliberately and pinned. One recorded divergence: an absent cluster name stamps `""`
+  where cloud providers refuse the create outright (RFC-0017 C2) — the CTM selector renders an
+  unresolvable name as the same `""`, so the round-trip holds either way.
+  [verified: `aether/forge/forge-tests/.../EmberInstanceTagRoundTripTest.java` — same-context
+  selector finds the instance with the exact four-entry map; selectors differing in any ONE field do
+  not; blank role stamps the production `core` default; untagged initial nodes match no non-empty
+  selector while staying listed. Mutation (stamp propagation removed): exactly the two positive
+  guards red. The three CTM-provisioning probes (`MembershipChaosCycleTest`,
+  `ProvisioningRecoveryAfterFailureBurstProbeTest`, `PostRestartSlowRejoinDeficitFillProbeTest`)
+  re-run green against the stamped provider.]
+
+### Fixed (2026-08-28 — #644: periodic tasks arm in start(), not at assembly)
+- **A created-but-never-started node now performs no periodic work and holds no timers.**
+  `AetherNode.assembleNode` used to hand all fourteen of the node's recurring tasks to
+  `SharedScheduler.scheduleAtFixedRate` at ASSEMBLY time (#642's evidence run: two held-back Ember
+  nodes ran 274 snapshot ticks each over 45 minutes without ever starting) — a family that includes
+  destructive WAL truncation, metadata snapshot writes, operator-visible retention alerts, and
+  (pre-#702) consensus KV removals. The new `PeriodicTasks` holder accumulates arming THUNKS during
+  assembly and arms them only once cluster formation resolves in `start()`; `stop()` and the
+  failed-boot guard (`cancelArmedWork`) discard unarmed thunks and cancel armed handles, and a
+  `stop()` racing a late formation resolution wins — CANCELLED is terminal, so a torn-down node can
+  never gain work. Arming after formation is safe for every member of the family: none participates
+  in `clusterNode.start()`'s resolution (verified against the promise chain — the election trigger
+  itself runs after resolution), and the activation level-heal's one dropped-edge scenario requires
+  `clusterNode::isActive`, which is true by arming time. One deliberate seed choice: the
+  phase-change watcher's baseline is still captured at ASSEMBLY, so the formation transition is
+  reported as one edge on the first armed tick instead of being swallowed into a start-time
+  baseline — the deferral removes only the pre-start publishing. The two UNKNOWNs from the ticket's
+  partition are settled: `publishPhaseChange` cannot publish pre-start at all now, and
+  `StreamConsumerManager.reconcile` was wasteful-not-unsafe (its declaration registry is empty
+  pre-start). The guard-failure path additionally stops the two constructor-armed cleanup ticks it
+  could never reach (`SliceInvoker`'s stale-invocation sweep, `AdaptiveSampler`'s rate
+  recalculation); `RabiaEngine`'s constructor-armed phase cleanup remains reachable only through
+  `clusterNode.stop()` and is recorded on #644 as the residual, with the constructor-armed family's
+  own deferral left as an explicitly-scoped follow-up.
+  [verified: `aether/node/src/test/java/org/pragmatica/aether/node/PeriodicTasksTest.java` (the
+  deferral state machine, 8 pins) and
+  `aether/forge/forge-tests/.../NodeLifecyclePeriodicArmingForgeTest.java` (the WIRING, on a real
+  Ember cluster with a held-back node: zero armed while unstarted across 4s of the tightest
+  interval, start arms exactly the 14 deferred, stop disarms; the arm-call-deleted mutation goes
+  red on exactly the wiring pins)]
+- **#557's boot-quorum projection got a named, tested seam** (the composition rider recorded on
+  #644): `AetherNode.presenceMemberSupplier` replaces the inline lambda no test could reach, and
+  `PresenceMemberSupplierSeamTest` pins it against a real boot-seeded `MembershipFsm` — swapping
+  the observed projection for the counted one (the exact #557 regression) now goes red at the real
+  wiring instead of only in aether-deployment's mirror test.
+  [verified: `aether/node/src/test/java/org/pragmatica/aether/node/PresenceMemberSupplierSeamTest.java`,
+  mutation (observed→counted) demonstrated red]
+
+### Fixed (2026-08-28 — #702: entity registration removals gated on live consensus-activity)
+- **A node that is not a live cluster participant can no longer mass-remove its own committed entity
+  keyspace registrations.** `EntityOwnershipReconciler`'s removal half read an empty declared-keyspace
+  set as evidence of absence and turned every committed self-registration into a KV `Remove` issued
+  into consensus — on a constructed-but-never-started node (the #644 family) that state is the boot
+  window, not a retraction, and the removal path was inert only by coincidence of construction order.
+  The removal half is now gated on the same live consensus-active sample (`clusterNode::isActive`)
+  the activation heal reads; the gate DEFERS the prune rather than cancelling it, so the
+  restart-without-the-slice heal fires on the first genuinely-active tick. The put half is
+  deliberately NOT behind the gate (a registration keeps re-asserting until it sticks), and the
+  minting half keeps its existing leader gate — a leader gate on removals was evaluated and rejected,
+  because removals are per-node self-authority and a worker that never becomes leader could never
+  shed a stale registration. Residual, accepted and documented: on a restarted ACTIVE node the window
+  between activation and slice redeploy still prunes-then-reasserts (the level-triggered heal).
+  [verified: `aether/node/src/test/java/org/pragmatica/aether/node/EntityOwnershipReconcilerTest.java`
+  — closed-gate suppression, defer-not-cancel across an activation flip, and the put-half exemption
+  are each pinned, with both mutations (gate removed / gate widened over puts) demonstrated red]
+
+### Changed (2026-08-28 — #496 scoped audit, surfaces 2 & 3 closed: KV/durability, deployment/blueprint)
+- GA claims-vs-reality audit (#496), remaining two of three green-lit surfaces. No doc content
+  changed this pass — both surfaces audited clean; recorded here so the "zero findings" result is a
+  verified conclusion, not silence.
+- Surface 2 (KV/durability): a repo-wide sweep for flag-on-sight phrases found nothing left
+  unaddressed beyond what the consensus/cluster-core pass already fixed (D1) and what stays
+  correctly deferred (durable-entity D13, the #676 backup row). Substantially covered by that pass.
+- Surface 3 (deployment/blueprint semantics): read all 8 candidate ops/architecture/spec docs. The
+  `ALL_OR_NOTHING`/blue-green atomicity claims in `architecture/02-deployment.md`,
+  `slice-developers/deployment.md`, and `guides/deploy-guide.md` already earn their wording —
+  mechanism named (single consensus-batch write across all slices' keys, ~100ms/one-Rabia-round for
+  the blue-green switch). `operators/deployment-recovery.md:73` is already exemplary on why
+  "highly available with automatic restart" doesn't describe Aether's terminal-removal/reprovision
+  recovery model. `specs/unified-deploy-spec.md`'s atomicity claim is likewise well-grounded; its
+  `/api/deploy/*` route-namespace content was left untouched as entangled with the deferred
+  `/api/v1` hard-cutover territory, not for a guarantee-wording reason.
+- `aether/docs/reference/guarantees-corrections-needed.md`: logged both surfaces' conclusions.
+  #496's scoped pass (consensus/cluster-core, KV/durability, deployment/blueprint) is now complete;
+  remaining open rows (D6-D13, D16-D19) all sit in explicitly deferred streams/pub-sub/durable-entity
+  territory for a later pass.
+
+### Changed (2026-08-28 — #496 scoped audit, consensus/cluster-core surface)
+- GA claims-vs-reality audit (#496), scoped to consensus/cluster-core guarantee language per
+  team-lead's green-light (management-API-route content, the #676 backup row, and stream/data-plane
+  claims explicitly deferred to a later pass — logged in `guarantees-corrections-needed.md`).
+- `aether/docs/reference/feature-catalog.md`: KV-Store row now states the write/read consistency
+  split (linearizable write order, non-linearizable local reads) instead of the unqualified
+  "Consensus-replicated store" phrasing (worklist D1); Quorum-state-management row now names the
+  pause/reject-writes + minority-self-fence mechanism instead of the "graceful degradation ...
+  automatic restoration" euphemism (worklist D4).
+- `aether/docs/operators/monitoring.md`: the threshold-replication "No single point of failure"
+  claim is now scoped to the write path, with the local-read-may-lag caveat added (worklist D14 —
+  applied with a context-specific rewrite, not the boilerplate one in the worklist, which didn't fit
+  this section since threshold writes aren't leader-pinned).
+- `aether/docs/guides/rolling-upgrade.md`: "zero downtime" is now scoped to app-downtime, with a new
+  core-node quorum-margin caveat during the rolling window (worklist D15 — the guide previously
+  never discussed this risk at all).
+- `aether/docs/architecture/01-consensus.md`, `aether/docs/contributors/consensus.md`: fixed an
+  unearned "Strong (all nodes agree)" / "Strong consistency required" claim on the leader-election
+  consensus mode (new finding, not in the original worklist) — the commit is linearizably ordered,
+  but nodes apply it as their own round completes, not simultaneously; same-order, not same-instant.
+- Confirmed `aether/docs/architecture/14-consistency-and-partitions.md` already meets the bar (no
+  changes needed) and that worklist items D2/D3 (DHT durability disclosure) were already applied in
+  the 2026-07-17 docs wave.
+- `aether/docs/reference/guarantees-corrections-needed.md`: marked D1-D4/D14/D15 applied, logged D20
+  (the new leader-election finding), and logged the deferred rows (D6-D13/D16-D19) so the next #496
+  pass is enumerable instead of rediscovered.
+
+### Changed (2026-08-28 — #705 filed: point the compat-window gap at it)
+- `aether/docs/reference/versioning-and-compatibility.md`'s open compatibility-window gap
+  (noted when #321 landed, below) now points at #705 — filed by the owner off that flag,
+  milestoned v1.0.0 — instead of describing it as an unfiled candidate. No policy content added;
+  the duration/backport decision is still owner-grade and unmade.
+
+### Fixed (2026-08-28 — #577 docs half: `@Sql` documented usage did not compile)
+- `aether/docs/reference/configuration.md`'s Config Merge Hierarchy example called
+  `@Sql("orders_db")` — `@Sql` (`aether/resource/api/.../db/Sql.java`) has no value element at all,
+  fixed to `@ResourceQualifier(type = SqlConnector.class, config = "database")`, so that call is a
+  compile error and no named datasource is reachable through it. Fixed the example to
+  `@ResourceQualifier(config = "database.<name>")`, the annotation the rest of the page already
+  documents correctly for named datasources, and added an explicit "`@Sql` takes no argument" note
+  to the Multi-Datasource Convention section so the constraint isn't only implicit in the examples.
+  The `[datasources.*]`/`[endpoints.*]` merge-hierarchy mechanism itself is untouched — its wiring
+  is a separate, unverified question (`#577`'s "reported, needing confirmation" bucket), not this
+  fix's scope. `@Sql`'s data-plane-adjacent half of #577 (`StreamConsumerAdapter` and friends)
+  remains for stream B; not started here.
+
+### Changed (2026-08-28 — #321: SemVer commitment ruled for GA)
+- `aether/docs/reference/versioning-and-compatibility.md` updated with the owner ruling: Aether
+  commits to semantic versioning for the product release from GA (`v1.0.0`) onward — additive
+  changes only in minors, breaking changes reserved for majors — independent of the management
+  API's own version axis (`management-api-versioning-spec.md` §2.6). Pre-GA rc's remain outside
+  the commitment. Flags the one thing the ruling did *not* settle: the compatibility window once a
+  major ships (backport/LTS/EOL policy) is still undecided and unpublished — noted as a candidate
+  for its own tracking ticket, not filed, parallel to how the version-skew gap became #666.
+
+### Added (2026-08-27 — #351 / #345 I4: durable entity timers, end to end)
+- **A timer scheduled on an entity is a record in that entity's own fenced, replicated log**, so it
+  survives its owner being replaced and the whole cluster restarting. `scheduleTimer` / `cancelTimer`
+  work from any node: a non-owner forwards to the committed owner over three new wire verbs
+  (`EntityScheduleTimerForward`, `EntityScheduleTimerForwardResponse`, `EntityCancelTimerForward`;
+  tags 1668/1670 and 1669), and the owner re-runs admission on arrival, so the epoch fence still
+  decides and the per-key total order stays the owner's to enforce.
+- **The token is CALLER-minted**, so a re-send after a lost acknowledgement is the SAME schedule:
+  owner-side dedupe on the fold's pending set means no duplicate timer and the same success answer.
+  Without it a lost ack left a durable timer scheduled with no token to cancel it by — for the
+  canonical consumer (reservation expiry) a spurious expiry attributable to nothing. `TimerToken`
+  never crosses the wire; the token travels as a plain `String` and is re-wrapped inside the module.
+  The API exposes both forms: `scheduleTimer(key, delay, onFire, token)` for callers that want
+  retry-safety, and a minting `scheduleTimer(key, delay, onFire)` default for callers that do not.
+- **The fire instant is stamped by the committed OWNER at append, never by the scheduling node.** The
+  API's one unconditional promise is at-or-after, never before; a sender whose clock ran ahead of the
+  owner's would fire a timer EARLY and it would look correct to everyone involved. Paying one network
+  hop of extra delay keeps the promise. Skew shifts a fire only across a handover between owners.
+- `ENTITY_TIMER_INTERVAL` is 1s, a documented CONSTANT rather than a config knob. #351 promises no
+  punctuality anywhere, so this value CREATES the contract: worst-case lateness is one tick plus
+  however long the partition goes without a live owner. Sub-second punctuality is explicitly not this
+  mechanism's job — a millisecond deadline wants in-memory scheduling, which buys that precision by
+  giving up durability across an owner change.
+
+#### Measured, from live 5-node clusters
+| Gate | delay | disruption | fire |
+|---|---|---|---|
+| full restart | 30s | 42,061ms downtime | 1,052ms after ready |
+| owner handover | 45s | 9,344ms kill→new committed owner | 36,720ms |
+| same-token resend ×5 | 8s | — | ≤1 tick |
+
+The restart gate is the stronger of the two because its **downtime outlasts the delay** — the timer
+comes due while the cluster is down, so it demonstrates "late, never lost" rather than merely
+"survived". The handover gate keeps ~35s of runway, so the timer fires on its ORIGINAL instant from a
+node that never saw the schedule; its target is chosen through the production `EntityPartitionArc`
+and then VERIFIED to have changed owner, so a mis-targeted kill fails loudly instead of passing
+vacuously. Exactly-once is asserted on entity state (`OrderState.expiries`), not on logs.
+[verified: `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/DurableEntityTimerDurabilityTest.java`,
+`.../DurableEntityForgeTest.java`]
+
+**The exactly-once evidence required repairing its own instrument first, and that repair is part of the
+claim.** The quiet period separating "exactly once" from "not yet twice" was a bare
+`LockSupport.parkNanos`, and `Promise.await()` can leave a residual permit on the calling thread that
+the next bare park consumes immediately. Measured: **5 residual-permit hits per 20,000 awaits**, and
+with a permit present the bare park returned in **0ms** where a deadline loop takes **503ms**. Until
+that was fixed the gates could silently re-read the value they had just polled. All three now
+measurably elapse (5,000 → 5,004-5,005ms).
+
+### Fixed (2026-08-27 — checkpoint correctness, reached from the I4 fold work)
+- **A checkpoint could claim more coverage than its contents carried.** The driver read the applied
+  offset and the fold contents separately, so a fold advancing between the two reads produced a HIGH
+  claim over LOW contents. Both now come from one captured fold (`checkpointCandidate`).
+- **`saveCheckpoint` was a blind Put with no monotonicity**, so a regressed-but-honest claim could
+  overwrite a higher one whose log beneath had already been reclaimed by the retention floor — leaving
+  those records on no reachable node. Now advance-only, guarded by the previously write-only
+  `checkpointedThrough`. The cross-NODE half needs a conditional substrate write and is #700.
+- `EntityCheckpointDriver.register` did check-then-add, so its documented idempotence held only for
+  sequential re-provisioning. Now a single atomic `putIfAbsent`, matching `EntityTimerDriver`.
+- Pre-existing fold defects found here and deliberately left for their own review: #701.
+### Fixed (2026-08-27 — #547: no deploy-time validation for generic resource config sections)
+- **The gap.** A slice's generic resource dependencies (database/cache/HTTP-client/idempotency —
+  `SliceTopology.resources()`) had zero validation at deploy time. A missing `resources.toml`
+  section only surfaced later, one node at a time, as an `SpiResourceProvider.loadConfig` failure
+  during slice activation — after the deploy had already been accepted.
+- **Fix.** `BlueprintService.publish`/`expandAndStoreArtifact` now run a new
+  `ConfigSectionPreflightValidator` against every slice's `resources()` (not `publishes()`/
+  `subscribes()` — see scope note below), aggregating every missing section into one failure via
+  `Result.allOf` so the deploy fails once with a **complete list**, not stop-at-first
+  [verified: `ConfigSectionPreflightValidatorTest`, `BlueprintPublishOwnershipTest.ConfigPreflight`
+  — the latter exercises the real `BlueprintService.publishFromArtifact` path end-to-end with an
+  on-disk slice jar and a real `ConfigurationProvider`].
+- **Scope, deliberately narrow.** Only generic resources are gated. Pub-sub topics/streams already
+  have their own validation stage (`StreamResourceValidator`) with different, non-gating semantics —
+  folding them into this hard-fail check was considered and rejected as scope creep beyond this
+  ticket's acceptance criteria (`BlueprintService.java:340-345`'s own comment already documents the
+  stream-validation gate as a separate stage; `ManifestGenerator` structurally excludes stream
+  resources from the sections this check can see).
+- **Gap 1 (silent synthesis) resolved by documenting, not removing.** `TopicConfig` is the one
+  resource type that still derives its config from the manifest when its `resources.toml` section is
+  absent (`SpiResourceProvider.topicNameFallback`, #396) — there is nothing to synthesise, since the
+  topic name was never a value the operator was supposed to supply. Its javadoc and
+  `resource-reference.md` now say so explicitly; every other resource type has no such fallback.
+- **Honest limits, stated in code and docs.** The check verifies presence and shape against the
+  leader's composite configuration view (KV-overlay ⊕ the leader's own `aether.toml`), checked once
+  at deploy time — not environmental correctness and not cross-node config homogeneity
+  `[design intent — unverified]`. The failure message names this exact view so it is not mistaken
+  for a cross-node guarantee. When no `ConfigurationProvider` is wired on the node at all, the check
+  fails **open** rather than manufacture a false positive — and because a quiet gate that doesn't
+  gate is itself a failure mode, the skip is now logged (WARN) whenever it would have had at least
+  one resource section to check, naming the count of sections and slices that went unchecked
+  [verified: `BlueprintPublishOwnershipTest.ConfigPreflight.publishFromArtifact_logsVisibleSkipWarning_whenNoConfigurationProviderIsWired`
+  — captures the real logger via a log4j2 programmatic appender against the live `publishFromArtifact` path].
+- No false positives: a slice whose sections are all present deploys unchanged
+  [verified: `ConfigSectionPreflightValidatorTest.HappyPath`].
+- **Scope pinned by tests, not just by comment.** A missing publish-topic config section can never
+  fail this check — `publishes()` is a list the validator never inspects, unlike a missing
+  generic-resource section which hard-fails
+  [verified: `ConfigSectionPreflightValidatorTest.HappyPath.validate_missingPublishTopicSection_isInvisibleToTheCheck`].
+  Proven on the real manifest-generation/parsing path too: a slice jar with both a missing generic
+  resource section and a co-present missing publish-topic section fails naming only the resource
+  section, never the topic
+  [verified: `BlueprintPublishOwnershipTest.ConfigPreflight.publishFromArtifact_namesOnlyTheMissingResourceSection_whenAMissingPublishTopicSectionCoexists`].
+- New: `MissingConfigSection` (Cause), `ConfigSectionPreflightValidator` in
+  `aether/aether-deployment/.../deployment/validation/`. Plumbing: `BlueprintService` gained a 5-arg
+  `blueprintService(...)` factory taking `Option<ConfigurationProvider>`; `AetherNode` wires it from
+  `resourceProviderSetup.nodeComposite()`. The existing 3-/4-arg factories are unchanged in behavior
+  (delegate with `Option.empty()`, i.e. fail-open) — no existing call site or test required updating.
+
+### Fixed (2026-08-27 — #269: slice-level `resources.toml` `${secrets:...}` placeholders not resolved)
+- **The gap.** Node-level `aether.toml`/KV secrets already resolved eagerly via
+  `ConfigurationProvider.withSecretResolution` (`AetherNode.createResourceProviderFacade`), but a
+  slice's own bundled `META-INF/resources.toml` was parsed as-is — a `${secrets:db/password}`
+  placeholder shipped as a literal string into any resource declared only at that layer.
+- **Fix.** `SliceStore` now threads the same node-configured resolver
+  (`Option<Fn1<Promise<String>, String>>` — the narrow functional shape `withSecretResolution`
+  itself already takes, chosen over threading a whole `SecretsProvider` so `aether/slice` doesn't
+  gain a new dependency on `aether/environment-integration`) through to a new
+  `resolveIntrinsicSecrets`, which wraps the slice-intrinsic provider the same way node.toml is
+  wrapped.
+- **All-or-nothing, deliberately.** One failed key drops the ENTIRE slice-intrinsic layer —
+  mirroring the file's own pre-existing malformed-TOML-parse-failure convention — rather than
+  silently keeping the other keys or failing the whole slice load. A resource declared only in the
+  slice's `resources.toml` then fails as not-configured at provision time; the node log names the
+  slice, the failed key, and this consequence (`intrinsicSecretsDroppedMessage`). A slice's
+  resource config that's also set in `aether.toml`/KV is unaffected. *Considered and rejected:*
+  failing the entire slice load on any secret failure — inconsistent with how a malformed
+  `resources.toml` already degrades, and a bigger blast radius than the gap being closed.
+- **R5 redaction, same pass.** `logShadowedKeys`'s INFO line was logging both the slice-intrinsic
+  and operator-override *values* when an operator config shadowed a slice default. It now logs key
+  names only (`shadowedKeys`); swept the rest of `SliceStore.java` for other value-logging sites —
+  this was the only one.
+- Tests pin the success path (placeholder resolved, non-secret keys pass through), the no-resolver
+  path (literal placeholder preserved, pre-#269 behavior), the failure path (entire layer dropped),
+  the consequence message (names the slice/key/secret-path/effect), and the redaction (returns key
+  names only, never a value, for any input) — via directly-testable pure functions rather than log
+  capture, since this codebase's log backend (log4j2) has no unit-test appender-capture utility.
+  [mechanism: `SliceStoreTest`, unit-level — not yet exercised end-to-end with a live secrets
+  backend across nodes]
+- Docs: `aether/docs/slice-developers/resource-reference.md` updated — it previously stated slice
+  secrets were unresolved and pointed at this ticket as future work.
+
+### Fixed (2026-08-27 — #519 dead-config-accessor gate re-homed so it can pass a clean build)
+- **The gate could not pass a from-scratch reactor run, and had held the branch red for hours.** It
+  scans every module in `aether/pom.xml`'s default `<modules>` list by reading each one's
+  `target/classes`, but lived in `aether/node`'s test suite — and modules such as `aether/ember` depend
+  on `node`, so they are built strictly AFTER it. On a clean build their output does not yet exist when
+  node's tests run, and the gate's corpus precondition correctly refused. It passed locally only where
+  leftover `target/` output happened to be present.
+- **Moved, not redesigned.** The whole `deadsurface` package now lives in a dedicated
+  `aether/dead-surface-gate` module placed LAST in the default `<modules>` list, with **test-scoped
+  dependencies on all 30 scanned modules** — so corpus completeness is enforced by Maven's own
+  ordering, in any build order, rather than by luck. Six of the seven files are byte-identical to their
+  previous versions; `ReactorRoots` differs only in comments and one diagnostic string.
+- **The loud precondition is deliberately untouched.** The instrument was well built — it detects its
+  own incomplete corpus and refuses rather than reporting false DEAD accessors, which is why this
+  surfaced as a red build instead of as a silently under-reporting gate. Softening it would have
+  destroyed the property that made the defect visible.
+- Verified from a genuinely clean tree (zero `target/` directories beforehand), so the local run
+  reproduces CI's from-scratch ordering: BUILD SUCCESS, `ConfigKeyLivenessTest` 2 run / 0 failures.
+  Adversarial check: deleting `aether/ember`'s output turns the gate red with its original
+  corpus-incomplete message, and restoring it turns it green — the pass is not vacuous.
+- A gate that only passes on a dirty tree is the inverted form of the stale-artifact trap: local green
+  *because* leftovers were present, CI red *because* it was clean.
+
+### Fixed (2026-08-27 — #278: interceptor config silent-default corruption for retry/metrics provisioning)
+- `CircuitBreakerConfig`'s private `DEFAULTS` renamed to public `DEFAULT`; `RetryConfig` gained a
+  TOML-bindable `BackoffStrategy` (binder resolver) plus a public `DEFAULT`. Before this, an
+  otherwise-present `[retry.*]`/`[circuit_breaker.*]` TOML section with an omitted field silently
+  fell back to a private, binder-invisible default, and `RetryConfig`'s backoff strategy could not
+  be configured from TOML at all.
+- New reflective regression-gate test (`InterceptorConfigDefaultAllowlistTest`) pins which
+  interceptor configs may expose a public static final `DEFAULT` (pure tunables:
+  `CircuitBreakerConfig`, `RetryConfig`) and which must NOT (identity-bearing name fields:
+  `CacheConfig`, `IdempotencyConfig`, `MetricsConfig` — a shared public default would let unrelated
+  TOML call sites silently collapse onto the same cache/store/metrics namespace). Adversarially
+  verified (mutation testing in both directions) to actually catch a regression, not pass vacuously.
+- `MetricsInterceptorFactory` now resolves the node's real `MeterRegistry` from
+  `ProvisioningContext` (registered by `AetherNode` from `ManagementServer.meterRegistry()`)
+  instead of each `MetricsMethodInterceptor` fabricating its own disconnected registry — metrics
+  now land in the SAME registry the Management API `/metrics` endpoint scrapes.
+  **Tradeoff, not yet resolved:** the registry registration only runs when
+  `config.managementPort() > 0` (`AetherNode.java`, inside the management-server startup branch).
+  A node with the management port disabled will now fail to PROVISION any slice using a metrics
+  interceptor, rather than silently recording into a black-hole registry as before.
+  [design intent — unverified] whether fail-loud is the right outcome for management-disabled
+  nodes, versus falling back to a no-op registry, is an open question for the issue owner.
+- Fixed a live bug in the banking example: `examples/banking/account`'s `resources.toml` had zero
+  `[cache.*]` sections (would fail hard at deployment with `ConfigError.sectionNotFound`), and its
+  three cache-touching methods (`getBalance`/`credit`/`debit`) pointed at three different TOML
+  addresses that needed an identical explicit `cache_name` to share one `CacheBackend` instance —
+  without it, `credit`/`debit`'s invalidation silently targeted a disconnected cache, leaving a
+  stale balance served forever. New `CacheInvalidationTest`
+  [verified: examples/banking/account/src/test/java/org/pragmatica/aether/example/banking/account/CacheInvalidationTest.java]
+  proves the fix end-to-end through the real TOML-binder -> `CacheInterceptorFactory` ->
+  `CacheMethodInterceptor` path — not the plain-record construction `AccountServiceTest` uses,
+  which bypasses interceptor wiring entirely — including an adversarial case proving the staleness
+  failure mode actually manifests when `cache_name` diverges.
+
+### Removed (2026-08-27 — #560: orphaned `aether-lb` Dockerfile deleted, cloud-testing-spec.md marked historical)
+- `aether/docker/aether-lb/Dockerfile` deleted (with its now-empty parent directory). It built
+  against `aether/lb/target/aether-lb.jar`, a path nothing in the repo produces — `aether/lb` isn't
+  a module, no workflow builds an `aether-lb` image, `ghcr.io/pragmaticalabs/aether-lb` was never
+  published. Unbuildable since it landed; zero other references anywhere in the repo.
+- `aether/tests/cloud/docs/cloud-testing-spec.md`'s existing "Superseded in part" banner (rc3,
+  2026-07-30) explained current routing but never flagged the ~150 lines of Phase 6/8 provisioning
+  detail below it that still describe the retired VM+container design as live. Banner finalized
+  (retirement is now a decided fact, not "tracked separately") and inline **Historical** markers
+  added at the six heaviest clusters (§1.3 architecture diagram, Phase 6, Phase 8, §5's bastion-as-
+  LB framing, §9's sequence diagram, Open Question Q4). Whether an LB returns as a mode of
+  `aether-node` on `PassiveNode` (dead code today) stays gated on the owner's roadmap answer on
+  ingress AB/canary routing — see #560, [MAILBOX.md](MAILBOX.md).
+
+### Removed (2026-08-27 — #571: `HealthSignal` / `HealthSignalSink` deleted repo-wide)
+- **The whole signal channel is gone: 2 types, ~64 main-code sites across 5 modules, 116 test
+  references across 20 files, landed as one atomic commit.** Splitting it was never an option — an
+  intermediate state where some callers are gone and the type is not (or the reverse) breaks a fresh
+  build while incremental stays green, which is exactly what `f1aed3ff4` did to this branch.
+- **The deletion is behaviour-preserving by construction, not by argument.** `healthSinkRef.set` had
+  zero call sites and every `HealthSignalSink` in main code was either `HealthSignalSink.noop()` or a
+  pass-through parameter — **no real implementation of the interface existed anywhere in production
+  code**, so every emit already went into a black hole. `ClusterDeploymentContext.healthSignalSink()`
+  and `ManageableNode.healthSignalSink()` both had zero callers.
+- **Two live paths sitting inside the blast radius were kept intact**, and they are the reason this
+  needed one owner rather than a mechanical sweep: `ClusterSyncPongSignalFan`'s leader readiness view
+  (`recordReadiness` / `readinessSnapshot()`, feeding the CDM allocatable gate and the DRAINING set)
+  is a SEPARATE interface from the sink and survives untouched; `SwimHealthContext.reportHint`'s
+  `bufferHealthObservation` → `observationStore.pushHealth` half is LIVE and feeds
+  `PeerHealthObservation` into the `ClusterSyncPong` body — only the `emitLeaderHint` half went.
+- **Test migration lost no resolution on the health plane.** `emitLeaderHint` had exactly two call
+  sites and BOTH already paired it with `bufferHealthObservation` — there was no emit-without-push
+  anywhere — and `PeerHealthObservation` is strictly richer than `HealthSignal.SwimHint`
+  (`HealthHint`/`HealthHintWire` are isomorphic under a total bijection, plus it carries
+  `producedAtMs`). All 17 health-plane assertions moved onto the observation store with no new seam.
+- **One genuine loss, recorded rather than absorbed:** `HealthSignal.PingTimeout.observedAt` has no
+  live carrier — `reportUnreachable(NodeId)` takes neither the epoch stamp nor the missed count. The
+  count is still pinned at FSM level by `counterForPeer`; the stamp is not pinned anywhere. It was
+  only ever observable through a channel with no production consumer, so what disappeared is a
+  test-only assertion, not operator-visible information. Putting it on `reportUnreachable`'s payload
+  would be a behaviour change and belongs in its own review.
+- **Four metrics-plane tests deleted outright** as pinning only the dead channel (`translateHint` /
+  `translateConnectivity` coverage went with the code they translated into); one deleted as a
+  duplicate of its readiness-view sibling. Seven migrated onto `reportUnreachable` and
+  `readinessSnapshot()`. The leader-transition test needed a SECOND peer to keep pinning its real
+  property (leadership re-read per `fan()`, not cached at construction) — the existing entry is not
+  cleared on demotion, so re-using one peer would have made it vacuous.
+- **One test in the migration set was already vacuous.**
+  `CoreSwimHealthDetectorHintEmissionTest.defaultFactory_doesNotFail_whenNoSinkProvided` asserted an
+  `emittedSignals` list was empty, but that list was never wired to the object under test (the 4-arg
+  factory hardcodes `noop()` and its own private store), so the assertion could not fail. Reduced to
+  the construction smoke check it actually was, and named accordingly.
+- **The QUIC disconnect listener is now inert, and every comment that claimed otherwise was
+  corrected.** `AetherNode.attachQuicDisconnectListener` was the only caller of
+  `setDisconnectListener` and its listener body was a single emit into the dead sink, so both are
+  gone; `QuicClusterNetwork`'s leader-side `disconnectListener.onDisconnect` now runs against the
+  `noop()` default for every teardown. Liveness reaches the leader through
+  `PeerConnectivityObservation` instead. The interface and its transport-side contract test are kept
+  — the contract is still honest, it simply has no consumer — and both now say so.
+- Verified: full-reactor `mvn clean install` (142 modules, 12,365 tests, 0 failures), repo-wide JBCT
+  check, and `./forge.sh ci` (38 tests). The format gate caught two files a compile-green build did
+  not — the same class that broke this branch once already.
+
+### Added (2026-08-27 — #519 phase 1: permanent dead-config-accessor CI gate)
+- New `aether/node` test-scoped gate, `ConfigKeyLivenessTest`, that scans compiled bytecode
+  (`BytecodeReachability`, ASM `INVOKE*`/`invokedynamic` edges, owner-qualified so same-named
+  accessors on unrelated types don't produce false matches) to catch a config record accessor
+  parsed from TOML but never called by any production code path — landed ahead of, or orphaned
+  behind, its own consumer. Reflective binding (e.g. Jackson) is treated as live via
+  `ReflectiveConfigExemptions`, not flagged. Baseline-and-ratchet, not instant-gate: the corpus was
+  triaged once (see below); the test only fails on a *new* unsuppressed dead accessor from here on.
+  A synthetic fixture (`selfTest_syntheticFixture_distinguishesLiveFromDeadAccessor`) is the
+  permanent positive/negative-control sensor validating the scanner itself, run on every build.
+- New `@ConfigKeyLive("<ticket>: <why>")` annotation (`aether-config`, `RUNTIME`-retention,
+  targets `METHOD` + `RECORD_COMPONENT`) suppresses one flagged accessor with a mandatory
+  ticket-backed justification, read reflectively by the gate — deliberately not
+  `@SuppressWarnings`, which is `SOURCE`-retention and invisible to a bytecode-only scanner.
+- Corpus discovery (`ReactorRoots`) reads the module list directly out of `aether/pom.xml`'s
+  default `<modules>` block, not this JVM's own classpath: a classpath read only sees
+  `aether/node`'s own dependency closure, which is blind to `aether/cli` (a sibling of `node` that
+  depends on `aether-config` directly, not through `node`) — every accessor whose only real caller
+  lived in `cli` was invisible to an earlier classpath-based draft and came back false-DEAD. Fails
+  loud (`missingProductionOutput()`, an explicit build instruction) rather than silently scanning
+  an incomplete corpus when a declared module was never compiled in the working copy.
+- Phase-1 triage of the full `ClusterBootstrapConfig` tree: 9 accessors initially flagged
+  (`SourceProfile.user/key/sshPort`, `FirewallRule.description`, `SshDeploymentConfig.publicKeyFiles`,
+  `TlsDeploymentConfig.clusterSecret`, `OperationsConfig.timeouts`,
+  `TimeoutsConfig.healthCheck/quorumFormation`) are genuinely live, called only from `aether/cli` —
+  correctly resolved once `ReactorRoots` closed the corpus gap above, no suppression needed. 7
+  accessors (`AutoHealSpec`'s 6 unwired fields, #675, prior entry) plus 6 more found this pass
+  (`ClusterBootstrapConfig.configVersion`, `RoleSubTable.role`, `RuntimeProfile.name`,
+  `InfrastructureConfig.networkingType`, `TlsDeploymentConfig.certTtl`,
+  `TimeoutsConfig.drain` in `config.cluster`) are genuinely dead, filed as
+  [#693](https://github.com/pragmaticalabs/pragmatica/issues/693) and suppressed with
+  `@ConfigKeyLive` citing the specific unrelated same-named accessor each one was almost confused
+  with (`ClusterConfigValue.configVersion()`, `NodeLifecycle`/`ReplicationBatcher`/CTM's `.drain()`,
+  `TlsConfig.clusterSecret()` on `Main.resolveClusterSecret`, etc.).
+- Phase 2 (status/health field liveness, deferred from this pass per scope) tracked as
+  [#690](https://github.com/pragmaticalabs/pragmatica/issues/690); #519 itself updated with the
+  phase-1 census.
+- [mechanism: `BytecodeReachability` walks ASM `MethodNode` instructions for `INVOKEVIRTUAL/
+  INVOKESTATIC/INVOKESPECIAL/INVOKEINTERFACE/INVOKEDYNAMIC`, matched by owner-qualified
+  `MethodRef`, over `ReactorRoots.productionRoots()`,
+  aether/node/src/test/java/org/pragmatica/aether/deadsurface/]
+- [verified: `org.pragmatica.aether.deadsurface.ConfigKeyLivenessTest` — both the synthetic
+  positive/negative-control fixture and the real `ClusterBootstrapConfig`-tree gate pass; full
+  `aether/node` test-source tree recompiles clean against the final `ReactorRoots`]
+
+### Fixed (2026-08-27 — #678: replacement PEERS no longer seeded from discovered-but-dead peers)
+- `ClusterTopologyManagerRecord.buildProvisionContext` — the cold-path PEERS fallback used when the
+  `LeaderReconciler`'s live `clusterMembers` set is empty — filtered candidate peers with
+  `isDiscoveredPeer` only. Discovery is one-way and permanent (SWIM gossip adds a peer once; nothing
+  ever removes it from the dial set on death), so a just-killed host stayed eligible for a
+  replacement's PEERS list forever, contradicting the neighbouring class docstring's claim that
+  seeding from a live set "keeps just-killed hostnames out of the PEERS list" — that claim held for
+  the live-member-set path but never for this fallback.
+- Added `liveObservedPeer()`, filtering on `snapshotSource.currentMembershipView().map(MembershipView::coreMemberIds)`
+  — in production (`PresenceGenerationSnapshotSource`) backed by `MembershipFsm.coreObservedMembers`,
+  core members narrowed to first-hand reachability evidence (a completed QUIC handshake or a SWIM
+  ALIVE observation), plus self. No new dependency: `snapshotSource` was already wired into this
+  record. Before any snapshot exists (BOOTING, no reachability evidence latched yet) the filter is a
+  no-op passthrough, matching the BOOTING/NORMAL fallback idiom already used elsewhere in this class
+  (`resolveClusterName`, `healthyActivePeerCount`).
+  [mechanism: `ClusterTopologyManagerRecord.buildProvisionContext` + `liveObservedPeer`,
+  aether/aether-deployment/src/main/java/org/pragmatica/aether/deployment/cluster/ClusterTopologyManagerRecord.java]
+- [verified: `ClusterTopologyManagerActuatorTest.provisionReplacement_coldPath_excludesDiscoveredButUnreachablePeer`]
+  — a peer discovered via SWIM gossip but absent from the latched snapshot's `coreMemberIds` is
+  excluded from the cold-path PEERS list; a peer present in both is included.
+- Not a rename: the constant-true `isHealthyPeer` predicate this call site used before was already
+  renamed to `isDiscoveredPeer` (#558, prior commit) to stop the name from claiming a health check
+  that never happened. That rename was explicit that it did not fix the underlying defect — this
+  entry is that fix, landed separately as its own review per that rename's docstring.
+
+### Fixed (2026-08-27 — #578 follow-up: cli.md corrected to match the plan-classify-then-actuate fix)
+- `cli.md`'s `aether cluster apply` description claimed every apply computes a terraform-style plan
+  and executes it in waves (additions → modifications → removals, `maxUnavailable`-respecting
+  rolling restart). That description is only true of the `--resume`/`--rollback` path
+  (`ApplyOrchestrator` → `WaveExecutor`). Plain `apply` (no flags) actuates **scale changes only** —
+  `ClusterConfigApplierRecord.classify` accepts `ScaleUp`/`ScaleDown` and rejects every other
+  `DiffAction` variant (`AddSource`, `RemoveSource`, `AddRole`, `RemoveRole`, `RuntimeChange`,
+  `SourceFieldChange`, `ClusterLevelChange`) with a typed `UnsupportedApplyAction`, whole-plan,
+  before-any-actuation (`ClusterConfigApplier.java:72-96`); `ImmutableFieldChange` is caught one
+  layer up at the route (`ClusterConfigRoutes.executeDiff:433-435`). Corrected the doc to describe
+  the two paths separately rather than presenting the wave-execution description as what plain
+  `apply` does [verified: `aether/aether-deployment/.../ClusterConfigApplier.java`,
+  `aether/node/.../ClusterConfigRoutes.java`, `aether/cli/.../ApplyOrchestrator.java:172`]. No code
+  changed — doc-only, no restructuring beyond the one inaccurate paragraph.
+
+### Fixed (2026-08-27 — #381: application-config runtime notification catalog claim corrected)
+- **Catalog row 176 claimed "Runtime notification via single-threaded executor with record diff";
+  the runtime push half of that claim is dead code.** `ConfigNotificationManager.notifyInitial`
+  delivers a slice's merged config exactly once, at ACTIVATE
+  [verified: `NodeDeploymentState.registerSliceForConfigUpdates`]. `notifyChange` — the entry point
+  for pushing a config change to an already-running slice — has **zero callers repo-wide**; a
+  KV-Store `ConfigKey` write is picked up only by the separate, unrelated
+  `DynamicConfigManager`/`DynamicConfigurationProvider` flat-string overlay
+  (`aether/node/.../api/DynamicConfigManager.java`), which never calls back into
+  `ConfigNotificationManager`. The two config-update systems were built independently and never
+  bridged. Row 176 downgraded **Complete → Partial**; recovery action for an operator who needs a
+  changed config section picked up: redeploy/restart the affected slice.
+  [design intent — unverified] whether wiring `notifyChange` is still wanted: the
+  `lastParsedConfig` field it would support a diff from is itself dead (write-only, never
+  populated), and `control-plane-delegation-spec.md` (`aether/docs/specs/future/`) already lists
+  `ConfigNotificationManager` as a per-node, not-leader-only component in a planned future
+  architecture — left in place rather than deleted for that reason, pending a decision by whoever
+  owns that spec. **No functional/production code changed** — this is a claim-only correction
+  (`guarantees-corrections-needed.md` C4 already tracked this exact gap and named the two options,
+  "wire it or remove it"; wiring needs a KV-router registration in `AetherNode.java`, out of this
+  fix's territory).
+
+### Fixed (2026-08-27 — #616 follow-up: GossipKeyRotationKey security-operations gap, #616 closed)
+- Filed **#683**: `GossipKeyRotationKey`'s consumer path (`GossipKeyRotationHandler`, wired as the
+  design comment's "sole delivery path" for gossip-key rotation) has zero production writer and no
+  CLI/admin trigger anywhere in the codebase. Verified the daily automatic gossip-key rotation
+  claimed in `SECURITY.md` is unaffected and independently correct — every node derives its
+  current/previous/next key via HKDF from `cluster_secret` + UTC day
+  (`SelfSignedCertificateProvider.deriveGossipKeyWithLabel`), with no KV/consensus dependency. The
+  gap is narrower and sharper: because that daily key is itself derived from `cluster_secret`,
+  rotating `cluster_secret` doesn't revoke gossip access already computed from a leaked copy — the
+  KV-delivered path was meant to be the in-place escape hatch and currently cannot be invoked.
+  Cross-referenced #287 (closed, rc2 — chmod 600 + off-argv hardening on a different code path) and
+  `SECURITY.md`'s `cluster_secret` hygiene section, where a one-line note now cites #683.
+- Closed **#616** — the KV key-type census landed in `guarantees.md` §1a (commit `cb245eb36`), and
+  every gap the audit surfaced now carries its own ticket (#676 backup, #679/#680/#681 spun-off
+  findings, #683 gossip-key rotation).
+
+### Fixed (2026-08-27 — #616 durability audit: KV key-type census, backup mechanism, three new gaps)
+- Added `guarantees.md` §1a: a census of all 50 `AetherKey` record types (not ~40 as originally
+  estimated), current-truth-only (no sufficiency judgment, no internal-ruling references).
+  `EphemeralKeys.java`'s compiled, test-pinned 17-type set is documented as authoritative for the
+  declared/derivable split, superseding #616's own stale 15-type hand-list (10-type discrepancy in
+  both directions, enumerated). Classified 4 fully-dead key types (`StorageBlockKey`,
+  `StorageRefKey`, `CloudCredentialsKey`, `StreamPartitionAssignmentKey`) and one half-wired type
+  (`GossipKeyRotationKey`: consumer fully wired as the sole delivery path, zero found production
+  write/trigger site, no CLI/admin route to fire a rotation).
+- Documented the real backup mechanism per #676's tracked resolution: `[backup] enabled` defaults
+  `false` and additionally requires a non-blank `path` (the true gate is `Main.resolveBackup`, not
+  `AetherNode.resolvePersistence`'s own redundant filter); saves fire only on quorum-loss pause,
+  membership reconfigure (which persists an *empty* state, not a snapshot), graceful stop, or a
+  post-restore echo — never on commit. **New finding:** the on-disk payload is an opaque base64
+  blob of a generic binary snapshot, not the structured/diffable TOML `feature-catalog.md:122`
+  claimed — corrected there (row 206 downgraded Complete → Partial) and in `guarantees.md` §1a.
+  The manual backup/restore REST API and CLI are unconditionally disabled at both node-construction
+  call sites regardless of `[backup]` config — stays tracked as **#676**.
+- Filed three new issues surfaced by this pass: **#679** (`ApiKeyAuditKey` is write-only — 4
+  production write sites, zero read/query sites found anywhere), **#680** (`ScheduledTaskStateKey`'s
+  automatic cron/interval-fire path hardcodes `nextFireAt`/`totalExecutions`/`consecutiveFailures`
+  on every write instead of reading prior state — telemetry-only, scheduling itself unaffected;
+  the correct read-modify-write pattern already exists in `ScheduledTaskRoutes.java`), and **#681**
+  (open question, not a reopen of the already-closed #384: no production reader was found for the
+  DHT `ReplicatedMap`s — `EndpointKey`/`SliceNodeKey`/`HttpNodeRouteKey` — that actually queries them
+  for a routing decision; only replication-receive plumbing and node-departure cleanup reference
+  them today).
+
+### Fixed (2026-08-27 — #616 partial: guarantees.md/known-limitations.md understated declarative stream-consumer cursor durability)
+- `guarantees.md` §4 (`stream.consume` bullet and summary-matrix row 19) and `known-limitations.md`'s
+  streaming-substrate bullet both described automatic cursor resume as app-`StreamAccess`-only,
+  claiming the declarative `[streams.X]` consumer runtime (`ConsumerRuntimeState`) "remains
+  test-only — not the wired path." Verified false: `AetherNode.java:3734-3757` composes it with
+  `ClusterCursorStore` in production, layering a consensus-committed KV checkpoint
+  (`AetherKey.StreamCursorCheckpointKey`) on the local cursor store — resume is `max(local,
+  cluster)`, so an ownership change resumes from the last checkpoint instead of offset 0, and a
+  same-node restart never re-delivers what it already processed. Noted the honest edge: a
+  consensus-write failure on checkpoint is logged and swallowed, degrading that checkpoint to
+  local-only durability rather than blocking delivery. Flagged, not overclaimed: the composition is
+  unit-tested (`ClusterCursorStoreTest`, fakes for the KV reader/writer) but no multi-node failover
+  test was found exercising it end-to-end — a coverage gap, not a correctness doubt.
+- Partial: this is the #616 durability-audit finding independent of the BackupService/declared-state
+  question (#676), which is still gated on an owner decision before the rest of #616's durability
+  model can be written. `known-limitations.md`'s separate DHT-migration claim (line 127,
+  `SliceNodeKey`/`EndpointKey`/`HttpNodeRouteKey`) is left untouched — open question, not yet traced.
+
+### Fixed (2026-08-27 — #675: bootstrap-config.md/timeout-configuration.md advertised dead auto-heal tunables)
+- `bootstrap-config.md`'s `[operations.*]` schema table and Traps callout described all nine
+  `[operations.auto_heal]` fields as operator-tunable. Verified reality: only `enabled` and the
+  `[cluster] max_nodes` fleet cap (a different key entirely) reach a running node —
+  `Main.resolveAutoHeal` always builds from `AutoHealConfig.DEFAULT`, overriding only `maxNodes`.
+  The other eight fields (`retry_interval`, `startup_cooldown`, `stale_observation_ttl`,
+  `quic_miss_promotion_threshold`, `provisioning_timeout`, `provision_stability_window`,
+  `decommissioned_retention`, `swim_hints_ttl`) parse and validate but are discarded. Annotated
+  every dead row, added the PF-25 bootstrap-rejection note for `enabled = false`, and rewrote the
+  Traps callout to enumerate all eight fields and cite #675 instead of naming only two.
+- `timeout-configuration.md`'s `[timeouts.scaling] auto_heal_retry` / `auto_heal_startup_cooldown`
+  rows (a third, distinct config surface — `TimeoutsConfig.java`, no call sites outside
+  `ConfigLoader`) were presented as live with no caveat. Annotated both table occurrences and the
+  full example config, citing #675.
+- Both fixes are current-truth-plus-tracked-gap, matching the #666 citation style: no promise about
+  which way #675's wire-or-reject decision lands.
+
+### Fixed (2026-08-27 — #657: guarantees.md/known-limitations.md denied shipped durable-entity capabilities)
+- `guarantees.md` and `known-limitations.md` still described durable-entity CRUD and reads as
+  "planned, not wired," despite `PartitionFencedDurableEntity` (via `DurableEntityFactory`) having
+  shipped as the production-wired implementation under #345/#352/#596: `aether/node` now depends
+  directly on `resource-durable-entity` (previously "a dependency of nothing but its own parent"),
+  `InMemoryDurableEntity` is package-private/unreachable from any deployed slice, writes are
+  RF=3-replicated by default with fsync-before-ack, and non-owner calls forward to the committed
+  owner instead of refusing. Rewrote the one-line orientation, summary-matrix rows for
+  create/update/delete and both `BOUNDED_STALE`/`LINEARIZABLE` reads, the §6 section header and
+  body, and the Known Gaps entry to reflect this; the `entity.timer`/`workflow.*`/`saga.*` row is
+  untouched — those remain genuinely planned.
+- Corrected a stale sub-clause inside a paragraph the ticket had marked "current, no correction
+  needed": it claimed `LINEARIZABLE` was still "production-DORMANT... until node-wired (#352)",
+  contradicting the rest of the page (that clause was written later than the ticket's baseline).
+  Fixed to state it is live since #352 shipped, with the per-call `EntityError
+  .LinearizableUnavailable` case explained as a freshness-vs-safety asymmetry, not dormancy. Same
+  duplicated clause fixed in the Known Gaps tracking note.
+- `known-limitations.md`'s durable-entity bullet (drifted to line 131, ticket cited 105) rewritten
+  to match: CRUD + both read consistencies wired, only timer/workflow/saga still planned.
+- Flagged, not fixed (outside docs territory): `ReadConsistency.java:20-27` still carries stale
+  javadoc referencing "#277" and "the current HA-only in-memory cut."
+
+### Fixed (2026-08-27 — #283: stale @Notify/interceptor/qualifier/@Scheduled claims in resource-reference.md)
+- `slice-developers/resource-reference.md` had drifted further since the ticket's original
+  2026-06-11 assessment. Fixed: built-in qualifier count (three → four); the config-layering/secret
+  explanation, which previously implied slice-bundled `resources.toml` gets the same
+  `${secrets:...}` resolution as the operator `aether.toml` (it doesn't — tracked in #269); SMTP
+  config (`tls` → `tls_mode`, flat `username`/`password` → nested `auth.username`/`auth.password`)
+  and HTTP vendor config (`provider` → `provider_hint`, `from` → `from_address`) to match the real
+  `SmtpConfig`/`SmtpAuth`/`HttpEmailConfig` record shapes (#271); the TIERED cache row's false
+  "cluster-wide consistency" claim, replaced with the real local-L1/distributed-L2-fallback
+  behavior and a cross-node-invalidation gap note (#279).
+- Added gap notes to the Retry and Metrics TOML examples: `RetryConfig.backoff_strategy` and
+  `MetricsConfig.tags` (`List<String>`) have no config-level default or binding path through the
+  generic config binder today, so the examples shown don't fully provision as written (#278).
+  Corrected the Rate Limit and Logging config tables' Default column from fabricated values to
+  `required` — neither `RateLimitConfig` nor `LogConfig` declares a `DEFAULT` static field, so the
+  binder has no fallback and omitting any key fails config binding.
+- Rewrote the `@Scheduled` section: replaced the fictional `leaderOnly: boolean` field with the
+  real `execution_mode` (`ExecutionMode`: `single`/`all`, default `single`) across the config
+  table, all three TOML examples, and the Behavior bullets — `single` is leader-only, `all` runs on
+  every quorum-participating node (leader or follower), correcting the previous "each node with the
+  slice" description [verified: `ScheduleConfig.java`, `ExecutionMode.java`,
+  `ScheduledTaskManager.shouldRunInCurrentState`/`startEligibleTasks`]. Cross-refs #272/#273.
+
+### Fixed (2026-08-27 — #310: 12-management.md base paths, /api/aspects, CLI typos)
+- `architecture/12-management.md`'s "Endpoint Categories" table listed every management-API
+  category under a fictional `/api/v1/...` prefix; the real `ManagementRoute` enum has no version
+  segment anywhere [verified: `aether/aether-management-api/.../route/ManagementRoute.java`].
+  Stripped the prefix, and fixed two categories whose base path was wrong outright: "Updates" (the
+  real feature is the deploy lifecycle at `/api/deploy`) and "Artifacts" (upload/download/list live
+  under `/repository`, not `/api/artifacts`, which serves only `/api/artifacts/metrics`).
+- `/api/aspects` and `aether aspects set <artifact> <method> METRICS` do not exist anywhere in the
+  codebase; the real feature is per-method observability depth/config. Replaced with
+  `/api/observability` and `aether observability depth set <artifact>#<method> <threshold>`
+  [verified: `ObservabilityCommand`, `OBSERVABILITY_DEPTH_*`/`OBSERVABILITY_CONFIG_*` routes].
+- Fixed the Prometheus scrape path (`/metrics/prometheus` → `/api/metrics/prometheus`) and two CLI
+  typos (`aether blueprint apply/delete` → plural `blueprints`; `aether upload <jar>`, not a real
+  command, → `aether artifacts push <group:artifact:version>`). Corrected the endpoint count ("30+"
+  → "190+", counted directly from the enum). Left the REPL and WebSocket sections untouched — both
+  verified accurate against `AetherCli.java` / `ManagementServer.java`.
+
+### Fixed (2026-08-27 — #316: stale SecurityMode.NONE-default premise in 10-security.md)
+- `architecture/10-security.md`'s "API Key Authentication" section predated #290 and described a
+  stale 4-field `AppHttpConfig` (including a nonexistent `forwardTimeoutMs` field, no
+  `securityMode`/`jwtConfig`) with no mention of the `JWT` mode. Replaced with a "Security Modes"
+  section covering all three `SecurityMode` values (`NONE`/`API_KEY`/`JWT`), the correct default
+  (`API_KEY`, per #290) and bootstrap-admin-key flow, and the real 9-field `AppHttpConfig` +
+  `JwtConfig` record shapes [verified: `SecurityMode.java`, `AppHttpConfig.java`, `JwtConfig.java`].
+  Fixed the "Security Boundaries" bullet to reflect the default (not an unconditional requirement)
+  and added `SECURITY.md` as the page's primary trust-model/operational-posture pointer. This file
+  was out of scope for the #318 sweep (which fixed `cli.md`/`management-api.md`/
+  `getting-started.md` for the same stale-default class of claim) and is fixed here under its own
+  ticket.
+
+### Changed (2026-08-27 — #321 follow-through: node-binary version skew now tracked as #666)
+- `reference/versioning-and-compatibility.md` ("Rolling upgrades and node version skew"):
+  replaced the "no visible spec or tracking issue" language with a reference to #666 (filed
+  2026-08-27), stating its scope (a version field on `Hello` plus a join-time mismatch policy,
+  refuse-or-degrade, decision pending) and explicit non-goals (version negotiation, codec
+  evolution rules, mixed-node-binary rolling-upgrade support). The "no recorded decision on
+  runtime-owned vs. application-owned" sentence is kept but reframed as a **tracked-not-designed
+  boundary** — #666 scopes that mismatch-policy decision without yet making it; this page still
+  does not invent one. Added a cross-reference to the new `known-limitations.md` section.
+- `reference/known-limitations.md`: added a "Node-binary version skew" row to the "Scope at a
+  glance" table (tracking: #666) and a full section describing the gap, why the window to add a
+  `Hello` version field closes at GA (an old node can't parse an extended `Hello`), and the
+  operator-facing fallback (canary-wait rolling upgrade, no rc-skipping) until #666 lands.
+  Cross-links back to `versioning-and-compatibility.md` for the technical writeup.
+- No design/policy decision was made in either edit — both document that a tracking issue now
+  exists for a previously-untracked gap, per the ticket's actual (minimal, detection-only) scope.
+
+### Fixed (2026-08-27 — #318 audit-trail: stale SecurityMode/security-default claims)
+- Swept `aether/docs/**` and top-level `*.md` for claims about the app-http `security_mode`
+  default that predate #290 ("secure by default") and #573 (management-API deny-by-default).
+  Verified current behavior against source: `ConfigLoader.populateAppHttpConfig` defaults
+  `security_mode` to `API_KEY` when omitted (`aether-default.toml`, the shipped Layer-1 config,
+  sets no explicit `security_mode`), and `BootstrapAdminKeyRegistrar` auto-generates one ADMIN
+  key on first leadership when none was provisioned, printing it once. Fixed 3 docs that
+  understated this (stated or implied `NONE`/no-auth as the default): `reference/cli.md`
+  (Security Modes table + example), `reference/management-api.md` (Security Modes table +
+  per-mode config sections, including a stale "auto-upgrade only when keys present" claim that
+  no longer matches the unconditional `explicitMode.or(API_KEY)` default), and
+  `slice-developers/getting-started.md` ("Securing Your Endpoints"). Added a narrow
+  design-intent-vs-current-behavior note to `specs/rbac-spec.md` §7 (a 2026-02-23 DRAFT Tier-1
+  proposal predating both fixes, whose "no security configured → Public" framing for the
+  management API is no longer accurate) rather than rewriting the spec — flagged for #318 to
+  decide whether to correct in place or point at SECURITY.md. Confirmed by source read that the
+  Ember/Forge in-JVM harness factories (`AppHttpConfig.appHttpConfig(int, ...)` etc., used by
+  `ForgeServer`) are a separate, hardcoded `NONE` default unrelated to the node/`ConfigLoader`
+  path — `getting-started.md`'s existing description of that as current dev-harness behavior
+  was already accurate and left unchanged, per instruction not to characterize it as final or
+  transitional. `SECURITY.md` was already correct (checked in an earlier pass this session).
+
+### Changed (2026-08-27 — #317: Status field on architecture docs)
+- Added `**Status:** Current` (no fabricated last-reviewed date) to the 16 header-less docs in
+  `aether/docs/architecture/` (`00-overview.md` through `15-resource-and-isolation-model.md`).
+  `resilience-operability-principles.md`, the 17th file in that directory, already carried a
+  specific dated status (`Adopted (design-stream, 2026-07-07)` with `Feeds:`/`Sources:`
+  provenance) and was left untouched rather than downgraded to the generic placeholder.
+  Reformatting the ~47 specs that already have some form of status header in an inconsistent
+  format is deliberately deferred to #318's cross-check audit, so each doc is only touched once
+  (format + verification together) instead of twice. "Current" is a pre-audit placeholder with
+  a documented upgrade path: #318 should promote it to "Current — verified against <release>"
+  once each doc is individually checked against the shipping codebase. Closing note on #317,
+  cross-referenced on #318: https://github.com/pragmaticalabs/pragmatica/issues/317#issuecomment-5435597489
+
+### Fixed (2026-08-27 — #315 follow-up: "NOT IN RC1" banner wording)
+- The 5 designed-only specs under `aether/docs/specs/future/` (`hierarchical-storage-spec.md`,
+  `cloud-provider-digitalocean.md`, `declarative-http-client-spec.md`, `control-plane-delegation-spec.md`,
+  `fluid-migration-spec.md`) plus `future/README.md` had their "NOT IN RC1 — design only" banners
+  reworded to "Design only — not implemented in the 1.0.0 line." The RC1-specific wording predated
+  the current rc3 line and risked misreading — a reader could take "not in RC1" as already resolved
+  by rc2/rc3 rather than as a standing statement that none of these 5 are implemented in the 1.0.0
+  release line at all. No implementation-status claim changed, only which version label backs it.
+  Historical narrative in `CHANGELOG.md`, `MAILBOX.md`, and `.internal/documentation-overhaul-plan-2026-06-11.md`
+  left as-is (dated records of what was decided/done at the time).
+
+### Fixed (2026-08-27 — #315 follow-up: archive index hygiene)
+- `aether/docs/archive/README.md` had 3 dead links (`mcp-integration.md`, `ai-integration.md`,
+  `kv-schema-simplified.md` — all three deleted from the tree back on 2026-02-16) and 7 files present
+  in the directory but missing from the index (`aether-high-level-overview.md`, `canary-blue-green-spec.md`,
+  `clusterdeploymentmanager-implementation-guide.md`, `dependency-injection-summary.md`,
+  `implementation-plan.md`, `nodedeploymentmanager-implementation-guide.md`, `typed-slice-api-design.md`).
+  Removed the 3 dead rows and added the 7 missing ones with a status and, where a current-doc
+  successor exists, a pointer to it. All 14 files in the directory are now indexed; 0 dead links remain.
+
+### Fixed (2026-08-27 — #315 follow-up: stale `aether/docs/internal/` path references)
+- Repo-wide sweep for references to the pre-#315 path `aether/docs/internal/` left dangling
+  by the dot-prefix rename to `aether/docs/.internal/`. Fixed 20 references across 9 files
+  (`security-subsystem-spec.md`, `deployment-recovery.md`, `membership-architecture-v2-spec.md`,
+  `membership-unification-spec.md`, `cli.md`, `management-api.md`, `cluster-topology-overhaul-spec.md`,
+  `worker-membership-spec.md`, plus relative-path hits in `in-memory-streams-spec.md`,
+  `streaming-spec.md`, `http-media-types-spec.md`, `feature-catalog.md`) and one pre-existing,
+  unrelated relative-path bug (`future/control-plane-delegation-spec.md` pointed one directory
+  short even before the rename). Also closed 3 dead links to `development-priorities.md`, a
+  planning doc deleted from the tree entirely on 2026-06-13 — repointed to GitHub Issues as the
+  current worklog (feature-catalog.md #208). Out-of-territory hits (scripts, CI, Java
+  Javadoc/comments in `aether/cli`, `aether/node`, `aether/tests`, `aether/forge`) and two open
+  questions (a gitignored, per-machine root `CLAUDE.md` in the sibling clone with the same stale
+  path, and `jbct/docs/` territory ownership) logged in `MAILBOX.md`.
+
+### Added (2026-08-27 — #321: versioning-and-compatibility reference doc)
+- New `aether/docs/reference/versioning-and-compatibility.md`: maps the four independent
+  versioning surfaces (product release, envelope format, slice HTTP API, management HTTP API)
+  with verified status for each — envelope versioning and slice API versioning (#198) are real and
+  built; management API versioning (#300) is Draft and not implemented (routes still bare
+  `/api/...`, verified directly against `ManagementRoute.java`); no project-wide SemVer commitment
+  is published anywhere in this repository. Flags an open gap found during research, not previously
+  documented anywhere user-visible: no version field or codec-evolution design exists for the
+  node-to-node handshake/wire protocol, so there is no recorded runtime-owned-vs-app-owned decision
+  for node-binary version skew during a rolling upgrade — a real, ticketless gap first flagged
+  internally 2026-06-11 and still open as of this writing. `SECURITY.md`'s forward-pointer to this
+  document updated now that it exists.
+
+### Added (2026-08-27 — #320: repo-root CONTRIBUTING.md)
+- New `CONTRIBUTING.md`: license implications of contributing by directory (BSL-1.1 under
+  `aether/` and `jbct/slice-processor{,-tests}/` is not OSI-approved open source; Apache-2.0
+  elsewhere), the SPDX header each path needs, verified build/test expectations sourced directly
+  from `build.sh` and `.github/workflows/ci.yml` (including why `build.sh`'s mutating format/lint
+  goal should be run locally rather than relying on CI's non-mutating check), fork/branch/PR
+  workflow targeting `main`, a requested-but-not-enforced DCO sign-off convention (verified no
+  DCO/CLA bot exists in `.github/` today), and an inline code-of-conduct section.
+
+### Added (2026-08-27 — #319: repo-root SECURITY.md)
+- New `SECURITY.md`: GitHub private-vulnerability-reporting as the disclosure channel; Aether's
+  single-trust-domain threat model; verified default management-API posture (`SecurityMode.API_KEY`
+  by default since #290, not `NONE` as originally assumed — the bootstrap admin key flow, printed
+  once on first leadership); how to assign `authorization_role` per API key; the still-open
+  `cluster_secret` Docker-Compose env-var exposure (#287 residual, verified still present); a
+  checklist for recognizing an untrusted-network deployment; and an explicit note that the
+  runtime/slice boundary is not a JPMS-hardened sandbox today (no `module-info.java` exists anywhere
+  under `aether/`) — corrects the security-subsystem-spec's forward-looking framing against current
+  code.
+
+### Changed (2026-08-27 — #315: docs Phase 1 structural cut)
+- `aether/docs/internal/` renamed to `aether/docs/.internal/` (235 files, dot-prefixed so a
+  future mkdocs build excludes it by convention; contents untouched).
+- `aether/docs/operator/` merged into the existing `aether/docs/operators/`; `runbooks/lifecycle-verification.md`
+  moved under `operators/runbooks/`. The singular `operator/` directory no longer exists.
+- `aether/docs/contributors/architecture.md` deleted — stale duplicate overview citing archived
+  vision docs; all inbound links now point to `aether/docs/architecture/00-overview.md`.
+- 4 dead specs archived to `aether/docs/specs/archive/` (each self-declared superseded by
+  `cluster-topology-overhaul-spec.md` or its own v2): `swim-driven-topology-spec.md`,
+  `membership-architecture-v2-spec.md`, `membership-unification-spec.md`, `integration-test-overhaul-spec.md`.
+- 5 designed-only, zero-implementation specs moved to `aether/docs/specs/future/` with a
+  "NOT IN RC1 — design only" banner added: `hierarchical-storage-spec.md`,
+  `cloud-provider-digitalocean.md`, `declarative-http-client-spec.md`,
+  `control-plane-delegation-spec.md`, `fluid-migration-spec.md`.
+- New `aether/docs/specs/README.md`, `specs/archive/README.md`, `specs/future/README.md` indexes.
+- `aether/docs/README.md` hub index regenerated from the current tree (previously ~2.5 months
+  stale, missing the entire `architecture/` series and half of `reference/`/`operators/`);
+  two pre-existing dead links from a March 2026 reorg (`slice-developers/development-guide.md`,
+  `slice-developers/infra-services.md`, both already archived) fixed at their 4 remaining
+  referring sites. Public "Internal" hub section removed — dot-prefixed dirs are engineering
+  scratch, not curated navigation.
+
+### Changed (2026-08-27 — #317: Status field added to headerless specs)
+- `aether/docs/specs/pg-persistence-spec.md` gains `**Status:** Implemented` — the spec's
+  parse/schema/codegen pipeline matches shipped code in `aether/pg-tools/` (pg-parser,
+  pg-codegen, pg-schema, pg-maven-plugin) component-for-component.
+- `aether/docs/specs/landscape-spec.md` gains `**Status:** Draft` — design landed via #462,
+  no matching implementation found anywhere in this codebase.
+- Full #317 (Status-header convention across all `specs/*.md` and `architecture/*.md`) still
+  pending a scope ruling; see MAILBOX.md.
+
+### Fixed (2026-08-27 — #660: Rabia sync adoption counted self twice over, deadlocking a bare-majority cold start)
+- **Sync adoption now requires `clusterSize / 2` PEER responses, with self completing the majority.**
+  The gate compared `clusterSize / 2 + 1` against a response count, but responses only ever arrive from
+  peers (`broadcastPayload` iterates `peers`; self is never one), so it silently demanded `quorum + 1`
+  LIVE nodes. A bare-majority cold start — 3 of 5, or a 3-node cluster with one node down — sat in
+  `Syncing` forever: consensus never reached ACTIVE, so no `QuorumEstablished` dispatched, no leader was
+  elected and no reconciler ran, while every link and every SWIM view stayed healthy. Introduced by
+  `36712ba5a`, whose never-derive-a-threshold-from-connectivity fix was correct and overshot by one:
+  quorum ESTABLISHMENT counts self, adoption did not. The threshold is still derived from `clusterSize`
+  ALONE — never from live, connected or reachable counts.
+  [verified: aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/PostRestartSlowRejoinDeficitFillProbeTest.java]
+- **The same off-by-one made the single-node threshold unsatisfiable.** `clusterSize <= 1` returned 1,
+  and a one-node cluster has zero peers to produce that one response, so it could never leave `Syncing`
+  either. Self alone is the majority of a 1-node cluster; the requirement is now zero.
+  [mechanism: clusterSize / 2 == 0 at clusterSize 1, and self is the whole majority]
+- **Self carries weight as a FLOOR, not as an adoption candidate** (`ownStateFloor`). Relaxing the
+  threshold makes the responder set a minority, so the intersection property that makes adoption safe
+  holds only over `{self} ∪ responders` — self must be able to REFUSE a response set that is behind it,
+  or a node holding a committed phase could adopt a state that lost it. The floor is the more advanced of
+  the persisted and the LIVE phase, because `persistence.save` runs at pause/reconfigure/stop/restore and
+  never on commit, so the persisted snapshot lags live state without bound. When no response beats the
+  floor the node activates on its own state and installs nothing, rather than calling `restoreSnapshot`
+  with a staler picture while advance-only `currentPhase` hides the loss. Refusal is on `<`, not `<=`: an
+  equal phase is an equal committed prefix. [mechanism: quorum intersection over {self} ∪ responders]
+- **The adoption candidate stays the max over peer responses only**, which is what keeps the ratified
+  §6.4 boot future-history detector alive: folding self into the candidate makes `persisted > candidate`
+  unsatisfiable and retires the mixed-wipe / `down -v` detector — and burns its one-shot latch — without
+  deleting a line or failing a test. [mechanism: detector compares self against the CLUSTER-reported phase]
+- **D9 (`cluster-topology-overhaul-spec.md` §6.4) is SUPERSEDED IN PART, deliberately.** Detection is
+  unchanged — the WARN and the `onBootFutureHistory` journal feed still fire. The OUTCOME changes: D9 as
+  ratified restored anyway, regressing a node carrying future history onto the cluster's older state; the
+  adoption floor now refuses that candidate, so the node HOLDS its own history and installs nothing.
+  Committed state must not be discardable by sync adoption — the safety argument outranks detect-only.
+  Reachable only with durable persistence configured (`resolvePersistence` defaults to in-memory). The
+  spec entry carries a supersession note. Both halves are pinned.
+  [verified: integrations/consensus/src/test/java/org/pragmatica/consensus/rabia/RabiaSyncAdoptionQuorumTest.java]
+- **Operator consequence of that change, with its recovery action** (`aether/docs/operators/runbooks/backup-recovery.md`):
+  with backups enabled, a deliberately reset cluster plus one node that kept its old backup directory no
+  longer converges by silently discarding that node's history — the node activates on its own old state
+  and diverges. Recovery: clear each node's `[backup] path` before restarting into a reset cluster. The
+  `BOOT FUTURE-HISTORY` WARN names the condition, and it is now in the runbook's troubleshooting table.
+- **Adoption refuses outright at `clusterSize < 1`.** The requirement would be `0 / 2 == 0`, so a node
+  would meet its own threshold with zero responses and activate alone; the previous `clusterSize <= 1 ? 1`
+  blocked that by accident. [mechanism: explicit guard in adoptionThresholdMet]
+- **Silence killer: the `Syncing` retry loop logged only at TRACE**, so the deadlock produced tens of
+  megabytes of log with no INFO-level indication. It now emits a periodic WARN (every 6th unsatisfied
+  round, roughly every 30s at the default 5s retry) carrying the deciding arithmetic — responses
+  collected, responses required, responder ids, clusterSize — and the operator consequence. Operator
+  recovery: the state clears when a `clusterSize / 2` peer majority answers; a cluster stuck here needs
+  more members started, not a restart of the stuck node. [mechanism: warnIfSyncStuck]
+- Residual recorded as **#667** (rc4): adoption cannot tell a live-ACTIVE responder from a cold one, so
+  for a single node rejoining a still-live cluster with in-memory persistence the relaxed threshold is
+  weaker than the old bound. Sound for the cold-bootstrap case this fix targets; the principled closure
+  is carrying the responder's engine state in `SyncResponse`, which is protocol surface and deliberately
+  out of scope here. [design intent — unverified]
+
+### Fixed (2026-08-27 — #590 follow-up: the PROVISIONED path now carries the role it was provisioned with)
+- **`EmberComputeProvider.createFrom` dropped `ProvisionContext.role` and called the bare `addNode()`,
+  so every node the CTM minted in-JVM — auto-heal replacement or worker-reconcile worker — came up
+  advertising NO role and therefore classifying as a CORE** (`isCoreRole(role) = !"worker".equals(role)`;
+  blank counts as core). `addWorkerNode()` fixed the paths a test controls; this is the path no test can
+  opt out of. Every production provider translates that same field into `AETHER_ROLE` / `aether-role`,
+  which the booting node re-asserts as its SWIM `LABEL_ROLE`, so propagating it is fidelity restoration,
+  not new behaviour. The label is stamped VERBATIM — normalising it here would mask exactly the mislabel
+  a harness exists to expose — and a blank role stamps NO label, mirroring a node booted without
+  `AETHER_ROLE` (`Main.collectNodeLabels` puts the key only when the env var is present).
+  [verified: `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/EmberAddNodeRoleLabelTest.java`]
+- **The equivalence that keeps existing core provisioning unchanged is asserted, not assumed.** `core`
+  and blank are both non-`worker`, so both classify as core — pinned directly against
+  `MemberDescriptor.isCoreRole`, and confirmed end-to-end: the three probes that drive CTM provisioning
+  (`MembershipChaosCycleTest`, `ProvisioningRecoveryAfterFailureBurstProbeTest`,
+  `PostRestartSlowRejoinDeficitFillProbeTest`, 4 tests) stay green while their provisioned replacements
+  now advertise `labels={role=core}` where they previously advertised `{}`.
+- Guard extended to six tests, driving `ComputeProvider.provision(spec)` rather than `createFrom`
+  directly so the static `ProvisionRequest.resolve` choke sits inside the assertion. Both mutations go
+  red on exactly the right tests: dropping the propagation fails the two provisioned cases with
+  `Saw labels={}`; stamping blank unconditionally fails the blank case with `Saw labels={role=}`.
+- **Fragility recorded, not silently absorbed — #689 (rc4).** The role is a SELF-ASSERTED label, and its
+  unknown case fails toward NOT acting: a node intended as a worker whose label never arrives classifies
+  as core, suppresses the core-absence fence, and nothing reports it. The suppressor default is
+  deliberate and unchanged; #689 asks for the leader-side WARN and operator surface for the divergence
+  between intended and advertised role, both of which the leader already holds.
+
+### Added (2026-08-27 — #590: the community fence's no-double-active ordering, MEASURED)
+- **`CoreAbsenceFenceOrderingTest`** (forge, Heavy, 5 cores + 1 worker) proves the #590 ordering under
+  TOTAL isolation: a black-holed worker fences ITSELF via `DrainReason.CORE_ABSENCE`, locally, with no
+  consensus write reachable, and does so strictly before `community_absence`. Six runs: fence
+  9673–9704ms against a 10000ms window, margin 10296–10327ms before the core would re-place — a 31ms
+  spread. The invariant graduates from `[mechanism: core_absence < community_absence refused at config
+  load]` to measured, **for the total-isolation case only**.
+  [verified: aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/CoreAbsenceFenceOrderingTest.java]
+- **Explicitly NOT proven**: partial partition (a community reaching its own members but not the core —
+  `blackhole` is per-node and total) and real-network severance. Both inherit to #367 output 1; this
+  class must not be cited as full CP-contract proof.
+- **`EmberCluster.addWorkerNode()`** — harness FIDELITY restoration, not a new capability. Community-tier
+  mechanisms gate on `MemberDescriptor.isCoreRole(role) = !"worker".equals(role)`, where blank counts as
+  CORE. Production nodes self-assert that label (`AETHER_ROLE` → `NodeInfo.LABEL_ROLE`); Ember set none,
+  so every in-JVM node read as a core and the fence was structurally suppressed. `addNode()` is
+  byte-identical and still advertises no label; both halves pinned by `EmberAddNodeRoleLabelTest`.
+- **Four runs failed first, and none of them meant what they looked like.** Suppressed-by-design read as
+  "the fence is broken" (armed=true, sinceLastPingMs=40922, remainingMs=0, fenced=false) until a
+  precondition assertion showed the node self-identified as a core. Then the fence fired but the
+  observer vanished with it — the drain removes its own node — so the watch now also accepts
+  deregistration as evidence and polls at 20ms to catch the direct flag. **Without the precondition,
+  those runs would have shipped as a confident false defect against working code.**
+
+### Fixed (2026-08-27 — #558 sweep miss: two `NodeHealth` sites broke the branch, and one was an operator-facing lie)
+- **`aether/node` stopped compiling for four commits.** The `NodeHealth` delete missed two sites in
+  `ClusterTopologyRoutes` because the enumerating grep was truncated with `| head -5` and only the
+  predicted downstream modules were built. Fixed in `ba1317723`; the sweep was re-run untruncated (zero
+  residual references) and every downstream module compiled. Both failure modes are now repo build
+  conventions.
+- **`GET /api/cluster/topology` reported `"health": "HEALTHY"` for every node it had ever discovered,
+  dead ones included** — it read `NodeState.health`, which nothing ever mutated. The field now reports
+  what is actually known: `CONNECTED` (live transport link observed), `DISCOVERED` (known id, no live
+  link), `UNKNOWN` (not in the observer's map). **This is a response-VALUE change on a management
+  endpoint**, documented in `management-api.md` with the value table and a caution that `DISCOVERED` is
+  not a claim of ill health. Same defect class as #678, on the surface an operator consults to decide
+  whether a node is alive.
+- `management-api.md`'s `coreCount` fallback reference updated to `reportedActiveNodeCount()`.
+
+
+- **`TopologyManager.healthyActiveNodeCount()` → `reportedActiveNodeCount()`** (public default +
+  `TopologyObserver` override + both production callers + 13 count-asserting test sites). Post-delete
+  the method performs no health filtering, so the old name asserted a check that does not happen — on
+  a PUBLIC interface, which is where that defect class mints the next #678.
+- **No deprecation alias.** Aether is not published (#668) and the two callers in
+  `ClusterTopologyManagerRecord` are the entire consumer set; pre-GA is when an API rename is free.
+- **The name asserts NO filter property, deliberately, because the method is genuinely two things.**
+  `TopologyObserver` returns the membership view's on-duty count in NORMAL — post-#557 that requires
+  OBSERVED reachability (completed QUIC handshake or SWIM ALIVE) — and falls back to a DISCOVERY count
+  in BOOTING to break the cold-start catch-22 where the snapshot only exists after consensus commits.
+- Two better-reading candidates were rejected for being false in one mode each, which is precisely the
+  defect this rename removes. `observedActiveNodeCount` (used briefly, then corrected) overclaims —
+  there is no observation during BOOTING. `discoveredActiveNodeCount` names a SUPERSET of what NORMAL
+  returns, and for a COUNT that is the more dangerous error: a caller comparing it against a configured
+  size would silently over-expect. "Reported" is true in both modes; which authority and what it filters
+  is the docstring's job, not the name's. Per the repo's claim discipline — between two candidate
+  phrasings, choose the weaker one.
+  [mechanism: TopologyObserver.reportedActiveNodeCount mode split; PresenceMembershipView.healthyOnDutyCount]
+
+
+- **Deleted** `NodeHealth`, `NodeState.suspected(...)`, `NodeState.canAttemptConnection(...)`, the
+  `health` / `failedAttempts` / `nextAttemptAfter` components, and the now-unfed
+  `BackoffConfig.shouldDisable(...)` (zero callers). `NodeState` is now `(info, firstSeen)` with a
+  `discovered(...)` factory — discovery is all that map ever recorded.
+- **Driver: there is exactly ONE re-dial authority, and it was never this one.** The transport layer
+  owns re-dial policy (QUIC peer-phase dedup, the in-flight CONNECTING guard, the per-attempt dial
+  timeout) and SWIM owns suspicion. Wiring this backoff would have installed a SECOND authority that
+  nothing exercises, and two mechanisms disagreeing about when to re-dial is worse than one. A
+  vestigial gate is a standing invitation to wire it someday and create that disagreement.
+- Behaviour-preserving by construction: `suspected(...)` had zero callers and the map's only mutations
+  were `putIfAbsent(healthy)` / `remove`, so `health == HEALTHY` was constant-true and
+  `canAttemptConnection` a constant-true gate. Removing a constant-true filter cannot change a result.
+- **Counts renamed to what they actually count**, which is NOT what #558 proposed. The ticket said
+  rename to `discoveredPeerCount`; after `dc24377a7` that would have been a fresh lie. The three
+  methods carrying the vacuous filter each counted something different:
+  `legacyHealthyActiveNodeCount` → `discoveredNodeCount` (all known nodes — a genuine discovery
+  count), `swimHealthyCorePeerCount` → `knownCorePeerCount` (known peers ∩ authoritative core set),
+  `legacyHealthyActivePeerCount` → `connectedPeerCount` (peers observed CONNECTED — a reachability
+  count, not discovery). `TopologyManager.healthyActiveNodeCount()` keeps its name for now: public
+  default, production callers, and renaming it is an API change that belongs in its own commit.
+- **Stale surfaces swept, per the closing-comment convention.** `swimHealthyCorePeerCount`'s docstring
+  claimed peers were filtered "HEALTHY in the live SWIM `nodeStatesById` map" — never true, and the
+  name asserted it too. Corrected, along with the `NodeHealth` reference in the node-count docstring.
+- **The dead filter was NOT correctness-neutral — see #678.** `ClusterTopologyManagerRecord` filtered a
+  provisioned replacement's PEERS list through the same constant-true predicate (`isHealthyPeer`, now
+  `isDiscoveredPeer`), while a neighbouring docstring asserted the intersection kept dead hosts out.
+  It never did. Renaming makes today's behaviour explicit; fixing it needs a real liveness source and
+  is a provisioning change deliberately left to #678 rather than ridden in on a naming cleanup.
+
+
+- **Premise validation first**: #557's three reported defects are all already fixed — the discovery-based
+  boot count by `dc24377a7`, the `syncQuorumSize` collapse by `36712ba5a` plus #660, and the
+  MembershipView path by the rewire of `AetherNode.presenceMemberSupplier` to
+  `MembershipFsm.coreObservedMembers(self)`, which admits a peer only on `PeerConnected` or
+  `SwimHealthy`. The quorum numerator IS observed reachability.
+- **`PresenceGenerationSnapshotSource`'s class docstring still claimed `coreCountedMembers()`**, which
+  is not harmless: #557's own diagnosis comment concluded the path used "health assumed, not observed"
+  — reasoning from the stale description rather than the wiring. Corrected, with the distinction and
+  its consequence stated where the next reader meets it.
+- **`PresenceGenerationSnapshotSourceQuorumCompositionTest`** closes the coverage gap between the two
+  layers that were already tested: the FSM projection below and the BOOTING/legacy path above, with
+  nothing exercising the seam that actually decides boot quorum. A seed-only FSM must publish NO view;
+  the same source wired to `coreCountedMembers` publishes one immediately with a full quorum numerator
+  and zero peers reachable, which is #557 itself — kept as a permanent discriminator so the test cannot
+  pass vacuously. Mutation-checked.
+  [verified: aether/aether-deployment/src/test/java/org/pragmatica/aether/deployment/generation/PresenceGenerationSnapshotSourceQuorumCompositionTest.java]
+- Stated limit, not implied coverage: the test MIRRORS `AetherNode.presenceMemberSupplier` rather than
+  reading it — that supplier is a local inside a 5000-line assembly method with no seam — so a rewire of
+  `AetherNode` itself would leave it green. Recorded in the class rather than glossed.
+
+
+- `MembershipChaosCycleTest` (forge, Heavy, 5 nodes) drives **kill → detect → decommission → heal**
+  against the current SWIM + MembershipFsm stack: a hard-killed core must leave counted membership,
+  auto-heal must reach the real `ComputeProvider` path, and the replacement must boot, join and be
+  counted. A recording provider makes the heal leg provable — counted membership returning to five
+  could otherwise be a rejoin rather than the cluster healing itself.
+- **Not a revive.** `MembershipChaosSpikeTest` was deleted in `c0c4e6444` as part of the deliberate v2
+  membership migration, not for flakiness; it still imports `PhiAccrualDetector`, a class that no
+  longer exists, so restoring it would not compile. Its published timeline was measured against a
+  detector since replaced, so those numbers are recorded as history and deliberately not asserted.
+- Budgets are DERIVED from shipping constants (auto-heal startup cooldown 15s, SWIM suspicion 10s +
+  NTT departure 15s, auto-heal retry 10s, provisioning timeout 60s), and the timeline is **measured**
+  across three runs and recorded in the class: decommission 5.6–8.1s, heal 21.3–23.8s, leader recovery
+  22.3–24.8s, exactly one provision every run. In-process numbers on one host — a regression baseline
+  and order-of-magnitude check, explicitly not a production SLO.
+  [verified: aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/MembershipChaosCycleTest.java]
+- The first run failed on an assertion of mine, not on the system: leader presence was sampled at the
+  instant heal completed, while a re-election was legitimately in flight as the replacement joined.
+  Leadership is a convergence property, so it is now awaited — and how long recovery takes became a
+  reported number rather than a hidden assumption.
+- Complements `MembershipBlackHoleSpikeTest` rather than duplicating it: that covers the harder
+  detection case (silent but connected) and stops at terminal removal; this covers the ordinary kill
+  and carries it through heal.
+
+
+- `aether/tests/integration/coordination_slope.py` — samples QUIC protocol-message rate per CORE node
+  (`quic_messages_sent_total` + `quic_messages_received_total`, differenced) plus `cpu.usage` /
+  `heap.used`, for the re-scoped #591 worker-count sweep. It reports a **worker-count** slope with
+  community count pinned at 1, never a community-count slope: group splitting is dead code (#673), so
+  that axis is a property the shipping system does not have.
+- `CoordinationSlopeInstrumentTest` (forge, 3 nodes) validates the sampler against a LIVE cluster —
+  the endpoint contract on every core, counter cumulativeness, and the sampler itself end to end.
+  The remote sweep is expensive and infrequent, so a sampler that silently reported zeros would not
+  surface until the numbers were already in the book.
+- **That validation immediately earned its keep, catching two defects in the instrument:**
+  `GET /api/metrics` returns a CLUSTER-WIDE load map (every node answers for every node) although the
+  route is declared LOCAL — the sampler had assumed per-node and could not disambiguate; and the
+  per-core sampling was SEQUENTIAL, so with three cores and a 60s window each core was measured over a
+  different minute and the "slope" summed rates that never coexisted. Cores are now differenced over
+  one shared window, and `--node-ids` is required so worker entries can never be folded into the core
+  mean. [verified: aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/CoordinationSlopeInstrumentTest.java]
+- Missing counters raise rather than returning zero, a backwards-going counter voids the sample, and
+  backpressure/write-failure deltas are reported as saturation guards — a slope measured while those
+  climb is measuring congestion, not coordination cost.
+
+
+- **`./forge.sh`** — the first local gate that actually RUNS a multi-node cluster. `./forge.sh`
+  (smoke), `ci` (everything except `@Tag("Heavy")`, exactly what CI runs), `full`, or a single class
+  name. Until now nothing local executed forge: `build.sh` compiles the tests and says so in its own
+  banner, and `mvn test` runs surefire while forge tests are failsafe ITs.
+- **A `Smoke` tag** on `ClusterFormationTest`, `SliceInvocationTest` and `StreamOwnershipDriverFenceTest`
+  — the ticket's formation + deployment/invocation + one-stream-path set. Measured, not estimated:
+  **97s wall for 15 tests** (formation 25.9s, stream ownership 36.2s, invocation 31.6s).
+- **Per-test JUnit timeouts** (`junit-platform.properties`: 10m per test method, 8m per lifecycle
+  method) so a hung forge test is reported BY NAME instead of consuming the whole job anonymously.
+  Verified by temporarily dropping the lifecycle budget to 3s, which produces
+  `[ERROR] ClusterFormationTest » Timeout setUp() timed out after 3 seconds` — class and method both
+  named. The same proof aimed at the testable-method budget changed nothing, because forge classes
+  spend their time in `@BeforeAll` standing a cluster up rather than in `@Test` bodies: a config file
+  that is present and parsed can still be inert against the case you care about.
+  The lifecycle budget is 8m rather than a tighter number because the tests' own awaits are the
+  intended failure mechanism and this backstop must never fire first — the longest internal guard in
+  the non-Heavy set is 240s, and at 5m a slow-but-succeeding formation on a loaded runner could have
+  tripped it and manufactured the flakiness it exists to diagnose.
+  [verified: aether/forge/forge-tests/src/test/resources/junit-platform.properties]
+  Deliberately not the ticket's suggested `forkedProcessTimeoutInSeconds`: that is already set to 1800
+  in the pom and has failed to reap a hung fork at least three times. Honest limit — a JUnit timeout
+  interrupts the test thread, so a hang in a non-interruptible wait may not unblock; the value is the
+  named failure in the report, not a guaranteed JVM exit. `forkedProcessTimeoutInSeconds` stays as the
+  outer backstop. [mechanism: JUnit timeouts interrupt the test thread]
+- `forge.sh` uses `verify`, not `integration-test`: failsafe enforces failures only at `verify`, and
+  `integration-test` prints `BUILD SUCCESS` over failing tests. Its `-pl aether/forge/forge-tests`
+  scope is hard-coded and documented as non-negotiable — that scoping is what keeps `HetznerCloudIT`
+  (which provisions a real paid server when `HCLOUD_TOKEN` is set) out of the reactor.
+- The script clears `target/failsafe-reports` before running. Without that, its own summary read
+  every previous run's XML: a 3-class smoke run reported 50 tests from 12 files, most left by an
+  unrelated probe run. A gate that reports another run's results is the same defect as a positive
+  control that ignores its own trigger — it does not miss problems, it reports confident nonsense.
+- The pre-push expectation is now written where it is seen rather than remembered: `build.sh`'s
+  closing banner leads with "NOTHING ABOVE RAN A CLUSTER", and `CONTRIBUTING.md` — which previously
+  implied `build.sh` was sufficient before a PR — carries the requirement and the module list.
+
+### Fixed (2026-08-27 — #509 probe: the positive control never posted a valid scale request)
+- `PostRestartSlowRejoinDeficitFillProbeTest.postScale` sent `{"coreCount": N}`, a field
+  `ManagementApiResponses.ScaleRequest` has never had. The server rejected it with HTTP 500
+  (`Type mismatch: expected int, got unknown ... ["count"]`), so the configured core count was never
+  raised, the reconciler correctly reported `NO_DEFICIT`, and the control asserted zero provisions.
+  Now sends the documented `{"source":"","role":"core","count":N,"expectedVersion":V}` — the shape
+  `ScaleRequestContractTest` pins and `ClusterScaleCommand` sends.
+- **The control no longer swallows a failed trigger.** `postScale` rendered the response into a log
+  line and discarded the status, so a rejected request produced a confident "the deficit-fill path or
+  the recorder is INERT in this cluster" verdict — a positive control that ignores its own trigger
+  failing does not just miss defects, it manufactures a diagnosis of the wrong subsystem. Any non-2xx
+  now fails the scenario immediately with the status and body.
+- Note for anyone running this module: `mvn -pl aether/forge/forge-tests integration-test` reports
+  `BUILD SUCCESS` even with failing tests — failsafe enforces only at `verify`, which cannot be run
+  while `HCLOUD_TOKEN` is set. The failsafe XML is the only trustworthy verdict.
+
+
+- **`QuorumLossDetector` gains `stop()`** (terminal latch checked at every dispatch point + both
+  futures cancelled), called from `AetherNode.stop()` beside the #590 core-absence stop. The defect:
+  the detector had no stop, its timers live on the process-wide `SharedScheduler`, and
+  `presenceSampler.stop()` freezes its member count below threshold — so in a shared-JVM host
+  (forge/Ember) a stopped node's armed detector fired ~75s after the ORIGINAL boot and
+  `EmberCluster.handleSelfDrain`'s id-keyed registry lookup stopped the node's NEXT incarnation.
+  Third instance of the SharedScheduler-no-stop class (#499 backfill, #590 core-absence).
+  Production exposure LOW (`halt(2)` kills ghosts with the process) [design intent — unverified];
+  harness exposure HIGH (false-red generator). Live-gate rerun is BLOCKED on #660 (pre-existing
+  Rabia sync deadlock, surfaced by this batch's gate run); #642 stays open until that gate fires.
+- **SharedScheduler stop-hook audit** (45 sites): 8 node-scoped recurring tasks had no reachable
+  cancel path on node stop and kept acting for stopped nodes — CDM reconcile timer (via the
+  designed `deactivate()` path), governor announcer, retention enforcer (a DESTRUCTIVE sweep),
+  spokesman ping loop, consumer runtime (ordering-bound: now closed INSIDE the #488 window, before
+  the partition manager it reads through), replication batcher (via `StreamPartitionManager.close()`),
+  API-key sweep, adaptive sampler. Each individually reviewed for over-cancellation; all verdicted sound.
+- **Cold-boot convergence window is now anchored at `start()`**, not assembly: a node started >75s
+  after creation previously booted with ZERO quorum-loss suppression (the window had already
+  expired). The start()-re-stamp wiring is covered by the forge gate only; the predicate seam is
+  unit-pinned.
+- pg-parser: repo corpus walk consolidated into one shared `SqlCorpus` helper (`isRegularFile` at
+  the mechanism — the #598 fix had covered one caller and its sibling broke the next full local
+  build on directories named `*.sql`); `ZCstDumpTest` (a hand-run CST-diff instrument that asserts
+  nothing) now runs only when `-Dcstdump.out` is passed, per its own documented invocation.
+
+### Fixed (2026-08-27 — #575: `[operations.auto_heal] enabled` no longer parses into a silent no-op)
+- **A bootstrap-config key that changed nothing now fails validation instead of shipping.**
+  `[operations.auto_heal] enabled = false` (and its `[operations] auto_heal = false` shortcut —
+  both parse to the same `AutoHealSpec.enabled`) parsed, validated, and diffed cleanly, then never
+  reached the runtime: the code that actually gates provisioning reads a separately-hand-maintained
+  `AutoHealConfig` (`environment-integration`) that has no `enabled` field at all. An operator who
+  set this to stop replacement provisioning during an incident got silent no-op, not the suppression
+  they asked for. `ClusterBootstrapConfigValidator` now rejects `enabled = false` outright (`PF-25`),
+  mirroring `checkIngressProviderSupport` (`PF-23`, #574) — reject a declared knob loudly rather than
+  parse it and do nothing. `enabled = true` is left alone: it matches the runtime's actual always-on
+  behavior, so it does not assert anything false, even though it is equally inert. The `cluster init`
+  advanced-config scaffold no longer emits the misleading `enabled = true` line either
+  [verified: `ClusterBootstrapConfigValidatorTest.ClusterLevel.validate_autoHealDisabled_returnsPf25`].
+  Recovery action for an operator who wants to disable auto-heal: use the real, already-wired
+  runtime toggle instead — `aether cluster topology auto-heal disable` (#603) — a different
+  mechanism (an imperative, per-leader-term switch) from this bootstrap-time declarative key.
+- **Known, deferred gap (not fixed by this ticket):** the dead wiring is broader than the `enabled`
+  field. `Main.resolveAutoHeal` only ever applies `#298`'s `max_nodes` cap onto `AutoHealConfig`;
+  every other `[operations.auto_heal]` field (`retry_interval`, `startup_cooldown`,
+  `stale_observation_ttl`, `quic_miss_promotion_threshold`, `provisioning_timeout`,
+  `provision_stability_window`, `decommissioned_retention`, `swim_hints_ttl`) is parsed into
+  `AutoHealSpec` and then discarded — the whole section falls through to `AutoHealConfig.DEFAULT`
+  except for that one field. Collapsing the two duplicated types (`AutoHealSpec` vs `AutoHealConfig`,
+  which also disagree on `decommissionedRetention`'s default: 24h vs 60s) requires touching
+  `Main.java` / `AetherNodeConfig.java`, both outside this stream's territory — tracked as a
+  follow-up structural ticket candidate, not addressed here. Docs (`reference/bootstrap-config.md`,
+  `reference/timeout-configuration.md`) still describe these fields as operator-tunable and need a
+  correction pass; also out of this stream's territory (`aether/docs/**`).
+
+### Fixed (2026-08-27 — #576: dead stream/consumer TOML keys now rejected at blueprint validation)
+- **A blueprint's `[streams.X]` and `[streams.X.consumers.Y]` config diffed cleanly against what the
+  operator asked for, then most of it never reached the runtime.** `StreamResourceValidator` now
+  rejects the keys that are structurally inert instead of accepting them:
+  - `encryption-key-id` — every stream is written through one shared segment sink with no encryptor
+    ever wired to it; the 5-arg encryptor-accepting overload has no production caller. Real fix is
+    tracked as `#253` (`BlockEncryptor` has no production key source) — a different stream's
+    territory, not addressed here.
+  - `compression` (`lz4`/`zstd`) — the same shared sink hardcodes `CompressionCodec.NONE`; segments
+    are always written uncompressed regardless of this key.
+  - `batch-size`, `processing`, `on-failure`, `checkpoint-interval`, `max-retries`, `dead-letter`,
+    `read-preference` under `[streams.X.consumers.Y]` — `StreamConfigParser#parseConsumers` (the
+    parser that reads these) has no production caller anywhere in the repo; every declarative
+    consumer runs through `StreamConsumerManager`'s 1-arg `ConsumerConfig` construction, which is
+    permanently pinned at defaults.
+  Only **non-default** values trip the new `inert-stream-config-key` / `inert-consumer-config-key`
+  rules — a key that happens to already equal the hardcoded default does not assert anything false,
+  even though it is equally inert, so it is left alone
+  [verified: `StreamResourceValidatorTest.InertConfigRejection`, 7 new cases covering all affected
+  keys plus an explicit-defaults positive control].
+  Recovery action for an operator hitting one of these rejections: remove the key (it was never
+  doing anything) or wait for the runtime wiring fix to land before reintroducing it.
+- **`auto-offset-reset`'s parsed *default* was itself dishonest, separately from the explicit-value
+  case above.** The parser defaulted an omitted key to `"latest"`, but a never-committed consumer has
+  always started at offset 0 (earliest) per the settled `#478` ruling, permanently — not a gap to be
+  closed later. Blanket-rejecting the field's near-universal default would have been disruptive to
+  every existing blueprint for no operator benefit, so the parser default is corrected to `"earliest"`
+  instead (zero runtime behavior change — the field has zero behavioral readers; only
+  `KVStoreSerializer` round-trips the string)
+  [verified: `StreamConfigParserTest.ResourcesParsing.autoOffsetResetDefaultsToEarliest`].
+  An explicit non-`"earliest"` value is now unambiguous and rejected under `inert-stream-config-key`
+  alongside `encryption-key-id`/`compression`.
+- **Known, deferred gap (not fixed by this ticket):** rejecting the dead keys is a validation-time
+  fix, not the structural one. A full wiring fix — making these keys actually take effect — spans
+  `aether/slice-api` (`ConsumerConfig`/`StreamConfig` plumbing), `aether/aether-stream`
+  (`StorageSegmentSink`'s single shared, unencrypted sink), and most of `aether/node`
+  (`AetherNode`/`StreamConsumerManager`'s hardcoded construction sites) — all outside this stream's
+  territory, tracked as a follow-up structural ticket candidate. A second, independent TOML parsing
+  path for the same `[streams.X]` shape exists at `NodeDeploymentState.java` (`aether-deployment`,
+  via a generic `ConfigService.config(section, StreamConfig.class)` binder) — in-territory but out of
+  this fix's scope, and likely part of the real root cause (two divergent parsers for one config
+  shape) rather than something this validation-time guard addresses.
+
+### Fixed (2026-08-27 — #603: `auto-heal disable` now actually gates provisioning)
+- **The operator kill switch had exactly one reader.** `aether cluster topology auto-heal disable`
+  flipped `ClusterTopologyManager.isAutoHealEnabled()` and the status route reported it disabled —
+  but `LeaderReconciler.provisioningAllowed` never read the flag, so a real member departure was
+  auto-healed regardless. `autoHealEnabled` is now read once per reconcile pass and threaded through
+  the gate, the decision log, and the `#336` snapshot, so all three agree even if the operator
+  flips the flag mid-pass. Checked first in the four-condition gate, ahead of the formation
+  latches, as the operator's explicit override. **Suppresses provisioning for the current leader
+  term only** — the flag is an in-memory field on the current leader, not a committed value, so it
+  does not survive a leader failover [mechanism: field lives on `LeaderReconciler`, no persistence
+  or replication path]. Recovery action for an operator who needs the suppression to hold across a
+  failover: none yet — re-disable on the new leader after failover, or track the gap as its own
+  ticket. `LeaderReconcilerTest` pins the evaluation order directly: with both auto-heal disabled
+  and the debounce window still open, `suppressionReason()` reports `AUTO_HEAL_DISABLED`, not
+  `WITHIN_DEBOUNCE` — asserted before the debounce window is advanced, the only point where the two
+  reasons actually diverge [verified: `LeaderReconcilerTest.autoHealDisabled_suppressesProvisioning_evenPastDebounceWithGenuineDeparture`]
+
+### Fixed (2026-08-27 — #571 partial: dead `completeDrain` emit removed; stale `DHTNotification` deleted)
+- **`ClusterDeploymentState.completeDrain` no longer emits to a permanently-noop sink.** It called
+  `ctx.healthSignalSink().emit(new HealthSignal.DrainCompleted(...))`, but `HealthSignalSink`'s only
+  wiring point (`AetherNode.healthSinkRef`) has been bound to `HealthSignalSink.noop()` unconditionally
+  since the membership-v2 migration deleted the two intended consumers, `HealthReconciler` and
+  `LifecycleWriter` — the log message this method printed ("...emitting DrainCompleted signal to
+  LifecycleWriter") named a class that no longer exists in the codebase. Removed the emit and
+  corrected the log line; this is a self-contained no-op removal (the call went nowhere before and
+  after) [mechanism: `HealthSignalSink.noop()` has no side effect by construction]. This is the one
+  producer call site the ticket's own line citations correctly identified; the sink's five other
+  producer sites live in `AetherNode.java`/`ManageableNode.java` (stream-A territory), `aether-metrics`,
+  and `integrations/consensus`/`integrations/swim` (stale doc comments only) — tracked separately,
+  not fixed by this entry. See `MAILBOX.md` for the cross-stream coordination note.
+- **`ClusterDeploymentManagerTest$DrainCompletionTests.completeDrain_emitsDrainCompletedSignal` rewritten
+  as `completeDrain_writesNoKvCommand`.** The old test pinned the now-removed `HealthSignal.DrainCompleted`
+  emit. Before deleting it outright, a dedicated investigation confirmed the property it stood in for —
+  "drain completion is observable via the leader's spec §8 path" — is genuinely dead, not a coverage gap:
+  the new membership-v2 drain procedure (`DrainProcedure.java`, `membership.ntt`) runs on the *victim*
+  node with "No KV / consensus dependency" (its own doc, lines 54-55), while `completeDrain` runs on the
+  *leader* — a structural mismatch meaning the old in-JVM signal could never have carried this information
+  even before its consumers were deleted; slice migration is explicitly out of that spec's scope. The
+  rewritten test instead pins the surviving property: `completeDrain` issues no KV command (it never did,
+  and now visibly doesn't route through the dead sink either) [verified:
+  `ClusterDeploymentManagerTest$DrainCompletionTests.completeDrain_writesNoKvCommand`].
+- **Deleted `DHTNotification.java`** (`aether/aether-invoke`) — a `@Codec`-annotated sealed protocol
+  message (`Put`/`Removed`) with zero senders and zero receivers repo-wide, confirmed independently by
+  two separate greps of `.java`/`.md`/`.toml`/`.yml` sources: its only references were its own
+  declaration, two tag pins in `SystemTags.java` (`640`/`641`, now retired — never renumbered or reused
+  per that file's own rule), and this changelog's now-stale claim below. Not a placeholder: no
+  TODO/planned marker in the file or its git history. `StreamType.DHT` is unaffected — it has live
+  readers elsewhere (`DHTRelayMessage`, `integrations/dht/DHTMessage`) — and `ProtocolMessage` is not
+  sealed, so no switch loses exhaustiveness from this deletion.
+- **Correction to a prior entry:** the "DHT notification broadcasting" bullet under `### Changed`
+  earlier in this file (originally dated before the 1.0.0-rc3 unreleased section existed) describes
+  `DHTNotification` as an active, in-use broadcast mechanism. That was true when written; it is not
+  true today — the mechanism above supersedes it. Left the original entry unedited (historical record)
+  rather than rewritten.
+
+### Fixed (2026-08-27 — #578: cluster-config apply no longer silently no-ops or partially mutates)
+- **A rejected apply plan is now guaranteed zero side effects.** `ClusterConfigApplier.apply`
+  previously actuated actions as it walked them — a diff mixing a valid scale with an unsupported
+  action wrote the live desired-count change and only then failed, leaving the cluster mutated
+  while the stored config still held the old value. The applier now classifies the WHOLE plan
+  first (one exhaustive switch, no `default`, so an eleventh `DiffAction` variant fails to compile
+  rather than silently falling through) and rejects up front on the first failing action before
+  anything is actuated [mechanism: `firstRejection`/`scalesOf` split the classified list before any
+  `topologyManager.setDesiredCount` call runs]. An accepted plan's scale writes still fold
+  sequentially, matching an operator's top-to-bottom reading of the plan; a write that fails
+  partway through the fold leaves the earlier writes landed with no compensation — documented as a
+  known boundary, not built, since no caller has yet produced a plan where that ordering matters
+  [design intent — unverified].
+- **`ManagementServer`'s no-topology-manager fallback now fails loudly instead of silently
+  succeeding.** The fallback (currently dead code — no live route wires a node with an absent
+  `ClusterTopologyManager`) previously accepted any apply as a no-op. Renamed
+  `ClusterConfigApplier.unused()` to the enum-singleton `NoTopologyManager`, returning a new typed
+  `ClusterConfigError.ClusterTopologyManagerUnavailable` (503, operator recovery action: retry
+  against a node with cluster topology management active) so the same silent-success defect this
+  ticket closes on the live path cannot resurface here if the fallback ever becomes reachable
+  [verified: `ClusterConfigApplierTest.NoTopologyManagerFallback`].
+- **Known, deferred inconsistency (not fixed by this batch):** an `ImmutableFieldChange` action
+  answers 409 CONFLICT from this applier but 400 BAD_REQUEST from the live HTTP route
+  (`ClusterConfigRoutes.executeDiff` intercepts `hasImmutableChanges()` before the applier runs, via
+  `ClusterConfigError.ValidationFailed`, which does not override the interface's default
+  `httpStatus()`). The applier's 409 is unreachable from the live route today. Fixing it means
+  changing `ValidationFailed`'s status propagation, which affects every other validator wrapping
+  it — tracked here, out of scope for #578.
+- Fixed a `.field()` bug at two pre-existing call sites (`ClusterConfigRoutes.java`,
+  `ApplyOrchestrator.java`) where an `ImmutableFieldChange` rejection's field name was read lazily
+  only inside the branch that has one, found during review of this batch.
+
+### Added (2026-08-27 — #642/#509 test infra)
+- `EmberCluster.start(heldBackNodeIds)` + `startHeldBackNodes()`: deterministic slow-rejoiner seam —
+  held nodes are created into every peer's configured topology but not started, producing the #509
+  "stable-id members merely slow to rejoin" shape without racing a real restart.
+- `PostRestartSlowRejoinDeficitFillProbeTest` (Heavy): full-restart-with-2-of-5-held probe with a
+  recording ComputeProvider, zero-provision assertion through a derived hold window, scale-up
+  positive control (via `POST /api/cluster/scale` — `setClusterSize()` alone is a vacuous control),
+  and fail-fast on any started node dying. Run 1 found #642; run 2 (ghosts fixed) surfaced #660.
+  Goes green only after #660's fix; #509 closes on that green per its on-ticket ruling.
+
+### Added
+- Core: **typed-error construction** (`core/docs/typed-error-construction.md`) — the API half. `Causes.forOneValue/forTwoValues/forThreeValues` gain typed rungs: a message-only rung (`Fn1<C, String>` causeFactory) and a data-retaining rung whose causeFactory receives the values plus the formatted message in constructor order, so a data-carrying cause record's canonical constructor reference IS the factory (`record InvalidEmail(String raw, String message)` + `forOneValue("Invalid email: %s", InvalidEmail::new)`). Three is the ceiling by decision — zero corpus call sites exist at arity two and three. All rungs (existing single-arg ones included) now pin `Locale.ROOT` so numeric conversions render identically across JVMs. Two defaults-only mixins land nested in `Cause`: `Cause.Terminal` (isTerminal → true, the implementing IS the classification) and `Cause.Wrapped` (an `origin` component supplies `source()`; the component cannot be named `source` — the record accessor's return type would clash — and `Option.option` is deliberate, since `Option.some(null)` would wrap a null without complaint). One rendering fact worth knowing, pinned by test: `%s` renders a `Cause` argument through `toString()`, not `message()` — interfaces cannot default `toString()` — so a wrap template that wants the origin's message embedded formats `origin.message()` in a hand-rolled factory line
+- Core: **full-PECS variance on every cause-factory parameter** — `Result.filter`/`mapError`, `Promise.filter` (both overloads)/`mapError`/`failAsync`, and all six `Verify.ensure`/`ensureOption` causeProviders: producer position takes `? extends Cause`, value inputs take `? super T`. A fully-typed factory field now drops into every composition site with no widening and no `::apply` adaptation, and a factory generalised over a supertype serves narrower sites. Binary-compatible (erasure unchanged); source-compatible for callers, verified by a reactor-wide compile; with `Promise` sealed (#635) no external implementor can exist, so the claim holds unconditionally. Pre-GA is the window where this widening is free
+
+### Changed
+- DX: **the Forge debug workflow is documented, and every `run-forge.sh` honors `FORGE_JVM_OPTS`** (#608, the issue's own "cheapest half first"). Forge is one plain JVM, so standard JDWP remote attach has always worked — nobody was told. `forge-guide.md` gains a Debugging section with the exact flags (attach-when-ready and suspend-on-startup variants), the IDE attach recipe, and the two facts worth knowing before blaming the runtime: breakpoints in slice code bind normally (JDWP is classloader-agnostic — keep the slice source project open for frame mapping), and a hit breakpoint freezes all five simulated nodes with it, so expect SWIM suspicion noise after long pauses. All six example `run-forge.sh` scripts pass `FORGE_JVM_OPTS` through (deliberately unquoted — several flags must word-split). The issue's other half — watch mode without the mvn-install round trip — is a real feature and stays open on #608
+- Docs: **the two boundaries named precisely** (#614). Everywhere slice isolation is *described* (overview, feature-catalog row 5, slice-container, slice-loading, resource-and-isolation model), the claim now carries its scope: classloaders isolate **dependency versions**, the **cluster** isolates failures — co-located slices share one JVM, the fault boundary is the node. **Slice-to-node pinning is documented as explicitly not supported** (a `known-limitations.md` scope row + section): the blueprint has no placement key and `PlacementPolicy`'s four tiers are the whole slice-placement vocabulary, so sole occupancy is achieved by tier construction, not per-node constraint — and `15-resource-and-isolation-model.md`'s claim that placement hints express slice co-location is corrected (they are provisioning-time node-shape controls in `ProvisionSpec`, catalog row 187). The overview's Rabia section now reconciles leaderless consensus with the coordination leader instead of leaving the contradiction to the reader: the leader lease is a value IN the ordered store, so re-election is a write rather than a protocol — which is where the ~2ms leader-replacement figure comes from, and what Raft cannot do by construction
+- Consensus: **QUIC transport errors migrated to the typed-error construction idiom** — the pilot migration the lint spec's rollout plan calls for (`jbct/docs/typed-error-lint-spec.md` §5.3). `QuicTransportError`'s eight data-carrying records gain a trailing `message` component and a declared `FACTORY`; the four variants wrapping an underlying failure (`ConnectionCloseFailed`, `BindFailed`, `ConnectFailed`, `StreamCreationFailed`) now implement `Cause.Wrapped` with a `Cause origin` component, so the wrapped failure survives into `source()` instead of being flattened into message text (rendering is unchanged — both the old string concatenation and the new `%s` template go through the same `Causes.fromThrowable(...)` value's `toString()`). `General`'s field renamed `text` → `message` to the prescribed fixed-text shape — caught by the pack, not by eye. `IdentityMismatch` hand-rolls its factory: its message renders `NodeId.id()`, not `NodeId.toString()`, and a `%s` template cannot express that — custom value rendering is a second legitimate reason to hand-roll alongside the spec's above-the-ceiling case, worth its sentence in the companion spec. `TlsContextCreationFailed` deleted — zero references repo-wide (pre-GA, no compat hold). All 11 construction sites across the four QUIC files now construct through the factories. Calibration evidence per §5.3: pre-migration the pack reports 10 findings on the file (1×CAUSE-01, 9×CAUSE-02); a deliberately broken intermediate fires the two track-B rules (CAUSE-04 on a template/arity mismatch, CAUSE-08 on a stray `new` bypassing a declared factory); the final state is pack-silent — 0 CAUSE findings across all 15 QUIC files. integrations/consensus: 709 tests green, including the reconnect test that pins `IdentityMismatch`'s components
+
+### Changed
+- Core: **`Promise` is now sealed** (`permits PromiseImpl`), matching `Result`'s `permits Success, Failure`. Verified before sealing: exactly one implementor exists (`PromiseImpl`, same file), no test doubles implement `Promise`, and no anonymous `new Promise<>()` anywhere in the repo — so nothing breaks. The driver is the typed-error-construction work (`core/docs/typed-error-construction.md`): its variance pass changes the generic signatures of `filter`/`mapError`/`failAsync`, which is source-compatible for callers but would break any external implementor overriding those defaults; with the interface sealed, "source-compatible" holds unconditionally. Pre-GA is the window where sealing costs nothing — an installed base could later make it a breaking change
+
+### Verified (2026-08-26 — #596 CLOSED: the live entity gate, on the product's own routing)
+- **02w-entity-crash rerun with the per-node endpoint rotation REMOVED** (the ticket's own
+  instruction: the harness's owner-finding sweep masked the product's missing forwarding, so the
+  acceptance run had to drop it). `entity_post_any` now treats the FIRST REACHABLE endpoint's
+  answer as authoritative — transport failure moves on (the suite kills nodes; a dead port is the
+  harness's problem), a wrong answer from a live node FAILS. Result on a 5-node remote cluster:
+  **40/40 pre-kill creates acked via product forwarding** (the pre-#596 pinned-endpoint shape
+  scored 4/40), every acked value read back exactly through one endpoint (the read-forward's live
+  exercise), **37/40 acked ACROSS a SIGKILL** (the 3 are honest failover-gap refusals — a forward
+  aimed at the dying owner fails typed), **77/77 acked survived exact-valued** (0 missing, 0
+  corrupted, 0 unreachable), terminal convergence instant, suite 54s, and **zero `NotCurrentOwner`
+  anywhere in the run** — the refusal the ticket was filed about never fired. guarantees.md entity
+  tags upgraded from design-intent to `[verified]` accordingly.
+
+### Added (2026-08-26 — #596 read half: BOUNDED_STALE entity reads forward from non-hosting nodes)
+- **A `BOUNDED_STALE` entity read on a node with no local log now forwards to the committed owner
+  instead of refusing.** The write half (command-shaped mutations + owner-forwarding) landed
+  earlier; the read half completes the surface. The decision is REPLICA-AWARE, not owner-aware: a
+  node that HOLDS the partition — owner or replica — serves locally (the fold's ready/caught-up
+  gates bound staleness in offsets, which is the consistency level's whole contract); only a node
+  with NO ring forwards, using the ticket's own primitive (`holdsPartition` = ring presence, never
+  a replica descriptor). Unwired transport or uncommitted ownership keeps the typed local refusal
+  (`PartitionNotHeld`) — never an invented hop. Validate-the-ticket note: the "returns EMPTY, reads
+  as ABSENT" defect had already been upgraded to that loud refusal by the hosting-set arc; this
+  change turns the refusal into a route. Wire: `EntityGetForward`/`EntityGetForwardResponse`
+  (SystemTags 1666/1667) with the mutation trio's budget discipline (arrived-expired reads are
+  refused, not served to nobody) and an EXPLICIT `present` flag — absence is never inferred from
+  state-byte length, because a zero-length-encoding edge silently reading as ABSENT is the
+  ticket's original defect. The service's correlation protocol is genericized over the answer type
+  (one implementation, two pending maps) so the read and write halves cannot drift.
+  Decision matrix + protocol `[verified: EntityOwnerForwardTest 28/28 incl. 7 bounded-stale/read
+  pins; EntityForwardServiceTest get protocol 5 new pins incl. budget refusal]`; live multi-node
+  LB-fronted path `[design intent — unverified]` until the cloud entity gate (the ticket's
+  acceptance bar) — #596 stays open for that.
+- **Review-hardened (2 MAJOR, both real).** (1) Holding is re-checked at SERVE time, not only at
+  routing time: the fold memoizes rebuild success forever, and a ring released AFTER the rebuild
+  leaves a frozen fold whose catch-up gate is vacuous (an empty ring reports headOffset −1) — a
+  read served from it, locally or via a forwarded hop during ownership-reconcile lag, had NO
+  staleness bound at all. `ready()` now refuses a non-held partition typed, armed by a
+  non-holding-receiver test that also pins loop safety (the receiver never re-enters the forwarding
+  decision). (2) Decoding a forwarded answer was a bare `map(this::decode)` — a codec-miss throw on
+  the response-dispatch thread left the caller's promise UNRESOLVED, a hang instead of a typed
+  failure; all three forward-decode sites (including the two pre-existing write-path ones) now go
+  through the lifted decode. Plus: the unwired-refusal test pins the CAUSE TEXT rather than bare
+  isFailure; a dedicated pin proves getForwarded serves WITHOUT write admission (load-bearing per
+  the ForwardTarget contract); the read-your-writes caveat of a replica-served BOUNDED_STALE read
+  is stated in guarantees.md.
+
+### Fixed (#606 — examples teach what actually runs)
+- **Banking persists for real** (owner decision): `AccountService` no longer injects a `SqlConnector` it never touches while storing state in ConcurrentHashMaps — it delegates to a new `@PgSql AccountPersistence` whose every statement is compile-time-validated against `schema/V001__create_tables.sql`. Credit/debit are single conditional `UPDATE … WHERE … RETURNING` statements, so insufficient-funds is decided by the row match, atomically, not by a read-then-write; rejected updates map to the existing typed errors (`NotFound`/`InsufficientFunds`/`CurrencyMismatch`). One honest boundary recorded at the declaration instead of hidden: the processor rejects data-modifying CTEs and exposes no transaction surface, so `openAccount` is two statements and a crash between them orphans an account row
+- **Transfer compensation no longer discards its own Promise.** `compensateDebit` fired `accounts.credit(...)` and recorded `COMPENSATED` unconditionally — compensation failure was swallowed and the status lied. Now the whole failure path composes through `fold` (Promise's error-path primitive — `onFailure` is an unawaited side effect and cannot gate a chain; `orElse` would drop the original cause and turn a successful compensation into a successful transfer): the original failure still propagates after the compensating credit completes, `COMPENSATED` is recorded only on success, and a new `TransferStatus.COMPENSATION_FAILED` carries both causes in `TransferSummary.failureDetail`. Mutation-proven both ways: recording COMPENSATED unconditionally turns 2 tests red; restoring the original fire-and-forget turns 3 red
+- **The same bug found and fixed in ecommerce** while meeting the issue's "no example discards a Promise/Result" acceptance: `PlaceOrder`'s `releaseStockOnFailure` dropped the release Promise identically; now composed via `fold` with `OrderError.StockReleaseFailed(paymentFailure, releaseFailure)` naming both causes — mutation-checked (restoring the drop turns 2 tests red)
+- **Every slice example now opens with a teach-header** stating what it demonstrates and what it deliberately does not. Examples reactor: 25 → 60 tests (14 account, 15 transfer, 6 place-order compensation among the new), `jbct:check` clean
+
+### Fixed (#613 — a slice can bundle its own `javax.*` third-party artifacts)
+- **`SliceClassLoader` no longer forces the whole `javax.` namespace parent-first.** `javax.inject`,
+  `javax.servlet`, `javax.annotation` are ordinary third-party artifacts, and the blanket prefix
+  meant a slice could not bundle its own copy — before the fix, a bundled `javax.inject` ended in
+  `ClassNotFoundException`, which is precisely the per-slice version independence the child-first
+  loader exists to provide. The issue's suggested explicit package list was deliberately not used:
+  it has sharp edges (`javax.annotation` is third-party while `javax.annotation.processing` is JDK;
+  `javax.transaction` vs `javax.transaction.xa`) and drifts across JDK releases. Instead the
+  predicate is the definition itself — a `javax.*` class is parent-first iff the **platform
+  classloader resolves it** — so JDK-shipped namespaces (`javax.xml`, `javax.crypto`, `javax.net`,
+  `javax.sql`, `javax.management`, ...) keep exactly their old routing and a slice-bundled shadow
+  of them is still ignored, closing the classic xml-apis split-namespace `ClassCastException`
+  before it can open. `java.` / `jdk.` / `sun.` are untouched. Three probe-class tests pin it
+  (compiled at test time, the shadows minted via `--patch-module` since vanilla javac refuses the
+  split package): a bundled `javax.inject.Named` resolves to the slice loader; a bundled
+  `javax.xml.parsers.DocumentBuilderFactory` shadow is ignored in favor of the platform class; a
+  bundled `java.lang.String` shadow is ignored in favor of bootstrap `String` — that last pin
+  shadows an EXISTING class deliberately, because a novel `java.lang` probe dies in the JDK's own
+  `defineClass` defense on correct code and mutant alike (`super.loadClass` is
+  parent-first-then-self), distinguishing nothing; measured, not assumed
+
+### Fixed (#649, #646 — pg validation resolves names by statement structure; upserts stop hard-failing and silent skips become real checks)
+- **#649, the build-blocker:** `INSERT … ON CONFLICT DO UPDATE` hard-failed validation ("Column 'excluded' not found", "Column 'reservations' not found in table 'reservations'") on the ticketing corpus's four monotonic version guards, with no semantics-preserving workaround. The traced mechanism was double mis-routing, not missing-feature-meets-new-code: `validateRoot`'s keyword-presence fallback (UpdateKW+SetKW anywhere, no UpdateStmt — true of every DO UPDATE) ran `validateUpdate` over the whole INSERT, and there `findAll("ColId").getFirst()` picked the wrong node because peglib 0.7.3 lexes `version` as `Token VersionKW` — the recorded "never dispatch on keyword kinds" hazard, in the validator's extractor. Pre-0.7.3 the same wrong path passed by accident (the SET target was still a ColId), which is exactly why the corpus was green until the Aug-24 toolchain. Fix: the fallback is gone; statement dispatch is structural; the DO UPDATE clause gets a real scope — target relation self-referencable by name, alias honored, and `EXCLUDED` registered as a pseudo-relation carrying the target's columns (scoped, not whitelisted: `EXCLUDED.nonexistent_col` errors); SET targets and column lists are read positionally (`CstExtractor.extractColumnList` no longer keys on the `ColId` rule name)
+- **#646:** `RETURNING` lists and UPDATE/DELETE `WHERE`/`USING`/`FROM` column refs now validate against the statement's target scope. Previously `selectOutputColumnNames` did `findAll("SelectCore")` over the whole statement demanding exactly one — so a subquery-free `UPDATE … RETURNING` was silently skipped (the "working" cases were never validated), one WHERE-subquery made RETURNING validate against the subquery's projection (the original three spurious warnings), and two subqueries skipped again. Ticketing's canary is now a test: a bogus RETURNING column on the expireHolds shape errors where it was silent. Subqueries still validate their own scopes
+- **Latent defects the newly-real validation surfaced, all fixed in the same pass:** `WITH … AS (…) UPDATE` reported "Table not found: id"; schema-qualified `public.reservations` reported "Table or alias not found: public"; and the test-persistence blueprint's `INSERT INTO kv_store (key, value)` was validated on neither column (its own upsert reproduced the #649 error verbatim). One pre-existing defect found and deliberately NOT bundled: correlated subqueries cannot see the outer scope — filed as #651
+- Evidence: pg-tools 832 → **858 tests green** (+26; QueryValidatorTest now 50 across 8 nested classes), independently re-run; three mutation checks each turn their tests red (drop EXCLUDED registration → 4, stub validateReturning → 2, revert to whole-tree SelectCore discovery → 4); the four #649 upsert shapes and the #646 A/B pair are in the parser corpus so the next parser bump cannot silently regress them
+
+### Fixed (2026-08-26 — #628: a failed 02-chaos baseline restore is no longer structurally invisible)
+- **Intra-suite restore gate + honest transport sensors (owner scope call: full package).** All
+  seven 02-chaos test files downgraded a failed `restore_cluster_baseline` to a warning, and
+  `run_suite` had no gate between test FILES — the only restore gate lived between SUITES — so a
+  broken cluster failed every downstream scenario on its own subject: the 2026-08-21
+  `rawReady=1 EXCL-caller` shape and the 2026-08-22 `got 0 ()` shape are both downstream of one
+  warned-away restore. Now: the cleanups call `restore_cluster_baseline_or_flag` (FAIL log + a
+  marker to the suite runner; still exit-trap-safe), and `run_suite` on the marker captures node
+  logs IMMEDIATELY (the 2026-08-22 evidence window was destroyed before the once-per-suite capture
+  ran — the new capture lands in `failure-logs/<suite>-restore-failed/`) and quarantines the
+  remaining test files with the same semantics the between-suites gate applies. Sensors:
+  `running_core_containers` was rc-unchecked over `remote_exec`, so an SSH/daemon failure filtered
+  to "0 running containers" — verbatim the reported `got 0 ()`; it is now bounded
+  (`remote_exec_bounded`: the REMOTE `timeout` bounds a hung `docker ps`, which SSH ConnectTimeout
+  cannot — it guards setup only) and reports `UNREACHABLE(rc=N)` with rc=1, and the Pick_3
+  precondition distinguishes transport-failure from genuinely-empty (one semantic restore attempt
+  before failing, for standalone runs — parallel to the run_suite gate). `wait_for` exports
+  `WAIT_FOR_REMAINING` so transport-touching predicates can bound themselves (its deadline is only
+  checked between iterations — one hung predicate overran 4596s against a 480s budget; with the
+  seven full-budget failed restores this accounts for most of the 3× duration blow-up, alongside
+  the pre-`5ef0f822c` missing connect cap). `[mechanism-armed: stubbed failing restore writes the
+  marker and returns 0, standalone path warns and returns 0; harness lint 49/49 baseline, contract
+  tests green]` `[design intent — unverified on the live path until the next remote 02-chaos run:
+  the gate branch only fires when a real restore fails]`
+
+### Fixed (2026-08-26 — #598: parallel cluster-A suites no longer race for the cluster-global `database` datasource)
+- **test-persistence gets its own datasource name — and its own physical database.** Cluster-A
+  suites run in parallel, and both url-shortener (suite 06) and test-persistence (suites 06/08/10)
+  declared migrations under the default datasource name `database`; the #566 single-migrator gate
+  409'd whichever published second, and the loser's tests failed four steps later with empty
+  deployment IDs (owner direction 1, chosen 2026-08-26; direction 3 — abort on refused publish —
+  was already in-tree since `9b88911cd`, pre-dating the ticket's evidence run). The blueprint now
+  declares `database.testpersistence` via a blueprint-private `@TestPersistenceDb` qualifier
+  (pg-codegen honors custom `@ResourceQualifier(type = PgSqlConnector.class)` annotations by
+  design), migrations move to `schema/testpersistence/`, and the resources section points at a
+  SEPARATE physical database (`forge_testpersistence`) — required, not cosmetic: the schema
+  history/owner tables are fixed-name-per-physical-database, so a shared physical DB would re-create
+  the same collision one layer down (exactly the case `aether_schema_owner` exists to refuse).
+  Environments: compose-A mounts `pg-init/` (fresh `pgdata` every deploy — `deploy_docker` drops the
+  volume — so init always runs; a `--skip-deploy` run against a pre-change cluster needs one
+  redeploy), the remote branch ships the init dir alongside the compose file, and the cloud A-TOMLs
+  gain a `[database.testpersistence]` node_config section (the connector resolves config by EXACT
+  section name — the flat `[database]` override does not reach named sections) with
+  `ensure_cloud_pg_database` creating the PG-VM database idempotently after the firewall opens.
+  Discovery hardening in the same change: all four schema-suite scripts discovered "the tracked
+  datasource" as `head -1` of the CLUSTER-GLOBAL status list — with two tracked datasources that
+  grabs whichever blueprint published first, so suite 10's retry/baseline operations could target
+  url-shortener's datasource mid-suite-06; all four now select the `testpersistence` row.
+  `[verified: remote concurrent 06+10 run 2026-08-26 — 06-deployment 5/5 (blue-green start/promote/
+  complete/rollback, canary, rolling — the ticket's exact failing assertions), 10-database 3/3,
+  ZERO 409/already-migrated in the full log, every discovery resolved database.testpersistence,
+  forge_testpersistence confirmed present on the remote PG by direct inspection; blueprint jar
+  content-verified (database.testpersistence + schema/testpersistence/)]`
+- **`--suites` entries that match nothing now abort the run.** Found by the proof run itself:
+  `--suites 6,10` silently ran ONLY suite 10 and exited 0 (suites select by zero-padded prefix),
+  so the half-coverage read as a full green run — the silent-truncation shape. A selector typo is
+  a broken run, not a smaller one: `validate_selected_suites` fails loudly, naming the unmatched
+  entries and the available prefixes. `[verified: armed both ways against the real suites dir —
+  `6,10` rejected naming `6`, `06,10` accepted]`
+- **Post-push CI catch: the pg-init file is a `.sh`, not a `.sql`.** `CorpusParseTest` feeds EVERY
+  `.sql` in the repo through the MIGRATION grammar, and `CREATE DATABASE` / `GRANT ... ON DATABASE`
+  are admin DDL outside its domain — the corpus gate red-flagged the init file on `30a91eb85`, so
+  it now uses the standard docker-entrypoint shell form (`psql -c`), keeping the corpus premise
+  intact repo-wide. Same catch surfaced latent format debt: the test-persistence module sits
+  OUTSIDE the root reactor, so no gate ever ran jbct on it — 5 files (2 from this change, 3
+  pre-existing) formatted, module check now clean. And a latent corpus-walk defect: `sqlFiles`
+  matched `.sql` by NAME-SUFFIX alone, so the DIRECTORIES named `java.sql` in local JRE dist
+  output turned the walk into an IOException on any machine with a prior dist build —
+  `Files::isRegularFile` filter added, armed against the live dist output. `[verified:
+  CorpusParseTest green locally WITH aether/dist/output present; jbct:check clean on the module]`
+
+### Fixed (2026-08-25 — the boot codec guard's first real catch: the cluster forward-apply pair had NO codec)
+- **`ForwardApplyRequest`/`ForwardApplyResponse` were routed wire types with no registered codec.**
+  CI forge-tests went red on the first node boot after the #634 boot guard landed (`6c5ed495e`) —
+  the guard refused assembly naming exactly these two types. A true positive, not an over-strict
+  guard: `ForwardingClusterNode` really sends them (`network.send`, command forwarding to a core
+  node for consensus application), their `ProtocolMessage` siblings (the Rabia family) all carry
+  `@Codec`, and this pair simply never got the annotation — every forwarded command would have
+  silently vanished at the transport, the exact #492 class the guard exists to catch. Fix, in two
+  halves each demanded by its own guard: `@Codec` on both records (the cluster module already runs
+  the codec processor; generated `ForwardCodecs` verified by content) + aggregation into
+  `NodeCodecs`; then hand-assigned system tags 1664/1665 in `SystemTags` — the tag-space discipline
+  rejected the hash-fallback tags by name ("System types with no hand-assigned tag"), exactly as
+  designed after the codec-tag-collision hazard. Detection-gap note: the
+  branch was boot-refused from `6c5ed495e` until this fix and no local gate saw it — `./build.sh`
+  only BUILDS forge tests and the module test gates don't run them; forge CI was the first thing
+  to actually boot an assembly. `[verified: ClusterFormationTest (forge) — previously ERRORED at
+  assembly in 0.05s, now forms the cluster]`
+
+### Added/Fixed (2026-08-25 — #634-7 remainder: WAL fsync-failure injection + crash-mid-compaction, closing the ticket's test-gap list)
+- **The WAL fail-stops on a failed fsync (found by writing the owed injection test).** Before this,
+  a failed group-commit `force` failed only the covered appends — the next append RETRIED the fsync
+  itself. After one fsync failure the OS may drop the covered dirty pages while clearing the error,
+  so the retried force can falsely report durability; acking on it leaves a silent mid-file hole,
+  and recovery's contiguous scan then discards every ACKED record past the hole. Same defect class
+  the ticket's item 1 closed at the manager layer ("a later success after a mid-chain failure would
+  leave a hole"), one layer down. `PartitionWal` now records the failure once (loud ERROR) and
+  refuses every later append with typed `WalError.FailStopped` — no write, no force — while reads
+  still serve; reopen (node restart) is the recovery action and trims to the valid prefix, losing
+  nothing acked. A compaction I/O failure deliberately does NOT fail-stop: reclamation failure is
+  not a durability failure. Also fixed: a close-time fsync failure no longer leaks the channel (the
+  old `force→flatMap→close` chain skipped `close()` on force failure). `[verified: PartitionWalTest
+  FsyncFailure 5/5 — no ack over a failed fsync, force attempted exactly ONCE across a pipelined
+  group, refusal with the channel deliberately RESTORED so a retry would have succeeded, reopen
+  recovers acked records, compaction failure loud with the live file intact]`
+- **Crash-mid-compaction pinned across every window of the temp+rename dance.** Each test
+  constructs the exact post-crash disk state a SIGKILL would leave (a live JVM can't be killed
+  inside `truncate`): a complete VALID decoy temp is ignored by recovery; a torn temp is ignored; a
+  stale temp from a crashed run is overwritten and consumed by the next compaction; and survivors
+  are durable immediately after the rename WITHOUT the instance's `close()` — proven by an
+  independent reader on the same file — because the temp is `force(true)`'d before the rename. The
+  rename now passes `ATOMIC_MOVE` (enforcing what the doc already claimed), and the class doc
+  records why no directory fsync is issued, honestly tagged `[mechanism: the superset argument
+  covers the undone-rename case; the no-neither-file case rests on ordered metadata journaling, not
+  POSIX]`. `[verified: PartitionWalTest CrashMidCompaction 4/4]` `guarantees.md` §4 `stream.append`
+  now states the fail-stop failure mode with the operator recovery action.
+- **Review-hardened (2 MAJOR + 1 MAJOR surface, 4 MINOR, 1 NIT — all fixed).** (1) Compaction could
+  UN-FREEZE the fail-stop: `installCompacted` republishes `syncedSeq = writtenSeq`, so a
+  threshold-crossing truncate after a fsync failure would let an in-flight append ack over bytes
+  the failed fsync may have dropped — truncate is now refused while fail-stopped (entry check plus
+  an in-lock check in `compact()`, race-free because fail-stop is only recorded under the same
+  lock). (2) The single-force-attempt test passed without ever reaching the in-lock guard it named
+  (the refusal usually lands at the append entry check) — rebuilt with a GATED injected channel
+  that parks the first append inside `force` while holding the sync lock, making the second
+  append's entry-check pass deterministic and its refusal attributable ONLY to the in-lock guard.
+  (3) Fail-stop had no operator surface (one ERROR log — log-scraping): now `WalStats.failStopped`
+  → `wal.failStopped` on `GET /api/storage/retention` + CLI passthrough + docs; the dashboard slot
+  inherits the retention view's recorded dormant-slot decision on #494. Also: fail-stopped `close()`
+  skips the close-time force (the forbidden retry — pinned by force-call count); a failed
+  post-compaction reopen fail-stops instead of leaving a zombie with a closed channel; refusal
+  asserts on `Files.size` (disk), not the accounting; the unacked-record resurrection on reopen is
+  pinned with `containsExactly` and documented as at-least-once territory; `syncFailure` is
+  `Option<Cause>`, not a null sentinel.
+
+### Added/Fixed (2026-08-25 — #634 structural follow-ups: the silences that hid the #492 class are closed)
+- **Boot refuses a routed wire type with no codec (the #492-class killer).** Twice a generated codec
+  registry existed but was never aggregated into `NodeCodecs`, and every message of the orphaned
+  types silently vanished at the transport — runs 2–5 burned on exactly this with zero log lines.
+  `AetherNode.verifyRoutedTypesEncodable` now runs before the router is wired: every ROUTED
+  `Message.Wired` type must have a codec or the node refuses to start, naming ALL missing types and
+  the probable cause (an unaggregated `*CodecsNode` registry). `Message.Local` types are structurally
+  exempt — the sealed hierarchy is the discriminator, so no exemption list can rot. Recorded limit:
+  the guard sees types this node ROUTES; a wired type only ever SENT is covered by the loud-encode
+  net below. `[verified: VerifyRoutedTypesEncodableTest 5/5 — missing type named with the
+  aggregation hint, Local-vs-Wired discrimination armed, multi-miss accumulation]`
+- **Encode failures are LOUD.** There was no catch anywhere — an encode throw escaped the send path,
+  killing the caller's promise chain unresolved (synchronous sends) or silently cancelling periodic
+  broadcast tasks. Both transport encode sites now produce a typed `WriteOutcome.EncodeFailed` plus
+  one ERROR naming the message class; the two outcome-consuming call sites
+  (`DistributedDHTClient`, `EntityForwardService`) fail fast on it, while fire-and-forget
+  send/broadcast paths are LOG-ONLY by design — there is no caller to tell (and the worker-side DHT
+  network's default `sendOutcome` reports `Sent` unconditionally: a pre-existing blindness, now
+  recorded at the default). The
+  adjacent same-class silence — the wired router override bypassing `dispatchOne`'s try/catch, so a
+  HANDLER throw was equally unlogged — gets the same treatment: one handler's throw is logged and no
+  longer kills the dispatch of the rest. `[verified: QuicClusterNetworkEncodeFailureTest 2/2 (typed
+  outcome naming the class, registered-type arming); RabiaNodeRouterDispatchTest 3/3 (thrower
+  provably invoked, remaining handlers still run, no propagation)]`
+- **The entity-forward wire carries the budget (stage-2 propagation, mirroring the HTTP forward
+  pair).** The three request records gained `remainingMillis`; the sender stamps its remaining
+  budget, and the OWNER refuses an arrived-expired command with the typed `ForwardBudgetExhausted`
+  before touching the entity — applying a non-idempotent write whose ack nobody collects is the
+  zombie-dispatch amplification 02w measured. Wire note: same-version clusters only, rc-internal
+  (positional codec). `[verified: EntityForwardServiceTest 14/14 — arrived-expired refusal without
+  touching the entity (armed by the NO_BUDGET counterpart), wire stamp bounded/unbounded]`
+- **Invoke-layer waits are capped by the ambient budget — caller-side live, receiver-side a ready
+  mechanism.** `InvocationHandler`'s dispatch timeout reads the budget at its synchronous arm site
+  (inert today, see the tag below); `SliceInvoker`'s two correlation waits CANNOT read there — the
+  arm sits behind encode/endpoint continuations on threads where the ScopedValue is unbound, and the
+  first cut read `Deadline.current()` there: the new pin measured 60,015ms elapsed under a 300ms
+  budget, the cap silently inert. The budget is therefore captured ONCE at each chain entry on the
+  caller's thread (a parameter through the request/response chain; a `FailoverContext` component on
+  the retry chain). A call under a client deadline gets at most what remains; with no ambient budget
+  the configured value is unchanged. Wire propagation on `InvokeRequest` stays the recorded next
+  step (`TimeoutsConfig` docs). Caller-side cap `[verified: InvocationDeadlineCapTest — bounded
+  327ms vs the 60s ceiling, armed by a 2s still-waiting unbounded counterpart]`. Receiver-side cap
+  (`InvocationHandler`): `[design intent — unverified]` on the LIVE path — the mechanism is pinned
+  (a bound budget caps at 304ms in-process), but the only production caller is the inbound network
+  dispatch and `InvokeRequest` carries no budget yet, so the read is always unbounded until the wire
+  step lands (review catch: the first wording claimed both halves verified). Batch gate: build.sh
+  clean, 3,933 tests / 0 failures across ten modules.
+- **The "1:4254 generation-counter anomaly" is not one.** The counter is a LEADERSHIP-TENURE TICK —
+  bumped once per `pingInterval` (1s default) while leader — so 1:4254 means rabiaTerm 1 with ~71
+  minutes of uninterrupted leadership: the signature of a STABLE cluster. The per-interval semantics
+  were written down nowhere and the value was investigated as an anomaly once; they are now
+  documented at the increment site and on the generation surface. Deliberately no per-bump log.
+  `[mechanism: counter increments only in bumpGenerationIfLeader, scheduled at pingInterval]`
+
+### Added (2026-08-25 — #634-3+4: the tri-floor retention operator surface; WAL joins the storage subsystem)
+- **`GET /api/storage/retention` + `aether storage retention` — the tri-floor view and the joint
+  invariant (#634-4, rescoped into #634-3 per the ticket ruling: the operator surface is the only
+  honest home of a checker that must see all three floors).** Per `(stream, partition)`: the WAL's
+  live counters (size, replayable window, truncation watermark, per-group-commit fsync
+  count/mean/max), the in-memory ring tail, the durable sealed bound, the earliest retained segment,
+  and the entity checkpoint floor — joined into `coveredFrom` (earliest offset reachable from ANY
+  local source) and the invariant verdict: an entity partition with a committed checkpoint is
+  VIOLATED when no local source reaches back to `checkpoint + 1`, which is precisely the condition a
+  future fold refuses on; the surface says so before that refusal is the first symptom. A 5-minute
+  `RetentionInvariantWatch` WARN-logs and raises a `retention-invariant` critical alert once per
+  newly-violated partition (re-alerting after recovery+relapse) — the existing alert path evaluates
+  only while a dashboard client is connected, which is exactly the visibility gap the watch closes.
+  Review hardening (4 MAJORs caught and fixed): the alert severity literal was lowercase and the
+  validator is case-sensitive — the whole periodic half was INERT until the shared
+  `RetentionRoutes.ALERT_SEVERITY` constant + a real-validator pin closed it; an EMPTY materialized
+  ring reported tail `0`, permanently masking the restarted-empty case — now `-1`, and
+  nothing-local-under-a-checkpoint is itself violated; raises are debounced to two consecutive
+  violated ticks (the tri-floor join is a non-atomic cut); the invariant is documented as the
+  NECESSARY half of reachability (min-of-starts, holes not detected — reclamation is oldest-first).
+  `[verified: RetentionRoutesTest — coveredFrom source-preference incl. the WAL
+  (truncatedUpto, lastOffset] window, violation + armed non-violation incl. restarted-empty,
+  segment-only rows, entity-vs-bare-name discrimination, debounce once/transient/relapse/clean
+  pins; severity accepted by a real AlertManager]` End-to-end alert delivery in a live cluster
+  remains `[design intent — unverified]`. Operator recovery for a violated partition: backfill the
+  missing range from a replica that still holds it, or accept the documented loss and re-baseline
+  the checkpoint (docs carry the full action).
+- **The stream WAL is now part of the storage subsystem's config, capacity and observability
+  (#634-3).** `[storage.streams] wal_path` is a first-class TOML key (absent/empty = the exact
+  pre-existing derivation `<artifacts disk_path sibling>/stream-segments/<nodeId>/wal`; explicit
+  values still get the mandatory per-node suffix) `[verified: ConfigLoaderTest wal_path triple]`.
+  `GET /api/storage` reports the `streams` instance's live WAL bytes as a peer field (the WAL is a
+  sibling of the segment store, not a tier — the instance previously under-reported real disk by the
+  entire WAL), carried through the cluster rollup (`StorageStatusValue` gained `walBytes`; the
+  serializer arm — previously untested entirely, a gate finding — now has a full-field round-trip
+  pin, and the BINARY consensus codec for it gained its first round-trip pin too, a review finding:
+  the positional `@Codec` layout means the `walBytes` addition is a same-version-cluster wire change
+  — rc-internal, no mixed-version rolling upgrade across this boundary pre-GA, same policy as the
+  entity registration key change). Fsync latency is measured once per GROUP COMMIT (one nanoTime
+  pair per batch, not per append) `[verified: PartitionWalTest.Stats 3 pins; StreamPartitionManagerWalSnapshotTest 2 pins
+  incl. the no-WAL path]`.
+- **`GET /api/entity/keyspaces` + `aether entity keyspaces` — the hosting view (owner-ruled fold-in
+  of the 02w hosting-set observability).** Per keyspace: the sorted hosting node set (an upper bound
+  on the candidate set — the leader intersects it with live members; owners are always drawn from it
+  and nowhere else), the max partition count, and the
+  rolling-redeploy disagreement flag — assembled from replicated KV, so any caught-up node answers
+  identically. The 02w defect this surfaces was diagnosed from typed write refusals; now it is one
+  GET. The view is a pure projection over `EntityOwnershipReconciler.scanRegistrations` — the
+  single authority on the merge semantics (review catch: the first version re-implemented the
+  merge with no equivalence guarantee). `[verified: EntityCheckpointRoutesTest projection pins]`
+- Docs: full management-api.md + cli.md sections including the recovery actions; dashboard
+  dormant-slot decisions recorded per the #494 template for both new endpoints. Two pre-existing doc
+  defects fixed in passing (mis-titled entity-checkpoints section; `/api/entity/checkpoints` missing
+  from the route table) and one corrected (the CLI checkpoints doc showed a fabricated table
+  rendering — the command prints pretty JSON).
+  Gate evidence for the whole batch: `./build.sh` clean; 3,368 tests / 0 failures across
+  aether-config, aether-stream, slice, node, cli — RetentionRoutesTest 15,
+  StorageStatusValueCodecTest 6 (both codec halves of the family), StreamPartitionManagerWalSnapshotTest 3,
+  PartitionWalTest.Stats 3, ConfigLoaderTest wal_path triple, KVStoreSerializerTest 66;
+  ManagementRouteCoverageTest confirms both new routes have handlers. A test-registry detour en route
+  (the codec test first errored on every list-bearing value) documented a latent trap: value-codec
+  tests must layer the framework parent registry the way production does, or the first List component
+  fails with "No codec registered" — the requirement now lives in the test with the measurement.
+
+### Verification (2026-08-24 — 02w run7, post hosting-set fix: THE SUITE IS FULLY GREEN, first ever)
+- **14/14 assertions across all 10 phases, 0 failures — every number the hosting-set defect suppressed
+  is now at its ceiling.** Ownership converged across all partitions in **31s** (run6: FAILED at 989s
+  against a 480s budget); **40/40 pre-kill creates ACKED** (run6: 22/40 refused by non-hosting
+  owners); the SIGKILL landed with **40 concurrent acks recorded during the kill window** (run6: 3 —
+  the fast create path is what lets the concurrent creator land anything); **all 80 ACKED entities
+  survived the crash with their exact values — 0 missing, 0 corrupted, 0 unreachable** (run6: 21).
+  Failover settled in 2s; the checkpoint driver reports alive on exactly the 3 HOSTING nodes
+  (`instances = 3` — the fix's shape visible in operations); post-crash liveness green; auto-heal
+  restored all 5 cores to terminal convergence. Suite phase time 57s.
+  `[verified: 02w-entity-crash run7 — evidence in aether/tests/integration/failure-logs/02w-run7-green/]`
+  This closes the durability arc: #634-1 fsync-before-ack, #596 write-half forwarding, the deadline
+  budget, the codec registration, and hosting-set ownership are all live-validated in one run.
+
+### Fixed (2026-08-24 — entity arc ownership is minted over the HOSTING set: the last 02w defect)
+- **The leader's entity-ownership reconcile minted `(entity:<keyspace>, partition)` owners over ALL
+  cluster members; with `instances = 3` on five nodes, arcs owned by non-hosting nodes refused every
+  write** (run6's one red test: `no entity registered for keyspace orders` from nodes 4/5, 22/40
+  creates). Root cause was structural: the keyspace registration was a single cluster-wide record
+  carrying only `partitionCount`, so the hosting set was unknowable at the decision site. Fixed by
+  making the registration PER-NODE (`EntityKeyspaceRegistrationKey` is now `(keyspace, node)`; the
+  set of committed records IS the hosting set) and giving entity arcs their own
+  `StreamPartitionOwnershipWriter` whose HrwOwner places over registered hosts ∩ the reconciled
+  member snapshot — same leader gate, epoch discipline and record family as streams; only the
+  candidate set differs. Empty candidate set leaves the committed record untouched (no self-promote;
+  writes refuse with the honest transient cause until a host returns). Failover re-placement stays
+  within the hosting set by construction. The logic moved to a new testable
+  `EntityOwnershipReconciler` (aether/node).
+  `[verified: DurableEntityForgeTest 12/12 forming 5 nodes with instances=3 — incl. the new
+  ownership_isMintedOnlyOverNodesHostingTheEntitySlice pin and state-survives-owner-loss, 82s;
+  EntityOwnershipReconcilerTest 15/15, mutation-proven (removing the hosting-set intersection —
+  the literal defect — reds 3 tests); touched modules 1879/0]` The cloud 02w re-run — the final gate
+  per the in-JVM-first sequencing rule — ran the same day and closed the suite fully green (see the
+  run7 verification block above).
+- **Review catch (MAJOR): the reconciler was not the SOLE writer of `entity:*` ownership.** Entity
+  logs are real streams since I3, so the stream-side replica reconcile walks them too — and its
+  ownership driver, placing over the whole member view, would have re-placed entity arcs onto
+  non-hosting nodes on every catalog/membership edge (entity deploys included — `createStream` fires
+  a config Put that reconciles immediately), fighting the entity reconcile record-for-record with up
+  to one 5s tick of refused writes per flip. The forge suite structurally cannot observe that window
+  (it converges before asserting). Fixed by excluding entity arcs from the stream ownership driver
+  (`driveStreamOwnership` filters through `EntityOwnershipReconciler.withoutEntityArcs`; log REPLICA
+  placement is untouched) — the entity reconciler is now the exclusive authority, which is what makes
+  the "by construction" claim above true. `[verified: withoutEntityArcs unit pin — entity arcs
+  dropped, stream arcs kept including one whose bare name equals the keyspace]`
+- **Review catch (MAJOR): a keyspace containing `/` was unvalidated while two parsers rely on its
+  absence** (the entity DHT-key grammar and the new registration identity — a `/` would silently
+  fence writes against the floor arc and shred snapshot restores into a phantom keyspace). Now
+  refused at bind time by `durableEntityConfig` with the typed `InvalidKeyspace`, the one entry
+  point every keyspace passes through.
+  `[verified: DurableEntityConfigTest slash-refusal + named-cause pins]`
+- **Registrations now have a full lifecycle.** The reconcile tick makes each node's committed
+  records equal its locally-declared set in BOTH directions: asserting declared keyspaces (as
+  before) and PRUNING committed-but-undeclared self-records. `EntityKeyspaceRegistrar.retract` +
+  a close hook on the provisioned entity (run via the factory's `close` override when the keyspace's
+  last local consumer slice stops) retract the declaration, unregister the forward target
+  (`EntityForwardRegistry.unregister` — an arriving forward for an unloaded keyspace now gets the
+  typed refusal instead of reaching into a dead classloader) and unhook the checkpoint driver. The
+  entity deliberately is NOT `AutoCloseable` (review catch): a public close would let slice code
+  unhook a live keyspace, so the unload seam is package-private and reachable only through the
+  factory.
+  The prune leg also heals what retract can never see: a node that died and restarted WITHOUT the
+  slice sheds its stale record, so a live node can no longer stay a placement candidate for a
+  keyspace it stopped hosting. Residual (recorded in `EntityKeyspaceRegistrar` docs): a node that
+  dies and NEVER returns leaves a permanently dead record — excluded from every placement decision
+  by the liveness intersection, reaped only by hand until a reaper exists.
+  `[verified: DurableEntityFactoryTest Unload 2 pins (close retracts + unhooks, exactly once);
+  EntityForwardServiceTest unregister pins; registrationDelta both-directions pins incl.
+  leaves-other-nodes'-records-alone]`
+- Wire/snapshot note: the `EntityKeyspaceRegistrationKey` payload (SystemTags 1107) and its
+  text-snapshot identity changed shape (`<keyspace>` → `<keyspace>/<nodeId>`). Same-version
+  clusters only; rc3 is unreleased, no migration. Hosting-set observability (which nodes registered
+  a keyspace) is folded into the #634-3/4 operator surface per owner ruling this session; committed
+  arc owners were already visible via `GET /api/ownership/stream` and `aether cluster ownership
+  stream` (entity arcs ride the stream family under the `entity:` namespace).
+
+### Verification (2026-08-24 — 02w run6, post codec-fix: THE DURABILITY VERDICT, first ever)
+- **All 21 ACKED entities survived a SIGKILL with their exact values — 0 lost, 0 corrupted,
+  0 unreachable, full population checked within budget.** 18 pre-kill + 3 acked DURING the kill
+  window (the first run fast enough for the concurrent creator to land anything). Failover settled
+  in 1s; post-crash liveness green; checkpoint driver clean. This live-validates the
+  fsync-before-ack chain including #634-1's replica path.
+  `[verified: 02w run6 — Every_ACKED_entity_survives_the_crash over 21 acked keys under SIGKILL]`
+- **Suite wall clock: 552s** — runs 2–4 were killed past 5.6h, run5 took 4,230s. 9 of 10 tests
+  pass; the one failure (ownership convergence) is now PRECISELY diagnosed by the typed refusal
+  the same session added: `no entity registered for keyspace orders` from nodes 4 and 5 — the
+  blueprint places `instances = 3`, and **the leader's ownership reconcile mints entity
+  partition-arc owners across ALL cluster nodes instead of the entity-hosting set**, so partitions
+  owned by non-hosting nodes refuse every write (22/40 creates). Forge cannot see this (formation
+  size = instance count). Next work item: mint entity arc ownership over the keyspace's hosting
+  nodes, and keep re-placement within them on failover.
+
+### Fixed
+- **The #596 entity owner-forward wire pair was NEVER REGISTERED in the node codec — every entity
+  forward in every run silently vanished at the transport.** The annotation processor generated
+  `EntityforwardCodecsNode`; the hand-maintained `NodeCodecs` aggregation never included it (the
+  #492 defect class — "generated codecs lived only in the orphaned registry" — second occurrence),
+  and the transport swallowed the encode throw, so the sender saw nothing and burned its full
+  correlation timeout. ONE line explains every entity integration symptom across runs 2–5:
+  8,977s creates (30s constant per doomed leg pre-budget), run5's ~64s creates and "unreachable"
+  keys (the 10s budget cut the per-leg burn — the budget was NEVER unbounded; the 30.1s gap
+  quantization was 3 × 10.03s doomed legs), convergence timeouts on healthy clusters, and the
+  forge suite's 299s setUp hang. Fixed by aggregating the registry — upon which the SystemTags
+  pinning guard immediately demanded hand-assigned tags (1660–1663), exactly as designed. Also
+  fixed while the (never-functional) wire was free to change: the forward response now carries
+  `failureType`, and the entity reconstructs the owner's TYPED refusal
+  (`EntityAlreadyExists`/`EntityNotFound`) — a string-flattened duplicate-create read as an
+  unexplained failure to every matcher keyed on the type, which would have undercounted 02w's
+  acked creates. `DurableEntityForgeTest` updated from the pre-#596 contract (non-owner refuses
+  `NotCurrentOwner`) to the forwarding contract (the owner's verdict reaches every caller) — the
+  suite is failsafe-excluded from CI and had never run since forwarding landed.
+  `[verified: DurableEntityForgeTest 11/11 incl. state-survives-owner-loss, 100/100 forwards
+  complete within budget, 0 timeouts, convergence in seconds vs 299s hang; NodeCodecsRoutedTypesTest
+  pins the four codecs; EntityOwnerForwardTest 21/21 incl. typed-reconstruction pins; node 892/0;
+  durable-entity 155/0]` Follow-ups recorded: boot-time routed-type⇒codec verification (the
+  structural fix for the #492 class), and the transport's silent swallow of encode failures.
+
+### Verification (2026-08-24 — 02w run5, first run with complete evidence)
+- **The 02w wall-clock disease is fixed: 4,230s (~70 min) end-to-end vs run4's 5.6h+ killed.**
+  Deadline budget live-validated server-side (stage 1+2): suite legs bounded, cluster B formed in
+  14s, failover settled in 2s, post-crash liveness create+read passed. Capture-before-heal proven:
+  the SIGKILLed node's full log survived its `docker rm` for the first time
+  (`streamed-aether-b-node-5.log`), along with the auto-heal replacement's.
+- **Durability verdict: UNMEASURABLE this run — and for the first time that is what it says,
+  instead of a false loss claim.** 14/40 creates acked inside the 900s create budget (~64s/create);
+  pre-kill readback green (14/14 exact values); post-kill readback exhausted its 900s budget at
+  11/14 keys with 2 UNREACHABLE (no node answered — quarantined, NOT counted as loss). Among the
+  measurable: 0 lost, 0 corrupted. `[design intent — unverified]` remains the standing durability
+  claim; the run adds NO evidence of loss.
+- **The remaining defect is localized and quantified:** entity operations from most nodes
+  chronically burn their full 10s budget before one leg lands (~64s/create healthy, ~82s/read
+  post-kill; ownership convergence 989s vs 480s budget on a HEALTHY cluster). One pathology
+  explains all three red measurements. Root-cause investigation on the complete run5 logs is the
+  next work item; suite generation counter hit 1:4254 (churn to explain).
+
+### Fixed
+- **02w's verdict could not distinguish data loss from an unreachable cluster — now it must.**
+  `read_amount` is a three-way protocol: `found` (value), ABSENT (positive `"outcome":"absent"`
+  from a node HOLDING the key's arc — non-holders answer `PartitionNotHeld`, never absent), and
+  UNREACHABLE (no positive answer — fails the run as "verdict unmeasurable", never as loss; run2's
+  "1/2 lost" was rendered over exactly this conflation). Create and both readback loops carry
+  wall-clock phase budgets (`CREATE_BUDGET`/`READBACK_BUDGET`, 900s) — run4 ran a 20,295s readback
+  against nothing; budget exhaustion caps the population (creates) or reports UNMEASURABLE
+  (readback), never a fabricated verdict. Remote `_api_call` gains a 5s connect cap; the
+  failure-log dir is cleared per run (run3's diagnosis nearly used run2's stale capture); and
+  capture-before-heal log streamers on the remote host (scripts/log-streamer.sh, self-healing
+  5s re-scan picks up auto-heal replacements) make node logs survive `docker rm` — auto-heal
+  destroyed the dying node's evidence in runs 2 and 4. The streamer's own pkill uses the
+  self-excluding `-[f]` pattern: the bare pattern matched the remote shell running the start
+  chain and killed it (run5 hit this live; the recorded "pgrep matches your own waiter" class).
+  `[verified: 02w run5 — budgets fired and reported honestly, streamed logs captured for all
+  nodes including the killed one, UNREACHABLE quarantined from the loss count]`
+
+### Added
+- **Per-request deadline budget shared across layers (`Deadline`, core) — the fix for the 02w
+  wall-clock disease.** Client-visible operations had no deadline shared across layers, so each
+  layer's timeout multiplied the one above: 5s forward hops re-driven over an unbounded receiver
+  dispatch, over a hardcoded 30s entity owner-forward wait, over 5s+retry remote stream reads —
+  run4 measured creates at ~97s each against a 30s client, and every abandoned hop left a receiver
+  computing an answer nobody collects. Now the app HTTP server mints a budget
+  (`timeouts.forwarding.request_budget`, default 10s; management forwards mint
+  `management_request_budget`, 10s) carried as an ambient `Deadline` (ScopedValue; TimeSpan API)
+  and consumed as `min(own timeout, remaining)` by: forwarder hops (`remaining/attempts-left`,
+  counting an outer task-group retry loop's attempts, typed stop under a 200ms floor; remaining
+  stamped on `HttpForwardRequest` so BOTH receivers — app and management — REFUSE a request whose
+  sender already gave up at a 50ms floor and re-bind the budget for local dispatch); entity
+  owner-forwards (refuse-below-floor before the send — a doomed send only widens the
+  unknown-outcome window on a non-idempotent write; timeout cause now states the owner MAY have
+  applied the command); and remote stream read/publish ack waits including the shared
+  forward-publish retry ladder, which captures the budget once and re-binds it around every
+  attempt (retries run on scheduler threads where the ScopedValue is gone) and stops retrying
+  when the backoff would outlive the budget. The `ContextPropagation` snapshot now carries the
+  deadline, so every propagated async hop keeps it. Unbudgeted callers (background work, direct
+  construction) keep every previous default — an unbound scope reads as unbounded. The
+  durable-entity API captures the caller's budget and re-binds it across the
+  `PerKeySerialExecutor` thread hop. NOT yet budgeted (recorded follow-ups): the
+  invocation-layer east-west timeouts (needs budget on `InvokeRequest`) and the entity forward
+  wire message (owner-side apply runs unbudgeted). `[verified: core DeadlineTest (fake-clock);
+  HttpForwarderDeadlineTest — exhausted budget = typed fail with zero sends, wire stamped,
+  hop wait capped; AppHttpServerForwardBudgetTest — expired wire budget refused with router
+  never invoked, healthy budget re-minted for dispatch; EntityForwardServiceTest — refuse-before-
+  send at zero AND below-floor + wait capped vs 60s config; EntityOwnerForwardTest — budget
+  observed across the executor hop; StreamForwardClientTest — read/publish waits capped vs 60s
+  config; StreamForwardRetryDeadlineTest — every retry attempt observes the budget, sub-backoff
+  budget stops the ladder]`
+  Handover 2026-08-24 correction recorded: the burn was NOT `InvocationTimeouts` re-driving the
+  forwarder ×3 (those retry knobs are parsed but wired to nothing) — the re-driver is the layer
+  ABOVE the node: harness sweeps × forwarder hops × the 30s `ENTITY_FORWARD_TIMEOUT`, now all
+  consuming one budget.
+
+### Fixed
+- **`Retry` now stops on a terminal-classified `Cause` (core), and the QUIC removed-peer verdict is one.**
+  Measured on 02w (2026-08-23): 4,160 scheduled retries of `stream dropped: peer is REMOVED (terminal)` —
+  the classification lived in message text no policy reads. `Cause.isTerminal()` (default false, so every
+  unclassified cause keeps bounded-retry behaviour), `Causes.terminal(...)`, and `Retry` fails immediately
+  on a terminal cause with a distinct log line. The prior fix had made the removed-peer failure FAST; this
+  makes it FINAL. `[verified: core RetryTest 13/0 incl. 2 new pins, mutation (guard removed) killed;
+  consensus 15/0 with the seam pinned — the removed-peer cause asserts isTerminal]`
+- **#634 item 1 — replicated stream records are fsynced BEFORE the replica acks.** `appendRecovered` never
+  called `durablyLog` (one call site: the owner's publish path), so the "replicated" half of
+  `minSyncReplicas` was RAM-until-seal: correlated power loss inside the unsealed window lost acked entity
+  writes at ANY replication factor. Replicated/backfilled records now enter the same per-partition WAL the
+  owner uses, CHAINED per partition (PartitionWal runs each append on a per-call async supplier, so
+  unchained calls race FILE order — and file order is load-bearing: recovery derives `lastOffset` from the
+  last record, truncation assumes monotonic offsets; the chain costs what the owner's own `durablyLog`
+  already pays per record). `ReplicationReceiveHandler` awaits the new `syncReplicated` barrier before
+  acking; a failed fsync WITHHOLDS the ack, so the owner's barrier degrades honestly instead of counting a
+  copy that does not exist. A mid-chain failure deliberately poisons the chain — a later success would
+  leave a WAL hole the ring does not have. Wall-less deployments resolve the barrier immediately: their ack
+  means exactly what it meant before. `[verified: StreamPartitionManagerWalTest — independent-reader fsync
+  proof for appendRecovered+syncReplicated, wall-less immediate resolve; ReplicationReceiveHandlerTest —
+  ack held until the barrier resolves, ack withheld on sync failure; aether-stream 15/0 in the touched
+  suites]`
+- **#634 item 2 — an unwritable WAL dir now REFUSES BOOT instead of one WARN and fsync-free acks.** The
+  degrade silently converted "durable entity" into "in-memory entity". Opt-in for explicitly best-effort
+  deployments: `-Daether.allowNonDurableStreams=true` / `AETHER_ALLOW_NON_DURABLE_STREAMS=true` keeps the
+  previous WARN-degrade byte-identical. Enforced in `Main`'s `verify* -> abortBoot` chain (the same idiom
+  as the cluster-name and dev-mode gates — JBCT forbids the throw-based abort first attempted, and the
+  lint pushed the gate to where boot policy belongs); a node constructed DIRECTLY (Forge, tests, embedded)
+  never passes Main and keeps the degrade-with-WARN, which is exactly the explicitly-best-effort population.
+  The decision is an extracted, tested seam (`AetherNode.decideWalAvailability` /
+  `AetherNode.verifyWalBootable`) — the boot guard is the part most likely to be "simplified" into a
+  silent-degrade regression. `[verified: WalAvailabilityGateTest 3/0 — refusal names the escape hatch]`
+- **#634 item 6 — three documentation overclaims corrected:** AHSE feature-catalog row 207 Complete →
+  Partial (noOp demotion/GC, unreachable RemoteTier, no compression/encryption on the engine write path,
+  absent §10 metrics, ack-at-last-tier until #349 DD-8-1); the CHANGELOG's "KV-Store backed MetadataStore"
+  claim (never built — `InMemoryMetadataStore` is the only implementation); two stale
+  `EvictionListener.NOOP` gap notes (the segment sink IS wired via `StorageSegmentSink`).
+- **Durable-entity structural review (#596 follow-up): four fixes from one read of spec vs implementation
+  against live evidence.**
+  **S1 — a fold was rebuilt once and then FROZEN.** `EntityFold.ready()` memoizes a successful rebuild
+  forever, and `fold.apply` had exactly two callers — both on the owner's own append path — so nothing ever
+  fed REPLICATED records into a replica's fold. `BOUNDED_STALE` on a replica therefore served a
+  rebuild-time snapshot (unbounded staleness under a bounded name), and a replica later PROMOTED kept the
+  frozen view — mutating on top of stale state and silently dropping every record replicated after its
+  rebuild: lost updates on the failover path. Every access now catches the fold up to the log's current
+  head before serving (one runner per partition; joiners wait and re-check, since interleaved appliers
+  could write a key's older state over its newer one; offsets the append path already applied are
+  accounted, never re-applied). A fold whose watermark fell behind retention clears its rebuild memo and
+  the next access rebuilds from the checkpoint — the only bridge over a truncated range.
+  `[verified: 4 new EntityFoldFreshnessTest pins — replica staleness, promotion-mutates-replicated-state,
+  watermark accounting under interleave, truncation→re-rebuild; 3 mutations (hook reverted, account-only,
+  memo-clear removed), all killed]`
+  `[design intent — unverified]` that S1 was the mechanism behind a live durability failure: the 02w
+  durability verdict over a full population is still pending, and the frozen-fold consequence is
+  established by code reading and unit pins, not yet by a cluster reproduction.
+  **S6 — a forward the transport refused burned the full 30s correlation timeout in silence.** The send
+  seam was fire-and-forget; 02w measured the cost (40 creates in 8977s — ~75s each — against 12–15ms for a
+  create whose partition was ready). The service now sends via `sendOutcome` and a refusal
+  (`ConnectionDead` / `NoPeerState` / `BackpressureRefused`) fails the caller immediately with a typed
+  cause naming the refusal; the timeout remains as the backstop for sent-but-unanswered.
+  `[verified: 5 new EntityForwardServiceTest cases; mutation (outcome ignored) killed by the named test]`
+  **S4 — `ensureLog` was idempotent AND shape-blind.** `tolerateAlreadyExists` accepted a redeploy
+  declaring a different `partition_count` against an existing stream — the arc then re-hashes keys onto
+  partitions whose history lives elsewhere, and they read back as absent with nothing saying why. The
+  declared shape must now match the existing stream's `(partitions, replicas, minSync)` or provisioning
+  refuses, naming both shapes. `[verified: 2 new StreamEntityLogSubstrateTest pins; mutation killed]`
+  **S2 — `ReplicationBarrierUnmet` advised "retrying is safe", which is FALSE for update.** The write is
+  fsync-durable locally, locally served, and replayed on recovery — a retried `update` re-applies the
+  mutator on state that already includes it. The cause now states the per-operation recovery: a retried
+  create/delete self-identifies via `EntityAlreadyExists`/`EntityNotFound`; an update must read back and
+  decide from observed state. This is a third outcome (durable-but-under-replicated) distinct from
+  success and failure, and its docs now say so.
+  **Spec reconciled (S5):** `BOUNDED_STALE`'s bound is the backing stream partition's REPLICATION lag
+  (entity state has lived on stream partitions since I3, not in consensus-applied KV), earned by the S1
+  catch-up; a node outside the replica set refuses rather than answering "absent". The
+  `replication_factor` comment claiming the field is "ignored once the log path is wired" said the
+  opposite of what landed.
+  **Deliberately NOT in this batch:** the spec's `(key, n)` idempotency counter (S3). Its only stated
+  consumer is slice side-effect code in the workflow/saga increments (I5/I6), and the part that would fix
+  caller-retry double-apply needs an API-level idempotency token — a public-surface decision recorded
+  here as OPEN, not silently dropped.
+- **Entity `create` and `delete` now forward to the committed owner (#596).** The owner-forwarding that
+  landed with the `Mutator` primitive covered `update` ALONE — `forwardTarget` had exactly one call site —
+  so `create` and `delete` on a non-owner were still refused outright. That is the operation #596 was filed
+  on: its evidence was creates failing, 4 of 40 acked. Both now take the same hop, with the same guarantees
+  the update path already had: the owner re-runs its OWN admission on arrival (so a hop to a deposed owner
+  is refused exactly as a local write would be), the command runs inside the owner's per-key serialization,
+  and a failed forward surfaces as a failure and is never applied locally — that fallback is the split-brain
+  the ownership fence exists to prevent.
+  `EntityCreateForward` and `EntityDeleteForward` are NEW variants of the sealed `@Codec` message rather
+  than a flag on the shipped `EntityUpdateForward`: adding a component changes an existing message's encoded
+  shape, whereas a new permitted subclass gets its own tag and leaves the wire untouched. They share
+  `EntityUpdateForwardResponse` (empty `state` for delete, which has no post-state) — deliberately NOT
+  renamed to match, because a `@Codec` type's name IS its tag identity and re-deriving it for a cosmetic
+  gain is not worth a wire change.
+  **Also fixed, because the new paths would otherwise have copied it:** the landed `forwardUpdate` called
+  `serializer.encode(...)` inline inside a `flatMap`. `Serializer` THROWS on a codec miss and `doUpdate` runs
+  INSIDE the per-key tail, so an escaping throw left the caller's promise unresolved and wedged that key's
+  serialization tail for good — the exact hazard `readState`/`commit` in the same file lift their encodes to
+  avoid. All three send paths now lift, and the receiving side lifts its decodes too, so an undecodable
+  payload answers the sender with a typed failure instead of making it wait out the 30s timeout.
+  `[verified: unit + mutation — durable-entity 147/0, aether/node 874/0, `EntityOwnerForwardTest` 17/17;
+  6 mutations, 6 kills, no survivors (create/delete no longer forward, receiver skips admission, delete
+  answers a state, failed forward falls back locally, unwired no longer inert)]`
+  `[design intent — unverified]` on the live path: no forwarded create or delete has crossed a real network.
+  `02w-entity-crash` is the suite that would prove it and it CANNOT yet — it fails earlier, on entity
+  ownership never converging across partitions (2147s against a 480s budget), which is a separate defect.
+  **Two tests were found passing for the wrong reason** while pinning this, both by mutation rather than by
+  reading. `applyForwarded_refuses_whenTheReceiverIsNotTheOwner` — pre-existing, from the landed write half —
+  asserted only `isFailure()`; on a fresh substrate, removing the ownership fence ENTIRELY still fails, with
+  `keyNotFound`, so it would have stayed green with the fence deleted. The `refusesAsBefore` trio had the
+  same shape: an unwired transport fails with `FORWARD_UNWIRED`, which is indistinguishable from an admission
+  refusal through a bare `isFailure()`. All six now assert the failure's CAUSE.
+- **A never-written stream pinned every replica in `SYNCING` forever (#631).** Three gates each exclude the
+  GENESIS case — a stream just created and never written — and together they made it unrecoverable. The owner
+  is legitimately at watermark `-1` and self-promotes; replicas pull from it, receive an EMPTY response, and
+  #445 routes that into the no-source path because an empty owner read is never trustworthy. `waitThenPromote`
+  then suppressed the cold-start promote on the mere EXISTENCE of a committed owner record — always present for
+  a freshly-created stream. Observed in `02y-stream-crash` as all 4 partitions of the suite's OWN fresh
+  blueprint pinned for the entire 240s deploy window, so the livelock IS the deploy timeout; `03-scaling`
+  showed 1436 pins on `entity:orders`. The deferral is now decided on the owner's probed TAIL rather than on
+  its record's existence: owner ahead → defer (the real #445 case), owner unreachable → defer (an unknown tail
+  must not be read as an empty one), owner not ahead → fall through to the probe contest. **No wire-format
+  change** — `CatchupResponse` is tag-pinned at 99 and rolling upgrade is Phase-1 only, so the owner is asked
+  for its tail instead of a record component being added.
+  Two further defects surfaced while pinning it, neither addressed by the tail check alone. **The contest's
+  single-winner ELECTION parked every non-owner**: the owner is a registered replica sitting at the same `-1`
+  and wins the lowest-NodeId tie-break from a code path it never contests, so the designated winner never
+  participates and every other replica stays SYNCING. The election is now dropped when self sits exactly AT the
+  owner's authoritative tail; the contest's SAFETY checks — every peer reachable, none ahead — are untouched
+  and govern identically in both modes. **And the unreachable-owner fallback was attached to the whole promise
+  chain** rather than to the probe's own `Result`, so a deliberate defer and a declined contest were both
+  re-reported as an unreachable owner — a fabricated operator signal on the exact surface a pinned partition is
+  diagnosed from. The issue's filed mechanism (a missing owner-liveness check) and its suggested membership
+  filter are both obsolete: `AetherNode.committedOwnerStillAlive` already filters the committed-owner source,
+  empty-view caveat included.
+  Also removed `backfill_emptyOwner_boundElapsed_committedOwnerPresent_staysSyncing_notColdStartPromoted`,
+  which asserted the exact rule this reverses AND was vacuous — it set the clock past the bound before the
+  first call, but `firstNoSourceMs` is armed lazily on that same call, so `waited == 0` and it returned at the
+  within-bound guard without ever reaching the branch it named. It passed identically before and after the
+  change, in both directions.
+  `[verified: unit + mutation — aether-stream 680/0; 5 new `GenesisEmptyStreamPromotion` cases, each killed by
+  a distinct mutation (election restored, defer-on-equal, `orElse` scope, owner-ahead defer removed,
+  unreachable treated as empty) — 5 mutations, 5 kills, no survivors]`
+  `[verified: aether/tests/integration --env remote, 2026-08-23, 5-node cluster B with failure injection —
+  02y-stream-crash 1p/0f in 94s (was 0p/1f, blueprint never ACTIVE, deploy timing out at 240s); its
+  multi-partition blueprint now deploys in 8s and the suite completes SIGKILL-of-the-owner-under-concurrent-
+  publish, ACKED-event survival and offset contiguity. 03-scaling 3p/0f in 248s — exactly its recorded
+  baseline, against 4204s and a 100.00% error rate on Scale_down_7_-_5_under_load when broken]`
+  Two limits on that evidence, stated rather than glossed. The per-node pin COUNTS (212 on `02y`, 1436 on
+  `03-scaling`) were NOT re-measured: node logs are captured only on suite FAILURE, so a green run produces
+  none — the evidence here is behavioural (the livelock WAS the 240s deploy timeout; a deploy completing in 8s
+  cannot be livelocked), not a direct pin count. And `03-scaling`'s mechanism was never confirmed to be this
+  one — its owner log was lost to an SSH reset — so its recovery is CONSISTENT with this root cause without
+  proving it alone. The election is deliberately KEPT on the failover path: after a real owner eviction the
+  recomputed HRW owner self-promotes on the owner-immediate path and replicas catch up from it, so the contest
+  is a fallback there rather than the mechanism.
+- pg-parser: **nested block comments now parse correctly** (#619, upstream `siy/java-peglib#45`). PostgreSQL nests `/* ... */` per the SQL standard; the grammar now declares `%nest '/*' '*/'`, new in peglib **0.7.3**, which lexes the pair with a depth-counting scanner instead of a DFA path. There was no grammar-only alternative: nested comments are not a regular language so no DFA can match them, and the recursive spelling is refused by peglib's analyzer as `grammar.whitespace-cycle` because `BlockComment` is reachable from `%whitespace`. **The `BlockComment` alternative is removed rather than kept alongside `%nest`** — measured, not assumed: keeping it and dropping it give identical results on a single-level comment, a nested comment, a nested comment whose span contains a statement-splitting `;`, and an unterminated block (byte-identical error text, since an unterminated block falls through to the DFA either way). Two lex paths for one construct could only drift. The corpus statement excluded while the gap was open is restored to `dml-select.sql`, where `CorpusParseTest`'s per-line statement count now pins that a `;` inside a nested comment does not split the statement. `NestedBlockCommentGapTest`, which deliberately asserted the broken behaviour so that closing the gap would turn it red, is replaced by `NestedBlockCommentTest` asserting the correct behaviour — the load-bearing assertion counts select-list items rather than parse success, because the defect's whole danger was that it did not fail
+- Correction to the previous entry describing this gap: `SELECT 1 /* a /* b */ -- */\n , 2 FROM t;` was cited as a second silent-divergence case and is **not** one. That comment is balanced (two opens, two closes), so `, 2` is legitimately outside it and two select-list items is the correct reading — which the old lexer also produced, by a different route. Only `SELECT 1 /* /* */ , 999 -- */\n FROM t;` diverges, because `, 999` sits inside the balanced span (2 items on 0.7.2, 1 on 0.7.3). Count the delimiters before deciding what the right answer is: a balanced nested comment is precisely the case where the buggy and correct lexers agree
+- pg-parser: the nested-block-comment gap (#619) is **not a parse failure** — it can silently accept a different statement, and the docs said otherwise. PostgreSQL nests `/* … */` per the SQL standard; `BlockComment` closes at the first `*/` and the remainder leaks into the statement as live SQL. When that leaked text composes into something valid there is no diagnostic at all: `SELECT 1 /* /* */ , 999 -- */\n FROM t;` parses cleanly as `SELECT 1, 999 FROM t` (two select-list items) where correct nesting means `SELECT 1 FROM t` — note that `, 999` must sit INSIDE the balanced span for this to diverge; a comment that balances before the leaked text (`/* a /* b */ -- */` then `, 2`) reads the same either way — the trailing `-- */` reads as a line comment and swallows the orphaned outer `*/`. Even the loud cases mislead: `SELECT 1 /* outer /* inner */ still a comment */ AS c;` reports `expected end of input at 1:37` because the parser first ACCEPTS the truncated `SELECT 1 still` (implicit column alias) and only then chokes, pointing past the real cause and never mentioning comments. The original ticket's "fails to parse, rare in practice" held only for the inputs it happened to try; rarity is the only thing bounding the blast radius. Spec, feature catalog and the note at the rule in `postgres.peg` corrected. `NestedBlockCommentGapTest` pins the CURRENT wrong behaviour on purpose — a disabled test documents intent but never fires, whereas an assertion on today's behaviour goes red the day peglib closes the gap, which is the signal to re-add the two excluded corpus statements and revert the docs. Root cause is upstream and now tracked as **siy/java-peglib#45**: `%whitespace` alternatives are DFA-absorbed, and the recursive repair is refused by peglib's analyzer as `grammar.whitespace-cycle`, so no grammar-side fix exists. Also corrected a stale `-Pgenerate-parser` instruction (that profile was retired in `03d547e26`) in #619's repro block and in `CorpusParseTest`'s doc comment
+- Examples: `examples/banking` never ran the jbct plugin at all. The root pom defaults `jbct.skip` to `true` (to avoid a reactor cycle) and every other example subtree overrides it to `false`; banking did not, so `CollectSliceDepsMojo.execute()` returned at its first line and `slice-deps.properties` was never written for any of the four modules. `DependencyVersionResolver` then fell back to package-derived coordinates, which is why the generated factory named the account slice `org.pragmatica.aether.example.banking:account` while its manifest called it `banking-account-account-service`. Banking was the only example family in this state, and the only one with slice-to-slice dependencies, so it was the only place the fallback was visible. With the override, `collect-slice-deps` writes the three real coordinates (`banking-account-account-service`, `banking-exchange-exchange-rate-service`, `banking-fraud-fraud-detection-service`, all `:1.0.0-rc3`) and the generated factory, the caller's manifest and the target's `slice.artifactId` all agree. Nothing was wrong with the resolution mechanism — note for future investigations that a build stopping before `package` ALWAYS produces an empty deps file, since `CollectSliceDepsMojo` reads slice manifests out of dependency JARs and skips any artifact whose file is not a `.jar` (a reactor sibling resolves to its `target/classes` directory), and that a manifest's `base.artifact` is the base module GAV, not the routing coordinate
+- Examples: enabling the plugin on banking surfaced one build-breaking lint error that had never been checked — `TransferService.assessRisk` returned `Promise<Void>` and produced it with `Promise.success(null)` (`JBCT-RET-04`). Now `Promise<Unit>` / `Promise.unitPromise()`, which also removes the null. Banking had **zero** format drift despite never having been format-checked. 26 warnings remain (naming, zone-verb, nesting, chain length); they do not gate the build and 11 sit in the file #606 will rewrite
+- Examples: slice-goal wiring made uniform across all 19 slice modules — `install-slices` and `verify-slice` added to `comprehensive-persistence`, `verify-slice` added to `step-composition`, `url-shortener` and `url-shortener-v2`. All four pass `jbct:verify-slice`, as do banking's four slice modules now that the plugin actually runs there. Non-slice `shared` modules are unaffected: they declare no jbct executions, and `verify-slice` is bound only in the slice modules themselves
+- **The entity min-sync barrier counted the owner twice (#345 I3 path).** `minSyncReplicas` COUNTS the
+  owner — `DurableEntityConfig.minSyncReplicas()` states it outright: "`2` means the owner plus one peer,
+  i.e. `awaitReplication(..., minAcks)` blocks on ONE distinct non-self ack". But `awaitReplication`
+  counts DISTINCT NON-SELF acks, and `StreamEntityLogSubstrate.awaitBarrier` passed the raw value, so a
+  keyspace configured for `2` waited for TWO peers. At the default `replicationFactor = 3` that is
+  satisfiable only while BOTH peers are alive and caught up — losing a single peer failed every entity
+  write with `ReplicationBarrierUnmet`, which is precisely the failure replication exists to survive. At
+  `replicationFactor = 2` there is only one non-self replica in existence, so no entity write could ever
+  succeed. Both stream writers already subtract (`StreamWriteRouter`, `StreamForwardHandler.awaitMinSync`);
+  this was the third writer on the same barrier and the only one that did not.
+  Distinct from #596 (entities unreachable off the partition owner, no owner-forwarding) — same subsystem,
+  independent causes. #596's own evidence rules this out as its cause: 4 of 40 creates acked, which could
+  not happen if the barrier failed everything.
+  `[verified: unit + mutation — new StreamEntityLogSubstrateTest, 2 cases (minSync 2→1 ack, 3→2 acks, the
+  second guarding a mutant that hardcodes 1); reverting the fix turns both red. aether/node 874/0.]`
+- **A segment whose age was unknown blocked size- and count-based eviction too.**
+  `SegmentIndex.rebuildFromRefs` reconstructs the index from ref NAMES, and a ref name carries only
+  `streams/<stream>/<partition>/<start>-<end>` — so after a restart every rebuilt segment came back with
+  `maxTimestamp = 0`. `RetentionEnforcer.isSegmentExpired` returned `false` on that, and because the check
+  sat BEFORE the policy call it withheld the segment from the count and size limits as well. Every segment
+  sealed before a restart was therefore permanently unreclaimable and disk grew without bound across
+  restarts. An unknown age is now passed as `0`, which disables only the AGE term: under `ANY` the size and
+  count limits are ORed and work again; under `ALL` every limit must be exceeded, so an unknown age still
+  withholds the segment — conservative in the direction that cannot delete data.
+  **This does not restore age-based retention for pre-restart segments** — their age is genuinely recorded
+  nowhere. That needs `maxTimestamp` persisted, which is a ref-name/metadata format change and a
+  stored-format decision rather than a local fix.
+  `[verified: unit + mutation — 2 new RetentionEnforcerTest cases (maxTimestamp=0 evicted under mode ANY on
+  maxCount and on maxBytes); reverting the early return turns both red, and the pre-existing
+  "never evicts on age alone" case still passes. aether-stream 676/0.]`
+
+### Changed
+- **A durable entity's transition is now a NAMED command, not a lambda (#596 prerequisite, unblocks
+  #351/#353/#354).** `DurableEntity<K, S>` becomes `DurableEntity<K, S, C extends Mutator<S>>`, and both
+  `update` and `scheduleTimer` take `C` instead of `Fn1<S, S>`. The blocker this removes is not stylistic:
+  a lambda has no name, so it can be neither persisted for a durable timer's `onFire` nor forwarded to a
+  partition owner. The slice JAR is already on every node, so the CODE is cluster-wide and only the DATA
+  identifying which transition to run has to travel — and a record has a name where a lambda does not.
+  `Mutator<S>` lives in `resource/api` (the lowest module every consumer sees) and deliberately does NOT
+  extend `Fn1`: `Fn1.then`/`before` return a COMPOSED LAMBDA typed as `Fn1`, which is not a record, gets
+  no generated codec, and carries no tag — inheriting them would let `a.then(b)` typecheck and produce
+  something that looks like a transition and cannot cross a boundary, on exactly the paths this type
+  exists to make safe. Implementors declare a SEALED hierarchy of record variants, which is also what
+  keeps lambdas out: a lambda cannot implement a sealed interface, so an unpersistable transition is
+  unrepresentable rather than merely discouraged.
+  `[verified: durable-entity 130/0; aether/node 874/0 with no tag collision in the full assembly;
+  the blueprint build REJECTED a surviving method reference (`OrderState::expired`) at compile time,
+  so the guarantee is enforced by the type system rather than by review.]`
+- **Slice codec generation now recurses into a sealed root's permitted subclasses.**
+  `FactoryClassGenerator.addResourceTypeArgumentEntry` bailed on anything that was not a RECORD or ENUM,
+  so a sealed command hierarchy landed in `requiredTypes` with NO codec generated for any variant — and
+  the build still succeeded, leaving the failure for the first attempt to put a command on the wire. Each
+  variant is a record and takes the existing path, and since every variant is its own registered codec
+  type, the tag IS the discriminator: no new wire concept, no envelope-version question.
+  `[verified: mutation — removing the recursion drops the blueprint's generated codec references from 8
+  to 1 while the build stays GREEN, which is what makes the omission silent and the fix load-bearing.]`
+- **A sync-quorum test raced the resync timer rather than a too-short sleep.** `RabiaEngineTest$SyncQuorum`
+  failed ~80% of the time locally and twice on CI — including on a docs-only commit, which is what proved
+  it was never a code regression. The cause was not timing slack: `testConfig()` retries the sync round
+  every ~100ms and `RabiaEngine.doSynchronize` CLEARS `syncResponses` when a retry finds fewer than a
+  quorum, so the test's first response was discarded before its second arrived and the node could never
+  reach a quorum. Waiting longer could not have helped — the discarded response is gone and the test sends
+  no more. The test now runs with a 60s sync-retry interval, keeping exactly one sync round in flight for
+  its duration, and bounded polls replace the sleeps.
+  `[verified: 12/12 passes (was 2/10); consensus module 707/0; mutating syncQuorumSize() to 1 still fails
+  the safety assertion, so the test remains discriminating rather than merely quiet.]`
+
+### Fixed
+- **An elected load balancer on AWS/GCP/Azure opened no ingress and said nothing about it (#615).**
+  REQ-5.1.8.2's auto-open of `app_http` for an elected LB — and the warning that requirement dictates
+  verbatim — were BOTH reachable only through `BootstrapPhaseFirewall.managesIngressFor`, which requires
+  Hetzner. Three gates each declined to cover the combination for individually sound reasons: PF-17
+  restricts `ELECTED` only on SSH sources, PF-23 returns early when a source declares no explicit
+  `allow_ingress`, and the `CREATE_FIREWALL` phase skips non-Hetzner sources entirely. The operator saw a
+  clean bootstrap and a load balancer that served nothing, with no line anywhere pointing at ingress.
+  Any cloud source with an elected LB whose provider has no Aether-managed ingress now gets a warning
+  naming the source, the provider and the port that was NOT opened. It is emitted BEFORE the
+  `applicable == 0` early return — such a cluster has zero manageable sources and takes exactly that
+  path, so a warning placed after it would never fire for the only case it exists to cover.
+  **A warning, not an error.** Security groups, VPC firewall rules and network security groups all deny
+  inbound by default, so such a node is UNREACHABLE rather than exposed — the inverse of Hetzner, where an
+  unassociated server accepts all inbound. Managing ingress yourself there is the arrangement PF-23
+  explicitly directs operators to, so the config is legitimate; the defect was the silence.
+  Implementing `openIngress` for those three providers remains separate feature work — their native
+  mechanisms all exist, only the clients are missing.
+  `[verified: unit + mutation — BootstrapPhaseFirewallTest 4 new cases, aether/cli 656/0. Four mutations,
+  each killed: moving the call after the early return, deleting it, dropping the elected-LB condition, and
+  dropping the provider condition. Note the first two produce identical failures — the tests pin THAT the
+  warning fires, not where the call sits, so the placement is load-bearing and documented rather than
+  test-enforced.]`
+
+### Fixed
+- **A `CAUGHT_UP` replica that stopped acking served stale reads forever and inflated the ring-release
+  gate (§12 of the 2026-08-17 handover).** `ReplicationState.CAUGHT_UP` never downgrades — nothing moves
+  a replica out of it. Under a partition the value does not go stale, it FREEZES at its last good reading
+  and goes on reading as healthy indefinitely, which is the defect class the same session catalogued with
+  seven instances. Two consumers acted on that raw state: `ForwardingReadRouter` selected read targets
+  with it, so a replica readers could still reach but which had stopped acking kept serving stale data
+  with no error; and `AetherNode.streamCatchupView` counted it, so an owner could release its partition
+  ring believing enough replicas were caught up.
+  A replica now additionally has to be FRESH: its `confirmedOffset` must trail the freshest peer watermark
+  by no more than `[streaming] caught_up_max_lag_offsets`. Both consumers go through one method,
+  `ReplicaRegistry.freshPeersFor` — a guard applied at one reader and not the other is exactly what left
+  #590 live at the placement grain, so sharing the implementation makes that structural rather than a
+  review question.
+  **Lag, not a TTL, and the reason matters.** A watermark advances only on acks and backfill milestones;
+  NOTHING refreshes it on a quiet partition. A time-based rule would therefore age out every replica of a
+  write-idle stream and stop serving reads from the healthiest streams in the cluster — the trap #333
+  documented in its own seam. Lag is self-correcting when quiet: if the owner has not advanced, no peer is
+  behind. It also catches the case that motivated the finding, where writes continue while one replica
+  stops acking.
+  **Self rows are deliberately never lag-checked** — `selfCoversPartition`, `selfCaughtUp` and
+  `LinearizableOwnerServe` still read the raw state, each with a comment saying why. A node never acks
+  itself, so its own descriptor keeps the `SYNCING` / `-1` seed (#593) and reaches `CAUGHT_UP` through
+  backfill completion rather than the ack path; measuring it against a peer watermark would report
+  staleness on a perfectly healthy owner. Within `ForwardingReadRouter` one helper served both a peer and
+  a self check, so guarding it wholesale would have been wrong. `PartitionBackfill.selectSource` also
+  reads the raw state and is also correct: it takes the `max(confirmedOffset)` over `CAUGHT_UP` peers,
+  which is the very value used as the freshness reference, so its donor has lag 0 by construction and
+  routing it through the guard would select the identical node.
+  Known limits of a relative measure, both pinned by tests so they are decisions rather than surprises: a
+  partition with one registered peer compares it against itself and never finds it stale, and if every
+  peer row freezes together their lags stay equal and none is flagged.
+  **The default bound of 1024 is a guess** — not derived from a measured steady-state lag distribution.
+  It is a config key (validated `>= 0`) so an operator hitting false staleness can relieve it without a
+  rebuild; what would settle the value is observed peer lag under the 02y publish load.
+  `[verified: unit + mutation — ReplicaRegistryTest$FreshPeersTests 9/9, aether-stream 674/0, node 872/0,
+  ./build.sh green with 0 new lint. Mutation testing found a REAL HOLE on the first pass: deleting the
+  CAUGHT_UP-state filter left the whole suite green, because the one test meant to pin it was passing on
+  the lag arithmetic instead (a freshly registered peer seeds at -1, so it exceeded the bound anyway). A
+  case with a SYNCING peer AT the reference watermark now isolates the state filter, and deleting that
+  filter fails exactly that test. NOT integration-verified: no multi-node run has exercised a replica that
+  stops acking while writes continue.]`
+
+### Fixed
+- **Auto-heal replacements were provisioned with no firewall association at all (#444 residual).**
+  `HetznerComputeProvider.buildCreateRequest` took its firewall ids from `config.firewallIds()`, which is
+  populated ONLY on the CLI bootstrap path — `ProviderResolver` threads in the ids `BootstrapPhaseFirewall`
+  just created. A CTM auto-heal replacement is built from a `SourceProfile`, and that persists firewall
+  **rules** but never the created firewall's **id**, so the list resolved to empty and the server was
+  created unassociated. The provider's own javadoc states the consequence: a Hetzner server with no
+  firewall accepts ALL inbound. The window `ProviderResolver` was written to close was shut for bootstrap
+  nodes and wide open for every replacement — and the feature catalog claimed "no node is briefly
+  unfirewalled" on the strength of bootstrap-only live runs.
+  The association is now resolved BY LABEL at create, reusing the one-firewall-per-`(cluster, source)`
+  selector the ingress path already owns. Persisting the ids at bootstrap was rejected — they go stale the
+  moment a firewall is recreated out of band, and staleness in a security control is the worst failure mode
+  available. Re-creating from `SourceProfile.firewallRules` was rejected as heavier per provision and as
+  turning rule drift into a silent reconciliation.
+  **The interesting half is the empty lookup, and a bare fail-closed would have been wrong.** "This source
+  manages no ingress" and "a firewall exists but this source name did not select it" are indistinguishable
+  from the source-scoped lookup alone, and they want opposite answers: the first is PF-23's explicitly
+  endorsed *manage ingress via your own security groups* configuration, where every bootstrap peer is
+  equally unfirewalled, so refusing would permanently disable auto-heal and buy no security; the second is
+  the `ClusterTopologyManagerRecord.replacementSourceName` → `default` degradation, where the peers ARE
+  firewalled and proceeding recreates the exposure. A cluster-scoped second look separates them — firewalls
+  exist for this cluster but none for this source ⇒ refuse; none anywhere ⇒ create with a WARN. A lookup
+  ERROR always refuses: unknown firewall state is not evidence of a safe one. That last one is earned
+  structurally rather than by a guard — the failed lookup propagates through the create chain, so no
+  server is built either way; the error mapping only makes the operator-facing reason say so.
+  Refusing to provision is a deliberate behaviour change — today the node is created anyway. A missing
+  replacement is a visible, recoverable degradation; a publicly reachable one is neither. The create-time
+  log line now carries the firewall count next to the labels, so `firewalls=0` is readable at the moment
+  it is decided rather than inferred later from the Hetzner console.
+  The two provider-side lookups (cluster-scoped SSH keys, label-resolved firewall) are independent account
+  queries and now run concurrently rather than chained, so a refusal costs one extra read-only list call
+  that the sequential form would have skipped — and a lookup failure arrives as a composed error, which is
+  what the error mapping now renders into an operator-facing reason.
+  Both refusals are plain `Cause` records rather than wrapped exceptions: a fail-closed refusal is an
+  expected outcome on this path, not an exceptional one, and `toProvisionError` re-wraps whatever reaches
+  it — so the previous shape allocated and stack-filled two throwables per refusal purely to carry a
+  string, and lost the structured fields on the way.
+  `[verified: unit + mutation — HetznerComputeProviderTest.FirewallAssociationTests 5/5, hetzner module
+  83/0. Four mutations checked: making the label lookup inert, forcing the empty-cluster branch to never
+  fail, dropping the error mapping, and removing the configured-ids short-circuit. Each turns exactly the
+  pinning test(s) red and leaves the controls green; none leaves all five green. NOT cloud-verified:
+  end-to-end proof requires provisioning real paid servers, so the guarantee that a replacement comes up
+  firewalled is asserted against the create REQUEST, not against a live server.]`
+
+### Fixed
+- **Worker-community zone grouping parsed the zone out of the NodeId instead of reading it (#592).**
+  `GroupAssignment` string-split the `NodeId` at its last dash, so `node-1` grouped into a zone called
+  `"node"` and a CTM-minted `…-r<clock36>` worker into everything before the suffix. That is identifier
+  parsing, not zone awareness; it looked correct only because uniform naming put every node in one zone,
+  which hid the defect behind the single-community case. The operator-facing `[worker] zone` knob and the
+  `zone` label the Hello handshake propagates for exactly this purpose were both unread on this path.
+  `computeGroups` now takes a zone resolver — kept as a seam so the assignment logic stays pure and
+  directly testable — and `GroupMembershipTracker` binds it to the SWIM membership labels, which is where
+  the advertised zone actually arrives.
+  **The ticket described only half of it.** `AETHER_ZONE` was absent from
+  `ClusterIdentityEnv.IDENTITY_VARS`, and both provisioning paths iterate that allow-list, so a
+  provisioned node never received the variable and came up zoneless regardless. Fixing the grouping alone
+  would have left the whole chain inert — the same unwired-gate shape as the core-absence fence. It is now
+  in the allow-list, completing `AETHER_ZONE` → `NodeInfo.LABEL_ZONE` → announce → `SwimMember.labels` →
+  grouping.
+  A node advertising no zone falls back to `WorkerConfig.DEFAULT_ZONE` rather than to a fragment of its
+  name: one honest bucket for "zone unknown" beats several confident-looking wrong ones. Since nothing
+  sets `AETHER_ZONE` today, live behaviour collapses to exactly the previous single-zone case — this is a
+  correctness fix that changes nothing until an operator sets a zone.
+  `[verified: unit + mutation — GroupAssignmentTest 4/4, each written to FAIL against the old derivation
+  (node names deliberately chosen to split into the same fragment while advertising different zones, and
+  vice versa); re-deriving the zone from the name turns all four red. There was previously NO test
+  coverage of this path at all. aether/node 872/0, environment-integration 59/0, ./build.sh green, 0 new
+  lint. NOT integration-verified — a two-zone cluster run is #599.]`
+
+### Fixed
+- **ACTIVATING had no node-local remediation arm at all (#601).** `processStateTransition` carried a bare
+  `case ACTIVATING -> {}` observer — structurally the same gap #325 closed for ROUTING — so a node whose
+  activation stalled had nothing local to recover or report it. The only recourse was the leader-side
+  remediator, which judges by a projection and, before `d9b37e180`, force-UNLOADed a slice that had been
+  serving traffic 35 seconds earlier.
+  **The gate, not the transition, is the load-bearing part.** ROUTING's arm force-progresses
+  unconditionally, and its own javadoc earns that: the routes are already published and serving locally,
+  so the cross-node ack is a confirmation optimisation. ACTIVATING cannot borrow that reasoning — the
+  chain loads the slice at `activateSliceWithTimeout` and registers it for invocation only at the NEXT
+  step, so a chain stalled in between leaves the slice loaded but unable to answer a call. Forcing ACTIVE
+  there would manufacture a phantom-ACTIVE that the cluster routes traffic to, which is strictly worse
+  than a slice stuck activating — and the same run exhibited that state elsewhere
+  (`KV claims ACTIVE … not loaded locally`).
+  So the arm forces ACTIVATING → ACTIVE only on positive proof of serving:
+  `invocationHandler().localSlice(artifact)`, present exactly when the bridge is registered. That held in
+  the observed incident — the chain had run past registration and published endpoints, and the node was
+  serving `publish` calls when the leader unloaded it.
+  When the slice is NOT serving the arm deliberately does nothing beyond a loud warning: failing it there
+  would preempt the activation chain's own longer timeout, which may still legitimately complete. The
+  chain's timeout and the (now KV-confirming) cluster remediator remain the backstops.
+  `[verified: unit + mutation — NodeDeploymentStateSeedEpochAckTest$ActivationRemediation 3/3 (serving
+  forces, not-serving must NOT force, already-left is a no-op); removing the serving gate turns exactly
+  the phantom-ACTIVE test red. aether-deployment 837/0, aether/node 868/0, ./build.sh green, 0 new lint.
+  NOT integration-verified.]`
+
+### Fixed
+- **The orphan sweep force-unloaded slices cluster-wide off a projection nothing re-derives.**
+  `StaleEntryCleaner.cleanupOrphanedSliceEntries` classified a slice as orphaned purely from
+  `active.blueprints()` — a leader-local map rebuilt only on `Active` entry, never re-derived during a
+  term — and then issued UNLOAD for every slice of that artifact. It runs on each reconcile tick, so a
+  single missed `AppBlueprintPut` (or a rename path that cleared the entry and lost the re-put) would
+  unload healthy slices for the leader's entire term, under the reassuring log line
+  `"orphaned slice entries (no matching blueprint)"`.
+  It now confirms against the committed `SliceTargetValue` before destroying anything. The VERSION is
+  part of the check: a target that has moved on means this artifact is superseded and genuinely is an
+  orphan, so supersession still cleans up. Fail-safe as elsewhere — an absent or unreadable target falls
+  through to the previous behaviour, so this can only spare a slice the cluster still targets.
+  Also added the `coreMembershipResolved()` gate that the class javadoc already claimed **all** cleanups
+  had; the three siblings gated, this one did not.
+  Third instance of one defect class found by a single audit — see the community-placement and
+  stuck-slice-remediator entries. In each, a local projection or self-reported value was consumed as
+  observed truth by code that then acted destructively.
+  `[verified: unit + mutation — ClusterDeploymentStateActiveTest$OrphanSweepStaleProjection pins both
+  directions (a committed target spares the slice; a genuinely absent one still cleans up).]`
+
+### Fixed
+- **Rabia sync quorum was derived from CONNECTIVITY, so it collapsed to one at the partition edge (#557,
+  second defect).** `RabiaEngine.syncQuorumSize()` computed `min(connectedNodeCount(), clusterSize) / 2 + 1`,
+  which evaluates to **1** at connectivity 0 or 1 — so a node reaching exactly one peer would
+  `restoreState` from a SINGLE response, adopting another node's consensus state wholesale precisely when
+  it is least likely to be talking to the majority side of a partition. The old docstring justified this
+  as "adapts to actual connectivity", which is the defect stated as its own rationale: connectivity is
+  what a partition manipulates, so a safety threshold derived from it collapses exactly when needed. It
+  is now a majority of the CLUSTER (`clusterSize <= 1` yields 1, since a single-node cluster has no peer
+  to adopt from).
+  **Direction is one-way — strictly stricter, so it cannot admit a sync that was previously refused.** The
+  cost is liveness, deliberately: a node that cannot reach a cluster majority now stays inactive instead
+  of syncing from a minority. Refusing to adopt state is the recoverable failure; adopting the wrong
+  state is not.
+  The test fallout was itself the evidence: exactly two tests broke, both in a stall-detector fixture that
+  builds a **5-node** cluster and feeds **2** sync responses — a minority, which only ever activated
+  because the old gate had collapsed. The fixture now supplies a genuine majority; no assertion was
+  changed. The main 3-node fixture, where 2 responses IS a majority, stayed green throughout.
+  `[verified: unit + mutation — RabiaEngineTest$SyncQuorum pins both directions (one response must not
+  activate, two must, so it cannot pass against an engine that never activates); restoring the old
+  formula turns exactly that test red and leaves the other 31 green. integrations/consensus 707/0.]`
+- **Community placement read the community's own frozen member list (#590, at the placement grain).**
+  `CommunityLivenessView` — built as #590's fix — had exactly ONE consumer in the codebase, the
+  community-state FSM. `CommunityPlacementPlanner` never called it, and went on reading
+  `announcement.members()` and `memberCount()` raw: the community's claim about ITSELF, which under
+  partition cannot be rewritten, so it does not expire — it FREEZES. The core therefore kept weighting a
+  cut-off community at its full size and naming nodes it could not reach in `WorkerSliceDirectiveValue`s.
+  This is #590's stated consequence at a grain its own ACTIVE/DEGRADED gate cannot catch, because a
+  community can sit comfortably above the viability floor while having lost members.
+  Both placement axes now filter through the liveness view — WHICH nodes (`placeableMembers`) and HOW MANY
+  instances (`liveMemberCount`) — and the filter itself moved onto `CommunityLivenessView.liveMembers` so
+  the two cannot drift apart. Fail-safe throughout: `isAbsent` reports only POSITIVELY observed absence
+  and is `false` when the collector is unwired, so an unwired deployment places exactly as before; and a
+  community that publishes no member list keeps its declared count rather than being re-weighted to 1 on
+  no evidence.
+  `[verified: unit + mutation — CommunityPlacementPlannerTest 3 new tests covering partitioned members,
+  a wholly-absent community, and the unwired default; aether-deployment 832/0, aether/node 868/0.]`
+
+### Verification (2026-08-16)
+
+`02y-stream-crash` and `02w-entity-crash`, `--env remote` on cluster B: **2 suites, 2 passed, 0 failed.**
+This is the run that backs the integration-verified claims on the three stream/deploy fixes below. Same
+scenario that produced the data loss — 5 nodes, `min-sync-replicas=2`, `docker kill` of the node owning
+partitions 0 AND 2 with 40 publishes in flight:
+
+| | before the fixes | after |
+|---|---|---|
+| deploy to all-instances ACTIVE | timed out at 240s | **3s** |
+| ACKED events surviving the crash | 39 of 80 (41 lost) | **80 of 80, 0 missing** |
+| non-empty partitions post-crash | 2 of 4 | 4 of 4 |
+| 02y suite | FAIL, 327s | **PASS, 85s** |
+
+Not a vacuous pass: the suite's non-vacuity gate confirms 80 ACKED events were actually checked (that
+gate exists because an earlier run reported "0 acked, 0 missing" as success).
+
+The three fixes compose — any one alone leaves 02y red. The min-sync barrier makes the ack honest, slot
+preemption makes the guarantee *achievable* (the replica can now reach in-sync instead of starving for
+4½ minutes), and the remediator fix stops a healthy slice being destroyed while it converges.
+
+**Scope of the claim:** one run. Multi-node with failure injection, which is the feature-catalog bar for
+*Integration-verified* — but a single run does not establish the absence of a race.
+
+### Fixed
+- **The leader force-unloaded a healthy, serving slice on the strength of a stale in-memory view.**
+  `StuckTransitionalRemediator` judged a slice by `Active.sliceStates()` — a leader-local PROJECTION — and
+  destroyed it without ever re-reading the authority it mirrors, the committed `NodeArtifactValue` in the
+  KV-Store. When the projection missed a transition the slice looked stuck forever, because the map it was
+  judged by was the same map that had failed to advance.
+  Measured 2026-08-16 (`02y-stream-crash`, remote cluster B): node-2's activation chain SUCCEEDED and the
+  slice was serving traffic — node-2's own log records
+  `test-stream-multipart-stream-slice/publish depth=0 duration=25.591363ms` at 23:15:15 — yet the leader
+  still read ACTIVATING and force-UNLOADed it 35s later at 23:15:50, failing the deploy gate.
+  **The activation chain's 120s guard was never the problem, contrary to first reading.** `Promise.timeout`
+  arms a one-shot `fail()` against the SAME promise instance and returns `this`; `resolve()` is CAS-guarded,
+  so it is a deadline on that instance and a no-op once resolved. It did not misfire — the chain had already
+  succeeded, so there was nothing to fire at.
+  The remediator now re-reads the committed state before acting. **Fail-safe direction:** remediation is
+  skipped ONLY when the KV positively reports a SETTLED (non-transitional) state; an absent key, an
+  unreadable value, or a KV that agrees the slice is still transitional all fall through to the previous
+  behaviour. So a genuinely stuck slice is still recovered, and the change can only ever spare a slice the
+  cluster has already committed as settled.
+  **Reachable on an ordinary deploy** — node-4's SIGKILL landed at 23:15:55.833, five seconds AFTER
+  remediation, with consensus healthy and quorum intact. The chaos did not cause it.
+  This is the same shape as #593's `SYNCING` seed, #508's status field and #590's frozen `memberCount`: a
+  local or self-reported value read as observed truth. Not addressed here: the remediator's threshold is
+  `3 × 90s = 270s` against the deploy gate's 240s, so it cannot rescue a deploy in time even when correct;
+  and ACTIVATING still has no node-local remediation arm of its own.
+  `[verified: unit + mutation — ClusterDeploymentStateActiveTest$StaleViewProtection 2/2; bypassing the KV
+  confirmation turns the stale-view test red and leaves the still-transitional control green.
+  aether-deployment 829/0, aether/node 868/0, ./build.sh green with 0 new lint. integration-verified — see **Verification (2026-08-16)** below.]`
+
+### Fixed
+- **A stalled backfill held its reshuffle slot forever, starving the partitions queued behind it.** A slot
+  was released only when the partition stopped being a not-caught-up REPLICA — and `PartitionBackfill`
+  retries forever once its bounded wait elapses with a committed owner present (the #445 distrust gate), so
+  the release condition was exactly the condition that would never become true. Slot tenure was unbounded.
+  Measured 2026-08-16 (`02y-stream-crash`, remote cluster B): `entity:orders[4]` and `[6]` held BOTH of a
+  node's two slots continuously for 4m55s with **zero** releases in the entire log, while
+  `multipart-events[0]` and `[2]` — the partitions that node was the designated replica for — sat queued
+  behind them, never became in-sync, and were lost outright when their owner was SIGKILLed. 56 pacing
+  defers were logged (29 on partition 0, 27 on partition 2) across ~28 redrive attempts each.
+  A slot held past `RESHUFFLE_SLOT_MAX_TICKS` is now preempted: the backfill KEEPS RUNNING and keeps
+  retrying, it simply stops counting against the concurrency bound. Preemption is gated on a non-empty
+  queue, so a preempted worker is SWAPPED for a waiting one rather than multiplying concurrency — with
+  nothing queued the pacing bound is untouched.
+  **Trade, deliberate:** this bounds TENURE rather than detecting the stall, so a legitimately slow but
+  progressing backfill can also be preempted. Harmless — it continues — and it fixes starvation from any
+  cause rather than only the retry-forever one.
+  Permit accounting is the subtle part and is pinned by its own test: slot acquisition is idempotent VIA
+  `inFlightMaterializations` membership, so a preempted ref that re-entered the acquire path would take a
+  SECOND permit while only one is ever released, draining the pool. A preempted-set preserves that
+  idempotence.
+  `[verified: unit + mutation — StreamReshuffleLifecycleTest$StalledSlotPreemption 3/3; removing the
+  preempt step from the reconcile tick turns exactly the starvation and permit-accounting tests red and
+  leaves the empty-queue control green. aether-config 333/0, aether-stream 665/0, aether/node 868/0,
+  ./build.sh green with 0 new lint. integration-verified — see **Verification (2026-08-16)** below.]`
+
+### Added
+- **`[streaming] reshuffle_concurrency` is now a real config key.** It bounds how many partitions one node
+  holds in materialize+backfill at once. It was a hard-coded `static final int` with no binding of any
+  kind, while the paced-materialization error message named `reshuffle_concurrency` as though it were a
+  setting — an operator whose backfills were starving went looking for a knob that did not exist, and had
+  no way to raise the bound. Parsed by `ConfigLoader`, rejected below 1 by `ConfigValidator` (0 would stall
+  every replica backfill permanently) so it joins the same collected report as every other config error,
+  and wired in `AetherNode` BEFORE any materialization since it replaces the permit pool wholesale. The
+  paced error now reports the limit actually in force rather than a compile-time constant. The `[streaming]`
+  section was entirely undocumented and is now in `configuration.md` with all four of its keys.
+  `[verified: aether-config 333/0; ./build.sh green, 0 new lint]`
+
+### Fixed
+- **Forwarded stream publishes bypassed `min-sync-replicas`, losing ACKED events on a single node kill.**
+  Both writers route on LOCAL RING PRESENCE rather than ownership: `DefaultStreamPublisher.publishEventual`
+  and `StreamWriteRouter.publish` each await replication only on the arm where the node already holds the
+  partition ring, and otherwise forward to the HRW owner. On the owner the forward landed in
+  `StreamForwardHandler.onPublishForward` → `StreamPartitionManager.publishForwarded` → `publishLocal` and
+  was acked with **no `awaitReplication` anywhere** — so every forwarded publish acked on the owner's local
+  fsync alone, silently running at min-sync 1 however the stream was configured.
+  Found by `02y-stream-crash` on remote cluster B (5 nodes, 4 partitions, min-sync-replicas=2): 80/80
+  publishes ACKED, then a `docker kill` of the node owning partitions 0 and 2 lost **both partition logs
+  whole** — 41 acked events. A replacement node's later cold backfill pulled p0=2/p1=22/p2=1/p3=19 events,
+  the surplus being exactly the 5 post-crash liveness writes, proving p0 and p2 held none of the original 80
+  anywhere in the cluster. The reads were accurate rather than a probe artifact: survivors answered
+  `500 Stream partition is not owned by this node`, not a false empty list.
+  The barrier now sits on the OWNER, in `onPublishForward`, because that is where the ack for a forwarded
+  publish is produced — one gate covering both writer paths. `awaitReplication` is bounded (immediate
+  `NOT_ENOUGH_REPLICAS` when targets < minAcks, else a 5s pending-ack timeout), so gating there cannot leak.
+  **This makes the ack honest, not the cluster healthy:** where a replica is starved by
+  `reshuffle_concurrency` pacing and never reaches in-sync, such publishes now FAIL instead of falsely
+  acking — the same run shows 56 pacing defers (29 on partition 0, 27 on partition 2) with the designated
+  replica stuck `SYNCING` for ~4.5 minutes. That starvation is a separate, still-open defect.
+  `[verified: unit + mutation — StreamForwardHandlerTest$MinSyncBarrierTests; reverting the production
+  change turns onPublishForward_minSyncTwoWithNoInSyncReplica_doesNotAck red and leaves the min-sync≤1
+  control green. The tests wire a REAL ReplicationManager over an empty ReplicaRegistry deliberately: the
+  NOOP manager's awaitReplication returns success unconditionally, so a test on the default bare
+  streamPartitionManager would pass with or without the barrier. aether-stream 662/0, aether/node 868/0,
+  ./build.sh green with 0 new lint. integration-verified — see **Verification (2026-08-16)** below.]`
+
+### Changed
+- **Durable-entity error surface renamed to entity-centric names (#432).** `DurableEntityError` →
+  `EntityError` (symmetric with the sibling `StreamError`), `DurableEntityProvisioningError` →
+  `EntityProvisioningError`, `KeyNotFound` → `EntityNotFound`, `KeyAlreadyExists` →
+  `EntityAlreadyExists`, `StaleOwner` → `StaleOwnerEpoch`, and `TimerNotFound` gained the
+  `TimerToken` so a caller holding several timers can tell WHICH was not found.
+  The spec had pinned one set of names and the code shipped another; v0.4.0 closed that by amending
+  the spec, and this closes it the other way where the shipped name was the weaker one — spec and
+  code now agree, and the book teaches the same surface.
+  **The line drawn on what NOT to rename:** the same name for the same CONCEPT across subsystems is a
+  feature — `StreamError.NotCurrentOwner` and `EntityError.NotCurrentOwner` say the same thing about a
+  partition owner. The same name for DIFFERENT concepts is the defect, and `KeyNotFound` was three
+  unrelated things (JWKS keys in `SecurityError`, config keys in `ConfigError`, entity keys). So
+  `NotCurrentOwner`, `StaleEpochRead`, `OwnershipNotYetCommitted`, `LinearizableUnavailable`,
+  `StorageFailed` and `TimerNotSupported` are unchanged.
+  Note the record's simple name IS the wire value (the fixture slice reports
+  `cause.getClass().getSimpleName()`), so this changed strings asserted by `DurableEntityForgeTest`
+  and the `02w-entity-crash` suite; both moved with it. A Java-only rename would have left two
+  green-looking tests asserting a string nothing emits.
+  `[verified: ./build.sh green, lint 49/0 new; renamed across 34 files with zero old names remaining]`
+
+### Changed
+- **Codec tag space split into a manually-assigned system range and a hashed user range.** Tags are
+  VLQ-encoded, so the tag VALUE decides its wire cost (`0..127` = 1 byte, `128..16383` = 2,
+  `16384..2097151` = 3), and that is now spent deliberately: **system `0..16383`** for framework and
+  Aether protocol types — enumerable, framework-owned, hand-assigned, never renumbered and never
+  reused — and **user `16384..2097151`** for slice-generated codecs, hash-derived because they grow
+  without bound as applications add types.
+  The old scheme put everything in ONE 16256-slot space, which is birthday-bound at roughly 127
+  types: with ~100 codec types the collision probability was already ~27%, and it hit for real —
+  `AetherValue.EntityCheckpointValue` and `HealthHintWire` both hashed to tag **7612**, poisoning
+  `NodeCodecs` static init and erroring 48 unrelated tests, invisibly to the owning module's own
+  build. That exact pair is verified to collide under the old derivation and not under the new one.
+  Also replaced `String.hashCode()` with FNV-1a: our FQCNs share long prefixes
+  (`org.pragmatica.aether.resource.entity.Entity…`) and `hashCode` clusters badly on precisely that
+  shape, wasting a space that was already too small.
+  **Collisions are now structurally impossible except within a single slice's registry.** The two
+  ranges are disjoint, so a slice type can never collide with a system type; and `slice.codec(parent)`
+  gives every slice its own registry layered over the shared system parent
+  (`DependencyResolver#resolveBridge`), so two slices never see each other's types — including two
+  slices in the same blueprint. What remains is one slice's own list, which can include an injected
+  slice's request/response types.
+  User tags are held in a map rather than a flat array — an array spanning the wide range would be
+  ~16MB per slice, and every slice builds its own registry. System tags keep the flat-array index,
+  since they carry the cluster's own protocol traffic and are the hot path.
+  `[verified: ./build.sh green, lint 49/0 new; the historical 7612 collision reproduced under the old
+  derivation and resolved under the new]`
+- **System codec tags are hand-assigned rather than hashed — codec tag space Phase 2.** Phase 1 split
+  the space; this fills the system half. All **280** framework and Aether protocol types now carry an
+  explicit tag in one registry, `org.pragmatica.serialization.SystemTags`, which
+  `SliceCodec.deterministicTag` consults before falling through to the hash (unchanged, now named
+  `hashedTag`). Generated codecs already called `deterministicTag` at class-init, so pinning is a
+  one-line edit to one file: no regenerated code, no churn across the `@Codec` annotations, and **no
+  envelope-version bump** (envelope stays 1000).
+  **A tag is a wire contract and hashing gave it none of the stability that requires** — it moved with
+  a class rename, a package move, or a change of hash function. Two nodes disagreeing about what a tag
+  means is undiagnosable corruption rather than a clean failure.
+  **Wire cost.** Every one of these types previously sat in the 3-byte user range. 89 of them —
+  consensus rounds, SWIM gossip, DHT lookups, KV commands, stream replication and the value objects
+  nested inside all of them — now occupy `21..109` and cost **one** byte; the remaining 191 occupy
+  `128..1659` and cost two. `110..127` is held free so a future hot type can still be promoted into
+  one byte, and `2112..16383` is reserved. `[mechanism: tags are VLQ-encoded, so a tag ≤ 127 is one
+  byte and ≤ 16383 is two]`
+  **The obligation is enforced, not merely documented.** `SliceCodec.systemCodec()` refuses to build a
+  system registry containing a type that fell through to the hash and names it, so the system set
+  never has to be rediscovered by hand — grep cannot answer that question (it returns 134 `@Codec`
+  annotations against 76 registered types and mixes in test artifacts). `SystemTags` rejects a
+  duplicate name AND a duplicate tag at class-init. A rename now leaves its entry unmatched and fails
+  the build, which is the intended behaviour: whether the wire identity travels with the name is a
+  human decision, not a hash's.
+  `[verified: aether/node/src/test/java/org/pragmatica/aether/node/SystemCodecPinningTest.java —
+  builds both production system registries the way AetherNode does and asserts every registered type
+  is hand-assigned, plus the one-byte-window property;
+  integrations/serialization/api/src/test/java/org/pragmatica/serialization/SystemTagsTest.java 6/0;
+  852/0 aether/node, 301/0 slice-processor, 40/0 serialization-api; ./build.sh green, 0 new lint]`
+  `[design intent — unverified: cross-node interop on the new system tags. Phase 1's live 5-node smoke
+  run exercised consensus, membership, KV and one slice; streams, entities and the DHT have the
+  densest codec hierarchies and are covered by suites 02y/02w, not yet re-run on Phase 2]`
+- **Slice codec tag collisions are reported at compile time instead of at slice load.** The
+  slice-processor now derives the tag for every type in a slice's generated codec list and fails the
+  build naming both types when two coincide. The registry already rejected this at load
+  (`SliceCodec#validateAndSetTag`), which is correct but late — the developer learned it from a
+  deploy. The collision domain is one slice's registry, not a blueprint's: each slice layers directly
+  over the shared system parent. The processor carries its own copy of the derivation
+  (`CodecTagSpace`) because consumers put only `slice-processor` on `annotationProcessorPaths`, so
+  reaching `SliceCodec` would drag `serialization-api` and Netty onto every application's
+  annotation-processor path; both copies pin the same probe value so a divergence fails a build rather
+  than silently degrading the check. `[verified:
+  jbct/slice-processor/src/test/java/org/pragmatica/jbct/slice/generator/CodecTagSpaceTest.java 3/0 +
+  SliceCodecTest#hashedTag_pinnedProbeValue; ./build.sh compiles every slice in the repo — examples,
+  test blueprints and e2e slices — with no collision reported]`
+
+### Added
+- **SIGKILL crash-durability gate for durable entities — #345 I3.** New `02w-entity-crash` suite: a
+  partition owner is hard-killed (`docker kill`, no graceful hooks) with entity creates in flight, and
+  every ACKED entity must read back with its EXACT written value. **Result: 56 acked, 0 missing, 0
+  corrupted; 40/40 pre-kill creates ACKED and 16/40 acked across the kill window.**
+  `[verified: aether/tests/integration/suites/02w-entity-crash — 1 passed, 0 failed on a 5-node remote
+  Docker cluster]` This is the gate Forge structurally cannot provide: every in-JVM stop routes through
+  `AetherNode.stop()` → `close()`, which closes the WAL cleanly, so graceful and hard stop are
+  durability-EQUIVALENT in-JVM and the crash-mid-fsync boundary is unreachable there (established for
+  streams in #431/#508).
+  Two non-vacuity gates, both added after they caught real hollow passes: assertions are gated on a
+  CONFIRMED kill (an earlier run passed "all 4 ACKED entities survived the crash" when the node-pick
+  had fail-fasted and **no kill ever happened**), and on a non-empty ACK set (#508's original shape
+  reported "0 acked, 0 missing" as PASS).
+  The suite addresses partition OWNERS directly rather than the LB-fronted app endpoint, because entity
+  operations are not owner-forwarded (#596); that workaround should be removed when forwarding lands, so
+  the suite exercises the product's routing rather than the harness's.
+- **Per-node durable-entity checkpoint observability — #345 I3.** `GET /api/entity/checkpoints` and
+  `aether entity checkpoints` report, per keyspace this node folds, the number of successful checkpoint
+  `writes`, `failures`, and the last offset `checkpointedThrough` for each partition. The surface exists
+  because a checkpoint driver that silently stopped had NO other symptom: writes still ack, reads still
+  serve, failover still works, and the only consequence — an entity log that is never reclaimed, because
+  the retention floor refuses to reclaim anything at or above a partition's committed checkpoint —
+  surfaces hours later as disk growth with nothing pointing at the cause. Before this the driver logged
+  only FAILURES, so a driver that never ran and a driver that ran perfectly produced identical output;
+  `writes` is the positive signal that separates them. Assembled on request from counters the tick already
+  maintains, so there is no hot-path cost. The route is LOCAL rather than delegate-routed: each node
+  checkpoints only the partitions IT folds, so a delegate's answer would describe a different node's work.
+  A partition this node never folded is ABSENT from `checkpointedThrough` rather than reported as `0`
+  ("nothing to say about it" and "checkpointed through offset 0" are different claims). Dashboard is an
+  explicit DORMANT slot: summing `writes` across nodes answers no operator question — revisit if a
+  cluster-wide "stalled checkpointing" alert is wanted, which IS aggregatable.
+  `[verified: aether/tests/integration/suites/02w-entity-crash]` — read live as a liveness sensor on a
+  5-node remote Docker cluster: `node-1=222w/0f node-2=44w/0f node-4=143w/0f`. Writes must be summed
+  CLUSTER-WIDE, because a node hosting the keyspace while folding no partition correctly reports zero;
+  a per-node assertion would fail on a healthy cluster.
+- **Durable entity state on a fenced, replicated log — #345 I3.** `@DurableEntity` state now survives the
+  loss of the node that owned it. Each keyspace becomes a real stream named `entity:<keyspace>` (the same
+  coordinate the write fence, linearizable reads and ownership records already key on, so I1's narrow-C
+  records needed no migration); a write appends to it through the fenced, fsync-durable, replicated path,
+  and the in-memory state is a FOLD of that log which any node can rebuild.
+  `[verified: aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/DurableEntityForgeTest.java]`
+  — 11/11 on a live 5-node Ember cluster: after the owning node is killed, surviving nodes serve the exact
+  written value. The test it replaces asserted the opposite (*"one graceful stop destroyed it
+  permanently"*), so the assertion is discriminating by construction.
+- **`replication_factor` is honoured rather than refused** (#345 I3). `minSyncReplicas` is DERIVED as
+  `min(2, replicationFactor)` rather than configured, so the runtime cannot silently serve a weaker
+  guarantee under a stronger name: at `1` a write is durable on the owner alone (survives restart, not node
+  loss); at `2`+ a peer holds it before the write acks. Default is 3.
+  `[verified: aether/resource/durable-entity/src/test/java/org/pragmatica/aether/resource/entity/DurableEntityConfigTest.java]`
+
+### Fixed
+- **A worker community did not dissolve when it lost the core, and the core did not notice it had lost
+  the community (#590).** The CP contract at the community tier was unimplemented, not merely
+  unvalidated — and it was unimplemented on BOTH sides, which the ticket did not record.
+  **Community side:** `writeDissolved()` had exactly two callers, both gated on the community shrinking
+  to zero members. That is a membership-shrink mechanism, not a partition response. SWIM is
+  intra-community gossip, so a community cut off from the core still sees all of its own members alive,
+  the emptiness condition never fires, and it keeps serving — the "rogue autonomous community" the
+  contract exists to make impossible. **Core side:** the per-community FSM's "observed live membership"
+  read `GovernorAnnouncementValue.memberCount`, a field the community writes about ITSELF. Under
+  partition the governor cannot rewrite it, so it does not expire — it FREEZES at its last healthy
+  value. The core therefore kept the community `ACTIVE` and kept placing work on nodes it could not
+  reach. `GovernorAnnouncementKey` is never removed by anything, and
+  `SpokesmanPingLoop.currentReports()` — the one genuinely receipt-based signal the core collected —
+  had zero consumers. Both sides blind, in the same way and for the same reason: a status field was
+  trusted in place of an observation.
+  **One mechanism, both directions.** The leader already broadcasts `ClusterSyncPing` cluster-wide and
+  every live node answers; that exchange now carries liveness both ways, with no new wire type. A node
+  that has seen no *term-accepted* ping for `timeouts.cluster.core_absence` (default 10s) dissolves
+  LOCALLY through `DrainProcedure.initiate(CORE_ABSENCE)` — no consensus write, which is the whole
+  point, since announcing dissolve normally means writing `GovernorAnnouncementKey` through the core.
+  Pings failing term fencing do not refresh liveness, so a partitioned-away former leader cannot hold a
+  community open. Detection is PER NODE and **WORKER-ONLY**, mirroring `QuorumLossDetector`: no
+  intra-community coordination, no dependence on the governor surviving, and a partitioned SUBSET
+  fences exactly itself. An arm-after-first-ping latch means a node that has never heard the core is
+  treated as cold-starting, not isolated — without it every community would dissolve during formation.
+  **The worker-only restriction is load-bearing and was learned the hard way.** This first shipped
+  wired on EVERY node, which suite 02y caught. Ping dispatch is leader-only
+  (`ClusterSyncState`: "a non-leader tick is a no-op") and a broadcast never reaches its own sender, so
+  on the core tier the signal is structurally absent twice over: a node that wins an election receives
+  no pings ever again, and every survivor of a dead leader receives none until re-election. Ungated,
+  both drained after `core_absence`. The fence is now gated by a fail-safe suppressor sampled at FIRING
+  time — only a node positively known NOT to be a core member may fire it, an unresolved core view
+  reads as suppress, and an unwired gate leaves the detector inert. Core liveness was always
+  `QuorumLossDetector`'s job.
+  On the core side, `ClusterSyncCollector.sinceLastPongNanos` feeds a `CommunityLivenessView` that the
+  FSM consults instead of the self-report; absent members are SUBTRACTED from the reported count rather
+  than recounted from `members()`, because the two are independent fields and the common
+  `governorAnnouncementValue(governorId, memberCount)` factory leaves `members` empty — recounting
+  would have read zero live members for every healthy community.
+  **`core_absence` must be strictly less than `community_absence`** (default 20s) and the config load
+  REFUSES an inverted or equal pair rather than clamping it. That inequality is the no-double-active
+  guarantee: the community stops serving before the core hands its slices to anyone else.
+  Observability per the observability-first rule: `coreAbsence` (`armed` / `fenced` /
+  `sinceLastPingMs` / `remainingMs` / `thresholdMs`) on `GET /api/cluster/membership`, deliberately on
+  that LOCAL endpoint beside the core tier's own quorum-loss fence — a node losing the core is precisely
+  the one a leader-forwarded read cannot reach during the incident it describes.
+  `[verified: aether/node/.../CoreAbsenceDetectorTest 13/13;
+  aether/aether-deployment/.../ClusterDeploymentStateCommunityFsmTest$CoreObservedAbsence 6/6;
+  aether/aether-config/.../ClusterTimeoutsAbsenceOrderingTest 5/5. Mutation-checked both ways: making
+  the FSM ignore observed absence turns exactly the 2 new-behaviour cases red with all 4 regression
+  guards still green, and removing the cold-start latch turns exactly
+  `evaluate_noPingEverReceived_neverFences` red with the other 12 green]`
+  `[design intent — unverified: the ORDERING under a real partition. Forge is single-JVM and cannot
+  sever the cluster network, so "the community stopped serving before the core re-placed its work" is
+  believed, not demonstrated, pending a docker/cloud partition run (#367). With an empty `members` list
+  only TOTAL isolation of a community is detected, not a partial one — a limit of the announcement
+  shape, not of the read side.]`
+  **Doc correction this forced:** `known-limitations.md` described dissolve-on-core-isolation as
+  awaiting *proof*, implying a built mechanism waiting on a test run. There was no mechanism to prove.
+  That page is the designated single source other docs reference, so the wording had propagated as
+  "wired".
+- **`WorkerCodecs.workerCodecs()` threw on every call.** `SwimConfig` carries `TimeSpan` fields, so
+  `SwimCodecs.REQUIRED_TYPES` demands a `TimeSpan` codec; `NodeCodecs` registers one manually and this
+  registry never did, so the startup checklist rejected it unconditionally
+  (`Required codecs are not registered: org.pragmatica.lang.io.TimeSpan`). It went unnoticed because
+  the registry has **no production caller** — it exists for the worker-community tier and nothing
+  constructs it yet, so no test and no node ever ran the code. Found by the Phase 2 pinning test,
+  which builds both system registries precisely because `WorkerCodecs` carries four sub-registries
+  `NodeCodecs` does not (`MutationCodecsNode`, `BootstrapCodecsNode`, `HeartbeatCodecsNode`,
+  `NetworkCodecsNode`) — without it those types would have gone unpinned with nothing to say so. The
+  registered codec is byte-identical to `NodeCodecs#timeSpanCodec`, since a worker and a core exchange
+  these values. `[verified:
+  aether/node/.../SystemCodecPinningTest#workerCodecs_everySystemType_hasAHandAssignedTag — red before
+  the fix with this exact message, green after; aether/node 852/0]`
+- **Auto-heal never replaced a failed node — a static-init-order bug that reported success the whole
+  time (#597).** `AutoHealConfig.DEFAULT.maxNodes()` was `null` rather than `Option.empty()`: static
+  initialisers run in textual order, and `DEFAULT`'s initialiser reached the `NO_CAP` constant
+  (declared 117 lines below it) while that constant was still null. Every provisioning path funnels
+  through `NodeLifecycleManagerRecord.capGuardedProvision`, whose first act is `maxNodes.fold(...)` —
+  so every auto-heal replacement threw NPE, and **a killed node was never replaced**.
+  What made it survive is that nothing reported it: the NPE was swallowed by the scheduler's
+  `runGuarded` ("task recurrence preserved"), so the circuit breaker recorded `consecutiveFailures: 0`,
+  and `/api/cluster/provisioning` kept reporting `lastReason: NONE_PROVISIONING` — which means "a
+  provision is PERMITTED", not "nothing is provisioning". Every gate read healthy while the deficit sat
+  unfilled. Observed live at `deficit=1` for 271s in a targeted repro and for **~70 minutes** during a
+  full `02w-entity-crash` run, which is what made `restore_cluster_baseline` declare cluster B
+  unrecoverable. `max_nodes` is opt-in and absent by default, so the default path is the broken one.
+  Distinct from #509, which is deficit-fill firing too EAGERLY; this is it never firing successfully.
+  `[verified: aether/environment-integration/.../AutoHealConfigStaticInitTest — 5/5, module 59/0; the
+  null was proven directly against the shipped jar before the fix, and both the broken and the fixed
+  behaviour were reproduced live on a 5-node remote Docker cluster — killing a non-leader now yields a
+  replacement container (`aether-b-node-01kzytd81s…`) at t=41s and the cluster returns to NO_DEFICIT,
+  where the same kill previously sat at deficit=1 indefinitely]`
+- **Entity state could be deleted by stream retention — #345 I3.** `RetentionEnforcer` is built once per
+  node with a single age policy and never reads per-stream config, so an entity's sealed segments would
+  have been deleted a fixed interval after its last write, silently destroying the state of any key not
+  recently touched. It now takes a `SegmentRetentionFloor`: a segment is reclaimable only when it lies
+  entirely at or below the partition's committed checkpoint. Non-entity streams report no floor and behave
+  byte-identically to before.
+  `[verified: aether/aether-stream/src/test/java/org/pragmatica/aether/stream/segment/RetentionEnforcerTest.java]`
+  — mutation-checked: removing the floor turns the "expired but above the checkpoint" case red.
+- **A node outside a partition's replica set reported a permanent condition as transient** (#345 I3,
+  found by the Forge gate). Reads there refused with `FoldInProgress` — a "retry me" message that never
+  clears, the exact failure shape I1 exists to prevent. Split into `PartitionNotHeld` (stable: ask another
+  node) and `FoldInProgress` (transient: catch-up is running). `[mechanism: holdsPartition is answered from
+  whether the partition manager has a ring, not inferred from a replica descriptor]`
+
+- **Cloud/docker crash-durability test for streams — #508, the gate #345's I3 needs.** New `02y-stream-crash` suite asserting that every ACKED event survives a HARD `docker kill` (SIGKILL, no graceful hooks) of a partition owner on a **multi-partition** stream, including events acked concurrently with the kill window, with per-partition offsets contiguous and ordered. **Result: 80 acked, 0 missing; 40/40 publishes ACKED across the kill; all 4 partitions contiguous** — reproduced across four independent runs under four different cluster conditions. Why it cannot be an in-JVM test (empirical, #431): every in-JVM stop routes through `AetherNode.stop()` -> `streamPartitionManager.close()` synchronously, `killNode(graceful=false)` only shortens teardown, and `close()` is durability-neutral, so graceful and hard stop are durability-EQUIVALENT in-JVM and the crash-mid-fsync boundary is unreachable there. Why it cannot use the management API: `/api/streams/publish/{name}` hardwires partition 0 (#524), so it drives the `test-stream-multipart` app-HTTP routes instead — a keyless publish round-robins across all four partitions and the read route takes an explicit `(partition, offset)`, so each log is asserted INDEPENDENTLY rather than hidden in an aggregate. The assertion is deliberately scoped to ACKED events only: under min-sync-replicas=2 the ack IS the durability claim (`PartitionWal.append` -> `force()` before the caller is told "published"), so demanding more would assert a guarantee the system does not make. **Lives in its own suite, deliberately** — on `02-chaos`'s shared cluster the EIGHTH chaos test fails whichever test it is (#593, probable cause #594), and reordering only swaps the victim; on a fresh cluster this test runs green in 63s. Non-vacuity gates were added after a run where a failed deploy made the survival assertion report "0 acked, 0 missing" as a PASS — a durability claim over an empty set, the exact looks-green-proves-nothing shape the test exists to disprove. [verified: `02y-stream-crash` 1/0 with `02-chaos` unchanged at 7/0; eight runs total on the LAN Docker host] [design intent — unverified: the same assertions against real cloud VMs]
+- **`[cluster] max_nodes` — the #298 fleet cap is now settable by an operator.** The cap shipped opt-in with no configuration path, so it could only be set from a test. It now traverses TOML -> `ConfigLoader` -> `AetherConfig.Builder` -> `ClusterConfig` -> `Main.resolveAutoHeal` -> `AutoHealConfig.withMaxNodes` -> the guard at `NodeLifecycleManager.provisionNode`. `0`/absent means unbounded, matching `coreMax`'s existing "unset" sentinel in the same record, so no existing config changes behaviour — a numeric default would silently refuse provisioning on any cluster already larger than it, which is an outage on upgrade rather than a guardrail. Cloud operators set it through the `node_config` overlay (`[source.<name>.node_config.cluster] max_nodes = 12`); hand-managed nodes set it directly under `[cluster]`. **This also closed a hop nobody had noticed: `Main` never called `.autoHeal(...)` at all**, falling through to the staged builder's `default build()`, so until now NO auto-heal setting was operator-tunable. Applied as a post-build wither because `autoHeal` sits six stages past `streaming` in the curried builder chain, and reaching it mid-chain would force `Main` to supply six unrelated stages it has no opinion about. Documented in `bootstrap-config.md` with the honest bound and the operator recovery action. [verified: `ClusterMaxNodesConfigTest` 3/3 — parsed when declared, unbounded when absent, coexists with `core_max`; mutation-checked — deleting the `ConfigLoader` parse line turns two of the three red while the unbounded-default test correctly stays green] [design intent — unverified: refusal against a live cloud account]
+- **Operator fleet cap refuses provisioning before an unbounded fleet can be minted (#298).** There was no pre-flight bound of any kind on how many nodes a cluster could provision: a runaway reconciler or a bad config could mint an arbitrarily large paid fleet, and nothing refused. The ticket's own fix direction — "call `checkQuota` before bulk provisioning" — was followed to the code and **rejected as unimplementable-as-written on two independent counts**: `QuotaStatus.unknown()` sets `sufficient = true` and every one of the five providers returns exactly that, so a gate reading `sufficient` could never refuse; and `CloudProvider`, the SPI owning `checkQuota`, has **no production consumer at all** — there is no bulk provisioning path, fleets grow one node per call through `ComputeProvider.provision(spec)`. Wiring the ticket as specified would have gated a dead method on a dead path. Instead the cap sits at `NodeLifecycleManager.provisionNode`, the single chokepoint every path funnels through (auto-heal reconciler, bootstrap, CLI wave reprovision), counting the cluster's live instances scoped by the `aether-cluster` tag providers already stamp. **Opt-in with no default** — a default numeric cap would silently refuse provisioning on any existing cluster larger than the number we picked, so absence means unbounded and today's behavior is unchanged until an operator sets `maxNodes`. **A failed count refuses rather than provisions**: an unreachable provider API must not silently disable the guard, which is precisely the looks-wired-does-nothing shape this ticket belongs to. A cap configured without a cluster name cannot be scoped and is reported loudly rather than quietly ignored. Enabling surface: `AutoHealConfig.withMaxNodes(int)`; cluster identity now reaches runtime config via `AetherNodeConfig.withClusterName`, stamped by `Main` from the already-boot-gated `AETHER_CLUSTER_NAME` — the runtime `[cluster] name` that `Main.verifyClusterLabelConsistency` was written in anticipation of. No Management API surface, so the REST→CLI→docs→dashboard quad is not triggered. **Bound honesty:** the check is check-then-act against a live count, so the guarantee is "bounded by `cap` plus whatever was concurrently in flight", NOT "never exceeds `cap`" — it bounds the runaway case, which is sequential reconciler passes, not a deliberate parallel burst. Operator recovery: raise `max_nodes`, or terminate instances until under the cap; provisioning resumes on the next reconcile pass. [verified: `NodeLifecycleManagerCapTest` 5/5 — refusal at the cap, pass below it, other clusters' instances excluded from the count, unbounded when unset, and refusal when the count cannot be read; mutation-checked twice — disabling the refusal branch and dropping the cluster-tag filter each turn exactly one distinct test red] [design intent — unverified: refusal against a live cloud account under a real reconciler-driven provisioning burst]
+- **Cloud bootstrap seeds the core quorum only (RFC-0017 stage 7 — the arc's payoff, #581).** `BootstrapPhaseProvision` no longer creates worker or spot VMs for cloud sources: it provisions the cores, publishes the full topology at formation, observes core-quorum formation via provider labels, and exits. The cluster provisions everything else (stage 5) with **live** core peers — eliminating the stale-seed failure mode structurally (a worker's seeds can never age out because they are rendered by a live leader at provision time), collapsing two provisioning mechanisms into one, and making large-topology deploys parallel where bootstrap was serial. `--wait` now means "core quorum formed"; worker convergence is asynchronous and observable via `GET /api/cluster/config` (desired) vs the topology/provisioning-diagnostics surfaces (actual). Stage 4's worker-seed baking became dead code on this path and was **removed rather than left as residue**. Scope: cloud sources only — SSH sources keep fixed-host registration (no cloud API for the cluster to provision through) and Docker sources keep all roles (the integration harness creates its workers at bootstrap). [verified: `BootstrapPhaseProvisionUserDataTest.cloudBootstrapRoles_areCoreOnly` + the full provision/deploy suites green after removing the baking path] [verified: `BootstrapPhaseProvisionUserDataTest.cloudBootstrapRoles_areCoreOnly` + arc-final live Hetzner run 2026-08-09 (cluster `rfc17-final`, assets `fd50dbb69`): provision created exactly 5 core VMs, 5/5 formed via label discovery, 2 workers cluster-minted post-bootstrap with `-r<clock36>` ids and correct `aether-source` labels, joined READY with live core peers — see RFC-0017 §Live validation]
+- **`cluster destroy` sweeps cluster-labelled VMs the bootstrap state never recorded (RFC-0017 stage 6 / C3, #581).** Cluster-provisioned nodes — stage-5 workers, auto-heal replacements — are not in `bootstrap-state.json`, so the id-scoped cleanup could never find them: every one was a paid orphan no destroy could reach. Destroy now runs a cluster-scoped VM sweep AFTER the state-based cleanup and before the SSH-key sweep, mirroring the #481 key-sweep discipline: the selector is built from the cluster name (`aether-cluster=<name>`) — **scoped by construction, a bare listing is a stub failure in the tests** — credentials resolve handle-first (never raw `HCLOUD_TOKEN`), the inventory is printed before any delete (#572's lesson: what the sweep sees is what you can lose), and 404s for VMs the first pass already removed are tolerated so destroy stays idempotent. **Ordering is load-bearing:** cores die in the state-based pass first, killing the leader's worker reconciler — swept workers cannot be re-provisioned mid-destroy. **`PROTECTED_CLUSTERS` now lives in the CLI as well** as the reaper script: destroying `test-pg` fails loudly before any provider call is made. The RFC's optional "scale to zero first" phase was dropped as redundant — the sweep deletes every labelled VM regardless, and core-death-first already closes the re-provision race it existed to avoid. [verified: `BootstrapCleanupTest` VM-sweep section — scoped selector pinned (bare `listServers()` throws in the stub), protected-cluster refusal before any client construction, 404 tolerance, blank-name skip; 22/22] [design intent — unverified: sweep against a live account with genuinely cluster-provisioned workers — folded into the arc-final Hetzner run, which the #574 arc's live label mechanics already de-risk]
+- **The cluster provisions its own workers and spot nodes from the published topology (RFC-0017 stage 5, #581).** The leader's CTM gains a worker-topology reconcile pass: on every committed `ClusterConfigKey` change (scale, apply, restore) and on leader activation, it compares each non-core `(source, role)` entry of the desired topology against the provider's ACTUAL label inventory (`aether-cluster`/`aether-source`/`aether-role`) and converges — deficit provisions through the same circuit-gated, zone-rotating `provisionReplacement` path auto-heal uses (now genuinely role-aware: the spec's role string and instance type were **hardcoded `"core"`/`"default"`**, survivable only while nothing but core replacements flowed through), surplus terminates newest-first (reconciler-minted `-r<clock36>` ids sort after bootstrap `-<index>` ids, so cluster-provisioned workers are reaped before bootstrap-provisioned ones). Deliberately a SEPARATE, simpler loop from the hardened core `LeaderReconciler`: a worker deficit is never quorum-ambiguous, has no cold-start ambiguity, and inventory ("the VM exists"), not SWIM membership, is the honest ground truth for create/destroy — a created-but-not-yet-joined worker must not be double-provisioned. Leader-gated by the same `active` guard as the membership actuator path and serialized against overlapping passes. `ClusterConfigApplier` now routes EVERY role through the fenced `setDesiredCount` write (the `RoleScaleUnsupported` rejection existed to keep non-core scales from rewriting the core-only scalar — the typed topology removed that hazard, closing #241's worker-provisioning gap), and scale-to-zero is now accepted for worker/spot tiers end-to-end (CLI, REST validation) — drain-all is a real operation and the RFC-0017 teardown path depends on it. Workers provisioned by the cluster boot with LIVE core peers rendered by the shared user-data path — the no-stale-seeds property bootstrap-baked seeds cannot have. [verified: `ClusterTopologyManagerWorkerReconcileTest` (deficit provisions with worker role + scoped filter, convergent second pass, newest-first surplus termination, core-only topology untouched, inactive-CTM gate), `ClusterConfigApplierTest` (all roles route to their own (source, role) pair, mixed diffs land both), `ClusterConfigRoutesScaleTest` (worker scale-to-zero accepted, negatives refused) — mutation-checked: disabling the leadership gate turns the inactive-CTM test red] [design intent — unverified: live worker provisioning on real cloud VMs — the arc-final Hetzner run's fourth deferred check]
+- **Cloud cores self-assemble via provider discovery; the SSH re-launch trampoline is gone for the standard topology (RFC-0017 stage 4, #581).** Bootstrap used to SSH into every cloud VM to re-launch it with a finalized `PEERS` list — the only reason cloud nodes needed inbound port 22, and the mechanism a deny-by-default firewall broke first. Now: (1) `Main.parsePeers` gains a discovery arm — after the explicit arms (`--peers=`, `CLUSTER_PEERS`, so operator lists and CTM replacements stay byte-identical) and before config synthesis — that polls `DiscoveryProvider.discoverPeers()` until the expected core count is visible, mapping instances with `aether-role=core` + a create-stamped `aether-node-id` label to seed peers on the **local** cluster port (the `aether-port` label cannot exist pre-formation; every core shares one port by composition); at the deadline a majority proceeds with a warning, below majority the node refuses to form a cluster that cannot reach consensus. (2) The composed node config now carries `[cluster] nodes` — without it a cloud VM resolves as DOCKER and expects 5 cores regardless of topology. (3) Workers and spot instances get core seeds **baked at create**: cores provision first, so worker user-data rendered afterwards carries their real addresses ("peer set arrives at birth" — no discovery, no credentials-dependency for peers, no re-launch). (4) Bootstrap readiness (C4) polls the provider API for `aether-formed=true` — a label each core merges onto itself after formation — instead of polling every node's management port, which a firewalled management port failed on HEALTHY nodes (found live on Hetzner 2026-08-05). **Gate:** engages only when exactly one source carries cores and it is a cloud source (the wizard's only output); cores spread across providers cannot find each other by label, so multi-core-source clusters keep the legacy SSH push, which remains fully test-pinned. **RFC-0017's gap table was corrected from the code during implementation:** `discoverPeers()` had zero production consumers, and `registerSelf` is inert in production (nothing populates `selfServerId`) — the C4 signal deliberately rides the IP-match self-tag that works without it. [verified: `MainDiscoveredPeersTest` (role filter, node-id requirement, local-port mapping, dedupe/sort determinism, majority gate), `BootstrapPhaseDeployFormationLabelsTest` (gate shape, label filter, gradual formation, timeout naming the shortfall, transient poll-failure resilience), `BootstrapPhaseProvisionUserDataTest` (cores boot peerless / workers carry baked core seeds), legacy path re-pinned in `BootstrapPhaseDeployCloudSshRestartTest` (34) + `BootstrapPhaseDeployHealthPollTest` (6); `./build.sh` green, 0 new lint, 1809 tests / 0 failures across aether-config/cli/node] [design intent — unverified: end-to-end self-assembly on live cloud VMs — scheduled for the arc-final Hetzner run; the label mechanics (create-stamp, merge-on-tag, label-selector listing) were proven against the real API in the #574 arc]
+- **The KV applier fences lost updates on the cluster config (RFC-0018, #570).** `ClusterTopologyManagerRecord.writeDesiredCount` was an unguarded read-modify-write: two writers that both read config version N both computed N+1, and the second silently overwrote the first — no error at any layer. RFC-0017's typed topology made that materially worse: `--source eu --role core` and `--source us --role worker` are independent, simultaneously-valid edits, and the lost update destroyed one of them outright. A third arm now joins the applier's fence family (H4 leader, ownership epoch): a `Put` of a [`VersionFenced`] value is applied only when its version is the **immediate successor** of the committed one — equal (the second racer) and jumps (stale reads) are rejected; a first write passes. Deliberately NOT the epoch fence, which accepts equality by design (governor reannouncement) and is therefore a regression fence, not a lost-update fence. No new command variant, no codec tag, no wire change — the condition is a property of the value, and `ClusterConfigValue.fenceVersion()` is the existing `configVersion`. **Rejection is made visible, not swallowed:** batch merging hands every submitter the full merged result list (`RabiaEngine.commitChanges`), so the apply result cannot be attributed — instead callers re-read committed state after the apply resolves (the engine runs the local `process` first) and confirm the change they asked for landed. CTM retries from the fresh value (3 attempts, then a typed failure — so a scale racing an auto-heal now converges with BOTH edits intact); the REST scale/apply/upgrade paths return HTTP 409 `VersionConflict` instead of reporting success for a write that did nothing. Racing bootstrap seeds now resolve first-wins instead of last-overwrite. Mixed-version posture: ships ungated like both existing fences — rc-line releases do not support mixed-version co-application (the KV serializer format already diverges between rcs); the GA rolling-upgrade contract must version-gate ALL applier-semantics changes together. [verified: `KVStorePutFenceTest` (fence semantics incl. the equal-version race, notification suppression, and two-store determinism under rejections), `ClusterTopologyManagerDesiredCountCasTest` (retry from fresh value, both racing edits survive, bounded exhaustion fails loudly), `ClusterConfigKVTest` (fenceVersion/successor obligation) — mutation-checked: removing the fence arm turns the fence tests red] [design intent — unverified: behaviour against a live multi-node cluster under a real concurrent scale/auto-heal race]
+- **Scaling names a source and a role instead of a cluster-wide core count (RFC-0017 C1, #581).** `POST /api/cluster/scale` now takes `(source, role, count, expectedVersion)`, and `aether cluster scale` takes `--source` / `--role` / `--count`. `--source` is optional: the server infers it when exactly one source declares the role and **refuses, naming the candidates, when several do** — "scale cores to 7" across two core-bearing sources does not say where the new nodes go, and the former scalar answered that by silently overwriting one number. A `(source, role)` the topology does not declare is refused rather than created, so a mistyped source name cannot become a real provisioning target. Quorum arithmetic still applies to `core` only and is evaluated against the resulting cluster-wide total, so scaling one core source to 1 is accepted when another carries 2. `GET /api/cluster/config` now returns `desiredTopology` (per source, per role) alongside the derived `coreCount`, and the dashboard gains a **DESIRED TOPOLOGY** panel that shows it and flags when a scale will require an explicit `--source`. [verified: `ClusterConfigRoutesScaleTest` (inference, ambiguity refusal, undeclared-target refusal, cluster-wide quorum arithmetic, non-core roles unconstrained), `ClusterConfigKVTest` (`sourcesWithRole`, `declares`)] [design intent — unverified: dashboard panel rendering, and the scale path against a live cluster]
+- **Ingress firewalls are applied, not just parsed (#574).** `[source.X.firewall] allow_ingress` was parsed, validated, diffed, and scaffolded into user configs by `aether cluster init` — with zero consumers on any provisioning path. On Hetzner that failed **open**: a server created with no firewall association accepts all inbound traffic, so every layer the operator touched confirmed a protection that did not exist. A new `CREATE_FIREWALL` bootstrap phase now turns each source's rules into a standalone Hetzner firewall via `ComputeProvider.openIngress` (create-or-patch, returning the provider resource id), and threads that id into server-create so the rules are in force **before** the instance exists rather than after. `"tcp+udp"` expands to two rules on one firewall (REQ-5.1.8.1); rules not listed are never touched (patch is a union, never a replacement); cluster (8090) and management (8080) ports stay operator-managed (REQ-5.1.8.3); `load_balancer = "elected"` with no firewall block auto-opens `app_http` on TCP+UDP with the spec's warning (REQ-5.1.8.2). [verified: live Hetzner cluster, 3 bootstrap runs / 9 VMs, 2026-08-06 — one labelled firewall per source, `tcp+udp` expanded to two rules, patch confirmed a union not a replacement, no 8090/8080 opened, attachment proven at server-create by three independent observations, idempotent re-run issued zero writes, and enforcement demonstrated end-to-end (a denied port 22 timed out at 6.0s while an allowed 8070 refused in 0.06s); `destroy` removed the firewall (subsequent GET returned 404). Unit coverage: `aether/cli/src/test/java/org/pragmatica/aether/cli/cluster/BootstrapPhaseFirewallTest.java`, `aether/environment/hetzner/src/test/java/org/pragmatica/aether/environment/hetzner/HetznerComputeProviderTest.java`]
+  - **Bootstrap-only.** Editing `allow_ingress` on an existing cluster is still discarded by `ClusterConfigApplier` (#578); re-bootstrap to change ingress rules.
+  - `allow_ingress` on AWS/GCP/Azure is now **rejected at pre-flight (PF-23)** instead of silently ignored. Those providers' defaults deny inbound, so the gap failed closed there — operators manage ingress via their own security groups until #463.
+- **Getting-started tutorial — every step executed, not asserted.** New `aether/docs/getting-started.md` (install → `jbct init` → Forge → Hetzner bootstrap), written from the 2026-07-24 cold-user dry-run transcript and adversarially re-walked post-fix: all 8 verification markers executed with evidence (pinned + unpinned installs, first-try-green scaffold build, live forge hello in ~30s, and a real 5×cpx32 Hetzner bootstrap run from the bootstrap-config reference example VERBATIM — 7/7 phases, quorum 3/5, ~€0.10). The two live-run discoveries are taught honestly in place rather than papered over: #520 (a `security_mode="NONE"` cluster rejects `artifacts push` — keys are ignored, publication needs OPERATOR/ADMIN) and #521 (`cluster destroy` can strand VMs while exiting 0 — verify in the provider console; `tools/cloud-reaper.sh` is the safety net). Includes a "Tear it down" section and cross-links with "My First Aether Slice".
+- **User-facing bootstrap-config reference with a minimal working Hetzner example (#514).** New `aether/docs/reference/bootstrap-config.md` documents the `aether cluster bootstrap` TOML schema (`[cluster]`/`[cluster.core]`, `[source.<name>]` + provider fields, `[operations.*]`, `[runtime.*]`) field-verified against `ClusterBootstrapConfigParser`, plus the three cold-user traps the 2026-07-24 getting-started dry-run hit as tribal knowledge: `security_mode="NONE"` framed honestly as dev/eval with the code-verified production alternative (pre-seeded `AETHER_API_KEYS` env / `[app-http.api-keys.<key>]` node-config — API_KEY mode authenticating from boot 1, no NONE required), explicit `jar_url` pinning when cluster version and published release tag diverge, and the `databases.X` → nested `[database.name]` composition contract. Cross-linked from `cli.md` and `configuration.md`; the stale never-shipped `[cloud.aws]` design doc (`operators/infrastructure-design.md`) now carries a prominent not-implemented banner pointing at the real reference.
+- **Stream test-coverage tail — the 2026-07-08 assessment's top-3 pre-GA gaps closed in-JVM (#429, #430, #431).** (1) #429: a multi-partition forge fixture (`test-stream-multipart` blueprint: partitions=4, RF=2, min-sync=2, count-retention, app-HTTP publish/read routes) + `MultiPartitionStreamTest` asserting owner distribution across nodes, per-partition contiguous ordering, and read-path equivalence (owner-local GOVERNOR vs forwarded NEAREST from outside the replica set); app-HTTP-unreachable preference arms documented, not faked. (2) #430: `StreamPublishReshuffleTest` — sustained publishing across a mid-stream owner kill, asserting the precise guarantee "every publish ACKED under min-sync-replicas=2 remains readable, uniquely offset, and per-partition-ordered across a single owner-kill reshuffle" (unacked in-flight publishes may fail — that is the contract, and the test asserts accordingly; add-node-driven migration deliberately excluded while #498 is open). (3) #431: `StreamCrashDurabilityTest` confirmed unblocked by the #499 arc (baseline 2/2 green — the S20-class owner-promotion race is gone) and hardened with failure-path per-node replica dumps + an honest scope javadoc: durability is fsync-before-ack, so graceful full-cluster restart proves the full WAL-replay contract in-JVM; a true no-hooks kill is structurally unreachable (`AetherNode.stop()` runs `streamPartitionManager.close()` on every path) and the crash-mid-fsync boundary is deferred to a cloud docker-kill test (#508). A second class, `MultiPartitionCrashDurabilityTest`, proves the distinct multi-partition surface on the #429 fixture: every fsync-acked event on EVERY partition survives full-cluster restart via **independent per-partition WAL replay** (a bug losing one partition's WAL while others recover is caught per-partition). The #431 investigation also surfaced and deterministically reproduced a reconciler defect — post-restart deficit-fill provisioning empty replacements for stable-id members merely slow to rejoin (#509). Empirical harness limits recorded: shared PER_CLASS clusters churn reliably on their 3rd formation (arm designs must stay within 2), and `jbct:check` does not scan test sources.
+- **Per-node local replica-view endpoint + CLI flag (#490).** `GET /api/streams/replicas/local/{name}/{partition}` (RouteTarget.LOCAL, the membership-endpoint pattern) is answered by the RECEIVING node from its OWN `ReplicaRegistry` — never delegate-routed — so the owner-authoritative view (`servedByOwner: true`) is finally reachable over HTTP by querying the resolved owner's management port, and per-node view sweeps become possible for failover diagnosis. The delegate-routed variant structurally could not return it (probe-proven: all 5 ports answered with one identical delegate view), and the docs' previous remedy ("re-query the hrwOwner node") silently didn't work because that query was delegate-routed too — both reference docs corrected. CLI: `aether stream replicas <s> <p> --local`. Dashboard: explicit dormant-slot decision recorded on #494. Route-target + ambiguity structurally tested.
+- **DHT resolve-time fallback + read-repair (#428, C2 of the #420 churn-loss class, epic #463).** A quorum-read miss on the replica set now triggers a bounded ring probe (up to 8 non-replica-set nodes, per-probe timeout, best-effort): the first present copy is returned AND read-repaired onto the current replica set via the standard quorum put, with observer events both ways (`ResolveFallbackObserver.onResolvedViaFallback` / loud `onUnresolvedAfterFallback` naming the key — never silent, per the departure-push house pattern). Full-replication mode is a natural no-op (the replica set already spans every node); its stranded-copy story lands with the #420 stage-2 durable tier, under which this whole mechanism deliberately retires from correctness-critical to cache-warmth. Additive Apache-module surface (one wither; existing construction unchanged). (integrations/dht 143/0, five targeted scenarios incl. stranded-copy repair and the probe bound.)
+- **LocalStack AWS contract suite (RFC-0016 W5, epic #463).** Ten docker-gated contract tests (compute RunInstances round-trip carrying the full `ProvisionRequest` field set, describe/terminate lifecycle, ELBv2 create/attach, SecretsManager round-trip, discovery via EC2 tag filters) exercising the real AWS provider/client against LocalStack Community — the AWS regression sensor that runs before any live credential exists. Skips cleanly (countable, never errors) without a Docker daemon via a lazy availability gate — the deliberate anti-pattern to #466's eager-`@Container` trap. `AwsConfig` gained an additive `endpointOverride` (factory unchanged, zero external constructor callers). Spot is excluded (LocalStack-Pro-only; covered by unit tests + the live smoke). Known-fidelity caveats documented per surface; the suite's first daemon run is expected to surface two suspected client contract bugs it was built to catch (ELBv2 JSON-vs-Query protocol encoding, missing UserData base64).
+- **Persisted cluster-config format gate (RFC-0016 W6, Q1 ruling, epic #463).** The existing top-level `config_version` field is now the document format version, exact-match-gated at the single parse boundary both readers share (the bootstrap parse and the KV-persisted re-parse leaders/CTM perform), with the Q1 named errors: absent or older → re-bootstrap; newer → restore the pre-upgrade persisted state (the binary-rollback-after-upgrade case). No migration ladder ships until a real rung exists (design in RFC-0016 §3.5); future persisted-format changes bump the required version. (aether-config 304/0, all four gate cells tested.)
+- **Per-role VM images (RFC-0016 W2, Q6 ruling, epic #463).** Each `[source.<provider>.<role>] image` now provisions that role's own nodes — the bootstrap seed path stamps the role's image onto `ProvisionSpec.imageId` (tier-1 of `resolve()`), and CTM auto-heal replacements get it via the node overlay rendering the node's OWN role's image — with **no implicit cross-role fallback** (a role without `image` resolves via `[cloud.compute]` then the loud stock default). Replaces the interim core-image-stamps-all behavior; existing core-only configs (including every cloud test TOML) behave identically, verified. Mixed runtime×architecture snapshot layouts (#464) are now expressible per role; `vm-snapshot.md` updated to the per-role contract. (aether-config 300/0, cli 536/0, aether-deployment 750/0, environment-integration 54/0, hetzner 71/0.)
+- **Provider-agnostic provisioning surface — every provision path funnels through a single non-overridable `resolve()` producing a complete `ProvisionRequest`; providers implement only `createFrom` (RFC-0016 W1, epic #463).** Structurally eliminates the #442/#459 plumb-per-field defect class: field precedence (spec > provider `[cloud.compute]` > explicit policy — fail-loud instance size per #442, loud stock-image fallback per #459) is decided once at the `provision(spec)` SPI boundary, which all three producer sites reach (bootstrap seed via `CloudProviderSupport`, CLI `BootstrapPhaseProvision`, and the CTM auto-heal path — the heal path previously bypassed the spec producers entirely). All five providers ported (Hetzner as the design proof; **AWS/GCP/Azure now consume `instance size` and `image` from the spec — both were silently dropped before**; Docker as the unsized special case), plus the Ember in-JVM provider and the forge fault-injector (chaos interception semantics preserved). `role = spot` maps to a SPOT market request; a provider without a spot product/arm rejects it loudly instead of silently provisioning on-demand. **AWS gains the first real spot arm** — EC2 `InstanceMarketOptions` (market type, max price when set, interruption behavior), with `InsufficientInstanceCapacity` mapped to the same retryable `CapacityUnavailable` that drives zone rotation on Hetzner and `SpotMaxPriceTooLow` terminal; GCP/Azure spot awaits client-surface support and rejects loudly. `integrations/cloud/aws` `RunInstancesRequest` extended additively (both factory signatures unchanged). Reviewed in two staged passes (both approved); per-module green: environment-integration 54/0, hetzner 71/0, aws 55/0, gcp 43/0, azure 50/0, docker 49/0, integrations-cloud-aws 42/0, aether-deployment 756/0, cli 531/0.
+
+### Removed
+- **The rest of the dead `CloudProvider` SPI, and `QuotaStatus` with it (#298 follow-up).** The interface's ingress methods were removed earlier (entry below); this removes what was left — `CloudProvider` itself, all five `*CloudProvider` implementations, `QuotaStatus`, and `HetznerCloudProviderTest`, whose only subject was dead code. Evidence: no production consumer (the sole reference outside the interface and its implementations was a comment added hours earlier while implementing #298), no `META-INF/services` registration, no reflective use, and the only construction of any implementation was inside its own test. **It is not part of the published provider SPI**: `cloud-integration-spi-spec.md` enumerates four contracts providers implement — `ComputeProvider`, `LoadBalancerProvider`, `DiscoveryProvider`, `SecretsProvider` — and `CloudProvider` is in none of them; providers register `EnvironmentIntegrationFactory`, and `EnvironmentIntegration` exposes `compute()`, never a `cloudProvider()`. So it was unreachable from the extension surface a third-party provider author sees. The interface had been **superseded in place** rather than merely unused: `supportsPreemptible()` was implemented by all five providers, cited by two spec requirements, and called by nothing — the PF-16 spot gate it documented is really `ClusterBootstrapConfigValidator.SPOT_UNSUPPORTED_REASONS`, a static map keyed on `CloudProviderName`. **This dead surface had already cost real work:** #298 was filed against `checkQuota` and specified a fix that could not function (every provider returned `QuotaStatus.unknown()`, whose `sufficient` flag is `true`, on an SPI with no bulk provisioning path to guard), which had to be disproved from the code before that ticket could be implemented. Spec references corrected in the same commit rather than left to rot: `cluster-bootstrap-spec.md` (REQ-5.1.7.2, REQ-8.2.3, the Phase-2 provisioning row, and two ingress references) and `harness-resilience-spec.md` C3a, which pointed at `HetznerCloudProvider.provision()` in a module `aether/aether-cloud` that does not exist. The `environment-integration` module description also stopped advertising a **cost** facet — that facet was `checkQuota`, and it never functioned. [verified: `./build.sh` green end to end after removal — no caller anywhere in the repo broke]
+- **Dead `CloudProvider` ingress SPI.** `CloudProvider.openIngress`/`closeIngress` had no production construction site and no live caller — their only production reference was `SourceProvisioner`, which had no callers of its own. Both removed; ingress now lives on `ComputeProvider`, the SPI the provisioning path actually uses.
+
+### Changed
+- **JBCT lint corpus burn-down (#493) — internal, no behavioral change.** The 20 real named fixed-message `Cause` variants that JBCT-SEAL-02 flagged as zero-component records are converted to the per-cause `enum Foo implements X { INSTANCE; … }` idiom (type names unchanged, so `permits` clauses and `case Foo …` type-patterns stay valid; only `new Foo()` → `Foo.INSTANCE`). Same messages and HTTP statuses; four sites also shed redundant hand-rolled singleton/factory machinery the enum's `INSTANCE` supersedes. The `record unused()` sealed-interface placeholder idiom is exempted rule-side rather than churned. JBCT-RET-08 (null call-argument) burned down to zero across the corpus: `TypeMapper`'s PG-type→Java-type table is Option-ified (40 `null` → `Option.empty()`/`present`, its factory taking `Option<String>`), `OutputFormatter.printQuery` gains a private `Option<TableSpec>` core (no caller churn), and the JDK/framework-boundary nulls that cannot be Option-wrapped — `AtomicReference` sentinels, `SSLContext.init`/`KeyStore.load`, reflective static invoke, JMX listeners, Jackson view-DTO absent fields, cloud provider-request DTOs — carry justified `@SuppressWarnings("JBCT-RET-08")` (the rule itself now also exempts the distinctive `orElse`/`compareAndSet`/`getAndSet` adapters). Plus the small residue: JBCT-MUT-01 (2 parameter-reassignments → locals: `JwtSignatureVerifier`, `MavenLocalRepoLocator`) and JBCT-STY-09 (4 nested ternaries de-nested: `AetherSchemaManager`, `ConfigurableLoadRunner`, `DdlAnalyzer`, `SchemaBuilder`). Compile-verified across all touched modules.
+
+### Fixed
+- **Chaos-suite poll loop carried an SSH roundtrip per second, turning a 240s soft-signal step into 3176s.** `topology_events_since` discovers CTM-replacement mgmt ports (they publish on ephemeral host ports) via `remote_exec` — an SSH roundtrip plus `docker ps` and one `docker port` per container — and it is called from 1-second poll loops. So the roundtrip sat on a hot path at exactly the moment the host is least responsive: immediately after S19 SIGKILLs three of five nodes and auto-heal begins provisioning. Measured across the #595 confirmation runs, identical code and a clean host each time, suite duration ranged **743s to 4836s**; in the slow run `Drain-trigger log signature present on survivors` alone took **3176s against a 240s budget** — and every branch of that step is a `log_warn`, so 53 minutes bought a signal the test explicitly states is not its contract ("exit-code-2 assertion above remains the hard contract"). Three fixes: (1) the discovery is memoised behind a 30s TTL (`TOPOLOGY_PORTS_TTL`) — ephemeral ports do not change on a 1-second cadence, so nothing is lost and the roundtrip leaves the loop; (2) `wait_for_self_drain_event` now checks its deadline **after** the fetch as well as before — checking only before bounds when an iteration may START, not when the loop ends, so a single slow fetch overshot the budget by however long it took; (3) the timeout message reports **actual elapsed** via `SELF_DRAIN_WAIT_ELAPSED` instead of repeating the budget it failed to honour — it previously read "within 60s" after 3176s, the same shape as the #594 warning that asserted a benign cause it had never checked. [verified: syntax + harness lint 0 new; the cached helper resolves on a clean source] [design intent — unverified: the duration improvement itself, which needs a run on the final code — the runs that exposed this were already in flight when the fix landed]
+- **Replica-set view reported a node's OWN row as permanently `SYNCING`/`-1` while it served a complete partition (#593).** `ReplicaRegistry.registerReplica` seeds every descriptor at `SYNCING` / `confirmedOffset = -1` and only `updateWatermark` advances it — driven by acks arriving FROM PEERS (`DefaultReplicationManager.handleAck`). A node never acks to itself, so its own descriptor stayed at the seed value for the lifetime of the partition. Measured on a live 5-node cluster: an owner reporting itself `SYNCING`/`-1` for over three hours while `ownerHeadOffset` was 24, a peer replica was `CAUGHT_UP` at 23, and all 24 events were readable in order via `/api/streams/read`. **The data was never wrong; the row describing it was** — a status surface that lies about a working system, which is why this reads as a durability incident to anyone (or any test) consulting it. `StreamReadRouter.replicaSnapshot` now answers THIS node's own row from local truth (`CAUGHT_UP` at the local ring head) when it holds the partition. Deliberately narrow: only the answering node's own row is substituted — the one row it has authoritative knowledge of; peer rows still come from the registry, where an ack is the honest source and a node cannot vouch for what a peer holds; and nothing is substituted when the partition is not held locally, because absence of a local ring is not evidence about anything. Each of those three properties is pinned by its own test. **Why this survived so long:** the pre-existing test fabricated the missing state by calling `updateWatermark(..., SELF, ...)` by hand — a call production never makes — so it passed continuously against the broken behaviour. Mutation-checked: disabling the substitution turns ONLY the new production-realistic test red, while that fabricating test stays green. [verified: `StreamReadRouterReplicaSnapshotTest` 6/6 incl. three new cases (own row from local truth with no self-ack, peer rows untouched, no substitution without a local ring); mutation-checked; `./build.sh` green] **NOT fixed here:** `servedByOwner` returned `false` when the same query was issued directly to the owner, in a payload whose own `isHrwOwner` was `true` for that node — so `selfNodeId` and the descriptor's `NodeId` disagree while naming the same node. That is a separate identity-comparison question, not reproducible without a live cluster in the failed state, and #593 stays open for it rather than being closed on a speculative change.
+- **`restore_cluster_baseline` never actually rescaled the cluster — the harness was sending a pre-#581 scale payload (#594).** `POST /api/cluster/scale` took `(source, role, count, expectedVersion)` from RFC-0017 C1 onward, but `scale_cluster` still sent `{"coreCount":N,"expectedVersion":0}`. Every call returned **HTTP 500** (`Type mismatch: expected int, got unknown at ScaleRequest["count"]`) and was swallowed by a WARN reading *"cluster may already be at target — proceeding to wait"* — so the cleanup that is supposed to return a chaos-churned cluster to `NODE_COUNT` did nothing, on every test, in every suite, since #581 landed. Observed on all 8 tests of 9 consecutive cluster-B runs before anyone read the body. Fix is the payload (`role`/`count`; `source` deliberately omitted so the server infers it — it does so when exactly one source declares the role, which is every docker/remote cluster the harness builds). **`expectedVersion: 0` is correct and stays**: `checkVersionAsync` treats 0 as an explicit bypass sentinel (`expectedVersion != 0 && ...`), the same one `aether cluster bootstrap` uses — an earlier draft of the issue wrongly claimed this needed a version read and 409 retry. **Both warnings were also rewritten**: they asserted a benign cause ("may already be at target") that nobody had verified, which is precisely why the failure survived so long — a warning that guesses at its own cause hides more than one that prints the status. They now state that the cluster was NOT resized and carry the HTTP status and body. Note for scope: the desired count was already at target in these runs (`previousCount: 5 -> newCount: 5`), so this fix restores the mechanism rather than proving it resolves the downstream churn tracked in #593. [verified: live remote run — `Scale result: HTTP 200 {"success":true,"role":"core","previousCount":5,"newCount":5,"configVersion":2..6}` across every test, where nine prior runs produced only 500s; 02-chaos 7/0] Process note: #581 updated REST, CLI, docs and dashboard per the QUAD invariant, but the integration harness is a FIFTH consumer of the same contract and was not updated — worth folding into that invariant.
+- **Cloud cost guardrails were decorative; both are now real (#298 follow-up).** Two independent defects in `aether/tests/cloud/`. (1) **`MAX_CLOUD_HOURS` did not abort** — the block labelled `# --- cost guard ---` printed `WARNING:` and fell through, so a cluster past its budget kept accruing cost AND kept being used; the limit had no effect at all. It now exits non-zero, leads with the teardown command (aborting stops this run extending the spend but does NOT reap — the cluster keeps costing until torn down, and that limitation is stated rather than implied), and treats `MAX_CLOUD_HOURS=0` as the explicit opt-out. Auto-teardown is deliberately not performed: a cluster over budget may be one someone is debugging, and destroying it from a guard is worse than the overspend it prevents. (2) **The cost estimate ignored fleet size AND instance type** — `driver_cost_estimate()` was the literal `echo "0.071"` and the summary computed `elapsed x rate`, so a 100-node run reported the cost of ONE node, understating by exactly N. `driver_cost_estimate [instance_type]` now returns a per-node-hour rate from a dated EU table, and `teardown-cloud.sh` multiplies by the fleet size read from the live label selector **before any deletion** (afterwards the selector returns 0 and the estimate silently collapses back to single-node cost — the same bug in a new place); auto-provisioned replacements are therefore counted. Unknown instance types fall back HIGH and warn on stderr, because under-reporting is the defect being fixed and a silent low default would reintroduce it. Worth recording that the old code was wrong TWICE in opposite directions — missing the `x N` factor while carrying a rate ~9x too high for the `cx22`/`cx23` class actually used — which is why the error was never obvious: a 2h 100-node `cx23` run reported EUR 0.14 against a true ~EUR 1.50. The driver contract in `lib/cloud-driver.sh` now documents the signature and the caller's obligation to multiply. [verified: `driver_cost_estimate` exercised per type incl. the unknown-type warning path, and the teardown arithmetic checked against a 2h/100-node case] [design intent — unverified: the abort path against a genuinely over-budget live cluster]
+- **`[operations.auto_heal]` in bootstrap config does not reach a running node (found 2026-08-12, #298 wiring).** `enabled` / `retry_interval` / `startup_cooldown` are parsed and validated into `AutoHealSpec` -> `OperationsConfig`, but nothing renders them into the composed per-node `aether.toml`, so every node runs `AutoHealConfig.DEFAULT`. An operator setting `retry_interval = "30s"` — as the documented reference example does — changes nothing. Only `max_nodes` has a delivered path today (via `node_config.cluster`, above); the remaining three fields are still inert. Recorded in `bootstrap-config.md` beside the section rather than silently left to mislead. Not fixed here: whether the remaining fields get a `node_config` path or the section is deleted like the `CloudProvider` SPI is a scope decision, not a bug fix.
+- **SWIM's cross-cluster ANNOUNCE gate was inert on every node; it is now armed, and upgrade-safe (#298 follow-up).** `SwimProtocol.handleAnnounce` has always compared the announced cluster name against the configured one — but `SwimConfig.DEFAULT` carries `""`, empty means "no gating", `fromTimeouts` inherited that default, and nothing ever set it. So the guard existed, was wired, was cited by specs, and rejected nothing. It is now fed from `AetherNodeConfig.clusterName` (stamped by `Main` from the boot-gated `AETHER_CLUSTER_NAME`). **This is the only cross-cluster ANNOUNCE isolation** — the transport's `isAnnounceAllowed` is a per-source RATE LIMITER, not an allowlist — and accepting a foreign ANNOUNCE clears tombstones and introduces the sender as an observed member. **Scope stated honestly:** `announceJoin` targets only a node's own configured seeds, so this is not protection against an arbitrary hostile sender; it catches a stale or copy-pasted seed list pointing at another cluster's addresses — the wire-level counterpart to `Main.verifyClusterLabelConsistency`'s Docker-label check. **Arming it required a fix to the comparison itself:** the original condition rejected any announced name differing from the expectation, INCLUDING an empty one, so a named node would have rejected an un-upgraded peer and broken membership through any mixed-version window. The gate now requires BOTH sides to claim a name before a mismatch is possible, which keeps it inert until every node is named and makes the transition a no-op in both directions. Empty stays "did not tell us", never "mismatch". In-process harnesses (Ember/forge) pass no cluster name and are unaffected. [verified: `SwimAnnounceClusterGateTest` 4/4 — match admitted, mismatch rejected, and both rolling-upgrade directions admitted; mutation-checked twice, each killing exactly one distinct test — reverting to the original single-sided condition turns the unnamed-sender upgrade test red (empirically confirming the hazard rather than asserting it), and disabling the gate turns the mismatch test red] [design intent — unverified: rejection observed on a live multi-cluster deployment]
+
+- **The operator's topology never replaced the bootstrap self-seed; the config-apply route reported success for a write the fence had rejected (#581).** Three compounding defects in `ClusterConfigRoutes`: `handleApplyConfig`'s `.orElse` could not distinguish the lookup's NOT_FOUND from a failure raised inside `processApply`, so every apply refusal was silently re-run as a first-time store; the BootstrapModule self-seed carries `tomlContent=""`, which cannot parse, so every apply against a freshly formed cluster failed at exactly that point; and `storeInitialConfig` issued a bare unfenced `Put` and answered success unconditionally while the RFC-0018 successor fence rejected it silently — the precise trap `storeFencedConfig`'s own doc describes. Net effect on a live cluster: cloud bootstrap exit 0, worker topology gone with a 200, RFC-0017 stage-5 provisioning inert. The route now decides presence on the Option, replaces a blank-toml seed as a confirmed fenced successor at version+1, and funnels the initial store through the same confirmed write path. [verified: `ClusterConfigRoutesApplyTest` (10 tests incl. a fence-modeling KV store; per-defect mutation probes go red) + live Hetzner runs 2026-08-09 — pre-fix: committed config byte-unchanged after a "successful" apply; post-fix: configVersion 2 with both topology entries, twice]
+- **CTM-minted VMs were invisible to the CTM's own inventory, and a reconcile trigger landing mid-pass was dropped (#581).** `ProvisionContext.forReplacement` hardcoded `sourceName="default"`, so every cluster-provisioned VM carried `aether-source=default` while the worker reconcile pass lists ACTUAL with `aether-source=<entry.sourceName()>` — `actual=0` forever: each pass minted `desired` MORE workers (measured: 6 for desired 4) and scale-down was structurally impossible (no victim ever visible). Separately, the promised "re-poke once at the end" was not implemented, so a scale committed during a pass was lost until an unrelated commit. The provision path now threads the topology entry's real source name (core auto-heal resolves it from cluster config via the same lookup that yields instance type), and a missed trigger is recorded and replayed as exactly one follow-up pass. [verified: `ClusterTopologyManagerWorkerReconcileTest` (12 tests, label-faithful fake provider — the old fake filtered on role alone, which is why the defect survived its own suite) + live Hetzner run 2026-08-09: scale 2→4 minted exactly +2, 4→1 terminated exactly the newest 3 in ~15s, 0→2 and 2→3 exact]
+- **Firewall presets opened the cluster port as `tcp` — the cluster transport is QUIC, which is UDP.** Behind Hetzner's deny-by-default ingress, inbound QUIC on the cluster port was dropped and no core could ever dial a peer: two full live bootstraps failed at the formation gate with `0 of 5 cores reported formation` while discovery and SWIM (whose UDP rule existed) worked. `FirewallPresetsTest` had pinned `"tcp"` as the requirement — the exposure encoded as the spec, the same failure shape as the `0.0.0.0/0` finding before it. Standard and restrictive presets now emit `udp` for the cluster port. [verified: live Hetzner runs 2026-08-09 — `in tcp 6000` firewall: 0/5 formed twice; `udp` rule added: 5/5 formed in one pass, four consecutive formations since] [mechanism: QUIC is defined over UDP — a TCP allow rule cannot admit it]
+- **`aether cluster scale` never worked, and no test could see it (#581).** The CLI posted `{"count":…,"role":…,"source":…}` while the route's DTO read a lone `coreCount` (`ManagementApiResponses.ScaleRequest`), so every scale request was **rejected at deserialization** — the decoder reports `Type mismatch: expected int, got unknown … ["count"]`, since the record's required `count` is absent from the body — and `source`/`role` were discarded on the floor. The DTOs live in `aether/node` and `aether/cli` does not depend on that module, so the wire contract was spelled twice, as a Java record on the server and a hand-built JSON string on the client, with nothing tying the spellings together. The only existing `CLUSTER_SCALE` tests assert which node the route dispatches to, which stays green either way. The request record is now `(source, role, count, expectedVersion)` and the CLI sends exactly those names. **This is one instance of a wider gap:** 18 CLI files hand-build request bodies with no compile-time tie to the server record; only moving the request DTOs into a module both sides depend on would make a drift like this a compile error. [verified: `aether/node/src/test/java/org/pragmatica/aether/api/ScaleRequestContractTest.java` + `aether/cli/src/test/java/org/pragmatica/aether/cli/cluster/ClusterScaleCommandTest.java` + arc-final live Hetzner run 2026-08-09 — `aether cluster scale --role worker` executed against a live 5-core cluster for counts 4/1/0/2/3, each answering explicit `previousCount`/`newCount`/`configVersion` and converging on the provider within seconds]
+- **CLI-side quorum validation was arithmetically wrong under per-source topology.** `aether cluster scale` checked that the requested count was odd and ≥ 3 before sending. That is a property of the CLUSTER-WIDE core total, not of one source's count: scaling one core source to 1 is legal when another source carries 2. The check moved to the server, which is the only party holding the whole topology. [verified: `ClusterConfigRoutesScaleTest.validateScale_checksClusterWideCoreTotal_notThePerSourceCount`]
+- **Firewall teardown failed on the first `cluster destroy` attempt.** Hetzner server deletion is asynchronous: `deleteServer` returns before the server is detached from its firewall, so the immediately-following delete got `422 resource_in_use` and destroy reported failure for a firewall that was seconds from deletable — leaving the operator to re-run destroy by hand. The delete now retries while the servers drain, and still fails loudly if the firewall is genuinely stuck. Found on a live Hetzner run; the unit test could not have caught it, and in fact *forbade* the discovery by asserting no other client call was made. [verified: live Hetzner run 2026-08-05 (first attempt 422, retry deleted it — API returned 404 afterwards) + `BootstrapCleanupTest.cleanup_retriesFirewallDelete_whenStillAttachedFromAsyncServerDeletion`]
+- **`aether cluster init` put the management API on the public internet by default (#580).** The `STANDARD` preset — the wizard's default — emitted `rule(MGMT_PORT, "tcp", "0.0.0.0/0")`, and `adminCidr` defaulted to `0.0.0.0/0` when the operator gave none, so an absent admin network silently meant *everyone*. Combined with the documented cloud example's `security_mode = "NONE"` that is unauthenticated remote control of the cluster. Harmless only while `allow_ingress` was inert; live the moment #574 made it apply. Presets now scope the management API and bootstrap SSH to the operator's admin CIDR and **omit those rules entirely when none is given**, never widening. New pre-flight **PF-24** rejects the management port on `0.0.0.0/0` together with `security_mode = "none"`. Wizard ports now derive from `PortMapping.defaultPortMapping()` instead of a second spelling that had drifted to 7100/7200. [verified: `FirewallPresetsTest`, `ClusterBootstrapConfigValidatorTest` — mutation-checked; the previous suite asserted `rulesFor_standard_allRulesUseAnyCidr`, encoding the exposure as the requirement]
+- **Provisioning could create a VM no cleanup path could ever find (#579).** `clusterNameOrDefault` fell back to the literal `"unknown"`, so a server whose cluster could not be resolved was stamped `aether-cluster=unknown` — invisible to `aether cluster destroy --cluster X` and to every scoped sweep, leaving a billable orphan only an account-wide reap would catch, and account-wide reaps are what destroyed the standing `test-pg` VM (#572). Provisioning now refuses outright; the `AETHER_CLUSTER_NAME` fallback is retained for the genuine pre-bootstrap window. RFC-0017 C2 — a precondition for cluster-owned provisioning, where the label is teardown's only handle on a node. [verified: `HetznerComputeProviderTest.ClusterLabelPreconditionTests` — mutation-checked]
+- **The bootstrap readiness gate blamed cloud-init for a firewalled management port.** `waitForCloudInit` never inspects cloud-init — it polls `http://<public-ip>:<management>/health/live` on every node. With a declared `allow_ingress` (deny-by-default) and REQ-5.1.8.3 keeping the management port operator-managed, the gate cannot reach healthy nodes, and reported `Cloud-init did not finish on N node(s). Investigate /var/log/cloud-init-output.log` — sending diagnosis to a host that teardown then destroys. The message now names the port actually polled and offers blocked ingress as the likeliest cause, and pre-flight warns when `allow_ingress` omits the management port. [verified: live Hetzner run 2026-08-05 — from inside the host `curl localhost:8080/health/live` returned **HTTP 200** with the aether-node JVM running, while the same URL from outside never connected; two independent runs failed identically, so this is deterministic, not a flake]
+- **`cluster destroy` could never succeed after a partial failure.** Retrying re-terminated VMs the first pass had already deleted; Hetzner answered `404 not_found`, cleanup counted it as failure, and the cluster registry entry stayed `KEPT` forever. Hetzner's terminate now maps 404 to `InstanceNotFound`, and teardown treats an already-absent VM as the outcome it wanted — while a genuine termination failure still surfaces. [verified: live Hetzner run 2026-08-05 (`destroy exit=0`, `Registry entry: removed`) + `BootstrapCleanupTest.cleanup_treatsAlreadyGoneVm_asDestroyed`, mutation-checked]
+- **`allow_ingress` without port 22 silently locked bootstrap out of its own nodes.** Ingress is deny-by-default and `DEPLOY_RUNTIME` deploys over SSH, so a firewall that omitted 22 provisioned three VMs correctly and then failed `SSH preflight failed: 3 host(s) unreachable after 300s` — the firewall working as designed. Pre-flight now warns (not errors: a pre-baked image may need no inbound SSH), and the reference documents it. [verified: live Hetzner run 2026-08-05 — port 22 timed out at 6s while allowed port 8070 refused in 0.06s, proving enforcement rather than a network fault]
+- **Wizard-generated firewall rules were dropped at parse.** `ClusterBootstrapConfigParser` gated the whole `allow_ingress` lookup on an explicit `[source.X.firewall]` section existing, then fell through to the array-of-tables form only inside that branch. `aether cluster init` writes the bare `[[source.X.firewall.allow_ingress]]` form with no `[source.X.firewall]` header — so every wizard-generated firewall block parsed to zero rules while the file plainly contained them. A second inertness layer beneath #574: even once rules were applied, the ones the wizard produced never reached `SourceProfile`. Both spellings now parse. `aether cluster init` also no longer scaffolds `allow_ingress` for providers that cannot apply it (AWS/GCP/Azure) or source types with no cloud API (SSH), which would otherwise generate a config its own pre-flight rejects. [verified: `ClusterConfigGeneratorTest.generate_cloud_firewallRulesSurviveRoundTripToSourceProfile` — caught only because the round-trip assertion was checked against a mutation and found vacuous]
+- **`cluster destroy` deleted no firewalls and reported success anyway.** `BootstrapCleanup`'s firewall arm printed `Deleting firewall rule ...`, issued no API call, and returned success — so teardown logged `Cleaned up ...` for a resource that still existed and still cost money. It is now a real id-scoped delete against the Hetzner API. Deletion is scoped by recorded resource id alone, never a label sweep — an unscoped reap is what destroyed the standing `test-pg` VM on 2026-08-03 (#572). Created firewalls also carry `aether-cluster`/`aether-source` labels so `tools/cloud-reaper.sh` can see them. [verified: `BootstrapCleanupTest.cleanup_deletesFirewall_whenCloudFirewallResourcePresent` — mutation-checked: reverting to the old stub turns it red]
+- **The Management API no longer grants ADMIN to every caller when no credentials are configured (#573).** On a node where `[app-http] enabled` was unset or false — **the default** (`ConfigLoader.java:314`) — the management plane authenticated nobody and authorized everybody. The chain: `Main.java:115-116` applies `.filter(AppHttpConfig::enabled)` and, when app-HTTP is disabled, discards the ENTIRE parsed `AppHttpConfig` — including a `SecurityMode.API_KEY` posture and any configured keys — substituting the no-arg default, which is `SecurityMode.NONE`. `AetherNode` then selected a validator that did not merely skip validation but returned a context holding `Set.of(Role.ADMIN, Role.SERVICE)` for every request. The `kvStoreAwareValidator` wrapper did not rescue it: `KvStoreApiKeyValidator` consults its delegate first and returns on success, so an unconditionally-succeeding delegate **short-circuited the cluster's KV-held bootstrap admin keys entirely** — meaning #290's own bootstrap-admin-key mechanism was bypassed on exactly the nodes that needed it. No warning was logged at any point. #290 made the config default secure (`ConfigLoader.java:324` → `API_KEY`); this defeated it one layer above, before it could take effect. **Not a rename-only change:** the permissive validator is retained as `permitAllValidator` — honestly named, since "no-op" reads as harmless and an unconditional authorization grant is the opposite — and remains correct for the two callers that have already decided authentication is unwanted: Forge's local dev websockets (which pass `authRequired=false`) and `AppHttpServer`'s `SecurityMode.NONE` arm, which refuses auth-requiring routes at `AppHttpServer.java:765` **before** any validator is consulted. That asymmetry is why the app plane was safe while the management plane was not, and why the fix is scoped to the management plane rather than to the shared helper. The management plane now uses `denyUnlessPublicValidator`: public routes pass with an EMPTY context, everything else is refused with `NO_VALIDATOR_CONFIGURED`. Returning a FAILURE rather than an empty success is deliberate and load-bearing — it is what lets the KV bootstrap-admin-key path run, so a cluster with a registered admin key still authenticates normally while a cluster with no credentials anywhere refuses privileged routes instead of granting them. A startup `WARN` now names the condition. **Scope:** the shipped Docker image sets `[app-http] enabled = true` (`aether/docker/aether-node/aether.toml:16-17`) and was never exposed; this affected bare-JVM runs, hand-written `aether.toml`, and the bare-metal getting-started path. **Evidence [verified: `aether/node/src/test/java/org/pragmatica/aether/http/security/SecurityValidatorAuthorityTest.java`]:** 5 tests pinning the two validators apart — privileged and api-key routes refused, public routes passing with no roles, the fail-don't-succeed property that preserves the KV path, and `permitAll` still granting for its legitimate callers. Mutation-checked: reverting `denyUnlessPublicValidator` to the permissive grant turns 4 of the 5 red (including `Expecting empty but was: [Role[value=service], Role[value=admin]]`), with the source restored md5-identical afterwards. 818 node tests green — **nothing depended on the implicit grant**, so it was pure exposure rather than a load-bearing behaviour. `build.sh` green. **Deliberately NOT changed:** `[app-http] enabled` still governs management-plane security. Decoupling them is the real structural fix and is left as a separate, explicitly-decided change — one flag governing two planes is the underlying design defect, and correcting it alters config semantics for existing deployments. **Found by** a GA readiness sweep for present-but-inert surfaces, not by any existing ticket.
+- **Two blueprints can no longer migrate the same physical database (#566).** `aether_schema_history` is a fixed, unqualified table name — one per PHYSICAL database — so the invariant is *one migrating blueprint per physical database*. The existing publish-time check keys on the datasource name derived from the JAR path (`schema/` → `database`, `schema/<n>/` → `database.<n>`), which **under**-approximates that invariant: two node config sections (`[database.a]`, `[database.b]`) can point at the same host/port/database, and both blueprints were permitted to migrate it, interleaving their version sequences in one shared history table. A new fixed single-row claim table `aether_schema_owner(blueprint_base)` — created `IF NOT EXISTS`, dialect-independent, never evolved (same posture as `aether_schema_history_meta`) — records the owning blueprint IN the database being migrated. `AetherSchemaManager.migrate`/`undo`/`baseline` claim it immediately after `bootstrap` and **before** `queryApplied`, so a database already claimed by a different blueprint is refused with a typed 409 (`SchemaError.PhysicalDatasourceOwnershipConflict`) having applied nothing. Ownership compares on `ArtifactBase` with the version stripped, matching the publish-time rule: `my-app:1.0.1` advancing over `my-app:1.0.0`'s records is the same owner, not a conflict. **The ticket's headline claim was wrong and is NOT implemented:** it reported the name-based check also *over*-rejects, on the premise that two blueprints could declare `[database]` sections pointing at different physical databases. They cannot — a blueprint's `resources.toml` is *"intentionally NOT published to KV"* (`BlueprintService`), and at migration time `DatasourceConnectionProvider` resolves the datasource name as a **node** config-section key against KV-overlay ⊕ node.toml. The derived name IS the config section, and the config section IS the physical database, so refusing a second blueprint that selects the same section is correct. The publish-time check is unchanged. **The proposed location was also unusable:** `aether_schema_history_meta` is documented "never itself evolved" and created `IF NOT EXISTS`, so a new column would reach fresh clusters and silently skip every existing one — hence a separate table. **Evidence [verified: `aether/aether-deployment/src/test/java/org/pragmatica/aether/deployment/schema/AetherSchemaManagerResumeTest.java` — `OwnershipClaim`]:** 7 tests covering first claim, idempotent re-claim, re-claim by a different version of the same base, refusal across bases, refusal after a real prior migration, and the 409 mapping; 798 module tests green, `build.sh` green, 0 new lint findings. The ordering test is mutation-checked — moving the claim after `queryApplied` turns it red. **That test required a stronger assertion than "no history rows written":** the refused claim short-circuits before `executeMigration` either way, so a row-count assertion passes against the mutation and proves nothing; the invariant pinned is that a refused claim does not even *read* the history table. **Not verified [design intent — unverified]:** behaviour against a live multi-blueprint cluster — the evidence is an in-memory connector model, not integration. `undo`/`baseline` have no production call sites, so their claim paths are compile-verified only.
+- **Client errors on `/api/deploy` no longer answer HTTP 500 (#569).** Deploying a blueprint the cluster does not hold returned `500 Internal Server Error` — measured live on a 5-node remote-host cluster: `{"title":"Internal Server Error","status":500,"detail":"Blueprint not found: …url-shortener:1.0.1"}`. It told the operator the cluster had broken when in fact the request named something that does not exist. `ProblemResponses.resolveStatus` tests `cause instanceof HttpStatusAware` and defaults everything else to 500; `DeploymentError`'s variants were well-typed but carried no status, and `DeployRoutes`' validation failures were bare `Causes.cause(...)` constants. The information needed to answer correctly already existed and was discarded at the HTTP boundary. `DeploymentError` now implements `HttpStatusAware` (`BlueprintNotFound`/`DeploymentNotFound` → 404; `DeploymentAlreadyExists`/`NoCurrentVersion`/`SameVersionDeployment`/`NOT_ACTIVE` → 409; `NOT_ASSIGNED` → 503, since the caller did nothing wrong and another node may serve it; `INVALID_STRATEGY_CONFIG` → 400; `ConsensusFailure` stays 500), new `DeployRouteError` carries the four request-validation failures at 400, and `CanaryStage`'s range checks carry 400. `DEPLOY_STATUS`'s not-found is now minted per request so the ProblemDetail names *which* deployment was missing, where it was previously an id-less constant. Following `SchemaRouteError` (#542), **`httpStatus()` is left abstract rather than defaulted to 500** — a default would let the next variant silently inherit the very 500 this change removes, so an omission is now a compile error. **Typing the causes was NOT sufficient, and this is the substance of the fix:** `buildParsedRequest` combined four validations with `Result.all`, which replaces the emerging cause with `Causes.composite(...)` as soon as *any* input fails — and `CompositeCause extends Cause` only, so the mixin was erased one hop before the funnel and the 500 returned. An unrecognized strategy stayed 500 with `INVALID_STRATEGY` correctly typed 400. `parseCanaryConfig` had the same erasure through `Result.allOf`. Both are now first-failure-wins chains, which forward the original cause instance untouched; accumulation bought nothing anyway, since `CompositeCause` renders one opaque message the caller never saw broken down. `CompositeCause` itself is deliberately **not** made status-aware — it lives in `core`, which is HTTP-free. **Evidence [verified: `aether/node/src/test/java/org/pragmatica/aether/api/routes/DeployRouteStatusTest.java`]:** 14 tests that drive the REAL `Route` handler and feed the emerging cause through the exact `ProblemResponses.writeProblem` call `ManagementRouter.writeError` makes — the cause-level assertion passes throughout while the wire answers 500, so route-level is the only level at which this is provable. Includes unwrapped-propagation assertions (records compare by value, so a wrapper, a re-type or a message drift all fail) and a load-bearing negative control: `ConsensusFailure` must still answer 500, without which the 404s could equally be explained by a blanket downgrade to 4xx. Mutation-checked: restoring `Result.all` turns exactly the 4 strategy tests red with `Composite:` visible in the actual values, leaving the other 10 green. 813 node + 208 aether-invoke tests green, `build.sh` green, 0 new lint findings. **Not re-probed live** — the running cluster predates the fix, and the route-level proof covers the hop where the defect lived.
+- **A self-fencing node's `SELF_DRAIN_INITIATED` event now actually reaches the cluster (#565).** The ticket blamed a race — `Runtime.halt(2)` beating the emit. **That premise is wrong:** the exit runs only after tracker-drain and departure-push settle or a 30 s grace expires (observed ~20 s), so no microsecond race is credible. The event never reached the publisher at all. `AetherNode` wired the drain emitter to `ClusterEventAggregator.emit`, which applies the **owner** gate — a *different* gate from the leader gate the call site's own comment rules out ("NOT leader-gated — the draining node is the only authoritative source for 'I am self-draining'"). A self-fencing node is by definition not the owner of the cluster-events partition: reconciles are suppressed while consensus is PASSIVE, so it evaluates the **pre-partition** placement, whose partition-0 owner is typically among the nodes it just lost. Both survivors answer `false`, the event is dropped, and the suppression logs at **DEBUG** — invisible at default INFO, which is why this survived. The one event that explains why a node left was the one event guaranteed not to be sent. The wiring now uses `emitLocal`, the owner-gate-bypassing path built for exactly this class of per-node fact. **The codebase had already documented the correct behaviour in four places** — `ClusterEvent.StreamMemoryExceeded` and `ClusterEvent.DeparturePushIncomplete` both cite `SelfDrainInitiated` as their precedent for "NOT leader-gated", `emitLocal`'s own contract says it mirrors "the `SelfDrainInitiated` not-leader-gated contract", and the budget test asserts NOT_OWNER emission "(mirrors SelfDrainInitiated)". The exemplar was the only call site not following the pattern named after it. **Evidence [verified: `aether/node/src/test/java/org/pragmatica/aether/api/ClusterEventAggregatorTest.java`]:** 3 new tests pinning that `emitLocal` publishes `SelfDrainInitiated` under NOT_OWNER, that `emit` suppresses it (the trap, pinned so a "simplification" back to `emit` fails), and that an OWNER emits exactly once rather than twice; 799 node tests green, `build.sh` green, 0 new lint findings. **What these tests do NOT cover [design intent — unverified]:** the *wiring* itself. Every test drives the aggregator directly; none constructs `AetherNode`'s drain emitter, so reverting the call site to `emit` would leave the suite green. The wiring is established by inspection only. **Also unverified:** whether the event now becomes durably visible. `emitLocal` still publishes via `publishEventual`, which for a non-owner forwards to the pre-partition owner — unreachable in exactly the partition scenario that triggers a self-fence. This fix removes the unconditional drop; it does not by itself guarantee delivery, and a node-local durable record is the likely follow-up. **Structural caveat left open:** gate choice is an unenforced per-call-site convention across 33 `ClusterEvent` variants and 3 gates. Making the gate a declared property of each variant would close the class; without that, the next per-node event repeats this defect exactly.
+- **Owner failover no longer duplicates a partition's entire history (#567).** A replica catching up from a peer computed its catch-up `fromOffset` from the **replica registry's self-descriptor** (`selfConfirmedOffset(replicas)`) rather than from its own ring. `SelfWatermark`'s contract already warned in as many words that this substitution is invalid — *"the registry's self-descriptor `confirmedOffset` is NOT a substitute: after a restart it is `-1` (SYNCING) even though the node may have recovered real local events"* — and after a failover it reads exactly that `-1`. So `fromOffset` became `0`, the replica re-pulled history it already held, and because `StreamPartitionRecovery.appendRecoveredEvent` assigns **sequential offsets at the ring tail** it did not overwrite the overlap: it re-appended it as brand-new offsets. Measured on a 5-node remote-host cluster (`test-stream-replica-failover`): a replica holding 25 events pulled from offset 0, landed 50 entries carrying 25 distinct markers with `offset 25 -> marker 0000`, and then self-promoted **owner at watermark 49** — a doubled log presented as authoritative. The `promote` completeness gate could not catch it, since `highestApplied = fromOffset + applied - 1` is satisfied identically by a correct empty pull at the tail and by a full re-pull from zero. The peer-source pull now derives its floor from `selfWatermark.localWatermark(...)`, the local ring head — the same authority the sibling owner-source path (`backfillFromOwner`) has always used. Both pull paths now share one notion of "what have I already landed", which is the only one that can be correct: the ring is where events land, so the next event to append is exactly ring-head + 1. **Scoped deliberately:** `selfConfirmedOffset` is still the right input for the owner re-verify comparison, which asks "is the owner ahead of my acked position", a different question from "where does my log end". **One test's proxy changed:** `backfill_caughtUpSourceExists_normalBackfill_noPromotionPathTaken` asserted the normal path never reads the self-watermark, using a throwing stub as a stand-in for "no promotion contest ran". That proxy encoded the defect — the normal path must now read the local tail — so it was replaced with an honest empty-ring watermark (`-1`, the true state in that fixture, leaving `fromOffset` at 0 as before); the probe-must-not-be-consulted assertion still carries the test's actual intent, and every behavioural assertion is unchanged. **Evidence [verified: `aether/aether-stream/src/test/java/org/pragmatica/aether/stream/replication/PartitionBackfillTest.java` — `PeerSourceAppendFloor`]:** 3 new tests written and confirmed **red against the unfixed tree first** (`fromOffset` expected 25, was 0; offset 25 held `event-0`; a behind-replica pulled 25 events instead of the missing 15), green after, with the 49 pre-existing tests in that class green throughout; 650 module tests green. The suite also pins that a genuinely-behind replica still pulls exactly its missing suffix, so the fix cannot degrade into a no-op. **Live-path verified [verified: `aether/tests/integration` suite `02-chaos`, remote-host 5-node cluster]:** the full suite green (41 assertions across 7 scripts, 0 failed, 0 skipped — reproduced identically on an independent second run from a fresh build) AND — because that suite passes *with* duplicates present and therefore proves nothing on its own — the partition read directly afterwards: **25 total events, 25 distinct markers, offsets contiguous 0..24, offset 25 absent** (it held `marker 0000` when the defect was live), last event `offset 24 = FLVR-FAILOVER-MARKER-0024`. Owner re-resolved node-1 → node-2 in 12 s during the run. **Two adjacent findings, neither fixed here:** `DefaultFailoverRecovery` is dead code — nothing outside its own test constructs it — and it carries the same defect plus tests that assert the wrong semantics (`fromOffset` from the *source's* watermark); and `StreamPartitionManager.appendRecovered` documents "into an empty partition" as a precondition that nothing enforces, which is what let a caller's arithmetic slip become silent data duplication rather than a rejected append.
+- **A caught-up replica no longer loops forever in the cold-start promotion contest (#559).** `PartitionBackfill.applyOwnerResponse` routed EVERY empty owner catch-up response to `handleNoSource` → `waitThenPromote` → `attemptColdStartPromotion`, because an empty response has two very different meanings and nothing distinguished them: the owner is genuinely empty (the #445 failover case the distrust gate exists for), or **self already holds everything the owner holds**. A replica in the second case entered a promotion contest it had no business entering, and since `peerNodeIds` includes the owner, it tied with the owner at the same watermark and lost the deterministic lowest-NodeId tie-break — returning to SYNCING and repeating every `STREAM_BACKFILL_REDRIVE_INTERVAL` (5 s), indefinitely. Observed on real hardware: two replicas holding exactly the owner's tail declined promotion **336 times each over 28 minutes**, correctly losing every time, fully caught up throughout, with no way to say so. The issue's proposed discriminator — `response.toOffset() == fromOffset - 1` — turned out to be unusable: `ForwardCatchupTransport.toResponse` stamps `toOffset = fromOffset - 1` for *every* empty response, so the comparison is an identity that carries no information about the owner's true tail. The two cases are byte-identical on the wire and the owner's watermark has to be asked for. The empty-response path now probes the owner once and treats self as caught up iff the owner reports a REAL watermark (`>= 0`) that self is not behind. `ownerWatermark >= 0` is what preserves #445 — a fresh or re-elected owner with an empty ring reports `-1`, is still not trusted as the true tail, and still falls through to the probe-gated no-source path rather than flipping a false `CAUGHT_UP`. The probe is gated on self holding data at all (`selfConfirmed >= 0`), so the empty-owner failover path keeps its exact previous behaviour and costs no extra round-trip. Deliberately scoped to the owner-pull path: the cold-start contest in `decidePromotion` keeps its lowest-NodeId tie-break unchanged, because there the HRW-ranked node is a candidate rather than an authority — nobody has been confirmed to hold authoritative history — so matching its watermark would establish nothing. Being caught up and being the promoted source are different questions; only the second needs a tie-break. **One invariant changed:** a non-owner now probes the owner once on the empty-response path, where `backfill_selfIsNonOwner_noSource_staysSyncingUntilBound` previously asserted no probe at all. That invariant is incompatible with any fix for this issue; all of that test's behavioural assertions are unchanged and it still fails when the #445 guard is removed. **Evidence:** 3 new tests including the 3-replica incident topology where the tie-break is live; both design decisions mutation-checked red — removing the `ownerWatermark >= 0` guard fails the #445 regression *and* the pre-existing non-owner test, and disabling the tail check entirely fails exactly the two new acceptance tests while leaving every #445 and cold-start test green. 646 module tests green. **Not yet verified:** the live failure mode — this reproduces as a red `02-chaos` suite (`expected 'CAUGHT_UP', got 'SYNCING'`) and only that suite passing on real multi-node hardware demonstrates the fix end-to-end.
+- **Boot-time quorum is derived from reachability, not from configuration (#557, #558).** The entry below fixed the `BOOTING` fallback; this fixes the root, which sits one layer earlier and made that fallback unreachable in production. `AetherNode` seeds the membership FSM from `config.topology().coreNodes()` at *wiring* time, and `MembershipFsm.seedMember` promotes each id by dispatching `UpHysteresisMet` **directly**, bypassing the healthy-streak hysteresis that normally gates promotion on observation. Every configured core is therefore a strict `MEMBER` before a packet moves. That single fact produced four symptoms: (1) `PresenceGenerationSnapshotSource` latched its one-way quorum gate on its first call, so `TopologyObserver` took the `MembershipView` branch, flipped `BOOTING → NORMAL` and declared quorum with zero connections — measured on a 5-node remote-host cluster as `BOOTING -> NORMAL` and `Quorum established` in the *same millisecond*, 160 ms before the first QUIC Hello completed; (2) the `BOOTING` connectivity fallback fixed below runs only while the membership view is absent, which the seed made false before `TopologyObserver` had even started — so on any cluster configured with at least a quorum of cores it was dead code, and its tests pass because they configure partial topology; (3) `/api/status` (`cluster.quorate`), `/api/health` and `/health/ready` all derive from `StatusRoutes.quorumStatus`, whose two paths were both seed-derived, so readiness reported quorum held from configuration alone; (4) `QuorumLossDetector`'s arm-after-first-quorum latch — documented as "has this cluster ever been quorate", existing so a node booting into a still-forming cluster never self-fences — armed on the configured set during construction, spending its cold-start guard before formation began. New `MembershipFsm.coreObservedMembers(self)` and `strictCoreObservedMemberCount(self)` narrow the counting projections to members carrying **latched** first-hand reachability evidence (a completed QUIC handshake or a SWIM ALIVE observation), plus self, which is reachable by definition and never observes itself. The latch is one-way on purpose: this gates formation, not liveness, so a transient `SUSPECT` or link flap must not drop a member out of the quorum numerator and emit a spurious `PASSIVE` edge. Placement, heal-deficit and role-assignment consumers keep reading `coreCountedMembers` — only the quorum numerator moved. **Formation is not gated behind consensus:** with the view now correctly absent at boot, the connectivity fallback carries cold start, and the same handshakes that satisfy it latch the evidence. This is why the rule rejected during design — requiring *authoritative* sync responses — deadlocked formation 0/5 while this does not: fresh formation cannot produce authoritative state, but it does produce reachability. **Operator-visible change:** `/health/ready` now means "I can reach a majority" rather than "a majority is configured", so a node reports ready later — after real connectivity rather than after config parse. The `/api/health` quorum detail string changes from `Counted core members: N / required: M` to `Reachable core members: …`, because "counted" had become the wrong projection name. `guarantees.md`'s minority-self-fence armed-latch claim is now earned rather than merely stated. **Evidence:** 10 unit tests across the two projections, each design decision mutation-checked red (a vacuous reachability filter fails the boot-seed regression plus two others; a non-latching flag fails exactly the two flap cases); 5-node in-JVM formation green via `ClusterFormationTest` (4/4, 25 s), confirming no formation deadlock. **Not yet verified:** multi-node with failure injection on real hardware — the remote-host suite and cloud sweep are the outstanding gates, and the readiness-timing change above is the specific thing they need to exercise.
+- **Cluster start no longer declares quorum before a single peer is reachable (#557).** `TopologyObserver.addNode` recorded a newly *discovered* peer as `NodeState.healthy(...)` — optimistically healthy before any connection existed — then merely *requested* a dial and evaluated quorum synchronously in the same block. The health filter that count passed through was vacuous: `nodeStatesById` has only `putIfAbsent` and `remove`, and `NodeState.suspected(...)` is never called anywhere in the repository, so every entry stayed `HEALTHY` for life and `legacyHealthyActivePeerCount()` was arithmetically `nodeStatesById.size() - 1` — a discovery count wearing a health filter. That count governs boot specifically, because the SWIM-observed `MembershipView` is latched absent until FSM members reach quorum: a genuine catch-22 (the snapshot is published only after Rabia commits, which itself needs quorum) that the fallback exists to break. So at cold start quorum meant *"I have heard of ⌊n/2⌋+1 nodes"*, not *"I can reach ⌊n/2⌋+1 nodes"* — `RabiaEngine` was told `ACTIVE` and broadcast its one-shot `SyncRequest` into a network with zero connected peers, leaving the other nodes waiting for sync responses that were never sent, with nothing ever committing. It surfaced as a cluster that intermittently never formed — roughly 1 run in 12, seen as a 30-minute forge-tests timeout with **zero** failing assertions, because the test blocked on an untimed `cluster.start().await()` before reaching a single assertion. The boot count now intersects the discovery-derived dial set with the transport's last reported CONNECTED set, which `NetworkServiceMessage.ConnectedNodesList` already delivered to the observer on the same reconcile tick and which was previously used only to compute re-dials. `CONNECTED` is a genuine post-handshake fact — set after Hello completes and peer identity is verified — not the deliberately-distrusted `isActive()`. **Cost:** quorum establishes up to one reconcile interval later (5s production, 1s in-JVM Ember), measured against a declaration that previously fired ~1s *before* the first lane existed. The catch-22 is preserved rather than reintroduced: the dial path reads only the in-memory dial set and never consults consensus, so quorum stays satisfiable from transport connectivity alone with nothing committed. **This entry describes only the BOOTING-fallback half of #557 — see the following entry, which corrects two claims made here:** on a cluster whose config lists at least a quorum of cores, the fallback this fix corrects was never reached in production, and `/health/ready` was NOT unaffected. **New behaviour worth watching:** the boot count can now *drop*, which the monotonic discovery count could not, because `connectedPeers()` excludes `EVICTED` where `activePeers()` includes it specifically to avoid flicker — so a transient eviction in the pre-view window can emit a `PASSIVE` edge that previously could not occur. It recovers within one reconcile interval, and once the FSM view latches the view path governs.
+- **A failed schema migration now holds slice activation — and holds only its own blueprint's slices (#542).** The gate was wrong in both directions at once. It blocked on `PENDING`/`MIGRATING` only, and since the orchestrator writes `PENDING` when scheduling a *recoverable* retry and `FAILED` on *permanent* failure, the gate was inverted: it held slices during retries that were going to succeed, and released them the moment the migration failed for good — so slices activated against an un-migrated database. It was also unscoped: it scanned every schema record in the KV-Store, so any blueprint's in-flight migration held every blueprint's slices. Datasource names are cluster-global (the default `schema/V001__*.sql` layout names the datasource `database` for every blueprint), which is what made an unscoped scan a cross-blueprint hold rather than a curiosity. `SchemaVersionValue` now carries a **required** `owningBlueprint` component, and the guarantee is: *a slice is withheld from activation if and only if its own blueprint owns a datasource whose migration is in `PENDING`, `MIGRATING` or `FAILED`* — `COMPLETED` alone releases, and another blueprint's failed or in-flight migration cannot hold it. Ownership matches on `group:artifact` with the version stripped, so a blueprint advancing `1.0.0` -> `1.0.1` still owns the records its earlier version wrote. A slice whose blueprint is absent from the leader's map, does not set `schema_required`, or carries no owner is reported ready rather than held — no record can be attributed to it, so holding it would be an unclearable hold. **Scope limit, stated plainly: the gate keys on migration *ownership*, not *usage*.** A blueprint that reads a datasource without declaring migrations for it is not held when that datasource's owner fails. Observability shipped with the fix: the leader emits a `SCHEMA_ACTIVATION_BLOCKED` audit entry and a `SchemaEvent.ActivationBlocked` naming the datasource, the owning blueprint and the held slices; `owningBlueprint` is surfaced on `GET /api/schema/status`, as the `OWNING BLUEPRINT` column of `aether schema status`, and on the dashboard schema panel alongside a `blocksActivation` hold badge.
+- **Two blueprints claiming the same cluster-global datasource are now refused at deploy time with 409 (#550).** Because datasource names are cluster-global, a second blueprint declaring migrations for `database` silently overwrote the first blueprint's schema record, leaving two blueprints interleaving unrelated version sequences against one physical database. `POST /api/blueprints/deploy` and `POST /api/blueprints/publish` now refuse the request with `409 Conflict` before any KV command is applied, so a refused publish writes nothing. Republishing the *same* blueprint at a newer version is an owner advancing its own schema, not a conflict; a blueprint that declares no migrations passes trivially, so sharing a datasource for reads and writes stays legal — only duplicate migration *ownership* is refused. `POST /api/blueprints` (raw blueprint content) is unaffected: migrations are read from the artifact jar's `schema/` directory, so a raw-DSL blueprint declares none. **Precise scope of the check:** both routes are `DEPLOYMENT` task-group targeted, so a request is forwarded to the task-group owner and the ownership lookup reads that owner's state rather than a stale follower's — but the check is a read of the existing record followed by a write, not a compare-and-swap. Two publishes issued *concurrently* for the same unclaimed datasource can both observe it unclaimed and both proceed; sequential publishes, the realistic operator case, are reliably refused. This is the same deploy-time read-then-write window the other validations on that path already use.
+- **`aether schema baseline` no longer wipes the record it baselines, and refuses to invent one (#551).** Baselining rebuilt the record from scratch, dropping `artifactCoords` — which broke `SchemaOrchestratorService.resolveAndParseMigrations` on every subsequent migrate of that datasource — and, once ownership became a required component, would have dropped the owning blueprint too, detaching the record from the very gate that consults it. Baseline now rewrites only the version, the marker migration name and the status, inheriting the coordinates and the owner from the existing record. A datasource with **no** record can no longer be baselined: the call fails with `Schema status not found for datasource` instead of fabricating the unowned orphan that required-ownership exists to make unrepresentable.
+- **`aether schema` action commands no longer print a canned success line over a server failure.** `migrate`, `undo`, `baseline`, `retry`, `status` and `history` skipped the `checkResponseError` guard every other CLI command applies, so a failed call still printed e.g. `Migration retry triggered for orders_db` and exited 0. All six now surface the server's message and a non-zero exit code — load-bearing for the #542 recovery workflow, where `retry` against a non-`FAILED` record and `baseline` against an unpublished datasource are both expected failures.
+- **Dashboard schema panel: rows survive a REST refresh.** The WebSocket frame and `GET /api/schema/status` describe the same record under different field names (`name` vs `datasource`), and the panel read only the WebSocket spelling — so the refresh that follows a dashboard Retry click blanked every row's name and its `x-for` key. REST rows are now normalized into the WebSocket shape before rendering.
+- **Documentation corrections found while completing #542.** `management-api.md` claimed `POST /api/schema/retry` returns `409 Conflict` when the datasource is not `FAILED` while the code answered `500`. The claim was first corrected to describe the `500` honestly, and then the *code* was corrected to make the documented `409` real — see the Schema Management status-code entry below, which supersedes that interim wording. `feature-catalog.md` described the schema gate as "blocks ACTIVATE until COMPLETED", which was never what the code did.
+- **Schema Management endpoints answer 404/409/400 instead of a blanket 500 — the documented status codes are now reachable.** Same defect class as the blueprint-publish `409` (#550): `SchemaRoutes` declared its failures as plain `Causes.cause(...)` constants, and `ProblemResponses.resolveStatus` tests `cause instanceof HttpStatusAware` and silently defaults everything else to `500`. A missing datasource, a refused retry and a genuine node fault were therefore indistinguishable on the wire, and `management-api.md` had just been corrected to document that `500` as the contract. The causes now live in a sealed `SchemaRouteError` and carry their own status: **404** for `Schema status not found for datasource '<name>'` (raised by every route in the group — status, history, migrate, undo, baseline, retry), **409** for a `retry` against a datasource that is not `FAILED` (the request is well-formed and the datasource exists; the conflict is with cluster state), and **400** for a present-but-non-integer `?version=` / `?targetVersion=`. Both failure messages now name the datasource, and the retry conflict additionally names the status it actually observed, so the ProblemDetail `detail` explains the refusal without a second call. **The 400 case was not a wrong status but a missing one:** `baseline`/`undo` parsed the version with a bare `Integer.parseInt`, and nothing between the route builder and `ManagementRouter` lifts — the `NumberFormatException` escaped the handler and was caught only by the outermost Netty guard, which answers `500` with a bare `{"error":"Internal Server Error"}` envelope, bypassing the RFC 9457 funnel entirely and dropping the request from management metrics. An **absent** parameter is unchanged and still takes its documented default (`1` baseline, `0` undo); the parameter tables that called it "required" were wrong and now say so. `SchemaRouteError.httpStatus()` is deliberately left **abstract** rather than defaulted to `500`, so a future variant cannot silently inherit the very default this type exists to eliminate. Proven at the ROUTE level, not the mapping level: `SchemaRouteStatusTest` drives the real `Route` handlers over an in-memory KV-Store and feeds the emerging cause through the exact `ProblemResponses.writeProblem` call `ManagementRouter.writeError` makes, asserting the cause arrives unwrapped (any composite/re-wrap erases the mixin and restores the `500`), plus a negative control proving a plain `Cause` still yields `500`. Mutation-verified: flipping the three statuses back to `INTERNAL_SERVER_ERROR` fails 12 of the 21 tests while the negative control correctly still passes. The two integration suites that grep this contract (`10-database/test-schema-retry.sh`, `06-deployment/test-schema-migration.sh`) match on the body phrase rather than the numeric code and stay green; their stale "HTTP 500" comments were corrected. (node 791/0.)
+- **Declarative stream consumers deliver under a DEFAULT deployment — consumer placement no longer requires the partition owner to host the slice (#535, completing #488).** #488's wiring was correct and live-proven, but its gating rule was `partition owner ∩ slice deployed locally`, and on a real 5-node Hetzner cluster at default replication (slice on 3 of 5) **that intersection was empty**: three successfully-published events were delivered to nobody while every node truthfully reported `attachedSubscriptions: 0`. The forge fixture structurally could not catch it — it ran the slice on every node, making the intersection non-empty by construction. **Three premises in the issue's own fix directions turned out to be false, and disproving them collapsed the "largest change" option into the smallest.** (1) The remote-read path #488 assumed was missing already exists and is production-wired: `ForwardingReadRouter.localOrForwardOnNotLocal` forwards to the HRW owner on a `PARTITION_NOT_LOCAL` local read, and `StreamReadRouter` is built with a real forward client — only `ConsumerRuntimeState.pollPartition`'s hardwired `partitionManager.readLocal` needed a seam. (2) Assignment needs neither consensus nor `ConsumerGroupCoordinator`: `ReplicaPlacement.place(...)` is public and takes an ARBITRARY candidate set, and `DeploymentMap.byArtifact` already gives every node the artifact→hosting-nodes map from mirrored `NodeArtifactKey` notifications. The coordinator was rejected for a better reason than size — its `joinGroup`/`leaveGroup` have no failure detector (a crashed node never leaves, its assignment stays stuck) and assignment is leader-only, stalling through every election; HRW over the deployment map inherits failure detection for free. (3) The owner-forwards-invocation option is genuinely blocked: `SliceInvoker` has no node-targeted invoke and requires the CALLING node to hold a codec-bearing bridge, which the owner by definition lacks. Placement-aware deployment was rejected on substance rather than the feared ownership↔placement cycle — it cannot cover partitions > replicas, and HRW ownership moves on every membership change while placement does not follow, so the gap would reopen on each membership edge unless slice redeployment chased membership churn. **The rule is now a strict EXTENSION:** exactly one node is assigned per `(stream, partition, group)` — the HRW owner when the slice is `ACTIVE` there, else the HRW pick over the nodes where it is, with the candidate set intersected against `ReplicaSetController.reconciledMembers()` (deliberately the SAME member view stream ownership is computed from, so the ownership and placement halves cannot disagree about liveness). Where #488 already worked the assignment is bit-identical — same node, local reads, push listener — so the live-validated path carries zero regression risk and only the previously-silent path is new. A non-owner assignee reads through `streamReadRouter` with `GOVERNOR` preference; `NEAREST` would be wrong because it also forwards on an EMPTY read, which for a tail-polling consumer means a forward on nearly every poll. **A latent duplicate generator was fixed on the way:** the poll loop rescheduled EAGERLY, so a second poll could read from a cursor the first had not yet advanced and re-deliver the same events — harmless while every read was a synchronous local one, fatal once a read takes a network round trip. The loop is now serial (next poll scheduled only when the current cycle's read AND delivery complete). **The observability endpoint changed with the model rather than becoming the next claims-vs-reality defect:** `unconsumedOwnedPartitions` would have asserted a gap that no longer exists, so it is replaced by `unassignedPartitions` (partitions no node can consume because the slice is ACTIVE nowhere — the only remaining true gap); `partitionAssignments` is added, naming the consumer and owner node per partition so one call to ANY node answers "who consumes partition 3, and does it read locally"; and `eventTypePublishable` now returns **null rather than false** on a node that cannot know, since the probe needs the slice's own codec registry — `false` there was a fabricated value, not a degenerate one. **Quad closed:** the endpoint shipped in #488 at 1-of-4 (REST only, in neither the management-API reference nor the CLI); it now has both, plus `aether streams consumers`, with an explicit dormant-slot decision recorded for the dashboard. **Determinism proof, not a lucky one:** the new forge arm gets its guarantee from the pigeonhole — a 5-partition stream deployed at `instances = 1`, so the single host owns at most one partition and at least four MUST be read through their owners; a 1-partition stream at `instances = 1` would have exercised the interesting case only 4 times in 5. The arm asserts it really landed in the uncovered configuration (the runtime's own diagnostic must report forwarding) so a co-located run fails loudly instead of passing for free, and the unit-level non-vacuity arm shows the same subscription against the LOCAL reader delivering nothing. `DeclarativeStreamConsumerTest` keeps the co-located control on the same new stream at `instances = 5`, so a change that fixes the uncovered case by breaking the co-located one cannot pass; it also moved off port band 14000, which it silently shared with `StreamOwnerFailoverTest` while being absent from `TEST_PORT_ALLOCATION.md` entirely. **Guarantee (restated honestly):** at-least-once delivery per partition, conditional on the slice being ACTIVE on at least one live node. Duplicates arise from `RETRY` redelivery, from the reconcile-tick window during an ownership or placement change (old and new assignee may both deliver), and from resuming at the last checkpoint (≤1000 events or ≤30s) rather than the last delivered offset after an ungraceful move — a graceful detach flushes the exact cursor. NOT effectively-once: there is no fencing token on delivery, and two transiently-divergent assignment views can both deliver and both write the cursor, last write winning. Delivery is zero only when the slice is ACTIVE nowhere, and that is reported, not silent. No new background handles (#499): the reconcile tick is already in `periodicTasks`, poll futures are already retained and cancelled on unsubscribe/close, and an in-flight forwarded read at stop resolves into a cancelled state the existing guards drop. The `AetherNode` `streamReadRouter` block moved above the consumer wiring AS ONE UNIT — only `committedStreamOwnerSource` and `linearizableBarrier` were created later and both depend solely on far-earlier state, so no late-binding seam was needed.
+- **Dead Management-API routes: every declared route is now served or absent, and a structural guard keeps it that way (#525).** Six routes were declared in `ManagementRoute`, consumed by CLI and dashboard, and served by nobody — the sweep also turned up two more the issue's own test could not see. Dispositions were made individually, not batched. `ROUTES_LIST` (`/api/routes`) is **implemented**: it was fetched live by the dashboard's routes panel (`stores/deployments.js` `refreshRoutes`) and offered as `aether routes`, both landing on a 404; `HttpRouteRegistry` is already cluster-wide (each `RouteInfo` carries the nodes serving it), so it registers against the existing builder that `/api/nodes/routes` uses. `WORKERS_LIST` is **implemented** against committed consensus state — the premise that the worker runtime had been removed was **false**: `AetherNode.activateWorkerMode` is live, `WorkerConfig`/`WorkerConfigLoader` parse a real `[worker]` section, and `GovernorAnnouncementValue` is the authoritative cluster-visible worker roster, so `/api/workers` now projects it per-worker (node, community, governor, `isGovernor`) where `/api/cluster/governors` projects the same announcements per-community; dissolved communities are excluded. `WORKERS_HEALTH` and `WORKERS_ENDPOINTS` **cannot** be built — no per-worker health fact is replicated and only the *governor's* `tcpAddress` reaches consensus — so they answer an honest **501 naming the missing capability**, and their CLI subcommands were removed rather than left advertising what they cannot deliver. `AUDIT_COMMANDS_LIST` **removed**: both `AuditLog` classes are pure SLF4J emitters with no queryable store, and the documented backing (`DirectLifecycleWriter`, `CommandReceived`/`CommandApplied`) exists nowhere in the tree — the endpoint's query parameters, response shape and `curl` examples were documentation for code that was never written; the only persisted audit data is API-key lifecycle, already served by `/api/cluster/keys/audit`. **The issue undercounted**: `CLUSTER_MIGRATE` and `CLUSTER_MIGRATE_PLAN` are dead too. They evaded the "is the enum constant referenced under `aether/node/src/main`?" test because they *are* referenced — in `ManagementRoutePermissions`, which grants authorization for a handler that does not exist — while `aether cluster migrate --target … --zone …` prompts for destructive confirmation and POSTs into the void; both now answer 501. The real count was 179 of 189 served, not 181 of 188. The durable artifact is `ManagementRouteCoverageTest`, which asserts EVERY `ManagementRoute` is either registered through the single `ManagementRoutes.route(...)` funnel or explicitly exempted as claimed by the `/repository/` prefix handler; it keys on handler registration rather than grep precisely so a permissions-table mention cannot satisfy it, an anti-cheat test verifies exempted routes really do sit under the claiming prefix, and a third test proves the scanner detects a known registration (a guard that quietly scans nothing always passes). It caught a real false positive during development — an indirect registration helper — which is why `NotImplementedRoutes` spells each registration out literally. (node 747, cli 616, `jbct:check` 0 format issues / 0 lint errors across aether-management-api, node, cli.)
+- **Applications can publish their own types again — resource provisioning is now scoped to the deployed slice's codec (#526), and codec resolution is deterministic (#529).** Triage reclassified #526 from "a stream bug" to a **resource-provisioning-boundary bug with three symptom families**: `StreamPublisherFactory`/`StreamAccessFactory`, `CacheInterceptorFactory` (`DISTRIBUTED`/`TIERED`) and `IdempotencyInterceptorFactory` all read `Serializer`/`Deserializer` from the same `ProvisioningContext`, and all three received the **node-wide** codec, which knows framework types and nothing an application declares. `publisher.publish(new OrderPlaced(...))` therefore threw `No codec registered for class` before routing was ever reached, and a distributed cache could not hold an app-typed method result. Root cause: `SpiResourceProvider.enrichWithRuntimeExtensions` applied node-wide runtime extensions **unconditionally and last**, overwriting anything the slice supplied. Runtime extensions are now DEFAULTS layered *under* caller-supplied values. An exhaustive audit of all 16 SPI-registered extension types established the guard is provably inert everywhere else: only two extension types were ever caller-supplied (`ConfigurationProvider` and the sliceId `String`, both from `SliceLoadingContext`), neither is SPI-registered, so the intersection is empty. The slice's codec cannot exist at provisioning time — `Slice.codec(parent)` is an instance method and resources are provisioned *inside* the generated factory, before the slice object exists — so a single-assignment `DeferredSliceCodec` is handed to the resources and bound by the loader (`DependencyResolver.resolvedSlice`) the moment the instance is created, still strictly before `start()` and before the slice is invocable. Use before binding throws, naming the slice and the type; there is no fallback, because a substituted codec is the silent-wrong-state class one layer down. **Framework-typed streams are proven identical, not merely working**: the slice codec is a CHILD of the node codec and inherits every framework registration verbatim, asserted as byte-for-byte equal output for `String`, `List` and mixed containers, plus cross-codec decode. No codegen change, so `ENVELOPE_FORMAT_VERSION` stays 1000 under the GA freeze. Separately, `SliceCodec.findBySupertype` returned the **first assignable** entry from an unordered `Map.copyOf` and cached it, so which codec won was arbitrary, sticky for the process lifetime, and could differ between nodes — a cross-node encoding mismatch producing undecodable payloads rather than a clean error. Resolution is now the most-specific assignable supertype, with one documented tie-break (a class candidate beats unrelated interface candidates; Java's single-inheritance chain leaves at most one minimal class) and a loud failure naming the type and every competing candidate when genuinely ambiguous; the documented `ImmutableCollections$ListN -> List` case (which #488's batch path depends on) is covered by explicit `List`/`Set`/`Map` round-trips. The operator surface was corrected to match: `eventTypePublishable` on `/api/streams/declarative-consumers` consulted the node codec and warned "this consumer will receive nothing until #526 lands" — after the fix that alarm would have been false for exactly the case that now works, so it now consults the slice's own codec via the new `SliceBridge.sliceCodec()`. **Corpus gap closed**: all five stream blueprints were `String`-typed, which is why nothing caught this; `test-stream-consumer` gains an independent `OrderPlaced`-typed stream (publisher, declarative consumer, HTTP surface) alongside its untouched `String` stream, so a regression in either mechanism cannot mask the other. Both fixes are mutation-verified — restoring the first-match loop makes `Leaf` encode as `Base` and `MarkedRoot` as `Marker` with the ambiguity case throwing nothing; restoring the unconditional overwrite fails the precedence tests. (serialization-api 30, slice-api 294, resource-api 83, slice 718, aether-stream 641, node 735 — all green.)
+- **`@PartitionKey` now actually routes — a shipped annotation that had never been read by the slice-processor (#507).** `aether/slice-api`'s `@PartitionKey` documented per-key partition routing and the whole runtime honored it (`StreamPublisherFactory`/`StreamAccessFactory` read `ProvisioningContext.keyExtractor()`; `DefaultStreamPublisher`/`PartitionedStreamAccess` hash it with `ReplicaPlacement.stableHash64`, cross-JVM-stable per `StablePartitionRoutingTest`) — but the annotation processor never looked at it: zero reads across `jbct/slice-processor/src/main`. Every publish therefore round-robined, so ANY multi-partition stream silently lost per-key ordering while its own annotation advertised the opposite. Shipped example `examples/notification-hub` was live proof: `NotificationEvent(@PartitionKey String senderId, …)` with `partitions = 4`, sender ordering claimed and not delivered. The processor now resolves the event type's `@PartitionKey` component and appends `.withKeyExtractor((Fn1<K, T>) T::component)` to the generated provisioning context, so the extractor the runtime was already looking for is finally supplied — the example gets keyed routing with zero source changes. Scoped to `StreamPublisher<T>`/`StreamAccess<T>`: topic `Publisher<T>` is unpartitioned (`PublisherFactory` ignores the extractor), so emitting one there would advertise routing that does not happen. Two `@PartitionKey` components on one record is now a compile error naming the type and both components — silently taking the first would make partitioning depend on declaration order, exactly the silent-wrong-state class this series is burning down. A primitive-typed key is emitted boxed (`Fn1`'s type argument rejects primitives; mutation-verified — un-boxing fails the generated compile). `@Key` and `@PartitionKey` now share ONE component resolver (`AnnotatedComponent`) instead of two copies that can drift. Streams with no `@PartitionKey`, topic publishers, and the #429 `test-stream-multipart` fixture (event type is `String`, not a record — round-robin distribution assertions untouched) are byte-for-byte identical to before. Emitted under the GA envelope freeze, so `ENVELOPE_FORMAT_VERSION` stays 1000 and the runtime accept-set is unchanged (recorded in `envelope-versioning.md`). (slice-processor 292/0 incl. 7 new `@PartitionKey` tests; slice-processor-tests 43/0; notification-hub clean build.)
+- **A `security_mode = "NONE"` cluster can receive artifacts again — the two half-overlapping dev switches are unified (#520).** Live-caught on a real Hetzner cluster: the documented dev/eval posture (`[source.X.node_config.app-http] security_mode = "NONE"`, required so the bootstrap's own cluster-config write isn't 401-rejected) turns app-HTTP auth OFF — every caller is `anonymous`/`VIEWER` and API keys are ignored, `whoami` reporting `authenticated: false` even for the bootstrap-minted ADMIN key — while the artifact-publication gate in `MavenProtocolRoutes` consulted a *different* switch entirely (`AETHER_INSECURE_DEV_MODE`) and hard-required OPERATOR/ADMIN. The role was therefore structurally unholdable and `aether artifacts push` 401'd: a cluster you could provision but not deploy to. The integration harness never caught it because its compose env sets BOTH switches; only the cold bootstrap path sets one. The gate now admits a push for an authenticated OPERATOR/ADMIN **or** the dev-mode env **or** an app-HTTP security mode of NONE, reading the node's *effective* posture (the same `securityEnabled` value `ManagementServer` already receives from `AetherNode` — and `AppHttpConfig.securityEnabled()` is exactly `securityMode != NONE`, so the route cannot drift from the server it belongs to). `API_KEY`/`JWT` modes are unchanged and still reject anonymous and VIEWER. Every unauthenticated publish emits a WARN naming the artifact path, the admitting posture, and the remediation — a real operator push is matched first and never trips it. (node: 18 gate tests incl. warning-present *and* warning-absent assertions via a capturing appender; 269 green across `org.pragmatica.aether.api.**`.) **Live-verified** on a fresh 5×cpx32 Hetzner cluster: `whoami` → `anonymous`/`VIEWER`/`authenticated:false`, `artifacts push` → *All artifacts pushed successfully*, slice ACTIVE/HEALTHY on 3 nodes, `curl /api/hello/World` → `{"greeting":"Hello, World!"}` — the getting-started leg-4 acceptance ("a cold user reaches a served hello from the cloud cluster") met end-to-end for the first time.
+- **`aether cluster destroy` no longer strands paid VMs, and no longer reports success when it does (#521) — root cause was a one-word section-name drift with a seven-month blast radius.** `BootstrapPhaseProvision` mined the bootstrap TOML for a **plural** `[sources.<name>]` header while the canonical section is **singular** `[source.<name>]` (`ClusterBootstrapConfigParser.SOURCE_PREFIX`), so `indexOf` missed on every real config and **every** persisted `SourceCleanupHandle` since that code shipped carried `credentialEnvVars = {}` (verified: all five clusters on the dev machine, back to 2026-07-11 — #439's handle-first cleanup guarantee has been dead on arrival for this path the whole time). Downstream, an empty credential map meant the missing-env-var loop never executed, so resolution reported **success** carrying zero credentials and the provider then failed with `Cloud credentials missing for provider 'hetzner': set HCLOUD_TOKEN` — naming an env var that *was* set and sending the operator to look in the wrong place. Three fixes, at the matching level: (1) the CLI now derives the stanza header from the parser's own `SOURCE_PREFIX` constant (made `public`) instead of re-spelling a literal — killing the drift class rather than the typo, and the new anchored regex also tolerates leading whitespace the old `indexOf` silently didn't; (2) a handle whose `credentialEnvVars` names no api-token env var is informationally equivalent to no handle and now falls back to raw provider env **loudly**, as the same demoted last resort, so resources are never stranded — a handle that *does* name an env var stays authoritative and an unset one still hard-fails, preserving #439; (3) registry + exit-code honesty — a failed cloud cleanup now KEEPS the registry entry (the operator's only handle on a cluster whose VMs may still be billing) and returns `ExitCode.CLEANUP_FAILED`, printing the literal retry command, while `--keep-resources` remains the acknowledged skip-and-succeed path; an aborted `cluster bootstrap` (the interactive prompt reading EOF in a non-interactive shell — indistinguishable from success in CI) now also exits non-zero. `ProviderResolver` additionally fails loud rather than returning success on an empty required-credential set. The #439 fixture that had *invented* the plural spelling — and so agreed with the bug — is rebuilt from the parser's constant and the real repo cluster TOML, with a non-empty-credential-mapping assertion; both fixes are mutation-verified (restoring the plural literal fails 8 tests; removing the resolver guard reproduces the incident's exact error string). (aether-config 312, cli 559.) **Live-verified** on a fresh Hetzner cluster: the new state file carries `"credentialEnvVars": {"api_token": "HCLOUD_TOKEN", …}` where every previously-bootstrapped cluster on the dev machine has `{}`, with zero fallback warnings (so the *mining* path was exercised, not the new safety net); an aborted attempt exercised failure-path auto-cleanup (all 5 VMs reaped, no strays); and `cluster destroy` exited 0 having actually terminated all five VMs with `Registry entry: removed`.
+- **Installers: unpinned installs no longer silently deliver `1.0.0-alpha`, and upgrades across layout generations leave no broken binstubs (#510, #512).** Both installers' numeric-field sort treated `1.0.0-alpha`/`-rc1`/`-rc2` as ties (alpha won); resolution is now an explicit release rank — GA > `rc-N` > `beta` > `alpha`, numeric-aware (`rc10` > `rc9`), always excluding the moving `*-candidate` tags — and a requested-but-nonexistent version fails LOUD (exit 1 naming the releases list), never a silent fallback. `--version`/`--version=` now parse on all three scripts, with root `install.sh` gaining per-tool `--jbct-version`/`--aether-version` passthrough (the tools version independently). Cross-generation hygiene (#512): install/upgrade now purge ALL launcher scripts + libs of the tool regardless of prior layout (jar-mode ↔ archive-mode ↔ mixed — the dev-machine repro was a `bin/aether-forge` expecting a jar no generation ever placed), wrapper writes are `rm -f`-guarded so they can't write *through* a stale symlink (real bug found during proof), and every generated launcher validates its jar/dist target before `exec` with a "run install.sh again" message instead of a bare `Unable to access jarfile`. Also fixed: `setup_path`'s duplicate-guard grepped `"AETHER"` but inserts `# Aether` (case mismatch — every reinstall appended another PATH block to the user's shell rc); both guards now match the export line's own content. Proven via 9-case resolution fixture, synthetic mixed-generation sandbox upgrades (zero stale binstubs), and HOME-sandboxed idempotent-PATH runs.
+- **`jbct init` scaffold passes its own gates and the first forge run serves traffic (#511, #513, #515) — with a structural drift gate so this class cannot recur.** Templates re-formatted/lint-cleaned to rc3-canonical (#511: the scaffold failed its own `format-check` at first `run-forge.sh`). `run-forge.sh` deploys by artifact coordinates (`<g>:<a>:<v>:blueprint`) instead of the dropped file-path form, stale `generate-blueprint.sh`/`blueprint.toml` remnants removed, and ForgeServer now exits non-zero when its startup `--blueprint` deploy fails instead of staying up healthy-looking over an empty cluster (#513). `deploy-test.sh`/`deploy-prod.sh` regenerated against the real CLI (`aether artifacts push` + `aether blueprints deploy --wait`; the old script invoked nonexistent `aether artifact push --env`), `aether.toml` points at the new bootstrap-config reference, and forge homes node data under `$AETHER_HOME/forge-data` — stream WAL crash-durable in local dev, one loud line instead of a read-only `/data` WARN wall with silent WAL-off (#515; production node `/data/aether` default untouched). The drift gate is two-stage: a fast jbct-cli test asserting generated sources pass current format+lint (proven to fail on injected template drift) and a Heavy forge-tests E2E driving `jbct init` → scaffold build → coords deploy → live `{"greeting":"Hello, World!"}` (plus a file-path-rejection arm). Riders: `jbct init --help` un-broken (a custom `--version` option silently disabled picocli's whole help/version mixin; version pinning stays via the per-tool flags), dead hidden `--slice` flag removed (`--no-slice` is the real opt-out), and jbct-lint RET-01/PAT-03 now exempt TEST_CLASS files so `jbct check` on a pristine scaffold reports zero errors (non-test code still fires both rules).
+- **Silent-wrong-state reconciliation sweep — seven wired-or-removed dispositions across health, streams, config, and generated manifests (2026-07-24 pass; deferred members filed as #517/#518/#519).** (1) Dead operator escape hatch REMOVED: `ReconcilerRulesConfig`/`RuleSpec` documented `[reconciler.rules.<rule>] enforce=false` for a `LifecycleReconciler` that no longer exists — never parsed, zero consumers; an operator disabling a destructive rule was silently ignored. (2) Quorum honesty WIRED: node `StatusRoutes` computed `hasQuorum` as "≥2 nodes"/"≥1 peer" (a 2-of-5 minority reported quorum UP) and `cluster.quorate` as `size >= size/2+1` (always true); all three surfaces now share one derivation off the consensus layer's own `quorumLossSnapshot()` (fallback: majority over counted core members), so health, readiness, and status agree — and honest quorum only tightens CLI bootstrap formation (verified consumer audit). (3) Stream DELETE honesty WIRED: `destroyStream` failures propagated as non-2xx instead of `.recover`-swallowed always-`"deleted"`. (4) Default Docker image fixed: `ghcr.io/siy/aether-node:latest` → pinned `ghcr.io/pragmaticalabs/aether-node:1.0.0-rc3`, and (5) `KubernetesGenerator` now references `DockerConfig.DEFAULT_IMAGE` (one image constant; the generator emitted its own stale copy — aether-setup gained its first test pinning this). (6) Bootstrap `provider` typos fail LOUD: `ClusterBootstrapConfigParser` silently mapped an invalid provider string to `Option.empty()` (dropping cloud-provider identity); present-but-invalid now yields a parse error naming the bad value and valid providers, absent stays legitimate for ssh/forge/docker sources. (7) `management-api.md` corrected where it documented the old fake quorum semantics.
+- **`blueprints deploy --wait` no longer reports a 300s timeout on a deployment that succeeded (#522).** Live-caught on a real 5-node Hetzner cluster during the #520/#521 re-validation: `--wait` printed `Deployment status: PENDING` for the full timeout and then failed, while the same cluster simultaneously reported the slice `ACTIVE`/`HEALTHY` on 3 nodes, carried `DEPLOYMENT_COMPLETED` in its event log, and served real traffic. Root cause was not a lost or unparseable state (the #438 suspicion): the gate **never queried a deployment-status surface at all**. It fetched `GET /api/slices` and substring-matched the user-supplied *blueprint* coordinates (`org.example:hello:1.0.0-SNAPSHOT`) against the response, which only ever carries the *derived slice* artifacts (`org.example:hello-hello-world:1.0.0-SNAPSHOT`) — a match that cannot occur, so the polled "status" was a hardcoded literal, not a reading. The same check was equally broken the other way: had the substring matched, it would have declared success the instant the coordinates appeared in the JSON in **any** state, including `LOADING` or `FAILED`. The gate now polls the purpose-built `GET /api/blueprints/status/{id}` and completes only on `overallStatus == DEPLOYED`, taking the blueprint id from the deploy response (a blueprint declares its own id, so deriving it from the requested coordinates was a guess) and failing loudly rather than waiting on an unidentified deployment if that id is absent. Because the node computes `overallStatus` from the same replicated `DeploymentMap` that backs `aether slices status`, the two surfaces are now structurally unable to disagree — no second source of truth was introduced, and no terminal state needed to be written. `PENDING`/`IN_PROGRESS`/`PARTIAL`/unreadable all keep polling, so a genuinely stuck or failed deployment still exits `TIMEOUT` (2); the status is now also sampled once before the deadline is examined, so an already-finished deployment is observed even at zero remaining time. (cli 580 green incl. 21 new both-direction tests replaying the live payloads; aether-deployment 3 new tests pinning the shared `DeploymentMap` derivation; aether-management-api round-trip test proving the artifact-shaped id's percent-encoded colons survive assemble→match — Netty's path decoder verified to return them intact.) **Not yet re-run against a live cluster.**
+- **`aether scale --wait` and the rolling-upgrade drain gate read real status too — the #522 sibling sweep.** A sweep of every CLI wait gate for the same habit ("synthesize a status from a substring instead of reading the status field") found two more. (1) `scale --wait` counted occurrences of the artifact COORDINATES in the raw `GET /api/slices` body — but `ClusterSlicesResponse` names each artifact exactly once and its per-instance entries carry only `nodeId`/`state`, so the count was pinned at **1** no matter how many instances were running: `--wait -n 2` or higher timed out on a scale that had already succeeded (#522's exact failure mode), while `--wait -n 1` reported success immediately without reading instance state at all, including for a slice whose only instance was `FAILED`. It now counts instances the cluster reports `ACTIVE` for the exact requested coordinates, and an unreadable slice list stays below every legal target so the gate keeps waiting rather than passing. (2) `ClusterHttpClient.waitForDrainComplete` — which `WaveExecutor` gates rolling-upgrade waves on in four places — searched the whole `/api/nodes/lifecycle/{id}` body for `DECOMMISSIONED`; it now reads the `state` field, so a node still `DRAINING` cannot be reported as drained by any other field mentioning the token, and a wave cannot restart a node that is still shedding traffic. Both readings live in testable homes next to the existing `LiveNodesFilter` (`ScaleWait`, `ClusterHttpClient.isDecommissioned`) with 17 tests including the false-success arms; the scale fix is mutation-verified (dropping the ACTIVE gate fails 2 tests). Surveyed and left alone as correct: `ClusterDrainCommand.pollUntilDecommissioned` and `ClusterDestroyCommand.waitForDecommissioned` already parse `state`, and `waitForNodeReady` polls a real `/health/ready`. One adjacent non-gate finding filed rather than fixed: `ClusterRotateKeyCommand.extractFirstActiveKeyId` checks document-wide that *some* key is `ACTIVE` and then returns the *first* `keyId` in the document, which can be a revoked one.
+- **Stream forward-retry unified across all three publish-forward sites (#485, #506).** `StreamWriteRouter` retried transient forward failures (`RemotePublishRetryable`, the owner-config-lag race) up to 3 attempts with a 150ms scheduled backoff — but `DefaultStreamPublisher.forwardToOwner` (#485) and `PartitionedStreamAccess`'s A6 owner-routed publish (#506, found by the #485 pass) forwarded single-shot, surfacing transient owner-materialization failures to the app. The retry state machine now lives in ONE shared `StreamForwardRetry` helper (thunk-driven; 3 attempts / 150ms `SharedScheduler` backoff / `RemotePublishRetryable`-only / propagate-on-permanent-or-exhaustion) routed through all three sites — eliminating the divergence class that produced these tickets (a fix landing on one copy and lagging the others). `StreamWriteRouter`'s observable behavior is unchanged (its 6 routing/retry tests pass unmodified); fail-soft bootstrap/local arms in `PartitionedStreamAccess` untouched. 9 scripted-client retry tests across the three sites; module suite 635/0; all five Heavy forge suites green including both owner-failover gates (end-to-end hot-path proof). Remaining partition-selection gap tracked as #507.
+- **METRICS-lane community-metrics broadcasts no longer throw `No codec registered` (#492).** `CommunityMetricsSnapshot` (+ nested `PerSliceMetrics`/`PerMethodMetrics`) rides the core QUIC METRICS lane, but its generated codecs were registered only in `WorkerCodecs` — an **orphaned** assembly with zero consumers (remnant of the removed worker runtime) — so every broadcast from a core node failed in `writeToStream` (44× per forge failover run). The `aether.worker.metrics` codec aggregator is now registered in `NodeCodecs` (the only live registry), with a round-trip regression test through the production codec assembly. Sweep result per the ticket: the other four worker wired types (heartbeat/mutation/bootstrap/network) have no live traffic on the core mesh; `WorkerCodecs` dead-code disposition tracked separately.
+- **Stream RF-restoration after owner-kill now converges — the #491-batch residual is closed (#499).** The real defect was a FIRE-ONCE backfill-completion ack: a replacement replica promotes CAUGHT_UP within milliseconds of its transport Hello — before its membership view populates — so the one-shot #336 `ReplicateAck` resolved no HRW owner and was silently skipped; on a write-idle partition nothing ever re-sent it, freezing the owner's replicas-view at `SYNCING@-1` over **fully-replicated data** (replication itself had rebuilt correctly — the deadlock was registry visibility, which also gates `convergedWithRfRestored` and every operator surface reading the replicas-view). `PartitionBackfill#reverifyNoOp` now re-sends the idempotent completion ack (interval-quiesced, no-op on the owner when already applied), so a lost one-shot ack self-heals under every loss mode. The ticket's original "empty HRW owner cannot catch up (watermark -1)" mechanism was DISPROVEN by per-correlation-id instrumented reproduces — that loop belonged to the killed node's zombie scheduler (below) logging into the shared forge console. Acceptance: `StreamOwnerFailoverPinnedTest` re-enabled as the permanent HARD gate and converged 3× consecutively (lossless reads phases 1–8 + RF-restoration phase 9).
+- **A stopped node's periodic tasks no longer outlive it (#499, audit #501).** `AetherNode` armed 9 fixed-rate tasks on the JVM-global `SharedScheduler` and discarded every `ScheduledFuture` — `stop()` cancelled none of them, so a killed in-JVM node's backfill redrive kept firing forever against torn-down state (wiped rings, reset PeerStates), fabricating a convincing RF-restoration deadlock in the forge console and misdirecting the #499/#498 investigations. All 9 futures are now retained (`periodicTasks` record component) and cancelled first in `stop()`; the phase-9 harness additionally dumps every live node's self-tagged replica view on convergence timeout, so this failure class can never again die blind. Repo-wide audit of the remaining ~25 `scheduleAtFixedRate` call sites: #501 (rc4).
+- **AwsClient: ELBv2 protocol corrected and provisioning-path hangs eliminated (#483) — caught by the LocalStack contract suite's first CI activation.** Two real defects: ELBv2 register/deregister/target-health spoke JSON+`X-Amz-Target` to a Query/XML-protocol service (now form-encoded Action/Version requests with XML response parsing; SecretsManager stays JSON); and `instanceStatus` hung 90 s on any instance lookup — it filtered by a nonexistent `tag:instance-id`, the empty reservation set NPE'd inside a `Promise.map` mapper, and an in-mapper throw leaves the promise unresolved forever (core-library behavior, tracked as its own design question). Fixes: native `describeInstancesById`, null-safe response DTOs, non-throwing mappers with typed causes, and a 30 s `HttpRequest` timeout on every AWS request as the structural no-hang bound. The LocalStack suite is now **10/10 green and blocking in CI** (docker-gated, opt-in flag removed; compute tests dropped from 90 s hangs to ~1.6 s). Fidelity correction in RFC-0016 §4.3: ELBv2 is LocalStack-**Pro**-only — Community asserts the bounded-typed-failure property; the happy path is unit-guarded and rides the Pro/live smoke.
+- **Bootstrap SSH keys are cluster-scoped and never account-guessed (RFC-0016 W3, #444 partial).** Keys upload as `aether-bootstrap-<cluster>`, and the Hetzner replacement-provisioning lookup filters on that cluster's prefix derived from the persisted cluster name — the 3B account-wide bare-prefix fallback (which matched every cluster on the account) is deleted; an unresolvable cluster name fails loud with no guessing, never broad-matching. No dual-accept of old bare names (no pre-rc3 clusters exist, per the Q1 ruling). The #444 remainder (firewall references, labels policy, exact-id matching to close the nested-cluster-name prefix edge) is rescoped on the issue. (environment-hetzner 72/0, incl. cross-cluster isolation test.)
+- **A failed bootstrap can no longer strand paid resources because cleanup resolved credentials differently than provisioning (#439).** Every cloud cleanup path (VM reap and SSH-key reap — the `CreatedResource` switch is exhaustive and was verified per-variant) now resolves credentials handle-first via the persisted `SourceCleanupHandle.credentialEnvVars`; both raw-env fallbacks are demoted to loud last-resorts reached only when no handle exists. Regression-proven on the exact 2026-07-11 incident shape: timeout-triggered cleanup with a non-default `HCLOUD_TOKEN_PROD` reaps the VM and the SSH key from the prod token while `HCLOUD_TOKEN` is asserted never read. (cli 538/0.)
+- **A `[source.<provider>.spot]` sub-table on a provider without an implemented spot arm now fails validation loudly (RFC-0016 W10, epic #463).** PF-16 generalized from its Hetzner-only check to a data-driven unsupported-set (`hetzner`: no spot product; `gcp`/`azure`: client arm pending, named per provider) — previously a validated spot role on gcp/azure would have silently provisioned on-demand. AWS, carrying the only real spot arm since W1, is the sole provider accepting spot sub-tables today; docker was already rejected by PF-15 (spot is cloud-only). Extending a future arm = deleting one map entry.
+- **Cloud (Hetzner): spec-level `[source.<provider>.<role>] image` (VM boot image / snapshot id) now reaches provision requests for both bootstrap seeds and CTM auto-heal replacements (#459).** The field was previously dropped at parse (`RoleSubTable` had no `image`), so the documented snapshot mechanism (`vm-snapshot.md`) had no effect and every VM booted the stock Ubuntu image — snapshot-accelerated provisioning (30–120s saved per VM) was unreachable. The field is now parsed and threaded through the seed path (`ProviderResolver` → `[cloud.compute] image`) and the node overlay (`BootstrapOverlayGenerator`), so replacements inherit the snapshot across leader generations via the persisted profile — the same mechanism as `ssh_key_ids`; the provider's silent hardcoded `ubuntu-22.04` default is demoted to a provision-time loud WARN fallback (kept safe — a stock image still boots — deliberately unlike `server_type`'s fail-loud from #442). Precedence: role `image` > `[cloud.compute] image` > loud default; existing TOMLs that set `[cloud.compute] image` directly behave unchanged. Unit-tested end-to-end across parser/overlay/resolver/provider (aether-config 296/0, cli 531/0, environment-hetzner 68/0, jbct:check clean); cloud verification (snapshot-booted cluster, `hcloud` image-id assertion) rides the first rc3 cloud run. Provider-agnostic generalization is RFC-0016 (epic #463).
+- **Deployment state now survives leader failover — `Version` persisted in canonical parseable form (#438).** `DeploymentManagerImpl.addDeploymentCommand` stored `oldVersion`/`newVersion` via the record's default `toString()` (`Version[major=…]`), which `Version.version()` cannot re-parse; on every leader change, the new leader's `restoreDeployment` parse failed and an in-flight deployment was silently dropped from `activeDeployments`. Versions are now persisted via the canonical `withQualifier()` format; round-trip and rollback-path tests guard the writer. Adjacent `Version`-bearing values (`SliceTargetValue`, `VersionRoutingValue`) use typed `@Codec` fields and were verified unaffected — the defect class is confined to this one string round-trip. (aether-invoke 208/0.)
+- **pg-codegen DDL analyzer no longer mis-parses `$tag$`-quoted or `;`-containing function/trigger bodies (#408).** `postgres.peg`'s `DollarString` matched only untagged `$$…$$` and `RestOfStatement` was `;`-blind; a tagged dollar-quoted `CREATE FUNCTION` with internal `;` was mis-split at compile time. `DollarString` now matches tagged forms via backreference and `RestOfStatement` skips string/dollar spans; `$1` positional params verified unaffected. Compile-time path only — the runtime migration splitter was never affected. (pg-parser 307/0, pg-schema 112/0.)
+- **H2 migrations route through the dialect-aware statement splitter (#409).** `dialectFor(H2)` previously fell back to naive `split(";")`, mis-splitting `;`-in-literal statements. H2 now has a standard lexical `DialectSpec` (`;` terminator, `ddlTransactional=true`). SQLITE deliberately remains on the naive fallback: its `CREATE TRIGGER…BEGIN…END;` needs `END;`-aware machinery the line-anchored block primitive doesn't provide — documented as an accepted limitation until demand appears. (sql-splitter 170/0, aether-deployment 749/0.)
+- **Integration harness: a hard-aborted sweep can no longer exit 0, the last unbounded poll loop is bounded, and transient publish flakes retry (#460).** Suites skipped after a `restore_cluster_baseline` unrecoverable verdict are now tallied as a distinct `skipped-unrecoverable` class ([ABORT] rows, non-zero exit) instead of blending into benign skips; the `log-follower` respawn loops (the fork-leak structure behind the 5.5 h silent stall) gained a wall-clock lifetime ceiling (`AETHER_LOG_FOLLOWER_MAX_LIFETIME`, default 7200 s) — every other post-restore wait path was verified already bounded by the rc2 belt; all three 08-resources publish loops retry transient transport failures (bounded, assertion failures never masked).
+- **Integration harness: CLI/node-image version-parity preflight (#440).** `run-tests.sh` now asserts `aether --version` matches the node artifact's `Implementation-Version` before any bootstrap, loud-aborting on mismatch (the class that burned a full provision cycle when a stale `~/.aether/bin` rc1 CLI shadowed the freshly built one); `AETHER_BIN` pins an explicit CLI (still checked) and the preflight banner logs which binary resolved. Verified live: the guard catches the stale-rc2-CLI-vs-rc3-jar mismatch present on the dev machine today.
+- **CI: the forge-tests PR job is no longer chronically red — five CPU-heavy multi-node in-JVM probes tagged `Heavy` and excluded from the GitHub-runner job only (#458).** Root-caused by log forensics: red since 2026-06-19 — the day the first untagged heavy probe landed — from CPU starvation of 5-node in-JVM Ember clusters on 4-vCPU public runners (drifting signatures: Awaitility timeouts, a 30-min step wall, a strict all-appends-succeed assert failing under consensus contention), not a product regression. The existing `failsafe.excludedGroups=Heavy` mechanism (SliceDeploymentTest precedent) now covers `ScaleUpFiveToSevenProbeTest`, `ProvisioningRecoveryAfterFailureBurstProbeTest`, `StreamFanoutConsumerTest`, `StreamCrashDurabilityTest`, `OwnershipFenceBaselineTest`; verified the exclusion applies ONLY in ci.yml — probes keep running in local builds and the release lane. Two of the five also fail on a dev workstation and are under probe-vs-product root-cause as #467.
+
+
+## [1.0.0-rc2] - 2026-07-16
 
 ### Fixed
 - **JBCT formatter/linter formatting fixes (#447).** Four cases: (1) import ordering now follows the book — `java → javax → org.pragmatica → third-party (alphabetical) → project`, statics last in the same grouping — enforced identically by lint (`JBCT-STY-06`) and the formatter through one shared `ImportGroups` classifier in jbct-core (the ordering was previously defined twice, divergently, with the book contradicted by both). (2) A fluent chain whose head call wraps its arguments no longer glues the first follow-up call to the closing-paren line and mis-anchors the remaining segments at the argument column — the ≥2-follow-up special case (`FlowPrinter`) and its `postBrokenArgsAnchor` machinery are removed, so the single-follow-up rule applies uniformly: break before the first follow-up, whole chain anchored at the head call's dot column. The `MultilineArguments.chainedWithArgs` golden fixture that canonized the glued layout is updated; new `WrappedArgsChain` fixture covers return and lambda-tail positions. (3) Statement-position chains — previously never broken regardless of length because `shouldBreakChain` was purely structural — now break when their flat rendering would exceed `maxLineLength` (short chains stay flat; new `StatementChains` fixture). (4) The never-read `alignChainedCalls`/`alignArguments`/`alignParameters` config keys are removed from `FormatterConfig`/TOML (alignment is unconditional; stale keys in user configs are silently ignored). First-ever tests for `CstImportOrderingRule` + unit tests for `ImportGroups`; jbct-core 28/0, jbct-format 65/0 (24 golden idempotency fixtures), jbct-lint 185/0. Existing formatted sources are re-flagged by `JBCT-STY-06` under the new order until the post-merge repo-wide reformat sweep (tracked on #447).
@@ -51,7 +3124,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Versioned slice routes carry version as metadata; mounted path composed at registration time (#198 §6.4)** — the `/v{N}/` segment is no longer baked into route paths during code generation. A generated versioned route now keeps its un-versioned path and carries `Route.version() = N`; the generated `routes()` composes the mounted path `{apiPrefix}/v{N}/{path}` at route-registration time via `Route.mountInPathMode(...)`, defaulting to **path mode** so the wire behavior is byte-for-byte identical to the previous baked form (proven by the in-JVM `SliceVersioningTest`, still 3/3). This lets the SAME compiled slice be exposed in either path mode or header mode as a deploy-time setting (header-mode dispatch is a separate next step). The generated `{Slice}Routes` gains a `versionRegistry()` override (`SliceVersionRegistry`: `apiPrefix`, declared version set, `defaultIfMissing` version, `requireVersionHeader`, per-version `deprecated`/`sunset`); the manifest gains per-route `route.N.version`. `RouteConfig` carries the per-handler version and leaves `prefix` empty for versioned slices (`apiPrefix` carries the base). Unversioned slices are unchanged. Generator output structure changed → slice-envelope format version bumped 1002 → 1003 (runtime accepts `{1000, 1001, 1002, 1003}`).
 - **Stream replication: two-knob durability model (`replicas` + `min-sync-replicas`, Kafka `min.insync.replicas` semantics) — #262.** `replicas` sets the replication factor; `min-sync-replicas` (counts the owner) makes a publish await `min-sync − 1` peer acks. Fixes a prior off-by-one that made synchronous app-stream replication unusable, wires `/api/streams/publish` to honour it, and adds a catch-up-before-serve owner-promotion gate. #262 stream failover convergence complete: reconcile-on-stream-config edge; promoted-owner watermark reseat + backfill ack; fresh-HRW-owner catch-up via peer-watermark probe; recovery appends adopt committed owner epoch (was Epoch.ZERO, fenced). Suite 02 fully green on real infra (replica-failover 9P/0F, lossless failover, RF restored).
 
-## [1.0.0-rc1] - Unreleased
+## [1.0.0-rc1] - 2026-06-13
 
 ### Added
 - **Cloud bootstrap zone fallback (multi-zone provisioning)** — a cloud `[source.X]` may now declare an ordered `zones = ["fsn1", "nbg1", "hel1"]` list; when a zone runs out of capacity (Hetzner `412 resource_unavailable` "error during placement"), the bootstrap PROVISION phase rotates to the next zone and retries that node instead of aborting the whole cluster. A per-role-group cursor means once a working zone is found, subsequent nodes start there and skip known-full zones (a cluster may legitimately span zones — desirable for resilience). Capacity failures are now a distinct `EnvironmentError.CapacityUnavailable` (mapped from the Hetzner `resource_unavailable` code), so the retry is scoped to genuine capacity exhaustion — auth/quota/other provision errors still fail fast without wasting attempts across zones. Backward-compatible: a single `zone = "..."` (no `zones`) behaves exactly as before (one attempt), and a source with neither uses the provider's default region. Auto-heal replacement provisioning (`provisionReplacement`) now zone-rotates too — see the #334 entry below.
@@ -105,7 +3178,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Codec registry naming: `codec.registry.suffix` annotation processor option (RC1, 2026-05-22)** — `CodecProcessor` (`integrations/serialization/codec-processor/.../CodecProcessor.java`) accepts a new `-Acodec.registry.suffix=<suffix>` option; `deriveRegistryName(packageName)` appends the suffix to the generated aggregator class name. Each module that contributes `@Codec` types to a shared package now declares a distinct suffix via `<compilerArgs><arg>-Acodec.registry.suffix=...</arg></compilerArgs>` in its `maven-compiler-plugin` configuration. The four modules contributing to `org.pragmatica.aether.slice` (slice, slice-api, node, aether-invoke) generate `SliceCodecsSlice` / `SliceCodecsSliceApi` / `SliceCodecsNode` / `SliceCodecsInvoke` respectively — each in its own classfile, no shade collision. Consumers (`NodeCodecs`, `WorkerCodecs`) reference all suffixed sub-registries explicitly. Without the suffix all four modules previously emitted `org.pragmatica.aether.slice.SliceCodecs.class` and `maven-shade-plugin` retained whichever entry it processed last — the surviving registry held a 1-element list with only `MethodNameCodec`, so cluster-network serializers failed with `IllegalArgumentException: No codec registered for class: org.pragmatica.aether.slice.ExecutionMode` whenever a slice published a `ScheduledTaskKey/Value` to KV via consensus.
 - **`system:cluster-events` moved from a node-local view to a replicated partition stream (#239)** — cluster events were previously materialized into a per-node KV/ring-buffer view (the rc1 `ClusterEventLogPublisher` rate-capped KV writer + `ClusterEventLogSweeper` GC + in-process `RingBuffer`); they are now produced into the real, partition-managed, **replicated** `system:cluster-events:1.0.0` stream over the off-heap partition transport. This gives cross-node event visibility (any node's `/api/events` reflects cluster-wide events, not just locally-observed ones). Emit is owner-gated — only the HRW owner of partition 0 produces each event, deduplicating across replicas — and the stream is replicated to all core nodes (RF=N — the replica set ≡ the core set). Retention is enforced by the stream's production `RetentionPolicy` (count/byte/age) rather than the old sweeper.
 - **`GET /api/events` `?sinceSeq=` cursor behavior change (#239, review C5)** — the events cursor is now an `Instant` in the namespaced-stream events API. For backward compatibility the legacy `?sinceSeq=` query parameter is still accepted, but its value is now reinterpreted as **epoch-milliseconds** and fed to the new `eventsSince(Instant)` path. An existing caller passing a small opaque sequence number therefore receives events since ~the Unix epoch (effectively "from the beginning") rather than since that sequence position. Operators should migrate to ISO-8601 / epoch-milli timestamps.
-- **Writes to `system:*` streams over HTTP are rejected with `405 Method Not Allowed` (#239)** — any mutating verb (`POST`/`PUT`/`PATCH`/`DELETE`) targeting a `system`-namespace stream is refused regardless of role, even when management security is disabled. The check runs ahead of the role/auth pipeline in `ManagementServer` and covers both the path-segment route shape and the legacy colon-form (`system:<stream>:<version>`, including URL-encoded). Reads of system streams are unaffected.
+- **Writes to `system:*` streams over HTTP are rejected with `405 Method Not Allowed` (#239)** — any mutating verb (`POST`/`PUT`/`PATCH`/`DELETE`) targeting a `system`-namespace stream is refused regardless of role, even when management security is disabled. The check runs ahead of the role/auth pipeline in `ManagementServer`: each identity-bearing write route (`STREAM_PUBLISH`/`STREAM_DELETE` and the catalog-form `STREAMS_PUBLISH`/`STREAMS_DELETE`/`STREAMS_GROUP_CREATE`/`STREAMS_GROUP_DELETE`) resolves its target via the same `ManagementRoute` route-match the real dispatch path uses (not a raw path-segment scan), reduces it to an engine key (via `ResourceAddress` for catalog-form routes, the raw name for flat-form), and rejects when that key names a `SystemStreams.ALL` entry. A route match whose params fail to resolve to a valid identity (malformed namespace/version) fails closed — denied, not passed through. `STREAM_CREATE`'s target name is body-carried, not path-carried, so this pre-auth gate structurally cannot see it; it is covered instead by a separate, post-auth, handler-level guard in `StreamRoutes` that runs unconditionally as the first statement of the sole method that mints a stream, closing the pre-bootstrap race window where a create could otherwise name-squat a reserved stream with caller-controlled config before `SystemStreamBootstrap` registers it. `CONSUMER_GROUP_JOIN`/`CONSUMER_GROUP_LEAVE` carry their target stream name in the request body too and remain uncovered by either mechanism — a known, tracked gap closed by the route-reshape into catalog form. Reads of system streams are unaffected.
 - **Stream off-heap allocation is now floor-reserve + lazy elastic growth (#96)** — `OffHeapRingBuffer` no longer pre-allocates its full retention `maxBytes` at creation. It allocates a per-partition FLOOR (header + index + one 256 KiB data segment) up front and grows the data region one segment at a time toward the `maxBytes` cap as data arrives, via a segmented `List<MemorySegment>`. Budget accounting moved to a single CAS `tryReserve`/`release` against `totalAllocatedBytes` (fixes a prior read-then-add TOCTOU); `createStream`/`hydrateEntry` admit the floor (loud `STREAM_MEMORY_EXCEEDED` if it can't fit), growth admits per-segment, and `closeAndRelease` returns the LIVE allocated bytes. Net effect: the per-node 128 MB stream budget (`DEFAULT_MAX_TOTAL_BYTES`) now holds far more streams (a 4-partition 4 MiB-retention stream reserves ~2 MB at create instead of ~17.7 MB), eliminating the ~7-stream wall. EVENTUAL streams that can't grow under pool pressure evict-and-succeed (with event); STRONG streams reject loudly. No segment reclamation on eviction yet (high-water held for stream lifetime; RC2 follow-up).
 - **`CLUSTER_EVENTS_MAX_BYTES` default 64 MB → 16 MB** — `system:cluster-events` previously reserved half the per-node 128 MB stream budget, starving app-stream creation; cluster events are small JSON so 16 MB retains many thousands while freeing the budget for app streams.
 
@@ -700,7 +3773,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [0.25.0] - 2026-04-01
 
 ### Added
-- **Hierarchical Storage Engine (AHSE)** — Content-addressed block storage with tiered Memory + Disk hierarchy. Core library at `integrations/storage` (zero Aether deps), Aether adapter at `aether/aether-storage`. BlockId (SHA-256), MemoryTier (CAS-bounded), LocalDiskTier (sharded filesystem), StorageInstance (write-through + tier-waterfall reads), SingleFlightCache (read dedup), MetadataStore (in-memory + KV-Store backed), SnapshotManager (dual-trigger: mutation count + time interval, rolling pruning), StorageReadinessGate (startup sequencing with read/write barriers), per-instance TOML config (`[storage.*]` sections), ArtifactStore migration (chunks via StorageInstance), config-driven StorageFactory with node wiring, per-node REST API (`/api/storage`, `/api/storage/{name}`, `/api/storage/{name}/snapshot`), per-cluster REST API (`/api/cluster/storage`, `/api/cluster/storage/{name}`) with KV-Store status publishing, CLI commands (`aether storage list/status/snapshot`), 107 unit + integration tests
+- **Hierarchical Storage Engine (AHSE)** — Content-addressed block storage with tiered Memory + Disk hierarchy. Core library at `integrations/storage` (zero Aether deps), Aether adapter at `aether/aether-storage`. BlockId (SHA-256), MemoryTier (CAS-bounded), LocalDiskTier (sharded filesystem), StorageInstance (write-through + tier-waterfall reads), SingleFlightCache (read dedup), MetadataStore (in-memory; the KV-Store-backed variant was never built — `InMemoryMetadataStore` is the only implementation and `StorageBlockKey`/`StorageRefKey` have zero production readers; corrected 2026-08-24, #634 item 6), SnapshotManager (dual-trigger: mutation count + time interval, rolling pruning), StorageReadinessGate (startup sequencing with read/write barriers), per-instance TOML config (`[storage.*]` sections), ArtifactStore migration (chunks via StorageInstance), config-driven StorageFactory with node wiring, per-node REST API (`/api/storage`, `/api/storage/{name}`, `/api/storage/{name}/snapshot`), per-cluster REST API (`/api/cluster/storage`, `/api/cluster/storage/{name}`) with KV-Store status publishing, CLI commands (`aether storage list/status/snapshot`), 107 unit + integration tests
 - **Streaming Phase 1 runtime** — `StreamPublisherFactory` and `StreamAccessFactory` (ResourceFactory SPI), `StreamPublisherImpl` with partition-key routing or round-robin, `PartitionedStreamAccess` with cross-partition fetch and consensus cursor checkpointing, `StreamConsumerAdapter` for single-event and batch handlers, `StreamConfigParser` for blueprint `[streams.xxx]` TOML sections
 - **CDM stream integration** — stream creation from blueprint config during deployment, consumer subscription registration at slice activation via KV-Store, unsubscription on deactivation
 - **QUIC certificate rotation** — `CertificateRenewalScheduler` wired to node startup, triggers at 60% remaining validity, exponential retry backoff (5min→4h cap), server restart on same port with atomic SSL context swap

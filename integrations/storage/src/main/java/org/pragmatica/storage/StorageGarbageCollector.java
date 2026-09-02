@@ -5,6 +5,7 @@ import org.pragmatica.lang.Unit;
 
 import static org.pragmatica.lang.Unit.unit;
 
+
 /// Garbage collector for orphaned storage blocks.
 /// Scans metadata for blocks with zero references past their grace period
 /// and deletes them from all tiers.
@@ -15,26 +16,20 @@ import static org.pragmatica.lang.Unit.unit;
 /// Use the dormant/active lifecycle (activate/deactivate) to enforce single-leader coordination:
 /// the leader activates GC on election and deactivates on demotion.
 public interface StorageGarbageCollector {
-
     /// Run one GC cycle. Returns the number of blocks collected.
     /// No-ops when not active.
     int collectGarbage();
-
     /// Accumulated collection statistics.
     GCStats stats();
-
     /// Activate the garbage collector, allowing collectGarbage() to process blocks.
     Result<Unit> activate();
-
     /// Deactivate the garbage collector. Subsequent collectGarbage() calls will no-op.
     Result<Unit> deactivate();
-
     /// Whether the garbage collector is currently active.
     boolean isActive();
 
     /// Statistics for garbage collection activity.
     record GCStats(int blocksCollected, long lastRunMs) {
-
         static GCStats empty() {
             return new GCStats(0, 0);
         }

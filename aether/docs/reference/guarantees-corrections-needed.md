@@ -1,8 +1,136 @@
 # Guarantees — Corrections Needed (worklist)
 
 > Overclaims and inaccuracies found while building [`guarantees.md`](./guarantees.md).
-> **Nothing here has been applied** — this is a review worklist. Each row: location · quoted claim · why it's wrong · honest rewrite.
+> Each row: location · quoted claim · why it's wrong · honest rewrite.
 > Grounded at `release-1.0.0-rc2` @ `e320881f0`, 2026-06-29.
+>
+> **Status 2026-08-10 — mostly APPLIED.** This file opened with "Nothing here has been applied"
+> for six weeks after that stopped being true; a worklist about claim accuracy was itself
+> inaccurate. Of the seven issues filed from it (#378–#384), **six are CLOSED**: #378 (sync-replication
+> off-by-one), #379 (KV `Remove` unfenced), #380 (DHTConfig strong-consistency docstring), #382
+> (DurableEntity "Linearizable get" javadoc), #383 (in-memory/snapshot-only persistence — documented,
+> build deferred to epic #349), #384 (DHT guarantee downgrade documented). **#381 remains open**
+> (`ConfigNotificationManager.notifyChange` has no caller — runtime config-change push is dead code),
+> milestone `v1.0.0-rc4`, and is a member of the dead-surface class tracked under #519.
+>
+> Re-grounding this file against current `HEAD` is part of **#496** (GA claims-vs-reality audit).
+> Until that runs, treat the rows below as historically accurate at rc2, not as current findings.
+>
+> **#496 progress, 2026-08-28 (consensus/cluster-core surface, scoped pass) —** re-checked against
+> current `HEAD`. D2/D3 (DHT durability disclosure) were already applied in the 2026-07-17 docs wave.
+> **Applied this pass:** D1 (KV-Store row — added the write/read consistency split), D4 (quorum-loss
+> "graceful degradation" euphemism — replaced with the pause/self-fence mechanism), D14
+> (`operators/monitoring.md` SPOF claim — rescoped to the write path, the boilerplate rewrite in this
+> worklist didn't fit that section's actual context), D15 (`rolling-upgrade.md` "zero downtime" — added
+> the core-node quorum-margin caveat, which the guide never stated at all). Also fixed, not from this
+> worklist: an unearned "Strong (all nodes agree)" leader-election claim in both `01-consensus.md` and
+> `contributors/consensus.md` — same-order ≠ same-instant, now stated precisely.
+> **Deferred, not audited this pass** (out of the scoped surfaces — logged so the next pass doesn't
+> rediscover): D6/D7/D18 (pub-sub — not a named in-scope surface), D8–D12/D16 (streams — explicitly
+> named as deferred "stream/data-plane" territory), D13 (durable-entity — #345/#352/#596 read as
+> active cluster-core work, ownership ambiguous, held rather than guessed), D17/D19 (archive docs —
+> low priority, untouched). D5 ("Battle-tested") intentionally left alone: the term is already defined
+> precisely at the top of `feature-catalog.md`'s own legend, unlike the unqualified phrases above.
+>
+> **#496 progress, 2026-08-28 (surfaces 2 & 3 — KV/durability, deployment/blueprint) — both closed,
+> zero further fixes.** Surface 2 (KV/durability): a repo-wide grep for flag-on-sight phrases
+> (`strongly consistent|highly available|never loses|fully durable|always consistent|exactly.once`,
+> excluding streams/pub-sub/durable-entity/archive territory) found nothing left unaddressed beyond
+> what surface 1 already fixed (D1) and what stays correctly deferred (D13 durable-entity, the #676
+> backup row). Everything else the grep hit was already honest (`durable-pubsub-spec.md:98`,
+> `durable-entity-primitive-spec.md:1107`), a false positive (`http-routing.md` "try every node
+> exactly once" is a retry-count bound, not a delivery claim), or squarely in deferred streams
+> territory (`in-memory-streams-spec.md`, `streaming-spec.md`, `hierarchical-storage-spec.md` — all
+> D8–D12/D16 already logged above). **Concluding surface 2 as substantially covered by surface 1.**
+> Surface 3 (deployment/blueprint semantics): read all 8 candidate docs
+> (`architecture/02-deployment.md`, `slice-developers/deployment.md`, `guides/deploy-guide.md`,
+> `guides/rolling-upgrade.md` [D15, already fixed in surface 1], `specs/unified-deploy-spec.md`,
+> `operators/{multi-cluster-deployment,docker-deployment,deployment-recovery}.md`,
+> `operators/runbooks/deployment.md`). The `ALL_OR_NOTHING`/blue-green atomicity claims already earn
+> their wording — mechanism named (single consensus-batch `KVCommand` write across all slices' keys,
+> `InFlightBlueprint` rollback tracking, "~100ms via single Rabia round" for the blue-green switch) —
+> so no fix needed. `deployment-recovery.md:73` is already exemplary: it explicitly explains why
+> "highly available with automatic restart" does **not** describe Aether's node-recovery model
+> (terminal-removal membership, fresh-ULID reprovision, not restart), naming the mechanism precisely —
+> flagged as a good/honest example, not a finding. `multi-cluster-deployment.md`, `docker-deployment.md`,
+> `runbooks/deployment.md` carry no guarantee-language claims at all (pure operational procedure).
+> `unified-deploy-spec.md`'s own atomicity claim (REQ-4) is likewise well-grounded (batch consensus
+> apply), but its `/api/deploy/*` route-namespace content is entangled with the deferred `/api/v1`
+> hard-cutover territory (stream-operator, #300) and was left untouched for that reason, not a
+> guarantee-wording reason. **Concluding surface 3 as audited, clean, zero fixes.**
+> **#496 scoped pass (consensus/cluster-core, KV/durability, deployment/blueprint) is now complete.**
+> Remaining open items in this file (D6–D13, D16–D19) all sit in explicitly deferred territory
+> (streams, pub-sub, durable-entity, archive) and are correctly left for whichever stream owns that
+> re-grounding pass next.
+>
+> **#496 progress, 2026-08-28 (pub-sub — D6/D7/D18) —** re-audited against current `HEAD` per
+> guarantees.md §5 (not deferred: the original deferral was scope-naming, stream B being unlaunched
+> is not a reason for pub-sub claims to stay dishonest meanwhile). **Applied:** D6 and D7
+> (`feature-catalog.md` rows 24/23 — both had drifted to new line numbers since rc2; rewritten in
+> place rather than pasting the stale rc2-era boilerplate). **New finding beyond the original rows:**
+> D21, `slice-developers/resource-reference.md`'s subscriber-facing Behavior section omitted all
+> delivery-loss information — read as reliable-by-omission; fixed. **Blocked, not applied:** D18 —
+> its target (`aether-coder/.../pub-sub.md`) is not part of this repo's git-controlled territory at
+> all (empty `git log --all` for that path, `.claude/` gitignored here); it lives only in the
+> separate main `pragmatica` clone and local skill-cache directories. Flagged to team-lead for
+> routing rather than silently edited cross-repo or silently dropped.
+>
+> **#496 progress, 2026-08-28 (archive — D17/D19) —** cheap, closed. **Applied:** D17 (Outbox
+> "exactly-once" — confirmed genuinely unimplemented via `infra-slices-progress.md`'s unchecked box
+> and a repo-wide search finding no `Outbox` class, then marked "Planned / not implemented"), D19
+> (artifact-repository "Always available" — annotated as superseded, with the design decision's real
+> justification named instead of the false universal-availability claim). All D-rows gated on another
+> stream (D8–D13/D16, management-API routes, backup) remain correctly untouched.
+>
+> **#322 progress, 2026-08-28 (slice-developers/ stale-front-door refresh HALF only) —** the
+> security-default-warnings half stays explicitly untouched (held on #665's builder flip); no
+> security section in any touched file was edited. The ticket's own "13 docs, last touched
+> 2026-04-17" premise had partly gone stale itself — git history showed most of `slice-developers/`
+> already refreshed by other work since #322 was filed (2026-06-11); only 5 files still predated
+> it: `demos.md`, `troubleshooting.md`, `faq.md`, `pg-notifications.md`, `testing-slices.md`.
+> Delegated a staleness audit of those 5 against current source/APIs (not the stale ticket text).
+> **Findings, all applied:** `demos.md` — Forge API reference table listed routes that don't exist
+> (`/api/status`, `/api/crash/*`, `/api/load/set/*`); rewritten against `ChaosRoutes.java`/
+> `StatusRoutes.java`/`LoadRoutes.java`. `troubleshooting.md` — wrong Maven groupId
+> (`org.pragmatica.jbct` → `org.pragmatica-lite`, confirmed against `slice-processor/pom.xml`);
+> a code example calling a nonexistent `Aspect.identity()` and `SliceInvokerFacade.invoke(...)`
+> (rewritten against the current `SliceCreationContext`/`MethodHandle` API); two "Fixed in 0.20.0"
+> entries citing a defunct pre-1.0 version scheme (reworded as historical/not-reproducible-on-any-
+> current-build rather than a false current version claim). `faq.md` — "Fury binary serialization"
+> claim was false (no Fury dependency anywhere in the repo; actual mechanism is a custom
+> `SliceCodec`/`@CodecFor` scheme, confirmed via `NodeCodecs.java`); "2-hour history" for predictive
+> scaling stated the configurable max as if it were the default (actual default is 1 hour, per
+> `TtmConfig.java`). `pg-notifications.md` — audited, genuinely clean, no changes (annotation
+> syntax, config fields, and guarantee language all match current source and `guarantees.md` §5).
+> `testing-slices.md` — the worst case: described a Testcontainers/Docker framework
+> (`AetherNodeContainer`, `AetherCluster`) that no longer exists anywhere in the codebase, including
+> a stale "85 tests / 13 classes" table naming test classes that don't exist. Full rewrite around
+> the actual current framework: `EmberCluster` (in-process JVM, no Docker), direct HTTP calls
+> against node management ports, `@BeforeAll`/`@TestInstance(PER_CLASS)` shared-cluster lifecycle,
+> `forge.sh` as the runner — verified against `ClusterFormationTest.java`, `SliceDeploymentTest.java`,
+> `EmberCluster.java`'s public API, and `forge.sh`'s own comments. Deliberately did not re-encode a
+> snapshot list of the 34 current test classes (that's exactly the staleness pattern being fixed);
+> pointed at `ls .../forge-tests/.../*Test.java` instead. No touch to `getting-started.md` or any
+> operator-install page was needed for this half — the 5 stale files didn't include them, so the
+> "leave security sections alone" constraint had nothing to collide with this pass.
+
+### Surface 3 file audit (2026-08-28) — deployment/blueprint, per-file disposition
+
+All 8 candidate deployment/blueprint docs, so the read-vs-skip boundary is enumerable rather than
+re-derived from the prose above:
+
+| File | Guarantee-language claims? | Disposition |
+|---|---|---|
+| `architecture/02-deployment.md` | Yes — `ALL_OR_NOTHING`/`BEST_EFFORT` blueprint atomicity | Already earns the claim (batch-consensus mechanism named, `InFlightBlueprint` rollback tracked) — no fix |
+| `slice-developers/deployment.md` | Yes — same `ALL_OR_NOTHING` claim, dev-facing | Already earns the claim — no fix |
+| `guides/deploy-guide.md` | Yes — blue-green "atomic switchover" | Already earns the claim (mechanism + timing named: "~100ms via single Rabia round") — no fix |
+| `guides/rolling-upgrade.md` | Yes — "zero downtime" | Fixed in surface 1 (D15) |
+| `specs/unified-deploy-spec.md` | Yes — REQ-4 "atomic multi-slice transitions" | Already earns the claim (batch consensus apply); `/api/deploy/*` route content untouched — entangled with the deferred `/api/v1` cutover (#300), not a wording gap |
+| `operators/deployment-recovery.md` | Yes — contrasts "highly available with automatic restart" | Already exemplary: names the actual mechanism (terminal-removal membership, fresh-ULID reprovision) precisely — credited, not a finding |
+| `operators/multi-cluster-deployment.md` | No | Skipped — pure operational procedure |
+| `operators/docker-deployment.md` | No | Skipped — pure operational procedure |
+| `operators/runbooks/deployment.md` | No | Skipped — pure operational procedure |
+
 
 Two kinds of item:
 - **DOC** — wording overclaim; fix the prose.
@@ -43,13 +171,13 @@ Two kinds of item:
 ### feature-catalog.md
 | # | Location | Claim | Honest rewrite |
 |---|----------|-------|----------------|
-| D1 | `:54` (row 17, KV-Store) | "Consensus-replicated store" (implies linearizable reads) | "Writes linearizably ordered via Rabia; reads served from local replica — sequential, possibly stale, **not linearizable**." |
-| D2 | `:105` (row 33, DHT) | "quorum R/W … Battle-tested" | "Eventual/LWW DHT (HLC-version). Aether system maps run FULL/q=1 in-memory: single-node ack, stale reads, lost on full restart." |
-| D3 | `:270/271/281` (rows 94/95/152) | "moved from consensus to ReplicatedMap … O(3) vs O(N)" (perf-only framing) | Add: "Trade-off: these keys are now **eventually consistent and not crash-durable**; reads may be stale across nodes." |
-| D4 | `:52` (quorum loss) | "graceful degradation on quorum loss, automatic restoration" | "On quorum loss the **minority pauses consensus (writes rejected) and self-fences (process exit)** after 15 s; majority keeps serving. Quorum return auto-resumes the majority; fenced nodes require restart/reprovision." |
+| D1 | `:54` (row 17, KV-Store) | "Consensus-replicated store" (implies linearizable reads) | ✅ **APPLIED 2026-08-28** — row now states linearizable write order vs. non-linearizable local reads, cites guarantees.md §1. |
+| D2 | `:105` (row 33, DHT) | "quorum R/W … Battle-tested" | ✅ **RESOLVED** (2026-07-17 docs wave, confirmed still live at current HEAD) — row states in-memory-only durability, cites guarantees.md §2. |
+| D3 | `:270/271/281` (rows 94/95/152) | "moved from consensus to ReplicatedMap … O(3) vs O(N)" (perf-only framing) | ✅ RESOLVED — see guarantees.md §7 item 7 (#384 CLOSED); rows now carry the eventual/not-crash-durable downgrade pointer. |
+| D4 | `:52` (quorum loss) | "graceful degradation on quorum loss, automatic restoration" | ✅ **APPLIED 2026-08-28** — row now states pause/reject-writes + minority self-fence explicitly, cites guarantees.md §3. |
 | D5 | `:21/33/52` etc. | "Battle-tested" on Auto-healing / Quorum / DHT | "Validated in E2E + cloud chaos; quorum/self-fence paths hardened through 2026-06." (correctness fixes landed within the last week — A6 2026-06-28, self-drain 2026-06-21). |
-| D6 | `:85` (row, message delivery) | "Battle-tested … leader failover scenarios" | "Message delivery — **at-most-once**, unordered, fan-out + round-robin. No retry/persistence; lost if no live endpoint. Subscriptions survive leader change (KV-backed)." |
-| D7 | `:84` (row 23) | "competing consumers (round-robin)" | "competing consumers (round-robin) **via EndpointRegistry**." (the `TopicSubscriptionRegistry` RR/nodeId is vestigial dead code — cleanup candidate). |
+| D6 | `:97` (row 24, message delivery — row moved from the rc2-era `:85`) | "Battle-tested … leader failover scenarios" | ✅ **APPLIED 2026-08-28** — row now states delivery is at-most-once/unordered/best-effort, no retry or persistence, silently dropped if no live subscriber instance (publish still reports success), registration (not the message) survives leader change. Cites guarantees.md §5. |
+| D7 | `:96` (row 23 — row moved from the rc2-era `:84`) | "competing consumers (round-robin)" | ✅ **APPLIED 2026-08-28** — row now names `EndpointRegistry` as the mechanism doing the round-robin fan-out across a subscriber slice's live instances, distinct from `TopicSubscriptionKey`'s KV-Store registration bookkeeping. |
 | D8 | `:180` (row 139) | "Sync replication ack … Complete" | See **C1** — Partial / unsatisfiable. |
 | D9 | `:177` (row 146) | "cursor persistence (push + pull)" | "in-RAM cursors with periodic checkpoint; durable persistence depends on the (unwired) cursor-store overload." |
 | D10 | `:177` | "zero-copy MemorySegment reads" | "zero-copy **consumer-slice read**; the producer path copies into off-heap." |
@@ -60,12 +188,14 @@ Two kinds of item:
 ### Other docs / skills
 | # | Location | Claim | Honest rewrite |
 |---|----------|-------|----------------|
-| D14 | `operators/monitoring.md:322` | "No single point of failure" | "No **consensus** SPOF (leaderless Rabia); **control-plane** ops (deploy, scale, auto-heal) are leader-pinned and briefly pause during re-election." |
-| D15 | `guides/rolling-upgrade.md:3` | "zero downtime" | "Zero **app-downtime** for slice upgrades; roll **core** nodes one at a time to preserve quorum." |
+| D14 | `operators/monitoring.md:322` | "No single point of failure" | ✅ **APPLIED 2026-08-28** — rescoped to the write path specifically (thresholds aren't leader-pinned, unlike deploy/scale/auto-heal, so the original suggested rewrite here would have misfit the section); added the local-read-may-lag caveat. |
+| D15 | `guides/rolling-upgrade.md:3` | "zero downtime" | ✅ **APPLIED 2026-08-28** — scoped to app-downtime; added the core-node quorum-margin caveat, which the guide previously never stated at all. |
 | D16 | `streaming-performance-analysis.md:130` | "supporting exactly-once processing" | "**effectively-once** for same-DB side effects, **when** `PgTransactionalCursorCommit` is wired (not in node bootstrap today)." |
-| D17 | `archive/infrastructure-slices-design.md:701,767` | "Reliable event publishing with **exactly-once** delivery" (Outbox) | Mark "Planned / not implemented" (archived/aspirational). |
-| D18 | skill `aether-coder/.../pub-sub.md:52` | use case "Notifications, **broadcasts**" | "Notifications, fan-out to subscriber **types** (one instance each)" — not a true broadcast to all instances. |
-| D19 | `archive/infra-services.md:346` | "Always available: Every node can serve artifacts" | Archived — annotate as superseded (a minority/partitioned node halts and serves nothing). |
+| D17 | `archive/infrastructure-slices-design.md:701,767` | "Reliable event publishing with **exactly-once** delivery" (Outbox) | ✅ **APPLIED 2026-08-28** — marked "Planned / not implemented" (confirmed: unchecked in `infra-slices-progress.md`, no `Outbox` class anywhere in the runtime), "exactly-once" reframed as the intended effectively-once outcome of the (unbuilt) pattern, not a shipped guarantee. |
+| D18 | skill `aether-coder/.../pub-sub.md:52` | use case "Notifications, **broadcasts**" | ⛔ **TERRITORY-BLOCKED, 2026-08-28** — the target file does not exist anywhere in this repo's git history (`git log --all -- .claude/skills/aether-coder` is empty) and `.claude/` is itself gitignored here; it only lives in the separate main `pragmatica` clone and in local, non-version-controlled skill-cache directories. Not committable from `pragmatica-stream-e`. Flagged to team-lead for routing to whichever stream/session owns the skill's actual source; honest rewrite unchanged from the row above pending that routing. |
+| D21 | `slice-developers/resource-reference.md:1034-1039` (Pub-Sub Messaging → Behavior) | (implicit, by omission) — Behavior list described registration and routing but said nothing about delivery loss, reading as if delivery were reliable | ✅ **APPLIED 2026-08-28** (new finding, not from the original rc2 grounding pass) — added an explicit at-most-once/no-persistence/no-retry/dropped-if-no-live-instance bullet, and reworded "routed to any node with a subscriber loaded" (ambiguous, readable as broadcast) to state one delivery per subscribing slice, round-robined across that slice's live instances. Cites guarantees.md §5. |
+| D19 | `archive/infra-services.md:346` | "Always available: Every node can serve artifacts" | ✅ **APPLIED 2026-08-28** — annotated as a superseded claim (a minority/partitioned node halts and serves nothing, guarantees.md §3), with the actual property this design decision relies on named instead (no separate slice-deployment bootstrap dependency). |
+| D20 | `architecture/01-consensus.md`, `contributors/consensus.md` — leader-election table/prose | "Strong (all nodes agree)" / "Strong consistency required" | ✅ **APPLIED 2026-08-28** (new finding, not from the original rc2 grounding pass) — the commit itself is linearizably ordered (same Rabia log + `viewSequence` fence as any KV write), but each node applies it as its own consensus round completes, not simultaneously — same-order, not same-instant. Both docs now state this and cite guarantees.md §1. |
 
 ### Already honest (no change — credit where due)
 - `architecture/01-consensus.md:7,13` "leaderless crash-fault-tolerant (CFT)" — accurate fault-model scoping.

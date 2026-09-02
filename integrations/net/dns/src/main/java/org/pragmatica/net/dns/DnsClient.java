@@ -13,8 +13,14 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.net.dns;
+
+import java.net.InetSocketAddress;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -23,13 +29,6 @@ import org.pragmatica.lang.io.AsyncCloseable;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.dns.ResolverError.RequestTimeout;
 import org.pragmatica.net.dns.ResolverError.ServerError;
-
-import java.net.InetSocketAddress;
-import java.time.Duration;
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBufUtil;
@@ -47,10 +46,10 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
+
 /// Asynchronous DNS client using Netty UDP.
 public interface DnsClient extends AsyncCloseable {
     Logger log = LoggerFactory.getLogger(DnsClient.class);
-
     Promise<DomainAddress> resolve(DomainName domainName, InetSocketAddress serverAddress);
 
     /// Create DNS client with provided event loop group and default query timeout.
@@ -62,10 +61,11 @@ public interface DnsClient extends AsyncCloseable {
     /// Create DNS client with provided event loop group and configurable query timeout.
     /// The event loop group will NOT be shut down when the client is closed.
     static DnsClient dnsClient(EventLoopGroup eventLoopGroup, TimeSpan queryTimeout) {
-        var bootstrap = new Bootstrap().group(eventLoopGroup)
-                                       .channel(NioDatagramChannel.class);
+        var bootstrap = new Bootstrap().group(eventLoopGroup).channel(NioDatagramChannel.class);
         var client = DnsClientImpl.forBootstrap(bootstrap, false, queryTimeout);
+
         bootstrap.handler(DnsChannelInitializer.forClient(client));
+
         return client;
     }
 }
@@ -89,11 +89,11 @@ class DnsChannelInitializer extends ChannelInitializer<DatagramChannel> {
           .addLast(new SimpleChannelInboundHandler<DatagramDnsResponse>() {
             @Override
             protected void channelRead0(ChannelHandlerContext ctx, DatagramDnsResponse msg) {
-                       try{
-                           client.handleDatagram(msg);
-                       } finally{
-                           ctx.close();
-                       }
+                       try {
+                       client.handleDatagram(msg);
+                   } finally {
+                       ctx.close();
+                   }
                    }
         });
     }
@@ -116,7 +116,11 @@ record DnsClientImpl(Bootstrap bootstrap,
     static final TimeSpan DEFAULT_QUERY_TIMEOUT = timeSpan(10).seconds();
 
     static DnsClientImpl forBootstrap(Bootstrap bootstrap, boolean ownsEventLoop) {
-        return new DnsClientImpl(bootstrap, new ConcurrentHashMap<>(), new AtomicInteger(1), ownsEventLoop, DEFAULT_QUERY_TIMEOUT);
+        return new DnsClientImpl(bootstrap,
+                                 new ConcurrentHashMap<>(),
+                                 new AtomicInteger(1),
+                                 ownsEventLoop,
+                                 DEFAULT_QUERY_TIMEOUT);
     }
 
     static DnsClientImpl forBootstrap(Bootstrap bootstrap, boolean ownsEventLoop, TimeSpan queryTimeout) {
@@ -133,6 +137,7 @@ record DnsClientImpl(Bootstrap bootstrap,
         if (!ownsEventLoop) {
             return Promise.success(unit());
         }
+
         return Promise.promise(promise -> bootstrap().config()
                                                    .group()
                                                    .shutdownGracefully()
@@ -141,18 +146,19 @@ record DnsClientImpl(Bootstrap bootstrap,
 
     void handleDatagram(DatagramDnsResponse msg) {
         var requestId = msg.id();
+
         log.debug("Received response for request Id {}", requestId);
         option(requestMap.get(requestId)).onPresent(request -> handleResponse(request, msg));
     }
 
     private void handleResponse(Request request, DatagramDnsResponse msg) {
         log.debug("Handling response {} for request {}", msg, request);
-        if (!msg.code()
-                .equals(DnsResponseCode.NOERROR)) {
+        if (!msg.code().equals(DnsResponseCode.NOERROR)) {
             var errorMessage = "Server responded with error code " + msg.code();
+
             log.warn(errorMessage);
-            request.promise()
-                   .fail(new ServerError(errorMessage));
+            request.promise().fail(new ServerError(errorMessage));
+
             return;
         }
         // Take record with minimal TTL
@@ -168,10 +174,13 @@ record DnsClientImpl(Bootstrap bootstrap,
 
     private static ArrayList<DomainAddress> extractAddresses(Request request, DatagramDnsResponse msg) {
         var addresses = new ArrayList<DomainAddress>();
+
         for (int i = 0, count = msg.count(DnsSection.ANSWER); i < count; i++) {
             var record = msg.recordAt(DnsSection.ANSWER, i);
+
             if (record.type() == DnsRecordType.A) {
                 var raw = (DnsRawRecord) record;
+
                 log.debug("record {}, ttl {}", raw, raw.timeToLive());
                 InetUtils.forBytes(ByteBufUtil.getBytes(raw.content()))
                          .map(inetAddress -> DomainAddress.domainAddress(request.domainName(),
@@ -182,6 +191,7 @@ record DnsClientImpl(Bootstrap bootstrap,
                                                       request.domainName()));
             } else if (record.type() == DnsRecordType.AAAA) {
                 var raw = (DnsRawRecord) record;
+
                 log.debug("AAAA record {}, ttl {}", raw, raw.timeToLive());
                 InetUtils.forBytes(ByteBufUtil.getBytes(raw.content()))
                          .map(inetAddress -> DomainAddress.domainAddress(request.domainName(),
@@ -192,6 +202,7 @@ record DnsClientImpl(Bootstrap bootstrap,
                                                       request.domainName()));
             }
         }
+
         return addresses;
     }
 
@@ -202,31 +213,36 @@ record DnsClientImpl(Bootstrap bootstrap,
                                                                    .channel()
                                                                    .writeAndFlush(buildQuery(serverAddress, request));
                                                           // Setup guard timeout
-        promise.async(queryTimeout,
-                      pending -> pending.fail(new RequestTimeout("No response from server within " + queryTimeout.millis() + "ms")));
+                                                          promise.async(queryTimeout,
+                                                                        pending -> pending.fail(new RequestTimeout("No response from server within " + queryTimeout.millis()
+                                                                                                                  + "ms")));
                                                       })
                       .onEmpty(() -> promise.fail(Request.exhausted()));
     }
 
     private DatagramDnsQuery buildQuery(InetSocketAddress serverAddress, Request request) {
         log.debug("Sending request {} to {}", request, serverAddress);
+
         return new DatagramDnsQuery(null, serverAddress, request.requestId()).setRecursionDesired(true)
-                                                             .setRecord(DnsSection.QUESTION,
-                                                                        new DefaultDnsQuestion(request.domainName()
-                                                                                                      .name(),
-                                                                                               DnsRecordType.A));
+                                                                             .setRecord(DnsSection.QUESTION,
+                                                                                        new DefaultDnsQuestion(request.domainName()
+                                                                                                                      .name(),
+                                                                                                               DnsRecordType.A));
     }
 
     private Option<Request> computeRequest(Promise<DomainAddress> promise, DomainName domainName) {
         for (int attempt = 0; attempt < 0xFFFF; attempt++) {
             var requestId = idCounter().getAndIncrement() & 0xFFFF;
             var request = new Request(domainName, promise, requestId);
+
             if (option(requestMap().putIfAbsent(requestId, request)).isEmpty()) {
                 // Ensure slot for this ID is freed regardless of the outcome
                 promise.onResultRun(() -> requestMap().remove(requestId));
+
                 return option(request);
             }
         }
+
         return Option.none();
     }
 }

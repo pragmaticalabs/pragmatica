@@ -190,7 +190,7 @@ Aether uses a three-tier ClassLoader hierarchy to balance isolation with sharing
 
 ### SliceClassLoader
 
-- Uses **child-first** delegation for slice isolation
+- Uses **child-first** delegation for slice isolation (dependency-version isolation — the fault boundary is the node, not the classloader; see `architecture/15-resource-and-isolation-model.md`)
 - Parent-first only for JDK classes (`java.*`, `javax.*`, `jdk.*`, `sun.*`)
 - Contains: slice JAR + any conflicting dependency JARs
 

@@ -5,12 +5,29 @@ retention-value = "5m"
 max-event-size = "64KB"
 
 # `@Notify NotificationSender` is provisioned from this section.
-# Backend can be "smtp" or "http". Below is a MailHog-friendly local SMTP setup;
-# real deployments would point at a production SMTP relay or vendor (SendGrid,
-# Mailgun, Postmark) via the [notification.http] backend.
+# Backend can be "smtp" or "http". Below is a Mailpit/MailHog-friendly local
+# SMTP setup; real deployments would point at a production SMTP relay or vendor
+# (SendGrid, Mailgun, Postmark) via the [notification.http] backend.
 #
-# TODO(example-coverage): add a MailHog container to the parent example so
-# `./run-forge.sh` actually delivers and captures these emails.
+# Fields mirror SmtpConfig (integrations/net/smtp): host, port, tls_mode
+# (NONE | STARTTLS | IMPLICIT), connect_timeout, command_timeout. Credentials,
+# when a relay requires them, go in a nested [notification.smtp.auth] section
+# with `username` and `password` (SmtpAuth); omit the section for no auth —
+# an empty-credential AUTH PLAIN is not "no auth". Local sinks need none:
+#
+#   [notification.smtp.auth]
+#   username = "noreply@example.com"
+#   password = "${secrets:smtp/password}"
+#
+# NOTE: binding this section from TOML is currently gated on #671 — the config
+# binder does not yet recurse Option<Record> components (NotificationConfig
+# declares the SMTP block as Option<SmtpConfig>), so the SMTP backend cannot
+# be provisioned from TOML until that lands. Shape below is the documented
+# target shape (aether/docs/slice-developers/resource-reference.md).
+#
+# TODO(example-coverage, #672): add a Mailpit/MailHog container to the parent
+# example so `./run-forge.sh` actually delivers and captures these emails.
+# Gated on #671 (see NOTE above).
 [notification]
 backend = "smtp"
 
@@ -18,9 +35,5 @@ backend = "smtp"
 host = "localhost"
 port = 1025
 tls_mode = "NONE"
-username = ""
-password = ""
-pool_size = 2
 connect_timeout = "5s"
 command_timeout = "10s"
-helo_hostname = "notification-hub.example"

@@ -16,7 +16,8 @@ import static org.pragmatica.lang.Result.unitResult;
 ///
 /// `createStream` reports `STREAM_ALREADY_EXISTS` as a failure-typed {@link Result} (it is the
 /// idempotent-duplicate signal, not a genuine error), so every idempotent caller — `StreamRoutes`,
-/// {@link StreamPublisherFactory}, {@link StreamAccessFactory}, and {@link SystemStreamFactories} —
+/// {@link StreamPublisherFactory}, {@link StreamAccessFactory}, {@link SystemStreamFactories}, and
+/// {@link org.pragmatica.aether.stream.topic.DurableTopicSubstrate} (topic + DLQ activation) —
 /// must tolerate exactly that cause and PROPAGATE everything else (notably
 /// `STREAM_MEMORY_EXCEEDED`). Centralizing the predicate here removes the three divergent copies that
 /// previously each swallowed all create failures.

@@ -15,6 +15,7 @@ import org.pragmatica.aether.config.cluster.RuntimeType;
 import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.config.cluster.SourceType;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
@@ -35,6 +36,7 @@ import static org.pragmatica.aether.config.cluster.OperationsConfig.defaultOpera
 import static org.pragmatica.aether.config.cluster.RoleSubTable.roleSubTable;
 import static org.pragmatica.aether.config.cluster.RuntimeProfile.runtimeProfile;
 import static org.pragmatica.aether.config.cluster.SourceProfile.sourceProfile;
+import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 
@@ -43,7 +45,7 @@ class ClusterBootstrapCommandTest {
     private static final String RUNTIME_REF = "default";
 
     private static SourceProfile forgeSource(int coreCount) {
-        return sourceProfile("forge",
+        return sourceProfile(sourceNameOrDefault("forge"),
                              SourceType.FORGE,
                              none(),
                              none(),
@@ -78,7 +80,7 @@ class ClusterBootstrapCommandTest {
             var config = configWithName("from-toml");
             var overridden = config.withClusterName("cli-name").unwrap();
 
-            assertEquals("cli-name", overridden.cluster().name());
+            assertEquals("cli-name", overridden.cluster().name().value());
             assertEquals(config.cluster().version(), overridden.cluster().version());
             assertEquals(config.configVersion(), overridden.configVersion());
             assertEquals(config.coreTopology(), overridden.coreTopology());
@@ -93,7 +95,7 @@ class ClusterBootstrapCommandTest {
             var identity = clusterIdentity("from-toml", "2.5.0").unwrap();
             var renamed = identity.withName("cli-name").unwrap();
 
-            assertEquals("cli-name", renamed.name());
+            assertEquals("cli-name", renamed.name().value());
             assertEquals("2.5.0", renamed.version());
         }
     }
@@ -192,6 +194,66 @@ class ClusterBootstrapCommandTest {
                 System.setErr(originalErr);
             }
         }
+    }
+
+    /// #521 — a bootstrap aborted at the interactive `Continue? [y/N]` prompt used to exit 0, which is
+    /// indistinguishable from a provisioned cluster to any wrapper script. A non-interactive shell reads
+    /// EOF at that prompt, so this is precisely the case CI hits.
+    @Nested
+    class AbortedBootstrapExitCode {
+
+        @Test
+        void bootstrap_abortedAtConfirmationPrompt_returnsNonZeroExitCode() throws Exception {
+            var tomlPath = writeCanonicalForgeToml("abort-test");
+            var cmd = new ClusterBootstrapCommand();
+            new CommandLine(cmd).parseArgs(tomlPath.toString());
+
+            var originalIn = System.in;
+            var originalOut = System.out;
+            var originalErr = System.err;
+            var captured = new ByteArrayOutputStream();
+
+            System.setIn(new ByteArrayInputStream(new byte[0]));
+            System.setOut(new PrintStream(captured, true, StandardCharsets.UTF_8));
+            System.setErr(new PrintStream(captured, true, StandardCharsets.UTF_8));
+            try {
+                var exit = cmd.call();
+                var out = captured.toString(StandardCharsets.UTF_8);
+
+                assertNotEquals(-1, out.indexOf("Aborted."),
+                                "expected the confirmation-prompt abort path, got: " + out);
+                assertEquals(ExitCode.ERROR, exit,
+                             "an aborted bootstrap must exit non-zero — nothing was provisioned");
+            } finally {
+                System.setIn(originalIn);
+                System.setOut(originalOut);
+                System.setErr(originalErr);
+            }
+        }
+    }
+
+    /// Canonical singular `[source.<name>]` spelling — the only form `ClusterBootstrapConfigParser`
+    /// recognises, so this fixture actually parses and reaches the confirmation prompt.
+    private static Path writeCanonicalForgeToml(String clusterName) throws Exception {
+        var toml = """
+                   config_version = "1.0.0"
+
+                   [cluster]
+                   name = "%s"
+                   version = "1.0.0"
+
+                   [source.forge]
+                   type = "forge"
+
+                   [source.forge.core]
+                   count = 3
+                   """.formatted(clusterName);
+        var path = Files.createTempFile("aether-bootstrap-abort-test-", ".toml");
+
+        path.toFile().deleteOnExit();
+        Files.writeString(path, toml, StandardCharsets.UTF_8);
+
+        return path;
     }
 
     private static Path writeMinimalToml(String clusterName) throws Exception {

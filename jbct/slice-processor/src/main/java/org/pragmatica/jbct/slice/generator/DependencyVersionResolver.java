@@ -2,10 +2,7 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.jbct.slice.generator;
-
-import org.pragmatica.jbct.slice.model.DependencyModel;
 
 import javax.annotation.processing.ProcessingEnvironment;
 import javax.tools.Diagnostic;
@@ -13,6 +10,9 @@ import javax.tools.FileObject;
 import javax.tools.StandardLocation;
 import java.io.IOException;
 import java.util.Properties;
+
+import org.pragmatica.jbct.slice.model.DependencyModel;
+
 
 /// Resolves dependency artifact coordinates and versions from slice-deps.properties.
 ///
@@ -46,16 +46,20 @@ public class DependencyVersionResolver {
 
     public DependencyModel resolve(DependencyModel dependency) {
         var interfaceFqn = dependency.interfaceQualifiedName();
+
         if (interfaceFqn == null || interfaceFqn.isEmpty()) {
             return dependency.withResolved("unknown:unknown", "UNRESOLVED");
         }
         // Lookup by interface FQN
         var artifactCoords = sliceDeps.getProperty(interfaceFqn);
+
         if (artifactCoords == null) {
             // Try with .api suffix removed (in case interface is in api subpackage)
             var apiInterfaceFqn = interfaceFqn.replace(".api.", ".");
+
             artifactCoords = sliceDeps.getProperty(apiInterfaceFqn);
         }
+
         if (artifactCoords != null) {
             return parseCoordinates(dependency, artifactCoords);
         }
@@ -66,60 +70,93 @@ public class DependencyVersionResolver {
     private DependencyModel parseCoordinates(DependencyModel dependency, String coords) {
         // Format: groupId:artifactId:version
         var parts = coords.split(":");
+
         if (parts.length >= 3) {
             var artifact = parts[0] + ":" + parts[1];
             var version = parts[2];
+
             return dependency.withResolved(artifact, version);
         } else if (parts.length == 2) {
             return dependency.withResolved(coords, "UNRESOLVED");
         }
+
         return dependency.withResolved("unknown:unknown", "UNRESOLVED");
     }
 
+    /// Resolves a dependency that `slice-deps.properties` does not list.
+    ///
+    /// A miss there is informative rather than a dead end. `jbct:collect-slice-deps` builds that
+    /// file exclusively from `project.getArtifacts()`, so a sibling slice compiled by THIS module
+    /// can never appear in it, while every external slice shipping a valid manifest always does.
+    /// The complement is therefore the answer: an unlisted slice dependency is a sibling this
+    /// module's own `jbct:package-slices` run will package, and its coordinate is
+    /// `<baseArtifactId>-<kebab(sliceName)>` — the same expression [ManifestGenerator] writes as
+    /// that sibling's own `slice.artifactId`, which is what makes the two agree.
+    ///
+    /// This attribution must NOT be narrowed to a package-shape test. Requiring the provider to
+    /// sit under the consumer's IMMEDIATE parent package recognised only direct package siblings,
+    /// so a domain-organised app — consumer `booking.purchase.buyticket`, provider
+    /// `eventmanagement.capacity.seatsellability` — fell through to the package-derived branch
+    /// below and emitted a coordinate naming no artifact that exists. `jbct:package-slices` decides
+    /// the dependency file's `[slices]` section by prefix-matching `groupId:baseArtifactId-`, so it
+    /// silently dropped every such dependency: the section went unwritten, the provider jar never
+    /// reached the consumer's SliceClassLoader, and the slice died in `getDeclaredMethods()` with a
+    /// NoClassDefFoundError naming the provider interface.
     private DependencyModel fallbackResolve(DependencyModel dependency) {
         var interfacePackage = dependency.interfacePackage();
+
         if (interfacePackage == null || interfacePackage.isEmpty()) {
             return dependency.withResolved("unknown:unknown", "UNRESOLVED");
         }
-        // Check if this is a same-module dependency (sibling slice under common parent package)
-        if (currentSlicePackage != null && baseGroupId != null && baseArtifactId != null) {
-            var parentPackage = parentPackage(currentSlicePackage);
-            if (parentPackage != null && interfacePackage.startsWith(parentPackage + ".")) {
-                // Same-module dependency - use base artifact + slice name in kebab-case
-                var sliceName = dependency.interfaceSimpleName();
-                var kebabName = toKebabCase(sliceName);
-                var artifact = baseGroupId + ":" + baseArtifactId + "-" + kebabName;
-                return dependency.withResolved(artifact, "UNRESOLVED");
-            }
+        // Same-module sibling slice - packaged by this module as baseArtifactId-<kebab(sliceName)>
+        if (hasModuleContext()) {
+            var artifact = baseGroupId + ":" + baseArtifactId + "-" + toKebabCase(dependency.interfaceSimpleName());
+
+            return dependency.withResolved(artifact, "UNRESOLVED");
         }
-        // External dependency - derive from package: org.example.inventory.api -> org.example:inventory
+        // No module context - derive from package: org.example.inventory.api -> org.example:inventory
         var pkg = interfacePackage;
         // Remove .api suffix if present
         if (pkg.endsWith(".api")) {
             pkg = pkg.substring(0, pkg.length() - 4);
         }
+
         var parts = pkg.split("\\.");
+
         if (parts.length < 2) {
             return dependency.withResolved(pkg + ":unknown", "UNRESOLVED");
         }
+
         var groupId = String.join(".", java.util.Arrays.copyOf(parts, parts.length - 1));
         var artifactId = parts[parts.length - 1];
+
         return dependency.withResolved(groupId + ":" + artifactId, "UNRESOLVED");
     }
 
-    private static String parentPackage(String pkg) {
-        var lastDot = pkg.lastIndexOf('.');
-        return lastDot > 0 ? pkg.substring(0, lastDot) : null;
+    /// True once [#setSliceContext] has supplied usable module coordinates. `ManifestGenerator`
+    /// reads them via `options.getOrDefault(..., "unknown")`, so the literal `unknown` is the
+    /// absent-option sentinel and must not be spliced into an artifact coordinate.
+    private boolean hasModuleContext() {
+        return currentSlicePackage != null
+               && isUsableCoordinate(baseGroupId)
+               && isUsableCoordinate(baseArtifactId);
+    }
+
+    private static boolean isUsableCoordinate(String value) {
+        return value != null && !value.isEmpty() && !value.equals("unknown");
     }
 
     private static String toKebabCase(String camelCase) {
         if (camelCase == null || camelCase.isEmpty()) {
             return camelCase;
         }
+
         var result = new StringBuilder();
+
         result.append(Character.toLowerCase(camelCase.charAt(0)));
         for (int i = 1; i < camelCase.length(); i++) {
             char c = camelCase.charAt(i);
+
             if (Character.isUpperCase(c)) {
                 result.append('-');
                 result.append(Character.toLowerCase(c));
@@ -127,17 +164,21 @@ public class DependencyVersionResolver {
                 result.append(c);
             }
         }
+
         return result.toString();
     }
 
     private Properties loadSliceDeps() {
         var props = new Properties();
-        try{
+
+        try {
             FileObject resource = env.getFiler()
                                      .getResource(StandardLocation.CLASS_OUTPUT, "", "slice-deps.properties");
+
             try (var reader = resource.openReader(true)) {
                 props.load(reader);
             }
+
             if (!props.isEmpty()) {
                 env.getMessager()
                    .printMessage(Diagnostic.Kind.NOTE,
@@ -150,6 +191,7 @@ public class DependencyVersionResolver {
                .printMessage(Diagnostic.Kind.NOTE,
                              "slice-deps.properties not found, dependency versions will be unresolved");
         }
+
         return props;
     }
 }

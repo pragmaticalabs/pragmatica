@@ -166,23 +166,37 @@ follow_node_log() {
         # stdin (a finite pipe that EOFs after the payload), so ssh cannot drain the
         # surrounding loop's stdin — and `-n` is deliberately NOT used: it would redirect
         # stdin from /dev/null and discard the payload.
-        ( while true; do
+        #
+        # #460 gap 2 (belt-and-suspenders): the respawn loop is bounded by a wall-clock
+        # lifetime ceiling. A follower whose owning suite's teardown was skipped — e.g.
+        # after a failed cluster-B restore — would otherwise re-fork this ssh every 8s
+        # FOREVER (the observed 5.5h fork-leak). $SECONDS is the same wall-clock deadline
+        # pattern the rc2 wait_for fix used; on expiry the follower self-terminates with a
+        # diagnostic instead of leaking subshells. Override AETHER_LOG_FOLLOWER_MAX_LIFETIME.
+        local _fw_max="${AETHER_LOG_FOLLOWER_MAX_LIFETIME:-7200}"
+        ( _fw_deadline=$((SECONDS + _fw_max))
+          while [ "$SECONDS" -lt "$_fw_deadline" ]; do
               ssh "${SSH_OPTS[@]}" -i "${AETHER_SSH_KEY}" \
                   "${CLOUD_SSH_USER:-root}@${target_ip}" 'bash -s' <<<"$payload" \
                   >> "$out_file" 2>&1
               echo "# [log-follower] tail dropped for $node_id ($target_ip); retry in 8s" >> "$out_file"
               sleep 8
-          done ) &
+          done
+          echo "# [log-follower] lifetime ceiling ${_fw_max}s reached for $node_id — follower self-terminating (belt-and-suspenders vs the #460 fork-leak; override AETHER_LOG_FOLLOWER_MAX_LIFETIME)" >> "$out_file" ) &
         echo "$!"
         return 0
     fi
 
     # Local docker path — unchanged behaviour; harness user has socket access.
-    ( while true; do
+    # Same #460 gap-2 wall-clock lifetime ceiling as the cloud branch above.
+    local _fw_max="${AETHER_LOG_FOLLOWER_MAX_LIFETIME:-7200}"
+    ( _fw_deadline=$((SECONDS + _fw_max))
+      while [ "$SECONDS" -lt "$_fw_deadline" ]; do
           docker logs -f --tail 0 "$container" >> "$out_file" 2>&1
           echo "# [log-follower] tail dropped for $container; retry in 8s" >> "$out_file"
           sleep 8
-      done ) &
+      done
+      echo "# [log-follower] lifetime ceiling ${_fw_max}s reached for $container — follower self-terminating (belt-and-suspenders vs the #460 fork-leak; override AETHER_LOG_FOLLOWER_MAX_LIFETIME)" >> "$out_file" ) &
     echo "$!"
     return 0
 }

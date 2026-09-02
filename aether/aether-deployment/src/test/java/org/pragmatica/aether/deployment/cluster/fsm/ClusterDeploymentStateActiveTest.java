@@ -12,7 +12,6 @@ import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.Deploym
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Activate;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.SliceState;
-import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
@@ -86,7 +85,6 @@ class ClusterDeploymentStateActiveTest {
                                                     router,
                                                     stubTopologyManager(SELF),
                                                     stubSchemaOrchestrator(),
-                                                    HealthSignalSink.noop(),
                                                     () -> Set.of(SELF, NODE_A),
                                                     () -> Set.of(SELF, NODE_A),
                                                     Set::of,
@@ -221,6 +219,124 @@ class ClusterDeploymentStateActiveTest {
         }
     }
 
+    /// The remediator judges a slice by `sliceStates()` — an in-memory PROJECTION on the leader — and used
+    /// to destroy it without ever consulting the authority it mirrors, the committed `NodeArtifactValue`.
+    /// When the projection missed a transition the slice looked stuck forever, because the map it was
+    /// judged by was the same map that had failed to advance.
+    ///
+    /// Measured 2026-08-16 (02y-stream-crash, remote cluster B): node-2's slice was ACTIVE and serving —
+    /// its own log records `test-stream-multipart-stream-slice/publish depth=0 duration=25.591363ms` at
+    /// 23:15:15 — and the leader force-UNLOADed it 35s later as "stuck ACTIVATING".
+    /// The orphan sweep decides "no matching blueprint" from `active.blueprints()`, a leader-local
+    /// projection rebuilt only on `Active` entry — nothing re-derives it during a term. One missed
+    /// `AppBlueprintPut` therefore makes every slice of that artifact look orphaned for the leader's
+    /// whole term, and the sweep force-UNLOADs them cluster-wide on each reconcile tick. Same shape as
+    /// the stuck-slice remediator that destroyed a serving slice: judge by a projection, act destructively.
+    @Nested
+    class OrphanSweepStaleProjection {
+
+        @Test
+        void blueprintMissingFromProjectionButTargetCommitted_doesNotUnload() {
+            seedNodeArtifact(NODE_A, SliceState.ACTIVE, injectedClock.get());
+            harness.dispatch(new Activate());
+
+            var sliceKey = SliceNodeKey.sliceNodeKey(ARTIFACT, NODE_A);
+
+            // The projection loses the blueprint (a missed put / a rename that cleared it), while the
+            // cluster's committed SliceTarget still says this exact version should be running.
+            activeState().blueprints().remove(ARTIFACT);
+            activeState().sliceStates().put(sliceKey, SliceState.ACTIVE);
+            cluster.commands.clear();
+
+            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
+
+            assertThat(cluster.commands)
+                    .as("the committed SliceTarget still names this artifact — the projection was stale, so nothing may be unloaded")
+                    .isEmpty();
+            assertThat(activeState().sliceStates())
+                    .as("a slice the cluster still targets must not be dropped from the view either")
+                    .containsKey(sliceKey);
+        }
+
+        @Test
+        void noCommittedTarget_stillCleansUpAsBefore() {
+            seedNodeArtifact(NODE_A, SliceState.ACTIVE, injectedClock.get());
+            harness.dispatch(new Activate());
+
+            // A DIFFERENT artifact, never seeded: absent from the projection AND absent from the KV, so
+            // it is genuinely orphaned rather than merely unseen by a stale view.
+            var strayArtifact = Artifact.artifact("org.example:slice-stray:1.0.0").unwrap();
+            var strayKey = SliceNodeKey.sliceNodeKey(strayArtifact, NODE_A);
+
+            activeState().sliceStates().put(strayKey, SliceState.ACTIVE);
+            cluster.commands.clear();
+
+            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
+
+            assertThat(cluster.commands)
+                    .as("with no committed target the slice IS orphaned and must still be cleaned up")
+                    .isNotEmpty();
+            assertThat(activeState().sliceStates())
+                    .as("a genuinely orphaned entry is dropped from the view")
+                    .doesNotContainKey(strayKey);
+        }
+    }
+
+    @Nested
+    class StaleViewProtection {
+
+        private SliceNodeKey divergedSlice(long enteredAt, SliceState committed) {
+            injectedClock.set(enteredAt);
+            seedNodeArtifact(NODE_A, SliceState.ACTIVATING, enteredAt);
+            harness.dispatch(new Activate());
+
+            var sliceKey = SliceNodeKey.sliceNodeKey(ARTIFACT, NODE_A);
+
+            // What the cluster actually committed.
+            kvStore.put(NodeArtifactKey.nodeArtifactKey(NODE_A, ARTIFACT),
+                        NodeArtifactValue.nodeArtifactValue(committed, enteredAt));
+            // What the leader's projection still believes — the divergence, restated explicitly so the test
+            // does not depend on whether the KV put happens to notify this FSM.
+            activeState().sliceStates().put(sliceKey, SliceState.ACTIVATING);
+            activeState().transitionalStateTimestamps().put(sliceKey, enteredAt);
+
+            // Well past the stuck threshold (3 x the 90s ACTIVATING timeout).
+            injectedClock.set(enteredAt + (90_000L * 3) + 1_000L);
+            cluster.commands.clear();
+
+            return sliceKey;
+        }
+
+        @Test
+        void committedStateSettled_whileViewSaysActivating_adoptsCommittedStateAndIssuesNoUnload() {
+            var sliceKey = divergedSlice(1_000_000L, SliceState.ACTIVE);
+
+            activeState().stuckRemediator().detectStuckTransitionalStates();
+
+            assertThat(cluster.commands)
+                    .as("a slice the cluster committed as ACTIVE must never be force-unloaded — it may be serving traffic")
+                    .isEmpty();
+            assertThat(activeState().sliceStates())
+                    .as("the stale projection must adopt the committed state instead")
+                    .containsEntry(sliceKey, SliceState.ACTIVE);
+            assertThat(activeState().transitionalStateTimestamps())
+                    .as("adopting a settled state must also stop the stuck timer")
+                    .doesNotContainKey(sliceKey);
+        }
+
+        @Test
+        void committedStateStillTransitional_remediatesExactlyAsBefore() {
+            var sliceKey = divergedSlice(2_000_000L, SliceState.ACTIVATING);
+
+            activeState().stuckRemediator().detectStuckTransitionalStates();
+
+            assertThat(cluster.commands)
+                    .as("when the KV AGREES the slice is still transitional it is genuinely stuck and must still be remediated")
+                    .isNotEmpty();
+            assertThat(activeState().sliceStates()).doesNotContainKey(sliceKey);
+        }
+    }
+
     /// M4 not-yet-wired sentinel guard (cluster-topology-overhaul Wave 9 item 5). During the boot
     /// window the CDM core-membership supplier yields `MembershipFsm.MEMBERSHIP_NOT_WIRED`; a
     /// stale-entry cleanup that races the wiring must NO-OP rather than read the unresolved
@@ -245,7 +361,6 @@ class ClusterDeploymentStateActiveTest {
                                                         router,
                                                         stubTopologyManager(SELF),
                                                         stubSchemaOrchestrator(),
-                                                        HealthSignalSink.noop(),
                                                         coreMembers,
                                                         () -> Set.of(SELF),
                                                         Set::of,

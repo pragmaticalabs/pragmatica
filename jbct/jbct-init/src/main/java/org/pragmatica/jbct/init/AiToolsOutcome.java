@@ -3,6 +3,7 @@ package org.pragmatica.jbct.init;
 import java.nio.file.Path;
 import java.util.List;
 
+
 /// Outcome of an AI-tools install/update operation.
 /// `installed` lists files written into the project's .claude/ directory;
 /// `skippedGlobal` lists files skipped because an equivalent already exists in

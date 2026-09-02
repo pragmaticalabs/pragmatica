@@ -293,15 +293,30 @@ class Java25ParserTest {
             """).isSuccess());
     }
 
+    /// Pins a KNOWN DIVERGENCE from javac, so it turns red if peglib later tightens the grammar.
+    ///
+    /// javac rejects `class record {}` — "as of release 14, 'record' is a restricted type name and
+    /// cannot be used for type declarations" — but the grammar's restricted set is only
+    /// `RestrictedTypeName <- < ('var' / 'yield') ![a-zA-Z0-9_$] >`, so `record` passes as a type
+    /// name. This sits in peglib's documented "wrongly accepted" bucket, not in jbct's code.
+    ///
+    /// Before 0.7.1 the surrounding cases (`record field;`, `void test(record r)`,
+    /// `new record()`) were also accepted; they are now rejected, which is why the previous
+    /// version of this test — which asserted the whole snippet parsed — stopped passing.
     @Test
-    void parseRecordAsTypeName() {
+    void parse_recordAsTypeName_stillAcceptedDespiteJavacRejectingIt() {
+        assertTrue(parser.parse("class record {}").isSuccess());
+    }
+
+    @Test
+    void parse_acceptsRecordAsVariableName() {
         assertTrue(parser.parse("""
-            class record {}
             class C {
-                record field;
-                void test(record r) {
-                    record local = new record();
+                void test() {
+                    int record = 3;
+                    record(record);
                 }
+                void record(int value) {}
             }
             """).isSuccess());
     }

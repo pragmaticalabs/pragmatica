@@ -54,20 +54,34 @@ public record CstNavigator(CstNode.NonTerminal node) {
                    .anyMatch(c -> hasRule(c, ruleName) && isNonEmpty(c));
     }
 
+    /// Text of the direct child named `ruleName`, descending one level to its leaf.
+    ///
+    /// Terminals count as leaves alongside Tokens: peglib 0.7.x emits a named lexer kind as a
+    /// `Token` but an INLINE literal as an anonymous `Terminal`, so a rule whose body is a bare
+    /// literal — `NumericType <- 'integer'i / ...` — bottoms out in a Terminal. Matching only
+    /// Tokens made every such lookup return empty, which surfaced as data types extracting as
+    /// "unknown".
     public Option<String> tokenText(String ruleName) {
         return node.children()
                    .stream()
                    .filter(c -> hasRule(c, ruleName))
                    .flatMap(c -> switch (c) {
             case CstNode.Token tok -> Stream.of(tok.text());
-            case CstNode.NonTerminal nt -> nt.children().stream().flatMap(cc -> cc instanceof CstNode.Token t
-                                                                                ? Stream.of(t.text())
-                                                                                : Stream.empty());
-            default -> Stream.empty();
+            case CstNode.Terminal term -> Stream.of(term.text());
+            case CstNode.NonTerminal nt -> nt.children().stream().flatMap(CstNavigator::leafText);
+            default -> Stream.<String> empty();
         })
                    .findFirst()
                    .map(Option::present)
                    .orElse(Option.empty());
+    }
+
+    private static Stream<String> leafText(CstNode node) {
+        return switch (node) {
+            case CstNode.Token tok -> Stream.of(tok.text());
+            case CstNode.Terminal term -> Stream.of(term.text());
+            default -> Stream.empty();
+        };
     }
 
     public Option<String> firstTokenText() {

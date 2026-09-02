@@ -11,14 +11,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.pragmatica.postgres.io.frontend;
+
+import java.nio.ByteBuffer;
+import java.nio.charset.Charset;
 
 import org.pragmatica.postgres.io.Encoder;
 import org.pragmatica.postgres.message.frontend.FIndicators;
 
-import java.nio.ByteBuffer;
-import java.nio.charset.Charset;
 
 /**
  * See <a href="https://www.postgresql.org/docs/11/protocol-message-formats.html">Postgres message formats</a>
@@ -49,7 +49,7 @@ public class FIndicatorsEncoder implements Encoder<FIndicators> {
     }
 
     void sync(ByteBuffer buffer) {
-        buffer.put((byte) 'S');
+        buffer.put((byte)'S');
         buffer.putInt(4);
     }
 }

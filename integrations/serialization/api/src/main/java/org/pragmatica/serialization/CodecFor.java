@@ -6,6 +6,7 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
+
 /// Declares that codecs are needed for external types that cannot be annotated with @Codec directly.
 ///
 /// Use on any class in the module (typically the *Codecs registry class) to declare

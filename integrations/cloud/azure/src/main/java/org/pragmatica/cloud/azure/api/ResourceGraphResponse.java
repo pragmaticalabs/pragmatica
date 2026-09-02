@@ -14,12 +14,12 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.cloud.azure.api;
 
 import java.util.List;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+
 
 /// Response from Azure Resource Graph query.
 @JsonIgnoreProperties(ignoreUnknown = true)

@@ -1,5 +1,9 @@
 package org.pragmatica.jbct.cli;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.concurrent.Callable;
+
 import org.pragmatica.jbct.init.AiToolsInstaller;
 import org.pragmatica.jbct.init.AiToolsOutcome;
 import org.pragmatica.jbct.init.GitHubVersionResolver;
@@ -7,93 +11,49 @@ import org.pragmatica.jbct.init.PersistenceAdder;
 import org.pragmatica.jbct.init.ProjectInitializer;
 import org.pragmatica.jbct.init.SliceProjectInitializer;
 
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.concurrent.Callable;
-
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 
+
 /// Init command - create new JBCT project.
-@Command(
- name = "init",
- description = "Initialize a new JBCT project",
- mixinStandardHelpOptions = true)
+@Command(name = "init", description = "Initialize a new JBCT project", mixinStandardHelpOptions = true, versionProvider = JbctCommand.VersionProvider.class)
 public class InitCommand implements Callable<Integer> {
-    @Parameters(
-    paramLabel = "<directory>",
-    description = "Project directory (default: current directory)",
-    arity = "0..1")
+    @Parameters(paramLabel = "<directory>", description = "Project directory (default: current directory)", arity = "0..1")
     Path projectDir;
 
-    @Option(
-    names = {"--group-id", "-g"},
-    description = "Maven group ID (default: com.example)",
-    defaultValue = "com.example")
+    @Option(names = {"--group-id", "-g"}, description = "Maven group ID (default: com.example)", defaultValue = "com.example")
     String groupId;
 
-    @Option(
-    names = {"--artifact-id", "-a"},
-    description = "Maven artifact ID (default: directory name)")
+    @Option(names = {"--artifact-id", "-a"}, description = "Maven artifact ID (default: directory name)")
     String artifactId;
 
-    @Option(
-    names = {"--slice"},
-    description = "Create an Aether slice project",
-    hidden = true)
-    boolean slice;
-
-    @Option(
-    names = {"--no-slice"},
-    description = "Create a plain JBCT project (no Aether slice)")
+    @Option(names = {"--no-slice"}, description = "Create a plain JBCT project (no Aether slice)")
     boolean noSlice;
 
-    @Option(
-    names = {"--name"},
-    description = "Slice name (default: HelloWorld)",
-    defaultValue = "HelloWorld")
+    @Option(names = {"--name"}, description = "Slice name (default: HelloWorld)", defaultValue = "HelloWorld")
     String sliceName;
 
-    @Option(
-    names = {"--with-persistence"},
-    description = "Add PostgreSQL persistence support (pg-codegen, schema, persistence interface)")
+    @Option(names = {"--with-persistence"}, description = "Add PostgreSQL persistence support (pg-codegen, schema, persistence interface)")
     boolean withPersistence;
 
-    @Option(
-    names = {"--ai-only"},
-    description = "Only install AI tools (skip project files)")
+    @Option(names = {"--ai-only"}, description = "Only install AI tools (skip project files)")
     boolean aiOnly;
 
-    @Option(
-    names = {"--no-ai"},
-    description = "Skip AI tools installation")
+    @Option(names = {"--no-ai"}, description = "Skip AI tools installation")
     boolean noAi;
 
-    @Option(
-    names = {"--force", "-f"},
-    description = "Overwrite existing files")
+    @Option(names = {"--force", "-f"}, description = "Overwrite existing files")
     boolean force;
 
-    @Option(
-    names = {"--pragmatica-version"},
-    description = "Override pragmatica-lite version")
+    @Option(names = {"--pragmatica-version"}, description = "Override pragmatica-lite version")
     String pragmaticaVersion;
 
-    @Option(
-    names = {"--aether-version"},
-    description = "Override aether version (slice projects only)")
+    @Option(names = {"--aether-version"}, description = "Override aether version (slice projects only)")
     String aetherVersion;
 
-    @Option(
-    names = {"--jbct-version"},
-    description = "Override jbct-maven-plugin version")
+    @Option(names = {"--jbct-version"}, description = "Override jbct-maven-plugin version")
     String jbctVersion;
-
-    @Option(
-    names = {"--version"},
-    description = "Override all dependency versions (pragmatica-lite, aether, jbct)")
-    String version;
 
     @Override
     public Integer call() {
@@ -101,16 +61,16 @@ public class InitCommand implements Callable<Integer> {
         if (!isValidPackageName(groupId)) {
             System.err.println("Error: Invalid group ID '" + groupId + "'");
             System.err.println("Group ID must be a valid Java package name (e.g., com.example, org.mycompany)");
+
             return 1;
         }
         // Determine project directory
         projectDir = org.pragmatica.lang.Option.option(projectDir)
-                        .map(Path::toAbsolutePath)
-                        .or(() -> Path.of(System.getProperty("user.dir")));
+                                               .map(Path::toAbsolutePath)
+                                               .or(() -> Path.of(System.getProperty("user.dir")));
         // Determine artifact ID from directory name if not specified
-        artifactId = org.pragmatica.lang.Option.option(artifactId)
-                        .or(() -> projectDir.getFileName()
-                                            .toString());
+        artifactId = org.pragmatica.lang.Option.option(artifactId).or(() -> projectDir.getFileName()
+                                                                                      .toString());
         var projectCreated = false;
         var aiToolsInstalled = false;
         var isSliceProject = !noSlice;
@@ -119,22 +79,27 @@ public class InitCommand implements Callable<Integer> {
             var projectType = isSliceProject
                               ? "slice"
                               : "JBCT";
+
             System.out.println("Initializing " + projectType + " project in: " + projectDir);
             // Create directory if it's a new project
             if (!Files.exists(projectDir)) {
-                try{
+                try {
                     Files.createDirectories(projectDir);
                 } catch (java.io.IOException e) {
                     System.err.println("Error: Failed to create directory: " + e.getMessage());
+
                     return 1;
                 }
             }
+
             var projectResult = isSliceProject
                                 ? initSliceProject()
                                 : initRegularProject();
+
             if (!projectResult) {
                 return 1;
             }
+
             projectCreated = true;
             // Add persistence support if requested
             if (withPersistence && isSliceProject) {
@@ -144,6 +109,7 @@ public class InitCommand implements Callable<Integer> {
         // Install AI tools unless --no-ai
         if (!noAi) {
             var installer = AiToolsInstaller.aiToolsInstaller(projectDir);
+
             if (Files.exists(installer.claudeDir()) && !force) {
                 System.out.println();
                 System.out.println("Skipped: .claude/ (already exists, use --force to overwrite)");
@@ -177,6 +143,7 @@ public class InitCommand implements Callable<Integer> {
                 System.out.println("  3. Run 'mvn verify' to check everything works");
             }
         }
+
         if (aiToolsInstalled) {
             System.out.println();
             System.out.println("AI tools installed. In Claude Code:");
@@ -184,6 +151,7 @@ public class InitCommand implements Callable<Integer> {
             System.out.println("  - Use jbct-coder agent for code generation");
             System.out.println("  - Use jbct-reviewer agent for code review");
         }
+
         return 0;
     }
 
@@ -195,6 +163,7 @@ public class InitCommand implements Callable<Integer> {
                                                                   effectiveJbctVersion(),
                                                                   effectivePragmaticaVersion())
                           : ProjectInitializer.projectInitializer(projectDir, groupId, artifactId);
+
         return initializer.initialize()
                           .onFailure(cause -> System.err.println("Error: " + cause.message()))
                           .onSuccess(this::printCreatedFiles)
@@ -222,43 +191,44 @@ public class InitCommand implements Callable<Integer> {
         System.out.println("Created project files:");
         for (var file : createdFiles) {
             var relativePath = projectDir.relativize(file);
+
             System.out.println("  " + relativePath);
         }
     }
 
     private boolean hasVersionOverrides() {
-        return org.pragmatica.lang.Option.option(version)
-                  .isPresent() || org.pragmatica.lang.Option.option(pragmaticaVersion)
-                                     .isPresent() || org.pragmatica.lang.Option.option(aetherVersion)
-                                                        .isPresent() || org.pragmatica.lang.Option.option(jbctVersion)
-                                                                           .isPresent();
+        return org.pragmatica.lang.Option.option(pragmaticaVersion)
+                                         .isPresent() || org.pragmatica.lang.Option.option(aetherVersion)
+                                                                                   .isPresent() || org.pragmatica.lang.Option.option(jbctVersion)
+                                                                                                                             .isPresent();
     }
 
     private String effectivePragmaticaVersion() {
         return org.pragmatica.lang.Option.option(pragmaticaVersion)
-                  .orElse(() -> org.pragmatica.lang.Option.option(version))
-                  .or(GitHubVersionResolver::defaultPragmaticaVersion);
+                                         .or(GitHubVersionResolver::defaultPragmaticaVersion);
     }
 
     private String effectiveAetherVersion() {
         return org.pragmatica.lang.Option.option(aetherVersion)
-                  .orElse(() -> org.pragmatica.lang.Option.option(version))
-                  .or(GitHubVersionResolver::defaultAetherVersion);
+                                         .or(GitHubVersionResolver::defaultAetherVersion);
     }
 
     private String effectiveJbctVersion() {
         return org.pragmatica.lang.Option.option(jbctVersion)
-                  .orElse(() -> org.pragmatica.lang.Option.option(version))
-                  .or(GitHubVersionResolver::defaultJbctVersion);
+                                         .or(GitHubVersionResolver::defaultJbctVersion);
     }
 
     private boolean initSliceProject() {
         var initializer = hasVersionOverrides()
-                          ? SliceProjectInitializer.sliceProjectInitializer(projectDir, groupId, artifactId, sliceName,
+                          ? SliceProjectInitializer.sliceProjectInitializer(projectDir,
+                                                                            groupId,
+                                                                            artifactId,
+                                                                            sliceName,
                                                                             effectiveJbctVersion(),
                                                                             effectivePragmaticaVersion(),
                                                                             effectiveAetherVersion())
                           : SliceProjectInitializer.sliceProjectInitializer(projectDir, groupId, artifactId, sliceName);
+
         return initializer.flatMap(init -> init.initialize()
                                                .onSuccess(createdFiles -> printSliceCreatedFiles(createdFiles,
                                                                                                  init.sliceName())))
@@ -272,8 +242,10 @@ public class InitCommand implements Callable<Integer> {
         System.out.println("Created slice project files:");
         for (var file : createdFiles) {
             var relativePath = projectDir.relativize(file);
+
             System.out.println("  " + relativePath);
         }
+
         System.out.println();
         System.out.println("Slice: " + sliceName);
     }
@@ -282,10 +254,12 @@ public class InitCommand implements Callable<Integer> {
         if (!outcome.installed().isEmpty()) {
             System.out.println("Installed AI tools to: .claude/");
         }
+
         if (!outcome.skippedGlobal().isEmpty()) {
             System.out.println("Skipped " + outcome.skippedGlobal().size()
-                               + " file(s) already present globally in ~/.claude/");
+                              + " file(s) already present globally in ~/.claude/");
         }
+
         if (outcome.isEmpty()) {
             System.out.println("No AI tools files to install.");
         }
@@ -293,12 +267,12 @@ public class InitCommand implements Callable<Integer> {
 
     private static boolean isValidPackageName(String packageName) {
         return org.pragmatica.lang.Option.option(packageName)
-                  .filter(s -> !s.isBlank())
-                  .filter(s -> !s.startsWith(".") && !s.endsWith("."))
-                  .filter(s -> !s.contains(".."))
-                  .map(s -> s.split("\\."))
-                  .filter(InitCommand::allValidIdentifiers)
-                  .isPresent();
+                                         .filter(s -> !s.isBlank())
+                                         .filter(s -> !s.startsWith(".") && !s.endsWith("."))
+                                         .filter(s -> !s.contains(".."))
+                                         .map(s -> s.split("\\."))
+                                         .filter(InitCommand::allValidIdentifiers)
+                                         .isPresent();
     }
 
     private static boolean allValidIdentifiers(String[] segments) {
@@ -307,16 +281,17 @@ public class InitCommand implements Callable<Integer> {
                 return false;
             }
         }
+
         return true;
     }
 
     private static boolean isValidJavaIdentifier(String identifier) {
         return org.pragmatica.lang.Option.option(identifier)
-                  .filter(s -> !s.isEmpty())
-                  .filter(s -> Character.isJavaIdentifierStart(s.charAt(0)))
-                  .filter(InitCommand::allCharsValidIdentifierParts)
-                  .filter(s -> !isJavaKeyword(s))
-                  .isPresent();
+                                         .filter(s -> !s.isEmpty())
+                                         .filter(s -> Character.isJavaIdentifierStart(s.charAt(0)))
+                                         .filter(InitCommand::allCharsValidIdentifierParts)
+                                         .filter(s -> !isJavaKeyword(s))
+                                         .isPresent();
     }
 
     private static boolean allCharsValidIdentifierParts(String identifier) {
@@ -325,18 +300,13 @@ public class InitCommand implements Callable<Integer> {
                 return false;
             }
         }
+
         return true;
     }
 
     private static boolean isJavaKeyword(String word) {
         return switch (word) {
-            case "abstract", "assert", "boolean", "break", "byte", "case", "catch", "char",
-            "class", "const", "continue", "default", "do", "double", "else", "enum",
-            "extends", "final", "finally", "float", "for", "goto", "if", "implements",
-            "import", "instanceof", "int", "interface", "long", "native", "new", "package",
-            "private", "protected", "public", "return", "short", "static", "strictfp",
-            "super", "switch", "synchronized", "this", "throw", "throws", "transient",
-            "try", "void", "volatile", "while", "true", "false", "null" -> true;
+            case "abstract", "assert", "boolean", "break", "byte", "case", "catch", "char", "class", "const", "continue", "default", "do", "double", "else", "enum", "extends", "final", "finally", "float", "for", "goto", "if", "implements", "import", "instanceof", "int", "interface", "long", "native", "new", "package", "private", "protected", "public", "return", "short", "static", "strictfp", "super", "switch", "synchronized", "this", "throw", "throws", "transient", "try", "void", "volatile", "while", "true", "false", "null" -> true;
             default -> false;
         };
     }

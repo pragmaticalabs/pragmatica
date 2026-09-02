@@ -14,7 +14,6 @@ import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Deac
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.NodeArtifactPutReceived;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.SliceState;
-import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -89,7 +88,6 @@ class ClusterDeploymentFsmTest {
                                                     router,
                                                     stubTopologyManager(SELF),
                                                     stubSchemaOrchestrator(),
-                                                    HealthSignalSink.noop(),
                                                     Set::of,
                                                     Set::of,
                                                     Set::of,
@@ -190,7 +188,6 @@ class ClusterDeploymentFsmTest {
                                                                     router,
                                                                     stubTopologyManager(SELF),
                                                                     stubSchemaOrchestrator(),
-                                                                    HealthSignalSink.noop(),
                                                                     Set::of,
                                                                     Set::of,
                                                                     Set::of,

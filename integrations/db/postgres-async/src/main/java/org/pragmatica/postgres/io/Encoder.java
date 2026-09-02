@@ -11,13 +11,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.pragmatica.postgres.io;
-
-import org.pragmatica.postgres.message.Message;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
+
+import org.pragmatica.postgres.message.Message;
+
 
 /**
  * Encoder writes messages to byte buffer.
@@ -25,7 +25,6 @@ import java.nio.charset.Charset;
  * @author Antti Laisi
  */
 public interface Encoder<T extends Message> {
-
     /**
      * @return Message class
      */
@@ -44,5 +43,4 @@ public interface Encoder<T extends Message> {
     default int estimateSize(T msg, Charset encoding) {
         return 256;
     }
-
 }

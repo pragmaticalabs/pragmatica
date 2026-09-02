@@ -5,10 +5,12 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Result.unitResult;
+
 
 /// Default implementation of storage readiness gate.
 /// Uses AtomicReference for thread-safe state transitions and
@@ -17,6 +19,7 @@ final class DefaultStorageReadinessGate implements StorageReadinessGate {
     private static final Logger log = LoggerFactory.getLogger(DefaultStorageReadinessGate.class);
 
     private final AtomicReference<ReadinessState> state = new AtomicReference<>(ReadinessState.LOADING_SNAPSHOT);
+
     private final Promise<Unit> readReady = Promise.promise();
     private final Promise<Unit> writeReady = Promise.promise();
 
@@ -54,6 +57,7 @@ final class DefaultStorageReadinessGate implements StorageReadinessGate {
     public void snapshotLoaded() {
         if (!state.compareAndSet(ReadinessState.LOADING_SNAPSHOT, ReadinessState.SNAPSHOT_LOADED)) {
             log.warn("snapshotLoaded() called in unexpected state: {}", state.get());
+
             return;
         }
 
@@ -66,6 +70,7 @@ final class DefaultStorageReadinessGate implements StorageReadinessGate {
     public void consensusSynced() {
         if (!state.compareAndSet(ReadinessState.SNAPSHOT_LOADED, ReadinessState.READY)) {
             log.warn("consensusSynced() called in unexpected state: {}", state.get());
+
             return;
         }
 

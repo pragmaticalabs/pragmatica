@@ -214,7 +214,7 @@ Aether is a **runtime** - it runs your slices and handles distribution transpare
 ## Next Steps
 
 - [Getting Started](../slice-developers/getting-started.md) - Set up your first Aether project
-- [Architecture](../contributors/architecture.md) - Deep dive into how Aether works
+- [Architecture](../architecture/00-overview.md) - Deep dive into how Aether works
 - [Migration Guide](../slice-developers/migration-guide.md) - Extract slices from existing code
 - [Scaling Guide](../operators/scaling.md) - Understand scaling behavior
 - [CLI Reference](../reference/cli.md) - Command-line tools

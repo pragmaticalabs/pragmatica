@@ -1,5 +1,10 @@
 package org.pragmatica.config.source;
 
+import java.nio.file.Path;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Set;
+
 import org.pragmatica.config.ConfigError;
 import org.pragmatica.config.ConfigSource;
 import org.pragmatica.config.toml.TomlDocument;
@@ -9,15 +14,11 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
 
-import java.nio.file.Path;
-import java.util.LinkedHashMap;
-import java.util.Map;
-import java.util.Set;
-
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
+
 
 /// Configuration source backed by a TOML file.
 ///
@@ -141,14 +142,16 @@ public final class TomlConfigSource implements ConfigSource {
 
     private static Map<String, String> flattenDocument(TomlDocument document) {
         var result = new LinkedHashMap<String, String>();
-        document.sectionNames()
-                .forEach(section -> flattenSection(document, section, result));
+
+        document.sectionNames().forEach(section -> flattenSection(document, section, result));
+
         return result;
     }
 
     private static void flattenSection(TomlDocument document, String section, Map<String, String> result) {
         var prefix = sectionPrefix(section);
         var sectionValues = document.getSection(section);
+
         sectionValues.forEach((key, value) -> result.put(prefix + key, value));
     }
 
@@ -156,6 +159,7 @@ public final class TomlConfigSource implements ConfigSource {
         if (Verify.Is.empty(section)) {
             return "";
         }
+
         return section + ".";
     }
 }

@@ -13,8 +13,9 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.net;
+
+import java.util.Map;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.messaging.Message;
@@ -22,7 +23,6 @@ import org.pragmatica.messaging.StreamType;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.serialization.Codec;
 
-import java.util.Map;
 
 @Codec
 public sealed interface NetworkMessage extends Message.Wired {

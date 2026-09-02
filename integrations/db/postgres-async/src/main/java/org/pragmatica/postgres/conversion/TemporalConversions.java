@@ -1,45 +1,43 @@
 package org.pragmatica.postgres.conversion;
 
-import org.pragmatica.postgres.Oid;
-import org.pragmatica.postgres.net.SqlException;
-
 import java.time.*;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeFormatterBuilder;
 import java.time.format.DateTimeParseException;
 
-import static org.pragmatica.postgres.conversion.Common.returnError;
+import org.pragmatica.postgres.Oid;
+import org.pragmatica.postgres.net.SqlException;
+
 import static java.time.format.DateTimeFormatter.ISO_LOCAL_DATE;
 import static java.time.format.DateTimeFormatter.ISO_LOCAL_TIME;
+import static org.pragmatica.postgres.conversion.Common.returnError;
+
 
 /**
  * @author Antti Laisi
  * @author Sergiy Yevtushenko
  */
 final class TemporalConversions {
-    private TemporalConversions() {
-    }
+    private TemporalConversions() {}
 
-    private static final DateTimeFormatter TIMESTAMP_FORMAT = new DateTimeFormatterBuilder()
-        .parseCaseInsensitive()
-        .append(ISO_LOCAL_DATE)
-        .appendLiteral(' ')
-        .append(ISO_LOCAL_TIME)
-        .toFormatter();
+    private static final DateTimeFormatter TIMESTAMP_FORMAT = new DateTimeFormatterBuilder().parseCaseInsensitive()
+                                                                                            .append(ISO_LOCAL_DATE)
+                                                                                            .appendLiteral(' ')
+                                                                                            .append(ISO_LOCAL_TIME)
+                                                                                            .toFormatter();
 
-    private static final DateTimeFormatter TIMESTAMPTZ_FORMAT = new DateTimeFormatterBuilder()
-        .parseCaseInsensitive()
-        .append(ISO_LOCAL_DATE)
-        .appendLiteral(' ')
-        .append(ISO_LOCAL_TIME)
-        .appendOffset("+HH:mm", "+00")
-        .toFormatter();
+    private static final DateTimeFormatter TIMESTAMPTZ_FORMAT = new DateTimeFormatterBuilder().parseCaseInsensitive()
+                                                                                              .append(ISO_LOCAL_DATE)
+                                                                                              .appendLiteral(' ')
+                                                                                              .append(ISO_LOCAL_TIME)
+                                                                                              .appendOffset("+HH:mm",
+                                                                                                            "+00")
+                                                                                              .toFormatter();
 
-    private static final DateTimeFormatter TIMEZ_FORMAT = new DateTimeFormatterBuilder()
-        .parseCaseInsensitive()
-        .append(ISO_LOCAL_TIME)
-        .appendOffset("+HH:mm", "+00")
-        .toFormatter();
+    private static final DateTimeFormatter TIMEZ_FORMAT = new DateTimeFormatterBuilder().parseCaseInsensitive()
+                                                                                        .append(ISO_LOCAL_TIME)
+                                                                                        .appendOffset("+HH:mm", "+00")
+                                                                                        .toFormatter();
 
     static LocalDate toLocalDate(Oid oid, String value) {
         try {

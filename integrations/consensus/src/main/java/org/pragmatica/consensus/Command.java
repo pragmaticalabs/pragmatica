@@ -13,8 +13,8 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus;
+
 /// Marker interface for state machine commands.
 /// Commands must be immutable and their execution must be deterministic.
 public interface Command {}

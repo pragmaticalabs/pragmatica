@@ -184,4 +184,136 @@ class ReplicaRegistryTest {
             assertThat(reg.replicasFor(STREAM, PARTITION).getFirst().confirmedOffset()).isEqualTo(42L);
         }
     }
+
+    /// #12 — `CAUGHT_UP` never downgrades, so a peer that stops acking FREEZES at its last good
+    /// watermark and goes on reading as healthy forever. `freshPeersFor` additionally requires a peer to
+    /// be within `caughtUpMaxLagOffsets` of the freshest peer watermark, measured relative to the peer
+    /// set because the read router runs on nodes that hold no local partition.
+    @Nested
+    class FreshPeersTests {
+        private static final NodeId NODE_C = NodeId.randomNodeId();
+
+        /// Bound of 10 keeps the arithmetic legible; production default is 1024.
+        private ReplicaRegistry bounded() {
+            return replicaRegistry(10L);
+        }
+
+        private static void caughtUpAt(ReplicaRegistry reg, NodeId node, long offset) {
+            reg.registerReplica(STREAM, PARTITION, node);
+            reg.updateWatermark(STREAM, PARTITION, node, offset);
+        }
+
+        @Test
+        void freshPeersFor_peerWithinBound_isKept() {
+            var reg = bounded();
+
+            caughtUpAt(reg, NODE_B, 100L);
+            caughtUpAt(reg, NODE_C, 95L);
+
+            assertThat(reg.freshPeersFor(STREAM, PARTITION, NODE_A)).extracting(ReplicaDescriptor::nodeId)
+                                                                    .containsExactlyInAnyOrder(NODE_B, NODE_C);
+        }
+
+        @Test
+        void freshPeersFor_peerLaggingBeyondBound_isDropped() {
+            // The defect: NODE_C stopped acking at 50 while writes continued to 100. Its state is still
+            // CAUGHT_UP and always will be, so only the lag distinguishes it.
+            var reg = bounded();
+
+            caughtUpAt(reg, NODE_B, 100L);
+            caughtUpAt(reg, NODE_C, 50L);
+
+            assertThat(reg.freshPeersFor(STREAM, PARTITION, NODE_A)).extracting(ReplicaDescriptor::nodeId)
+                                                                    .containsExactly(NODE_B);
+            assertThat(reg.replicasFor(STREAM, PARTITION)).as("the frozen peer is still CAUGHT_UP — only freshness rejects it")
+                                                          .filteredOn(descriptor -> descriptor.nodeId().equals(NODE_C))
+                                                          .allMatch(descriptor -> descriptor.state() == ReplicationState.CAUGHT_UP);
+        }
+
+        @Test
+        void freshPeersFor_writeIdlePartition_keepsEveryPeer() {
+            // The reason the bound is in OFFSETS and not a TTL: nothing refreshes a watermark on a quiet
+            // partition, so a time-based rule would age out the healthiest streams in the cluster.
+            var reg = bounded();
+
+            caughtUpAt(reg, NODE_B, 7L);
+            caughtUpAt(reg, NODE_C, 7L);
+
+            assertThat(reg.freshPeersFor(STREAM, PARTITION, NODE_A)).hasSize(2);
+        }
+
+        @Test
+        void freshPeersFor_syncingPeer_isExcludedRegardlessOfLag() {
+            var reg = bounded();
+
+            caughtUpAt(reg, NODE_B, 100L);
+            reg.registerReplica(STREAM, PARTITION, NODE_C);
+
+            assertThat(reg.freshPeersFor(STREAM, PARTITION, NODE_A)).extracting(ReplicaDescriptor::nodeId)
+                                                                    .containsExactly(NODE_B);
+        }
+
+        @Test
+        void freshPeersFor_syncingPeerWithinLagBound_isStillExcluded() {
+            // The test above does NOT actually pin the state filter: a freshly registered peer seeds at
+            // offset -1, so the lag check alone (100 - -1 = 101 > 10) would exclude it even with the
+            // CAUGHT_UP filter deleted. Mutation testing caught that — removing the state filter left the
+            // whole suite green. This case isolates it: NODE_C sits at the SAME watermark as the freshest
+            // peer, so its lag is 0 and ONLY its SYNCING state can reject it.
+            var reg = bounded();
+
+            caughtUpAt(reg, NODE_B, 100L);
+            reg.registerReplica(STREAM, PARTITION, NODE_C);
+            reg.updateWatermark(STREAM, PARTITION, NODE_C, 100L, ReplicationState.SYNCING);
+
+            assertThat(reg.replicasFor(STREAM, PARTITION)).filteredOn(descriptor -> descriptor.nodeId().equals(NODE_C))
+                                                          .allMatch(descriptor -> descriptor.confirmedOffset() == 100L
+                                                                               && descriptor.state() == ReplicationState.SYNCING);
+            assertThat(reg.freshPeersFor(STREAM, PARTITION, NODE_A)).as("a SYNCING peer is not a read source however fresh its watermark")
+                                                                    .extracting(ReplicaDescriptor::nodeId)
+                                                                    .containsExactly(NODE_B);
+        }
+
+        @Test
+        void freshPeersFor_self_isExcludedEvenWhenFreshest() {
+            // Self is never lag-checked and never counted: a node does not ack itself, so its descriptor
+            // keeps the SYNCING/-1 seed (#593) and its CAUGHT_UP comes from backfill completion.
+            var reg = bounded();
+
+            caughtUpAt(reg, NODE_A, 100L);
+            caughtUpAt(reg, NODE_B, 100L);
+
+            assertThat(reg.freshPeersFor(STREAM, PARTITION, NODE_A)).extracting(ReplicaDescriptor::nodeId)
+                                                                    .containsExactly(NODE_B);
+        }
+
+        @Test
+        void freshPeersFor_singlePeer_isAlwaysFresh() {
+            // Documented limitation, pinned so it is a decision rather than a surprise: one sample admits
+            // no relative judgement, so an only peer is compared against itself and can never be stale.
+            var reg = bounded();
+
+            caughtUpAt(reg, NODE_B, 1L);
+
+            assertThat(reg.freshPeersFor(STREAM, PARTITION, NODE_A)).hasSize(1);
+        }
+
+        @Test
+        void freshPeersFor_unboundedRegistry_admitsArbitraryLag() {
+            var reg = replicaRegistry(ReplicaRegistry.CAUGHT_UP_LAG_UNBOUNDED);
+
+            caughtUpAt(reg, NODE_B, 1_000_000L);
+            caughtUpAt(reg, NODE_C, 0L);
+
+            assertThat(reg.freshPeersFor(STREAM, PARTITION, NODE_A)).hasSize(2);
+        }
+
+        @Test
+        void replicaRegistry_defaultFactory_isBoundedNotInert() {
+            // An unwired path must come up GUARDED. A fence whose provenance is never exercised is a
+            // fence that does nothing — this pins that the no-arg factory is not the unbounded one.
+            assertThat(replicaRegistry().caughtUpMaxLagOffsets()).isEqualTo(ReplicaRegistry.DEFAULT_CAUGHT_UP_MAX_LAG_OFFSETS)
+                                                                 .isNotEqualTo(ReplicaRegistry.CAUGHT_UP_LAG_UNBOUNDED);
+        }
+    }
 }

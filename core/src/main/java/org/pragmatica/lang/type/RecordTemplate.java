@@ -1,14 +1,15 @@
 package org.pragmatica.lang.type;
 
+import java.util.List;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
+import java.util.stream.Stream;
+
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Tuple.Tuple2;
 import org.pragmatica.lang.Tuple.Tuple3;
 
-import java.util.List;
-import java.util.stream.Collectors;
-import java.util.stream.IntStream;
-import java.util.stream.Stream;
 
 public interface RecordTemplate<T extends Record> {
     default Result<T> load(KeyToValue mapping) {
@@ -16,9 +17,7 @@ public interface RecordTemplate<T extends Record> {
     }
 
     Result<T> load(String prefix, KeyToValue mapping);
-
     FieldNames fieldNames();
-
     List<Tuple3<String, TypeToken<?>, Fn1<?, T>>> extractors();
 
     @SuppressWarnings("unused")
@@ -30,19 +29,17 @@ public interface RecordTemplate<T extends Record> {
         record fieldValues(List<?> values) implements FieldValues {
             @Override
             public int formatParameters(StringBuilder builder, int startIndex) {
-                var paramString = IntStream.range(startIndex, startIndex + values.size())
+                var paramString = IntStream.range(startIndex,
+                                                  startIndex + values.size())
                                            .mapToObj(i -> "$" + i)
                                            .collect(Collectors.joining(", "));
+
                 builder.append(paramString);
 
                 return startIndex + values.size();
             }
         }
-
-        var values = extractors().stream()
-                                 .map(Tuple3::last)
-                                 .map(fn -> fn.apply(record))
-                                 .toList();
+        var values = extractors().stream().map(Tuple3::last).map(fn -> fn.apply(record)).toList();
 
         return new fieldValues(values);
     }

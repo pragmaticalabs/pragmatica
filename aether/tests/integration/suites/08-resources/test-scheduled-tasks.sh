@@ -13,7 +13,7 @@ test_cluster_ready() {
 
 test_scheduled_tasks_endpoint() {
     local tasks
-    tasks=$(api_get "/api/scheduled-tasks")
+    tasks=$(api_get "/api/v1/scheduled-tasks")
     assert_ne "$tasks" "" "Scheduled tasks endpoint returns data"
 }
 
@@ -27,7 +27,7 @@ test_task_last_execution_advances() {
     wait_for "scheduled task registered (post-bootstrap activation)" \
              '[ -n "$(aether_field "scheduled-tasks list" tasks.0.configSection 2>/dev/null)" ]' \
              120 || {
-        log_fail "No scheduled tasks present in /api/scheduled-tasks within 120s of cluster ready"
+        log_fail "No scheduled tasks present in /api/v1/scheduled-tasks within 120s of cluster ready"
         return 1
     }
 
@@ -94,7 +94,7 @@ test_task_last_execution_advances() {
     local attempt hint_node
     for attempt in 1 2 3; do
         set +e
-        inject_response=$(node_api_post "$registered_offset" "/api/scheduled-tasks/inject" "$inject_body" 2>&1)
+        inject_response=$(node_api_post "$registered_offset" "/api/v1/scheduled-tasks/inject" "$inject_body" 2>&1)
         inject_rc=$?
         set -e
         if [ "$inject_rc" -eq 0 ]; then

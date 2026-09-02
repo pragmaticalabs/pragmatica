@@ -14,7 +14,6 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.json;
 
 import org.pragmatica.lang.Cause;
@@ -27,6 +26,7 @@ import tools.jackson.core.exc.StreamWriteException;
 import tools.jackson.databind.DatabindException;
 import tools.jackson.databind.exc.InvalidDefinitionException;
 import tools.jackson.databind.exc.MismatchedInputException;
+
 
 /// Typed error causes for JSON serialization/deserialization operations.
 /// Maps common Jackson exceptions to domain-friendly error types with context.
@@ -93,6 +93,7 @@ public sealed interface JsonError extends Cause {
         @Override
         public String message() {
             var base = "Type mismatch: expected " + expectedType + ", got " + actualValue;
+
             return path.map(p -> base + " at " + p)
                        .or(base);
         }
@@ -118,30 +119,20 @@ public sealed interface JsonError extends Cause {
     static Cause fromException(Throwable throwable) {
         return switch (throwable) {
             // Serialization failures (write-side)
-            case StreamWriteException e ->
-            SerializationFailed.serializationFailed(e.getMessage(), e);
+            case StreamWriteException e -> SerializationFailed.serializationFailed(e.getMessage(), e);
             // Type mismatches during deserialization
-            case MismatchedInputException e ->
-            TypeMismatch.typeMismatch(Option.option(e.getTargetType())
-                                            .map(Class::getSimpleName)
-                                            .or("unknown"),
-                                      extractValue(e),
-                                      e.getPathReference());
-            case InvalidDefinitionException e ->
-            TypeMismatch.typeMismatch(Option.option(e.getType())
-                                            .map(t -> t.getTypeName())
-                                            .or("unknown"),
-                                      "invalid definition",
-                                      e.getPathReference());
+            case MismatchedInputException e -> TypeMismatch.typeMismatch(Option.option(e.getTargetType()).map(Class::getSimpleName).or("unknown"),
+                                                                         extractValue(e),
+                                                                         e.getPathReference());
+            case InvalidDefinitionException e -> TypeMismatch.typeMismatch(Option.option(e.getType()).map(t -> t.getTypeName()).or("unknown"),
+                                                                           "invalid definition",
+                                                                           e.getPathReference());
             // JSON parsing errors (malformed JSON)
-            case StreamReadException e ->
-            InvalidJson.invalidJson(e.getMessage(), extractLocation(e));
+            case StreamReadException e -> InvalidJson.invalidJson(e.getMessage(), extractLocation(e));
             // General databind failures
-            case DatabindException e ->
-            DeserializationFailed.deserializationFailed(e.getMessage(), e);
+            case DatabindException e -> DeserializationFailed.deserializationFailed(e.getMessage(), e);
             // Other Jackson exceptions
-            case JacksonException e ->
-            DeserializationFailed.deserializationFailed(e.getMessage(), e);
+            case JacksonException e -> DeserializationFailed.deserializationFailed(e.getMessage(), e);
             // Non-Jackson exceptions - use generic wrapper
             default -> Causes.fromThrowable(throwable);
         };
@@ -167,7 +158,6 @@ public sealed interface JsonError extends Cause {
     }
 
     private static Option<String> extractLocation(StreamReadException e) {
-        return Option.option(e.getLocation())
-                     .map(loc -> "line " + loc.getLineNr() + ", column " + loc.getColumnNr());
+        return Option.option(e.getLocation()).map(loc -> "line " + loc.getLineNr() + ", column " + loc.getColumnNr());
     }
 }

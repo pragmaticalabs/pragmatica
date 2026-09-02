@@ -6,6 +6,7 @@ package org.pragmatica.aether.cli.cluster;
 
 import java.util.List;
 
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.NodeUserDataRenderer;
@@ -40,7 +41,7 @@ sealed interface UserDataTemplate {
                          String nodeId,
                          int nodeIndex,
                          String clusterSecret,
-                         String clusterName,
+                         ClusterName clusterName,
                          TomlDocument composedConfig) {
         return NodeUserDataRenderer.render(config,
                                            source,
@@ -58,7 +59,7 @@ sealed interface UserDataTemplate {
                          String nodeId,
                          int nodeIndex,
                          String clusterSecret,
-                         String clusterName,
+                         ClusterName clusterName,
                          TomlDocument composedConfig,
                          List<SshPublicKey> sshPublicKeys) {
         return render(config,
@@ -79,7 +80,7 @@ sealed interface UserDataTemplate {
                          String nodeId,
                          int nodeIndex,
                          String clusterSecret,
-                         String clusterName,
+                         ClusterName clusterName,
                          TomlDocument composedConfig,
                          List<SshPublicKey> sshPublicKeys,
                          List<String> peers) {
@@ -97,7 +98,7 @@ sealed interface UserDataTemplate {
 
     @Contract
     static void emitIdentityEnv(Fn2<Unit, String, String> emit,
-                                String clusterName,
+                                ClusterName clusterName,
                                 NodeRole role,
                                 Option<String> clusterSecretRef,
                                 Fn1<String, String> envLookup) {

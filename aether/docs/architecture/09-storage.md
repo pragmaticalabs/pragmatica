@@ -1,5 +1,7 @@
 # Distributed Storage (DHT)
 
+**Status:** Current
+
 This document describes the distributed hash table used for artifact storage and caching.
 
 ## DHT Architecture
@@ -48,6 +50,8 @@ graph TB
 | **Single** | 1 node | 1 node | Non-critical data |
 
 Production default: 3 replicas with quorum consistency (W=2, R=2).
+
+> **Not all DHT-hosted data uses the quorum default.** The quorum modes above apply to the artifact repository and cache. Aether's *system maps* (slice-node, HTTP-route, and endpoint state) run over `DHTConfig.FULL` (W=R=1) on an in-memory engine — see [Consistency and Durability](#consistency-and-durability) for the guarantee that keyspace actually provides.
 
 ## Artifact Storage
 
@@ -198,8 +202,25 @@ New nodes receive their partition assignments from the hash ring and pull data f
 
 Used by CacheService infrastructure slice for cluster-wide caching.
 
+## Consistency and Durability
+
+The DHT hosts two classes of data with **different** guarantees. The distinction matters for operators, because one class is a deliberate downgrade from the consensus plane and is easy to mistake for a strongly-consistent store.
+
+| Data class | Config | Consistency | Durability | Under partition |
+|------------|--------|-------------|------------|-----------------|
+| Artifact repository, cache | Quorum (default RF=3, W=R=2) | Quorum LWW by HLC — eventual, concurrent writes LWW-dropped; anti-entropy repairs replicas | In-memory, replicated; artifacts also resolvable from Maven | Majority |
+| **System maps** — slice-node, HTTP-route, endpoint | `DHTConfig.FULL` (W=R=1) | **Eventual, not linearizable** — a write acks after one local put, a read returns the first non-empty response with no version reconciliation and **no read-repair**; `FULL` also disables anti-entropy and rebalancing (`DHTConfig.FULL`, `integrations/dht/.../DHTConfig.java`; wired at `AetherNode.java:1069` via `AetherMaps`) | **Not crash-durable** — in-memory engine (`MemoryStorageEngine`, `AetherNode.java:421`); a full-cluster restart loses this state | Side with ≥1 replica serves; **reads may be stale across nodes** |
+
+**The system-maps guarantee is a deliberate downgrade, not only a performance win.** Slice-node, HTTP-route, and endpoint state was migrated *off* consensus (where it was CP and quorum-durable) *onto* the eventual DHT `ReplicatedMap` to trade O(N) consensus write-amplification for O(3) replication (feature-catalog rows 94/95/152/281). The trade Aether accepts in return: these reads can be stale across nodes, and the state is reconstructed (not recovered) after a full restart. This is safe because the maps are **derived, self-healing state** — nodes re-register their slices, routes, and endpoints on activation, so the cluster re-converges rather than depending on the DHT surviving a crash.
+
+The same DHT storage engine also **enforces** the cluster's ownership fence: `HighWaterOwnerEpochGate` rejects a deposed writer's entity-keyed put by reading a node-local high-water whose **authority is the consensus KV** — an enforcement point inside the engine, not a DHT keyspace (neither FULL nor quorum). See [`../reference/guarantees.md`](../reference/guarantees.md) §2 (`dht.epoch-gate`).
+
+The precise per-operation rows (`dht.write` / `dht.read`, system maps vs. artifact repo) are in [`../reference/guarantees.md`](../reference/guarantees.md) §2 and §7; the architecture-level summary and the partition contract are in [`14-consistency-and-partitions.md`](14-consistency-and-partitions.md); the scope statement is in [`../reference/known-limitations.md`](../reference/known-limitations.md). This section does not restate those — it points to them. *Tracking: [#384](https://github.com/pragmaticalabs/pragmatica/issues/384); the `FULL` docstring honesty fix was [#380](https://github.com/pragmaticalabs/pragmatica/issues/380).*
+
 ## Related Documents
 
 - [02-deployment.md](02-deployment.md) - Artifact resolution during slice loading
 - [01-consensus.md](01-consensus.md) - KV-Store (separate from DHT)
 - [04-networking.md](04-networking.md) - DHT messages via MessageRouter
+- [14-consistency-and-partitions.md](14-consistency-and-partitions.md) - Per-operation consistency & partition contract (DHT rows summarized)
+- [../reference/known-limitations.md](../reference/known-limitations.md) - Scope: the DHT downgrade as a stated boundary

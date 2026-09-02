@@ -1,14 +1,15 @@
 package org.pragmatica.config;
 
+import java.util.concurrent.atomic.AtomicReference;
+
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
-import java.util.concurrent.atomic.AtomicReference;
-
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Result.unitResult;
+
 
 /// Thread-safe holder for the global ConfigService instance.
 ///
@@ -23,16 +24,18 @@ sealed interface ConfigServiceHolder {
 
     static Result<Unit> setInstance(ConfigService service) {
         INSTANCE.set(service);
+
         return unitResult();
     }
 
     static Result<Unit> clear() {
         INSTANCE.set(null);
+
         return unitResult();
     }
 
     record unused() implements ConfigServiceHolder {
-        public static Result<unused> unused() {
+        public static Result<unused > unused() {
             return success(new unused());
         }
     }

@@ -247,7 +247,7 @@ class ClusterTargetMixinTest {
         @Test
         void parsesClusterFlagViaPicocli_intoScaleCommand() {
             var command = new ClusterScaleCommand();
-            new CommandLine(command).parseArgs("--cluster", "scale-target", "--core", "5");
+            new CommandLine(command).parseArgs("--cluster", "scale-target", "--role", "core", "--count", "5");
 
             assertEquals("scale-target", command.clusterTarget.clusterName());
         }

@@ -14,14 +14,7 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.r2dbc;
-
-import org.pragmatica.lang.Functions.Fn1;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -30,9 +23,16 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
+
 
 /// Bridge utilities for converting Reactive Streams Publisher to Promise.
 /// Provides seamless integration between reactive and promise-based APIs.
@@ -48,45 +48,47 @@ public interface ReactiveOperations {
     @SuppressWarnings("unchecked")
     static <T> Promise<T> fromPublisher(Publisher<? extends T> publisher, Fn1<R2dbcError, Throwable> errorMapper) {
         return Promise.promise(promise -> {
-                                   var valueRef = new AtomicReference<T>();
-                                   var countRef = new AtomicInteger(0);
-                                   ((Publisher<T>) publisher).subscribe(new Subscriber<T>() {
-            private Subscription subscription;
+            var valueRef = new AtomicReference<T>();
+            var countRef = new AtomicInteger(0);
 
-            @Override
-            public void onSubscribe(Subscription s) {
-                                                                            subscription = s;
-                                                                            s.request(2);
-                                                                        }
+            ((Publisher<T>) publisher).subscribe(new Subscriber<T>() {
+                private Subscription subscription;
 
-            @Override
-            public void onNext(T item) {
-                                                                            var count = countRef.incrementAndGet();
-                                                                            if (count == 1) {
-                                                                                valueRef.set(item);
-                                                                            } else if (count == 2) {
-                                                                                subscription.cancel();
-                                                                                promise.resolve(new R2dbcError.MultipleResults(count).result());
-                                                                            }
-                                                                        }
+                @Override
+                public void onSubscribe(Subscription s) {
+                    subscription = s;
+                    s.request(2);
+                }
 
-            @Override
-            public void onError(Throwable t) {
-                                                                            promise.resolve(errorMapper.apply(t)
-                                                                                                       .result());
-                                                                        }
+                @Override
+                public void onNext(T item) {
+                    var count = countRef.incrementAndGet();
 
-            @Override
-            public void onComplete() {
-                                                                            var count = countRef.get();
-                                                                            if (count == 0) {
-                                                                                promise.resolve(R2dbcError.NoResult.INSTANCE.result());
-                                                                            } else if (count == 1) {
-                                                                                promise.resolve(Result.success(valueRef.get()));
-                                                                            }
-                                                                        }
+                    if (count == 1) {
+                        valueRef.set(item);
+                    } else if (count == 2) {
+                        subscription.cancel();
+                        promise.resolve(new R2dbcError.MultipleResults(count).result());
+                    }
+                }
+
+                @Override
+                public void onError(Throwable t) {
+                    promise.resolve(errorMapper.apply(t).result());
+                }
+
+                @Override
+                public void onComplete() {
+                    var count = countRef.get();
+
+                    if (count == 0) {
+                        promise.resolve(R2dbcError.NoResult.INSTANCE.result());
+                    } else if (count == 1) {
+                        promise.resolve(Result.success(valueRef.get()));
+                    }
+                }
+            });
         });
-                               });
     }
 
     /// Converts a Publisher to a Promise, returning the first value if present.
@@ -100,40 +102,40 @@ public interface ReactiveOperations {
     static <T> Promise<Option<T>> firstFromPublisher(Publisher<? extends T> publisher,
                                                      Fn1<R2dbcError, Throwable> errorMapper) {
         return Promise.promise(promise -> {
-                                   var completed = new AtomicBoolean(false);
-                                   ((Publisher<T>) publisher).subscribe(new Subscriber<T>() {
-            private Subscription subscription;
+            var completed = new AtomicBoolean(false);
 
-            @Override
-            public void onSubscribe(Subscription s) {
-                                                                            subscription = s;
-                                                                            s.request(1);
-                                                                        }
+            ((Publisher<T>) publisher).subscribe(new Subscriber<T>() {
+                private Subscription subscription;
 
-            @Override
-            public void onNext(T item) {
-                                                                            if (completed.compareAndSet(false, true)) {
-                                                                                subscription.cancel();
-                                                                                promise.resolve(Result.success(Option.option(item)));
-                                                                            }
-                                                                        }
+                @Override
+                public void onSubscribe(Subscription s) {
+                    subscription = s;
+                    s.request(1);
+                }
 
-            @Override
-            public void onError(Throwable t) {
-                                                                            if (completed.compareAndSet(false, true)) {
-                                                                                promise.resolve(errorMapper.apply(t)
-                                                                                                           .result());
-                                                                            }
-                                                                        }
+                @Override
+                public void onNext(T item) {
+                    if (completed.compareAndSet(false, true)) {
+                        subscription.cancel();
+                        promise.resolve(Result.success(Option.option(item)));
+                    }
+                }
 
-            @Override
-            public void onComplete() {
-                                                                            if (completed.compareAndSet(false, true)) {
-                                                                                promise.resolve(Result.success(Option.none()));
-                                                                            }
-                                                                        }
+                @Override
+                public void onError(Throwable t) {
+                    if (completed.compareAndSet(false, true)) {
+                        promise.resolve(errorMapper.apply(t).result());
+                    }
+                }
+
+                @Override
+                public void onComplete() {
+                    if (completed.compareAndSet(false, true)) {
+                        promise.resolve(Result.success(Option.none()));
+                    }
+                }
+            });
         });
-                               });
     }
 
     /// Collects all values from a Publisher into a List.
@@ -147,30 +149,30 @@ public interface ReactiveOperations {
     static <T> Promise<List<T>> collectFromPublisher(Publisher<? extends T> publisher,
                                                      Fn1<R2dbcError, Throwable> errorMapper) {
         return Promise.promise(promise -> {
-                                   var results = Collections.synchronizedList(new ArrayList<T>());
-                                   ((Publisher<T>) publisher).subscribe(new Subscriber<T>() {
-            @Override
-            public void onSubscribe(Subscription s) {
-                                                                            s.request(Long.MAX_VALUE);
-                                                                        }
+            var results = Collections.synchronizedList(new ArrayList<T>());
 
-            @Override
-            public void onNext(T item) {
-                                                                            results.add(item);
-                                                                        }
+            ((Publisher<T>) publisher).subscribe(new Subscriber<T>() {
+                @Override
+                public void onSubscribe(Subscription s) {
+                    s.request(Long.MAX_VALUE);
+                }
 
-            @Override
-            public void onError(Throwable t) {
-                                                                            promise.resolve(errorMapper.apply(t)
-                                                                                                       .result());
-                                                                        }
+                @Override
+                public void onNext(T item) {
+                    results.add(item);
+                }
 
-            @Override
-            public void onComplete() {
-                                                                            promise.resolve(Result.success(results));
-                                                                        }
+                @Override
+                public void onError(Throwable t) {
+                    promise.resolve(errorMapper.apply(t).result());
+                }
+
+                @Override
+                public void onComplete() {
+                    promise.resolve(Result.success(results));
+                }
+            });
         });
-                               });
     }
 
     /// Convenience method with default error mapping.
@@ -189,22 +191,21 @@ public interface ReactiveOperations {
         return Promise.promise(promise -> publisher.subscribe(new Subscriber<Void>() {
             @Override
             public void onSubscribe(Subscription s) {
-                                                                  s.request(Long.MAX_VALUE);
-                                                              }
+                s.request(Long.MAX_VALUE);
+            }
 
             @Override
             public void onNext(Void item) {}
 
             @Override
             public void onError(Throwable t) {
-                                                                  promise.resolve(errorMapper.apply(t)
-                                                                                             .result());
-                                                              }
+                promise.resolve(errorMapper.apply(t).result());
+            }
 
             @Override
             public void onComplete() {
-                                                                  promise.resolve(Result.success(Unit.unit()));
-                                                              }
+                promise.resolve(Result.success(Unit.unit()));
+            }
         }));
     }
 

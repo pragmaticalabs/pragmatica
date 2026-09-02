@@ -7,7 +7,6 @@ package org.pragmatica.storage;
 /// @param accessCount number of accesses since last hint collection
 /// @param tierLevel the tier where the block resides on the originating node
 public record PrefetchHint(String blockIdHex, int accessCount, String tierLevel) {
-
     /// Factory method.
     public static PrefetchHint prefetchHint(String blockIdHex, int accessCount, String tierLevel) {
         return new PrefetchHint(blockIdHex, accessCount, tierLevel);

@@ -13,8 +13,11 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.dht;
+
+import java.util.Arrays;
+import java.util.function.Consumer;
+import java.util.zip.CRC32;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.dht.storage.StorageEngine;
@@ -24,9 +27,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
-import java.util.Arrays;
-import java.util.function.Consumer;
-import java.util.zip.CRC32;
 
 /// Local DHT node that handles storage operations.
 /// Provides local data access and can be integrated with MessageRouter
@@ -38,7 +38,11 @@ public final class DHTNode {
     private final DHTConfig config;
     private final HlcClock hlcClock;
 
-    private DHTNode(NodeId nodeId, StorageEngine storage, ConsistentHashRing<NodeId> ring, DHTConfig config, HlcClock hlcClock) {
+    private DHTNode(NodeId nodeId,
+                    StorageEngine storage,
+                    ConsistentHashRing<NodeId> ring,
+                    DHTConfig config,
+                    HlcClock hlcClock) {
         this.nodeId = nodeId;
         this.storage = storage;
         this.ring = ring;
@@ -72,6 +76,7 @@ public final class DHTNode {
                                   ConsistentHashRing<NodeId> ring,
                                   DHTConfig config) {
         var clock = HlcClock.hlcClock(nodeId);
+
         return new DHTNode(nodeId, storage, ring, config, clock);
     }
 
@@ -117,7 +122,11 @@ public final class DHTNode {
 
     /// Put a value to local storage with version tracking and the writer's owner epoch as the
     /// fencing token (#345 piece 1c).
-    public Promise<Boolean> putLocalVersioned(byte[] key, byte[] value, long version, long epochTerm, long epochCounter) {
+    public Promise<Boolean> putLocalVersioned(byte[] key,
+                                              byte[] value,
+                                              long version,
+                                              long epochTerm,
+                                              long epochCounter) {
         return storage.putVersioned(key, value, version, epochTerm, epochCounter);
     }
 
@@ -167,8 +176,7 @@ public final class DHTNode {
 
     /// Handle a get request (for message routing integration).
     @Contract
-    public void handleGetRequest(DHTMessage.GetRequest request,
-                                 Consumer<DHTMessage.GetResponse> responseHandler) {
+    public void handleGetRequest(DHTMessage.GetRequest request, Consumer<DHTMessage.GetResponse> responseHandler) {
         storage.get(request.key())
                .onSuccess(value -> responseHandler.accept(new DHTMessage.GetResponse(request.requestId(),
                                                                                      nodeId,
@@ -185,17 +193,20 @@ public final class DHTNode {
     /// stale-epoch reject surfaces as a failed `putVersioned` promise → `PutResponse(success=false,
     /// superseded=false)`, exactly the deposed-owner rejection the client re-resolves against.
     @Contract
-    public void handlePutRequest(DHTMessage.PutRequest request,
-                                 Consumer<DHTMessage.PutResponse> responseHandler) {
-        storage.putVersioned(request.key(), request.value(), request.version(), request.epochTerm(), request.epochCounter())
+    public void handlePutRequest(DHTMessage.PutRequest request, Consumer<DHTMessage.PutResponse> responseHandler) {
+        storage.putVersioned(request.key(),
+                             request.value(),
+                             request.version(),
+                             request.epochTerm(),
+                             request.epochCounter())
                .onSuccess(written -> responseHandler.accept(new DHTMessage.PutResponse(request.requestId(),
-                                                                                        nodeId,
-                                                                                        true,
-                                                                                        !written)))
+                                                                                       nodeId,
+                                                                                       true,
+                                                                                       !written)))
                .onFailure(_ -> responseHandler.accept(new DHTMessage.PutResponse(request.requestId(),
-                                                                                  nodeId,
-                                                                                  false,
-                                                                                  false)));
+                                                                                 nodeId,
+                                                                                 false,
+                                                                                 false)));
     }
 
     /// Handle a remove request (for message routing integration).
@@ -229,6 +240,7 @@ public final class DHTNode {
     public void handleDigestRequest(DHTMessage.DigestRequest request,
                                     Consumer<DHTMessage.DigestResponse> responseHandler) {
         var partition = Partition.at(request.partitionStart());
+
         storage.entriesForPartition(ring, partition)
                .onSuccess(entries -> responseHandler.accept(new DHTMessage.DigestResponse(request.requestId(),
                                                                                           nodeId,
@@ -243,15 +255,16 @@ public final class DHTNode {
     public void handleMigrationDataRequest(DHTMessage.MigrationDataRequest request,
                                            Consumer<DHTMessage.MigrationDataResponse> responseHandler) {
         var partition = Partition.at(request.partitionStart());
+
         storage.entriesForPartition(ring, partition)
                .onSuccess(entries -> responseHandler.accept(new DHTMessage.MigrationDataResponse(request.requestId(),
-                                                                                                  nodeId,
-                                                                                                  entries,
-                                                                                                  false)))
+                                                                                                 nodeId,
+                                                                                                 entries,
+                                                                                                 false)))
                .onFailure(_ -> responseHandler.accept(new DHTMessage.MigrationDataResponse(request.requestId(),
-                                                                                            nodeId,
-                                                                                            java.util.List.of(),
-                                                                                            false)));
+                                                                                           nodeId,
+                                                                                           java.util.List.of(),
+                                                                                           false)));
     }
 
     /// Apply migration data by merging received entries into local storage using versioned puts,
@@ -264,9 +277,9 @@ public final class DHTNode {
     /// Compute a CRC32 digest over sorted key-value entries.
     static byte[] computeDigest(java.util.List<DHTMessage.KeyValue> entries) {
         var crc = new CRC32();
-        entries.stream()
-               .sorted((a, b) -> Arrays.compare(a.key(), b.key()))
-               .forEach(kv -> updateCrc(crc, kv));
+
+        entries.stream().sorted((a, b) -> Arrays.compare(a.key(), b.key())).forEach(kv -> updateCrc(crc, kv));
+
         return longToBytes(crc.getValue());
     }
 
@@ -276,9 +289,6 @@ public final class DHTNode {
     }
 
     private static byte[] longToBytes(long value) {
-        return new byte[]{(byte) (value >>> 56), (byte) (value >>> 48),
-                          (byte) (value >>> 40), (byte) (value >>> 32),
-                          (byte) (value >>> 24), (byte) (value >>> 16),
-                          (byte) (value >>> 8), (byte) value};
+        return new byte[]{(byte)(value >>> 56), (byte)(value >>> 48), (byte)(value >>> 40), (byte)(value >>> 32), (byte)(value >>> 24), (byte)(value >>> 16), (byte)(value >>> 8), (byte) value};
     }
 }

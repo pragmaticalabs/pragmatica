@@ -6,6 +6,7 @@ package org.pragmatica.aether.api.routes;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.view.MembershipView;
 import org.pragmatica.aether.deployment.membership.view.MembershipView.MemberView;
 import org.pragmatica.aether.node.ManageableNode;
@@ -16,8 +17,10 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSlotValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.swim.SwimHealth;
 
 import java.lang.reflect.Proxy;
@@ -35,11 +38,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// slot has at most one occupant, the count is capped at `clusterSize` by construction. A dead
 /// predecessor that lingers present in the SWIM/membership view but is no longer any slot's
 /// occupant is NOT counted — its replacement occupies the slot. This pins the §1 defect #1
-/// over-count (`coreCount = S+1` against a target of `S`).
+/// over-count (`coreCount = S+1` against a target of `S`). #583 additionally pins the cold-start
+/// fallback (no slots seeded yet): it must be role-scoped, not raw SWIM presence — a
+/// cluster-minted worker present before slots exist must not inflate the "core" headcount.
 class ClusterTopologyRoutesSlotHeadcountTest {
     private static final NodeId SELF = new NodeId("self-node");
     private static final NodeId DEAD = new NodeId("dead-predecessor");
     private static final NodeId FRESH = new NodeId("fresh-replacement");
+    private static final MembershipFsm NO_FSM = null;
 
     private KVStore<AetherKey, AetherValue> kvStore;
 
@@ -59,11 +65,15 @@ class ClusterTopologyRoutesSlotHeadcountTest {
         };
     }
 
-    private ManageableNode nodeProxy() {
+    /// `fsm` is only reached by the cold-start (no-slots) branch — tests that seed slots pass
+    /// `NO_FSM` and never trigger it, matching StatusRoutesQuorumTest's proxy convention.
+    private ManageableNode nodeProxy(MembershipFsm fsm) {
         return (ManageableNode) Proxy.newProxyInstance(ManageableNode.class.getClassLoader(),
                                                        new Class[]{ManageableNode.class},
                                                        (_, method, _) -> switch (method.getName()) {
                                                            case "kvStore" -> kvStore;
+                                                           case "membershipFsm" -> fsm;
+                                                           case "self" -> SELF;
                                                            default -> throw new UnsupportedOperationException("Not in proxy: "
                                                                                                               + method.getName());
                                                        });
@@ -72,6 +82,36 @@ class ClusterTopologyRoutesSlotHeadcountTest {
     private void seedSlot(String slotId, NodeId occupant, long epoch, Option<NodeId> superseded) {
         kvStore.process(kvStore.createBatch(List.of(new KVCommand.Put<>(ProvisioningSlotKey.provisioningSlotKey(slotId),
                                             new ProvisioningSlotValue(1L, 2L, Option.some(occupant), epoch, superseded)))));
+    }
+
+    private static MembershipFsm fsmWithSelfAsCore() {
+        var fsm = MembershipFsm.membershipFsm();
+
+        promoteCore(fsm, SELF);
+
+        return fsm;
+    }
+
+    private static MembershipFsm fsmWithSelfCoreAndPresentWorker(NodeId worker) {
+        var fsm = fsmWithSelfAsCore();
+
+        promoteWorker(fsm, worker);
+
+        return fsm;
+    }
+
+    private static void promoteCore(MembershipFsm fsm, NodeId id) {
+        fsm.onSwimHealthy(id, 1L);
+        fsm.onMemberDescriptor(labeledInfo(id, Map.of(NodeInfo.LABEL_ROLE, "core")));
+    }
+
+    private static void promoteWorker(MembershipFsm fsm, NodeId id) {
+        fsm.onSwimHealthy(id, 1L);
+        fsm.onMemberDescriptor(labeledInfo(id, Map.of(NodeInfo.LABEL_ROLE, "worker")));
+    }
+
+    private static NodeInfo labeledInfo(NodeId id, Map<String, String> labels) {
+        return NodeInfo.nodeInfo(id, NodeAddress.nodeAddress("host-x", 6000).unwrap(), labels);
     }
 
     @Test
@@ -86,7 +126,7 @@ class ClusterTopologyRoutesSlotHeadcountTest {
         // number of HEALTHY slot occupants), never 3.
         var view = presentView(DEAD, FRESH, SELF);
 
-        var count = ClusterTopologyRoutes.slotDerivedCoreCount(nodeProxy(), view);
+        var count = ClusterTopologyRoutes.slotDerivedCoreCount(nodeProxy(NO_FSM), view);
 
         var clusterSize = 2;
         assertThat(count).as("slot-derived headcount must not exceed clusterSize despite a lingering DEAD present entry")
@@ -102,20 +142,38 @@ class ClusterTopologyRoutesSlotHeadcountTest {
         seedSlot("1", SELF, 1L, Option.none());
         var view = presentView(SELF);
 
-        var count = ClusterTopologyRoutes.slotDerivedCoreCount(nodeProxy(), view);
+        var count = ClusterTopologyRoutes.slotDerivedCoreCount(nodeProxy(NO_FSM), view);
 
         assertThat(count).isEqualTo(1);
     }
 
     @Test
-    void coreCount_noSlotsSeeded_fallsBackToViewCount() {
-        // Cold start: no slots in KV → fall back to the SWIM-derived count so a freshly
-        // bootstrapped self still reports as a core.
+    void coreCount_noSlotsSeeded_selfOnlyCore_fallsBackToObservedCoreCount() {
+        // Cold start: no slots in KV → fall back to the FSM's core-scoped observed-member count
+        // (mirrors StatusRoutes.fallbackQuorumStatus) so a freshly bootstrapped self still
+        // reports as a core.
         var view = presentView(SELF);
+        var fsm = fsmWithSelfAsCore();
 
-        var count = ClusterTopologyRoutes.slotDerivedCoreCount(nodeProxy(), view);
+        var count = ClusterTopologyRoutes.slotDerivedCoreCount(nodeProxy(fsm), view);
 
         assertThat(count).isEqualTo(1);
+    }
+
+    @Test
+    void coreCount_noSlotsSeeded_workerPresentAlongsideSelf_excludesWorkerFromCount() {
+        // #583 regression: before the fix, the cold-start fallback was view.presentMembers().size()
+        // — every SWIM-present member counted regardless of role, so a cluster-minted worker
+        // present before slots exist inflated the "core" headcount to 2. The FSM's core-scoped
+        // coreObservedMembers excludes the explicit worker at the source, keeping this at 1.
+        var worker = new NodeId("cluster-minted-worker");
+        var view = presentView(SELF, worker);
+        var fsm = fsmWithSelfCoreAndPresentWorker(worker);
+
+        var count = ClusterTopologyRoutes.slotDerivedCoreCount(nodeProxy(fsm), view);
+
+        assertThat(count).as("a present worker must not inflate the slot-derived core headcount during cold start")
+                         .isEqualTo(1);
     }
 
     private static MembershipView presentView(NodeId... present) {

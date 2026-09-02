@@ -14,7 +14,6 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.http.routing;
 
 import org.pragmatica.http.CodecError;
@@ -24,6 +23,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.type.TypeToken;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+
 
 /// Adapter that wraps JsonMapper to implement JsonCodec interface.
 /// Bridges between Jackson-based JSON serialization and the `byte[]` codec seam.

@@ -8,10 +8,14 @@ package org.pragmatica.aether.slice;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import javax.tools.ToolProvider;
+
 import java.io.IOException;
 import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -63,6 +67,87 @@ class SliceClassLoaderTest {
         var sliceClass = classLoader.loadClass("org.pragmatica.aether.slice.Slice");
 
         assertThat(sliceClass).isEqualTo(org.pragmatica.aether.slice.Slice.class);
+    }
+
+    // === javax.* Delegation (#613): third-party javax is slice-local, JDK javax stays parent-first ===
+
+    /// The bug #613 fixes: `javax.inject` is an ordinary third-party artifact, and blanket
+    /// parent-first delegation for `javax.` meant a slice could not bundle its own copy —
+    /// before the fix this call ended in ClassNotFoundException.
+    @Test
+    void loadClass_sliceBundledThirdPartyJavax_resolvesSliceCopy() throws Exception {
+        var classes = compile("javax/inject/Named.java",
+                              "package javax.inject; public class Named {}",
+                              List.of());
+        var classLoader = new SliceClassLoader(new URL[]{classes.toUri().toURL()}, getClass().getClassLoader());
+
+        var named = classLoader.loadClass("javax.inject.Named");
+
+        assertThat(named.getClassLoader()).isSameAs(classLoader);
+    }
+
+    /// The reason the fix probes instead of dropping `javax.` wholesale: `javax.xml` is shipped
+    /// by the JDK's `java.xml` module, and honoring a slice-bundled shadow (xml-apis style) would
+    /// split the namespace across two loaders — the classic cross-loader ClassCastException. The
+    /// shadow must be IGNORED. (Shadow bytes minted via --patch-module; vanilla javac refuses the
+    /// split package.)
+    @Test
+    void loadClass_jdkOwnedJavax_ignoresSliceShadow() throws Exception {
+        var classes = compile("javax/xml/parsers/DocumentBuilderFactory.java",
+                              "package javax.xml.parsers; public class DocumentBuilderFactory {}",
+                              List.of("--patch-module", "java.xml={SRC}"));
+        var classLoader = new SliceClassLoader(new URL[]{classes.toUri().toURL()}, getClass().getClassLoader());
+
+        var factory = classLoader.loadClass("javax.xml.parsers.DocumentBuilderFactory");
+
+        assertThat(factory).isEqualTo(javax.xml.parsers.DocumentBuilderFactory.class);
+    }
+
+    /// Mutation check from #613's acceptance: a slice-local `java.lang` shadow must still be
+    /// ignored. The shadow must be of an EXISTING class: a NOVEL java.lang class ends in the
+    /// JDK's own defineClass defense (SecurityException) on the correct code AND on a predicate
+    /// mutant — `super.loadClass` is parent-first-then-self, so it reaches the slice URLs after
+    /// the parent misses — which distinguishes nothing (measured, the first version of this test
+    /// expected CNFE and learned better). With a bundled `java.lang.String` shadow the outcomes
+    /// split: correct routing returns the bootstrap String; a mutant that drops the `java.`
+    /// prefix goes child-first into defineClass and dies with "Prohibited package name".
+    @Test
+    void loadClass_bundledJavaLangShadow_isIgnored_bootstrapClassWins() throws Exception {
+        var classes = compile("java/lang/String.java",
+                              "package java.lang; public class String {}",
+                              List.of("--patch-module", "java.base={SRC}"));
+        var classLoader = new SliceClassLoader(new URL[]{classes.toUri().toURL()}, getClass().getClassLoader());
+
+        var string = classLoader.loadClass("java.lang.String");
+
+        assertThat(string).isEqualTo(String.class);
+        assertThat(string.getClassLoader()).isNull();
+    }
+
+    /// Compiles one source file into tempDir and returns the classes directory. `{SRC}` in
+    /// options is replaced with the source root (for --patch-module).
+    private Path compile(String relativePath, String source, List<String> options) throws IOException {
+        var srcRoot = tempDir.resolve("src");
+        var sourceFile = srcRoot.resolve(relativePath);
+        Files.createDirectories(sourceFile.getParent());
+        Files.writeString(sourceFile, source);
+
+        var classes = tempDir.resolve("classes");
+        Files.createDirectories(classes);
+
+        var args = new ArrayList<String>();
+        for (var option : options) {
+            args.add(option.replace("{SRC}", srcRoot.toString()));
+        }
+        args.add("-d");
+        args.add(classes.toString());
+        args.add(sourceFile.toString());
+
+        var result = ToolProvider.getSystemJavaCompiler()
+                                 .run(null, null, null, args.toArray(String[]::new));
+        assertThat(result).as("javac exit code").isZero();
+
+        return classes;
     }
 
     // === Child-First Loading Tests ===

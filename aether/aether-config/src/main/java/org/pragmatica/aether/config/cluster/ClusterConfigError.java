@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.config.cluster;
 
+import java.util.List;
+
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.lang.Cause;
@@ -76,7 +78,8 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware {
         }
     }
 
-    record MissingContainerImage() implements ClusterConfigError {
+    enum MissingContainerImage implements ClusterConfigError {
+        INSTANCE;
         @Override
         public String message() {
             return "Missing container image. deployment.runtime.image is required when runtime.type = 'container'";
@@ -126,7 +129,7 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware {
         }
     }
 
-    record ValidationFailed(java.util.List<ClusterConfigError> errors) implements ClusterConfigError {
+    record ValidationFailed(List<ClusterConfigError> errors) implements ClusterConfigError {
         @Override
         public String message() {
             var sb = new StringBuilder("Cluster config validation failed:\n");
@@ -218,6 +221,39 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware {
         @Override
         public HttpStatus httpStatus() {
             return HttpStatus.CONFLICT;
+        }
+    }
+
+    /// A scale request named a role but not a source, and several sources declare that role.
+    ///
+    /// Refusing is the point: "scale cores to 5" across two core-bearing sources does not say which
+    /// one absorbs the change, and the former cluster-wide core count answered it by silently
+    /// rewriting one number.
+    record AmbiguousScaleSource(String role, List<String> sources) implements ClusterConfigError {
+        @Override
+        public String message() {
+            return "Role '" + role
+                 + "' is declared by " + sources.size()
+                 + " sources (" + String.join(", ", sources)
+                 + "). Re-run naming one with --source.";
+        }
+    }
+
+    /// A scale request named a (source, role) the topology does not declare.
+    ///
+    /// Adding the pair instead would turn a mistyped source name into a real provisioning target.
+    ///
+    /// The component is `sourceName`, not `source`: [Cause] already declares `source()` returning
+    /// `Option<Cause>`, so a record component named `source` fails to compile.
+    record UnknownScaleTarget(String sourceName, String role, List<String> known) implements ClusterConfigError {
+        @Override
+        public String message() {
+            return "Cluster topology declares no '" + role
+                 + "' nodes in source '" + sourceName
+                 + "'. Declared targets: " + (known.isEmpty()
+                                              ? "(none)"
+                                              : String.join(", ", known))
+                 + ". Change the topology with 'aether cluster apply', not with a scale.";
         }
     }
 
@@ -317,7 +353,8 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware {
         }
     }
 
-    record MissingSshKeyPath() implements ClusterConfigError {
+    enum MissingSshKeyPath implements ClusterConfigError {
+        INSTANCE;
         @Override
         public String message() {
             return "deployment.ssh.key_path must be specified";
@@ -329,6 +366,57 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware {
         public String message() {
             return "Invalid container image name: '" + value
                  + "'. Must match [a-zA-Z0-9][a-zA-Z0-9._/-]*:[a-zA-Z0-9._-]+";
+        }
+    }
+
+    /// #578: `ClusterConfigApplier` only actuates [DiffAction.ScaleUp]/[DiffAction.ScaleDown] — the
+    /// other 8 `DiffAction` variants (source/role add-remove, runtime change, field changes) fell
+    /// through a catch-all `default` that logged and returned success, so a config push naming one of
+    /// them silently no-op'd while the response claimed the apply worked. 501 (not 400) because the
+    /// request itself is well-formed and the diff plan is valid — the server just doesn't implement
+    /// this action kind on the `POST /api/cluster/config` path.
+    ///
+    /// The message deliberately does NOT tell the operator to destroy and re-bootstrap: unlike
+    /// `ImmutableFieldChange`, these actions are not actually unsupportable — `aether cluster apply
+    /// --resume`/`--rollback` route through `WaveExecutor`, which DOES provision/destroy/roll these
+    /// kinds live. The plain `aether cluster apply <file>` invocation just never reaches that engine;
+    /// it POSTs straight to this endpoint instead. That dispatch gap is a separate, structural finding
+    /// (flagged for its own fix, not asserted here as a working workaround) — this cause only
+    /// guarantees the one thing this layer can promise: the operation did not silently happen. It
+    /// carries the [DiffAction] itself, not a pre-rendered symbol/description pair, so a caller can
+    /// inspect which action kind failed rather than string-match the message.
+    record UnsupportedApplyAction(DiffAction action) implements ClusterConfigError {
+        @Override
+        public String message() {
+            return "Config action not supported for live apply on POST /api/cluster/config in this release: " + action.symbol()
+                 + " " + action.description()
+                 + ". No verified recovery is available through this endpoint yet — escalate rather than retry.";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.NOT_IMPLEMENTED;
+        }
+    }
+
+    /// #578 review: `ClusterConfigApplier.NoTopologyManager` is `ManagementServer`'s fallback wiring for a
+    /// node whose `clusterTopologyManager()` returns `Option.none()` — today that never happens
+    /// (`AetherNode` always returns `Option.some(...)`), so this path is currently dead, not live.
+    /// It still shipped as a silent-success stub — the identical shape of defect #578 fixes on the
+    /// live path — so a future conditional `clusterTopologyManager()` would reintroduce #578 through
+    /// this fallback with no test catching it. 503 (not 501): this is about THIS node's readiness,
+    /// not about the action kind being unimplemented — retrying the identical request against a node
+    /// that has a topology manager wired is the honest recovery.
+    enum ClusterTopologyManagerUnavailable implements ClusterConfigError {
+        INSTANCE;
+        @Override
+        public String message() {
+            return "This node has no cluster topology manager wired — it cannot apply cluster config "
+                 + "changes. Retry against a node where cluster topology management is active.";
+        }
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.SERVICE_UNAVAILABLE;
         }
     }
 

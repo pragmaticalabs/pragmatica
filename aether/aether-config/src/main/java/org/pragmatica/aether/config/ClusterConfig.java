@@ -9,13 +9,32 @@ import org.pragmatica.lang.Result;
 import static org.pragmatica.lang.Result.success;
 
 
-public record ClusterConfig(Environment environment, int nodes, boolean tls, PortsConfig ports, int coreMax) {
+public record ClusterConfig(Environment environment,
+                            int nodes,
+                            boolean tls,
+                            PortsConfig ports,
+                            int coreMax,
+                            int maxNodes) {
+    /// #298 — no fleet cap. Follows `coreMax`'s convention in this record: 0 means "unset", so an
+    /// existing config that never mentions `max_nodes` provisions unbounded exactly as before. A
+    /// default numeric cap would silently refuse provisioning on any cluster already larger than it.
+    public static final int UNBOUNDED = 0;
+
+    public static Result<ClusterConfig> clusterConfig(Environment environment,
+                                                      int nodes,
+                                                      boolean tls,
+                                                      PortsConfig ports,
+                                                      int coreMax,
+                                                      int maxNodes) {
+        return success(new ClusterConfig(environment, nodes, tls, ports, coreMax, maxNodes));
+    }
+
     public static Result<ClusterConfig> clusterConfig(Environment environment,
                                                       int nodes,
                                                       boolean tls,
                                                       PortsConfig ports,
                                                       int coreMax) {
-        return success(new ClusterConfig(environment, nodes, tls, ports, coreMax));
+        return clusterConfig(environment, nodes, tls, ports, coreMax, UNBOUNDED);
     }
 
     public static Result<ClusterConfig> clusterConfig(Environment environment,
@@ -30,18 +49,22 @@ public record ClusterConfig(Environment environment, int nodes, boolean tls, Por
     }
 
     public ClusterConfig withNodes(int nodes) {
-        return clusterConfig(environment, nodes, tls, ports, coreMax).unwrap();
+        return clusterConfig(environment, nodes, tls, ports, coreMax, maxNodes).unwrap();
     }
 
     public ClusterConfig withTls(boolean tls) {
-        return clusterConfig(environment, nodes, tls, ports, coreMax).unwrap();
+        return clusterConfig(environment, nodes, tls, ports, coreMax, maxNodes).unwrap();
     }
 
     public ClusterConfig withPorts(PortsConfig ports) {
-        return clusterConfig(environment, nodes, tls, ports, coreMax).unwrap();
+        return clusterConfig(environment, nodes, tls, ports, coreMax, maxNodes).unwrap();
     }
 
     public ClusterConfig withCoreMax(int coreMax) {
-        return clusterConfig(environment, nodes, tls, ports, coreMax).unwrap();
+        return clusterConfig(environment, nodes, tls, ports, coreMax, maxNodes).unwrap();
+    }
+
+    public ClusterConfig withMaxNodes(int maxNodes) {
+        return clusterConfig(environment, nodes, tls, ports, coreMax, maxNodes).unwrap();
     }
 }

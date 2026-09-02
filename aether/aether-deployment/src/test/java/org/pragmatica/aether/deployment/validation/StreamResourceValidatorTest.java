@@ -265,4 +265,145 @@ class StreamResourceValidatorTest {
             assertThat(List.of(new StreamResourceValidator.unused())).hasSize(1);
         }
     }
+
+    /// #576: `[streams.X]`/`[streams.X.consumers.Y]` keys that parse cleanly but never reach the
+    /// runtime (encryption-key-id, compression, a non-"earliest" auto-offset-reset, and every
+    /// per-consumer tuning key) are rejected here instead of silently accepted — see
+    /// [StreamResourceValidator#guardInertConfig]. Only non-default values trip the guard; a key
+    /// equal to the hardcoded default asserts nothing false.
+    @Nested
+    class InertConfigRejection {
+        @Test
+        void encryptionKeyIdIsRejected() {
+            var toml = """
+                    [streams.orders]
+                    version = "1.0.0"
+                    encryption-key-id = "kms-key-7"
+                    """;
+
+            var result = StreamResourceValidator.validate(Option.some(toml), APP_ARTIFACT);
+
+            result.onSuccessRun(() -> fail("Expected failure"))
+                  .onFailure(cause -> assertThat(((StreamValidationFailures) cause).failures())
+                                              .extracting(StreamValidationFailure::rule)
+                                              .contains(StreamResourceValidator.RULE_INERT_STREAM_CONFIG));
+        }
+
+        @Test
+        void lz4CompressionIsRejected() {
+            var toml = """
+                    [streams.orders]
+                    version = "1.0.0"
+                    compression = "lz4"
+                    """;
+
+            var result = StreamResourceValidator.validate(Option.some(toml), APP_ARTIFACT);
+
+            result.onSuccessRun(() -> fail("Expected failure"))
+                  .onFailure(cause -> assertThat(((StreamValidationFailures) cause).failures())
+                                              .extracting(StreamValidationFailure::rule)
+                                              .contains(StreamResourceValidator.RULE_INERT_STREAM_CONFIG));
+        }
+
+        @Test
+        void zstdCompressionIsRejected() {
+            var toml = """
+                    [streams.orders]
+                    version = "1.0.0"
+                    compression = "zstd"
+                    """;
+
+            var result = StreamResourceValidator.validate(Option.some(toml), APP_ARTIFACT);
+
+            result.onSuccessRun(() -> fail("Expected failure"))
+                  .onFailure(cause -> assertThat(((StreamValidationFailures) cause).failures())
+                                              .extracting(StreamValidationFailure::rule)
+                                              .contains(StreamResourceValidator.RULE_INERT_STREAM_CONFIG));
+        }
+
+        @Test
+        void explicitAutoOffsetResetLatestIsRejected() {
+            var toml = """
+                    [streams.orders]
+                    version = "1.0.0"
+                    auto-offset-reset = "latest"
+                    """;
+
+            var result = StreamResourceValidator.validate(Option.some(toml), APP_ARTIFACT);
+
+            result.onSuccessRun(() -> fail("Expected failure"))
+                  .onFailure(cause -> assertThat(((StreamValidationFailures) cause).failures())
+                                              .extracting(StreamValidationFailure::rule)
+                                              .contains(StreamResourceValidator.RULE_INERT_STREAM_CONFIG));
+        }
+
+        @Test
+        void nonDefaultConsumerBatchSizeIsRejected() {
+            var toml = """
+                    [streams.orders]
+                    version = "1.0.0"
+
+                    [streams.orders.consumers.billing]
+                    batch-size = 50
+                    """;
+
+            var result = StreamResourceValidator.validate(Option.some(toml), APP_ARTIFACT);
+
+            result.onSuccessRun(() -> fail("Expected failure"))
+                  .onFailure(cause -> assertThat(((StreamValidationFailures) cause).failures())
+                                              .extracting(StreamValidationFailure::rule)
+                                              .contains(StreamResourceValidator.RULE_INERT_CONSUMER_CONFIG));
+        }
+
+        @Test
+        void everyNonDefaultConsumerKeyIsRejected() {
+            var toml = """
+                    [streams.orders]
+                    version = "1.0.0"
+
+                    [streams.orders.consumers.billing]
+                    batch-size = 50
+                    processing = "parallel"
+                    on-failure = "skip"
+                    checkpoint-interval = "5s"
+                    max-retries = 10
+                    dead-letter = "orders-dlq"
+                    read-preference = "nearest"
+                    """;
+
+            var result = StreamResourceValidator.validate(Option.some(toml), APP_ARTIFACT);
+
+            result.onSuccessRun(() -> fail("Expected failure"))
+                  .onFailure(cause -> {
+                      var failures = ((StreamValidationFailures) cause).failures();
+                      assertThat(failures.stream()
+                                         .filter(f -> f.rule().equals(StreamResourceValidator.RULE_INERT_CONSUMER_CONFIG))
+                                         .count()).isEqualTo(7);
+                  });
+        }
+
+        @Test
+        void allDefaultsPresentExplicitlyIsAccepted() {
+            var toml = """
+                    [streams.orders]
+                    version = "1.0.0"
+                    compression = "none"
+                    auto-offset-reset = "earliest"
+
+                    [streams.orders.consumers.billing]
+                    batch-size = 1
+                    processing = "ordered"
+                    on-failure = "retry"
+                    checkpoint-interval = "1s"
+                    max-retries = 3
+                    dead-letter = ""
+                    read-preference = "governor"
+                    """;
+
+            var result = StreamResourceValidator.validate(Option.some(toml), APP_ARTIFACT);
+
+            result.onFailure(cause -> fail("Expected success: " + cause.message()))
+                  .onSuccess(validated -> assertThat(validated.resources()).containsKey("orders"));
+        }
+    }
 }

@@ -18,7 +18,7 @@
         <maven.compiler.release>25</maven.compiler.release>
         <maven.deploy.skip>true</maven.deploy.skip>
         <jbct.skip>false</jbct.skip>
-        <platform.version>1.0.0-rc2</platform.version>
+        <platform.version>1.0.0-rc3</platform.version>
     </properties>
 
     <dependencies>
@@ -126,6 +126,12 @@
                         <id>slice-install</id>
                         <goals>
                             <goal>install-slices</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>verify-slice</id>
+                        <goals>
+                            <goal>verify-slice</goal>
                         </goals>
                     </execution>
                 </executions>

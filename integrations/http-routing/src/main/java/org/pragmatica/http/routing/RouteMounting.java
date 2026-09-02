@@ -2,6 +2,7 @@ package org.pragmatica.http.routing;
 
 import java.util.stream.Stream;
 
+
 /// Shared route-composition seam for the deploy-either-way #198 versioning (§7).
 ///
 /// The generated `{Slice}Routes` exposes un-versioned route paths plus per-route version metadata;
@@ -36,8 +37,10 @@ public final class RouteMounting {
             var apiPrefix = source.versionRegistry().apiPrefix();
 
             return mode.isHeaderMode()
-                   ? source.routes().map(route -> Route.mountInHeaderMode(route, apiPrefix))
-                   : source.routes().map(route -> Route.mountInPathMode(route, apiPrefix));
+                   ? source.routes()
+                           .map(route -> Route.mountInHeaderMode(route, apiPrefix))
+                   : source.routes()
+                           .map(route -> Route.mountInPathMode(route, apiPrefix));
         }
 
         @Override

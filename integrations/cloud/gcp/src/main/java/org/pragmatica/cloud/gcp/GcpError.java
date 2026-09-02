@@ -14,7 +14,6 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.cloud.gcp;
 
 import org.pragmatica.json.JsonMapper;
@@ -24,6 +23,7 @@ import org.pragmatica.lang.utils.Causes;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+
 
 /// Typed error causes for GCP Cloud API operations.
 public sealed interface GcpError extends Cause {
@@ -39,7 +39,8 @@ public sealed interface GcpError extends Cause {
     record AuthError(String details, Option<Throwable> cause) implements GcpError {
         @Override
         public String message() {
-            return "GCP auth error: " + details + cause.map(t -> " - " + Causes.fromThrowable(t).message()).or("");
+            return "GCP auth error: " + details + cause.map(t -> " - " + Causes.fromThrowable(t).message())
+                                                       .or("");
         }
     }
 
@@ -47,7 +48,8 @@ public sealed interface GcpError extends Cause {
     record ParseError(String context, Option<Throwable> cause) implements GcpError {
         @Override
         public String message() {
-            return "Failed to parse GCP response: " + context + cause.map(t -> " - " + Causes.fromThrowable(t).message()).or("");
+            return "Failed to parse GCP response: " + context + cause.map(t -> " - " + Causes.fromThrowable(t).message())
+                                                                     .or("");
         }
     }
 
@@ -68,11 +70,7 @@ public sealed interface GcpError extends Cause {
 
     private static GcpError extractApiError(int statusCode, ErrorResponse resp) {
         return new ApiError(statusCode,
-                            Option.option(resp.error())
-                                  .map(ErrorResponse.ErrorBody::status)
-                                  .or("unknown"),
-                            Option.option(resp.error())
-                                  .map(ErrorResponse.ErrorBody::message)
-                                  .or("No details"));
+                            Option.option(resp.error()).map(ErrorResponse.ErrorBody::status).or("unknown"),
+                            Option.option(resp.error()).map(ErrorResponse.ErrorBody::message).or("No details"));
     }
 }

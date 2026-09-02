@@ -1,5 +1,7 @@
 # HTTP Request Routing
 
+**Status:** Current
+
 This document describes how HTTP requests are routed to slices, including cross-node forwarding and retry logic.
 
 ## Request Flow

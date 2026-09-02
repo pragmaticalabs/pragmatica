@@ -18,6 +18,83 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ClusterBootstrapConfigParserTest {
 
     @Nested
+    class FormatVersionGate {
+
+        @Test
+        void parse_currentConfigVersion_succeeds() {
+            ClusterBootstrapConfigParser.parse(forgeToml("config_version = \"1.0.0\"\n"))
+                .onFailure(cause -> Assertions.fail(cause.message()))
+                .onSuccess(config -> assertThat(config.configVersion()).isEqualTo("1.0.0"));
+        }
+
+        @Test
+        void parse_absentConfigVersion_failsNamedReBootstrap() {
+            ClusterBootstrapConfigParser.parse(forgeToml(""))
+                .onSuccess(config -> Assertions.fail("Expected failure"))
+                .onFailure(cause -> assertThat(cause.message()).contains("no config_version")
+                                                              .contains("re-bootstrap"));
+        }
+
+        @Test
+        void parse_olderConfigVersion_failsReBootstrap() {
+            ClusterBootstrapConfigParser.parse(forgeToml("config_version = \"0.9.0\"\n"))
+                .onSuccess(config -> Assertions.fail("Expected failure"))
+                .onFailure(cause -> assertThat(cause.message()).contains("0.9.0")
+                                                              .contains("re-bootstrap"));
+        }
+
+        @Test
+        void parse_newerConfigVersion_failsRestoreFromPreUpgrade() {
+            ClusterBootstrapConfigParser.parse(forgeToml("config_version = \"2.0.0\"\n"))
+                .onSuccess(config -> Assertions.fail("Expected failure"))
+                .onFailure(cause -> assertThat(cause.message()).contains("2.0.0")
+                                                              .contains("NEWER")
+                                                              .contains("restore"));
+        }
+
+        @Test
+        void parse_badVersionWithBrokenTemplate_failsWithVersionNotTemplateError() {
+            // #480: the config_version gate runs BEFORE template-inheritance resolution, so an
+            // old-format config with a broken template surfaces the Q1 re-bootstrap message rather
+            // than a "not found" template-resolution error (the cleaner operator diagnostic).
+            var toml = """
+                config_version = "0.9.0"
+
+                [cluster]
+                name = "dev-local"
+                version = "1.0.0"
+
+                [source.local]
+                type = "forge"
+                inherit = "nonexistent"
+
+                [source.local.core]
+                count = 3
+                """;
+
+            ClusterBootstrapConfigParser.parse(toml)
+                .onSuccess(config -> Assertions.fail("Expected failure"))
+                .onFailure(cause -> assertThat(cause.message()).contains("re-bootstrap")
+                                                              .doesNotContain("not found"));
+        }
+
+        private static String forgeToml(String versionLine) {
+            return versionLine + """
+
+                [cluster]
+                name = "dev-local"
+                version = "1.0.0"
+
+                [source.local]
+                type = "forge"
+
+                [source.local.core]
+                count = 3
+                """;
+        }
+    }
+
+    @Nested
     class HappyPath {
 
         @Test
@@ -40,7 +117,7 @@ class ClusterBootstrapConfigParserTest {
                 .onFailure(cause -> Assertions.fail(cause.message()))
                 .onSuccess(config -> {
                     assertThat(config.configVersion()).isEqualTo("1.0.0");
-                    assertThat(config.cluster().name()).isEqualTo("dev-local");
+                    assertThat(config.cluster().name().value()).isEqualTo("dev-local");
                     assertThat(config.cluster().version()).isEqualTo("1.0.0");
                     assertThat(config.sources()).containsKey("local");
 
@@ -75,6 +152,7 @@ class ClusterBootstrapConfigParserTest {
                 [source.hetzner-eu.core]
                 count = 5
                 instance_type = "cx41"
+                image = "snapshot-174523891"
                 runtime = "prod-container"
 
                 [source.hetzner-eu.worker]
@@ -91,7 +169,7 @@ class ClusterBootstrapConfigParserTest {
             ClusterBootstrapConfigParser.parse(toml)
                 .onFailure(cause -> Assertions.fail(cause.message()))
                 .onSuccess(config -> {
-                    assertThat(config.cluster().name()).isEqualTo("production");
+                    assertThat(config.cluster().name().value()).isEqualTo("production");
 
                     var source = config.sources().get("hetzner-eu");
                     assertThat(source.type()).isEqualTo(SourceType.CLOUD);
@@ -105,6 +183,8 @@ class ClusterBootstrapConfigParserTest {
                     assertThat(source.roles()).containsKey(NodeRole.CORE);
                     assertThat(source.roles()).containsKey(NodeRole.WORKER);
                     assertThat(source.roles().get(NodeRole.CORE).instanceType()).isEqualTo(Option.some("cx41"));
+                    assertThat(source.roles().get(NodeRole.CORE).image()).isEqualTo(Option.some("snapshot-174523891"));
+                    assertThat(source.roles().get(NodeRole.WORKER).image()).isEqualTo(Option.empty());
                     assertThat(source.roles().get(NodeRole.CORE).runtimeRef()).isEqualTo("prod-container");
                     assertThat(source.roles().get(NodeRole.WORKER).count()).isEqualTo(Option.some(3));
 
@@ -465,7 +545,7 @@ class ClusterBootstrapConfigParserTest {
 
             ClusterBootstrapConfigParser.parse(toml)
                 .onSuccess(_ -> Assertions.fail("Expected failure for wrong config_version"))
-                .onFailure(cause -> assertThat(cause.message()).contains("Unsupported config_version"));
+                .onFailure(cause -> assertThat(cause.message()).contains("NEWER").contains("restore"));
         }
 
         @Test
@@ -480,6 +560,75 @@ class ClusterBootstrapConfigParserTest {
             ClusterBootstrapConfigParser.parse(toml)
                 .onSuccess(_ -> Assertions.fail("Expected failure for missing cluster.name"))
                 .onFailure(cause -> assertThat(cause.message()).contains("cluster.name"));
+        }
+    }
+
+    /// S7 — a source's `provider` is optional (forge / ssh / docker have none) but a present-but-invalid
+    /// value must fail loudly, not silently resolve to `Option.empty()`. Absent → ok/empty; valid →
+    /// resolved; invalid → parse failure naming the bad value and the valid provider names.
+    @Nested
+    class ProviderValidation {
+        private static final String CLOUD_WITH_PROVIDER = """
+            config_version = "1.0.0"
+
+            [cluster]
+            name = "production"
+            version = "1.0.0"
+
+            [source.hetzner-eu]
+            type = "cloud"
+            provider = "%s"
+            credentials = "${secrets:hetzner-api-key}"
+            region = "eu-central"
+
+            [source.hetzner-eu.core]
+            count = 3
+            instance_type = "cx41"
+            runtime = "prod-container"
+
+            [runtime.prod-container]
+            type = "container"
+            image = "ghcr.io/pragmaticalabs/aether-node:1.0.0"
+            """;
+
+        @Test
+        void parse_validProvider_resolvesProvider() {
+            ClusterBootstrapConfigParser.parse(CLOUD_WITH_PROVIDER.formatted("hetzner"))
+                .onFailure(cause -> Assertions.fail(cause.message()))
+                .onSuccess(config -> assertThat(config.sources().get("hetzner-eu").provider())
+                    .isEqualTo(Option.some(CloudProviderName.HETZNER)));
+        }
+
+        @Test
+        void parse_invalidProvider_failsNamingBadValueAndValidNames() {
+            ClusterBootstrapConfigParser.parse(CLOUD_WITH_PROVIDER.formatted("hetnzer"))
+                .onSuccess(config -> Assertions.fail("Expected a parse failure for a typo'd provider, not a silent drop"))
+                .onFailure(cause -> assertThat(cause.message())
+                    .contains("hetnzer")
+                    .contains("hetzner")
+                    .contains("aws"));
+        }
+
+        @Test
+        void parse_absentProvider_succeedsWithEmptyProvider() {
+            var toml = """
+                config_version = "1.0.0"
+
+                [cluster]
+                name = "dev-local"
+                version = "1.0.0"
+
+                [source.local]
+                type = "forge"
+
+                [source.local.core]
+                count = 3
+                """;
+
+            ClusterBootstrapConfigParser.parse(toml)
+                .onFailure(cause -> Assertions.fail(cause.message()))
+                .onSuccess(config -> assertThat(config.sources().get("local").provider())
+                    .isEqualTo(Option.empty()));
         }
     }
 }

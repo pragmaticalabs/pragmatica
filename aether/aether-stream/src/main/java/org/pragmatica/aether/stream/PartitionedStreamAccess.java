@@ -615,8 +615,25 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
     private Promise<Long> routeToOwner(NodeId owner, int partition, byte[] bytes, long timestamp) {
         return owner.equals(selfNodeId)
                ? publishLocal(partition, bytes, timestamp)
-               : forwardClient.map(client -> client.publishRemote(owner, streamName, partition, bytes, timestamp))
+               : forwardClient.map(client -> forwardToOwner(client, owner, partition, bytes, timestamp))
                               .or(() -> publishLocal(partition, bytes, timestamp));
+    }
+
+    /// #506: wrap the single owner-forward in the shared bounded retry so the app publish path absorbs the
+    /// same transient owner-config-lag race the management/API write path ({@link StreamWriteRouter}) and
+    /// {@link DefaultStreamPublisher} already do (parity via {@link StreamForwardRetry}). Only this
+    /// remote-forward arm retries; the self-owner and no-owner/no-client fail-soft local arms in
+    /// {@link #routeToOwner} are unchanged.
+    private Promise<Long> forwardToOwner(StreamForwardClient client,
+                                         NodeId owner,
+                                         int partition,
+                                         byte[] bytes,
+                                         long timestamp) {
+        return StreamForwardRetry.withBoundedRetry(() -> client.publishRemote(owner,
+                                                                              streamName,
+                                                                              partition,
+                                                                              bytes,
+                                                                              timestamp));
     }
 
     /// Local publish on the owner. With `minSyncReplicas > 1` the publish does not resolve until

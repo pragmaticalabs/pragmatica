@@ -14,19 +14,19 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.http;
-
-import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Option;
 
 import java.net.http.HttpConnectTimeoutException;
 import java.net.http.HttpTimeoutException;
 import java.time.Duration;
 
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
+
 import static org.pragmatica.http.HttpClientError.ConnectionFailed.connectionFailed;
 import static org.pragmatica.http.HttpClientError.Failure.failure;
 import static org.pragmatica.http.HttpClientError.Timeout.timeout;
+
 
 /// Typed error causes for HTTP client operations.
 /// Maps common HTTP exceptions to domain-friendly error types.
@@ -96,9 +96,7 @@ public sealed interface HttpClientError extends Cause {
 
         @Override
         public String message() {
-            return "HTTP operation failed: " + Option.option(cause.getMessage())
-                                                    .or(cause.getClass()
-                                                             .getName());
+            return "HTTP operation failed: " + Option.option(cause.getMessage()).or(cause.getClass().getName());
         }
     }
 

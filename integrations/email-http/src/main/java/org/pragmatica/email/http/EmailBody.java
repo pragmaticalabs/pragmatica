@@ -5,6 +5,7 @@ import org.pragmatica.lang.Option;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 
+
 /// Email body content — either plain text or HTML with optional fallback.
 public sealed interface EmailBody {
     record Text(String content) implements EmailBody {

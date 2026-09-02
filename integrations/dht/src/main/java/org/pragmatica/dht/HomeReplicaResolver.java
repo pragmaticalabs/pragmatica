@@ -13,20 +13,19 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.dht;
-
-import org.pragmatica.lang.Option;
 
 import java.util.Set;
 import java.util.function.Function;
+
+import org.pragmatica.lang.Option;
+
 
 /// Deterministic home replica selection from community members.
 /// Uses hashing over the community member set to pick a stable home node.
 ///
 /// @param <N> Node identifier type
 public interface HomeReplicaResolver<N extends Comparable<N>> {
-
     /// Resolve the home replica for a key within a community.
     ///
     /// @param key       the DHT key bytes
@@ -37,8 +36,7 @@ public interface HomeReplicaResolver<N extends Comparable<N>> {
     /// Create a resolver backed by a community membership lookup.
     ///
     /// @param membershipLookup function returning current members for a community
-    static <N extends Comparable<N>> HomeReplicaResolver<N> homeReplicaResolver(
-            Function<String, Set<N>> membershipLookup) {
+    static <N extends Comparable<N>> HomeReplicaResolver<N> homeReplicaResolver(Function<String, Set<N>> membershipLookup) {
         return new HomeReplicaResolverImpl<>(membershipLookup);
     }
 }

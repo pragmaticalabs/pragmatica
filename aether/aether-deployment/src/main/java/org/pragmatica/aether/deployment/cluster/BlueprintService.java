@@ -33,6 +33,8 @@ import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.stream.StreamResource;
 import org.pragmatica.aether.slice.stream.StreamVersionSpec;
 import org.pragmatica.aether.slice.blueprint.BlueprintNamespace;
+import org.pragmatica.aether.deployment.schema.SchemaError;
+import org.pragmatica.aether.deployment.validation.ConfigSectionPreflightValidator;
 import org.pragmatica.aether.deployment.validation.StreamResourceValidator;
 import org.pragmatica.aether.deployment.validation.ValidatedStreamResources;
 import org.pragmatica.aether.slice.repository.Location;
@@ -45,6 +47,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVCommand.Put;
 import org.pragmatica.cluster.state.kvstore.KVCommand.Remove;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -79,14 +82,22 @@ public interface BlueprintService {
     static BlueprintService blueprintService(ClusterNode<KVCommand<AetherKey>> cluster,
                                              KVStore<AetherKey, AetherValue> store,
                                              Repository repository,
+                                             ArtifactStore artifactStore,
+                                             Option<ConfigurationProvider> nodeComposite) {
+        return new BlueprintServiceInstance(cluster, store, repository, Option.some(artifactStore), nodeComposite);
+    }
+
+    static BlueprintService blueprintService(ClusterNode<KVCommand<AetherKey>> cluster,
+                                             KVStore<AetherKey, AetherValue> store,
+                                             Repository repository,
                                              ArtifactStore artifactStore) {
-        return new BlueprintServiceInstance(cluster, store, repository, Option.some(artifactStore));
+        return new BlueprintServiceInstance(cluster, store, repository, Option.some(artifactStore), Option.empty());
     }
 
     static BlueprintService blueprintService(ClusterNode<KVCommand<AetherKey>> cluster,
                                              KVStore<AetherKey, AetherValue> store,
                                              Repository repository) {
-        return new BlueprintServiceInstance(cluster, store, repository, Option.empty());
+        return new BlueprintServiceInstance(cluster, store, repository, Option.empty(), Option.empty());
     }
 
     static List<SliceTopology> flattenTopologyResults(List<Result<List<SliceTopology>>> results) {
@@ -117,15 +128,18 @@ class BlueprintServiceInstance implements BlueprintService {
     private final KVStore<AetherKey, AetherValue> store;
     private final Repository repository;
     private final Option<ArtifactStore> artifactStore;
+    private final Option<ConfigurationProvider> nodeComposite;
 
     BlueprintServiceInstance(ClusterNode<KVCommand<AetherKey>> cluster,
                              KVStore<AetherKey, AetherValue> store,
                              Repository repository,
-                             Option<ArtifactStore> artifactStore) {
+                             Option<ArtifactStore> artifactStore,
+                             Option<ConfigurationProvider> nodeComposite) {
         this.cluster = cluster;
         this.store = store;
         this.repository = repository;
         this.artifactStore = artifactStore;
+        this.nodeComposite = nodeComposite;
     }
 
     @Override
@@ -261,10 +275,65 @@ class BlueprintServiceInstance implements BlueprintService {
                                                              Map<String, List<MigrationEntry>> migrations,
                                                              String artifactCoords,
                                                              boolean registerOnly) {
+        return ensureMigrationOwnership(expanded.id(),
+                                        migrations).async()
+                                       .flatMap(_ -> applyAllCommands(expanded,
+                                                                      resourcesConfig,
+                                                                      roleHints,
+                                                                      migrations,
+                                                                      artifactCoords,
+                                                                      registerOnly));
+    }
+
+    private Promise<ExpandedBlueprint> applyAllCommands(ExpandedBlueprint expanded,
+                                                        Option<String> resourcesConfig,
+                                                        Map<String, String> roleHints,
+                                                        Map<String, List<MigrationEntry>> migrations,
+                                                        String artifactCoords,
+                                                        boolean registerOnly) {
         var commands = buildAllCommands(expanded, resourcesConfig, roleHints, migrations, artifactCoords, registerOnly);
 
         return cluster.apply(commands)
                       .map(_ -> expanded);
+    }
+
+    /// Deploy-time single-migrator gate. Every datasource this artifact declares migrations for must
+    /// be unclaimed or already claimed by this same blueprint; otherwise the whole publish is
+    /// rejected before a single command is applied, so a second migrator never lands in KV.
+    /// A blueprint declaring no migrations passes trivially — sharing a datasource for reads and
+    /// writes is legal, only duplicate migration ownership is refused.
+    ///
+    /// Ownership is compared on the blueprint's `ArtifactBase` (group:artifact, version stripped),
+    /// matching `ClusterDeploymentState.hasConflictingOwnership`: republishing `my-app:1.0.1` over
+    /// records written by `my-app:1.0.0` is the same owner advancing its own schema, not a conflict.
+    ///
+    /// `firstFailureOf`, not `allOf`: accumulation would fold the conflicts into a composite cause,
+    /// and a composite is not `HttpStatusAware` — the publish endpoint would answer 500 instead of
+    /// the 409 the typed cause declares. The first conflict is also the whole answer, since the
+    /// publish is refused outright either way.
+    private Result<Unit> ensureMigrationOwnership(BlueprintId owner, Map<String, List<MigrationEntry>> migrations) {
+        return Result.firstFailureOf(migrations.keySet()
+                                               .stream()
+                                               .map(datasource -> ensureDatasourceUnclaimed(owner, datasource))
+                                               .toList()).mapToUnit();
+    }
+
+    private Result<Unit> ensureDatasourceUnclaimed(BlueprintId owner, String datasource) {
+        return currentMigrationOwner(datasource).filter(current -> !current.base()
+                                                                           .equals(owner.base()))
+                                    .map(current -> ownershipConflict(datasource, current, owner))
+                                    .or(Result::unitResult);
+    }
+
+    private static Result<Unit> ownershipConflict(String datasource, BlueprintId current, BlueprintId rejected) {
+        return SchemaError.DatasourceOwnershipConflict.datasourceOwnershipConflict(datasource, current, rejected).result();
+    }
+
+    private Option<BlueprintId> currentMigrationOwner(String datasource) {
+        return store.get(SchemaVersionKey.schemaVersionKey(datasource))
+                    .filter(SchemaVersionValue.class::isInstance)
+                    .map(SchemaVersionValue.class::cast)
+                    .map(SchemaVersionValue::owningBlueprint);
     }
 
     private List<KVCommand<AetherKey>> buildAllCommands(ExpandedBlueprint expanded,
@@ -289,7 +358,7 @@ class BlueprintServiceInstance implements BlueprintService {
         // semantics (the gate that would HTTP-422 on bad stream config is a separate stage).
         commands.add(buildStreamBindingsCommand(expanded, resourcesConfig, roleHints));
         if (!migrations.isEmpty()) {
-            commands.addAll(buildSchemaMigrationCommands(migrations, artifactCoords));
+            commands.addAll(buildSchemaMigrationCommands(migrations, artifactCoords, expanded.id()));
         }
 
         return commands;
@@ -355,15 +424,17 @@ class BlueprintServiceInstance implements BlueprintService {
     }
 
     private List<KVCommand<AetherKey>> buildSchemaMigrationCommands(Map<String, List<MigrationEntry>> migrations,
-                                                                    String artifactCoords) {
+                                                                    String artifactCoords,
+                                                                    BlueprintId owningBlueprint) {
         return migrations.entrySet()
                          .stream()
-                         .map(entry -> buildMigrationCommand(entry, artifactCoords))
+                         .map(entry -> buildMigrationCommand(entry, artifactCoords, owningBlueprint))
                          .toList();
     }
 
     private KVCommand<AetherKey> buildMigrationCommand(Map.Entry<String, List<MigrationEntry>> entry,
-                                                       String artifactCoords) {
+                                                       String artifactCoords,
+                                                       BlueprintId owningBlueprint) {
         var datasource = entry.getKey();
         var migrationList = entry.getValue();
         var maxVersion = migrationList.stream()
@@ -380,15 +451,46 @@ class BlueprintServiceInstance implements BlueprintService {
                                                           maxVersion,
                                                           lastFilename,
                                                           SchemaStatus.PENDING,
-                                                          artifactCoords);
+                                                          artifactCoords,
+                                                          owningBlueprint);
 
         return new Put<>(key, value);
     }
 
     private Promise<ExpandedBlueprint> validatePubSub(ExpandedBlueprint expanded) {
-        return loadAllTopologies(expanded.loadOrder()).flatMap(topologies -> PubSubValidator.validate(topologies)
-                                                                                            .map(_ -> expanded)
-                                                                                            .async());
+        return loadAllTopologies(expanded.loadOrder()).flatMap(topologies -> {
+            noteConfigSectionPreflightSkipIfBlind(topologies);
+
+            return PubSubValidator.validate(topologies)
+                                  .flatMap(_ -> ConfigSectionPreflightValidator.validate(topologies, nodeComposite))
+                                  .map(_ -> expanded)
+                                  .async();
+        });
+    }
+
+    /// Fail-open is a quiet gate by construction (#547): with no [ConfigurationProvider] wired,
+    /// [ConfigSectionPreflightValidator] cannot distinguish a present section from an absent one, so
+    /// it must not manufacture false positives — but a successful deploy must not read as "checked
+    /// and passed" when it was actually "not checked". Same principle as the drain disruption-budget
+    /// guard's visible bypass note (`NodeLifecycleRoutes`): a gate that quietly doesn't gate is the
+    /// failure mode, so the skip is logged whenever there is at least one resource section it would
+    /// otherwise have checked.
+    private void noteConfigSectionPreflightSkipIfBlind(List<SliceTopology> topologies) {
+        if (nodeComposite.isPresent()) {
+            return;
+        }
+
+        var resourceCount = topologies.stream().mapToInt(t -> t.resources()
+                                                               .size()).sum();
+
+        if (resourceCount > 0) {
+            log.warn("Config-section pre-flight (#547) SKIPPED for this deploy: no ConfigurationProvider "
+                    + "is wired on this node, so {} declared resource section(s) across {} slice(s) could not "
+                    + "be checked against the leader's composite configuration view. Deploy proceeds fail-open — "
+                    + "this is 'not checked', not 'checked and passed'.",
+                     resourceCount,
+                     topologies.size());
+        }
     }
 
     private Promise<List<SliceTopology>> loadAllTopologies(List<ResolvedSlice> slices) {

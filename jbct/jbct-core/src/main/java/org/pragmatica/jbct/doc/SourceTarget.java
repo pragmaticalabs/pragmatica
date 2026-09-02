@@ -1,10 +1,11 @@
 package org.pragmatica.jbct.doc;
 
-import org.pragmatica.lang.Option;
-
 import java.util.List;
 
+import org.pragmatica.lang.Option;
+
 import static org.pragmatica.lang.Option.option;
+
 
 /// Pure mapping from a positional `doc` argument to candidate source-relative paths.
 ///
@@ -29,12 +30,15 @@ public sealed interface SourceTarget {
 
     /// Ordered candidate source-relative paths for the requested name.
     static List<String> candidates(String name) {
-        return name.contains(".") ? qualifiedCandidates(name) : simpleCandidates(name);
+        return name.contains(".")
+               ? qualifiedCandidates(name)
+               : simpleCandidates(name);
     }
 
     private static List<String> qualifiedCandidates(String name) {
-        return lastSegmentStartsUpper(name) ? List.of(classPath(name), packageInfoPath(name))
-                                            : List.of(packageInfoPath(name), classPath(name));
+        return lastSegmentStartsUpper(name)
+               ? List.of(classPath(name), packageInfoPath(name))
+               : List.of(packageInfoPath(name), classPath(name));
     }
 
     private static List<String> simpleCandidates(String name) {
@@ -55,8 +59,8 @@ public sealed interface SourceTarget {
 
     private static boolean lastSegmentStartsUpper(String name) {
         return option(lastSegment(name)).filter(segment -> !segment.isEmpty())
-                                        .map(segment -> Character.isUpperCase(segment.charAt(0)))
-                                        .or(false);
+                     .map(segment -> Character.isUpperCase(segment.charAt(0)))
+                     .or(false);
     }
 
     private static String lastSegment(String name) {

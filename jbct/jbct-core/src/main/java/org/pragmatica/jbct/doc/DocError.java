@@ -1,8 +1,9 @@
 package org.pragmatica.jbct.doc;
 
+import java.util.List;
+
 import org.pragmatica.lang.Cause;
 
-import java.util.List;
 
 /// Errors for the `doc` command source-header pipeline.
 /// Named using past tense per JBCT error naming convention.

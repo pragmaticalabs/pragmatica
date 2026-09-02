@@ -14,15 +14,15 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.http;
-
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
 
 import java.net.http.HttpHeaders;
 import java.net.http.HttpResponse;
 import java.util.List;
+
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+
 
 /// Typed HTTP response wrapper containing status, headers, and body.
 ///
@@ -73,8 +73,7 @@ public record HttpResult<T>(int statusCode, HttpHeaders headers, T body) {
     ///
     /// @return First header value, or empty if not present
     public Option<String> header(String name) {
-        return Option.option(headers.firstValue(name)
-                                    .orElse(null));
+        return Option.option(headers.firstValue(name).orElse(null));
     }
 
     /// Gets all values for a header.
@@ -93,6 +92,7 @@ public record HttpResult<T>(int statusCode, HttpHeaders headers, T body) {
         if (isSuccess()) {
             return Result.success(body);
         }
+
         return new HttpClientError.RequestFailed(statusCode, statusMessage()).result();
     }
 

@@ -49,6 +49,8 @@ public class LogLevelRegistry {
         return registry;
     }
 
+    // JBCT-RET-08: standalone (no-cluster) construction — clusterNode absent by design
+    @SuppressWarnings("JBCT-RET-08")
     public static LogLevelRegistry readOnly(KVStore<AetherKey, AetherValue> kvStore) {
         var registry = new LogLevelRegistry(null, kvStore);
 

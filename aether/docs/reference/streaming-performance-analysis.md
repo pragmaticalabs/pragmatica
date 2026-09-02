@@ -48,7 +48,7 @@ Primary implementation lives in `aether/aether-stream/`, with cold-tier storage 
 
 ## 2. Architectural Overview
 
-Streams are modelled as partitioned, append-only logs. Each partition has exactly one governor node (the single writer). A governor is selected via the cluster's DHT ring / task-group assignment; this document does not restate that mechanism, it only notes that the stream module depends on a `governorResolver` (see `DefaultStreamPublisher.resolveForwardClientAndGovernor`, line 205).
+Streams are modelled as partitioned, append-only logs. Each partition has exactly one governor node (the single writer). A governor is selected via the cluster's DHT ring / task-group assignment; this document does not restate that mechanism, it only notes that app EVENTUAL publishes route to the partition's HRW owner via `GovernorResolver.partitionOwnerResolver` — the arg-less leader resolver is retained as a fallback, and a self-resolved owner falls back to a local append (see `DefaultStreamPublisher.resolveOwner` / `publishRemote`).
 
 **Hot tier.** Events land in an off-heap ring buffer allocated via `Arena.ofShared()` with a fixed layout: 64-byte header, 24-byte index entries, then a circular data region (see `OffHeapRingBuffer.java:22-47`). The 24-byte index entry is a fixed overhead per event and is material for small payloads.
 

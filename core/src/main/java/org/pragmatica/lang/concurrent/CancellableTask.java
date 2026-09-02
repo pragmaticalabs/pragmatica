@@ -1,10 +1,11 @@
 package org.pragmatica.lang.concurrent;
 
-import org.pragmatica.lang.Contract;
-
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 import java.util.concurrent.ScheduledFuture;
+
+import org.pragmatica.lang.Contract;
+
 
 /// Thread-safe cancellable scheduled task holder.
 /// Replaces the nullable AtomicReference + getAndSet(null) pattern for ScheduledFuture fields.
@@ -14,8 +15,7 @@ public final class CancellableTask {
     @Contract
     private static VarHandle lookupFutureHandle() {
         try {
-            return MethodHandles.lookup()
-                                .findVarHandle(CancellableTask.class, "future", Object.class);
+            return MethodHandles.lookup().findVarHandle(CancellableTask.class, "future", Object.class);
         } catch (ReflectiveOperationException e) {
             throw new ExceptionInInitializerError(e);
         }
@@ -41,6 +41,7 @@ public final class CancellableTask {
     @Contract
     public void set(ScheduledFuture<?> newFuture) {
         var prev = (ScheduledFuture<?>) FUTURE.getAndSet(this, newFuture);
+
         cancelIfPresent(prev);
     }
 
@@ -48,6 +49,7 @@ public final class CancellableTask {
     @Contract
     public void cancel() {
         var prev = (ScheduledFuture<?>) FUTURE.getAndSet(this, null);
+
         cancelIfPresent(prev);
     }
 

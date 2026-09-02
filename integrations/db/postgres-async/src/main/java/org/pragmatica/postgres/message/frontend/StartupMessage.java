@@ -11,17 +11,17 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.pragmatica.postgres.message.frontend;
 
 import org.pragmatica.postgres.message.FrontendMessage;
+
 
 /**
  * @author Antti Laisi
  */
 public final class StartupMessage implements FrontendMessage {
-
     private static final int protocol = 196608;
+
     private final String username;
     private final String database;
 

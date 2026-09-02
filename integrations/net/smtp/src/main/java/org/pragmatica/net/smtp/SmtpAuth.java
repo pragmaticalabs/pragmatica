@@ -13,14 +13,13 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.net.smtp;
 
 import java.util.Base64;
 
+
 /// SMTP authentication credentials.
 public record SmtpAuth(String username, String password) {
-
     /// Create SMTP authentication credentials.
     public static SmtpAuth smtpAuth(String username, String password) {
         return new SmtpAuth(username, password);
@@ -30,6 +29,7 @@ public record SmtpAuth(String username, String password) {
     /// Format: base64(\0username\0password)
     public String encodePlain() {
         var plain = "\0" + username + "\0" + password;
+
         return Base64.getEncoder().encodeToString(plain.getBytes());
     }
 }

@@ -13,11 +13,11 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.rabia;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
+
 
 /// Metrics collection interface for consensus engine observability.
 ///

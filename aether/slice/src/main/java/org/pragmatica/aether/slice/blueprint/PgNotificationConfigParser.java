@@ -11,6 +11,7 @@ import java.util.Map;
 import org.pragmatica.aether.slice.PgNotificationConfig;
 import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
 
 import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.utils.Causes.cause;
@@ -21,7 +22,7 @@ public interface PgNotificationConfigParser {
     String PREFIX = "pg-notifications.";
 
     static Result<Map<String, PgNotificationConfig>> parse(String toml) {
-        if (toml == null || toml.isBlank()) {
+        if (!Verify.Is.present(toml)) {
             return success(Map.of());
         }
 

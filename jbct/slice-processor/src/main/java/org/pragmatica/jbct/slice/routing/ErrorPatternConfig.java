@@ -2,14 +2,14 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.jbct.slice.routing;
-
-import org.pragmatica.lang.Option;
 
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+
+import org.pragmatica.lang.Option;
+
 
 /// Error pattern configuration for HTTP status code mapping.
 ///
@@ -83,26 +83,32 @@ public record ErrorPatternConfig(int defaultStatus,
                             : this.defaultStatus;
         var mergedPatterns = mergePatterns(this.statusPatterns, other.statusPatterns);
         var mergedExplicit = mergeMappings(this.explicitMappings, other.explicitMappings);
+
         return errorPatternConfig(mergedDefault, mergedPatterns, mergedExplicit, this.strict || other.strict);
     }
 
     private static Map<Integer, List<String>> mergePatterns(Map<Integer, List<String>> base,
                                                             Map<Integer, List<String>> overlay) {
         var merged = new HashMap<>(base);
+
         overlay.forEach((status, patterns) -> merged.merge(status,
                                                            patterns,
                                                            (existing, added) -> {
                                                                var combined = new java.util.ArrayList<>(existing);
+
                                                                combined.addAll(added);
+
                                                                return List.copyOf(combined);
                                                            }));
+
         return Map.copyOf(merged);
     }
 
-    private static Map<String, Integer> mergeMappings(Map<String, Integer> base,
-                                                      Map<String, Integer> overlay) {
+    private static Map<String, Integer> mergeMappings(Map<String, Integer> base, Map<String, Integer> overlay) {
         var merged = new HashMap<>(base);
+
         merged.putAll(overlay);
+
         return Map.copyOf(merged);
     }
 
@@ -118,8 +124,7 @@ public record ErrorPatternConfig(int defaultStatus,
     /// @param typeName the error type name to resolve
     /// @return resolved HTTP status code
     public int resolveStatus(String typeName) {
-        return Option.option(explicitMappings.get(typeName))
-                     .or(() -> resolveFromPatterns(typeName));
+        return Option.option(explicitMappings.get(typeName)).or(() -> resolveFromPatterns(typeName));
     }
 
     private int resolveFromPatterns(String typeName) {
@@ -130,6 +135,7 @@ public record ErrorPatternConfig(int defaultStatus,
                 }
             }
         }
+
         return defaultStatus;
     }
 }

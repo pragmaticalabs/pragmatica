@@ -14,14 +14,7 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.lang.utils;
-
-import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Functions.Fn1;
-import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
 
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -29,6 +22,13 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+
 
 /// A memoization utility for Promise-returning computations.
 ///
@@ -114,6 +114,7 @@ public interface MemoPromise<K, V> {
     /// @return a new unbounded MemoPromise instance
     static <K, V> MemoPromise<K, V> memoPromise(Fn1<Promise<V>, K> computation) {
         Objects.requireNonNull(computation, "computation must not be null");
+
         return new UnboundedMemoPromise<>(computation);
     }
 
@@ -132,6 +133,7 @@ public interface MemoPromise<K, V> {
         if (maxSize <= 0) {
             return INVALID_MAX_SIZE.result();
         }
+
         return Result.success(new BoundedMemoPromise<>(computation, maxSize));
     }
 
@@ -149,8 +151,10 @@ public interface MemoPromise<K, V> {
         public Promise<V> get(K key) {
             Objects.requireNonNull(key, "key must not be null");
             var cached = cache.get(key);
+
             if (cached != null) {
                 hits.incrementAndGet();
+
                 return cached;
             }
             // Create promise first, then put it into the cache
@@ -158,26 +162,31 @@ public interface MemoPromise<K, V> {
             misses.incrementAndGet();
             var promise = computation.apply(key);
             var existing = cache.putIfAbsent(key, promise);
+
             if (existing != null) {
                 // Another thread inserted first, use their promise
                 hits.incrementAndGet();
                 misses.decrementAndGet();
+
                 return existing;
             }
             // Attach failure handler after insertion to avoid recursive updates
             promise.onResult(result -> result.onFailure(_ -> cache.remove(key, promise)));
+
             return promise;
         }
 
         @Override
         public Unit invalidate(K key) {
             cache.remove(key);
+
             return Unit.unit();
         }
 
         @Override
         public Unit invalidateAll() {
             cache.clear();
+
             return Unit.unit();
         }
 
@@ -209,8 +218,8 @@ public interface MemoPromise<K, V> {
             this.cache = Collections.synchronizedMap(new LinkedHashMap<>(16, 0.75f, true) {
                 @Override
                 protected boolean removeEldestEntry(Map.Entry<K, Promise<V>> eldest) {
-                                                         return size() > maxSize;
-                                                     }
+                    return size() > maxSize;
+                }
             });
         }
 
@@ -218,24 +227,30 @@ public interface MemoPromise<K, V> {
         public Promise<V> get(K key) {
             Objects.requireNonNull(key, "key must not be null");
             Promise<V> cached;
+
             synchronized (cache) {
                 cached = cache.get(key);
             }
+
             if (cached != null) {
                 hits.incrementAndGet();
+
                 return cached;
             }
             // Create promise outside synchronized block to avoid holding lock during computation
             misses.incrementAndGet();
             var promise = computation.apply(key);
             Promise<V> existing;
+
             synchronized (cache) {
                 existing = cache.putIfAbsent(key, promise);
             }
+
             if (existing != null) {
                 // Another thread inserted first, use their promise
                 hits.incrementAndGet();
                 misses.decrementAndGet();
+
                 return existing;
             }
             // Attach failure handler after insertion
@@ -244,6 +259,7 @@ public interface MemoPromise<K, V> {
                     cache.remove(key, promise);
                 }
             }));
+
             return promise;
         }
 
@@ -252,6 +268,7 @@ public interface MemoPromise<K, V> {
             synchronized (cache) {
                 cache.remove(key);
             }
+
             return Unit.unit();
         }
 
@@ -260,6 +277,7 @@ public interface MemoPromise<K, V> {
             synchronized (cache) {
                 cache.clear();
             }
+
             return Unit.unit();
         }
 

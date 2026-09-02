@@ -1,6 +1,6 @@
 # Storage Management API Specification
 
-## Addendum to: [Hierarchical Storage Spec](hierarchical-storage-spec.md)
+## Addendum to: [Hierarchical Storage Spec](future/hierarchical-storage-spec.md)
 ## Status: Implementation-Ready
 ## Target Release: v0.25.0+
 
@@ -261,7 +261,7 @@ Register in `RoutePermissionRegistry`.
 ## 6. References
 
 ### Internal
-- [Hierarchical Storage Spec](hierarchical-storage-spec.md) -- parent spec
+- [Hierarchical Storage Spec](future/hierarchical-storage-spec.md) -- parent spec
 - `aether/aether-storage/src/main/java/org/pragmatica/aether/storage/StorageInstance.java` -- `tierInfo()`, `TierInfo` record
 - `aether/aether-storage/src/main/java/org/pragmatica/aether/storage/StorageReadinessGate.java` -- `ReadinessState`, `isReadReady`, `isWriteReady`
 - `aether/aether-storage/src/main/java/org/pragmatica/aether/storage/SnapshotManager.java` -- `forceSnapshot()`, `lastSnapshotEpoch()`

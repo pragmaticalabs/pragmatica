@@ -1,11 +1,12 @@
 package org.pragmatica.http.routing;
 
+import java.util.Set;
+
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
-import java.util.Set;
-
 import static org.pragmatica.lang.Option.option;
+
 
 /// Pure header-mode API version-selection policy (#198 §7).
 ///
@@ -44,7 +45,7 @@ public final class VersionSelector {
 
     private static Result<Integer> selectFromHeader(String value, Set<Integer> available) {
         return parseVersion(value).filter(available::contains)
-                                  .toResult(unknownVersion(value));
+                           .toResult(unknownVersion(value));
     }
 
     private static Result<Integer> selectWithoutHeader(SliceVersionRegistry registry,
@@ -68,16 +69,17 @@ public final class VersionSelector {
 
     private static Option<Integer> parseVersion(String value) {
         return option(value).filter(VersionSelector::isInteger)
-                            .map(Integer::parseInt);
+                     .map(Integer::parseInt);
     }
 
     private static boolean isInteger(String value) {
-        return !value.isEmpty() && value.chars().allMatch(Character::isDigit);
+        return ! value.isEmpty() && value.chars()
+                                         .allMatch(Character::isDigit);
     }
 
     private static VersionSelectionError unknownVersion(String rawValue) {
         return new VersionSelectionError.UnknownVersion(option(rawValue).filter(VersionSelector::isInteger)
-                                                                        .map(Integer::parseInt)
-                                                                        .or(0));
+                                                              .map(Integer::parseInt)
+                                                              .or(0));
     }
 }

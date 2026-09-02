@@ -2,11 +2,11 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package com.example.versionedslice;
 
 import org.pragmatica.aether.slice.annotation.Slice;
 import org.pragmatica.lang.Promise;
+
 
 /// Test slice for verifying #198 API path-mode versioning route generation.
 ///
@@ -27,10 +27,8 @@ public interface VersionedSlice {
 
     // v1 get → getV1
     Promise<GetResponse> getV1(GetRequest request);
-
     // v2 get → getV2
     Promise<GetResponse> getV2(GetRequest request);
-
     // v2 upsert → upsertV2
     Promise<UpsertResponse> upsertV2(UpsertRequest request);
 

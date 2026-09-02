@@ -22,6 +22,7 @@ import org.pragmatica.aether.config.PlacementPolicy;
 import org.pragmatica.aether.deployment.AuditLog;
 import org.pragmatica.aether.deployment.cluster.AllocationPool;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
+import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.Blueprint;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.ReconciliationAdjustment;
@@ -40,6 +41,8 @@ import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Memb
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.SelfShutdownReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.VersionRoutingPutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.VersionRoutingRemoveReceived;
+import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.WorkerJoinReceived;
+import org.pragmatica.aether.deployment.schema.SchemaEvent.ActivationBlocked;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.DeploymentFailed;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.DeploymentStarted;
 import org.pragmatica.aether.slice.SliceState;
@@ -47,8 +50,6 @@ import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.BlueprintParser;
 import org.pragmatica.aether.slice.blueprint.DeploymentConfig;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
-import org.pragmatica.aether.slice.generation.Epoch;
-import org.pragmatica.aether.slice.generation.HealthSignal;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
@@ -167,6 +168,13 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// blank (worker-membership-spec D2).
         private static final String DEFAULT_SOURCE = "default";
 
+        /// Schema statuses that hold slice activation (#542). FAILED is a blocking status: the
+        /// physical schema sits at a version the slice was not built against until an operator
+        /// retries or redeploys.
+        private static final Set<SchemaStatus> BLOCKING_SCHEMA_STATUSES = Set.of(SchemaStatus.PENDING,
+                                                                                 SchemaStatus.MIGRATING,
+                                                                                 SchemaStatus.FAILED);
+
         // --- move-only extraction seams (package-private helpers operating on this Active) ---
         StuckTransitionalRemediator stuckRemediator() {
             return new StuckTransitionalRemediator(this);
@@ -223,6 +231,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 case VersionRoutingRemoveReceived(ValueRemove<VersionRoutingKey, VersionRoutingValue> valueRemove) -> handleVersionRoutingRemove(valueRemove,
                                                                                                                                                  tx);
                 case MembershipDecisionReceived(MembershipDecision decision) -> handleMembershipDecision(decision, tx);
+                case WorkerJoinReceived(WorkerJoinDecision decision) -> handleWorkerJoin(decision, tx);
                 case SelfShutdownReceived(TransportObservation.SelfShutdown selfShutdown) -> handleSelfShutdown(selfShutdown,
                                                                                                                 tx);
                 case ActivationDirectivePutReceived(ValuePut<ActivationDirectiveKey, ActivationDirectiveValue> valuePut) -> handleActivationDirectivePut(valuePut,
@@ -288,6 +297,25 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         private void handleMembershipDecision(MembershipDecision decision,
                                               TransitionRequest<ClusterDeploymentState, ClusterFsmEvent> tx) {
             tx.handle(() -> processMembershipDecision(decision));
+        }
+
+        /// The non-core join channel (#728). A worker never appears in `MembershipDecision`, so
+        /// without this arm `assignNodeRole` was unreachable for the only nodes that actually need
+        /// a community: labelled workers reached FSM Member and were never assigned a role, never
+        /// minted a community, and never activated.
+        ///
+        /// Routed straight to [`#assignNodeRole`] rather than through [`#handleNodeAdded`]: the
+        /// seed-node guard there is a CORE concern (seeds are SWIM-derived to present by the
+        /// membership-v2 view and need no directive), and `reconcile()` is driven by the core
+        /// delta, which a worker join deliberately does not perturb.
+        private void handleWorkerJoin(WorkerJoinDecision decision,
+                                      TransitionRequest<ClusterDeploymentState, ClusterFsmEvent> tx) {
+            tx.handle(() -> processWorkerJoin(decision));
+        }
+
+        private void processWorkerJoin(WorkerJoinDecision decision) {
+            log.info("Received worker join: {} (role={})", decision.nodeId(), decision.role());
+            assignNodeRole(decision.nodeId());
         }
 
         private void handleSelfShutdown(TransportObservation.SelfShutdown selfShutdown,
@@ -396,7 +424,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             switch (value.status()) {
                 case PENDING -> handleSchemaPending(datasource);
                 case COMPLETED -> handleSchemaCompleted(datasource);
-                case FAILED -> log.warn("Schema migration failed for datasource: {}", datasource);
+                case FAILED -> handleSchemaFailed(value);
                 case MIGRATING -> log.debug("Schema migration in progress for datasource: {}", datasource);
             }
         }
@@ -453,19 +481,46 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             draining.forEach(this::evictNextSliceFromNode);
         }
 
+        /// Rebuild-time schema recovery. Two distinct ways a migration stalls, both of which strand
+        /// every slice of the owning blueprint in LOADED indefinitely — LOADED carries no timeout, and
+        /// only FAILED is reported above DEBUG, so the outage is indistinguishable from a healthy
+        /// cluster at every operator-visible signal.
+        ///
+        /// - MIGRATING with an expired lock: died mid-flight. Reset to PENDING; that Put re-fires
+        ///   `processSchemaVersionPut`.
+        /// - PENDING: never started. `processSchemaVersionPut` is the ONLY caller of
+        ///   `handleSchemaPending`, so a PENDING Put that lands before this FSM reaches Active is lost,
+        ///   and no later Put is ever issued for a record that is already PENDING — nothing retried it.
+        ///   Re-dispatch directly rather than rewriting the same value: `migrateIfNeeded` re-reads the
+        ///   record, no-ops unless it is still PENDING, and guards concurrent entry with
+        ///   `inFlightMigrations` plus a TTL'd lock, so a redundant call costs nothing.
         private void recoverStalledSchemaMigrations() {
             var stalledDatasources = new ArrayList<String>();
+            var pendingDatasources = new ArrayList<String>();
 
             ctx.kvStore()
                .forEach(SchemaVersionKey.class,
                         SchemaVersionValue.class,
-                        (_, value) -> collectStalledMigration(value, stalledDatasources));
-            if (stalledDatasources.isEmpty()) {
-                return;
+                        (_, value) -> collectSchemaRecovery(value, stalledDatasources, pendingDatasources));
+            if (!stalledDatasources.isEmpty()) {
+                log.info("Found {} stalled schema migrations, resetting to PENDING", stalledDatasources.size());
+                stalledDatasources.forEach(this::resetStalledMigration);
             }
 
-            log.info("Found {} stalled schema migrations, resetting to PENDING", stalledDatasources.size());
-            stalledDatasources.forEach(this::resetStalledMigration);
+            if (!pendingDatasources.isEmpty()) {
+                log.info("Found {} schema migrations still PENDING at rebuild, re-dispatching to the orchestrator",
+                         pendingDatasources.size());
+                pendingDatasources.forEach(this::handleSchemaPending);
+            }
+        }
+
+        private void collectSchemaRecovery(SchemaVersionValue value,
+                                           List<String> stalledDatasources,
+                                           List<String> pendingDatasources) {
+            collectStalledMigration(value, stalledDatasources);
+            if (value.status() == SchemaStatus.PENDING) {
+                pendingDatasources.add(value.datasourceName());
+            }
         }
 
         private void collectStalledMigration(SchemaVersionValue value, List<String> stalledDatasources) {
@@ -505,6 +560,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                                 value.lastMigration(),
                                                                 SchemaStatus.PENDING,
                                                                 value.artifactCoords(),
+                                                                value.owningBlueprint(),
                                                                 value.attemptCount());
             var lockKey = SchemaMigrationLockKey.schemaMigrationLockKey(datasourceName);
             var commands = List.<KVCommand<AetherKey>> of(new KVCommand.Put<>(versionKey, updated),
@@ -559,6 +615,9 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                       expanded.loadOrder().size(),
                       registerOnly);
             buildDependencyMap(expanded);
+            // Loop-invariant: same as handleAppBlueprintChange, resolve once rather than per slice.
+            var schemaRequired = resolveSchemaRequired(expanded.id());
+
             for (var slice : expanded.loadOrder()) {
                 var artifact = slice.artifact();
 
@@ -573,7 +632,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                Blueprint.blueprint(artifact,
                                                    slice.instances(),
                                                    slice.minAvailable(),
-                                                   Option.some(expanded.id())));
+                                                   Option.some(expanded.id()),
+                                                   schemaRequired));
             }
         }
 
@@ -581,9 +641,12 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             var artifact = sliceTargetKey.artifactBase().withVersion(sliceTargetValue.currentVersion());
             var instances = sliceTargetValue.targetInstances();
             var minInstances = sliceTargetValue.effectiveMinInstances();
+            var owner = sliceTargetValue.owningBlueprint();
+            // Unowned slices keep the historical default (true, preserving prior behavior); owned
+            // slices resolve schemaRequired via their blueprint, same as handleAppBlueprintChange.
+            boolean schemaRequired = owner.map(this::resolveSchemaRequired).or(true);
 
-            blueprints.put(artifact,
-                           Blueprint.blueprint(artifact, instances, minInstances, sliceTargetValue.owningBlueprint()));
+            blueprints.put(artifact, Blueprint.blueprint(artifact, instances, minInstances, owner, schemaRequired));
             log.trace("Restored slice target: {} with {} instances (min: {})", artifact, instances, minInstances);
         }
 
@@ -617,6 +680,49 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                        .map(Map.Entry::getKey)
                        .toList()
                        .forEach(this::tryActivateIfDependenciesReady);
+        }
+
+        /// #542: a FAILED record holds every slice of its owning blueprint (`areSchemasReady`), so
+        /// the hold must be reported rather than inferred from a deploy that silently never
+        /// finishes. The orchestrator's own `MigrationFailed` names the failure but always carries
+        /// an empty `blockedSlices` — it has no deployment state to consult. The leader does, so it
+        /// emits the consequence here: which slices are held, and by whose migration.
+        private void handleSchemaFailed(SchemaVersionValue value) {
+            var owner = value.owningBlueprint();
+            var blockedSlices = slicesOwnedBy(owner);
+
+            log.error("Schema migration FAILED for datasource '{}' (owner '{}') — holding activation of {} slice(s) {};"
+                     + " clear with POST /api/schema/{}/retry or redeploy the blueprint",
+                      value.datasourceName(),
+                      owner.asString(),
+                      blockedSlices.size(),
+                      blockedSlices,
+                      value.datasourceName());
+            AuditLog.schemaActivationBlocked(value.datasourceName(), owner.asString(), blockedSlices);
+            ctx.router()
+               .route(ActivationBlocked.activationBlocked(value.datasourceName(),
+                                                          owner,
+                                                          blockedSlices,
+                                                          value.artifactCoords(),
+                                                          value.attemptCount()));
+        }
+
+        private List<String> slicesOwnedBy(BlueprintId owner) {
+            return blueprints.entrySet()
+                             .stream()
+                             .filter(entry -> isOwnedBy(owner,
+                                                        entry.getValue()))
+                             .map(entry -> entry.getKey()
+                                                .asString())
+                             .sorted()
+                             .toList();
+        }
+
+        private static boolean isOwnedBy(BlueprintId owner, Blueprint blueprint) {
+            return blueprint.schemaRequired() && blueprint.owner()
+                                                          .map(BlueprintId::base)
+                                                          .filter(owner.base()::equals)
+                                                          .isPresent();
         }
 
         private void handleSliceNodeRemoval(SliceNodeKey sliceNodeKey) {
@@ -942,9 +1048,10 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             }
         }
 
+        /// Terminal step of the drain eviction chain: draining completion is observed through the
+        /// FSM transition and its log line, and writes no KV command.
         private void completeDrain(NodeId drainingNode) {
-            log.info("Drain complete for node {}, emitting DrainCompleted signal to LifecycleWriter", drainingNode);
-            ctx.healthSignalSink().emit(new HealthSignal.DrainCompleted(drainingNode, Epoch.ZERO));
+            log.info("Drain complete for node {}", drainingNode);
         }
 
         private void handleSliceTargetChange(SliceTargetKey key, SliceTargetValue value) {
@@ -968,10 +1075,15 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             }
 
             var minInstances = value.effectiveMinInstances();
+            var owner = value.owningBlueprint();
+            // Unowned slices keep the historical default (true, preserving prior behavior); owned
+            // slices resolve schemaRequired via their blueprint, same as handleAppBlueprintChange.
+            // Without this, schemaRequired reverted to true on every scale event for owned slices.
+            boolean schemaRequired = owner.map(this::resolveSchemaRequired).or(true);
 
             log.info("Slice target changed for {}: {} instances (min: {})", newArtifact, desiredInstances, minInstances);
             blueprints.put(newArtifact,
-                           Blueprint.blueprint(newArtifact, desiredInstances, minInstances, value.owningBlueprint()));
+                           Blueprint.blueprint(newArtifact, desiredInstances, minInstances, owner, schemaRequired));
             issueAllocationCommandsWithPlacement(newArtifact, desiredInstances, value.effectivePlacement());
         }
 
@@ -1092,6 +1204,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                       .flatMap(toml -> BlueprintParser.parse(toml).option())
                       .flatMap(org.pragmatica.aether.slice.blueprint.Blueprint::deploymentConfig)
                       .map(DeploymentConfig::schemaRequired)
+                      .onEmpty(() -> log.debug("schemaRequired unresolved for {}, defaulting to true (missing blueprint entry, resourcesConfig, or unparsable/incomplete resources.toml)",
+                                               blueprintId))
                       .or(true);
         }
 
@@ -1308,25 +1422,52 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                         ctx.nowMs()));
         }
 
-        private boolean areSchemasReady(SliceNodeKey sliceKey) {
-            var blueprint = blueprints.get(sliceKey.artifact());
+        /// The activation gate for a slice's schema migrations, scoped to the slice's OWN blueprint.
+        /// Datasource names are cluster-global (`BlueprintArtifactParser` derives `"database"` from
+        /// the default script layout for every blueprint), so an unrelated blueprint's record must
+        /// never hold this slice — that unscoped scan was the other half of #542.
+        ///
+        /// Blocking statuses are PENDING, MIGRATING and FAILED. FAILED blocks: a permanently failed
+        /// migration leaves the physical schema at a version the slice was not built against, which
+        /// is exactly the corruption this gate exists to prevent. Note the pre-#542 gate was
+        /// inverted — `scheduleRetry` writes PENDING (blocked) while `emitPermanentFailure` writes
+        /// FAILED (released), so the slice was held during recoverable retries and let through on
+        /// permanent failure. The hold now clears only via `/api/schema/{ds}/retry`
+        /// (FAILED -> PENDING -> COMPLETED) or a redeploy that republishes the record.
+        ///
+        /// A slice whose owning blueprint cannot be resolved — no `Blueprint` entry, or an entry
+        /// carrying no owner — is reported READY. No record can be attributed to it, so blocking
+        /// would be an unclearable hold: nothing that ever completes could match it, and the slice
+        /// would sit in LOADED forever. Records only ever exist because some blueprint declared
+        /// migrations, and that blueprint's own slices do carry its owner, so the safety property is
+        /// held from the owning side rather than by refusing to decide here.
+        boolean areSchemasReady(SliceNodeKey sliceKey) {
+            return Option.option(blueprints.get(sliceKey.artifact()))
+                         .filter(Blueprint::schemaRequired)
+                         .flatMap(Blueprint::owner)
+                         .map(this::noBlockingSchemaRecords)
+                         .or(true);
+        }
 
-            if (blueprint != null && !blueprint.schemaRequired()) {
-                return true;
-            }
-
+        private boolean noBlockingSchemaRecords(BlueprintId owner) {
             var schemasReady = new AtomicBoolean(true);
 
             ctx.kvStore()
                .forEach(SchemaVersionKey.class,
                         SchemaVersionValue.class,
-                        (_, value) -> checkSchemaBlocking(value, schemasReady));
+                        (_, value) -> checkSchemaBlocking(owner, value, schemasReady));
 
             return schemasReady.get();
         }
 
-        private static void checkSchemaBlocking(SchemaVersionValue value, AtomicBoolean schemasReady) {
-            if (value.status() == SchemaStatus.PENDING || value.status() == SchemaStatus.MIGRATING) {
+        /// Ownership matches on `ArtifactBase` (version stripped), so a blueprint that advanced from
+        /// `my-app:1.0.0` to `my-app:1.0.1` still owns the records its earlier version wrote — the
+        /// same rule `hasConflictingOwnership` and `BlueprintService`'s deploy-time gate apply.
+        private static void checkSchemaBlocking(BlueprintId owner,
+                                                SchemaVersionValue value,
+                                                AtomicBoolean schemasReady) {
+            if (BLOCKING_SCHEMA_STATUSES.contains(value.status()) && owner.base()
+                                                                          .equals(value.owningBlueprint().base())) {
                 schemasReady.set(false);
             }
         }
@@ -1676,6 +1817,20 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             cleanupStaleNodeArtifactEntries();
             cleanupStaleSliceEntries();
             detectStuckTransitionalStates();
+            // A schema sweep does NOT belong here. It was added and reverted on 2026-08-31: sweeping
+            // PENDING records on every reconcile re-dispatches a migration that is already running —
+            // reconcile() is driven from many call sites, so three dispatches landed within two
+            // seconds, and `SchemaOrchestratorService.acquireLock` is check-then-act (`isLockHeld`
+            // then `cluster.apply(Put)`), not atomic across nodes. The second runner reached
+            // `aether_schema_history` and died on `23505 duplicate key`, marking the whole datasource
+            // FAILED and holding every slice in the blueprint — the exact outage the sweep was meant
+            // to prevent, caused by the sweep.
+            //
+            // The hole it was closing is real: a PENDING Put lost AFTER activation is unreachable by
+            // the rebuild-time sweep. Closing it needs a stalled-record test (record age, or an
+            // atomic compare-and-set on the lock key) so recovery fires only for a migration nobody
+            // is working on. Rebuild-time recovery in `rebuildStateFromKVStore` stays: it runs once,
+            // cannot race a live migration, and is mutation-proven.
         }
 
         /// Per-community FSM evaluation (worker-membership-spec §3.3): the leader walks every committed
@@ -1718,16 +1873,47 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             }
         }
 
-        /// Observed live membership of a community = its governor announcement's member count
-        /// (worker-membership-spec §3.3). No announcement (no governor yet) reads as `0`, which keeps
-        /// a FORMING community below the floor and demotes an ACTIVE community to DEGRADED.
+        /// Observed live membership of a community (worker-membership-spec §3.3), corrected for
+        /// core-observed absence (#590).
+        ///
+        /// The announcement's `memberCount` is the community's own SELF-REPORT, and under a
+        /// core/community partition the governor cannot rewrite it — so it freezes at its last healthy
+        /// value instead of expiring, and the community stayed `ACTIVE` forever while unreachable. The
+        /// reported count is therefore reduced by the members the leader has positively observed to be
+        /// absent (pong silence beyond `timeouts.cluster.community_absence`).
+        ///
+        /// Deliberately a SUBTRACTION from `memberCount` rather than a recount of `members()`: the two
+        /// are independent fields and `governorAnnouncementValue(governorId, memberCount)` leaves
+        /// `members` empty with a non-zero count, so recounting would read 0 live members for a
+        /// perfectly healthy community. With nothing absent this returns exactly what it returned
+        /// before.
+        ///
+        /// No announcement (no governor yet) still reads as `0`, which keeps a FORMING community below
+        /// the floor and demotes an ACTIVE one to DEGRADED.
         private int communityLiveMembers(String communityId) {
             return ctx.kvStore()
                       .get(GovernorAnnouncementKey.forCommunity(communityId))
                       .filter(GovernorAnnouncementValue.class::isInstance)
                       .map(GovernorAnnouncementValue.class::cast)
-                      .map(GovernorAnnouncementValue::memberCount)
+                      .map(this::observedLiveMembers)
                       .or(0);
+        }
+
+        /// `memberCount` minus the positively-absent members. When the announcement carries no member
+        /// list there is only one identity to check — the governor's own — which still detects the
+        /// case this exists for: a whole community that has gone silent.
+        private int observedLiveMembers(GovernorAnnouncementValue announcement) {
+            var liveness = ctx.communityLiveness();
+
+            if (announcement.members().isEmpty()) {
+                return liveness.isAbsent(announcement.governorId())
+                       ? 0
+                       : announcement.memberCount();
+            }
+
+            var absent = (int) announcement.members().stream().filter(liveness::isAbsent).count();
+
+            return Math.max(0, announcement.memberCount() - absent);
         }
 
         /// Pure per-community state edge (worker-membership-spec §3.3). FORMING/DEGRADED promote to

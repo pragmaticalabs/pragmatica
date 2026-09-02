@@ -2,7 +2,7 @@
 
 Unified Application Runtime for Java -- scale horizontally without microservices complexity.
 
-> **Release status: `1.0.0-rc2` (release candidate).** This RC validates the distributed
+> **Release status: `1.0.0-rc3` (release candidate).** This RC validates the distributed
 > foundation — consensus, leader election, failure detection, membership, and topology
 > management — under sustained cloud load. Scope for this RC:
 > - **Single trust domain.** Aether assumes all cluster nodes and management clients are
@@ -12,12 +12,12 @@ Unified Application Runtime for Java -- scale horizontally without microservices
 >   API-key auth with role-based access (viewer / operator / admin), and inter-node transport
 >   runs over TLS (self-signed by default, or operator-supplied certificates) — but the default
 >   `SecurityMode` is `NONE`, so auth must be **explicitly enabled**. Making security default-on
->   is a hard gate for RC2. Separately, `AETHER_INSECURE_DEV_MODE` is an explicit opt-in that
+>   is a hard gate for the 1.0.0 (GA) release. Separately, `AETHER_INSECURE_DEV_MODE` is an explicit opt-in that
 >   enables test-injection endpoints; it is **refused at boot** when operator TLS certificates
 >   are configured, and logs a loud startup warning whenever it is active.
 > - **Not yet production-hardened.** Some background reconcilers are tuned for settled clusters
 >   and can be transiently slower to converge under heavy churn; these are tracked for the next
->   milestones. Use RC1 for evaluation and non-critical workloads.
+>   milestones. Use this release candidate for evaluation and non-critical workloads.
 
 ## Overview
 
@@ -66,14 +66,16 @@ Forge provides a visual dashboard, cluster operations, chaos testing, and per-no
 Requires **Java 25**.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/siy/aether/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/pragmaticalabs/pragmatica/main/install.sh | sh
 ```
 
 ### Build from Source
 
+Aether lives in the [pragmaticalabs/pragmatica](https://github.com/pragmaticalabs/pragmatica) monorepo:
+
 ```bash
-git clone https://github.com/siy/aether.git
-cd aether && mvn package -DskipTests
+git clone https://github.com/pragmaticalabs/pragmatica.git
+cd pragmatica && ./build.sh
 ```
 
 ## Documentation
@@ -81,28 +83,31 @@ cd aether && mvn package -DskipTests
 | Category | Documents |
 |----------|-----------|
 | **Start Here** | [What is Aether?](docs/aether-overview.md), [Introduction](docs/articles/aether-introduction.md), [Getting Started](docs/slice-developers/getting-started.md), [Migration Guide](docs/slice-developers/migration-guide.md), [FAQ](docs/slice-developers/faq.md) |
-| **Core Concepts** | [Scaling](docs/operators/scaling.md), [Slice Lifecycle](docs/contributors/slice-lifecycle.md), [Architecture](docs/contributors/architecture.md) |
+| **Core Concepts** | [Scaling](docs/operators/scaling.md), [Slice Lifecycle](docs/contributors/slice-lifecycle.md), [Architecture](docs/architecture/00-overview.md) |
 | **Reference** | [CLI Reference](docs/reference/cli.md), [Forge Guide](docs/slice-developers/forge-guide.md), [Configuration](docs/reference/configuration.md), [Management API](docs/reference/management-api.md) |
-| **Operations** | [Rolling Updates](docs/operators/rolling-updates.md), [Monitoring](docs/operators/monitoring.md), [Docker](docs/operators/docker-deployment.md) |
+| **Operations** | [Rolling Updates](docs/guides/rolling-upgrade.md), [Monitoring](docs/operators/monitoring.md), [Docker](docs/operators/docker-deployment.md) |
 | **Design** | [Vision & Goals](docs/archive/vision-and-goals.md), [Metrics & Control](docs/contributors/metrics-control.md), [Slice API](docs/reference/slice-api.md) |
 
 ## Project Structure
 
+Aether is the `aether/` tree of the [pragmaticalabs/pragmatica](https://github.com/pragmaticalabs/pragmatica) monorepo
+(alongside `core/` — Result/Option/Promise, `integrations/` — consensus, HTTP, DB, serialization, and `jbct/` — the build/lint toolchain):
+
 ```
 aether/
-├── slice-api/           # Slice interface
+├── slice-api/           # Slice interface (the app-facing API)
 ├── slice/               # Slice management
-├── node/                # Runtime (AetherNode)
-├── cluster/             # Rabia consensus
+├── node/                # Runtime (AetherNode) + management API routes
+├── aether-stream/       # Event streams: replication, failover, consumers
+├── aether-deployment/   # Membership, topology, cluster deployment
 ├── forge/               # Local cluster simulator & dashboard
-├── cli/                 # Command-line tools
-└── examples/
-    └── ecommerce/       # E-commerce demo
+├── cli/                 # Command-line tools (`aether`)
+└── docs/                # Reference, operator, and contributor docs
 ```
 
 ## Dependencies
 
 - Java 25
 - Maven 3.9+
-- `pragmatica-lite-core`
-- `pragmatica-lite-consensus`
+- `org.pragmatica-lite:core`
+- `org.pragmatica-lite:consensus`

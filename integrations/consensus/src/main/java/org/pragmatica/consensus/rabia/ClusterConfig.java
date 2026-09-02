@@ -13,16 +13,16 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.rabia;
+
+import java.util.List;
+import java.util.Set;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
 
-import java.util.List;
-import java.util.Set;
 
 /// Consensus-level cluster membership descriptor.
 ///
@@ -43,8 +43,10 @@ public record ClusterConfig(List<NodeId> members) {
 
     public static Result<ClusterConfig> clusterConfig(List<NodeId> members) {
         return Verify.ensure(members, Verify.Is::notNull, ClusterConfigError.EMPTY_MEMBERSHIP)
-                     .filter(ClusterConfigError.EMPTY_MEMBERSHIP, m -> !m.isEmpty())
-                     .filter(ClusterConfigError.DUPLICATE_MEMBERS, m -> Set.copyOf(m).size() == m.size())
+                     .filter(ClusterConfigError.EMPTY_MEMBERSHIP,
+                             m -> !m.isEmpty())
+                     .filter(ClusterConfigError.DUPLICATE_MEMBERS,
+                             m -> Set.copyOf(m).size() == m.size())
                      .map(ClusterConfig::new);
     }
 
@@ -62,13 +64,10 @@ public record ClusterConfig(List<NodeId> members) {
     public enum ClusterConfigError implements Cause {
         EMPTY_MEMBERSHIP("ClusterConfig must contain at least one member"),
         DUPLICATE_MEMBERS("ClusterConfig must not contain duplicate members");
-
         private final String message;
-
         ClusterConfigError(String message) {
             this.message = message;
         }
-
         @Override
         public String message() {
             return message;

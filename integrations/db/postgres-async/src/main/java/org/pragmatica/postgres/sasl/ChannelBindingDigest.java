@@ -11,13 +11,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.pragmatica.postgres.sasl;
 
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.cert.CertificateEncodingException;
 import java.security.cert.X509Certificate;
+
 
 /// RFC 5929 §4.1 `tls-server-end-point` channel binding: digest of the server
 /// certificate using a hash derived from the cert's `signatureAlgorithm`.
@@ -33,6 +33,7 @@ public final class ChannelBindingDigest {
         try {
             var digestAlgorithm = mapToDigestAlgorithm(serverCert.getSigAlgName());
             var digest = MessageDigest.getInstance(digestAlgorithm);
+
             return digest.digest(serverCert.getEncoded());
         } catch (NoSuchAlgorithmException | CertificateEncodingException e) {
             throw new IllegalStateException("Failed to compute tls-server-end-point channel binding", e);
@@ -45,12 +46,17 @@ public final class ChannelBindingDigest {
         if (sigAlgName == null) {
             return "SHA-256";
         }
+
         var upper = sigAlgName.toUpperCase();
         // JCA names look like "SHA256withRSA", "SHA384withECDSA", "MD5withRSA", etc.
         // Some forms use hyphens: "SHA-256/withRSA". Normalize.
         var withIndex = upper.indexOf("WITH");
-        var hashPart = withIndex > 0 ? upper.substring(0, withIndex) : upper;
+        var hashPart = withIndex > 0
+                       ? upper.substring(0, withIndex)
+                       : upper;
+
         hashPart = hashPart.replace("-", "").trim();
+
         return switch (hashPart) {
             case "MD5", "SHA1", "SHA" -> "SHA-256";
             case "SHA224", "SHA256" -> "SHA-256";

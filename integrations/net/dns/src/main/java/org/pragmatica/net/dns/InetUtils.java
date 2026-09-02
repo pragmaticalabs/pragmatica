@@ -13,16 +13,16 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.net.dns;
+
+import java.net.InetAddress;
+import java.net.UnknownHostException;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 import org.pragmatica.net.dns.ResolverError.InvalidIpAddress;
 import org.pragmatica.net.dns.ResolverError.UnknownError;
 
-import java.net.InetAddress;
-import java.net.UnknownHostException;
 
 /// Utilities for working with InetAddress.
 public final class InetUtils {
@@ -34,6 +34,7 @@ public final class InetUtils {
         if (throwable instanceof UnknownHostException) {
             return new InvalidIpAddress(throwable.getMessage());
         }
+
         return new UnknownError(throwable.getMessage());
     }
 

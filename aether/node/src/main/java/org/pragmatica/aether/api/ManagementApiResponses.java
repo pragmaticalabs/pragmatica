@@ -7,6 +7,7 @@ package org.pragmatica.aether.api;
 import java.util.List;
 import java.util.Map;
 
+import org.pragmatica.aether.worker.isolation.CoreAbsenceSnapshot;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
 
@@ -132,6 +133,15 @@ public sealed interface ManagementApiResponses {
 
     record RouteInfo(String method, String path, List<String> nodes, String security) {}
 
+    record WorkersResponse(List<WorkerInfo> workers) {}
+
+    record WorkerInfo(String nodeId,
+                      String community,
+                      String governorId,
+                      boolean isGovernor,
+                      long communityTerm,
+                      long announcedAt) {}
+
     record ScaleResponse(String status, String artifact, int instances) {}
 
     record BlueprintResponse(String status, String blueprint, int slices) {}
@@ -179,7 +189,26 @@ public sealed interface ManagementApiResponses {
                                         double latencyP99,
                                         double errorRate,
                                         long eventCount,
-                                        long sampleCount) {}
+                                        long sampleCount,
+                                        ConsensusMetricsResponse consensus) {}
+
+    /// #674: the consensus-load block — previously collected in-process and DROPPED at this DTO
+    /// boundary, leaving no external observer able to measure coordination load on a core node.
+    /// LIVE monotonic totals (not minute aggregates): a differencing consumer needs raw totals over
+    /// its own window, the same contract `/metrics/transport` serves. NODE-LOCAL scope — each core
+    /// answers for itself. `pendingBatches` is a level; `avgDecisionLatencyMs` is derived over the
+    /// cumulative counts.
+    record ConsensusMetricsResponse(String role,
+                                    Option<String> leaderId,
+                                    int pendingBatches,
+                                    long decisionsCount,
+                                    long proposalsCount,
+                                    long voteRound1Count,
+                                    long voteRound2Count,
+                                    long fastPathCount,
+                                    long syncSuccessCount,
+                                    long syncFailureCount,
+                                    double avgDecisionLatencyMs) {}
 
     record DerivedMetricsResponse(double requestRate,
                                   double errorRate,
@@ -562,10 +591,18 @@ public sealed interface ManagementApiResponses {
 
     record AutoHealToggleResponse(boolean enabled, boolean previousState) {}
 
+    /// One desired-topology entry: how many nodes of `role` the cluster wants in `sourceName`.
+    ///
+    /// `coreCount` on [ClusterConfigResponse] is the sum of the core entries. It stays for the
+    /// existing consumers, but it cannot say WHERE those cores live, which is what an operator
+    /// needs before scaling a multi-source cluster.
+    record TopologyEntryInfo(String sourceName, String role, int count) {}
+
     record ClusterConfigResponse(String tomlContent,
                                  String clusterName,
                                  String version,
                                  int coreCount,
+                                 List<TopologyEntryInfo> desiredTopology,
                                  int coreMin,
                                  int coreMax,
                                  String deploymentType,
@@ -607,12 +644,19 @@ public sealed interface ManagementApiResponses {
     /// peer the FSM tracks (including DEAD, retained for incarnation-fenced rejoin), sorted by
     /// `nodeId` for stable output. When the local `QuorumLossDetector` is not yet wired the
     /// threshold/below/armed fields carry sensible zero/false defaults.
+    ///
+    /// `coreAbsence` (#590) is the community tier's equivalent fence on the same per-node footing: the
+    /// core-tier fields above answer "is this CORE node about to self-drain on quorum loss", and
+    /// `coreAbsence` answers "is this node about to dissolve because it has lost the core". Both are
+    /// deliberately on this LOCAL endpoint, because a leader-forwarded read cannot reach the node whose
+    /// isolation is in question.
     record ClusterMembershipResponse(String nodeId,
                                      int strictCoreMemberCount,
                                      int countedCoreMemberCount,
                                      int requiredThreshold,
                                      boolean belowThreshold,
                                      boolean armed,
+                                     CoreAbsenceSnapshot coreAbsence,
                                      List<MembershipNodeDetail> members) {}
 
     /// Per-peer membership detail as seen by the answering node's `MembershipFsm`: the lifecycle
@@ -697,6 +741,45 @@ public sealed interface ManagementApiResponses {
                                    long materializeQueueDepth,
                                    List<StreamHydrationDetail> streams) {}
 
+    /// #488 declarative-consumer view for THIS node. `attachedSubscriptions` is the count actually
+    /// subscribed here, which for a correctly assigned consumer equals the number of partitions this
+    /// node was assigned — not the stream's partition count.
+    record DeclarativeConsumersResponse(int attachedSubscriptions, List<DeclarativeConsumerDetail> consumers) {}
+
+    /// One declared `[streams.X]` consumer as this node sees it.
+    ///
+    /// `unassignedPartitions` is the loud gap (#535): partitions whose declared consumer slice is ACTIVE
+    /// on NO live node, so nothing can run the handler and they are consumed by nobody. It is NOT a gap
+    /// for this node to lack the slice — since #535 the partition's owner no longer has to host it, and
+    /// `partitionAssignments` names which node consumes each partition and which owns it. Reads are
+    /// forwarded to the owner whenever those two differ.
+    ///
+    /// `eventTypePublishable` is absent when this node cannot know: the probe needs the slice's own
+    /// codec registry, which only a node hosting the slice has. When present and false, the event type
+    /// has no codec there, so it cannot be published to the stream at all and this consumer will receive
+    /// nothing however healthy it otherwise looks. `diagnostic` carries the operator-facing explanation
+    /// for whichever condition applies, and is empty when the consumer is healthy.
+    record DeclarativeConsumerDetail(String stream,
+                                     String configSection,
+                                     String artifact,
+                                     String method,
+                                     String consumerGroup,
+                                     boolean batchMode,
+                                     String eventType,
+                                     boolean sliceDeployedLocally,
+                                     Option<Boolean> eventTypePublishable,
+                                     List<DeclarativeConsumerPartition> assignedPartitions,
+                                     List<Integer> unassignedPartitions,
+                                     List<DeclarativeConsumerAssignment> partitionAssignments,
+                                     String diagnostic) {}
+
+    /// Who consumes one partition and who owns it, as computed locally. Both are absent only during the
+    /// bootstrap window; `consumerNode` is additionally absent when nothing can consume the partition.
+    record DeclarativeConsumerAssignment(int partition, Option<String> consumerNode, Option<String> ownerNode) {}
+
+    /// `committedOffset` is the next offset this consumer will read — one past the last delivered event.
+    record DeclarativeConsumerPartition(int partition, long committedOffset, boolean stalled) {}
+
     /// Per-stream hydration row: `partitionsDeclared` the configured partition count,
     /// `ringsMaterialized` the rings actually built on this node (gated below declared on non-replicas),
     /// `partitionsDeferred` (#265 increment 3) the held partitions not yet materialized (budget-deferred
@@ -748,9 +831,22 @@ public sealed interface ManagementApiResponses {
                           int changeCount,
                           int rejectedCount) {}
 
-    record ScaleRequest(int coreCount, long expectedVersion) {}
+    /// Scale one (source, role) to `count` (RFC-0017 C1).
+    ///
+    /// REPLACES a bare `coreCount`, which could not name which source absorbed the change and did
+    /// not match what the CLI was already sending — the CLI posted `source`/`role`/`count` while
+    /// this record read `coreCount`, so no scale request ever carried a usable count.
+    ///
+    /// A blank `source` asks the server to infer it, which succeeds only when exactly one source
+    /// carries `role`. `role` defaults to core when blank.
+    record ScaleRequest(String source, String role, int count, long expectedVersion) {}
 
-    record ScaleClusterResponse(boolean success, int previousCount, int newCount, long configVersion) {}
+    record ScaleClusterResponse(boolean success,
+                                String source,
+                                String role,
+                                int previousCount,
+                                int newCount,
+                                long configVersion) {}
 
     record UpgradeRequest(String targetVersion) {}
 
@@ -850,6 +946,36 @@ public sealed interface ManagementApiResponses {
     /// slices THIS node has deployed, read from its local `HttpRoutePublisher`. `slices` is empty when
     /// the node hosts no versioned slice.
     record VersionsResponse(List<VersionedSliceView> slices) {}
+
+    /// #345 I3 — what THIS node has checkpointed for each durable-entity keyspace it folds.
+    ///
+    /// `writes` is the positive signal: it must climb while a keyspace is taking writes. A driver that
+    /// stopped leaves it flat while everything else still looks healthy, which is the failure this
+    /// surface exists to make visible. `failures` and `checkpointedThrough` localise it — a partition
+    /// whose offset stops advancing while others move is stuck on its own, not cluster-wide.
+    ///
+    /// A partition this node has never folded is ABSENT from `checkpointedThrough` rather than reported
+    /// as `0`: "nothing to say about it" and "checkpointed through offset 0" are different claims.
+    record EntityCheckpointsResponse(List<EntityKeyspaceCheckpointView> keyspaces) {}
+
+    record EntityKeyspaceCheckpointView(String keyspace,
+                                        int partitionCount,
+                                        long writes,
+                                        long failures,
+                                        Map<Integer, Long> checkpointedThrough) {}
+
+    /// Per-keyspace HOSTING view (#634-3, entity hosting-set fold-in, owner-ruled 2026-08-24): the set
+    /// of nodes with a committed per-node registration IS the candidate set the leader mints entity-arc
+    /// owners over, and until this surface it was invisible — the 02w hosting-set defect was diagnosed
+    /// from typed write refusals instead of one GET. Assembled from replicated KV, so any caught-up
+    /// node answers identically. `partitionCountsDisagree` mirrors the reconciler's rolling-redeploy
+    /// signal: hosts declared different counts, arcs span the max until configs re-converge.
+    record EntityKeyspacesResponse(List<EntityKeyspaceView> keyspaces) {}
+
+    record EntityKeyspaceView(String keyspace,
+                              int partitionCount,
+                              List<String> hosts,
+                              boolean partitionCountsDisagree) {}
 
     /// Per-slice version registry projection in [VersionsResponse]. `slice` is the deployed artifact
     /// coordinate; `apiPrefix` is the version-agnostic base prefix; `requireVersionHeader` and

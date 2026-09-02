@@ -13,10 +13,10 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.net.quic;
 
 import org.pragmatica.consensus.NodeId;
+
 
 /// Determines QUIC connection direction based on NodeId ordering.
 ///
@@ -25,7 +25,6 @@ import org.pragmatica.consensus.NodeId;
 /// connection detection entirely — each pair has exactly one
 /// connection with a deterministic initiator.
 public sealed interface ConnectionDirection {
-
     /// Lower NodeId initiates the QUIC connection.
     /// Returns true if self should act as the QUIC client for this peer.
     static boolean shouldInitiate(NodeId self, NodeId peer) {

@@ -7,6 +7,7 @@ package org.pragmatica.aether.forge;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.io.TempDir;
@@ -63,9 +64,33 @@ import org.pragmatica.aether.ember.EmberCluster;
 /// `test-stream` keeps NO server-side consumer cursor (the slice exposes only `publish`/`read`; every
 /// consumer tracks its own offset client-side), so cursor durability is not exercised here — the
 /// events-survive assertion is the required A6 proof.
+///
+/// #431 — WHAT THIS PROVES, AND WHY IT IS THE FULL IN-JVM SCOPE. This is a graceful full-cluster
+/// restart, and that is sufficient: stream durability is purely FSYNC-BEFORE-ACK. An owner append
+/// resolves its publish ack only after `PartitionWal.append`'s `force()` (verified in source), so an
+/// acked event is on disk — surviving a `kill -9` — before the caller is told "published". Node
+/// shutdown adds NO durability: `AetherNode.stop()` runs `streamPartitionManager.close()`, which only
+/// fsyncs bytes ALREADY appended and closes the FD; it never drains un-appended ring events into the
+/// WAL. A restart therefore proves fsync-before-ack whether graceful or hard — the hot ring is lost
+/// either way, so the WAL is the only recovery source.
+///
+/// Consequently the ticket's "hard owner kill (SIGKILL, no graceful hooks)" is NOT reproducible — and
+/// adds nothing — in the in-JVM Ember harness: every stop routes through `AetherNode.stop()` (close()
+/// runs synchronously before the async tail), and `EmberCluster.killNode(graceful=false)` only shortens
+/// the timeout on the async cluster/network teardown, leaving zombie consensus state that destabilises
+/// the fresh cluster's blueprint commit. The residual crash-mid-fsync boundary (killed in the
+/// ring-append→fsync window, where the caller is never acked), the "acks concurrent with a restart"
+/// stress, and multi-partition coverage (mgmt-API publish hardwires partition 0; the slice's
+/// `test-events` is baked `partitions=1`, not overridable by a posted blueprint) are reachable only at
+/// the CLOUD level (docker kill) or with a dedicated `partitions>=2` fixture — both out of scope for this
+/// in-JVM proof (a SECOND in-JVM restart arm was found unreliable: the cumulatively-slowed 3rd full-cluster
+/// formation trips the leader reconciler's deficit-fill, provisioning empty replacement nodes that split
+/// HRW ownership — see the #431 handover for the 9-run investigation).
+@Tag("Heavy")
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class StreamCrashDurabilityTest {
+    private static final System.Logger LOG = System.getLogger(StreamCrashDurabilityTest.class.getName());
     private static final int BASE_PORT = 13500;
     private static final int BASE_MGMT_PORT = 13600;
     private static final int BASE_APP_HTTP_PORT = 13700;
@@ -80,6 +105,8 @@ class StreamCrashDurabilityTest {
     private static final long POLL_GAP_NANOS = Duration.ofMillis(20).toNanos();
 
     private static final String STREAM_SLICE = TestArtifacts.STREAM_SLICE;
+    private static final String STREAM_NAME = "test-events";
+    private static final int PARTITION = 0;
     private static final String BLUEPRINT_ID = "forge.test:stream-crash-durability:1.0.0";
     private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
 
@@ -118,7 +145,7 @@ class StreamCrashDurabilityTest {
     void tearDown() {
         if (cluster != null) {
             var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
-            httpDelete(leaderPort, "/api/blueprints/" + BLUEPRINT_ID);
+            httpDelete(leaderPort, "/api/v1/blueprints/" + BLUEPRINT_ID);
             cluster.stop()
                    .await();
         }
@@ -156,6 +183,7 @@ class StreamCrashDurabilityTest {
         var recoveredPort = appPort();
         var recovered = drain(recoveredPort, 0L, EVENT_COUNT, recoveryDeadlineNanos());
 
+        dumpIfShort(recovered, EVENT_COUNT);
         assertThat(recovered)
             .describedAs("WAL replay must recover ALL %d acked events after full-cluster restart "
                          + "(ring was in-memory and lost; nothing was sealed)", EVENT_COUNT)
@@ -266,6 +294,28 @@ class StreamCrashDurabilityTest {
             assertThat(events.get(i).payload())
                 .describedAs("event %d payload (in publish order)", i)
                 .isEqualTo(tag + "-" + i);
+        }
+    }
+
+    // --- failure-path observability ----------------------------------------
+
+    private void dumpIfShort(List<Event> recovered, int expected) {
+        if (recovered.size() < expected) {
+            dumpAllNodeStreamState();
+        }
+    }
+
+    /// On a recovery shortfall, dump EVERY live node's in-JVM replica snapshot (mirrors
+    /// `AbstractStreamOwnerFailover.dumpAllReplicaViews`): one WARNING line per node tagged with its own
+    /// id, so a non-recovered partition view is diagnosable from the shared forge console instead of the
+    /// assertion dying blind. Reads the SAME `StreamReadRouter.replicaSnapshot` the `/api/v1/streams/replicas`
+    /// sensor serves, but per-node in-JVM (the HTTP sensor is delegate-routed, #490).
+    private void dumpAllNodeStreamState() {
+        for (var node : cluster.allNodes()) {
+            LOG.log(System.Logger.Level.WARNING,
+                    "crash-durability FAIL view self={0}: {1}",
+                    node.self(),
+                    node.streamReadRouter().replicaSnapshot(STREAM_NAME, PARTITION));
         }
     }
 
@@ -420,7 +470,7 @@ class StreamCrashDurabilityTest {
 
     private boolean checkNodeHealth(int port) {
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + "/api/health"))
+                                 .uri(URI.create("http://localhost:" + port + "/api/v1/health"))
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();
@@ -430,13 +480,13 @@ class StreamCrashDurabilityTest {
                    .or(false);
     }
 
-    /// A6 full-membership gate: poll the LEADER's `/api/health` and require quorum AND a member count
+    /// A6 full-membership gate: poll the LEADER's `/api/v1/health` and require quorum AND a member count
     /// that has reached the full expected set. `nodeCount` is the cluster-wide membership count the
     /// bootstrap formation phase also gates on (see `BootstrapPhaseFormation.healthMeetsFloor`).
     private boolean allNodesAreMembers(int expected) {
         var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + leaderPort + "/api/health"))
+                                 .uri(URI.create("http://localhost:" + leaderPort + "/api/v1/health"))
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();
@@ -462,7 +512,7 @@ class StreamCrashDurabilityTest {
         var lastResponse = ERROR_FALLBACK;
 
         for (int attempt = 1; attempt <= 3; attempt++) {
-            lastResponse = httpPostToml(port, "/api/blueprints", body);
+            lastResponse = httpPostToml(port, "/api/v1/blueprints", body);
 
             if (!lastResponse.contains("\"error\"")) {
                 return lastResponse;

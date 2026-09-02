@@ -1,15 +1,16 @@
 package org.pragmatica.config;
 
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
-
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
+
 
 /// Immutable configuration provider over an in-memory `Map<String, String>` of dot-notation keys.
 ///

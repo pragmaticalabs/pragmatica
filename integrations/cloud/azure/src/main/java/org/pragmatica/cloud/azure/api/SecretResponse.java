@@ -14,10 +14,10 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.cloud.azure.api;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+
 
 /// Response from Azure Key Vault secret retrieval.
 @JsonIgnoreProperties(ignoreUnknown = true)

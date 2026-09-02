@@ -13,11 +13,11 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.lang.io;
 
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+
 
 /// Interface for resources that can be closed asynchronously.
 ///

@@ -1,5 +1,7 @@
 # Aether Architecture Overview
 
+**Status:** Current
+
 This document is the entry point for the Aether architecture documentation. It describes the system at a high level and links to detailed documents for each subsystem.
 
 ## What is Aether?
@@ -184,6 +186,8 @@ See [05-worker-pools.md](05-worker-pools.md) for details.
 | [11-slice-container.md](11-slice-container.md) | ClassLoader isolation, dependency materialization, lifecycle hooks |
 | [12-management.md](12-management.md) | CLI, Management API, Forge simulator, dashboard |
 | [13-cloud-integration.md](13-cloud-integration.md) | Cloud providers, SPI facets, NodeLifecycleManager, auto-heal |
+| [14-consistency-and-partitions.md](14-consistency-and-partitions.md) | Consistency & partition-behavior contract, per-tier dissolve, per-operation guarantees |
+| [15-resource-and-isolation-model.md](15-resource-and-isolation-model.md) | Single-JVM resource model, soft (in-JVM) vs hard (by-placement) isolation, operator decision rule |
 
 ## Performance Characteristics (v0.20.0)
 

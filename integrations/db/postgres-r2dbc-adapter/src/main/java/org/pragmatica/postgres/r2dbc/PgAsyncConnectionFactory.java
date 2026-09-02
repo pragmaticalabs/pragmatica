@@ -14,16 +14,16 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.postgres.r2dbc;
+
+import org.pragmatica.postgres.net.Connectible;
 
 import io.r2dbc.spi.ConnectionFactory;
 import io.r2dbc.spi.ConnectionFactoryMetadata;
-
-import org.pragmatica.postgres.net.Connectible;
 import org.reactivestreams.Publisher;
 
 import reactor.core.publisher.Mono;
+
 
 /// R2DBC [ConnectionFactory] backed by a postgres-async [Connectible].
 ///
@@ -47,10 +47,9 @@ public final class PgAsyncConnectionFactory implements ConnectionFactory {
 
     @Override
     public Publisher<? extends io.r2dbc.spi.Connection> create() {
-        return Mono.create(sink ->
-            connectible.getConnection()
-                       .onSuccess(conn -> sink.success(new PgAsyncConnection(conn)))
-                       .onFailure(cause -> sink.error(new R2dbcAdapterException(cause.message()))));
+        return Mono.create(sink -> connectible.getConnection()
+                                              .onSuccess(conn -> sink.success(new PgAsyncConnection(conn)))
+                                              .onFailure(cause -> sink.error(new R2dbcAdapterException(cause.message()))));
     }
 
     @Override

@@ -5,6 +5,7 @@ import java.util.List;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
+
 /// Manages background tier demotion — moves blocks from faster tiers to slower tiers
 /// when utilization exceeds the configured high watermark threshold.
 ///
@@ -12,25 +13,19 @@ import org.pragmatica.lang.Unit;
 /// Use the dormant/active lifecycle (activate/deactivate) to enforce single-leader coordination:
 /// the leader activates demotion on election and deactivates on demotion.
 public interface DemotionManager {
-
     /// Run one demotion cycle across all tiers. Returns total blocks demoted.
     /// No-ops when not active.
     int demote();
-
     /// Get cumulative demotion statistics.
     DemotionStats stats();
-
     /// Activate the demotion manager, allowing demote() to process blocks.
     Result<Unit> activate();
-
     /// Deactivate the demotion manager. Subsequent demote() calls will no-op.
     Result<Unit> deactivate();
-
     /// Whether the demotion manager is currently active.
     boolean isActive();
 
     record DemotionStats(int blocksDemoted, long bytesMoved, long lastRunMs) {
-
         static DemotionStats empty() {
             return new DemotionStats(0, 0, 0);
         }

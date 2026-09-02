@@ -13,7 +13,6 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.swim;
 
 import java.net.InetSocketAddress;
@@ -22,12 +21,11 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
+
 /// Transport abstraction for sending and receiving SWIM protocol messages over UDP.
 public interface SwimTransport {
-
     /// Send a message to the given target address.
     Promise<Unit> send(InetSocketAddress target, SwimMessage message);
-
     /// Start listening for incoming messages on the given port.
     Promise<Unit> start(int port, SwimMessageHandler handler);
 
@@ -42,7 +40,6 @@ public interface SwimTransport {
 
     /// Handler for incoming SWIM messages.
     interface SwimMessageHandler {
-
         /// Called when a message is received from the given sender address.
         @Contract
         void onMessage(InetSocketAddress sender, SwimMessage message);

@@ -13,6 +13,7 @@ import java.util.Set;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
+import org.pragmatica.aether.worker.isolation.CoreAbsenceSnapshot;
 import org.pragmatica.aether.api.ManagementApiResponses.AutoHealStatusResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.AutoHealToggleResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.CircuitBreakerResetResponse;
@@ -50,7 +51,6 @@ import org.pragmatica.aether.slice.fence.OwnershipDomain;
 import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
-import org.pragmatica.consensus.topology.NodeHealth;
 import org.pragmatica.consensus.topology.NodeState;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.consensus.topology.TopologyObserver;
@@ -172,6 +172,10 @@ public final class ClusterTopologyRoutes implements RouteSource {
 
     private static final QuorumLossSnapshot QUORUM_LOSS_UNWIRED = new QuorumLossSnapshot(0, 0, false, false);
 
+    /// #590 — what an unwired core-absence detector reports: never armed, never fenced, no countdown.
+    /// `-1` reads as "no measurement", distinct from a genuine zero.
+    private static final CoreAbsenceSnapshot CORE_ABSENCE_UNWIRED = new CoreAbsenceSnapshot(false, false, -1L, -1L, 0L);
+
     private static ClusterMembershipResponse assembleMembershipResponse(ManageableNode node) {
         var fsm = node.membershipFsm();
         var snapshot = node.quorumLossSnapshot().or(QUORUM_LOSS_UNWIRED);
@@ -183,6 +187,7 @@ public final class ClusterTopologyRoutes implements RouteSource {
                                              snapshot.requiredThreshold(),
                                              snapshot.belowThreshold(),
                                              snapshot.armed(),
+                                             node.coreAbsenceSnapshot().or(CORE_ABSENCE_UNWIRED),
                                              members);
     }
 
@@ -359,7 +364,7 @@ public final class ClusterTopologyRoutes implements RouteSource {
         var assignedRoles = assignedRoles(node);
         var coreNodeIds = allNodeIds.stream()
                                     .filter(id -> !topologyManager.isPassive(id))
-                                    .filter(id -> isHealthy(topologyManager, id))
+                                    .filter(id -> isDiscovered(topologyManager, id))
                                     .filter(id -> isLiveLifecycle(membershipView, id))
                                     .map(NodeId::id)
                                     .toList();
@@ -454,9 +459,15 @@ public final class ClusterTopologyRoutes implements RouteSource {
     /// `MembershipView` supplies the per-occupant lifecycle+health classification input.
     ///
     /// **Cold-start fallback.** Before CTM seeds the durable slot map (very-early bootstrap,
-    /// self-only formation), there are no slots in KV. Counting zero would under-report the
-    /// freshly-bootstrapped leader; fall back to the SWIM-derived `reachableOnDutyCount` so
-    /// self-bootstrap still converges. Once slots exist, the slot map is authoritative.
+    /// self-only formation), there are no slots in KV. Falls back to the FSM's core-scoped
+    /// observed-member count (mirrors `StatusRoutes.fallbackQuorumStatus`) so self-bootstrap
+    /// still converges. #583: this previously fell back to the SWIM-derived `reachableOnDutyCount`
+    /// (`presentMembers().size()`), which counted every present member regardless of role — a
+    /// worker present before slots exist would inflate this "core" count. That role-blindness also
+    /// made the caller's `viewCount > 0 ? viewCount : coreCountedMembers()` backstop in
+    /// `assembleTopologyStatus` unreachable in practice, since self is always present and this
+    /// method's fallback therefore never returned 0. Once slots exist, the slot map is
+    /// authoritative.
     static int slotDerivedCoreCount(ManageableNode node, MembershipView view) {
         var occupants = new ArrayList<NodeId>();
 
@@ -466,7 +477,9 @@ public final class ClusterTopologyRoutes implements RouteSource {
                      (_, value) -> value.assignedNodeId()
                                         .onPresent(occupants::add));
         if (occupants.isEmpty()) {
-            return reachableOnDutyCount(view);
+            return node.membershipFsm()
+                       .coreObservedMembers(node.self())
+                       .size();
         }
 
         int count = 0;
@@ -486,13 +499,6 @@ public final class ClusterTopologyRoutes implements RouteSource {
         return view.isPresent(occupant);
     }
 
-    /// Cluster-canonical reachable-and-present count. Reads `MembershipView.presentMembers()`
-    /// (KV-canonical); self is always included (SWIM does not observe self locally).
-    private static int reachableOnDutyCount(MembershipView view) {
-        return view.presentMembers()
-                   .size();
-    }
-
     private static String topologyMode(TopologyManager tm) {
         return (tm instanceof TopologyObserver observer)
                ? observer.topologyMode()
@@ -500,10 +506,16 @@ public final class ClusterTopologyRoutes implements RouteSource {
                : TopologyObserver.TopologyMode.NORMAL.name();
     }
 
-    private static boolean isHealthy(TopologyManager tm, NodeId id) {
+    /// Discovery, NOT health (#558). This read `state.health() == NodeHealth.HEALTHY`, which was
+    /// constant-true — nothing ever drove a node out of HEALTHY — so the filter was an identity
+    /// function and the name asserted a check that never happened. Removing the dead vocabulary makes
+    /// that explicit; behaviour is unchanged.
+    ///
+    /// The real liveness filtering at the call site is `isLiveLifecycle`, which reads the membership
+    /// view. This predicate only answers "does the observer know this id at all".
+    private static boolean isDiscovered(TopologyManager tm, NodeId id) {
         return tm.getState(id)
-                 .map(state -> state.health() == NodeHealth.HEALTHY)
-                 .or(false);
+                 .isPresent();
     }
 
     /// True when the peer is present in the membership view and keeps a place in the operational
@@ -522,9 +534,18 @@ public final class ClusterTopologyRoutes implements RouteSource {
         var state = tm.getState(nodeId);
         var role = info.flatMap(i -> Option.option(i.labels().get(NodeInfo.LABEL_ROLE))).or("UNKNOWN");
         var assignedRole = assignedRoles.getOrDefault(nodeId, UNASSIGNED_ROLE);
-        var health = state.map(NodeState::health).map(Enum::name).or(connected
-                                                                     ? "CONNECTED"
-                                                                     : "UNKNOWN");
+        // #558 — this reported `NodeState.health().name()`, i.e. literally "HEALTHY" for every node the
+        // observer had ever discovered, dead ones included: nothing ever drove a node out of HEALTHY.
+        // An operator-facing field asserting health it never checked is the same defect as the counts,
+        // with a wider blast radius, so the values are now what is actually known.
+        //   CONNECTED  — a live transport link is observed right now
+        //   DISCOVERED — the observer knows this id, but there is no live link
+        //   UNKNOWN    — not in the observer's map at all
+        var health = state.isPresent()
+                     ? (connected
+                        ? "CONNECTED"
+                        : "DISCOVERED")
+                     : "UNKNOWN";
         var hostname = info.flatMap(i -> Option.option(i.labels().get(NodeInfo.LABEL_HOSTNAME))).or("");
         var zone = info.flatMap(i -> Option.option(i.labels().get(NodeInfo.LABEL_ZONE))).or("");
         var address = info.map(i -> i.address()

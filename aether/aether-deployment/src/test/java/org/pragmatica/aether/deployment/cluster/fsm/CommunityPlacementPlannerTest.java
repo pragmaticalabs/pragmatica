@@ -9,11 +9,12 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Activate;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
-import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.CommunityKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.aether.slice.kvstore.CommunityState;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -68,7 +69,6 @@ class CommunityPlacementPlannerTest {
                                                     router,
                                                     stubTopologyManager(SELF),
                                                     stubSchemaOrchestrator(),
-                                                    HealthSignalSink.noop(),
                                                     () -> Set.of(SELF),
                                                     () -> Set.of(SELF),
                                                     Set::of,
@@ -143,6 +143,57 @@ class CommunityPlacementPlannerTest {
         assertThat(planner().activeCommunityIds())
                 .as("with no committed CommunityKey the desired set is empty")
                 .isEmpty();
+    }
+
+    // --- #590 at the placement grain: a community's self-reported member list FREEZES under partition ---
+
+    private void seedGovernor(String communityId, NodeId governor, List<NodeId> members) {
+        kvStore.put(GovernorAnnouncementKey.forCommunity(communityId),
+                    GovernorAnnouncementValue.governorAnnouncementValue(governor, members, "tcp://stub"));
+    }
+
+    private void livenessAbsent(NodeId... absent) {
+        var absentSet = Set.of(absent);
+        ((ClusterDeploymentState.Active) harness.state()).ctx().setCommunityLiveness(absentSet::contains);
+    }
+
+    @Test
+    void buildCommunityWorkerMap_partitionedMembers_arePlacedOnOnlyTheLiveOnes() {
+        var governor = new NodeId("w-0");
+        var live = new NodeId("w-1");
+        var gone = new NodeId("w-2");
+        seedCommunity("src-w-0", CommunityState.ACTIVE);
+        seedGovernor("src-w-0", governor, List.of(governor, live, gone));
+        livenessAbsent(gone);
+
+        assertThat(planner().buildCommunityWorkerMap())
+                .as("a member positively observed absent must not be handed work — its announcement entry froze, it did not expire")
+                .containsEntry("src-w-0", List.of(governor, live));
+    }
+
+    @Test
+    void buildCommunityWorkerMap_wholeCommunityAbsent_isOmittedEntirely() {
+        var governor = new NodeId("w-0");
+        var other = new NodeId("w-1");
+        seedCommunity("src-w-0", CommunityState.ACTIVE);
+        seedGovernor("src-w-0", governor, List.of(governor, other));
+        livenessAbsent(governor, other);
+
+        assertThat(planner().buildCommunityWorkerMap())
+                .as("a community with nothing reachable left must be omitted, not placed on unreachable nodes")
+                .isEmpty();
+    }
+
+    @Test
+    void buildCommunityWorkerMap_livenessUnwired_placesExactlyAsBefore() {
+        var governor = new NodeId("w-0");
+        var other = new NodeId("w-1");
+        seedCommunity("src-w-0", CommunityState.ACTIVE);
+        seedGovernor("src-w-0", governor, List.of(governor, other));
+
+        assertThat(planner().buildCommunityWorkerMap())
+                .as("with no liveness collector wired NOTHING is positively absent, so placement is unchanged")
+                .containsEntry("src-w-0", List.of(governor, other));
     }
 
     // --- test fixtures (mirrors ClusterDeploymentStateActiveTest) ---

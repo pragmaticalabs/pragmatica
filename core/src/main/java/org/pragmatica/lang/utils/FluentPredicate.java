@@ -14,11 +14,11 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.lang.utils;
 
 import java.util.function.Consumer;
 import java.util.function.Predicate;
+
 
 /// Predicate which supports fluent API
 public interface FluentPredicate<T> extends Predicate<T> {
@@ -26,6 +26,7 @@ public interface FluentPredicate<T> extends Predicate<T> {
         if (test(value)) {
             consumer.accept(value);
         }
+
         return this;
     }
 
@@ -37,6 +38,7 @@ public interface FluentPredicate<T> extends Predicate<T> {
         if (!test(value)) {
             consumer.accept(value);
         }
+
         return this;
     }
 

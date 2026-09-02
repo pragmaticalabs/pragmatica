@@ -37,7 +37,7 @@ test_canary_start() {
     await_generation_quiesced "$CLUSTER_ENDPOINT" "current" 30 || log_warn "v1 baseline did not quiesce"
     assert_active_version "$BLUEPRINT_V1" "Baseline v1 ACTIVE before canary upgrade"
     push_blueprint "$BLUEPRINT_V2"
-    publish_blueprint "$BLUEPRINT_V2"
+    publish_blueprint_or_fail "$BLUEPRINT_V2" >/dev/null || return 1
     await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 30 || log_warn "v2 publish did not quiesce"
     local result
     result=$(deploy_start "$BLUEPRINT_V2" canary --traffic 5 --instances 1)
@@ -99,7 +99,7 @@ cleanup() {
     # Restore baseline v1.0.0 ACTIVE so the next test (blue-green / rolling) can
     # cleanly upgrade to v1.0.1. Without this, canary's `deploy_complete` leaves
     # v1.0.1 ACTIVE and the next `deploy_start v1.0.1` returns 500 "already active".
-    # `/api/blueprints/deploy` is the redeployment-safe endpoint (downgrade allowed).
+    # `/api/v1/blueprints/deploy` is the redeployment-safe endpoint (downgrade allowed).
     deploy_cleanup || true
     deploy_blueprint "$BLUEPRINT_V1" >/dev/null 2>&1 || \
         log_warn "cleanup: failed to revert active version to ${BLUEPRINT_V1}"

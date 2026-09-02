@@ -14,13 +14,13 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.cloud.gcp.api;
 
 import java.util.List;
 import java.util.Map;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+
 
 /// GCP Compute Engine instance model.
 @JsonIgnoreProperties(ignoreUnknown = true)

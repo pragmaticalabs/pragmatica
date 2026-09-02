@@ -96,7 +96,7 @@ Container hostnames like `aether-a-node-1` carry the cluster name structurally. 
 - `aether/tests/integration/lib/cluster.sh`: `_docker_container_by_node_id_label` filters on both label and network — landed with this RFC
 - `aether cluster scaffold --format docker-compose`: generates a correct-by-construction compose template — landed with this RFC
 - `ContainerLabelInspector` + `Main.verifyClusterLabelConsistency`: first-boot consistency check via `/var/run/docker.sock` Unix-socket HTTP (JDK-native `UnixDomainSocketAddress`); fail-closed on `aether.cluster` label vs `AETHER_CLUSTER_NAME` env mismatch — landed with this RFC
-- `aether/docs/operator/multi-cluster-deployment.md`: operator playbook — landed with this RFC
+- `aether/docs/operators/multi-cluster-deployment.md`: operator playbook — landed with this RFC
 
 ### Future work (tracked separately)
 
@@ -105,5 +105,5 @@ Container hostnames like `aether-a-node-1` carry the cluster name structurally. 
 ## See also
 
 - `aether/docs/specs/cluster-label-scoping-spec.md` — full design spec with line-level affected files
-- `aether/docs/operator/multi-cluster-deployment.md` — operator playbook
+- `aether/docs/operators/multi-cluster-deployment.md` — operator playbook
 - `aether/aether-config/src/main/java/org/pragmatica/aether/config/cluster/ClusterIdentity.java` — name validation

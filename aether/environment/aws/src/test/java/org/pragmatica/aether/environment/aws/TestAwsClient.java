@@ -13,7 +13,9 @@ import org.pragmatica.cloud.aws.api.DescribeInstancesResponse.ReservationSet;
 import org.pragmatica.cloud.aws.api.Instance;
 import org.pragmatica.cloud.aws.api.RunInstancesResponse;
 import org.pragmatica.cloud.aws.api.RunInstancesRequest;
+import org.pragmatica.cloud.aws.api.SecurityGroup;
 import org.pragmatica.cloud.aws.api.TargetHealth;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
@@ -32,23 +34,48 @@ final class TestAwsClient implements AwsClient {
     Promise<Unit> deregisterTargetsResponse = Promise.success(Unit.unit());
     Promise<List<TargetHealth>> describeTargetHealthResponse = Promise.success(List.of());
     Promise<String> getSecretValueResponse = Promise.success("secret-value");
+    Promise<String> createSecurityGroupResponse = Promise.success("sg-test");
+    Promise<List<SecurityGroup>> describeSecurityGroupsResponse = Promise.success(List.of());
+    Promise<Unit> authorizeIngressResponse = Promise.success(Unit.unit());
+    Promise<Unit> revokeIngressResponse = Promise.success(Unit.unit());
+    Promise<Unit> deleteSecurityGroupResponse = Promise.success(Unit.unit());
+    Promise<Option<String>> vpcOfSubnetResponse = Promise.success(Option.none());
     Queue<Promise<String>> secretResponses;
 
+    String lastVpcLookupSubnetId;
     List<String> lastTerminatedIds;
     List<String> lastRebootedIds;
     List<String> lastTagResourceIds;
     Map<String, String> lastTags;
     String lastDescribeTagKey;
     String lastDescribeTagValue;
+    String lastDescribeByIdValue;
     String lastRegisterTargetGroupArn;
     List<String> lastRegisteredIds;
     String lastDeregisterTargetGroupArn;
     List<String> lastDeregisteredIds;
     String lastTargetHealthArn;
     String lastSecretId;
+    RunInstancesRequest lastRunInstancesRequest;
+    String lastCreatedGroupName;
+    String lastCreatedGroupDescription;
+    Option<String> lastCreatedGroupVpcId;
+    Map<String, String> lastSecurityGroupTagFilters;
+    String lastAuthorizeGroupId;
+    String lastAuthorizeProtocol;
+    int lastAuthorizePort;
+    String lastAuthorizeCidr;
+    String lastAuthorizeDescription;
+    String lastRevokeGroupId;
+    String lastRevokeProtocol;
+    int lastRevokePort;
+    String lastRevokeCidr;
+    String lastRevokeDescription;
+    String lastDeletedGroupId;
 
     @Override
     public Promise<RunInstancesResponse> runInstances(RunInstancesRequest request) {
+        lastRunInstancesRequest = request;
         return runInstancesResponse;
     }
 
@@ -71,6 +98,12 @@ final class TestAwsClient implements AwsClient {
     }
 
     @Override
+    public Promise<DescribeInstancesResponse> describeInstancesById(String instanceId) {
+        lastDescribeByIdValue = instanceId;
+        return describeResponse;
+    }
+
+    @Override
     public Promise<Unit> rebootInstances(List<String> instanceIds) {
         lastRebootedIds = instanceIds;
         return rebootResponse;
@@ -81,6 +114,56 @@ final class TestAwsClient implements AwsClient {
         lastTagResourceIds = resourceIds;
         lastTags = tags;
         return createTagsResponse;
+    }
+
+    @Override
+    public Promise<String> createSecurityGroup(String name, String description, Option<String> vpcId) {
+        lastCreatedGroupName = name;
+        lastCreatedGroupDescription = description;
+        lastCreatedGroupVpcId = vpcId;
+        return createSecurityGroupResponse;
+    }
+
+    @Override
+    public Promise<List<SecurityGroup>> describeSecurityGroups(Map<String, String> tagFilters) {
+        lastSecurityGroupTagFilters = tagFilters;
+        return describeSecurityGroupsResponse;
+    }
+
+    @Override
+    public Promise<Unit> authorizeSecurityGroupIngress(String groupId,
+                                                       String protocol,
+                                                       int port,
+                                                       String cidr,
+                                                       String description) {
+        lastAuthorizeGroupId = groupId;
+        lastAuthorizeProtocol = protocol;
+        lastAuthorizePort = port;
+        lastAuthorizeCidr = cidr;
+        lastAuthorizeDescription = description;
+        return authorizeIngressResponse;
+    }
+
+    @Override
+    public Promise<Unit> revokeSecurityGroupIngress(String groupId, String protocol, int port, String cidr, String description) {
+        lastRevokeGroupId = groupId;
+        lastRevokeProtocol = protocol;
+        lastRevokePort = port;
+        lastRevokeCidr = cidr;
+        lastRevokeDescription = description;
+        return revokeIngressResponse;
+    }
+
+    @Override
+    public Promise<Unit> deleteSecurityGroup(String groupId) {
+        lastDeletedGroupId = groupId;
+        return deleteSecurityGroupResponse;
+    }
+
+    @Override
+    public Promise<Option<String>> vpcOfSubnet(String subnetId) {
+        lastVpcLookupSubnetId = subnetId;
+        return vpcOfSubnetResponse;
     }
 
     @Override

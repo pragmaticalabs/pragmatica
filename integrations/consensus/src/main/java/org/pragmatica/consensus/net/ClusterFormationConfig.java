@@ -7,7 +7,6 @@
  *
  *      http://www.apache.org/licenses/LICENSE-2.0
  */
-
 package org.pragmatica.consensus.net;
 
 import org.pragmatica.lang.Cause;
@@ -16,6 +15,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
+
 
 /// Cluster formation timing — network-layer timeouts governing quorum establishment and churn absorption.
 ///
@@ -30,9 +30,7 @@ public record ClusterFormationConfig(TimeSpan stabilizationWindow,
                                      TimeSpan postEstablishGrace,
                                      TimeSpan quorumLossHysteresis) {
     public static final TimeSpan DEFAULT_STABILIZATION_WINDOW = timeSpan(5).seconds();
-
     public static final TimeSpan DEFAULT_POST_ESTABLISH_GRACE = timeSpan(5).seconds();
-
     public static final TimeSpan DEFAULT_QUORUM_LOSS_HYSTERESIS = timeSpan(5).seconds();
 
     public static ClusterFormationConfig defaults() {
@@ -46,8 +44,7 @@ public record ClusterFormationConfig(TimeSpan stabilizationWindow,
                                                                         TimeSpan quorumLossHysteresis) {
         return Result.all(validatePositive(stabilizationWindow, "stabilizationWindow"),
                           validatePositive(postEstablishGrace, "postEstablishGrace"),
-                          validatePositive(quorumLossHysteresis, "quorumLossHysteresis"))
-                     .map(ClusterFormationConfig::new);
+                          validatePositive(quorumLossHysteresis, "quorumLossHysteresis")).map(ClusterFormationConfig::new);
     }
 
     private static Result<TimeSpan> validatePositive(TimeSpan value, String name) {

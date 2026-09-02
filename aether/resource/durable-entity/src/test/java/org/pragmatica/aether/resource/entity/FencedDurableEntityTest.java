@@ -27,7 +27,7 @@ class FencedDurableEntityTest {
     private static final TimeSpan AWAIT = timeSpan(5).seconds();
     private static final String KEYSPACE = "orders";
 
-    private static DurableEntity<String, Integer> entity() {
+    private static DurableEntity<String, Integer, IntOp> entity() {
         return FencedDurableEntity.fencedDurableEntity(MemoryStorageEngine.memoryStorageEngine(),
                                                        OwnerEpochSource.zero(),
                                                        intSerializer(),
@@ -90,7 +90,7 @@ class FencedDurableEntityTest {
 
             entity.create("a", 7).await(AWAIT).onFailure(FencedDurableEntityTest::failCause);
 
-            entity.update("a", value -> value * 3)
+            entity.update("a", new IntOp.Multiply(3))
                   .await(AWAIT)
                   .onFailure(FencedDurableEntityTest::failCause)
                   .onSuccess(state -> assertThat(state).isEqualTo(21));
@@ -101,7 +101,7 @@ class FencedDurableEntityTest {
             var entity = entity();
 
             entity.create("a", 7).await(AWAIT).onFailure(FencedDurableEntityTest::failCause);
-            entity.update("a", value -> value + 1).await(AWAIT).onFailure(FencedDurableEntityTest::failCause);
+            entity.update("a", new IntOp.Add(1)).await(AWAIT).onFailure(FencedDurableEntityTest::failCause);
 
             entity.get("a")
                   .await(AWAIT)
@@ -133,24 +133,24 @@ class FencedDurableEntityTest {
 
             entity.create("a", 9)
                   .await(AWAIT)
-                  .onSuccess(state -> fail("expected KeyAlreadyExists, got " + state))
-                  .onFailure(cause -> assertThat(cause).isInstanceOf(DurableEntityError.KeyAlreadyExists.class));
+                  .onSuccess(state -> fail("expected EntityAlreadyExists, got " + state))
+                  .onFailure(cause -> assertThat(cause).isInstanceOf(EntityError.EntityAlreadyExists.class));
         }
 
         @Test
         void update_fails_whenKeyNotFound() {
-            entity().update("absent", value -> value + 1)
+            entity().update("absent", new IntOp.Add(1))
                     .await(AWAIT)
-                    .onSuccess(state -> fail("expected KeyNotFound, got " + state))
-                    .onFailure(cause -> assertThat(cause).isInstanceOf(DurableEntityError.KeyNotFound.class));
+                    .onSuccess(state -> fail("expected EntityNotFound, got " + state))
+                    .onFailure(cause -> assertThat(cause).isInstanceOf(EntityError.EntityNotFound.class));
         }
 
         @Test
         void delete_fails_whenKeyNotFound() {
             entity().delete("absent")
                     .await(AWAIT)
-                    .onSuccess(state -> fail("expected KeyNotFound, got " + state))
-                    .onFailure(cause -> assertThat(cause).isInstanceOf(DurableEntityError.KeyNotFound.class));
+                    .onSuccess(state -> fail("expected EntityNotFound, got " + state))
+                    .onFailure(cause -> assertThat(cause).isInstanceOf(EntityError.EntityNotFound.class));
         }
     }
 

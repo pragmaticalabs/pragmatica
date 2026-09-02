@@ -13,6 +13,7 @@ import java.util.function.Supplier;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.config.CommunitySizing;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentContext;
+import org.pragmatica.aether.deployment.cluster.fsm.CommunityLivenessView;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.ActivationDirectivePutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.ActivationDirectiveRemoveReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Activate;
@@ -25,13 +26,14 @@ import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Sche
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.SliceTargetPutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.SliceTargetRemoveReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.MembershipDecisionReceived;
+import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.WorkerJoinReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.SelfShutdownReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.VersionRoutingPutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.VersionRoutingRemoveReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentState;
+import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
-import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
@@ -60,6 +62,7 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.MessageReceiver;
@@ -76,6 +79,13 @@ public interface ClusterDeploymentManager {
     Promise<Unit> activate();
     Promise<Unit> deactivate();
     boolean isActive();
+
+    /// #590 — inject the leader's OBSERVED community-liveness view, replacing the community's own
+    /// frozen self-report as the input to the per-community FSM. Narrow on purpose: the caller needs
+    /// this one seam, not the whole deployment context. Wired in `AetherNode` once the cluster-sync
+    /// collector exists; unwired deployments keep the pre-#590 behaviour.
+    @Contract
+    void setCommunityLiveness(CommunityLivenessView view);
 
     @Contract
     @MessageReceiver
@@ -104,6 +114,12 @@ public interface ClusterDeploymentManager {
     @Contract
     @MessageReceiver
     void onMembershipDecision(MembershipDecision decision);
+
+    /// The non-core join channel (#728). Separate receiver from [`#onMembershipDecision`] because
+    /// worker joins deliberately never travel on the core `MembershipDecision` stream.
+    @Contract
+    @MessageReceiver
+    void onWorkerJoin(WorkerJoinDecision decision);
 
     @Contract
     @MessageReceiver
@@ -141,7 +157,7 @@ public interface ClusterDeploymentManager {
         BEST_EFFORT,
         ALL_OR_NOTHING;
         public static DeploymentAtomicity parse(String value) {
-            if (value == null || value.isBlank()) {
+            if (!Verify.Is.present(value)) {
                 return ALL_OR_NOTHING;
             }
 
@@ -154,6 +170,12 @@ public interface ClusterDeploymentManager {
         }
     }
 
+    /// #699 — the 2/3/4-arg `blueprint(...)` overloads that used to live here all hardcoded
+    /// `schemaRequired = true`, silently, with no call site able to see the default being applied.
+    /// That silent default was the exact mechanism behind #555 (three of four production call
+    /// sites reverted an owned slice's `schemaRequired` to `true` because they used a short
+    /// overload instead of resolving it from the owning blueprint). Only the 5-arg canonical form
+    /// remains: every call site now states its intended `schemaRequired` explicitly.
     record Blueprint(Artifact artifact,
                      int instances,
                      int minInstances,
@@ -162,24 +184,9 @@ public interface ClusterDeploymentManager {
         public static Blueprint blueprint(Artifact artifact,
                                           int instances,
                                           int minInstances,
-                                          Option<BlueprintId> owner) {
-            return new Blueprint(artifact, instances, minInstances, owner, true);
-        }
-
-        public static Blueprint blueprint(Artifact artifact,
-                                          int instances,
-                                          int minInstances,
                                           Option<BlueprintId> owner,
                                           boolean schemaRequired) {
             return new Blueprint(artifact, instances, minInstances, owner, schemaRequired);
-        }
-
-        public static Blueprint blueprint(Artifact artifact, int instances, int minInstances) {
-            return new Blueprint(artifact, instances, minInstances, Option.empty(), true);
-        }
-
-        public static Blueprint blueprint(Artifact artifact, int instances) {
-            return new Blueprint(artifact, instances, 1, Option.empty(), true);
         }
     }
 
@@ -204,7 +211,6 @@ public interface ClusterDeploymentManager {
                                         coreMax,
                                         DEFAULT_RECONCILE_INTERVAL,
                                         schemaOrchestrator,
-                                        HealthSignalSink.noop(),
                                         Set::of,
                                         Set::of);
     }
@@ -229,7 +235,6 @@ public interface ClusterDeploymentManager {
                                         coreMax,
                                         reconcileInterval,
                                         schemaOrchestrator,
-                                        HealthSignalSink.noop(),
                                         Set::of,
                                         Set::of);
     }
@@ -244,33 +249,6 @@ public interface ClusterDeploymentManager {
                                                              int coreMax,
                                                              TimeSpan reconcileInterval,
                                                              SchemaOrchestratorService schemaOrchestrator,
-                                                             HealthSignalSink healthSignalSink) {
-        return clusterDeploymentManager(self,
-                                        cluster,
-                                        kvStore,
-                                        router,
-                                        initialTopology,
-                                        topologyManager,
-                                        atomicity,
-                                        coreMax,
-                                        reconcileInterval,
-                                        schemaOrchestrator,
-                                        healthSignalSink,
-                                        Set::of,
-                                        Set::of);
-    }
-
-    static ClusterDeploymentManager clusterDeploymentManager(NodeId self,
-                                                             ClusterNode<KVCommand<AetherKey>> cluster,
-                                                             KVStore<AetherKey, AetherValue> kvStore,
-                                                             MessageRouter router,
-                                                             List<NodeId> initialTopology,
-                                                             TopologyManager topologyManager,
-                                                             DeploymentAtomicity atomicity,
-                                                             int coreMax,
-                                                             TimeSpan reconcileInterval,
-                                                             SchemaOrchestratorService schemaOrchestrator,
-                                                             HealthSignalSink healthSignalSink,
                                                              Supplier<Set<NodeId>> coreCountedMembersSupplier,
                                                              Supplier<Set<NodeId>> readyNodesSupplier) {
         return clusterDeploymentManager(self,
@@ -283,7 +261,6 @@ public interface ClusterDeploymentManager {
                                         coreMax,
                                         reconcileInterval,
                                         schemaOrchestrator,
-                                        healthSignalSink,
                                         coreCountedMembersSupplier,
                                         readyNodesSupplier,
                                         Set::of);
@@ -299,7 +276,6 @@ public interface ClusterDeploymentManager {
                                                              int coreMax,
                                                              TimeSpan reconcileInterval,
                                                              SchemaOrchestratorService schemaOrchestrator,
-                                                             HealthSignalSink healthSignalSink,
                                                              Supplier<Set<NodeId>> coreCountedMembersSupplier,
                                                              Supplier<Set<NodeId>> readyNodesSupplier,
                                                              Supplier<Set<NodeId>> drainingNodesSupplier) {
@@ -313,7 +289,6 @@ public interface ClusterDeploymentManager {
                                         coreMax,
                                         reconcileInterval,
                                         schemaOrchestrator,
-                                        healthSignalSink,
                                         coreCountedMembersSupplier,
                                         readyNodesSupplier,
                                         drainingNodesSupplier,
@@ -330,7 +305,6 @@ public interface ClusterDeploymentManager {
                                                              int coreMax,
                                                              TimeSpan reconcileInterval,
                                                              SchemaOrchestratorService schemaOrchestrator,
-                                                             HealthSignalSink healthSignalSink,
                                                              Supplier<Set<NodeId>> coreCountedMembersSupplier,
                                                              Supplier<Set<NodeId>> readyNodesSupplier,
                                                              Supplier<Set<NodeId>> drainingNodesSupplier,
@@ -345,7 +319,6 @@ public interface ClusterDeploymentManager {
                                         coreMax,
                                         reconcileInterval,
                                         schemaOrchestrator,
-                                        healthSignalSink,
                                         coreCountedMembersSupplier,
                                         readyNodesSupplier,
                                         drainingNodesSupplier,
@@ -363,7 +336,6 @@ public interface ClusterDeploymentManager {
                                                              int coreMax,
                                                              TimeSpan reconcileInterval,
                                                              SchemaOrchestratorService schemaOrchestrator,
-                                                             HealthSignalSink healthSignalSink,
                                                              Supplier<Set<NodeId>> coreCountedMembersSupplier,
                                                              Supplier<Set<NodeId>> readyNodesSupplier,
                                                              Supplier<Set<NodeId>> drainingNodesSupplier,
@@ -379,7 +351,6 @@ public interface ClusterDeploymentManager {
                                coreMax,
                                reconcileInterval,
                                schemaOrchestrator,
-                               healthSignalSink,
                                coreCountedMembersSupplier,
                                readyNodesSupplier,
                                drainingNodesSupplier,
@@ -399,7 +370,6 @@ public interface ClusterDeploymentManager {
                                                          int coreMax,
                                                          TimeSpan reconcileInterval,
                                                          SchemaOrchestratorService schemaOrchestrator,
-                                                         HealthSignalSink healthSignalSink,
                                                          Supplier<Set<NodeId>> coreCountedMembersSupplier,
                                                          Supplier<Set<NodeId>> readyNodesSupplier,
                                                          Supplier<Set<NodeId>> drainingNodesSupplier,
@@ -418,7 +388,6 @@ public interface ClusterDeploymentManager {
                                                                                                                                            coreMax,
                                                                                                                                            reconcileInterval,
                                                                                                                                            schemaOrchestrator,
-                                                                                                                                           healthSignalSink,
                                                                                                                                            coreCountedMembersSupplier,
                                                                                                                                            readyNodesSupplier,
                                                                                                                                            drainingNodesSupplier,
@@ -441,7 +410,6 @@ public interface ClusterDeploymentManager {
                                                                  int coreMax,
                                                                  TimeSpan reconcileInterval,
                                                                  SchemaOrchestratorService schemaOrchestrator,
-                                                                 HealthSignalSink healthSignalSink,
                                                                  Supplier<Set<NodeId>> coreCountedMembersSupplier,
                                                                  Supplier<Set<NodeId>> readyNodesSupplier,
                                                                  Supplier<Set<NodeId>> drainingNodesSupplier,
@@ -454,7 +422,6 @@ public interface ClusterDeploymentManager {
                                                router,
                                                topologyManager,
                                                schemaOrchestrator,
-                                               healthSignalSink,
                                                coreCountedMembersSupplier,
                                                readyNodesSupplier,
                                                drainingNodesSupplier,
@@ -482,6 +449,12 @@ public interface ClusterDeploymentManager {
 
         public ClusterDeploymentContext context() {
             return ctx;
+        }
+
+        @Override
+        @Contract
+        public void setCommunityLiveness(CommunityLivenessView view) {
+            ctx.setCommunityLiveness(view);
         }
 
         @Override
@@ -575,6 +548,12 @@ public interface ClusterDeploymentManager {
         @Override
         public void onMembershipDecision(MembershipDecision decision) {
             ctx.dispatch(new MembershipDecisionReceived(decision));
+        }
+
+        @Contract
+        @Override
+        public void onWorkerJoin(WorkerJoinDecision decision) {
+            ctx.dispatch(new WorkerJoinReceived(decision));
         }
 
         @Contract

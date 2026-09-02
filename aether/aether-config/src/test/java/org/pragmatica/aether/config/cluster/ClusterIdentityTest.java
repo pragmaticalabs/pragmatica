@@ -16,7 +16,7 @@ class ClusterIdentityTest {
         var result = ClusterIdentity.clusterIdentity("test-cluster", "1.0.0");
         assertThat(result.isSuccess()).isTrue();
         result.onSuccess(id -> {
-            assertThat(id.name()).isEqualTo("test-cluster");
+            assertThat(id.name().value()).isEqualTo("test-cluster");
             assertThat(id.version()).isEqualTo("1.0.0");
         });
     }
@@ -85,7 +85,7 @@ class ClusterIdentityTest {
         var renamed = original.withName("new-name");
         assertThat(renamed.isSuccess()).isTrue();
         renamed.onSuccess(id -> {
-            assertThat(id.name()).isEqualTo("new-name");
+            assertThat(id.name().value()).isEqualTo("new-name");
             assertThat(id.version()).isEqualTo("1.0.0");
         });
     }

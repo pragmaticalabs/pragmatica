@@ -61,6 +61,17 @@ username = "${env:PG_USER}"
 password = "${env:PG_PASSWORD}"
 async_url = "postgresql://${env:PG_HOST}:5432/${env:PG_DB}"
 
+# #598: test-persistence's NAMED datasource (config="database.testpersistence"). The
+# connector resolves config by exact section name, so the flat [database] override
+# above does not reach it — this section must exist or the blueprint keeps its baked
+# forge-postgres URL and never connects on cloud. Points at its OWN database on the
+# PG VM (fixed-name schema history/owner tables are per-physical-database); run-tests.sh
+# ensures the database exists right after the PG firewall opens.
+[source.hetzner-eu.node_config.database.testpersistence]
+username = "${env:PG_USER}"
+password = "${env:PG_PASSWORD}"
+async_url = "postgresql://${env:PG_HOST}:5432/${env:PG_DB}_testpersistence"
+
 # Mirror the container TOML: enable the slice app-HTTP server + disable security so the
 # bootstrap's storeClusterConfig POST isn't rejected (the bootstrap-generated key isn't in
 # the KV yet). Without this block JVM nodes default to API_KEY mode → cluster-config write 403/401.
@@ -72,5 +83,5 @@ security_mode = "NONE"
 type = "jvm"
 # Cluster version is 1.0.0 (strict semver); the JVM-mode URL deriver would
 # produce v1.0.0/aether-node.jar, but the rc2 candidate JAR is published under
-# v1.0.0-rc2-candidate. Pin the candidate JAR explicitly.
-jar_url = "https://github.com/pragmaticalabs/pragmatica/releases/download/v1.0.0-rc2-candidate/aether-node.jar"
+# v1.0.0-rc3-candidate. Pin the candidate JAR explicitly.
+jar_url = "https://github.com/pragmaticalabs/pragmatica/releases/download/v1.0.0-rc3-candidate/aether-node.jar"

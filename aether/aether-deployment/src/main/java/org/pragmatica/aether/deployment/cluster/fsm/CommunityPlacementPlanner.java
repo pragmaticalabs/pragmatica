@@ -91,13 +91,64 @@ record CommunityPlacementPlanner(Active active) {
 
         var result = new HashMap<String, List<NodeId>>();
 
-        communityIds.forEach(communityId -> communityGovernor(communityId).onPresent(announcement -> result.put(communityId,
-                                                                                                                announcement.members()
-                                                                                                                            .isEmpty()
-                                                                                                                ? List.of(announcement.governorId())
-                                                                                                                : announcement.members())));
+        communityIds.forEach(communityId -> communityGovernor(communityId).onPresent(announcement -> placeableMembers(announcement).onPresent(members -> result.put(communityId,
+                                                                                                                                                                    members))));
 
         return Map.copyOf(result);
+    }
+
+    /// The members of `announcement` this core may actually place work on — its self-reported list minus
+    /// those positively observed absent. Empty (community omitted entirely) when nothing in it is
+    /// reachable.
+    ///
+    /// #590 at the PLACEMENT grain. The community-state FSM already demotes a community whose observed
+    /// live membership falls below the viability floor, but this planner read `announcement.members()`
+    /// raw — the community's own claim about itself, which under partition does not expire, it FREEZES.
+    /// So a cut-off community stayed weighted at its full size and the core kept issuing directives
+    /// naming nodes it could not reach: the exact consequence #590 describes, at a grain the
+    /// ACTIVE/DEGRADED gate cannot catch, because a community can be comfortably above the floor and
+    /// still have lost members.
+    ///
+    /// Fail-safe: `isAbsent` reports only POSITIVELY observed absence, and is `false` when the collector
+    /// is unwired — so an unwired deployment places exactly as it did before.
+    private Option<List<NodeId>> placeableMembers(GovernorAnnouncementValue announcement) {
+        var liveness = active.ctx().communityLiveness();
+
+        if (announcement.members().isEmpty()) {
+            // No published list: the governor is the only identity there is to check, which still catches
+            // the case this exists for — a whole community gone silent.
+            return liveness.isAbsent(announcement.governorId())
+                   ? Option.none()
+                   : Option.some(List.of(announcement.governorId()));
+        }
+
+        var live = liveness.liveMembers(announcement.members());
+
+        return live.isEmpty()
+               ? Option.none()
+               : Option.some(live);
+    }
+
+    /// Observed live size, used for proportional weighting: the declared count minus those positively
+    /// observed absent. Weighting a shrunken community at its FROZEN size over-provisions it with
+    /// instances it has no members left to run.
+    ///
+    /// Deliberately NOT `placeableMembers(...).size()`: when a community publishes no member list there
+    /// is exactly one identity to check (the governor), and collapsing that to a weight of 1 would
+    /// re-weight every list-less community on no evidence at all. Absent evidence, the declared count
+    /// stands — same semantics as `Active.observedLiveMembers`, which computes this for the viability
+    /// gate.
+    private int liveMemberCount(GovernorAnnouncementValue announcement) {
+        var liveness = active.ctx().communityLiveness();
+
+        if (announcement.members().isEmpty()) {
+            return liveness.isAbsent(announcement.governorId())
+                   ? 0
+                   : announcement.memberCount();
+        }
+
+        return liveness.liveMembers(announcement.members())
+                       .size();
     }
 
     private Map<String, GovernorAnnouncementValue> activeCommunities() {
@@ -163,7 +214,7 @@ record CommunityPlacementPlanner(Active active) {
 
     private void distributeToCommunities(Artifact artifact, int desiredInstances, String placement) {
         var communities = activeCommunities();
-        var totalMembers = communities.values().stream().mapToInt(GovernorAnnouncementValue::memberCount).sum();
+        var totalMembers = communities.values().stream().mapToInt(this::liveMemberCount).sum();
 
         if (totalMembers == 0) {
             writeWorkerDirective(artifact, desiredInstances, placement);
@@ -173,8 +224,7 @@ record CommunityPlacementPlanner(Active active) {
 
         var sorted = new ArrayList<>(communities.entrySet());
 
-        sorted.sort(Comparator.<Map.Entry<String, GovernorAnnouncementValue>> comparingInt(e -> e.getValue()
-                                                                                                 .memberCount()).reversed());
+        sorted.sort(Comparator.<Map.Entry<String, GovernorAnnouncementValue>> comparingInt(e -> liveMemberCount(e.getValue())).reversed());
         var remaining = desiredInstances;
 
         for (var i = 0; i < sorted.size(); i++) {
@@ -201,7 +251,7 @@ record CommunityPlacementPlanner(Active active) {
             return computeLargestCommunityShare(sorted, desiredInstances, totalMembers, remaining);
         }
 
-        var memberCount = sorted.get(index).getValue().memberCount();
+        var memberCount = liveMemberCount(sorted.get(index).getValue());
         var proportional = Math.max(1, Math.round((float) desiredInstances * memberCount / totalMembers));
 
         return Math.min(proportional, remaining);
@@ -214,7 +264,7 @@ record CommunityPlacementPlanner(Active active) {
         var share = remaining;
 
         for (var j = 1; j < sorted.size(); j++) {
-            var otherCount = sorted.get(j).getValue().memberCount();
+            var otherCount = liveMemberCount(sorted.get(j).getValue());
 
             share -= Math.max(1, Math.round((float) desiredInstances * otherCount / totalMembers));
         }

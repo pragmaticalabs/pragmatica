@@ -13,13 +13,13 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.lang.parse;
-
-import org.pragmatica.lang.Result;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
+
+import org.pragmatica.lang.Result;
+
 
 /// Functional wrappers for JDK number parsing APIs that return Result<T> instead of throwing exceptions
 public sealed interface Number {

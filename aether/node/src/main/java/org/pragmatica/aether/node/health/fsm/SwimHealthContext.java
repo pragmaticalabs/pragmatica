@@ -13,8 +13,6 @@ import java.util.function.Supplier;
 import org.pragmatica.aether.metrics.observation.PeerObservationStore;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.HealthHint;
-import org.pragmatica.aether.slice.generation.HealthSignal;
-import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.cluster.metrics.HealthHintWire;
 import org.pragmatica.cluster.metrics.PeerHealthObservation;
 import org.pragmatica.consensus.NodeId;
@@ -35,7 +33,6 @@ public final class SwimHealthContext {
     private final TopologyConfig topologyConfig;
     private final Serializer serializer;
     private final Deserializer deserializer;
-    private final HealthSignalSink signalSink;
     private final Supplier<Epoch> epochSupplier;
     private final BooleanSupplier isLeaderSupplier;
     private final PeerObservationStore observationStore;
@@ -66,7 +63,6 @@ public final class SwimHealthContext {
                              TopologyConfig topologyConfig,
                              Serializer serializer,
                              Deserializer deserializer,
-                             HealthSignalSink signalSink,
                              Supplier<Epoch> epochSupplier,
                              BooleanSupplier isLeaderSupplier,
                              PeerObservationStore observationStore,
@@ -76,7 +72,6 @@ public final class SwimHealthContext {
              topologyConfig,
              serializer,
              deserializer,
-             signalSink,
              epochSupplier,
              isLeaderSupplier,
              observationStore,
@@ -90,7 +85,6 @@ public final class SwimHealthContext {
                              TopologyConfig topologyConfig,
                              Serializer serializer,
                              Deserializer deserializer,
-                             HealthSignalSink signalSink,
                              Supplier<Epoch> epochSupplier,
                              BooleanSupplier isLeaderSupplier,
                              PeerObservationStore observationStore,
@@ -101,7 +95,6 @@ public final class SwimHealthContext {
              topologyConfig,
              serializer,
              deserializer,
-             signalSink,
              epochSupplier,
              isLeaderSupplier,
              observationStore,
@@ -115,7 +108,6 @@ public final class SwimHealthContext {
                              TopologyConfig topologyConfig,
                              Serializer serializer,
                              Deserializer deserializer,
-                             HealthSignalSink signalSink,
                              Supplier<Epoch> epochSupplier,
                              BooleanSupplier isLeaderSupplier,
                              PeerObservationStore observationStore,
@@ -127,7 +119,6 @@ public final class SwimHealthContext {
              topologyConfig,
              serializer,
              deserializer,
-             signalSink,
              epochSupplier,
              isLeaderSupplier,
              observationStore,
@@ -142,7 +133,6 @@ public final class SwimHealthContext {
                              TopologyConfig topologyConfig,
                              Serializer serializer,
                              Deserializer deserializer,
-                             HealthSignalSink signalSink,
                              Supplier<Epoch> epochSupplier,
                              BooleanSupplier isLeaderSupplier,
                              PeerObservationStore observationStore,
@@ -155,7 +145,6 @@ public final class SwimHealthContext {
              topologyConfig,
              serializer,
              deserializer,
-             signalSink,
              epochSupplier,
              isLeaderSupplier,
              observationStore,
@@ -171,7 +160,6 @@ public final class SwimHealthContext {
                              TopologyConfig topologyConfig,
                              Serializer serializer,
                              Deserializer deserializer,
-                             HealthSignalSink signalSink,
                              Supplier<Epoch> epochSupplier,
                              BooleanSupplier isLeaderSupplier,
                              PeerObservationStore observationStore,
@@ -185,7 +173,6 @@ public final class SwimHealthContext {
         this.topologyConfig = topologyConfig;
         this.serializer = serializer;
         this.deserializer = deserializer;
-        this.signalSink = signalSink;
         this.epochSupplier = epochSupplier;
         this.isLeaderSupplier = isLeaderSupplier;
         this.observationStore = observationStore;
@@ -253,13 +240,7 @@ public final class SwimHealthContext {
 
     @Contract
     public void reportHint(NodeId nodeId, HealthHint hint) {
-        emitLeaderHint(nodeId, hint);
         bufferHealthObservation(nodeId, hint);
-    }
-
-    @Contract
-    public void emitLeaderHint(NodeId nodeId, HealthHint hint) {
-        signalSink.emit(new HealthSignal.SwimHint(nodeId, hint, epochSupplier.get()));
     }
 
     @Contract
@@ -286,10 +267,9 @@ public final class SwimHealthContext {
     /// now flows via `MembershipDecision.NodeRemoved` after the leader's
     /// `MembershipFsm` writes `DECOMMISSIONED` and `TopologyObserver` publishes
     /// the membership delta. The leader-side aggregation path
-    /// (`emitLeaderHint` + `bufferHealthObservation`) is preserved.
+    /// (`bufferHealthObservation`) is preserved.
     @Contract
     public void routeFaulty(NodeId peer, Option<NodeId> currentLeader) {
-        emitLeaderHint(peer, HealthHint.FAULTY);
         bufferHealthObservation(peer, HealthHint.FAULTY);
         // See `faultyLeaderEvictor` field doc for the catch-22 this breaks. Narrow trigger:
         // ONLY when (a) cluster phase is NORMAL or RECOVERING (not COLD_BOOT — boot-time

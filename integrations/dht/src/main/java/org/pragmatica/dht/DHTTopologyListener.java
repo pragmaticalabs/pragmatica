@@ -13,7 +13,6 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.dht;
 
 import org.pragmatica.consensus.NodeId;
@@ -24,6 +23,7 @@ import org.pragmatica.lang.Option;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 
 /// Listens for membership decisions and updates the DHT ring accordingly.
 /// Triggers data migration when partitions move between nodes.
@@ -62,9 +62,9 @@ public final class DHTTopologyListener {
     @Contract
     public void onNodeJoined(MembershipDecision.NodeJoined event) {
         var addedNodeId = event.nodeId();
+
         log.info("DHT: Node added {}, updating ring", addedNodeId.id());
-        node.ring()
-            .addNode(addedNodeId);
+        node.ring().addNode(addedNodeId);
     }
 
     /// Handle a node-removed decision by removing the node from the consistent hash ring
@@ -113,8 +113,7 @@ public final class DHTTopologyListener {
     @Contract
     public void onNodeRecovered(NodeId recoveredNodeId) {
         log.info("DHT: Node {} recovered from DEPARTING, re-adding to ring", recoveredNodeId.id());
-        node.ring()
-            .addNode(recoveredNodeId);
+        node.ring().addNode(recoveredNodeId);
     }
 
     /// Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown
@@ -124,9 +123,9 @@ public final class DHTTopologyListener {
     @Contract
     public void onSelfShutdown(TransportObservation.SelfShutdown event) {
         var downNodeId = event.nodeId();
+
         log.info("DHT: Self shutdown {}, updating ring", downNodeId.id());
-        node.ring()
-            .removeNode(downNodeId);
+        node.ring().removeNode(downNodeId);
         rebalancer.onPresent(r -> r.onNodeRemoved(downNodeId));
     }
 
@@ -142,11 +141,9 @@ public final class DHTTopologyListener {
     /// transient QUIC flap. Genuinely-dead peers reach `NodeRemoved` via SWIM failure
     /// detection + reconciler decision within seconds; transient flaps reconnect and
     /// preserve ring locality.
-
     private void removeFromRing(NodeId removedNodeId) {
         log.info("DHT: Node removed {}, updating ring", removedNodeId.id());
-        node.ring()
-            .removeNode(removedNodeId);
+        node.ring().removeNode(removedNodeId);
         rebalancer.onPresent(r -> r.onNodeRemoved(removedNodeId));
     }
 }

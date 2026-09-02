@@ -1,12 +1,12 @@
 package org.pragmatica.cluster.node.rabia;
 
-import org.pragmatica.consensus.NodeId;
-import org.pragmatica.lang.Contract;
-
 import java.util.HashSet;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.LongSupplier;
+
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Contract;
 
 
 /// Leader-side tracker of "currently consuming KV-sync snapshot" peers. Used by the convergence
@@ -47,14 +47,20 @@ public final class SyncHoldRegistry {
     /// invocations for the same peer overwrite the deadline.
     @Contract
     public void register(NodeId peer, long deadlineMs) {
-        if (peer == null) {return;}
+        if (peer == null) {
+            return;
+        }
+
         holds.put(peer, deadlineMs);
     }
 
     /// Clear any active hold for `peer`. Safe to call when no hold is present.
     @Contract
     public void clear(NodeId peer) {
-        if (peer == null) {return;}
+        if (peer == null) {
+            return;
+        }
+
         holds.remove(peer);
     }
 
@@ -64,7 +70,9 @@ public final class SyncHoldRegistry {
     public Set<NodeId> activeHolds() {
         var now = clock.getAsLong();
         var result = new HashSet<NodeId>();
+
         holds.forEach((peer, deadline) -> partitionByDeadline(peer, deadline, now, result));
+
         return Set.copyOf(result);
     }
 

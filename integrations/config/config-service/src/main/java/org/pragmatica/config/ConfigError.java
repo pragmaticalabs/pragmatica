@@ -10,6 +10,7 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
 
+
 /// Error types for configuration operations.
 public sealed interface ConfigError extends Cause {
     /// Config section not found in configuration.
@@ -25,8 +26,7 @@ public sealed interface ConfigError extends Cause {
     }
 
     static SectionNotFound sectionNotFound(String section) {
-        return SectionNotFound.sectionNotFound(section)
-                              .unwrap();
+        return SectionNotFound.sectionNotFound(section).unwrap();
     }
 
     /// Failed to parse configuration section.
@@ -51,13 +51,11 @@ public sealed interface ConfigError extends Cause {
     }
 
     static ParseFailed parseFailed(String section, String reason) {
-        return ParseFailed.parseFailed(section, reason)
-                          .unwrap();
+        return ParseFailed.parseFailed(section, reason).unwrap();
     }
 
     static ParseFailed parseFailed(String section, Throwable cause) {
-        return ParseFailed.parseFailed(section, cause)
-                          .unwrap();
+        return ParseFailed.parseFailed(section, cause).unwrap();
     }
 
     /// Type mismatch in configuration section.
@@ -73,8 +71,7 @@ public sealed interface ConfigError extends Cause {
     }
 
     static TypeMismatch typeMismatch(String section, String expected, String actual) {
-        return TypeMismatch.typeMismatch(section, expected, actual)
-                           .unwrap();
+        return TypeMismatch.typeMismatch(section, expected, actual).unwrap();
     }
 
     /// Configuration file not found.
@@ -90,8 +87,7 @@ public sealed interface ConfigError extends Cause {
     }
 
     static FileNotFound fileNotFound(String path) {
-        return FileNotFound.fileNotFound(path)
-                           .unwrap();
+        return FileNotFound.fileNotFound(path).unwrap();
     }
 
     /// Failed to read configuration file.
@@ -112,8 +108,7 @@ public sealed interface ConfigError extends Cause {
     }
 
     static ReadFailed readFailed(String path, Throwable cause) {
-        return ReadFailed.readFailed(path, cause)
-                         .unwrap();
+        return ReadFailed.readFailed(path, cause).unwrap();
     }
 
     /// Failed to resolve a secret placeholder in configuration.
@@ -126,7 +121,9 @@ public sealed interface ConfigError extends Cause {
 
         @Override
         public String message() {
-            return "Failed to resolve secret '${secrets:" + secretPath + "}' in config key '" + key + "': " + underlying.message();
+            return "Failed to resolve secret '${secrets:" + secretPath
+                 + "}' in config key '" + key
+                 + "': " + underlying.message();
         }
 
         @Override
@@ -136,12 +133,11 @@ public sealed interface ConfigError extends Cause {
     }
 
     static SecretResolutionFailed secretResolutionFailed(String key, String secretPath, Cause underlying) {
-        return SecretResolutionFailed.secretResolutionFailed(key, secretPath, underlying)
-                                     .unwrap();
+        return SecretResolutionFailed.secretResolutionFailed(key, secretPath, underlying).unwrap();
     }
 
     record unused() implements ConfigError {
-        public static Result<unused> unused() {
+        public static Result<unused > unused() {
             return success(new unused());
         }
 

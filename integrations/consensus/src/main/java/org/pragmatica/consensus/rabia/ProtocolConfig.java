@@ -13,7 +13,6 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.rabia;
 
 import org.pragmatica.lang.Cause;
@@ -22,6 +21,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
+
 
 /// Configuration for the Rabia consensus engine.
 ///
@@ -61,9 +61,11 @@ public record ProtocolConfig(TimeSpan cleanupInterval,
                           validatePositive(syncRetryInterval, "syncRetryInterval"),
                           validatePositive(removeOlderThanPhases, "removeOlderThanPhases"),
                           validatePositive(maxPendingBatches, "maxPendingBatches"),
-                          validatePositive(applyTimeout, "applyTimeout"))
-                     .map((cleanup, sync, phases, maxPending, apply) ->
-                              new ProtocolConfig(cleanup, sync, phases, maxPending.intValue(), apply));
+                          validatePositive(applyTimeout, "applyTimeout")).map((cleanup, sync, phases, maxPending, apply) -> new ProtocolConfig(cleanup,
+                                                                                                                                               sync,
+                                                                                                                                               phases,
+                                                                                                                                               maxPending.intValue(),
+                                                                                                                                               apply));
     }
 
     private static Result<TimeSpan> validatePositive(TimeSpan value, String name) {
@@ -75,22 +77,17 @@ public record ProtocolConfig(TimeSpan cleanupInterval,
     private static Result<Long> validatePositive(long value, String name) {
         return value > 0
                ? Result.success(value)
-               : ConfigError.invalidValue(name, value)
-                            .result();
+               : ConfigError.invalidValue(name, value).result();
     }
 
     /// Default cleanup interval.
     public static final TimeSpan DEFAULT_CLEANUP_INTERVAL = timeSpan(60).seconds();
-
     /// Default sync retry interval.
     public static final TimeSpan DEFAULT_SYNC_RETRY_INTERVAL = timeSpan(5).seconds();
-
     /// Default number of phases to retain.
     public static final long DEFAULT_REMOVE_OLDER_THAN_PHASES = 100;
-
     /// Default maximum pending batches before backpressure kicks in.
     public static final int DEFAULT_MAX_PENDING_BATCHES = 1000;
-
     /// Default upper bound on `RabiaEngine.apply`.
     ///
     /// Set to 30s, aligned with `DHTConfig.DEFAULT_TIMEOUT` and the rest of the deploy
@@ -105,7 +102,10 @@ public record ProtocolConfig(TimeSpan cleanupInterval,
     /// Supports `SYNC_RETRY_INTERVAL_MS` environment variable override for E2E testing.
     public static ProtocolConfig defaultConfig() {
         var syncRetryMs = System.getenv("SYNC_RETRY_INTERVAL_MS");
-        var syncRetry = syncRetryMs != null ? timeSpan(Long.parseLong(syncRetryMs)).millis() : DEFAULT_SYNC_RETRY_INTERVAL;
+        var syncRetry = syncRetryMs != null
+                        ? timeSpan(Long.parseLong(syncRetryMs)).millis()
+                        : DEFAULT_SYNC_RETRY_INTERVAL;
+
         return new ProtocolConfig(DEFAULT_CLEANUP_INTERVAL,
                                   syncRetry,
                                   DEFAULT_REMOVE_OLDER_THAN_PHASES,

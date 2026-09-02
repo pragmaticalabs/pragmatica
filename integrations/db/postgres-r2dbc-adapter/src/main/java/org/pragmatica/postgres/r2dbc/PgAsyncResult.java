@@ -14,22 +14,22 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.postgres.r2dbc;
+
+import java.util.function.BiFunction;
+import java.util.function.Function;
+import java.util.function.Predicate;
+
+import org.pragmatica.postgres.PgResultSet;
 
 import io.r2dbc.spi.Result;
 import io.r2dbc.spi.Row;
 import io.r2dbc.spi.RowMetadata;
-
-import org.pragmatica.postgres.PgResultSet;
 import org.reactivestreams.Publisher;
 
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
-import java.util.function.BiFunction;
-import java.util.function.Function;
-import java.util.function.Predicate;
 
 /// R2DBC [Result] backed by a postgres-async [PgResultSet].
 ///
@@ -50,8 +50,10 @@ public final class PgAsyncResult implements Result {
     @Override
     public <T> Publisher<T> map(BiFunction<Row, RowMetadata, ? extends T> mappingFunction) {
         var metadata = PgAsyncRowMetadata.pgAsyncRowMetadata(resultSet.orderedColumns());
-        return Flux.fromIterable(() -> resultSet.iterator())
-                   .map(pgRow -> mappingFunction.apply(new PgAsyncRow(pgRow, metadata), metadata));
+
+        return Flux.fromIterable(() -> resultSet.iterator()).map(pgRow -> mappingFunction.apply(new PgAsyncRow(pgRow,
+                                                                                                               metadata),
+                                                                                                metadata));
     }
 
     @Override
@@ -62,8 +64,10 @@ public final class PgAsyncResult implements Result {
     @Override
     public <T> Publisher<T> flatMap(Function<Segment, ? extends Publisher<? extends T>> mappingFunction) {
         var metadata = PgAsyncRowMetadata.pgAsyncRowMetadata(resultSet.orderedColumns());
-        return Flux.fromIterable(() -> resultSet.iterator())
-                   .concatMap(pgRow -> mappingFunction.apply(new RowSegment(new PgAsyncRow(pgRow, metadata), metadata)));
+
+        return Flux.fromIterable(() -> resultSet.iterator()).concatMap(pgRow -> mappingFunction.apply(new RowSegment(new PgAsyncRow(pgRow,
+                                                                                                                                    metadata),
+                                                                                                                     metadata)));
     }
 
     private record RowSegment(Row row, RowMetadata metadata) implements Result.RowSegment {

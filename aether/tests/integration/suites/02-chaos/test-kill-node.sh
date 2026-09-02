@@ -52,14 +52,14 @@ test_kill_non_leader() {
     # surviving nodes don't observe NODE_LEFT/NODE_FAILED for the victim within 60s.
     # Dual-signal: if the victim never reached core-HEALTHY membership, no
     # coreMemberIds-delta event fires (correct product behavior), so fall back to
-    # membership-absence (wait_for_node_removed: 404 from /api/nodes/lifecycle OR
-    # absent from /api/nodes/status). EITHER genuinely confirms the node is gone.
+    # membership-absence (wait_for_node_removed: 404 from /api/v1/nodes/lifecycle OR
+    # absent from /api/v1/nodes/status). EITHER genuinely confirms the node is gone.
     if ! wait_for_node_departure "$victim" "$KILLED_BASELINE" 60 \
         && ! wait_for_node_removed "$victim" 60; then
         log_fail "No NODE_LEFT/NODE_FAILED event AND not removed from membership for ${victim} within 60s"
         return 1
     fi
-    log_pass "Departure of ${victim} observed via /api/events (current count: $(cluster_member_count))"
+    log_pass "Departure of ${victim} observed via /api/v1/events (current count: $(cluster_member_count))"
 }
 
 test_leader_unchanged() {
@@ -100,8 +100,10 @@ cleanup() {
     # signals (lifecycle states, generation snapshot, cluster phase) that the
     # next suite will read, so the previous explicit event/quiesce/phase
     # barriers are subsumed.
-    restore_cluster_baseline || \
-        log_warn "cleanup: restore_cluster_baseline reported non-zero; subsequent suites may inherit cluster churn"
+    # #628: failure is FLAGGED to run_suite (marker), which captures evidence and
+    # quarantines the remaining test files — the old warn-and-continue let a broken
+    # cluster fail every downstream scenario on its own subject.
+    restore_cluster_baseline_or_flag
 }
 
 # Run cleanup on ANY exit path — including a `return 1` from inside a test

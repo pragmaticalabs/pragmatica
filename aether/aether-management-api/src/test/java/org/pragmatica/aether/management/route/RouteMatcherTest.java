@@ -8,6 +8,8 @@ package org.pragmatica.aether.management.route;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.http.HttpMethod;
 
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.http.HttpMethod.DELETE;
 import static org.pragmatica.http.HttpMethod.GET;
@@ -20,7 +22,7 @@ class RouteMatcherTest {
 
     @Test
     void match_returnsRoute_forParameterlessGet() {
-        var result = matcher.match(GET, "/api/nodes/status");
+        var result = matcher.match(GET, "/api/v1/nodes/status");
         assertThat(result.isSuccess()).isTrue();
         result.onSuccess(matched -> {
             assertThat(matched.route()).isEqualTo(ManagementRoute.NODE_STATUS);
@@ -37,7 +39,7 @@ class RouteMatcherTest {
 
     @Test
     void match_returnsRoute_forSingleParam() {
-        var result = matcher.match(GET, "/api/deploy/abc-123");
+        var result = matcher.match(GET, "/api/v1/deploy/abc-123");
         assertThat(result.isSuccess()).isTrue();
         result.onSuccess(matched -> {
             assertThat(matched.route()).isEqualTo(ManagementRoute.DEPLOY_STATUS);
@@ -47,19 +49,40 @@ class RouteMatcherTest {
 
     @Test
     void match_returnsRoute_forMultipleParams() {
-        var result = matcher.match(GET, "/api/streams/orders/4");
+        // STREAM_PARTITION is identity-first: /streams/{namespace}/{stream}/{version}/partitions/
+        // {partition} -- four params with the discriminating literal sitting AFTER three of them.
+        var result = matcher.match(GET, "/api/v1/streams/orders/events/v2/partitions/4");
         assertThat(result.isSuccess()).isTrue();
         result.onSuccess(matched -> {
             assertThat(matched.route()).isEqualTo(ManagementRoute.STREAM_PARTITION);
-            assertThat(matched.param("name").or((String) null)).isEqualTo("orders");
+            assertThat(matched.param("namespace").or((String) null)).isEqualTo("orders");
+            assertThat(matched.param("stream").or((String) null)).isEqualTo("events");
+            assertThat(matched.param("version").or((String) null)).isEqualTo("v2");
             assertThat(matched.param("partition").or((String) null)).isEqualTo("4");
         });
+
+        // STREAM_PARTITION, STREAM_READ and STREAM_REPLICAS are structurally identical -- same
+        // method, same 8-token length, same param positions -- and differ ONLY in the text of that
+        // interior literal. Selecting the right one is therefore the whole job here, and asserting
+        // STREAM_PARTITION alone would not prove it: with positional literal matching disabled all
+        // three still "match", and STREAM_PARTITION wins the resulting tie purely by being declared
+        // first. Pinning the two siblings that are NOT declaration-order winners is what makes this
+        // test fail if the matcher ever stops discriminating on interior literal text. Each is
+        // guarded by isSuccess() so a route that stops matching entirely fails here rather than
+        // silently skipping its assertion.
+        var read = matcher.match(GET, "/api/v1/streams/orders/events/v2/read/4");
+        assertThat(read.isSuccess()).isTrue();
+        read.onSuccess(m -> assertThat(m.route()).isEqualTo(ManagementRoute.STREAM_READ));
+
+        var replicas = matcher.match(GET, "/api/v1/streams/orders/events/v2/replicas/4");
+        assertThat(replicas.isSuccess()).isTrue();
+        replicas.onSuccess(m -> assertThat(m.route()).isEqualTo(ManagementRoute.STREAM_REPLICAS));
     }
 
     @Test
     void match_longestPrefixWins_overSpecificThanGeneric() {
-        // /api/deploy/promote/{id} (specific) must win over /api/deploy/{id} (general)
-        var promote = matcher.match(POST, "/api/deploy/promote/dep-1");
+        // /api/v1/deploy/promote/{id} (specific) must win over /api/v1/deploy/{id} (general)
+        var promote = matcher.match(POST, "/api/v1/deploy/promote/dep-1");
         assertThat(promote.isSuccess()).isTrue();
         promote.onSuccess(matched -> {
             assertThat(matched.route()).isEqualTo(ManagementRoute.DEPLOY_PROMOTE);
@@ -69,8 +92,8 @@ class RouteMatcherTest {
 
     @Test
     void match_distinguishesByHttpMethod() {
-        var get = matcher.match(GET, "/api/deploy");
-        var post = matcher.match(POST, "/api/deploy");
+        var get = matcher.match(GET, "/api/v1/deploy");
+        var post = matcher.match(POST, "/api/v1/deploy");
         get.onSuccess(m -> assertThat(m.route()).isEqualTo(ManagementRoute.DEPLOY_LIST));
         post.onSuccess(m -> assertThat(m.route()).isEqualTo(ManagementRoute.DEPLOY_START));
         assertThat(get.isSuccess()).isTrue();
@@ -79,8 +102,8 @@ class RouteMatcherTest {
 
     @Test
     void match_distinguishesByParamCount_sameMethodAndPrefix() {
-        var list = matcher.match(GET, "/api/scheduled-tasks");
-        var bySection = matcher.match(GET, "/api/scheduled-tasks/cron");
+        var list = matcher.match(GET, "/api/v1/scheduled-tasks");
+        var bySection = matcher.match(GET, "/api/v1/scheduled-tasks/cron");
         list.onSuccess(m -> assertThat(m.route()).isEqualTo(ManagementRoute.SCHEDULED_TASKS_LIST));
         bySection.onSuccess(m -> assertThat(m.route()).isEqualTo(ManagementRoute.SCHEDULED_TASKS_BY_SECTION));
         assertThat(list.isSuccess()).isTrue();
@@ -89,7 +112,7 @@ class RouteMatcherTest {
 
     @Test
     void match_handlesDeleteWithParam() {
-        var result = matcher.match(DELETE, "/api/blueprints/bp-1");
+        var result = matcher.match(DELETE, "/api/v1/blueprints/bp-1");
         result.onSuccess(matched -> assertThat(matched.route()).isEqualTo(ManagementRoute.BLUEPRINT_DELETE));
         assertThat(result.isSuccess()).isTrue();
     }
@@ -107,7 +130,7 @@ class RouteMatcherTest {
 
     @Test
     void match_handlesThreeParams() {
-        var result = matcher.match(GET, "/api/scheduled-tasks/state/cron/com.example/run");
+        var result = matcher.match(GET, "/api/v1/scheduled-tasks/state/cron/com.example/run");
         result.onSuccess(matched -> {
             assertThat(matched.route()).isEqualTo(ManagementRoute.SCHEDULED_TASK_STATE);
             assertThat(matched.param("section").or((String) null)).isEqualTo("cron");
@@ -119,27 +142,27 @@ class RouteMatcherTest {
 
     @Test
     void match_returnsNoMatch_forUnknownPath() {
-        var result = matcher.match(GET, "/api/does-not-exist");
+        var result = matcher.match(GET, "/api/v1/does-not-exist");
         assertThat(result.isFailure()).isTrue();
         result.onFailure(cause -> assertThat(cause).isInstanceOf(ManagementRouteError.NoMatch.class));
     }
 
     @Test
     void match_returnsNoMatch_forWrongMethod() {
-        var result = matcher.match(DELETE, "/api/nodes/status");
+        var result = matcher.match(DELETE, "/api/v1/nodes/status");
         assertThat(result.isFailure()).isTrue();
     }
 
     @Test
     void match_stripsQueryString() {
-        var result = matcher.match(GET, "/api/events?since=2026-01-01");
+        var result = matcher.match(GET, "/api/v1/events?since=2026-01-01");
         result.onSuccess(matched -> assertThat(matched.route()).isEqualTo(ManagementRoute.EVENTS));
         assertThat(result.isSuccess()).isTrue();
     }
 
     @Test
     void match_decodesUrlEncodedSegments() {
-        var result = matcher.match(GET, "/api/deploy/abc%20def");
+        var result = matcher.match(GET, "/api/v1/deploy/abc%20def");
         result.onSuccess(matched -> assertThat(matched.param("id").or((String) null)).isEqualTo("abc def"));
         assertThat(result.isSuccess()).isTrue();
     }
@@ -162,8 +185,55 @@ class RouteMatcherTest {
     void match_acceptsAllStandardMethods() {
         for (var method : HttpMethod.values()) {
             // Just verify no NPE — most will return NoMatch
-            var result = matcher.match(method, "/api/nodes/status");
+            var result = matcher.match(method, "/api/v1/nodes/status");
             assertThat(result).isNotNull();
         }
+    }
+
+    // -- Token-based ambiguity guard (management-api-versioning-spec.md §3.2/§3.3 groundwork) --
+    // These pin RouteMatcher.ambiguous(List<PathToken>, List<PathToken>) directly against
+    // synthetic token sequences, since the interleaved shapes these pins exercise don't exist as
+    // real ManagementRoute enum entries yet (that's Commit 2b's job).
+
+    @Test
+    void ambiguous_returnsFalse_forLegitimateSpecificityPair() {
+        // STREAM_NAMESPACES_GET-shaped: /api/v1/streams/namespaces/{ns}
+        var namespacesGet = List.<PathToken>of(
+                PathToken.spacer("api"), PathToken.spacer("v1"),
+                PathToken.spacer("streams"), PathToken.spacer("namespaces"), PathToken.param("ns"));
+        // STREAMS_VERSIONS_LIST-shaped: /api/v1/streams/{ns}/{stream}
+        var versionsList = List.<PathToken>of(
+                PathToken.spacer("api"), PathToken.spacer("v1"),
+                PathToken.spacer("streams"), PathToken.param("ns"), PathToken.param("stream"));
+
+        // Compatible (a concrete path like /api/v1/streams/namespaces/foo matches both
+        // structurally) but namespacesGet has strictly more literals in the same positions, so it
+        // properly dominates — today's longest-literal-prefix-wins behavior already resolves this
+        // without a build-time collision.
+        assertThat(RouteMatcher.ambiguous(namespacesGet, versionsList)).isFalse();
+        assertThat(RouteMatcher.ambiguous(versionsList, namespacesGet)).isFalse();
+    }
+
+    @Test
+    void ambiguous_returnsTrue_forGenuinelyAmbiguousPair() {
+        // Neither route's literal placement is a superset of the other's: a concrete path like
+        // /foo/bar could structurally match either, and neither is more specific.
+        var literalThenParam = List.<PathToken>of(PathToken.spacer("foo"), PathToken.param("x"));
+        var paramThenLiteral = List.<PathToken>of(PathToken.param("y"), PathToken.spacer("bar"));
+
+        assertThat(RouteMatcher.ambiguous(literalThenParam, paramThenLiteral)).isTrue();
+        assertThat(RouteMatcher.ambiguous(paramThenLiteral, literalThenParam)).isTrue();
+    }
+
+    @Test
+    void ambiguous_returnsTrue_forMutualDomination_differingOnlyInParamNames() {
+        // Identical literal placement and text, differing only in param names. Both routes
+        // trivially dominate each other, so neither PROPERLY dominates — this must still be
+        // rejected as ambiguous (it's a duplicate route shape, not a specificity ordering).
+        var a = List.<PathToken>of(PathToken.spacer("streams"), PathToken.param("ns"), PathToken.param("stream"));
+        var b = List.<PathToken>of(PathToken.spacer("streams"), PathToken.param("x"), PathToken.param("y"));
+
+        assertThat(RouteMatcher.ambiguous(a, b)).isTrue();
+        assertThat(RouteMatcher.ambiguous(b, a)).isTrue();
     }
 }

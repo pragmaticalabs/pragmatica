@@ -10,6 +10,10 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import org.pragmatica.aether.environment.ClusterName;
+import org.pragmatica.aether.environment.FirewallId;
+import org.pragmatica.aether.environment.FirewallName;
+import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.aether.cli.cluster.BootstrapState.PhaseStatus;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
@@ -32,7 +36,9 @@ sealed interface BootstrapStateJson {
         var sb = new StringBuilder(512);
 
         sb.append("{\n");
-        appendStringField(sb, "clusterName", state.clusterName());
+        appendStringField(sb,
+                          "clusterName",
+                          state.clusterName().value());
         sb.append(",\n");
         appendStringField(sb, "configHash", state.configHash());
         sb.append(",\n");
@@ -58,17 +64,24 @@ sealed interface BootstrapStateJson {
         return MAPPER.readTree(json).flatMap(BootstrapStateJson::parseTree);
     }
 
+    /// The cluster name is parsed OUT of the lifted block: a state file naming a cluster outside the
+    /// grammar is a corrupt file, and reporting it as such beats letting an unusable name through to
+    /// the cleanup sweeps, whose `aether-cluster=<name>` selector would then match nothing.
     private static Result<BootstrapState> parseTree(JsonNode root) {
-        return Result.lift(ParseError::new, () -> doParse(root));
+        return ClusterName.clusterName(root.path("clusterName").asText()).flatMap(clusterName -> liftedParse(root,
+                                                                                                             clusterName));
+    }
+
+    private static Result<BootstrapState> liftedParse(JsonNode root, ClusterName clusterName) {
+        return Result.lift(ParseError::new, () -> doParse(root, clusterName));
     }
 
     @SuppressWarnings("JBCT-EX-01")
-    private static BootstrapState doParse(JsonNode root) {
-        var clusterName = root.path("clusterName").asText();
+    private static BootstrapState doParse(JsonNode root, ClusterName clusterName) {
         var configHash = root.path("configHash").asText();
         var startedAt = root.path("startedAt").asText();
         var phases = parsePhases(root.path("phases"));
-        var resources = parseResources(root.path("createdResources"));
+        var resources = parseResources(root.path("createdResources"), clusterName);
         var nodeIds = parseStringList(root.path("provisionedNodeIds"));
         var addresses = parseStringList(root.path("collectedAddresses"));
         var clusterSecret = root.path("clusterSecret").asText("");
@@ -162,7 +175,7 @@ sealed interface BootstrapStateJson {
         return Result.lift(() -> PhaseStatus.valueOf(name)).or((PhaseStatus) null);
     }
 
-    private static List<CreatedResource> parseResources(JsonNode node) {
+    private static List<CreatedResource> parseResources(JsonNode node, ClusterName clusterName) {
         if (node.isMissingNode() || node.isNull() || !node.isArray()) {
             return List.of();
         }
@@ -170,7 +183,7 @@ sealed interface BootstrapStateJson {
         var resources = new ArrayList<CreatedResource>();
 
         for (var element : node) {
-            var resource = parseSingleResourceNode(element);
+            var resource = parseSingleResourceNode(element, clusterName);
 
             if (resource != null) {
                 resources.add(resource);
@@ -181,7 +194,7 @@ sealed interface BootstrapStateJson {
     }
 
     @SuppressWarnings("JBCT-PAT-01")
-    static CreatedResource parseSingleResourceNode(JsonNode node) {
+    static CreatedResource parseSingleResourceNode(JsonNode node, ClusterName clusterName) {
         var type = node.path("type").asText("");
 
         return switch (type) {
@@ -189,11 +202,7 @@ sealed interface BootstrapStateJson {
                                                                                 node.path("resourceId").asText(),
                                                                                 node.path("sourceName").asText(),
                                                                                 node.path("role").asText());
-            case "FirewallRule" -> CreatedResource.FirewallRule.firewallRule(node.path("provider").asText(),
-                                                                             node.path("resourceId").asText(),
-                                                                             node.path("sourceName").asText(),
-                                                                             node.path("port").asInt(0),
-                                                                             node.path("protocol").asText("tcp"));
+            case "CloudFirewall" -> parseCloudFirewall(node, clusterName);
             case "FloatingIpAssignment" -> CreatedResource.FloatingIpAssignment.floatingIpAssignment(node.path("provider").asText(),
                                                                                                      node.path("floatingIp").asText(),
                                                                                                      node.path("targetNodeId").asText());
@@ -206,6 +215,43 @@ sealed interface BootstrapStateJson {
                                                                                    node.path("name").asText());
             default -> null;
         };
+    }
+
+    /// `firewallId` is read with `asText()`, which yields `"12345"` for a LEGACY unquoted number and
+    /// the value itself for a quoted string — the back-compat property `BootstrapStateJsonBackCompatTest`
+    /// pins, and the reason the field is not read with `asLong()`.
+    ///
+    /// The three fields degrade differently ON PURPOSE, because they are load-bearing to different
+    /// degrees:
+    ///
+    ///  - `firewallId` has NO safe fallback and is the only handle destroy has on a PAID resource.
+    ///    An unreadable one therefore fails the whole file (via [#liftedParse]'s lift), so the operator
+    ///    is told; dropping the entry would let destroy report success while the firewall keeps
+    ///    billing, which is the lie [BootstrapCleanup#deleteCloudFirewall] was written to end. Recovery
+    ///    is to repair the `firewallId` field in `bootstrap-state.json` (or delete the firewall by hand
+    ///    and remove the entry).
+    ///  - `sourceName` degrades to [SourceName#DEFAULT]; it labels the entry, nothing selects on it here.
+    ///  - `name` is DERIVED, so an unreadable one is re-derived with [FirewallName#forSource] — the same
+    ///    value the writer would have produced. It is a display string; deletion is by id alone.
+    private static CreatedResource parseCloudFirewall(JsonNode node, ClusterName clusterName) {
+        var sourceName = SourceName.sourceNameOrDefault(node.path("sourceName").asText());
+
+        return CreatedResource.CloudFirewall.cloudFirewall(node.path("provider").asText(),
+                                                           firewallId(node),
+                                                           sourceName,
+                                                           firewallName(node, clusterName, sourceName));
+    }
+
+    private static FirewallId firewallId(JsonNode node) {
+        return FirewallId.firewallId(node.path("firewallId").asText()).getOrThrow(UNUSABLE_FIREWALL_ENTRY);
+    }
+
+    String UNUSABLE_FIREWALL_ENTRY = "Unusable CloudFirewall entry in bootstrap-state.json — refusing to load a cleanup "
+                                   + "ledger whose firewall cannot be identified; repair the entry's firewallId (or "
+                                   + "delete the firewall by hand and drop the entry) to make the file loadable again";
+
+    private static FirewallName firewallName(JsonNode node, ClusterName clusterName, SourceName sourceName) {
+        return FirewallName.firewallName(node.path("name").asText()).or(FirewallName.forSource(clusterName, sourceName));
     }
 
     private static List<String> parseStringList(JsonNode node) {
@@ -267,7 +313,7 @@ sealed interface BootstrapStateJson {
     static void appendResourceJson(StringBuilder sb, CreatedResource resource) {
         switch (resource) {
             case CreatedResource.ProvisionedVm vm -> appendVm(sb, vm);
-            case CreatedResource.FirewallRule rule -> appendFirewallRule(sb, rule);
+            case CreatedResource.CloudFirewall firewall -> appendCloudFirewall(sb, firewall);
             case CreatedResource.FloatingIpAssignment ip -> appendFloatingIp(sb, ip);
             case CreatedResource.DockerContainer container -> appendDockerContainer(sb, container);
             case CreatedResource.SshDeployedConfig config -> appendSshConfig(sb, config);
@@ -297,17 +343,15 @@ sealed interface BootstrapStateJson {
           .append("\"}");
     }
 
-    private static void appendFirewallRule(StringBuilder sb, CreatedResource.FirewallRule rule) {
-        sb.append("{\"type\": \"FirewallRule\", \"provider\": \"")
-          .append(escapeJson(rule.provider()))
-          .append("\", \"resourceId\": \"")
-          .append(escapeJson(rule.resourceId()))
+    private static void appendCloudFirewall(StringBuilder sb, CreatedResource.CloudFirewall firewall) {
+        sb.append("{\"type\": \"CloudFirewall\", \"provider\": \"")
+          .append(escapeJson(firewall.provider()))
+          .append("\", \"firewallId\": \"")
+          .append(escapeJson(firewall.firewallId().value()))
           .append("\", \"sourceName\": \"")
-          .append(escapeJson(rule.sourceName()))
-          .append("\", \"port\": ")
-          .append(rule.port())
-          .append(", \"protocol\": \"")
-          .append(escapeJson(rule.protocol()))
+          .append(escapeJson(firewall.sourceName().value()))
+          .append("\", \"name\": \"")
+          .append(escapeJson(firewall.name().value()))
           .append("\"}");
     }
 
@@ -395,6 +439,8 @@ sealed interface BootstrapStateJson {
         sb.append(']');
     }
 
+    // RET-06: defensive null-coalescing when serializing a possibly-absent string field to JSON.
+    @SuppressWarnings("JBCT-RET-06")
     private static String escapeJson(String value) {
         if (value == null) {
             return "";

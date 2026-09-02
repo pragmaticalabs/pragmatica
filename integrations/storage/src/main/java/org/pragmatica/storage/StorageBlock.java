@@ -6,7 +6,6 @@ package org.pragmatica.storage;
 /// @param content block payload bytes (may be compressed)
 /// @param metadata block properties
 public record StorageBlock(BlockId id, byte[] content, BlockMetadata metadata) {
-
     /// Defensive copy of mutable byte array.
     public StorageBlock {
         content = content.clone();

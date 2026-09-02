@@ -4,11 +4,11 @@
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  */
-
 package org.pragmatica.statemachine;
 
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
+
 
 /// GoF-style state machine with CAS-guarded transitions. Dispatch runs on the caller thread; no
 /// executor, no queue. Concurrent dispatches are serialized via `AtomicReference.compareAndSet`
@@ -69,7 +69,9 @@ public final class Fsm<S extends FsmState<S, E>, E> {
                                                               Function<Fsm<S, E>, S> initialStateFactory,
                                                               FsmObserver<S, E> observer) {
         var fsm = new Fsm<S, E>(new FsmTags(kind, instance), observer);
+
         fsm.currentState.set(initialStateFactory.apply(fsm));
+
         return fsm;
     }
 
@@ -77,21 +79,21 @@ public final class Fsm<S extends FsmState<S, E>, E> {
     /// the two-arg form. Kept for back-compat with callers that have not yet been migrated.
     public static <S extends FsmState<S, E>, E> Fsm<S, E> fsm(String name, S initial) {
         var parsed = FsmTags.fromLegacyName(name);
+
         return fsm(parsed.kind(), parsed.instance(), initial, FsmObserver.noop());
     }
 
     /// Legacy single-name factory. See [`#fsm(String, FsmState)`].
-    public static <S extends FsmState<S, E>, E> Fsm<S, E> fsm(String name,
-                                                              S initial,
-                                                              FsmObserver<S, E> observer) {
+    public static <S extends FsmState<S, E>, E> Fsm<S, E> fsm(String name, S initial, FsmObserver<S, E> observer) {
         var parsed = FsmTags.fromLegacyName(name);
+
         return fsm(parsed.kind(), parsed.instance(), initial, observer);
     }
 
     /// Legacy single-name factory. See [`#fsm(String, String, Function)`].
-    public static <S extends FsmState<S, E>, E> Fsm<S, E> fsm(String name,
-                                                              Function<Fsm<S, E>, S> initialStateFactory) {
+    public static <S extends FsmState<S, E>, E> Fsm<S, E> fsm(String name, Function<Fsm<S, E>, S> initialStateFactory) {
         var parsed = FsmTags.fromLegacyName(name);
+
         return fsm(parsed.kind(), parsed.instance(), initialStateFactory, FsmObserver.noop());
     }
 
@@ -100,6 +102,7 @@ public final class Fsm<S extends FsmState<S, E>, E> {
                                                               Function<Fsm<S, E>, S> initialStateFactory,
                                                               FsmObserver<S, E> observer) {
         var parsed = FsmTags.fromLegacyName(name);
+
         return fsm(parsed.kind(), parsed.instance(), initialStateFactory, observer);
     }
 
@@ -121,6 +124,7 @@ public final class Fsm<S extends FsmState<S, E>, E> {
     public void dispatch(E event) {
         var state = currentState.get();
         var tx = new TransitionRequest<>(this, state, event);
+
         state.handle(event, tx);
     }
 
@@ -145,12 +149,15 @@ public final class Fsm<S extends FsmState<S, E>, E> {
         if (!currentState.compareAndSet(expected, target)) {
             observer.onCasLost(tags, expected, currentState.get());
             target.onCasLost();
+
             return false;
         }
+
         expected.onExit();
         transitionAction.run();
         target.onEntry();
         observer.onTransition(tags, expected, target);
+
         return true;
     }
 }

@@ -14,7 +14,6 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.cloud.hetzner;
 
 import org.pragmatica.lang.Cause;
@@ -24,6 +23,7 @@ import org.pragmatica.lang.utils.Causes;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+
 
 /// Typed error causes for Hetzner Cloud API operations.
 public sealed interface HetznerError extends Cause {
@@ -47,8 +47,7 @@ public sealed interface HetznerError extends Cause {
     record ParseError(String context, Throwable cause) implements HetznerError {
         @Override
         public String message() {
-            return "Failed to parse Hetzner response: " + context + " - " + Causes.fromThrowable(cause)
-                                                                                 .message();
+            return "Failed to parse Hetzner response: " + context + " - " + Causes.fromThrowable(cause).message();
         }
     }
 
@@ -65,6 +64,7 @@ public sealed interface HetznerError extends Cause {
         if (statusCode == 429) {
             return new RateLimited(extractRetryAfter(body));
         }
+
         return mapper.readString(body, ErrorResponse.class)
                      .map(resp -> extractApiError(statusCode, resp))
                      .or(new ApiError(statusCode, "unknown", body));
@@ -79,32 +79,27 @@ public sealed interface HetznerError extends Cause {
 
     private static Option<Long> parseRetryAfterFromJson(String body) {
         var colonIdx = body.indexOf(':', body.indexOf("retry_after"));
+
         return findEndIndex(body, colonIdx).filter(endIdx -> endIdx > colonIdx)
-                           .flatMap(endIdx -> parseLongSafe(body.substring(colonIdx + 1, endIdx)
-                                                                .trim()));
+                           .flatMap(endIdx -> parseLongSafe(body.substring(colonIdx + 1, endIdx).trim()));
     }
 
     private static Option<Integer> findEndIndex(String body, int colonIdx) {
         var commaIdx = body.indexOf(',', colonIdx);
         var braceIdx = body.indexOf('}', colonIdx);
+
         return Option.option(commaIdx > 0 && (braceIdx < 0 || commaIdx < braceIdx)
                              ? commaIdx
-                             : braceIdx)
-                     .filter(idx -> idx > 0);
+                             : braceIdx).filter(idx -> idx > 0);
     }
 
     private static Option<Long> parseLongSafe(String value) {
-        return Result.lift(() -> Long.parseLong(value))
-                     .option();
+        return Result.lift(() -> Long.parseLong(value)).option();
     }
 
     private static HetznerError extractApiError(int statusCode, ErrorResponse resp) {
         return new ApiError(statusCode,
-                            Option.option(resp.error())
-                                  .map(ErrorResponse.ErrorBody::code)
-                                  .or("unknown"),
-                            Option.option(resp.error())
-                                  .map(ErrorResponse.ErrorBody::message)
-                                  .or("No details"));
+                            Option.option(resp.error()).map(ErrorResponse.ErrorBody::code).or("unknown"),
+                            Option.option(resp.error()).map(ErrorResponse.ErrorBody::message).or("No details"));
     }
 }

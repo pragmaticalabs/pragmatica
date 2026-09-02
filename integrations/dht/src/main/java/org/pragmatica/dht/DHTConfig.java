@@ -13,17 +13,17 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.dht;
+
+import java.util.List;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 
-import java.util.List;
-
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
+
 
 /// Configuration for the distributed hash table.
 ///
@@ -67,17 +67,19 @@ public record DHTConfig(int replicationFactor,
     /// Default bounded retry: 3 total attempts with 100ms / 250ms / 500ms backoff.
     /// Mirrors the former `ArtifactStore.MAX_DHT_PUT_ATTEMPTS` + `DHT_PUT_BACKOFF_MS`
     /// constants, now expressed as configurable `TimeSpan` values.
-    public static final DhtRetryPolicy DEFAULT_RETRY_POLICY =
-        new DhtRetryPolicy(3, List.of(timeSpan(100).millis(), timeSpan(250).millis(), timeSpan(500).millis()));
+    public static final DhtRetryPolicy DEFAULT_RETRY_POLICY = new DhtRetryPolicy(3,
+                                                                                 List.of(timeSpan(100).millis(),
+                                                                                         timeSpan(250).millis(),
+                                                                                         timeSpan(500).millis()));
 
     /// Backward-compatible constructor that applies the default retry policy.
     /// Retained so existing call sites supplying only quorum + timeout keep compiling.
     public DHTConfig(int replicationFactor, int writeQuorum, int readQuorum, TimeSpan operationTimeout) {
         this(replicationFactor, writeQuorum, readQuorum, operationTimeout, DEFAULT_RETRY_POLICY);
     }
+
     /// Full replication marker - all nodes store all data.
     public static final int FULL_REPLICATION = 0;
-
     /// Default operation timeout for individual DHT get/put operations.
     ///
     /// Set to 30s (was 10s) to give headroom for cluster bootstrap and
@@ -94,15 +96,15 @@ public record DHTConfig(int replicationFactor,
     public static final TimeSpan DEFAULT_TIMEOUT = timeSpan(30).seconds();
 
     private static final Cause INVALID_REPLICATION = Causes.cause("replicationFactor must be >= 0 (0 = full replication)");
+
     private static final Cause INVALID_WRITE_QUORUM = Causes.cause("writeQuorum must be between 1 and replicationFactor");
+
     private static final Cause INVALID_READ_QUORUM = Causes.cause("readQuorum must be between 1 and replicationFactor");
 
     /// Default configuration: 3 replicas, quorum of 2 for both reads and writes.
     public static final DHTConfig DEFAULT = new DHTConfig(3, 2, 2, DEFAULT_TIMEOUT, DEFAULT_RETRY_POLICY);
-
     /// Single-node configuration for testing.
     public static final DHTConfig SINGLE_NODE = new DHTConfig(1, 1, 1, DEFAULT_TIMEOUT, DEFAULT_RETRY_POLICY);
-
     /// Cache configuration: single replica for ephemeral cache data.
     public static final DHTConfig CACHE_DEFAULT = new DHTConfig(1, 1, 1, DEFAULT_TIMEOUT, DEFAULT_RETRY_POLICY);
 
@@ -139,14 +141,17 @@ public record DHTConfig(int replicationFactor,
         if (replicationFactor < 0) {
             return INVALID_REPLICATION.result();
         }
+
         if (replicationFactor > 0) {
             if (writeQuorum < 1 || writeQuorum > replicationFactor) {
                 return INVALID_WRITE_QUORUM.result();
             }
+
             if (readQuorum < 1 || readQuorum > replicationFactor) {
                 return INVALID_READ_QUORUM.result();
             }
         }
+
         return Result.success(new DHTConfig(replicationFactor, writeQuorum, readQuorum, operationTimeout, retryPolicy));
     }
 
@@ -157,7 +162,9 @@ public record DHTConfig(int replicationFactor,
         if (replicationFactor == FULL_REPLICATION) {
             return Result.success(FULL);
         }
+
         int quorum = (replicationFactor / 2) + 1;
+
         return dhtConfig(replicationFactor, quorum, quorum);
     }
 
@@ -176,7 +183,7 @@ public record DHTConfig(int replicationFactor,
     /// consistent regardless (see the `FULL` constant). Configuration introspection only; no runtime path
     /// consumes this.
     public boolean hasQuorumOverlap() {
-        return !isFullReplication() && readQuorum + writeQuorum > replicationFactor;
+        return ! isFullReplication() && readQuorum + writeQuorum > replicationFactor;
     }
 
     /// Get effective replication factor for a given cluster size.

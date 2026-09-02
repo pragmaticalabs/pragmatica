@@ -69,22 +69,86 @@ check_java() {
     fi
 }
 
+# Resolve the version tag to install for an unpinned ("latest") request.
+# Reads newline-separated tag names (without a leading "v") from stdin and
+# prints the tag ranked highest by: major.minor.patch (numeric), then
+# maturity class GA > rc-N > beta > alpha (numeric-aware N, so rc10 > rc9).
+# Tags matching *-candidate are always excluded — the candidate tag is a
+# moving pre-release marker, never an installable release. Tags that don't
+# parse as MAJOR.MINOR.PATCH[-suffix] are skipped. Prints nothing if no tag
+# qualifies.
+resolve_latest_tag() {
+    while IFS= read -r tag; do
+        [ -n "$tag" ] || continue
+        case "$tag" in
+            *-candidate) continue ;;
+        esac
+
+        core="${tag%%-*}"
+        case "$tag" in
+            *-*) suffix="${tag#*-}" ;;
+            *)   suffix="" ;;
+        esac
+
+        major=$(echo "$core" | cut -d. -f1)
+        minor=$(echo "$core" | cut -d. -f2)
+        patch=$(echo "$core" | cut -d. -f3)
+        case "$major" in ''|*[!0-9]*) continue ;; esac
+        case "$minor" in ''|*[!0-9]*) continue ;; esac
+        case "$patch" in ''|*[!0-9]*) continue ;; esac
+
+        case "$suffix" in
+            "")     class=4; num=0 ;;
+            rc*)    class=3; num="${suffix#rc}" ;;
+            beta*)  class=2; num="${suffix#beta}" ;;
+            alpha*) class=1; num="${suffix#alpha}" ;;
+            *)      class=0; num=0 ;;
+        esac
+        case "$num" in ''|*[!0-9]*) num=0 ;; esac
+
+        printf '%05d.%05d.%05d.%d.%05d\t%s\n' "$major" "$minor" "$patch" "$class" "$num" "$tag"
+    done | LC_ALL=C sort -r | head -1 | cut -f2
+}
+
+# Confirm a specific version exists as a published release (not just any
+# tag), so an explicitly requested version fails loudly up front instead of
+# falling through to a download 404 buried inside the install steps.
+verify_version_exists() {
+    version="$1"
+    code=$(curl -s -o /dev/null -w '%{http_code}' "https://api.github.com/repos/$REPO/releases/tags/v$version")
+    [ "$code" = "200" ]
+}
+
 get_latest_version() {
     if [ -n "${VERSION:-}" ]; then
         echo "Using specified version: $VERSION"
+        if ! verify_version_exists "$VERSION"; then
+            echo "Error: version 'v$VERSION' not found in $REPO releases."
+            echo "  See: https://github.com/$REPO/releases"
+            exit 1
+        fi
         return
     fi
     echo "Fetching latest version..."
     VERSION=$(curl -fsSL "https://api.github.com/repos/$REPO/releases" \
         | grep '"tag_name"' \
         | sed -E 's/.*"v?([^"]+)".*/\1/' \
-        | sort -t. -k1,1rn -k2,2rn -k3,3rn \
-        | head -1)
+        | resolve_latest_tag)
     if [ -z "$VERSION" ]; then
-        echo "Error: Could not determine latest version"
+        echo "Error: could not determine latest version (no non-candidate releases found)"
         exit 1
     fi
     echo "Latest version: $VERSION"
+}
+
+# Remove all launcher scripts, libs, and versioned archive directories from
+# any prior install generation. jar_install always (re)writes every launcher
+# it manages, so this guarantees no stale binstub from an earlier archive-
+# mode or jar-mode install can survive into the new one.
+clean_install_dir() {
+    rm -f "$INSTALL_DIR/bin/aether" "$INSTALL_DIR/bin/aether-node" "$INSTALL_DIR/bin/aether-forge"
+    rm -rf "$INSTALL_DIR/lib"
+    rm -rf "$INSTALL_DIR"/aether-node-* "$INSTALL_DIR"/aether-cli-* "$INSTALL_DIR"/aether-forge-*
 }
 
 # --- Self-contained archive install (includes bundled JRE) ---
@@ -153,6 +217,10 @@ try_archive_install() {
     [ -x "$CLI_DIR/bin/aether" ]        && ln -sf "$CLI_DIR/bin/aether" "$INSTALL_DIR/bin/aether"
     [ -x "$FORGE_DIR/bin/aether-forge" ] && ln -sf "$FORGE_DIR/bin/aether-forge" "$INSTALL_DIR/bin/aether-forge"
 
+    for bin in aether aether-node aether-forge; do
+        [ -e "$INSTALL_DIR/bin/$bin" ] || echo "  Warning: $bin archive not available for $VERSION; launcher not installed."
+    done
+
     INSTALL_MODE="archive"
     rm -rf "$TEMP_DIR"
     echo "  Checksums verified."
@@ -165,6 +233,7 @@ jar_install() {
     BASE_URL="https://github.com/$REPO/releases/download/v$VERSION"
 
     echo "Downloading Aether $VERSION (JAR-only, requires JDK)..."
+    clean_install_dir
     mkdir -p "$INSTALL_DIR/lib" "$INSTALL_DIR/bin"
 
     # Download all three JARs
@@ -203,26 +272,56 @@ jar_install() {
     fi
 
     # Create wrapper scripts
+    write_jar_wrappers
+
+    INSTALL_MODE="jar"
+}
+
+# Create wrapper scripts for jar-mode launchers. Each wrapper validates its
+# target jar exists before exec, so a partial or stale install fails with an
+# actionable message instead of a bare "Unable to access jarfile". Called
+# unconditionally on every jar-mode install/upgrade so a stale bin/ entry
+# from a prior generation (symlink, archive-mode launcher, hand edit) never
+# survives.
+write_jar_wrappers() {
+    # rm -f first: bin/aether* may currently be a symlink left by a prior
+    # archive-mode install (possibly dangling). "cat >" writes THROUGH a
+    # symlink instead of replacing it, which would either fail outright or
+    # silently clobber whatever the symlink still points at. Removing the
+    # entry guarantees each wrapper below is always a fresh regular file.
+    rm -f "$INSTALL_DIR/bin/aether" "$INSTALL_DIR/bin/aether-node" "$INSTALL_DIR/bin/aether-forge"
+
     cat > "$INSTALL_DIR/bin/aether" << WRAPPER
 #!/bin/sh
+if [ ! -f "$INSTALL_DIR/lib/aether.jar" ]; then
+    echo "Error: $INSTALL_DIR/lib/aether.jar not found." >&2
+    echo "The installation is incomplete or corrupted. Run install.sh again." >&2
+    exit 1
+fi
 exec java -jar "$INSTALL_DIR/lib/aether.jar" "\$@"
 WRAPPER
 
     cat > "$INSTALL_DIR/bin/aether-node" << WRAPPER
 #!/bin/sh
+if [ ! -f "$INSTALL_DIR/lib/aether-node.jar" ]; then
+    echo "Error: $INSTALL_DIR/lib/aether-node.jar not found." >&2
+    echo "The installation is incomplete or corrupted. Run install.sh again." >&2
+    exit 1
+fi
 exec java -XX:+UseZGC \${AETHER_JAVA_OPTS:-} -jar "$INSTALL_DIR/lib/aether-node.jar" "\$@"
 WRAPPER
 
     cat > "$INSTALL_DIR/bin/aether-forge" << WRAPPER
 #!/bin/sh
+if [ ! -f "$INSTALL_DIR/lib/aether-forge.jar" ]; then
+    echo "Error: $INSTALL_DIR/lib/aether-forge.jar not found." >&2
+    echo "The installation is incomplete or corrupted. Run install.sh again." >&2
+    exit 1
+fi
 exec java -XX:+UseZGC \${AETHER_JAVA_OPTS:-} -jar "$INSTALL_DIR/lib/aether-forge.jar" "\$@"
 WRAPPER
 
-    chmod +x "$INSTALL_DIR/bin/aether"
-    chmod +x "$INSTALL_DIR/bin/aether-node"
-    chmod +x "$INSTALL_DIR/bin/aether-forge"
-
-    INSTALL_MODE="jar"
+    chmod +x "$INSTALL_DIR/bin/aether" "$INSTALL_DIR/bin/aether-node" "$INSTALL_DIR/bin/aether-forge"
 }
 
 install_completions() {
@@ -286,7 +385,10 @@ setup_path() {
     esac
 
     if [ "$PATH_CONFIGURED" = "0" ] && [ -n "$SHELL_RC" ]; then
-        if ! grep -q "AETHER" "$SHELL_RC" 2>/dev/null; then
+        # Match on the export line's own content (fixed string, not the "#
+        # Aether" comment) so the guard keeps working even if the comment
+        # text changes, and isn't defeated by a case mismatch against it.
+        if ! grep -qF '.aether/bin' "$SHELL_RC" 2>/dev/null; then
             echo "" >> "$SHELL_RC"
             echo "# Aether" >> "$SHELL_RC"
             echo "export PATH=\"\$HOME/.aether/bin:\$PATH\"" >> "$SHELL_RC"

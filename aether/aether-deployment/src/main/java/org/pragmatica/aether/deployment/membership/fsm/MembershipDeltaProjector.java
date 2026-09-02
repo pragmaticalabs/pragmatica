@@ -76,12 +76,20 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// strictly ordered and exactly-once per episode (the FSM's `everJoined` pairing), and it
 /// occurs only for episodes fully inside a cluster-wide non-quorate window.
 ///
-/// **Core-scoped baseline (Wave 2 / A8).** A JOINED edge whose descriptor role is the explicit
-/// literal `worker` is ignored — worker joins do not perturb the core delta (blank/unknown
-/// role counts as core, [`MemberDescriptor#isCoreRole`]). REMOVED is keyed on the announced
-/// baseline (NOT the role at death), so the join/remove pairing stays symmetric even across a
-/// role relabel, and a never-announced member's death emits nothing (the FSM's `everJoined`
-/// already filters never-JOINED deaths; this is the projector-side mirror).
+/// **Core-scoped baseline (Wave 2 / A8), and the non-core channel (#728).** A JOINED edge whose
+/// descriptor role is the explicit literal `worker` does not enter the core baseline — worker joins
+/// do not perturb the core delta (blank/unknown role counts as core,
+/// [`MemberDescriptor#isCoreRole`]). It is NOT discarded, however: it is routed to the separate
+/// [`WorkerJoinDecision`] channel, which is what gives `ClusterDeploymentState.assignNodeRole` its
+/// trigger for role assignment and community minting. Before #728 this edge was dropped outright,
+/// and since this projector is the sole emitter of `MembershipDecision.NodeJoined`, a labelled
+/// worker could never be assigned a role, minted a community, or activated — it reached FSM Member
+/// and stopped there. The two channels are deliberately separate types: `NodeJoined` carries a
+/// `topology()` core snapshot that consumers assign directly to their topology state, so a worker
+/// must never travel on it. REMOVED is keyed on the announced baseline (NOT the role at death), so
+/// the join/remove pairing stays symmetric even across a role relabel, and a never-announced
+/// member's death emits nothing (the FSM's `everJoined` already filters never-JOINED deaths; this
+/// is the projector-side mirror).
 ///
 /// **Threading (single-drainer actor).** [`#onDelta`] is invoked under the per-member FSM
 /// monitor and MUST stay cheap: it enqueues into the FIFO and returns. A single CAS-elected
@@ -101,6 +109,7 @@ public final class MembershipDeltaProjector {
     private final LongSupplier logIndexSupplier;
     private final Supplier<HlcTimestamp> hlcSupplier;
     private final Consumer<MembershipDecision> decisionSink;
+    private final Consumer<WorkerJoinDecision> workerJoinSink;
     private final Consumer<NodeId> pruneDeparted;
     private final Consumer<Runnable> drainExecutor;
     private final NttTimerScheduler retryScheduler;
@@ -116,6 +125,11 @@ public final class MembershipDeltaProjector {
     /// Drainer-confined: core members announced to the bus as `NodeJoined` and not yet removed.
     /// The decision-stream baseline — `topology()` payloads are snapshots of this set.
     private final LinkedHashSet<NodeId> announced = new LinkedHashSet<>();
+    /// Drainer-confined, and deliberately SEPARATE from [`#announced`] (#728): workers announced on
+    /// the [`WorkerJoinDecision`] channel. Kept out of the core baseline so no `topology()` payload
+    /// can ever contain a worker; kept at all so a worker join is emitted exactly once, mirroring
+    /// the core arm's idempotence guard.
+    private final LinkedHashSet<NodeId> announcedWorkers = new LinkedHashSet<>();
     /// Read-only diagnostic snapshot of [`#announced`] (Wave-1 baseline-trace successor).
     private volatile Set<NodeId> announcedView = Set.of();
 
@@ -123,6 +137,7 @@ public final class MembershipDeltaProjector {
                                      LongSupplier logIndexSupplier,
                                      Supplier<HlcTimestamp> hlcSupplier,
                                      Consumer<MembershipDecision> decisionSink,
+                                     Consumer<WorkerJoinDecision> workerJoinSink,
                                      Consumer<NodeId> pruneDeparted,
                                      Consumer<Runnable> drainExecutor,
                                      NttTimerScheduler retryScheduler) {
@@ -130,6 +145,7 @@ public final class MembershipDeltaProjector {
         this.logIndexSupplier = logIndexSupplier;
         this.hlcSupplier = hlcSupplier;
         this.decisionSink = decisionSink;
+        this.workerJoinSink = workerJoinSink;
         this.pruneDeparted = pruneDeparted;
         this.drainExecutor = drainExecutor;
         this.retryScheduler = retryScheduler;
@@ -140,17 +156,22 @@ public final class MembershipDeltaProjector {
     /// `GenerationSnapshotSource::observedRabiaTerm` and `hlcSupplier` the node HLC clock
     /// (identical stamping semantics to the old `publishMembershipDeltas`); `decisionSink`
     /// routes onto the node-local shared bus (`MessageRouter::route`); `pruneDeparted` is
-    /// `TopologyObserver::pruneDeparted`. Each drain burst runs on a short-lived virtual
-    /// thread, off every FSM per-member monitor; the flush retry rides the shared scheduler.
+    /// `TopologyObserver::pruneDeparted`. `workerJoinSink` routes the non-core
+    /// [`WorkerJoinDecision`] channel (#728) onto that same bus, where the cluster deployment FSM
+    /// consumes it for role assignment and community minting. Each drain burst runs on a
+    /// short-lived virtual thread, off every FSM per-member monitor; the flush retry rides the
+    /// shared scheduler.
     public static MembershipDeltaProjector membershipDeltaProjector(BooleanSupplier inQuorum,
                                                                     LongSupplier logIndexSupplier,
                                                                     Supplier<HlcTimestamp> hlcSupplier,
                                                                     Consumer<MembershipDecision> decisionSink,
+                                                                    Consumer<WorkerJoinDecision> workerJoinSink,
                                                                     Consumer<NodeId> pruneDeparted) {
         return membershipDeltaProjector(inQuorum,
                                         logIndexSupplier,
                                         hlcSupplier,
                                         decisionSink,
+                                        workerJoinSink,
                                         pruneDeparted,
                                         Thread::startVirtualThread,
                                         SharedScheduler::schedule);
@@ -162,6 +183,7 @@ public final class MembershipDeltaProjector {
                                                                     LongSupplier logIndexSupplier,
                                                                     Supplier<HlcTimestamp> hlcSupplier,
                                                                     Consumer<MembershipDecision> decisionSink,
+                                                                    Consumer<WorkerJoinDecision> workerJoinSink,
                                                                     Consumer<NodeId> pruneDeparted,
                                                                     Consumer<Runnable> drainExecutor,
                                                                     NttTimerScheduler retryScheduler) {
@@ -169,6 +191,7 @@ public final class MembershipDeltaProjector {
                                             logIndexSupplier,
                                             hlcSupplier,
                                             decisionSink,
+                                            workerJoinSink,
                                             pruneDeparted,
                                             drainExecutor,
                                             retryScheduler);
@@ -273,6 +296,8 @@ public final class MembershipDeltaProjector {
     /// Flush-retry tick: clear the ref, then re-poke the drainer iff undrained work remains.
     /// If the node is STILL non-quorate the drain attempt re-arms the retry ([`#drainLoop`]);
     /// once quorum is observed the queue drains fully, in order, and no further retry is armed.
+    // JBCT-RET-08: AtomicReference clear — null is the JDK sentinel, not Option-wrappable
+    @SuppressWarnings("JBCT-RET-08")
     @Contract
     private void runFlushRetry() {
         flushRetryFutureRef.set(null);
@@ -291,12 +316,16 @@ public final class MembershipDeltaProjector {
         }
     }
 
-    /// JOINED: core-role only (Wave 2 — a worker join never perturbs the core delta); an
-    /// already-announced member is idempotently skipped (the FSM's `everJoined` makes
-    /// duplicates structurally impossible — this guard is the projector-side mirror).
+    /// JOINED: core-role edges advance the core baseline and emit `NodeJoined`; non-core (worker)
+    /// edges are routed to the separate [`WorkerJoinDecision`] channel instead (#728) and never
+    /// touch the core baseline. An already-announced member is idempotently skipped on whichever
+    /// channel owns it (the FSM's `everJoined` makes duplicates structurally impossible — these
+    /// guards are the projector-side mirror).
     @Contract
     private void processJoined(MembershipDeltaEdge edge) {
         if (!MemberDescriptor.isCoreRole(edge.role())) {
+            emitWorkerJoin(edge);
+
             return;
         }
 
@@ -310,13 +339,38 @@ public final class MembershipDeltaProjector {
     /// REMOVED: a never-announced member emits nothing (worker, or never JOINED as core —
     /// the tangential consideration's projector-side mirror); an announced member emits
     /// `NodeRemoved` + prunes.
+    ///
+    /// The worker baseline is pruned unconditionally first (#728). It MUST be, independently of
+    /// whether anything is emitted: `announcedWorkers` is a once-only guard, so a worker that
+    /// departed while still recorded there would be silently swallowed on rejoin and never
+    /// re-assigned a role — the same class of silent non-participation #728 itself was. Removal
+    /// is keyed on the baselines rather than on the role at death, so this stays correct across a
+    /// role relabel, and pruning a node that was never a worker is a no-op.
     @Contract
     private void processRemoved(NodeId node) {
+        announcedWorkers.remove(node);
         if (!announced.contains(node)) {
             return;
         }
 
         emitRemoval(node);
+    }
+
+    /// The non-core arm of [`#processJoined`] (#728). Deliberately does NOT touch [`#announced`]
+    /// or `announcedView`: the core baseline stays worker-free, so no `topology()` payload can
+    /// ever carry a worker. Emitted from the drain path like every other decision, so it inherits
+    /// the quorum gate and FIFO ordering — which matters, because the consumer answers this by
+    /// submitting KV commands into consensus.
+    @Contract
+    private void emitWorkerJoin(MembershipDeltaEdge edge) {
+        if (!announcedWorkers.add(edge.node())) {
+            return;
+        }
+
+        var stampedAt = hlcSupplier.get();
+
+        log.debug("Membership delta: WorkerJoined {} (role={}, stampedAt={})", edge.node(), edge.role(), stampedAt);
+        workerJoinSink.accept(WorkerJoinDecision.workerJoinDecision(edge.node(), edge.role(), stampedAt));
     }
 
     @Contract

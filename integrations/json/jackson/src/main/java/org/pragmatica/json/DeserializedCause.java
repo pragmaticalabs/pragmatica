@@ -14,10 +14,10 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.json;
 
 import org.pragmatica.lang.Cause;
+
 
 /// Cause implementation for errors deserialized from JSON.
 /// Used when deserializing Result<T> failures where the original Cause type is not available.

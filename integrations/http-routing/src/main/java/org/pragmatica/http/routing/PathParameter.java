@@ -1,9 +1,5 @@
 package org.pragmatica.http.routing;
 
-import org.pragmatica.http.HttpStatus;
-import org.pragmatica.lang.Functions.Fn1;
-import org.pragmatica.lang.Result;
-
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.LocalDate;
@@ -13,8 +9,13 @@ import java.time.OffsetDateTime;
 import java.util.Locale;
 import java.util.UUID;
 
+import org.pragmatica.http.HttpStatus;
+import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Result;
+
 import static org.pragmatica.http.routing.ParameterError.InvalidParameter;
 import static org.pragmatica.http.routing.ParameterError.PathMismatch;
+
 
 /// Type-safe path parameter parser.
 ///
@@ -72,7 +73,7 @@ public interface PathParameter<T> {
     /// HTTP status, so no transport concept leaks into value-object code.
     default <R> PathParameter<R> mapped(Fn1<Result<R>, T> lift) {
         return value -> parse(value).flatMap(lift)
-                                    .mapError(cause -> HttpStatus.BAD_REQUEST.with(cause));
+                             .mapError(cause -> HttpStatus.BAD_REQUEST.with(cause));
     }
 
     /// Byte parameter - parses signed 8-bit integer.
@@ -172,11 +173,13 @@ public interface PathParameter<T> {
     static PathParameter<Duration> aDuration() {
         return value -> {
             var upperCase = value.toUpperCase(Locale.ROOT);
+
             return tryParseDuration(upperCase).orElse(() -> tryParseDuration("PT" + upperCase));
         };
     }
 
     private static Result<Duration> tryParseDuration(String value) {
-        return Result.lift(_ -> new InvalidParameter("Invalid duration value: " + value), () -> Duration.parse(value));
+        return Result.lift(_ -> new InvalidParameter("Invalid duration value: " + value),
+                           () -> Duration.parse(value));
     }
 }

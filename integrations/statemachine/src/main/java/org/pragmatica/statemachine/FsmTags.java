@@ -4,7 +4,6 @@
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  */
-
 package org.pragmatica.statemachine;
 
 /// Two-part identification for FSM instances. Split so that observers/metrics emit them as
@@ -19,13 +18,17 @@ public record FsmTags(String kind, String instance) {
     /// the first `-`; if no `-`, treats the whole thing as `kind` with empty instance.
     public static FsmTags fromLegacyName(String name) {
         var idx = name.indexOf('-');
+
         if (idx < 0) {
             return new FsmTags(name, "");
         }
+
         return new FsmTags(name.substring(0, idx), name.substring(idx + 1));
     }
 
     public String displayName() {
-        return instance.isEmpty() ? kind : kind + "-" + instance;
+        return instance.isEmpty()
+               ? kind
+               : kind + "-" + instance;
     }
 }

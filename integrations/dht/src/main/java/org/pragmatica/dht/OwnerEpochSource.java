@@ -13,7 +13,6 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.dht;
 
 /// Ambient source of the writer's CURRENT owner epoch, used to stamp each DHT put with a fencing
@@ -34,7 +33,6 @@ package org.pragmatica.dht;
 public interface OwnerEpochSource {
     /// This node's current ownership-epoch `rabiaTerm` for stamping outgoing puts.
     long currentEpochTerm();
-
     /// This node's current ownership-epoch `localCounter` for stamping outgoing puts.
     long currentEpochCounter();
 

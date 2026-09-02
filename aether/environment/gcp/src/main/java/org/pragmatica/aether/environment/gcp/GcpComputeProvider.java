@@ -8,15 +8,16 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
-import org.pragmatica.aether.environment.PlacementHint;
+import org.pragmatica.aether.environment.ProviderDefaults;
 import org.pragmatica.aether.environment.ProvisionContext;
-import org.pragmatica.aether.environment.ProvisionSpec;
+import org.pragmatica.aether.environment.ProvisionRequest;
 import org.pragmatica.aether.environment.ReadinessPolicy;
 import org.pragmatica.cloud.gcp.GcpClient;
 import org.pragmatica.cloud.gcp.api.InsertInstanceRequest;
@@ -33,7 +34,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-import org.pragmatica.utility.IdGenerator;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -53,10 +53,39 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
     }
 
     @Override
-    public Promise<InstanceInfo> provision(InstanceType instanceType) {
-        return client.insertInstance(buildInsertRequest(Option.empty(),
-                                                        config.userData(),
-                                                        defaultLabels()))
+    public ProviderDefaults providerDefaults() {
+        return ProviderDefaults.providerDefaults(config.machineType(),
+                                                 config.sourceImage(),
+                                                 "",
+                                                 "",
+                                                 option(config.userData()),
+                                                 true);
+    }
+
+    /// Translate a fully-resolved [ProvisionRequest] into a GCP insert-instance call.
+    /// [ProvisionRequest#resolve] has already applied the machine-type / image / zone / user-data
+    /// precedence (#442, #459), so this consumes those fields verbatim — no provider-side
+    /// re-derivation. The resolved instanceSize becomes the machine type and the resolved image
+    /// becomes the boot-disk source image (both were previously DROPPED here in favor of the
+    /// config defaults — this is the fix). A SPOT request is REJECTED loud: GCP's
+    /// [InsertInstanceRequest] carries no provisioningModel field on this client, so honoring a
+    /// spot request silently would provision an on-demand instance — the exact silent-downgrade
+    /// this surface eliminates.
+    @Override
+    public Promise<InstanceInfo> createFrom(ProvisionRequest request) {
+        if (request.market() instanceof InstanceType.Spot) {
+            return SPOT_UNSUPPORTED.promise();
+        }
+
+        var zone = zoneOverride(request.zone());
+        var userData = request.userData().or("");
+        var labels = labelsFor(request.context());
+
+        return client.insertInstance(buildInsertRequest(request.instanceSize(),
+                                                        request.image(),
+                                                        zone,
+                                                        userData,
+                                                        labels))
                      .map(GcpComputeProvider::toInstanceInfo)
                      .flatMap(info -> confirmRunning(info,
                                                      ReadinessPolicy.cloudDefault()))
@@ -64,18 +93,17 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
                      .mapError(GcpComputeProvider::toProvisionError);
     }
 
-    @Override
-    public Promise<InstanceInfo> provision(ProvisionSpec spec) {
-        var zone = extractZone(spec.placement());
-        var userData = spec.userData().or(config.userData());
-        var labels = labelsFor(spec.context());
+    /// GCP's [InsertInstanceRequest] exposes no `provisioningModel=SPOT` field on this client, so a
+    /// spot arm cannot be assembled here. A SPOT request must fail loud rather than silently
+    /// downgrade to an on-demand instance.
+    private static final Cause SPOT_UNSUPPORTED = EnvironmentError.provisionFailed(new RuntimeException("GCP spot (provisioningModel=SPOT) provisioning is not yet implemented on this client; a SPOT request must not silently downgrade to on-demand"));
 
-        return client.insertInstance(buildInsertRequest(zone, userData, labels))
-                     .map(GcpComputeProvider::toInstanceInfo)
-                     .flatMap(info -> confirmRunning(info,
-                                                     ReadinessPolicy.cloudDefault()))
-                     .onFailure(GcpComputeProvider::logProvisionFailureRollbackGap)
-                     .mapError(GcpComputeProvider::toProvisionError);
+    /// A blank resolved zone requests the provider's client-level default placement; a concrete
+    /// zone is threaded onto the insert request as the per-instance override.
+    private static Option<String> zoneOverride(String zone) {
+        return zone.isBlank()
+               ? Option.empty()
+               : Option.some(zone);
     }
 
     /// Rollback acknowledgment for GCP provisions. GCP's `insertInstance` is a single
@@ -143,12 +171,13 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
         return "";
     }
 
-    private InsertInstanceRequest buildInsertRequest(Option<String> zoneOverride,
+    private InsertInstanceRequest buildInsertRequest(String machineType,
+                                                     String image,
+                                                     Option<String> zoneOverride,
                                                      String userData,
                                                      Map<String, String> labels) {
         var name = generateInstanceName();
-        var machineType = config.machineType();
-        var disk = buildBootDisk();
+        var disk = buildBootDisk(image);
         var networkInterface = buildNetworkInterface();
         var metadata = buildMetadata(userData);
 
@@ -161,67 +190,35 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
                                          zoneOverride);
     }
 
-    private static Map<String, String> defaultLabels() {
-        return Map.of(MANAGED_LABEL_KEY, MANAGED_LABEL_VALUE, NODE_ID_LABEL, IdGenerator.generate("aether-node"));
-    }
-
     private static Map<String, String> labelsFor(ProvisionContext ctx) {
         var labels = new java.util.HashMap<String, String>();
 
         labels.put(MANAGED_LABEL_KEY, MANAGED_LABEL_VALUE);
-        var clusterName = resolveClusterName(ctx);
-
-        if (!clusterName.isEmpty()) {
-            labels.put("aether-cluster", clusterName);
-        }
-
+        resolveClusterName(ctx).onPresent(name -> labels.put("aether-cluster", name.value()));
         if (!ctx.role().isEmpty()) {
             labels.put("aether-role", ctx.role());
         }
-
-        if (!ctx.sourceName().isEmpty()) {
-            labels.put("aether-source", ctx.sourceName());
-        }
-
+        // Unconditional: SourceName cannot be blank, so the historical emptiness guard here was dead.
+        labels.put("aether-source",
+                   ctx.sourceName().value());
         labels.put(NODE_ID_LABEL, ctx.resolveNodeId());
         labels.putAll(ctx.extraTags());
 
         return Map.copyOf(labels);
     }
 
-    private static String resolveClusterName(ProvisionContext ctx) {
-        if (!ctx.clusterName().isEmpty()) {
-            return ctx.clusterName();
-        }
-
-        var fromEnv = System.getenv("AETHER_CLUSTER_NAME");
-
-        return fromEnv != null && !fromEnv.isEmpty()
-               ? fromEnv
-               : "";
+    /// Resolution chain: the provisioning context, then `AETHER_CLUSTER_NAME` (the pre-bootstrap
+    /// window). Ends [Option#empty] rather than at a placeholder — an unresolved cluster leaves the
+    /// `aether-cluster` tag OFF, exactly as the historical empty string did, and never stamps a name
+    /// a scoped cleanup sweep would then have to guess at. A value outside the RFC-1035 grammar in
+    /// the env var reads as absent here rather than as a name no selector can match.
+    private static Option<ClusterName> resolveClusterName(ProvisionContext ctx) {
+        return ctx.clusterName()
+                  .orElse(() -> ClusterName.maybeClusterName(System.getenv("AETHER_CLUSTER_NAME")));
     }
 
-    private static Option<String> extractZone(Option<PlacementHint> placement) {
-        return placement.flatMap(GcpComputeProvider::zoneFromHint);
-    }
-
-    private static Option<String> zoneFromHint(PlacementHint hint) {
-        return switch (hint) {
-            case PlacementHint.ZoneHint zone -> Option.some(zone.zoneName());
-            case PlacementHint.HostGroupHint ignored -> logUnsupported("HostGroupHint");
-            case PlacementHint.AffinityHint ignored -> logUnsupported("AffinityHint");
-            case PlacementHint.AntiAffinityHint ignored -> logUnsupported("AntiAffinityHint");
-        };
-    }
-
-    private static Option<String> logUnsupported(String hintType) {
-        log.debug("GCP provider ignoring {} — not yet supported", hintType);
-
-        return Option.empty();
-    }
-
-    private Disk buildBootDisk() {
-        return new Disk(true, true, new InitializeParams(config.sourceImage(), 20, "pd-standard"));
+    private Disk buildBootDisk(String image) {
+        return new Disk(true, true, new InitializeParams(image, 20, "pd-standard"));
     }
 
     private NetworkInterfaceConfig buildNetworkInterface() {

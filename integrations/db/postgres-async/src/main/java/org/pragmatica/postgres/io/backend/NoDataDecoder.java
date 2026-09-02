@@ -11,14 +11,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.pragmatica.postgres.io.backend;
+
+import java.nio.ByteBuffer;
+import java.nio.charset.Charset;
 
 import org.pragmatica.postgres.io.Decoder;
 import org.pragmatica.postgres.message.backend.BIndicators;
 
-import java.nio.ByteBuffer;
-import java.nio.charset.Charset;
 
 /**
  * See <a href="https://www.postgresql.org/docs/11/protocol-message-formats.html">Postgres message formats</a>

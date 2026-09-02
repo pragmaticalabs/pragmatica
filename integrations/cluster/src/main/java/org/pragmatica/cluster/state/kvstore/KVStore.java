@@ -1,5 +1,11 @@
 package org.pragmatica.cluster.state.kvstore;
 
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.BiConsumer;
+
 import org.pragmatica.consensus.StateMachine;
 import org.pragmatica.consensus.StateMachine.Batch;
 import org.pragmatica.cluster.state.kvstore.KVCommand.Get;
@@ -21,11 +27,6 @@ import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.function.BiConsumer;
 
 public class KVStore<K extends StructuredKey, V> implements StateMachine<KVCommand<K>> {
     private final Map<K, V> storage = new ConcurrentHashMap<>();
@@ -71,7 +72,9 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
 
     private Option<V> handleGet(Get<K> get) {
         var value = Option.option(storage.get(get.key()));
+
         router.route(new ValueGet<>(get, value));
+
         return value;
     }
 
@@ -79,20 +82,26 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         if (staleWrite(put.key(), put.value())) {
             return Option.option(storage.get(put.key()));
         }
+
         var oldValue = Option.option(storage.put(put.key(), put.value()));
+
         router.route(new ValuePut<>(put, oldValue));
+
         return oldValue;
     }
 
     /// The committed-state fence, shared by [#handlePut] and [#handleRemove] (#345 piece 1a, #379):
     /// a mutation (a `Put` value or a `Remove` witness) is rejected when it is either a stale
-    /// `LeaderKey` write (H4 leader fence) or a stale-epoch write to any [EpochBearing] value
-    /// (ownership fence). Both arms are pure functions of the committed storage content and the
+    /// `LeaderKey` write (H4 leader fence), a stale-epoch write to any [EpochBearing] value
+    /// (ownership fence), a non-successor write to a [VersionFenced] value (lost-update fence,
+    /// RFC-0018 #570), or a regressive write to a [MonotonicFenced] value (running-max fence,
+    /// #700). All arms are pure functions of the committed storage content and the
     /// incoming value alone, so every replica decides identically inside the consensus applier.
-    /// Snapshot restore ([#restoreSnapshot]) intentionally bypasses both fences: a restored snapshot
+    /// Snapshot restore ([#restoreSnapshot]) intentionally bypasses all fences: a restored snapshot
     /// is the authoritative committed state, not a competing write.
     private boolean staleWrite(K key, Object incoming) {
-        return staleLeaderWrite(key, incoming) || staleEpochWrite(key, incoming);
+        return staleLeaderWrite(key, incoming) || staleEpochWrite(key, incoming) || staleSuccessorWrite(key, incoming)
+               || regressiveWatermarkWrite(key, incoming);
     }
 
     /// H4 leader fence (cluster-topology-overhaul §Wave 8.2): `LeaderKey` writes are
@@ -128,15 +137,50 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     @SuppressWarnings("unchecked")
     private static <E extends Comparable<E>> boolean incomingEpochIsStale(EpochBearing<E> incoming,
                                                                           EpochBearing<?> stored) {
-        return incoming.fenceEpoch().compareTo((E) stored.fenceEpoch()) < 0;
+        return incoming.fenceEpoch()
+                       .compareTo((E) stored.fenceEpoch()) < 0;
+    }
+
+    /// Lost-update fence (RFC-0018, #570): [VersionFenced] values are compare-and-put on their
+    /// version chain — a write is applied only when its incoming version is the IMMEDIATE SUCCESSOR
+    /// of the committed one. An EQUAL version is rejected, unlike the epoch arm: epoch equality is a
+    /// legitimate re-announcement, but on a version chain an equal write is the second writer of the
+    /// read-modify-write race, silently overwriting the first. Version jumps are rejected too — a
+    /// write built on anything but the current committed value is built on a stale read. A first
+    /// write (no committed value, or a non-fenced one) passes: there is no chain to fence yet.
+    /// Deterministic for the same reason as the arms above: reads only committed storage and the
+    /// incoming value. A rejected write mutates nothing and emits NO notification; callers detect
+    /// the loss by re-reading committed state after the apply (batch merging makes the applier's
+    /// return value unattributable — see [VersionFenced]).
+    private boolean staleSuccessorWrite(K key, Object incoming) {
+        return incoming instanceof VersionFenced in
+               && storage.get(key) instanceof VersionFenced stored
+               && in.fenceVersion() != stored.fenceVersion() + 1;
+    }
+
+    /// Running-max fence (#700): [MonotonicFenced] values are advance-only — the write is rejected
+    /// iff its watermark is STRICTLY LOWER than the committed one. Equal is ACCEPTED (unlike the
+    /// successor arm): re-publishing the same coverage with fresh contents is legitimate; only
+    /// regression loses data, because the retention floor may already have reclaimed the log below
+    /// the committed claim, and a lower claim landing second would leave those records reachable
+    /// from nowhere. First write passes (no claim yet). Deterministic like the arms above: reads
+    /// only committed storage and the incoming value. A rejected write mutates nothing and emits NO
+    /// notification (see [MonotonicFenced] for the caller-side detection caveat).
+    private boolean regressiveWatermarkWrite(K key, Object incoming) {
+        return incoming instanceof MonotonicFenced in
+               && storage.get(key) instanceof MonotonicFenced stored
+               && in.fenceWatermark() < stored.fenceWatermark();
     }
 
     private Option<V> handleRemove(Remove<K> remove) {
         if (staleRemove(remove)) {
             return Option.option(storage.get(remove.key()));
         }
+
         var oldValue = Option.option(storage.remove(remove.key()));
+
         router.route(new ValueRemove<>(remove, oldValue));
+
         return oldValue;
     }
 
@@ -153,8 +197,10 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// the command, so every replica accepts or rejects a delete identically inside the applier.
     private boolean staleRemove(Remove<K> remove) {
         var key = remove.key();
+
         return switch (storage.get(key)) {
-            case LeaderValue committed when key instanceof LeaderKey -> !currentLeaderWitness(committed, remove.witness());
+            case LeaderValue committed when key instanceof LeaderKey -> !currentLeaderWitness(committed,
+                                                                                              remove.witness());
             case EpochBearing<?> committed -> !currentEpochWitness(committed, remove.witness());
             case null, default -> false;
         };
@@ -229,8 +275,10 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         } finally {
             replaying.set(Boolean.FALSE);
         }
+
         lastReplayedView.clear();
         lastReplayedView.putAll(storage);
+
         return Unit.unit();
     }
 
@@ -258,7 +306,8 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     private void replayPutKeys() {
         storage.forEach((key, value) -> {
             if (!value.equals(lastReplayedView.get(key))) {
-                router.route(new ValuePut<>(new Put<>(key, value), Option.option(lastReplayedView.get(key))));
+                router.route(new ValuePut<>(new Put<>(key, value),
+                                            Option.option(lastReplayedView.get(key))));
             }
         });
     }
@@ -268,6 +317,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         notifyRemoveAll();
         storage.clear();
         lastReplayedView.clear();
+
         return Unit.unit();
     }
 
@@ -292,9 +342,11 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     @SuppressWarnings({"unchecked", "rawtypes"})
     public <VV> Option<VV> getTyped(StructuredKey key, Class<VV> valueClass) {
         var raw = ((Map) storage).get(key);
+
         if (raw == null || !valueClass.isInstance(raw)) {
             return Option.none();
         }
+
         return Option.some((VV) raw);
     }
 
@@ -310,10 +362,10 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     @Contract
     public <KK, VV> void forEach(Class<KK> keyClass, Class<VV> valueClass, BiConsumer<KK, VV> consumer) {
         storage.forEach((key, value) -> {
-                            if (keyClass.isInstance(key) && valueClass.isInstance(value)) {
-                                consumer.accept((KK) key, (VV) value);
-                            }
-                        });
+            if (keyClass.isInstance(key) && valueClass.isInstance(value)) {
+                consumer.accept((KK) key, (VV) value);
+            }
+        });
     }
 
     @MessageReceiver

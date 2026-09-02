@@ -13,7 +13,6 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.net.quic;
 
 import java.util.Map;
@@ -21,6 +20,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.LongAdder;
 
 import org.pragmatica.lang.Contract;
+
 
 /// Thread-safe QUIC transport metrics using atomic counters.
 ///
@@ -45,6 +45,10 @@ public final class QuicTransportMetrics {
     /// Count of stream-zombie BACKSTOP evictions: a write found a CONNECTED peer with no usable
     /// stream AND the lazy open could not heal it, so the connection was evicted for a clean re-dial.
     private final LongAdder streamZombieEvictions = new LongAdder();
+    /// #487: count of sends DROPPED to a peer with no PeerState (dead or never-connected). Counts EVERY
+    /// drop, not just the rate-limited WARNs, so ops see true drop volume (the invisibility of this class
+    /// hid the #467/#457 self-send drops for months).
+    private final LongAdder dropToUnknownPeer = new LongAdder();
 
     private QuicTransportMetrics() {}
 
@@ -53,7 +57,6 @@ public final class QuicTransportMetrics {
     }
 
     // --- Recording methods ---
-
     @Contract
     public void onConnectionEstablished() {
         activeConnections.incrementAndGet();
@@ -128,13 +131,20 @@ public final class QuicTransportMetrics {
         streamZombieEvictions.increment();
     }
 
-    // --- Snapshot ---
+    /// #487: records a send DROPPED to a peer with no PeerState. Every drop is counted, whether or not
+    /// the accompanying WARN was rate-limited.
+    @Contract
+    public void onDropToUnknownPeer() {
+        dropToUnknownPeer.increment();
+    }
 
+    // --- Snapshot ---
     /// Returns a snapshot of all QUIC transport metrics as a map
     /// suitable for JSON serialization and Prometheus exposition.
-    @SuppressWarnings("JBCT-PAT-01") // Metrics snapshot assembly
+    @SuppressWarnings("JBCT-PAT-01")  // Metrics snapshot assembly
     public Map<String, Number> snapshot() {
         var metrics = new java.util.HashMap<String, Number>();
+
         metrics.put("quic_active_connections", activeConnections.get());
         metrics.put("quic_handshake_total", handshakeTotal.sum());
         metrics.put("quic_handshake_failures_total", handshakeFailures.sum());
@@ -147,6 +157,8 @@ public final class QuicTransportMetrics {
         metrics.put("quic_backpressure_queue_depth", backpressureQueueDepth.get());
         metrics.put("quic_stream_zombie_lazy_opens_total", streamZombieLazyOpens.sum());
         metrics.put("quic_stream_zombie_evictions_total", streamZombieEvictions.sum());
+        metrics.put("quic_drop_to_unknown_peer_total", dropToUnknownPeer.sum());
+
         return Map.copyOf(metrics);
     }
 
@@ -196,5 +208,9 @@ public final class QuicTransportMetrics {
 
     public long streamZombieEvictionCount() {
         return streamZombieEvictions.sum();
+    }
+
+    public long dropToUnknownPeerCount() {
+        return dropToUnknownPeer.sum();
     }
 }

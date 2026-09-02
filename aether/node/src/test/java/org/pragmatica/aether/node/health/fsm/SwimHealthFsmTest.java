@@ -7,8 +7,11 @@ package org.pragmatica.aether.node.health.fsm;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
-import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.metrics.observation.PeerObservationStore;
+import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.generation.HealthHint;
+import org.pragmatica.cluster.metrics.HealthHintWire;
+import org.pragmatica.cluster.metrics.PeerHealthObservation;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -46,6 +49,11 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// 1. Happy path through the lifecycle states.
 /// 2. Events ignored in terminal / inapplicable states.
 /// 3. Leader-routing: follower sees faulty-peer-is-current-leader and routes DisconnectNode.
+///
+/// Health verdicts are read from the context's [`PeerObservationStore`]. A subscriber is
+/// registered in `buildHarness`, so `observedHealth` is a cumulative, append-ordered log —
+/// `pushHealth` bypasses the internal buffer while any subscriber exists, which is why
+/// `drainHealth()` is never used here.
 class SwimHealthFsmTest {
 
     private static final NodeId SELF = new NodeId("node-1");
@@ -53,13 +61,16 @@ class SwimHealthFsmTest {
     private static final NodeId PEER_B = new NodeId("node-3");
 
     private final List<NetworkServiceMessage.DisconnectNode> routedDisconnects = new ArrayList<>();
-    private final List<org.pragmatica.aether.slice.generation.HealthSignal.SwimHint> emittedHints = new ArrayList<>();
+    private final List<PeerHealthObservation> observedHealth = new ArrayList<>();
+    private PeerObservationStore observationStore;
     private FsmTestHarness<SwimHealthState, SwimHealthEvents> harness;
     private AtomicReference<SwimHealthContext> ctxRef;
 
     private void buildHarness(boolean isLeader) {
         routedDisconnects.clear();
-        emittedHints.clear();
+        observedHealth.clear();
+        observationStore = PeerObservationStore.peerObservationStore();
+        observationStore.subscribeHealth(observedHealth::add);
         var router = MessageRouter.mutable();
         router.addRoute(NetworkServiceMessage.DisconnectNode.class, routedDisconnects::add);
         var topology = threeNodeTopology();
@@ -82,28 +93,19 @@ class SwimHealthFsmTest {
                                         topology,
                                         serializer,
                                         deserializer,
-                                        recordingSink(), // HealthSignalSink — records emitted hints
                                         () -> Epoch.ZERO,
                                         () -> isLeader,
-                                        PeerObservationStore.peerObservationStore(),
+                                        observationStore,
                                         SwimConfig.DEFAULT);
         ctxRef.set(ctx);
         return ctx.stopped();
     }
 
-    private org.pragmatica.aether.slice.generation.HealthSignalSink recordingSink() {
-        return signal -> {
-            if (signal instanceof org.pragmatica.aether.slice.generation.HealthSignal.SwimHint hint) {
-                emittedHints.add(hint);
-            }
-        };
-    }
-
-    private java.util.List<org.pragmatica.aether.slice.generation.HealthHint> hintsFor(NodeId peer) {
-        return emittedHints.stream()
-                           .filter(h -> h.nodeId().equals(peer))
-                           .map(org.pragmatica.aether.slice.generation.HealthSignal.SwimHint::state)
-                           .toList();
+    private List<HealthHintWire> hintsFor(NodeId peer) {
+        return observedHealth.stream()
+                             .filter(observation -> observation.peerId().equals(peer))
+                             .map(PeerHealthObservation::hint)
+                             .toList();
     }
 
     private static TopologyConfig threeNodeTopology() {
@@ -208,8 +210,7 @@ class SwimHealthFsmTest {
                                                                  GossipEncryptor.none()));
 
             harness.dispatch(new SwimHealthEvents.PeerSuspect(faulty(PEER_A)));
-            harness.dispatch(new SwimHealthEvents.ReportHint(PEER_B,
-                                                              org.pragmatica.aether.slice.generation.HealthHint.HEALTHY));
+            harness.dispatch(new SwimHealthEvents.ReportHint(PEER_B, HealthHint.HEALTHY));
 
             // Both arms produce `handled` records, no `ignored`.
             assertThat(harness.handled()).hasSize(2);
@@ -225,8 +226,8 @@ class SwimHealthFsmTest {
             // RC1-9 audit Step 3: the follower-for-dead-leader `routeDisconnect` branch
             // is gone. Eviction now flows post-consensus via MembershipDecision.NodeRemoved
             // after the leader (re-elected) writes DECOMMISSIONED. The FAULTY observation
-            // still drives the leader-side aggregation path (emitLeaderHint
-            // + bufferHealthObservation) so re-election can complete.
+            // still drives the leader-side aggregation path (`bufferHealthObservation`)
+            // so re-election can complete.
             buildHarness(false); // follower
             harness.dispatch(new SwimHealthEvents.StartRequested());
             harness.dispatch(new SwimHealthEvents.ProtocolReady(swimWithSeeds(),
@@ -284,7 +285,7 @@ class SwimHealthFsmTest {
     @Nested
     class ResurrectionGuard {
         @Test
-        void peerJoined_inRunning_emitsNoHealthyHint() {
+        void peerJoined_inRunning_writesNoHealthyObservation() {
             buildHarness(false);
             harness.dispatch(new SwimHealthEvents.StartRequested());
             harness.dispatch(new SwimHealthEvents.ProtocolReady(swimWithSeeds(),
@@ -294,36 +295,36 @@ class SwimHealthFsmTest {
 
             harness.dispatch(new SwimHealthEvents.PeerJoined(faulty(PEER_A)));
 
-            // Bare join must NOT produce a HEALTHY hint for the unreachable peer.
+            // Bare join must NOT record a HEALTHY observation for the unreachable peer.
             assertThat(hintsFor(PEER_A))
                 .as("bare gossip PeerJoined must not assert HEALTHY")
-                .doesNotContain(org.pragmatica.aether.slice.generation.HealthHint.HEALTHY);
+                .doesNotContain(HealthHintWire.HEALTHY);
         }
 
         @Test
-        void peerJoined_inStoppedOrStarting_emitsNoHealthyHint() {
+        void peerJoined_inStoppedOrStarting_writesNoHealthyObservation() {
             buildHarness(false);
-            // Stopped: bare join, no hint.
+            // Stopped: bare join, no observation.
             harness.dispatch(new SwimHealthEvents.PeerJoined(faulty(PEER_A)));
-            // Starting: bare join, no hint.
+            // Starting: bare join, no observation.
             harness.dispatch(new SwimHealthEvents.StartRequested());
             harness.dispatch(new SwimHealthEvents.PeerJoined(faulty(PEER_B)));
 
             assertThat(hintsFor(PEER_A))
                 .as("bare join in Stopped must not assert HEALTHY")
-                .doesNotContain(org.pragmatica.aether.slice.generation.HealthHint.HEALTHY);
+                .doesNotContain(HealthHintWire.HEALTHY);
             assertThat(hintsFor(PEER_B))
                 .as("bare join in Starting must not assert HEALTHY")
-                .doesNotContain(org.pragmatica.aether.slice.generation.HealthHint.HEALTHY);
+                .doesNotContain(HealthHintWire.HEALTHY);
         }
 
         @Test
-        void peerConnected_inRunning_emitsHealthyHint_butDoesNotPromoteMembership() {
+        void peerConnected_inRunning_writesHealthyObservation_butDoesNotPromoteMembership() {
             // Death-ward-only layering: a completed QUIC channel (PeerConnected) for a KNOWN
             // member must NOT promote SWIM membership. SWIM membership goes ALIVE exclusively via
-            // a probe-ack — transport may report death, never life. PeerConnected only emits a
-            // HEALTHY hint to the detector sink, clearing any stale SUSPECTED/FAULTY entry the
-            // leader's SwimHintsRegistry still holds (leader-side hint hygiene, not promotion).
+            // a probe-ack — transport may report death, never life. PeerConnected only records a
+            // HEALTHY observation, clearing any stale SUSPECTED/FAULTY entry the leader's
+            // SwimHintsRegistry still holds (leader-side hint hygiene, not promotion).
             buildHarness(false);
             harness.dispatch(new SwimHealthEvents.StartRequested());
             var swim = swimWithSeeds(PEER_A);
@@ -338,17 +339,17 @@ class SwimHealthFsmTest {
                 .as("PeerConnected must NOT promote a known member's SWIM membership to HEALTHY — SWIM probe-ack is the sole recovery authority")
                 .isNotEqualTo(SwimHealth.HEALTHY);
             assertThat(hintsFor(PEER_A))
-                .as("PeerConnected for a known member emits a HEALTHY hint to clear stale leader-side suspicion")
-                .contains(org.pragmatica.aether.slice.generation.HealthHint.HEALTHY);
+                .as("PeerConnected for a known member records a HEALTHY observation to clear stale leader-side suspicion")
+                .contains(HealthHintWire.HEALTHY);
         }
 
         @Test
-        void runningPeerConnected_knownSuspectMember_emitsHealthyHintClearingSuspicion() {
+        void runningPeerConnected_knownSuspectMember_writesHealthyObservationClearingSuspicion() {
             // 02-chaos readiness-latency root: a node briefly SWIM-SUSPECTED during kill
             // turbulence gets a SUSPECTED hint in the leader's SwimHintsRegistry. When the node
-            // recovers, a real QUIC PeerConnected for that KNOWN member must emit a HEALTHY hint
-            // that clears the stale SUSPECTED entry — otherwise the generation projector stays
-            // DEGRADED until the hint's TTL expires.
+            // recovers, a real QUIC PeerConnected for that KNOWN member must record a HEALTHY
+            // observation that clears the stale SUSPECTED entry — otherwise the generation
+            // projector stays DEGRADED until the hint's TTL expires.
             buildHarness(true);
             harness.dispatch(new SwimHealthEvents.StartRequested());
             var swim = swimWithSeeds(PEER_A);
@@ -357,28 +358,28 @@ class SwimHealthFsmTest {
                                                                  GossipEncryptor.none()));
             assertThat(harness.state()).isInstanceOf(SwimHealthState.Running.class);
 
-            // The peer is briefly suspected — a SUSPECTED hint is stamped.
+            // The peer is briefly suspected — a SUSPECTED observation is stamped.
             harness.dispatch(new SwimHealthEvents.PeerSuspect(faulty(PEER_A)));
             assertThat(hintsFor(PEER_A))
-                .as("PeerSuspect stamps a SUSPECTED hint")
-                .contains(org.pragmatica.aether.slice.generation.HealthHint.SUSPECTED);
+                .as("PeerSuspect stamps a SUSPECTED observation")
+                .contains(HealthHintWire.SUSPECTED);
 
             // The peer recovers — a real QUIC connection lands.
             harness.dispatch(new SwimHealthEvents.PeerConnected(PEER_A, Option.none()));
 
             assertThat(hintsFor(PEER_A).getLast())
-                .as("PeerConnected for the recovered known member emits HEALTHY, clearing the stale SUSPECTED")
-                .isEqualTo(org.pragmatica.aether.slice.generation.HealthHint.HEALTHY);
+                .as("PeerConnected for the recovered known member records HEALTHY, clearing the stale SUSPECTED")
+                .isEqualTo(HealthHintWire.HEALTHY);
         }
 
         @Test
         void bareJoinAfterFaulty_doesNotEraseFaultyEvidence_andDoesNotHeal() {
-            // A FAULTY peer rejoining by gossip must NOT be auto-healed: no HEALTHY hint, and
-            // the prior FAULTY signal is preserved (the last emitted hint for the peer is FAULTY).
+            // A FAULTY peer rejoining by gossip must NOT be auto-healed: no HEALTHY observation,
+            // and the prior FAULTY evidence is preserved (the last observation for the peer is FAULTY).
             buildHarness(false);
             harness.dispatch(new SwimHealthEvents.StartRequested());
             // Seed 2 peers so a single PeerFaulty does NOT trip the local-disconnect majority
-            // guard (threshold is > totalMembers/2): it routes a real FAULTY hint instead.
+            // guard (threshold is > totalMembers/2): it routes a real FAULTY observation instead.
             harness.dispatch(new SwimHealthEvents.ProtocolReady(swimWithSeeds(PEER_A, PEER_B),
                                                                  new StubTransport(),
                                                                  GossipEncryptor.none()));
@@ -390,27 +391,27 @@ class SwimHealthFsmTest {
                 .as("a single faulty peer must not trip the local-disconnect guard with 2 seeds")
                 .isInstanceOf(SwimHealthState.Running.class);
             assertThat(hintsFor(PEER_A))
-                .as("PeerFaulty must emit a FAULTY hint")
-                .contains(org.pragmatica.aether.slice.generation.HealthHint.FAULTY);
+                .as("PeerFaulty must record a FAULTY observation")
+                .contains(HealthHintWire.FAULTY);
 
             // Stale gossip re-announces PEER_A as joined — must NOT heal it.
             harness.dispatch(new SwimHealthEvents.PeerJoined(faulty(PEER_A)));
 
             assertThat(hintsFor(PEER_A))
-                .as("bare join after FAULTY must not emit HEALTHY (no resurrection)")
-                .doesNotContain(org.pragmatica.aether.slice.generation.HealthHint.HEALTHY);
+                .as("bare join after FAULTY must not record HEALTHY (no resurrection)")
+                .doesNotContain(HealthHintWire.HEALTHY);
             assertThat(hintsFor(PEER_A).getLast())
-                .as("FAULTY evidence preserved: last emitted hint stays FAULTY")
-                .isEqualTo(org.pragmatica.aether.slice.generation.HealthHint.FAULTY);
+                .as("FAULTY evidence preserved: last recorded observation stays FAULTY")
+                .isEqualTo(HealthHintWire.FAULTY);
         }
 
         @Test
-        void peerFaulty_secondHand_stillRoutesFaultyHint_gatingIsUpstream() {
+        void peerFaulty_secondHand_stillWritesFaultyObservation_gatingIsUpstream() {
             // P1: the SwimHealthState death-path is provenance-AGNOSTIC by design — the
             // co-confirmation gate lives upstream in SwimProtocol, so every PeerFaulty that
             // reaches the FSM (firstHand OR a locally-corroborated second-hand verdict) is a
-            // genuine death verdict and routes the FAULTY hint. A second-hand (firstHand=false)
-            // PeerFaulty therefore still emits the FAULTY hint here.
+            // genuine death verdict and records the FAULTY observation. A second-hand
+            // (firstHand=false) PeerFaulty therefore still records FAULTY here.
             buildHarness(false);
             harness.dispatch(new SwimHealthEvents.StartRequested());
             harness.dispatch(new SwimHealthEvents.ProtocolReady(swimWithSeeds(PEER_A, PEER_B),
@@ -421,8 +422,8 @@ class SwimHealthFsmTest {
             harness.dispatch(new SwimHealthEvents.PeerFaulty(faulty(PEER_A), false));
 
             assertThat(hintsFor(PEER_A))
-                .as("a corroborated second-hand PeerFaulty reaching the FSM still routes a FAULTY hint")
-                .contains(org.pragmatica.aether.slice.generation.HealthHint.FAULTY);
+                .as("a corroborated second-hand PeerFaulty reaching the FSM still records a FAULTY observation")
+                .contains(HealthHintWire.FAULTY);
         }
     }
 

@@ -115,7 +115,7 @@ class ComprehensiveSnapshotTest {
                 GCMetrics.EMPTY,
                 new EventLoopMetrics(0, 0, 0, true),
                 NetworkMetrics.EMPTY,
-                new RabiaMetrics("LEADER", Option.some("node-1"), 0, 10, 10, 5, 0, 100_000L),
+                new RabiaMetrics("LEADER", Option.some("node-1"), 0, 10, 10, 0, 0, 0, 5, 0, 100_000L),
                 100, 99, 1, 5.0, Map.of());
 
             assertThat(snap.healthy()).isTrue();
@@ -127,7 +127,7 @@ class ComprehensiveSnapshotTest {
                 GCMetrics.EMPTY,
                 new EventLoopMetrics(0, 0, 0, true),
                 NetworkMetrics.EMPTY,
-                new RabiaMetrics("LEADER", Option.some("node-1"), 0, 10, 10, 5, 0, 100_000L),
+                new RabiaMetrics("LEADER", Option.some("node-1"), 0, 10, 10, 0, 0, 0, 5, 0, 100_000L),
                 100, 89, 11, 5.0, Map.of());
 
             assertThat(snap.healthy()).isFalse();
@@ -139,7 +139,7 @@ class ComprehensiveSnapshotTest {
                 GCMetrics.EMPTY,
                 new EventLoopMetrics(0, 0, 0, true),
                 NetworkMetrics.EMPTY,
-                new RabiaMetrics("LEADER", Option.some("node-1"), 0, 10, 10, 5, 0, 100_000L),
+                new RabiaMetrics("LEADER", Option.some("node-1"), 0, 10, 10, 0, 0, 0, 5, 0, 100_000L),
                 100, 100, 0, 5.0, Map.of());
 
             assertThat(snap.healthy()).isFalse();

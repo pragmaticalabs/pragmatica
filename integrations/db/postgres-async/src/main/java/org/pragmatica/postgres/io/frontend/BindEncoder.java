@@ -11,14 +11,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.pragmatica.postgres.io.frontend;
+
+import java.nio.ByteBuffer;
+import java.nio.charset.Charset;
 
 import org.pragmatica.postgres.io.IO;
 import org.pragmatica.postgres.message.frontend.Bind;
 
-import java.nio.ByteBuffer;
-import java.nio.charset.Charset;
 
 /**
  * See <a href="https://www.postgresql.org/docs/11/protocol-message-formats.html">Postgres message formats</a>
@@ -73,26 +73,23 @@ public class BindEncoder extends ExtendedQueryEncoder<Bind> {
 
     @Override
     protected byte getMessageId() {
-        return (byte) 'B';
+        return (byte)'B';
     }
 
     @Override
     public void writeBody(Bind msg, ByteBuffer buffer, Charset encoding) {
-        IO.putCString(buffer, "", encoding); // portal
-        IO.putCString(buffer, msg.sname(), encoding); // prepared statement
-
+        IO.putCString(buffer, "", encoding);  // portal
+        IO.putCString(buffer, msg.sname(), encoding);  // prepared statement
         // Parameter format codes
         buffer.putShort((short) msg.paramFormatCodes().length);
         for (short code : msg.paramFormatCodes()) {
             buffer.putShort(code);
         }
-
         // Parameter values
         buffer.putShort((short) msg.params().length);
         for (byte[] param : msg.params()) {
             writeParameter(buffer, param);
         }
-
         // Result format codes
         buffer.putShort((short) msg.resultFormatCodes().length);
         for (short code : msg.resultFormatCodes()) {
@@ -102,15 +99,18 @@ public class BindEncoder extends ExtendedQueryEncoder<Bind> {
 
     @Override
     public int estimateSize(Bind msg, Charset encoding) {
-        int size = 1 + 4; // message ID + length
-        size += 1; // empty portal name
-        size += msg.sname().length() + 1; // statement name + null (ASCII names)
-        size += 2 + msg.paramFormatCodes().length * 2; // param format codes
-        size += 2; // param count
+        int size = 1 + 4;  // message ID + length
+        size += 1;  // empty portal name
+        size += msg.sname().length() + 1;  // statement name + null (ASCII names)
+        size += 2 + msg.paramFormatCodes().length * 2;  // param format codes
+        size += 2;  // param count
         for (byte[] param : msg.params()) {
-            size += 4 + (param != null ? param.length : 0);
+            size += 4 + (param != null
+                         ? param.length
+                         : 0);
         }
-        size += 2 + msg.resultFormatCodes().length * 2; // result format codes
+
+        size += 2 + msg.resultFormatCodes().length * 2;  // result format codes
         return size;
     }
 

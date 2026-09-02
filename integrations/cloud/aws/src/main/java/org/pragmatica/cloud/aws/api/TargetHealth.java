@@ -14,17 +14,7 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.cloud.aws.api;
 
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
-import com.fasterxml.jackson.annotation.JsonProperty;
-
-/// ELBv2 target health information.
-@JsonIgnoreProperties(ignoreUnknown = true)
-public record TargetHealth(
-    @JsonProperty("TargetId") String targetId,
-    @JsonProperty("Port") int port,
-    @JsonProperty("State") String state,
-    @JsonProperty("Description") String description
-) {}
+/// ELBv2 target health information (flat carrier derived from [DescribeTargetHealthResponse]).
+public record TargetHealth(String targetId, int port, String state, String description) {}

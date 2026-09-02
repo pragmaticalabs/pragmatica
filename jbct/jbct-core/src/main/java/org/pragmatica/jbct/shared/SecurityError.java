@@ -1,9 +1,10 @@
 package org.pragmatica.jbct.shared;
 
-import org.pragmatica.lang.Cause;
-
 import java.net.URI;
 import java.nio.file.Path;
+
+import org.pragmatica.lang.Cause;
+
 
 /// Security-related errors for path and URL validation.
 /// Named using past tense per JBCT error naming convention.

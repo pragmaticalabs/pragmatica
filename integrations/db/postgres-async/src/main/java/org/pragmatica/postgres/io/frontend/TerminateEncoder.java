@@ -13,16 +13,16 @@
  */
 package org.pragmatica.postgres.io.frontend;
 
-import org.pragmatica.postgres.message.frontend.Terminate;
-
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
+
+import org.pragmatica.postgres.message.frontend.Terminate;
+
 
 /**
  * @author Antti Laisi
  */
 public class TerminateEncoder extends SkipableEncoder<Terminate> {
-
     @Override
     public Class<Terminate> getMessageType() {
         return Terminate.class;
@@ -30,11 +30,11 @@ public class TerminateEncoder extends SkipableEncoder<Terminate> {
 
     @Override
     protected byte getMessageId() {
-        return (byte) 'X';
+        return (byte)'X';
     }
 
     @Override
     public void writeBody(Terminate msg, ByteBuffer buffer, Charset encoding) {
-        // No op, since Terminate message is body less message
+    // No op, since Terminate message is body less message
     }
 }

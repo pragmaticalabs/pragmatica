@@ -4,9 +4,9 @@ import org.pragmatica.lang.Result;
 
 import static org.pragmatica.lang.Result.success;
 
+
 /// Pass-through codec that performs no compression.
 final class NoOpCodec implements CompressionCodec {
-
     static final NoOpCodec INSTANCE = new NoOpCodec();
 
     @Override

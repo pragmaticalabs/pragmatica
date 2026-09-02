@@ -25,59 +25,110 @@ import org.pragmatica.lang.Option;
 /// therefore route to the IDENTICAL [OwnershipDomain.StreamPartition] without re-hashing.
 ///
 /// ## Key format
-/// `keyspace + "/" + partition + "/" + key` (UTF-8). The leading `keyspace/partition/` prefix is the
-/// arc coordinate; everything after the second `/` is the application key (which may itself contain
-/// `/`). [#dhtKey] builds it; [#arcOf] parses the prefix back to the arc.
+/// `entity:<keyspace> + "/" + partition + "/" + key` (UTF-8). The leading `entity:<keyspace>/partition/`
+/// prefix is the arc coordinate; everything after the second `/` is the application key (which may
+/// itself contain `/`). [#dhtKey] builds it; [#arcOf] parses the prefix back to the arc.
+///
+/// ## Why the arc name is namespaced (#345 I1)
+/// Entity arcs reuse the stream-partition ownership record family
+/// ([org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey]), which keys on a BARE
+/// name — so an entity keyspace `orders` and a stream `orders` would share ownership records and
+/// high-water arcs. That collision is not merely untidy: the entity's partition count comes from its own
+/// `DurableEntityConfig` while the stream's comes from its `StreamConfig`, so the write fence and the
+/// ownership arcs would silently key DIFFERENT partitions and still look like a working feature. The
+/// [#ARC_PREFIX] makes the two namespaces disjoint by construction. It is applied HERE, once, rather
+/// than at each call site, so the stamp site, the check site
+/// ([PartitionOwnerEpochGate], which parses the arc back out of the key bytes) and the ownership writer
+/// cannot drift apart. When #349 / plan Phase 3 turns an entity keyspace into a real stream, that stream
+/// adopts the SAME prefix — making the change a rename of nothing rather than a record migration.
 ///
 /// ## Partitioning
-/// The partition is `floorMod(stableHash64(keyspace + "/" + key), partitionCount)` — FNV-1a 64-bit
+/// The partition is `floorMod(stableHash64(arcName + "/" + key), partitionCount)` — FNV-1a 64-bit
 /// over UTF-8, the SAME stable-hash family the stream replica placement uses
 /// (`ReplicaPlacement.stableHash64`). It is reimplemented inline here rather than depending on the
 /// BSL-1.1 `aether-stream` module (which `aether-dht` does not and should not depend on); FNV-1a is
 /// fully deterministic across JVMs with no external library — the same precedent `ReplicaPlacement`
 /// itself follows. Identity hashes are deliberately NOT used (not stable across JVMs).
 public final class EntityPartitionArc {
+    /// Namespace prefix separating entity ownership arcs from stream ones inside the shared
+    /// `StreamPartitionOwnershipKey` family. See the type comment for why this is mandatory.
+    public static final String ARC_PREFIX = "entity:";
     private static final long FNV_64_OFFSET_BASIS = 0xcbf29ce484222325L;
     private static final long FNV_64_PRIME = 0x100000001b3L;
     private static final String SEP = "/";
 
-    private final String keyspace;
+    private final String arcName;
     private final int partitionCount;
 
-    private EntityPartitionArc(String keyspace, int partitionCount) {
-        this.keyspace = keyspace;
+    private EntityPartitionArc(String arcName, int partitionCount) {
+        this.arcName = arcName;
         this.partitionCount = partitionCount;
     }
 
-    /// Arc mapper for the entity family `keyspace` spread across `partitionCount` partitions.
+    /// Arc mapper for the entity family `keyspace` spread across `partitionCount` partitions. `keyspace`
+    /// is the RAW name the author wrote in `resources.toml`; the [#ARC_PREFIX] is applied here.
     public static EntityPartitionArc entityPartitionArc(String keyspace, int partitionCount) {
-        return new EntityPartitionArc(keyspace, partitionCount);
+        return new EntityPartitionArc(arcName(keyspace), partitionCount);
     }
 
-    /// The partition index for `key` — `floorMod(stableHash64(keyspace/key), partitionCount)`.
+    /// The namespaced ownership-arc name for a raw entity `keyspace` — what the ownership writer must
+    /// register, and what [#arcOf] reports. Exposed so the leader-side driver names the IDENTICAL arc
+    /// this mapper fences against, without duplicating the prefix.
+    public static String arcName(String keyspace) {
+        return ARC_PREFIX + keyspace;
+    }
+
+    /// The raw keyspace behind an entity ownership-arc name — the inverse of [#arcName], and the ONE
+    /// place the prefix rule is decided in that direction. [Option#none] when `arcName` is not
+    /// entity-namespaced, i.e. it names a plain stream: the two families share the ownership record
+    /// type, so a caller answering an entity question for a stream name (or vice versa) is exactly the
+    /// collision the prefix exists to make impossible.
+    public static Option<String> keyspaceOf(String arcName) {
+        return arcName.startsWith(ARC_PREFIX)
+               ? Option.some(arcName.substring(ARC_PREFIX.length()))
+               : Option.none();
+    }
+
+    /// This mapper's namespaced ownership-arc name.
+    public String arcName() {
+        return arcName;
+    }
+
+    /// The number of ownership arcs this keyspace spreads over.
+    public int partitionCount() {
+        return partitionCount;
+    }
+
+    /// The partition index for `key` — `floorMod(stableHash64(arcName/key), partitionCount)`.
     public int partitionOf(String key) {
-        return Math.floorMod(stableHash64(keyspace + SEP + key), partitionCount);
+        return Math.floorMod(stableHash64(arcName + SEP + key), partitionCount);
     }
 
-    /// The DHT key bytes `keyspace/partition/key`, with the arc coordinate as a parseable prefix.
+    /// The DHT key bytes `entity:<keyspace>/partition/key`, with the arc coordinate as a parseable prefix.
     public byte[] dhtKey(String key) {
-        return (keyspace + SEP + partitionOf(key) + SEP + key).getBytes(StandardCharsets.UTF_8);
+        return (arcName + SEP + partitionOf(key) + SEP + key).getBytes(StandardCharsets.UTF_8);
     }
 
-    /// The `(keyspace, partition)` ownership arc this entity `key` belongs to.
+    /// The `(entity:<keyspace>, partition)` ownership arc this entity `key` belongs to.
     public StreamPartition arcOf(String key) {
-        return OwnershipDomain.streamPartition(keyspace, partitionOf(key));
+        return OwnershipDomain.streamPartition(arcName, partitionOf(key));
     }
 
-    /// Parse the `(keyspace, partition)` ownership arc embedded in DHT key `bytes` (the inverse of
-    /// [#dhtKey]). [Option#none] when the bytes do not carry the `keyspace/partition/...` prefix this
-    /// mapper produces — the storage engine then treats the write as unfenced (the floor arc), exactly
-    /// as a non-entity DHT key would be.
+    /// Parse the `(entity:<keyspace>, partition)` ownership arc embedded in DHT key `bytes` (the inverse
+    /// of [#dhtKey]). [Option#none] when the bytes do not carry the `entity:<keyspace>/partition/...`
+    /// prefix this mapper produces — the storage engine then treats the write as unfenced (the floor arc),
+    /// exactly as a non-entity DHT key would be. Requiring [#ARC_PREFIX] is what keeps that decision
+    /// precise: without it any key that merely happened to contain `name/digits/` would be fenced against
+    /// an arc nothing owns.
     public static Option<StreamPartition> arcOf(byte[] bytes) {
         return parseArc(new String(bytes, StandardCharsets.UTF_8));
     }
 
     private static Option<StreamPartition> parseArc(String dhtKey) {
+        if (!dhtKey.startsWith(ARC_PREFIX)) {
+            return Option.none();
+        }
+
         var firstSep = dhtKey.indexOf(SEP);
 
         if (firstSep <= 0) {

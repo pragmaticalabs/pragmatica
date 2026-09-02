@@ -8,8 +8,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.function.Function;
 import java.util.function.Supplier;
-import java.util.regex.Pattern;
 
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
@@ -19,7 +19,6 @@ import picocli.CommandLine.Option;
 
 
 public class ClusterTargetMixin {
-    static final Pattern CLUSTER_NAME_PATTERN = Pattern.compile("^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$");
     private static final String API_KEY_FILE_NAME = "api-key";
     static Supplier<Result<ClusterRegistry>> registryLoader = ClusterRegistry::load;
     static Function<String, Path> apiKeyPathResolver = ClusterTargetMixin::defaultApiKeyPath;
@@ -41,7 +40,7 @@ public class ClusterTargetMixin {
             return Result.unitResult();
         }
 
-        if (!CLUSTER_NAME_PATTERN.matcher(clusterName).matches()) {
+        if (!ClusterName.PATTERN.matcher(clusterName).matches()) {
             return new ClusterTargetError.InvalidClusterName(clusterName).result();
         }
 
@@ -55,7 +54,7 @@ public class ClusterTargetMixin {
             return true;
         }
 
-        return CLUSTER_NAME_PATTERN.matcher(clusterName).matches();
+        return ClusterName.PATTERN.matcher(clusterName).matches();
     }
 
     private Result<Unit> resolveAndInstall(ClusterRegistry registry) {
@@ -109,7 +108,7 @@ public class ClusterTargetMixin {
 
     private static Result<String> ensureNonBlank(String content) {
         return content.isBlank()
-               ? new ClusterTargetError.ApiKeyEmpty().result()
+               ? ClusterTargetError.ApiKeyEmpty.INSTANCE.result()
                : Result.success(content);
     }
 
@@ -147,7 +146,8 @@ public class ClusterTargetMixin {
             }
         }
 
-        record ApiKeyEmpty() implements ClusterTargetError {
+        enum ApiKeyEmpty implements ClusterTargetError {
+            INSTANCE;
             @Override
             public String message() {
                 return "API key file is empty.";

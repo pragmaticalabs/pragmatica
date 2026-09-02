@@ -2,15 +2,15 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.jbct.slice.routing;
-
-import org.pragmatica.lang.Option;
 
 import javax.lang.model.element.TypeElement;
 
+import org.pragmatica.lang.Option;
+
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
+
 
 /// Maps an error type implementing Cause to an HTTP status code.
 ///
@@ -20,18 +20,14 @@ import static org.pragmatica.lang.Option.some;
 /// @param errorType      the TypeElement representing the error type
 /// @param httpStatus     the HTTP status code to return for this error
 /// @param matchedPattern the glob pattern that matched this type (empty if explicit mapping)
-public record ErrorTypeMapping(TypeElement errorType,
-                               int httpStatus,
-                               Option<String> matchedPattern) {
+public record ErrorTypeMapping(TypeElement errorType, int httpStatus, Option<String> matchedPattern) {
     /// Factory method for explicit mapping (no pattern).
     public static ErrorTypeMapping errorTypeMapping(TypeElement errorType, int httpStatus) {
         return new ErrorTypeMapping(errorType, httpStatus, none());
     }
 
     /// Factory method for pattern-matched mapping.
-    public static ErrorTypeMapping errorTypeMapping(TypeElement errorType,
-                                                    int httpStatus,
-                                                    String matchedPattern) {
+    public static ErrorTypeMapping errorTypeMapping(TypeElement errorType, int httpStatus, String matchedPattern) {
         return new ErrorTypeMapping(errorType, httpStatus, some(matchedPattern));
     }
 

@@ -17,6 +17,7 @@ import org.pragmatica.aether.api.ManagementApiResponses.ArtifactMetricsResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.BackfillMetricsRequest;
 import org.pragmatica.aether.api.ManagementApiResponses.BackfillMetricsResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ComprehensiveMetricsResponse;
+import org.pragmatica.aether.api.ManagementApiResponses.ConsensusMetricsResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.DeploymentMetrics;
 import org.pragmatica.aether.api.ManagementApiResponses.DerivedMetricsResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ErrorResponse;
@@ -115,6 +116,12 @@ public final class MetricsRoutes implements RouteSource {
         return buildTimeoutMetricsResponse();
     }
 
+    /// Package-private accessor for unit tests that exercise the comprehensive
+    /// response's consensus block (#674) without the HTTP layer.
+    ComprehensiveMetricsResponse buildComprehensiveMetricsResponseForTest() {
+        return buildComprehensiveMetricsResponse();
+    }
+
     @Override
     public Stream<Route<?>> routes() {
         return Stream.of(ManagementRoutes.<MetricsFullResponse> route(ManagementRoute.METRICS).toJson(this::buildMetricsResponse),
@@ -198,10 +205,14 @@ public final class MetricsRoutes implements RouteSource {
 
     private ComprehensiveMetricsResponse buildComprehensiveMetricsResponse() {
         var node = nodeSupplier.get();
+        // #674: the consensus block is LIVE (monotonic totals from the collector), not a minute
+        // aggregate — so it is present even before the first minute bucket exists, and a fresh
+        // node's consensus state is visible from the first request.
+        var consensus = consensusBlock(node);
         var recent = node.snapshotCollector().minuteAggregator().recent(1);
 
         if (recent.isEmpty()) {
-            return new ComprehensiveMetricsResponse(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+            return new ComprehensiveMetricsResponse(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, consensus);
         }
 
         var agg = recent.getFirst();
@@ -218,7 +229,24 @@ public final class MetricsRoutes implements RouteSource {
                                                 agg.latencyP99(),
                                                 agg.errorRate(),
                                                 agg.eventCount(),
-                                                agg.sampleCount());
+                                                agg.sampleCount(),
+                                                consensus);
+    }
+
+    private static ConsensusMetricsResponse consensusBlock(ManageableNode node) {
+        var consensus = node.snapshotCollector().consensusSnapshot();
+
+        return new ConsensusMetricsResponse(consensus.role(),
+                                            consensus.leaderId(),
+                                            consensus.pendingBatches(),
+                                            consensus.decisionsCount(),
+                                            consensus.proposalsCount(),
+                                            consensus.voteRound1Count(),
+                                            consensus.voteRound2Count(),
+                                            consensus.fastPathCount(),
+                                            consensus.syncSuccessCount(),
+                                            consensus.syncFailureCount(),
+                                            consensus.avgDecisionLatencyMs());
     }
 
     private DerivedMetricsResponse buildDerivedMetricsResponse() {
@@ -430,6 +458,9 @@ public final class MetricsRoutes implements RouteSource {
         return validateBackfillRequest(req).flatMap(this::executeBackfill);
     }
 
+    // RET-06: `req` is the deserialized request body (null when absent); the null check IS the
+    // parse-don't-validate entry validation.
+    @SuppressWarnings("JBCT-RET-06")
     private Promise<BackfillMetricsRequest> validateBackfillRequest(BackfillMetricsRequest req) {
         if (req == null) {
             return BackfillError.MISSING_BODY.promise();
@@ -477,6 +508,9 @@ public final class MetricsRoutes implements RouteSource {
                                                            req.endTimeMs()));
     }
 
+    // RET-06: `valueFn` is a nullable request field; the null/blank coalesce to a default generator
+    // is parse-don't-validate of wire input.
+    @SuppressWarnings("JBCT-RET-06")
     private static ValueGenerator parseValueFn(String valueFn) {
         if (valueFn == null || valueFn.isBlank()) {
             return ValueGenerator.constant(0.0);

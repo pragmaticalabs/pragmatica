@@ -13,10 +13,10 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.net.dns;
 
 import org.pragmatica.lang.Cause;
+
 
 /// DNS resolution errors.
 public sealed interface ResolverError extends Cause {

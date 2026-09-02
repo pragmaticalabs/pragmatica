@@ -53,8 +53,10 @@ commerce-order-service-1.0.0.jar
 │   ├── OrderResult.class               # Response types
 │   └── internal/                       # Subpackage classes
 │       └── OrderValidator.class
-├── org/example/shared/                 # Sibling shared package
-│   └── CommonUtils.class
+├── org/example/shared/                 # Sibling shared package (full tree, recursive)
+│   ├── CommonUtils.class
+│   └── event/
+│       └── OrderPlaced.class           # Shared message records and their components
 ├── com/fasterxml/jackson/...           # Bundled external libs
 ├── META-INF/
 │   ├── MANIFEST.MF                     # With Slice-* entries
@@ -71,7 +73,10 @@ commerce-order-service-1.0.0.jar
 - Implementation class
 - Generated factory and proxy classes
 - All request/response types referenced by slice methods
-- Nested classes of request/response types
+- Declared message/event types (`publish.message.classes`, `stream.event.classes`) — topic
+  publisher message types and stream event types the generated factory references (#712)
+- Nested classes of request/response and message/event types
+- Sibling `shared` package tree (recursive) and slice subpackages
 - Bundled external dependencies
 ```
 
@@ -227,7 +232,8 @@ processor.version=0.5.0
 
 Application shared code is automatically included in the impl JAR:
 
-1. **Sibling shared package**: `org.example.shared` for slice `org.example.order.OrderService`
+1. **Sibling shared package**: `org.example.shared` for slice `org.example.order.OrderService` —
+   the whole tree, including subpackages such as `org.example.shared.event` (#712)
 2. **Slice subpackages**: `org.example.order.internal`, `org.example.order.utils`, etc.
 
 ```

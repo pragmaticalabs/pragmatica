@@ -133,6 +133,14 @@ public final class ComprehensiveSnapshotCollector {
         return minuteAggregator;
     }
 
+    /// LIVE consensus counters for the wire (#674): the comprehensive HTTP response's consensus
+    /// block reads this directly rather than a minute aggregate, because the counters are monotonic
+    /// totals — a differencing consumer (the coordination-slope instrument's shape) needs raw
+    /// totals with its own window, exactly as `/metrics/transport` serves its counter map.
+    public RabiaMetrics consensusSnapshot() {
+        return rabiaCollector.snapshot();
+    }
+
     public DerivedMetrics derivedMetrics() {
         return derivedCalculator.current();
     }

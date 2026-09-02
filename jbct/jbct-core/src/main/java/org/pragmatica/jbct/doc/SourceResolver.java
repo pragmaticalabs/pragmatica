@@ -1,9 +1,5 @@
 package org.pragmatica.jbct.doc;
 
-import org.pragmatica.lang.Functions.Fn1;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
-
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -14,8 +10,13 @@ import java.util.List;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
+import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+
 import static org.pragmatica.jbct.doc.DocError.SourceNotFound.sourceNotFound;
 import static org.pragmatica.lang.Option.option;
+
 
 /// Resolves a class or package name to Pragmatica Core source-file content.
 ///
@@ -40,10 +41,10 @@ public sealed interface SourceResolver {
     static Result<String> resolve(String name, Option<Path> jarOverride, Option<String> versionOverride) {
         var candidates = SourceTarget.candidates(name);
         var attempts = new ArrayList<String>();
-        return fromJarOverride(candidates, jarOverride, attempts)
-            .orElse(() -> fromRepoCheckout(candidates, attempts))
-            .orElse(() -> fromMavenLocal(candidates, versionOverride, attempts))
-            .toResult(sourceNotFound(name, attempts));
+
+        return fromJarOverride(candidates, jarOverride, attempts).orElse(() -> fromRepoCheckout(candidates, attempts))
+                              .orElse(() -> fromMavenLocal(candidates, versionOverride, attempts))
+                              .toResult(sourceNotFound(name, attempts));
     }
 
     private static Option<String> fromJarOverride(List<String> candidates,
@@ -67,11 +68,11 @@ public sealed interface SourceResolver {
     }
 
     private static Option<String> readFromDirectory(Path root, String candidate, List<String> attempts) {
-        var file = root.resolve("core/src/main/java")
-                       .resolve(candidate);
+        var file = root.resolve("core/src/main/java").resolve(candidate);
+
         attempts.add("repo checkout: " + file);
-        return Result.lift(() -> Files.readString(file))
-                     .option();
+
+        return Result.lift(() -> Files.readString(file)).option();
     }
 
     private static Option<String> fromJar(Path jar, List<String> candidates, List<String> attempts) {
@@ -80,36 +81,34 @@ public sealed interface SourceResolver {
 
     private static Option<String> readFromJar(Path jar, String candidate, List<String> attempts) {
         attempts.add("sources jar " + jar + " entry " + candidate);
+
         return readZipEntry(jar, candidate).option();
     }
 
     private static Result<String> readZipEntry(Path jar, String entryName) {
         return Result.lift(() -> {
-                              try (var zip = new ZipFile(jar.toFile())) {
-                                  return option(zip.getEntry(entryName))
-                                               .flatMap(entry -> readEntry(zip, entry));
-                              }
-                          })
-                     .flatMap(opt -> opt.toResult(DocError.HeaderMissing.headerMissing(entryName)));
+            try (var zip = new ZipFile(jar.toFile())) {
+                return option(zip.getEntry(entryName)).flatMap(entry -> readEntry(zip, entry));
+            }
+        }).flatMap(opt -> opt.toResult(DocError.HeaderMissing.headerMissing(entryName)));
     }
 
     private static Option<String> readEntry(ZipFile zip, ZipEntry entry) {
         return Result.lift(() -> {
-                              try (InputStream in = zip.getInputStream(entry)) {
-                                  return new String(in.readAllBytes(), StandardCharsets.UTF_8);
-                              }
-                          })
-                     .option();
+            try (InputStream in = zip.getInputStream(entry)) {
+                return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+            }
+        }).option();
     }
 
     private static Option<Path> findRepoRoot() {
-        return walkToRepoRoot(Path.of("")
-                                  .toAbsolutePath());
+        return walkToRepoRoot(Path.of("").toAbsolutePath());
     }
 
     private static Option<Path> walkToRepoRoot(Path dir) {
-        return Files.isRegularFile(dir.resolve(REPO_MARKER)) ? option(dir)
-                                                            : parentOf(dir).flatMap(SourceResolver::walkToRepoRoot);
+        return Files.isRegularFile(dir.resolve(REPO_MARKER))
+               ? option(dir)
+               : parentOf(dir).flatMap(SourceResolver::walkToRepoRoot);
     }
 
     private static Option<Path> parentOf(Path dir) {
@@ -118,6 +117,7 @@ public sealed interface SourceResolver {
 
     private static Option<Path> selectSourcesJar(Option<String> versionOverride) {
         var coreDir = mavenRepository().resolve(CORE_REPO_DIR);
+
         return versionOverride.map(version -> sourcesJarPath(coreDir, version))
                               .filter(Files::isRegularFile)
                               .orElse(() -> latestSourcesJar(coreDir));
@@ -125,23 +125,23 @@ public sealed interface SourceResolver {
 
     private static Option<Path> latestSourcesJar(Path coreDir) {
         var existing = listVersions(coreDir).stream()
-                                            .sorted(Comparator.reverseOrder())
-                                            .map(version -> sourcesJarPath(coreDir, version))
-                                            .filter(Files::isRegularFile)
-                                            .findFirst();
+                                   .sorted(Comparator.reverseOrder())
+                                   .map(version -> sourcesJarPath(coreDir, version))
+                                   .filter(Files::isRegularFile)
+                                   .findFirst();
+
         return existing.map(Option::option)
                        .orElseGet(Option::none);
     }
 
     private static List<String> listVersions(Path coreDir) {
         return Result.lift(() -> {
-                              try (var stream = Files.list(coreDir)) {
-                                  return stream.filter(Files::isDirectory)
-                                               .map(SourceResolver::dirName)
-                                               .toList();
-                              }
-                          })
-                     .or(List.<String>of());
+            try (var stream = Files.list(coreDir)) {
+                return stream.filter(Files::isDirectory)
+                             .map(SourceResolver::dirName)
+                             .toList();
+            }
+        }).or(List.<String> of());
     }
 
     private static String dirName(Path path) {

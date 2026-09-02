@@ -14,13 +14,7 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.lang.utils;
-
-import org.pragmatica.lang.Contract;
-import org.pragmatica.lang.io.TimeSpan;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.util.concurrent.DelayQueue;
 import java.util.concurrent.Delayed;
@@ -31,6 +25,13 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+
+import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.io.TimeSpan;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 
 /// Prototype virtual-thread scheduler that decouples *timekeeping* from *execution*.
 ///
@@ -64,7 +65,9 @@ public final class VirtualThreadScheduler {
 
     /// Schedule a one-shot invocation after `delay`.
     public ScheduledFuture<?> schedule(Runnable task, TimeSpan delay) {
-        return enqueue(new ScheduledTask(task, System.nanoTime() + delay.nanos(), 0L));
+        return enqueue(new ScheduledTask(task,
+                                         System.nanoTime() + delay.nanos(),
+                                         0L));
     }
 
     /// Schedule a periodic invocation with `interval` used as both initial delay and period.
@@ -74,7 +77,9 @@ public final class VirtualThreadScheduler {
 
     /// Schedule a periodic invocation with a custom initial delay.
     public ScheduledFuture<?> scheduleAtFixedRate(Runnable task, TimeSpan initialDelay, TimeSpan interval) {
-        return enqueue(new ScheduledTask(task, System.nanoTime() + initialDelay.nanos(), interval.nanos()));
+        return enqueue(new ScheduledTask(task,
+                                         System.nanoTime() + initialDelay.nanos(),
+                                         interval.nanos()));
     }
 
     /// Stop the timer thread and the virtual-thread executor.
@@ -97,6 +102,7 @@ public final class VirtualThreadScheduler {
 
     private ScheduledTask enqueue(ScheduledTask task) {
         queue.put(task);
+
         return task;
     }
 
@@ -105,14 +111,17 @@ public final class VirtualThreadScheduler {
     private void timerLoop() {
         while (!stopped) {
             ScheduledTask t;
+
             try {
                 t = queue.take();
             } catch (InterruptedException e) {
                 if (stopped) {
                     return;
                 }
+
                 continue;
             }
+
             try {
                 dispatch(t);
             } catch (Throwable e) {
@@ -129,14 +138,15 @@ public final class VirtualThreadScheduler {
         if (t.cancelled) {
             return;
         }
+
         if (!t.running.compareAndSet(false, true)) {
             // Previous occurrence still in flight: skip this one but keep cadence.
             reschedule(t);
+
             return;
         }
 
         recordLag(t);
-
         t.inFlight = vtExec.submit(() -> {
             try {
                 if (!t.cancelled) {
@@ -151,7 +161,6 @@ public final class VirtualThreadScheduler {
                 }
             }
         });
-
         reschedule(t);
     }
 
@@ -159,6 +168,7 @@ public final class VirtualThreadScheduler {
     private void recordLag(ScheduledTask t) {
         dispatchCount.incrementAndGet();
         var lag = System.nanoTime() - t.deadlineNanos;
+
         maxLagNanos.accumulateAndGet(lag, Math::max);
     }
 
@@ -168,10 +178,12 @@ public final class VirtualThreadScheduler {
         if (!t.cancelled && t.periodNanos > 0) {
             t.deadlineNanos += t.periodNanos;
             var now = System.nanoTime();
+
             if (t.deadlineNanos < now) {
                 // Skip catch-up burst: if we fell behind, re-anchor to now.
                 t.deadlineNanos = now;
             }
+
             queue.put(t);
         }
     }
@@ -182,7 +194,6 @@ public final class VirtualThreadScheduler {
         private final Runnable body;
         private final long periodNanos;
         private final AtomicBoolean running = new AtomicBoolean(false);
-
         private volatile boolean cancelled;
         private volatile boolean done;
         private volatile Future<?> inFlight;
@@ -217,6 +228,7 @@ public final class VirtualThreadScheduler {
             if (other instanceof ScheduledTask t) {
                 return Long.compare(deadlineNanos, t.deadlineNanos);
             }
+
             return Long.compare(getDelay(TimeUnit.NANOSECONDS), other.getDelay(TimeUnit.NANOSECONDS));
         }
 
@@ -225,13 +237,16 @@ public final class VirtualThreadScheduler {
             if (cancelled) {
                 return false;
             }
+
             cancelled = true;
             if (mayInterruptIfRunning) {
                 var f = inFlight;
+
                 if (f != null) {
                     f.cancel(true);
                 }
             }
+
             return true;
         }
 

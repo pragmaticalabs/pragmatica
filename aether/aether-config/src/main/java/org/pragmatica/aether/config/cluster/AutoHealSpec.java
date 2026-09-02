@@ -4,15 +4,25 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.config.cluster;
 
+import org.pragmatica.aether.config.ConfigKeyLive;
+
+
+/// #675 tracks a duplicated-type gap: `Main.resolveAutoHeal` builds the runtime `AutoHealConfig` from
+/// `AutoHealConfig.DEFAULT` plus a `max_nodes` cap, and never reads this parsed spec at all — so six of
+/// this record's nine fields have no consumer anywhere outside `enabled()` (read by
+/// `ClusterBootstrapConfigValidator`) and `retryInterval()`/`startupCooldown()` (forwarded, not
+/// consumed, by `ClusterBootstrapConfigParser.autoHealFromShortcut`'s same-type defaulting chain).
+/// `@ConfigKeyLive`-suppressed below rather than deleted: #675 owns the fix (wire these through, or
+/// remove them), not #519's dead-surface guard — see #519 commissioning notes.
 public record AutoHealSpec(boolean enabled,
                            String retryInterval,
                            String startupCooldown,
-                           String staleObservationTtl,
-                           int quicMissPromotionThreshold,
-                           String provisioningTimeout,
-                           String provisionStabilityWindow,
-                           String decommissionedRetention,
-                           String swimHintsTtl) {
+                           @ConfigKeyLive("#675: parsed but never read by Main.resolveAutoHeal") String staleObservationTtl,
+                           @ConfigKeyLive("#675: parsed but never read by Main.resolveAutoHeal") int quicMissPromotionThreshold,
+                           @ConfigKeyLive("#675: parsed but never read by Main.resolveAutoHeal") String provisioningTimeout,
+                           @ConfigKeyLive("#675: parsed but never read by Main.resolveAutoHeal") String provisionStabilityWindow,
+                           @ConfigKeyLive("#675: parsed but never read by Main.resolveAutoHeal") String decommissionedRetention,
+                           @ConfigKeyLive("#675: parsed but never read by Main.resolveAutoHeal") String swimHintsTtl) {
     public static final String DEFAULT_STALE_OBSERVATION_TTL = "30s";
     public static final int DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD = 10;
     public static final String DEFAULT_PROVISIONING_TIMEOUT = "60s";

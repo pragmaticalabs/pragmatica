@@ -4,11 +4,11 @@
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  */
-
 package org.pragmatica.consensus.leader.fsm;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
+
 
 /// Leader-election domain events layered on top of [`ClusterFsmEvent`]. The FSM's event type is
 /// `ClusterFsmEvent` (not a separate sealed interface), so domain events implement that marker

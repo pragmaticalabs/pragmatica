@@ -20,12 +20,15 @@ import picocli.CommandLine.Mixin;
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_MEMBERSHIP_GET;
 
 
-@Command(name = "membership", description = "Show this node's LOCAL membership view (per-peer FSM state + quorum-loss self-drain signal)")
+@Command(name = "membership", description = "Show this node's LOCAL membership view (per-peer FSM state, quorum-loss self-drain signal, "
+                                          + "and core-absence fence countdown; the two fence summaries are root fields — use --format json)")
 @SuppressWarnings("JBCT-RET-01")
 class ClusterMembershipCommand implements Callable<Integer> {
-    // Per-peer rows drawn from the `members` array; the strict/threshold/below/armed summary fields
-    // live at the response root and are visible in `--format json`. The view is PER-NODE local — the
-    // table shows the membership picture as seen by whichever node served the request.
+    // Per-peer rows drawn from the `members` array; the strict/threshold/below/armed summary fields and
+    // the #590 `coreAbsence` object live at the response root and are visible in `--format json`. The
+    // view is PER-NODE local — the table shows the membership picture as seen by whichever node served
+    // the request, and for core-absence that is the whole point: the node whose countdown you want is
+    // the one the core is losing, so you query it directly rather than asking the leader.
     private static final TableSpec TABLE_SPEC = new TableSpec("Local Membership View",
                                                               List.of(new Column("NODE", "nodeId", 16),
                                                                       new Column("STATE", "state", 12),

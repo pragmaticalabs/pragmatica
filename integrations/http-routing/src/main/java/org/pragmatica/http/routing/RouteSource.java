@@ -2,6 +2,7 @@ package org.pragmatica.http.routing;
 
 import java.util.stream.Stream;
 
+
 public interface RouteSource {
     Stream<Route<?>> routes();
 
@@ -20,8 +21,7 @@ public interface RouteSource {
     }
 
     static RouteSource routeSource(RouteSource... routes) {
-        return () -> Stream.of(routes)
-                           .flatMap(RouteSource::routes);
+        return () -> Stream.of(routes).flatMap(RouteSource::routes);
     }
 
     @Deprecated(forRemoval = true)

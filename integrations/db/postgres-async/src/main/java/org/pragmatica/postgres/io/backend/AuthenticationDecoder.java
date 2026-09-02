@@ -11,15 +11,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.pragmatica.postgres.io.backend;
+
+import java.nio.ByteBuffer;
+import java.nio.charset.Charset;
 
 import org.pragmatica.postgres.io.Decoder;
 import org.pragmatica.postgres.io.IO;
 import org.pragmatica.postgres.message.backend.Authentication;
 
-import java.nio.ByteBuffer;
-import java.nio.charset.Charset;
 
 /**
  * See <a href="www.postgresql.org/docs/9.3/static/protocol-message-formats.html">Postgres message formats</a>
@@ -67,50 +67,53 @@ public class AuthenticationDecoder implements Decoder<Authentication> {
     @Override
     public Authentication read(ByteBuffer buffer, int contentLength, Charset encoding) {
         int type = buffer.getInt();
+
         return switch (type) {
             case CLEARTEXT_PASSWORD -> Authentication.CLEAR_TEXT;
             case PASSWORD_MD5_CHALLENGE -> {
                 byte[] md5Salt = new byte[4];
+
                 buffer.get(md5Salt);
-                yield  new Authentication(false, false, false, md5Salt, null, null);
+                yield new Authentication(false, false, false, md5Salt, null, null);
             }
             case AUTHENTICATION_SSPI -> throw new UnsupportedOperationException(AUTHENTICATION_IS_NOT_SUPPORTED);
             case AUTHENTICATION_GSS -> throw new UnsupportedOperationException("AuthenticationGss" + AUTHENTICATION_IS_NOT_SUPPORTED);
-            case AUTHENTICATION_SCM_CREDENTIAL ->
-                throw new UnsupportedOperationException("AuthenticationScmCredential" + AUTHENTICATION_IS_NOT_SUPPORTED);
-            case AUTHENTICATION_KERBEROS_V5 ->
-                throw new UnsupportedOperationException("AuthenticationKerberosV5" + AUTHENTICATION_IS_NOT_SUPPORTED);
+            case AUTHENTICATION_SCM_CREDENTIAL -> throw new UnsupportedOperationException("AuthenticationScmCredential" + AUTHENTICATION_IS_NOT_SUPPORTED);
+            case AUTHENTICATION_KERBEROS_V5 -> throw new UnsupportedOperationException("AuthenticationKerberosV5" + AUTHENTICATION_IS_NOT_SUPPORTED);
             case OK -> Authentication.OK;
             case SASL -> {
                 boolean scramSha256Met = false;
                 boolean scramSha256PlusMet = false;
                 String sasl = IO.getCString(buffer, encoding);
+
                 while (!sasl.isEmpty()) {
                     if (Authentication.SUPPORTED_SASL.equals(sasl)) {
                         scramSha256Met = true;
                     } else if (Authentication.SUPPORTED_SASL_PLUS.equals(sasl)) {
                         scramSha256PlusMet = true;
                     }
+
                     sasl = IO.getCString(buffer, encoding);
                 }
+
                 if (scramSha256Met || scramSha256PlusMet) {
                     yield new Authentication(false, scramSha256Met, scramSha256PlusMet, null, null, null);
                 } else {
-                    throw new UnsupportedOperationException("The server doesn't support " + Authentication.SUPPORTED_SASL + " SASL mechanism");
+                    throw new UnsupportedOperationException("The server doesn't support " + Authentication.SUPPORTED_SASL
+                                                           + " SASL mechanism");
                 }
             }
             case SASL_CONTINUE -> {
-                byte[] saslContinueData = new byte[contentLength - 4]; // Minus type field size
+                byte[] saslContinueData = new byte[contentLength - 4];  // Minus type field size
                 buffer.get(saslContinueData);
                 yield new Authentication(false, false, false, null, new String(saslContinueData, encoding), null);
             }
             case SASL_FINAL -> {
-                byte[] saslAdditionalData = new byte[contentLength - 4]; // Minus type field size
+                byte[] saslAdditionalData = new byte[contentLength - 4];  // Minus type field size
                 buffer.get(saslAdditionalData);
                 yield new Authentication(false, false, false, null, null, saslAdditionalData);
             }
             default -> throw new UnsupportedOperationException("Unsupported authentication type: " + type);
         };
     }
-
 }

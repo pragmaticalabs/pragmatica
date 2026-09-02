@@ -23,11 +23,16 @@ public sealed interface HttpForwardMessage extends ProtocolMessage {
         MANAGEMENT
     }
 
+    /// `remainingMillis` is the sender's remaining request budget at send time (stage 2 of deadline
+    /// propagation): a receiver drops work whose sender has already given up instead of computing an
+    /// answer nobody is waiting for. Negative (`Deadline.NO_BUDGET`) means the sender had no budget
+    /// and the receiver applies its own defaults.
     record HttpForwardRequest(NodeId sender,
                               String correlationId,
                               String requestId,
                               byte[] requestData,
-                              Pipeline pipeline) implements HttpForwardMessage {}
+                              Pipeline pipeline,
+                              long remainingMillis) implements HttpForwardMessage {}
 
     record HttpForwardResponse(NodeId sender,
                                String correlationId,

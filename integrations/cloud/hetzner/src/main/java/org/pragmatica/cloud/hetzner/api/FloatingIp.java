@@ -14,7 +14,6 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.cloud.hetzner.api;
 
 import java.util.List;
@@ -22,6 +21,7 @@ import java.util.Map;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+
 
 /// Hetzner Cloud floating IP model.
 @JsonIgnoreProperties(ignoreUnknown = true)

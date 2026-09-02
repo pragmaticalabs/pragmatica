@@ -14,22 +14,24 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.lang.utils;
+
+import java.lang.ref.WeakReference;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 
-import java.lang.ref.WeakReference;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.Supplier;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
+
 
 /// A utility for ensuring operations are executed at most once per key within a configurable TTL window.
 /// This implementation provides idempotency guarantees for asynchronous operations, preventing duplicate
@@ -173,9 +175,9 @@ public interface Idempotency {
     /// @return Result containing the Idempotency instance, or failure if TTL is invalid
     static Result<Idempotency> idempotency(org.pragmatica.lang.io.TimeSpan ttl, TimeSource timeSource) {
         if (ttl.nanos() <= 0) {
-            return IdempotencyError.InvalidTtl.invalidTtl(ttl)
-                                   .result();
+            return IdempotencyError.InvalidTtl.invalidTtl(ttl).result();
         }
+
         return Result.success(newIdempotency(ttl, timeSource));
     }
 
@@ -195,9 +197,7 @@ public interface Idempotency {
     }
 
     private static Idempotency newIdempotency(org.pragmatica.lang.io.TimeSpan ttl, TimeSource timeSource) {
-        record idempotency(long ttlNanos,
-                           TimeSource timeSource,
-                           ConcurrentHashMap<String, CachedEntry<?>> entries) implements Idempotency {
+        record idempotency(long ttlNanos, TimeSource timeSource, ConcurrentHashMap<String, CachedEntry<?>> entries) implements Idempotency {
             private static final Logger log = LoggerFactory.getLogger(Idempotency.class);
 
             @Override
@@ -208,24 +208,28 @@ public interface Idempotency {
                 var entry = (CachedEntry<T>) entries.compute(key,
                                                              (k, existing) -> {
                                                                  if (existing != null && !existing.shouldReplace(now)) {
-                                                                     return existing;
-                                                                 }
+                                                                 return existing;
+                                                             }
+
                                                                  created.set(true);
+
                                                                  return new CachedEntry<>(Promise.promise(),
                                                                                           now + ttlNanos);
                                                              });
+
                 if (!created.get()) {
                     log.trace("Returning existing entry for key: {}", key);
+
                     return entry.promise();
                 }
+
                 log.trace("Executing operation for key: {}", key);
                 executeOperation(key, operation, entry);
+
                 return entry.promise();
             }
 
-            private <T> void executeOperation(String key,
-                                              Supplier<Promise<T>> operation,
-                                              CachedEntry<T> entry) {
+            private <T> void executeOperation(String key, Supplier<Promise<T>> operation, CachedEntry<T> entry) {
                 operation.get()
                          .onResult(result -> result.onSuccess(value -> handleSuccess(key, value, entry))
                                                    .onFailure(cause -> handleFailure(key, cause, entry)));
@@ -233,46 +237,71 @@ public interface Idempotency {
 
             private <T> void handleSuccess(String key, T value, CachedEntry<T> entry) {
                 log.trace("Operation succeeded for key: {}", key);
-                entry.promise()
-                     .succeed(value);
+                entry.promise().succeed(value);
             }
 
             private <T> void handleFailure(String key, Cause cause, CachedEntry<T> entry) {
                 log.trace("Operation failed for key: {}, cause: {}", key, cause.message());
-                entry.promise()
-                     .fail(cause);
+                entry.promise().fail(cause);
                 // Safe removal - only remove if still our entry
                 entries.remove(key, entry);
             }
         }
         var entries = new ConcurrentHashMap<String, CachedEntry<?>>();
         // Cleanup interval: min(TTL/5, 1 minute)
-        var oneMinuteNanos = timeSpan(1).minutes()
-                                     .nanos();
+        var oneMinuteNanos = timeSpan(1).minutes().nanos();
         var cleanupIntervalNanos = Math.min(ttl.nanos() / 5, oneMinuteNanos);
         var cleanupInterval = timeSpan(cleanupIntervalNanos).nanos();
         // Schedule periodic cleanup using WeakReference to allow GC of the Idempotency instance.
-        // When the entries map is GC'd, the cleanup task becomes a no-op.
+        // The reference is also the task's LIFETIME (#714): the map's reachability is the only
+        // lifecycle this cache has — there is no owner to call a stop hook — so once the map is
+        // collected the task cancels itself rather than ticking forever over a dead reference.
+        // Before #714 the ScheduledFuture was discarded outright, so nothing COULD cancel it: the
+        // task became a no-op on GC, as the comment here claimed, and then ran for the life of the
+        // JVM, once per Idempotency instance ever created.
         var log = LoggerFactory.getLogger(Idempotency.class);
         var entriesRef = new WeakReference<>(entries);
-        SharedScheduler.scheduleAtFixedRate(() -> cleanupExpiredEntries(entriesRef, timeSource, log), cleanupInterval);
+        var cleanupTaskRef = new AtomicReference<ScheduledFuture<?>>();
+
+        cleanupTaskRef.set(SharedScheduler.scheduleAtFixedRate(() -> cleanupExpiredEntries(entriesRef,
+                                                                                           timeSource,
+                                                                                           log,
+                                                                                           cleanupTaskRef),
+                                                               cleanupInterval));
+
         return new idempotency(ttl.nanos(), timeSource, entries);
     }
 
-    private static void cleanupExpiredEntries(WeakReference<ConcurrentHashMap<String, CachedEntry<?>>> entriesRef,
-                                              TimeSource timeSource,
-                                              Logger log) {
-        try{
+    /// Package-private rather than private so the #714 self-cancel contract can be tested
+    /// deterministically. The alternative — forcing a real GC and waiting for the weak reference to
+    /// clear — is exactly the kind of timing-dependent test that pins nothing.
+    static void cleanupExpiredEntries(WeakReference<ConcurrentHashMap<String, CachedEntry<?>>> entriesRef,
+                                      TimeSource timeSource,
+                                      Logger log,
+                                      AtomicReference<ScheduledFuture<?>> cleanupTaskRef) {
+        try {
             var map = entriesRef.get();
+
             if (map == null) {
+                // The owning cache has been collected. Stop ticking instead of no-opping forever.
+                // The task may fire once before the ref is populated; a null holder simply means
+                // "not armed yet", and the map is strongly reachable at that point anyway.
+                var task = cleanupTaskRef.get();
+
+                if (task != null) {
+                    task.cancel(false);
+                }
+
                 return;
             }
+
             var sizeBefore = map.size();
             long now = timeSource.nanoTime();
-            map.entrySet()
-               .removeIf(e -> e.getValue()
-                               .shouldReplace(now));
+
+            map.entrySet().removeIf(e -> e.getValue()
+                                          .shouldReplace(now));
             var removed = sizeBefore - map.size();
+
             if (removed > 0) {
                 log.trace("Cleanup removed {} expired entries", removed);
             }

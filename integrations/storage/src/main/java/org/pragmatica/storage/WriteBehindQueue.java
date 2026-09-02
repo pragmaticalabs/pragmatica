@@ -8,8 +8,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 
 /// Bounded async queue that flushes pending writes to slower storage tiers in background.
 /// Uses a virtual thread for draining. When the queue is full, the caller blocks until space is available.
@@ -39,9 +41,7 @@ final class WriteBehindQueue {
     @Contract
     void activate() {
         if (running.compareAndSet(false, true)) {
-            drainThread = Thread.ofVirtual()
-                                .name("write-behind-drain")
-                                .start(this::drainLoop);
+            drainThread = Thread.ofVirtual().name("write-behind-drain").start(this::drainLoop);
             log.info("WriteBehindQueue activated");
         }
     }
@@ -61,10 +61,8 @@ final class WriteBehindQueue {
 
     /// Enqueue a write for async flush. Blocks caller if queue is full (backpressure).
     Promise<Unit> enqueue(BlockId id, byte[] content, StorageTier tier) {
-        return Promise.lift(
-            t -> StorageError.WriteError.writeError(t.getMessage()),
-            () -> queue.put(new PendingWrite(id, content, tier))
-        );
+        return Promise.lift(t -> StorageError.WriteError.writeError(t.getMessage()),
+                            () -> queue.put(new PendingWrite(id, content, tier)));
     }
 
     int pendingCount() {
@@ -76,7 +74,6 @@ final class WriteBehindQueue {
     }
 
     // --- Internal ---
-
     private void signalStop() {
         var thread = drainThread;
 
@@ -104,6 +101,7 @@ final class WriteBehindQueue {
 
     private void drainRemaining() {
         var remaining = new ArrayList<PendingWrite>();
+
         queue.drainTo(remaining);
         remaining.forEach(this::flushEntry);
     }
@@ -117,6 +115,7 @@ final class WriteBehindQueue {
     private void drainOne() {
         try {
             var entry = queue.take();
+
             flushEntry(entry);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -124,10 +123,14 @@ final class WriteBehindQueue {
     }
 
     private void flushEntry(PendingWrite entry) {
-        entry.tier().put(entry.id(), entry.content())
+        entry.tier()
+             .put(entry.id(),
+                  entry.content())
              .await()
              .onFailure(c -> log.warn("Write-behind flush failed for {} to {}: {}",
-                                      entry.id(), entry.tier().level(), c.message()));
+                                      entry.id(),
+                                      entry.tier().level(),
+                                      c.message()));
     }
 
     private record PendingWrite(BlockId id, byte[] content, StorageTier tier) {

@@ -13,12 +13,12 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.dht;
+
+import java.util.List;
 
 import org.pragmatica.lang.Contract;
 
-import java.util.List;
 
 /// Operator-visible sink for an incomplete graceful-departure push (issue #427, D4). When a
 /// draining node cannot confirm — within its bounded budget — that every locally-held chunk reached

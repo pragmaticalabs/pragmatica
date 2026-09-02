@@ -2,11 +2,11 @@ package org.pragmatica.postgres.message.backend;
 
 import org.pragmatica.postgres.message.BackendMessage;
 
+
 /**
  * @author  Antti Laisi
  */
 public final class NotificationResponse implements BackendMessage {
-
     private final int backend;
     private final String channel;
     private final String payload;

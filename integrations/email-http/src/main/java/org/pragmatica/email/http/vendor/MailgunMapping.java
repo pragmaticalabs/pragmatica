@@ -1,15 +1,16 @@
 package org.pragmatica.email.http.vendor;
 
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
+import java.util.Map;
+
 import org.pragmatica.email.http.EmailBody;
 import org.pragmatica.email.http.EmailMessage;
 import org.pragmatica.email.http.HttpEmailConfig;
 import org.pragmatica.email.http.VendorMapping;
 import org.pragmatica.email.http.VendorRequest;
 
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
-import java.util.Base64;
-import java.util.Map;
 
 /// Mailgun email API vendor mapping.
 public final class MailgunMapping implements VendorMapping {
@@ -38,6 +39,7 @@ public final class MailgunMapping implements VendorMapping {
 
     private static String buildFormBody(EmailMessage message) {
         var sb = new StringBuilder();
+
         appendParam(sb, "from", message.from());
         message.to().forEach(to -> appendParam(sb, "to", to));
         appendParam(sb, "subject", message.subject());
@@ -45,6 +47,7 @@ public final class MailgunMapping implements VendorMapping {
         message.cc().forEach(cc -> appendParam(sb, "cc", cc));
         message.bcc().forEach(bcc -> appendParam(sb, "bcc", bcc));
         message.replyTo().onPresent(rt -> appendParam(sb, "h:Reply-To", rt));
+
         return sb.toString();
     }
 
@@ -52,6 +55,7 @@ public final class MailgunMapping implements VendorMapping {
         if (!sb.isEmpty()) {
             sb.append('&');
         }
+
         sb.append(encode(key)).append('=').append(encode(value));
     }
 
@@ -73,6 +77,9 @@ public final class MailgunMapping implements VendorMapping {
 
     private static String extractDomain(String emailAddress) {
         var atIndex = emailAddress.indexOf('@');
-        return atIndex >= 0 ? emailAddress.substring(atIndex + 1) : emailAddress;
+
+        return atIndex >= 0
+               ? emailAddress.substring(atIndex + 1)
+               : emailAddress;
     }
 }

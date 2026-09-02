@@ -84,6 +84,9 @@ class ClusterGenerationCommand implements Callable<Integer> {
                                                      .asLong();
     }
 
+    // RET-06: `root` is a nullable Jackson JsonNode (childNode returns null for absent nodes) —
+    // a framework boundary, not a business optional.
+    @SuppressWarnings("JBCT-RET-06")
     private static String textField(JsonNode root, String field) {
         var value = root == null
                     ? null
@@ -94,6 +97,8 @@ class ClusterGenerationCommand implements Callable<Integer> {
                : value.asText();
     }
 
+    // RET-06: `root` is a nullable Jackson JsonNode — framework boundary, not a business optional.
+    @SuppressWarnings("JBCT-RET-06")
     private static long longField(JsonNode root, String field) {
         var value = root == null
                     ? null
@@ -104,6 +109,8 @@ class ClusterGenerationCommand implements Callable<Integer> {
                : value.asLong();
     }
 
+    // RET-06: `root` is a nullable Jackson JsonNode — framework boundary, not a business optional.
+    @SuppressWarnings("JBCT-RET-06")
     private static int intField(JsonNode root, String field) {
         var value = root == null
                     ? null
@@ -114,6 +121,8 @@ class ClusterGenerationCommand implements Callable<Integer> {
                : value.asInt();
     }
 
+    // RET-06: `root` is a nullable Jackson JsonNode — framework boundary, not a business optional.
+    @SuppressWarnings("JBCT-RET-06")
     private static JsonNode childNode(JsonNode root, String field) {
         return root == null
                ? null

@@ -9,7 +9,6 @@ import java.util.List;
 import java.util.Set;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 import org.pragmatica.aether.environment.LoadBalancerInfo;
 import org.pragmatica.aether.environment.LoadBalancerProvider;
@@ -109,23 +108,20 @@ public record AwsLoadBalancerProvider(AwsClient client, String targetGroupArn) i
         var idsToDeregister = surplusIds(currentIds, desiredIds);
 
         log.debug("Reconciliation diff: {} to add, {} to remove", idsToRegister.size(), idsToDeregister.size());
-        var registerOp = registerIfNotEmpty(idsToRegister);
-        var deregisterOp = deregisterIfNotEmpty(idsToDeregister);
-        var all = Stream.concat(registerOp.stream(), deregisterOp.stream()).toList();
 
-        return combineAll(all);
+        return combineAll(List.of(registerIfAny(idsToRegister), deregisterIfAny(idsToDeregister)));
     }
 
-    private java.util.Optional<Promise<Unit>> registerIfNotEmpty(List<String> ids) {
+    private Promise<Unit> registerIfAny(List<String> ids) {
         return ids.isEmpty()
-               ? java.util.Optional.empty()
-               : java.util.Optional.of(client.registerTargets(targetGroupArn, ids));
+               ? Promise.unitPromise()
+               : client.registerTargets(targetGroupArn, ids);
     }
 
-    private java.util.Optional<Promise<Unit>> deregisterIfNotEmpty(List<String> ids) {
+    private Promise<Unit> deregisterIfAny(List<String> ids) {
         return ids.isEmpty()
-               ? java.util.Optional.empty()
-               : java.util.Optional.of(client.deregisterTargets(targetGroupArn, ids));
+               ? Promise.unitPromise()
+               : client.deregisterTargets(targetGroupArn, ids);
     }
 
     private static Promise<Unit> combineAll(Collection<Promise<Unit>> promises) {

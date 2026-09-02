@@ -86,7 +86,6 @@ Covers all 181 enum entries. HTTP methods and path parameters are unchanged unle
 | `/api/alerts/history` | `/api/v1/alerts/history` |
 | `/api/alerts/inject` | `/api/v1/alerts/inject` |
 | `/api/artifacts/metrics` | `/api/v1/artifacts/metrics` |
-| `/api/audit/commands` | `/api/v1/audit/commands` |
 | `/api/backups` | `/api/v1/backups` |
 | `/api/backups/restore` | `/api/v1/backups/restore` |
 | `/api/blueprints` | `/api/v1/blueprints` |
@@ -207,7 +206,7 @@ EVERY stream, app or system, which the split design could not offer.
 |---|---|---|
 | `STREAM_CREATE` | `POST /api/streams` | `POST /api/v1/streams/system` (mints `system/{name}/1`; body unchanged) |
 | `STREAM_LIST` | `GET /api/streams` | **merged** into `STREAMS_LIST` `GET /api/v1/streams` (now lists all namespaces incl. `system`) |
-| `STREAM_GET` | `GET /api/streams/{name}` | `GET /api/v1/streams/{ns}/{stream}/{ver}/partitions` (detail = partitions sub-resource) |
+| `STREAM_GET` | `GET /api/streams/{name}` | `GET /api/v1/streams/{ns}/{stream}/{ver}/info` (nudged from `.../partitions` — the handler returns `StreamInfoResponse`, not a partition list, which "partitions" as a trailing verb misdescribed; the rename also cleared a `(GET, 7-token)` bucket collision with `STREAM_REPLICAS_LOCAL`'s old flat shape, see §3.2's LOCAL-diagnostics note below) |
 | `STREAM_PARTITION` | `GET /api/streams/{name}/{partition}` | `GET /api/v1/streams/{ns}/{stream}/{ver}/partitions/{p}` |
 | `STREAM_DELETE` | `DELETE /api/streams/{name}` | **merged** into catalog `STREAMS_DELETE` (system ns) |
 | `STREAM_PUBLISH` | `POST /api/streams/publish/{name}` | **merged** into `STREAMS_PUBLISH` `POST /api/v1/streams/{ns}/{stream}/{ver}/publish` (identity-first, §3.4) |
@@ -268,7 +267,7 @@ collection, delete=DELETE on the identity) — no verb suffixes remain anywhere 
 |---|---|
 | `ManagementRoute.java` (aether-management-api) | Literals → suffixes + `API_BASE` composition + `raw(...)` variant. `RouteMatcher`/`RouteAssembler`/`ManagementRoutes.route` inherit — no changes. |
 | `ManagementRouter.java:66-92` (aether/node) | Delete `RequestRouter` fallback; matched-but-unregistered → 501 (§2.4). |
-| `ManagementServer.java:1250` | `STREAM_WRITE_PATH_PREFIX = "/api/streams"` write-gate → cover both new bases, or convert to enum-keyed check (preferred). |
+| `ManagementServer.java` | **DONE** — `STREAM_WRITE_PATH_PREFIX` removed entirely; the gate resolves target identity via `ManagementRoute.match` (the same primitive the dispatch path uses) + `SystemStreams.isForbiddenEngineKey`, fail-closed on unresolvable identity. `STREAM_CREATE` is structurally excluded from this pre-auth, path-based gate — its target name is body-carried (`StreamCreateRequest`), not path-carried, and condition 1 (reuse the dispatch path's canonicalization, no parallel body parser) rules out extending the gate to see it. It is protected instead by a separate, **post-auth**, handler-level guard in `StreamRoutes#createFreshStream` (the sole stream-minting method) — this is a deliberate, documented departure from the pre-auth guarantee the path-based gate gives the other write routes, not an oversight. `CONSUMER_GROUP_JOIN`/`CONSUMER_GROUP_LEAVE` remain uncovered by either mechanism (also body-carried identity) until this spec's §3.3 catalog-form reshape lands; tracked as a separate ticket (rc4 provisional, cross-referencing #300) pending an evidence-based answer to whether joining/leaving a consumer group on a framework stream actually mutates state. |
 | CLI | Inherits via `route.assemble()`. Exceptions to fix: hardcoded `endpoint + "/api/cluster/config"` and `"/api/cluster/keys"` in `BootstrapPhaseFormation.java:243,263`. Delete `aether backup` singular (`AetherCli.java:3496-3503`); rename `backups trigger` → `backups create`. |
 | Dashboard | `aether/dashboard/src/main/resources/dashboard/index.html:62` `fetch('/api/nodes/status')` → new path; audit remaining fetches/WS paths in that module. |
 | Integration harness | `api_get`/`api_post` (`tests/integration/lib/common.sh:340-357`) take full literal paths — mechanical sed sweep of `/api/` → `/api/v1/` across `tests/integration/**` (greppable, wire-honest) rather than helper-injected prefix (hides the real path). Stream-engine tests re-pathed per §3.2; `TC-NEW-G4-kv-store-backup` re-targeted to `aether backups`. |

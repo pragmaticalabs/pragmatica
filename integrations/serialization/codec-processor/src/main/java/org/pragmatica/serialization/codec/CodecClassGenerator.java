@@ -13,6 +13,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
+
 /// Generates per-type codec source files and module registries for @Codec-annotated types.
 public class CodecClassGenerator {
     private final Filer filer;
@@ -20,8 +21,17 @@ public class CodecClassGenerator {
     private final Types types;
 
     private enum FieldKind {
-        BYTE, SHORT, CHAR, INT, LONG, FLOAT, DOUBLE, BOOLEAN,
-        STRING, CODEC_TYPE, DISPATCHED
+        BYTE,
+        SHORT,
+        CHAR,
+        INT,
+        LONG,
+        FLOAT,
+        DOUBLE,
+        BOOLEAN,
+        STRING,
+        CODEC_TYPE,
+        DISPATCHED
     }
 
     private record ClassifiedField(RecordComponentElement component, FieldKind kind, String codecRef) {}
@@ -30,27 +40,25 @@ public class CodecClassGenerator {
     record UnregisteredField(String fieldName, String typeName) {}
 
     /// Types with built-in codecs registered in FrameworkCodecs — safe for runtime dispatch.
-    private static final Set<String> BUILTIN_CODEC_TYPES = Set.of(
-        "java.util.List",
-        "java.util.Set",
-        "java.util.Map",
-        "org.pragmatica.lang.Option",
-        "org.pragmatica.lang.Option.Some",
-        "org.pragmatica.lang.Option.None",
-        "org.pragmatica.lang.Result",
-        "org.pragmatica.lang.Result.Success",
-        "org.pragmatica.lang.Result.Failure",
-        "org.pragmatica.lang.Unit",
-        "java.lang.Boolean",
-        "java.lang.Byte",
-        "java.lang.Short",
-        "java.lang.Character",
-        "java.lang.Integer",
-        "java.lang.Long",
-        "java.lang.Float",
-        "java.lang.Double",
-        "java.lang.String"
-    );
+    private static final Set<String> BUILTIN_CODEC_TYPES = Set.of("java.util.List",
+                                                                  "java.util.Set",
+                                                                  "java.util.Map",
+                                                                  "org.pragmatica.lang.Option",
+                                                                  "org.pragmatica.lang.Option.Some",
+                                                                  "org.pragmatica.lang.Option.None",
+                                                                  "org.pragmatica.lang.Result",
+                                                                  "org.pragmatica.lang.Result.Success",
+                                                                  "org.pragmatica.lang.Result.Failure",
+                                                                  "org.pragmatica.lang.Unit",
+                                                                  "java.lang.Boolean",
+                                                                  "java.lang.Byte",
+                                                                  "java.lang.Short",
+                                                                  "java.lang.Character",
+                                                                  "java.lang.Integer",
+                                                                  "java.lang.Long",
+                                                                  "java.lang.Float",
+                                                                  "java.lang.Double",
+                                                                  "java.lang.String");
 
     private final Set<String> knownCodecTypes = new HashSet<>();
 
@@ -75,9 +83,8 @@ public class CodecClassGenerator {
         return classified.stream()
                          .filter(f -> f.kind() == FieldKind.DISPATCHED)
                          .filter(this::isUnsafeDispatch)
-                         .map(f -> new UnregisteredField(
-                             f.component().getSimpleName().toString(),
-                             f.component().asType().toString()))
+                         .map(f -> new UnregisteredField(f.component().getSimpleName().toString(),
+                                                         f.component().asType().toString()))
                          .toList();
     }
 
@@ -103,12 +110,13 @@ public class CodecClassGenerator {
             if (knownCodecTypes.contains(qualifiedName)) {
                 return false;
             }
+
             return true;
         }
-
         // Array types: byte[] has built-in codec; other arrays are unsafe
         if (typeMirror instanceof javax.lang.model.type.ArrayType arrayType) {
-            return arrayType.getComponentType().getKind() != TypeKind.BYTE;
+            return arrayType.getComponentType()
+                            .getKind() != TypeKind.BYTE;
         }
 
         return true;
@@ -130,11 +138,13 @@ public class CodecClassGenerator {
 
         try {
             var sourceFile = filer.createSourceFile(qualifiedName, recordElement);
+
             try (var writer = new PrintWriter(sourceFile.openWriter())) {
                 writePackageAndImports(writer, packageName);
                 if (hasTypeVars || hasDispatch) {
                     writer.println("@SuppressWarnings({\"unchecked\", \"rawtypes\"})");
                 }
+
                 writer.println("public interface " + codecName + " {");
                 writeTagConstant(writer, tagExpression);
                 writeCodecField(writer, typeRef, codecName);
@@ -144,6 +154,7 @@ public class CodecClassGenerator {
                 writeRecordReadBody(writer, typeRef, classified);
                 writer.println("}");
             }
+
             return true;
         } catch (IOException e) {
             return false;
@@ -162,6 +173,7 @@ public class CodecClassGenerator {
 
         try {
             var sourceFile = filer.createSourceFile(qualifiedName, enumElement);
+
             try (var writer = new PrintWriter(sourceFile.openWriter())) {
                 writePackageAndImports(writer, packageName);
                 writer.println("public interface " + codecName + " {");
@@ -173,17 +185,22 @@ public class CodecClassGenerator {
                 writeEnumReadBody(writer, typeRef);
                 writer.println("}");
             }
+
             return true;
         } catch (IOException e) {
             return false;
         }
     }
 
-    boolean generateRegistry(String packageName, String registryName, List<String> codecNames, Set<String> requiredTypes) {
+    boolean generateRegistry(String packageName,
+                             String registryName,
+                             List<String> codecNames,
+                             Set<String> requiredTypes) {
         var qualifiedName = packageName + "." + registryName;
 
         try {
             var sourceFile = filer.createSourceFile(qualifiedName);
+
             try (var writer = new PrintWriter(sourceFile.openWriter())) {
                 writer.println("package " + packageName + ";");
                 writer.println();
@@ -197,6 +214,7 @@ public class CodecClassGenerator {
                 writeRequiredTypes(writer, requiredTypes);
                 writer.println("}");
             }
+
             return true;
         } catch (IOException e) {
             return false;
@@ -210,11 +228,11 @@ public class CodecClassGenerator {
 
     private static void writeCodecsList(PrintWriter writer, List<String> codecNames) {
         writer.print("    List<TypeCodec<?>> CODECS = List.of(");
-
         for (int i = 0; i < codecNames.size(); i++) {
             if (i > 0) {
                 writer.print(",");
             }
+
             writer.println();
             writer.print("        " + codecNames.get(i) + ".CODEC");
         }
@@ -226,6 +244,7 @@ public class CodecClassGenerator {
     private static void writeRequiredTypes(PrintWriter writer, Set<String> requiredTypes) {
         if (requiredTypes.isEmpty()) {
             writer.println("    Set<Class<?>> REQUIRED_TYPES = Set.of();");
+
             return;
         }
 
@@ -236,6 +255,7 @@ public class CodecClassGenerator {
             if (i > 0) {
                 writer.print(",");
             }
+
             writer.println();
             writer.print("        " + typeList.get(i) + ".class");
         }
@@ -245,7 +265,6 @@ public class CodecClassGenerator {
     }
 
     // --- Field classification ---
-
     private List<ClassifiedField> classifyComponents(List<? extends RecordComponentElement> components,
                                                      String currentPackage) {
         return components.stream()
@@ -270,7 +289,8 @@ public class CodecClassGenerator {
         };
     }
 
-    private ClassifiedField classifyDeclaredField(RecordComponentElement component, DeclaredType declared,
+    private ClassifiedField classifyDeclaredField(RecordComponentElement component,
+                                                  DeclaredType declared,
                                                   String currentPackage) {
         if (containsTypeVariable(declared)) {
             return new ClassifiedField(component, FieldKind.DISPATCHED, null);
@@ -282,13 +302,12 @@ public class CodecClassGenerator {
         if ("java.lang.String".equals(qualifiedName)) {
             return new ClassifiedField(component, FieldKind.STRING, null);
         }
-
         // Check for @Codec annotation (same compilation round)
         if (hasCodecAnnotation(element)) {
             var codecFqn = computeCodecFqn(element);
+
             return new ClassifiedField(component, FieldKind.CODEC_TYPE, codecReference(codecFqn, currentPackage));
         }
-
         // Check for companion codec class (cross-module dependency)
         var codecFqn = computeCodecFqn(element);
 
@@ -311,6 +330,7 @@ public class CodecClassGenerator {
 
     private String computeCodecFqn(TypeElement element) {
         var packageName = elements.getPackageOf(element).getQualifiedName().toString();
+
         return packageName + "." + nestedPrefix(element, packageName) + element.getSimpleName() + "Codec";
     }
 
@@ -325,7 +345,6 @@ public class CodecClassGenerator {
     }
 
     // --- Source generation helpers ---
-
     private static void writePackageAndImports(PrintWriter writer, String packageName) {
         writer.println("package " + packageName + ";");
         writer.println();
@@ -345,11 +364,8 @@ public class CodecClassGenerator {
     }
 
     // --- Record codec generation with field-level inlining ---
-
-    private static void writeRecordWriteBody(PrintWriter writer, String typeRef,
-                                             List<ClassifiedField> fields) {
+    private static void writeRecordWriteBody(PrintWriter writer, String typeRef, List<ClassifiedField> fields) {
         writer.println("    static void writeBody(SliceCodec codec, ByteBuf buf, " + typeRef + " value) {");
-
         for (var field : fields) {
             var accessor = "value." + field.component().getSimpleName() + "()";
 
@@ -382,8 +398,7 @@ public class CodecClassGenerator {
                     writer.println("        buf.writeByte(SliceCodec.TAG_DOUBLE);");
                     writer.println("        buf.writeDouble(" + accessor + ");");
                 }
-                case BOOLEAN -> writer.println("        buf.writeByte(" + accessor
-                    + " ? SliceCodec.TAG_TRUE : SliceCodec.TAG_FALSE);");
+                case BOOLEAN -> writer.println("        buf.writeByte(" + accessor + " ? SliceCodec.TAG_TRUE : SliceCodec.TAG_FALSE);");
                 case STRING -> {
                     writer.println("        buf.writeByte(SliceCodec.TAG_STRING);");
                     writer.println("        SliceCodec.writeString(buf, " + accessor + ");");
@@ -399,10 +414,8 @@ public class CodecClassGenerator {
         writer.println("    }");
     }
 
-    private void writeRecordReadBody(PrintWriter writer, String typeRef,
-                                     List<ClassifiedField> fields) {
+    private void writeRecordReadBody(PrintWriter writer, String typeRef, List<ClassifiedField> fields) {
         writer.println("    static " + typeRef + " readBody(SliceCodec codec, ByteBuf buf) {");
-
         for (var field : fields) {
             var name = field.component().getSimpleName().toString();
 
@@ -446,17 +459,18 @@ public class CodecClassGenerator {
                 }
                 case DISPATCHED -> {
                     var typeName = erasedTypeName(field.component());
+
                     writer.println("        var " + name + " = (" + typeName + ") codec.read(buf);");
                 }
             }
         }
 
         writer.print("        return new " + typeRef + "(");
-
         for (int i = 0; i < fields.size(); i++) {
             if (i > 0) {
                 writer.print(", ");
             }
+
             writer.print(fields.get(i).component().getSimpleName());
         }
 
@@ -465,7 +479,6 @@ public class CodecClassGenerator {
     }
 
     // --- Enum codec generation ---
-
     private static void writeEnumWriteBody(PrintWriter writer, String typeRef) {
         writer.println("    static void writeBody(SliceCodec codec, ByteBuf buf, " + typeRef + " value) {");
         writer.println("        SliceCodec.writeCompact(buf, value.ordinal());");
@@ -479,7 +492,6 @@ public class CodecClassGenerator {
     }
 
     // --- Utility methods ---
-
     private static String tagExpression(int tag, String qualifiedTypeName) {
         if (tag >= 0) {
             return String.valueOf(tag);
@@ -492,6 +504,7 @@ public class CodecClassGenerator {
     /// For top-level types, returns simple name. For `Outer.Inner`, returns "Outer.Inner".
     private String typeReference(TypeElement element, String packageName) {
         var qualifiedName = element.getQualifiedName().toString();
+
         return qualifiedName.substring(packageName.length() + 1);
     }
 
@@ -506,7 +519,8 @@ public class CodecClassGenerator {
             return "";
         }
 
-        return afterPackage.substring(0, lastDot).replace('.', '_') + "_";
+        return afterPackage.substring(0, lastDot)
+                           .replace('.', '_') + "_";
     }
 
     /// Returns the erased type name for a record component, suitable for use in casts.
@@ -516,7 +530,8 @@ public class CodecClassGenerator {
         var type = component.asType();
 
         if (containsTypeVariable(type)) {
-            return types.erasure(type).toString();
+            return types.erasure(type)
+                        .toString();
         }
 
         return type.toString();

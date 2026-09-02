@@ -47,6 +47,12 @@ public record ProvisioningContext(List<TypeToken<?>> typeTokens,
         return option((T) extensions.get(type)).toResult(MISSING_EXTENSION.apply(type.getSimpleName()));
     }
 
+    /// Whether the CALLER already supplied an extension of this type. Runtime enrichment consults
+    /// this so a node-wide default never displaces a value the slice deliberately provided (#526).
+    public boolean hasExtension(Class<?> type) {
+        return extensions.containsKey(type);
+    }
+
     public <T> ProvisioningContext withExtension(Class<T> type, T value) {
         var newExtensions = new HashMap<>(extensions);
 

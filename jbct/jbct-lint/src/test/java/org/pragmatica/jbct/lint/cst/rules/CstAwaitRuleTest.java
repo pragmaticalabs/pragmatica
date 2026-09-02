@@ -106,4 +106,18 @@ class CstAwaitRuleTest {
                 """);
         assertFalse(diagnostics.stream().anyMatch(d -> d.ruleId().equals("JBCT-PAT-03")));
     }
+
+    @Test
+    void no_diagnostic_in_test_class() {
+        var diagnostics = lint("""
+                package org.example;
+                class FooTest {
+                    @Test
+                    void run() {
+                        fetchData().await();
+                    }
+                }
+                """);
+        assertFalse(diagnostics.stream().anyMatch(d -> d.ruleId().equals("JBCT-PAT-03")));
+    }
 }

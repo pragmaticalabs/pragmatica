@@ -1,11 +1,12 @@
 package org.pragmatica.jbct.lint;
 
+import java.util.List;
+
 import org.pragmatica.jbct.lint.cst.CstLinter;
 import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.jbct.shared.SourceFile;
 import org.pragmatica.lang.Result;
 
-import java.util.List;
 
 /// JBCT linter implementation.
 ///

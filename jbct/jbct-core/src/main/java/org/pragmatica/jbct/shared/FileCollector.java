@@ -1,9 +1,5 @@
 package org.pragmatica.jbct.shared;
 
-import org.pragmatica.jbct.config.FilesConfig;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
-
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -11,6 +7,11 @@ import java.nio.file.PathMatcher;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
+
+import org.pragmatica.jbct.config.FilesConfig;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+
 
 /// Utility for collecting Java source files from paths.
 public sealed interface FileCollector permits FileCollector.unused {
@@ -25,17 +26,18 @@ public sealed interface FileCollector permits FileCollector.unused {
     /// @return List of Java file paths
     static List<Path> collectJavaFiles(List<Path> paths, FilesConfig filesConfig, Consumer<String> errorHandler) {
         var files = new ArrayList<Path>();
+
         for (var path : paths) {
             if (Files.isDirectory(path)) {
                 SourceRoot.sourceRoot(path)
                           .flatMap(SourceRoot::findJavaFiles)
                           .onSuccess(files::addAll)
                           .onFailure(cause -> errorHandler.accept("Error scanning " + path + ": " + cause.message()));
-            } else if (path.toString()
-                           .endsWith(".java")) {
+            } else if (path.toString().endsWith(".java")) {
                 files.add(path);
             }
         }
+
         return applyFilters(files, filesConfig, errorHandler);
     }
 
@@ -53,12 +55,12 @@ public sealed interface FileCollector permits FileCollector.unused {
                                              FilesConfig filesConfig,
                                              Consumer<String> errorHandler) {
         var files = new ArrayList<Path>();
-        sourceDirectory.filter(Files::exists)
-                       .onPresent(dir -> collectFromDirectory(dir, files, errorHandler));
+
+        sourceDirectory.filter(Files::exists).onPresent(dir -> collectFromDirectory(dir, files, errorHandler));
         if (includeTests) {
-            testSourceDirectory.filter(Files::exists)
-                               .onPresent(dir -> collectFromDirectory(dir, files, errorHandler));
+            testSourceDirectory.filter(Files::exists).onPresent(dir -> collectFromDirectory(dir, files, errorHandler));
         }
+
         return applyFilters(files, filesConfig, errorHandler);
     }
 
@@ -70,20 +72,21 @@ public sealed interface FileCollector permits FileCollector.unused {
     }
 
     private static List<Path> applyFilters(List<Path> files, FilesConfig filesConfig, Consumer<String> log) {
-        var matchers = filesConfig.excludes()
-                                  .stream()
-                                  .map(FileCollector::toPathMatcher)
-                                  .toList();
+        var matchers = filesConfig.excludes().stream().map(FileCollector::toPathMatcher).toList();
         var result = new ArrayList<Path>(files.size());
+
         for (var file : files) {
             if (isExcludedBySize(file, filesConfig.maxFileSize(), log)) {
                 continue;
             }
+
             if (isExcludedByPattern(file, matchers, log)) {
                 continue;
             }
+
             result.add(file);
         }
+
         return List.copyOf(result);
     }
 
@@ -91,16 +94,21 @@ public sealed interface FileCollector permits FileCollector.unused {
         if (maxFileSize <= 0) {
             return false;
         }
-        return Result.lift(() -> Files.size(file))
-                     .fold(_ -> false, size -> excludeIfOversized(file, size, maxFileSize, log));
+
+        return Result.lift(() -> Files.size(file)).fold(_ -> false,
+                                                        size -> excludeIfOversized(file, size, maxFileSize, log));
     }
 
     private static boolean excludeIfOversized(Path file, long size, long maxFileSize, Consumer<String> log) {
         if (size > maxFileSize) {
-            log.accept("Skipping " + file.getFileName() + " (file size " + size + " bytes exceeds limit of "
-                       + maxFileSize + " bytes)");
+            log.accept("Skipping " + file.getFileName()
+                      + " (file size " + size
+                      + " bytes exceeds limit of " + maxFileSize
+                      + " bytes)");
+
             return true;
         }
+
         return false;
     }
 
@@ -108,14 +116,15 @@ public sealed interface FileCollector permits FileCollector.unused {
         for (var matcher : matchers) {
             if (matcher.matches(file) || matcher.matches(file.getFileName())) {
                 log.accept("Skipping " + file.getFileName() + " (matches exclude pattern)");
+
                 return true;
             }
         }
+
         return false;
     }
 
     private static PathMatcher toPathMatcher(String pattern) {
-        return FileSystems.getDefault()
-                          .getPathMatcher("glob:" + pattern);
+        return FileSystems.getDefault().getPathMatcher("glob:" + pattern);
     }
 }

@@ -8,13 +8,18 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
+import org.pragmatica.aether.stream.CommittedStreamOwnerSource.CommittedOwner;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -301,8 +306,8 @@ class PartitionBackfillTest {
 
         @Test
         void backfill_caughtUpSourceExists_normalBackfill_noPromotionPathTaken() {
-            // A genuine CAUGHT_UP source exists: the normal backfill path runs and is byte-identical to
-            // the pre-fix behavior — the probe/promotion machinery is never consulted.
+            // A genuine CAUGHT_UP source exists: the normal backfill path runs and the probe/promotion
+            // machinery is never consulted.
             registry.registerReplica(STREAM, PARTITION, SOURCE);
             registry.updateWatermark(STREAM, PARTITION, SOURCE, 4L);
             registry.registerReplica(STREAM, PARTITION, SELF);
@@ -311,14 +316,17 @@ class PartitionBackfillTest {
             ReplicaWatermarkProbe failIfProbed = (_, _, _) -> {
                 throw new AssertionError("probe must not be consulted when a caught-up source exists");
             };
-            SelfWatermark failIfRead = (_, _) -> {
-                throw new AssertionError("self-watermark must not be read on the normal path");
-            };
+            // "Promotion path not taken" is carried by `failIfProbed`: the cold-start contest cannot run
+            // without probing peers. It is NOT carried by a throwing SelfWatermark — since #567 the normal
+            // path legitimately reads the local ring tail to compute its contiguous append floor, so a
+            // never-read stub would assert the duplication defect rather than the absence of promotion.
+            // The ring is empty here, so the honest local tail is -1 and `fromOffset` is 0 as before.
+            SelfWatermark emptyRing = (_, _) -> - 1L;
             var backfill = partitionBackfill(registry,
                                              recovery,
                                              fixedSource(eventsFrom(0, 5)),
                                              failIfProbed,
-                                             failIfRead,
+                                             emptyRing,
                                              SELF,
                                              BOUND,
                                              clock::get);
@@ -477,20 +485,25 @@ class PartitionBackfillTest {
             // A NON-owner replica must NOT take the owner-immediate path. Here the owner source is a NOOP
             // transport (returns nothing past fromOffset), so backfill fails-soft to SYNCING — the highest
             // applied offset stays below the response watermark, so there is NO false-promote, and the
-            // cold-start probe path is never consulted. (Pre-#333 this asserted a pure bounded-wait; the
+            // cold-start promotion contest is never entered. (Pre-#333 this asserted a pure bounded-wait; the
             // non-owner now attempts the authoritative owner source first, but still stays SYNCING when the
             // owner yields nothing.)
+            //
+            // #559 changed ONE thing here: the owner IS now probed once on the empty-response path, because
+            // "the owner is empty" and "I already hold the owner's tail" are indistinguishable in the
+            // response itself (`toOffset` is stamped `fromOffset - 1` for both) and only the owner's true
+            // watermark separates them. The stub therefore reports an EMPTY owner (-1) instead of throwing.
+            // Every behavioural assertion below is unchanged and still load-bearing: an owner at -1 is never
+            // a true tail (#445), so self stays SYNCING at -1 despite holding local data at 9.
             registry.registerReplica(STREAM, PARTITION, OWNER);
             registry.registerReplica(STREAM, PARTITION, NON_OWNER); // self
 
             var clock = new AtomicLong(0L);
-            ReplicaWatermarkProbe failIfProbed = (_, _, _) -> {
-                throw new AssertionError("non-owner must not probe peers on the owner-source path");
-            };
+            ReplicaWatermarkProbe emptyOwnerProbe = (_, _, _) -> Promise.success(-1L);
             var backfill = partitionBackfill(registry,
                                              recovery,
                                              CatchupTransport.NOOP,
-                                             failIfProbed,
+                                             emptyOwnerProbe,
                                              selfWatermarkOf(9L),
                                              NON_OWNER,
                                              BOUND,
@@ -503,8 +516,405 @@ class PartitionBackfillTest {
             assertThat(descriptorFor(NON_OWNER).confirmedOffset()).isEqualTo(-1L);
         }
 
+        @Test
+        void backfill_selfIsHrwOwner_butCommittedOwnerElsewhere_doesNotSelfPromote_staysSyncing() {
+            // #491 F4: self HRW-ranks itself owner (empty/partial ring), but the committed ownership record
+            // names a DIFFERENT node — the m1 divergence. The committed-owner gate must BLOCK the owner-
+            // immediate self-promote: self stays SYNCING at -1 instead of falsely promoting at its local
+            // watermark and looping catch-up against itself while the authoritative owner is elsewhere.
+            registry.registerReplica(STREAM, PARTITION, OWNER); // self == HRW owner, SYNCING
+
+            var clock = new AtomicLong(0L);
+            ReplicaWatermarkProbe failIfProbed = (_, _, _) -> {
+                throw new AssertionError("blocked self-election must not reach the probe path within the bound");
+            };
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             CatchupTransport.NOOP,
+                                             failIfProbed,
+                                             selfWatermarkOf(7L),
+                                             OWNER,
+                                             BOUND,
+                                             clock::get,
+                                             () -> MEMBERS,
+                                             committedOwnerIs(NON_OWNER));
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isFailure())
+                .as("committed owner elsewhere blocks the HRW self-promote — backfill stays SYNCING")
+                .isTrue();
+            assertThat(descriptorFor(OWNER).state()).isEqualTo(ReplicationState.SYNCING);
+            assertThat(descriptorFor(OWNER).confirmedOffset()).isEqualTo(-1L);
+        }
+
+        @Test
+        void backfill_selfIsHrwOwner_committedOwnerIsSelf_selfPromotesImmediately() {
+            // #491 F4 permissive arm: when the committed record names SELF, the gate is a no-op and the
+            // owner-immediate self-promote fires exactly as with no committed record — a legitimately-
+            // committed owner is never starved.
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+
+            var clock = new AtomicLong(0L);
+            ReplicaWatermarkProbe failIfProbed = (_, _, _) -> {
+                throw new AssertionError("committed owner == self self-promotes immediately — no probe");
+            };
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             CatchupTransport.NOOP,
+                                             failIfProbed,
+                                             selfWatermarkOf(7L),
+                                             OWNER,
+                                             BOUND,
+                                             clock::get,
+                                             () -> MEMBERS,
+                                             committedOwnerIs(OWNER));
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isSuccess())
+                .as("committed owner == self keeps the owner-immediate self-promote")
+                .isTrue();
+            assertThat(descriptorFor(OWNER).state()).isEqualTo(ReplicationState.CAUGHT_UP);
+            assertThat(descriptorFor(OWNER).confirmedOffset()).isEqualTo(7L);
+        }
+
+        private static CommittedStreamOwnerSource committedOwnerIs(NodeId owner) {
+            return (_, _) -> Option.some(new CommittedOwner(owner, Epoch.ZERO));
+        }
+
         private SelfWatermark selfWatermarkOf(long watermark) {
             return (_, _) -> watermark;
+        }
+    }
+
+    /// #491 m2: when the #445 empty-owner path routes a NON-owner replica to the bounded no-source wait,
+    /// the cold-start self-promote MUST be suppressed while a committed owner EXISTS — this is a FAILOVER
+    /// (the owner is authoritative and its ring will fill), not a genuine cold-start deadlock. Promoting
+    /// here would flip a false CAUGHT_UP at self's empty local watermark past the #445 distrust gate. The
+    /// redrive's owner re-pull catches self up once the owner returns non-empty history (recovery arm).
+    @Nested
+    class EmptyOwnerFailoverPromotionGate {
+        private static final NodeId NODE_AA = NodeId.nodeId("node-aa").unwrap();
+        private static final NodeId NODE_BB = NodeId.nodeId("node-bb").unwrap();
+        private static final NodeId NODE_CC = NodeId.nodeId("node-cc").unwrap();
+        private static final TimeSpan BOUND = TimeSpan.timeSpan(10).seconds();
+        private static final List<NodeId> MEMBERS = List.of(NODE_AA, NODE_BB, NODE_CC);
+        private static final NodeId OWNER = ReplicaPlacement.rank(STREAM, PARTITION, MEMBERS).getFirst();
+        private static final NodeId NON_OWNER = ReplicaPlacement.rank(STREAM, PARTITION, MEMBERS).getLast();
+
+        @Test
+        void backfill_emptyOwner_withinBound_staysSyncing_pinned() {
+            // Arm (a) pin: NON-owner, empty owner response, clock INSIDE the bound → NO_SOURCE, SYNCING@-1.
+            registry.registerReplica(STREAM, PARTITION, NON_OWNER); // self
+
+            var clock = new AtomicLong(0L);
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             fixedSource(List.of()), // owner ring still empty (#445)
+                                             failIfProbed(),
+                                             selfWatermarkOf(-1L),
+                                             NON_OWNER,
+                                             BOUND,
+                                             clock::get,
+                                             () -> MEMBERS,
+                                             committedOwnerIs(OWNER));
+
+            clock.set(BOUND.millis() - 1); // still inside the wait window
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isFailure())
+                .as("within the bound the empty-owner replica stays SYNCING")
+                .isTrue();
+            assertThat(descriptorFor(NON_OWNER).state()).isEqualTo(ReplicationState.SYNCING);
+            assertThat(descriptorFor(NON_OWNER).confirmedOffset()).isEqualTo(-1L);
+        }
+
+        /// #559: an empty owner response means "nothing to fetch", which is TWO different situations —
+        /// the owner is genuinely empty (#445 failover), or self already holds the owner's whole tail.
+        /// `ForwardCatchupTransport.toResponse` stamps `toOffset = fromOffset - 1` for every empty
+        /// response, so the response cannot tell them apart and both used to route into the cold-start
+        /// contest. A caught-up replica then lost the lowest-NodeId tie-break to the owner and returned
+        /// to SYNCING every redrive interval — observed as 336 declines over 28 minutes.
+        @Test
+        void backfill_selfAtOwnerTail_emptyResponse_reachesCaughtUp_withoutPromotionContest() {
+            registry.registerReplica(STREAM, PARTITION, NON_OWNER); // self
+
+            var clock = new AtomicLong(BOUND.millis() + 1L); // bound elapsed — contest would be reachable
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             fixedSource(List.of()), // nothing at or beyond self's tail
+                                             ownerProbedAt(1L),      // owner's true tail is 1 — self matches
+                                             selfWatermarkOf(1L),
+                                             NON_OWNER,
+                                             BOUND,
+                                             clock::get,
+                                             () -> MEMBERS,
+                                             committedOwnerIs(OWNER));
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isSuccess())
+                .as("a replica holding the owner's tail is caught up, whatever the tie-break would say")
+                .isTrue();
+            assertThat(descriptorFor(NON_OWNER).state()).isEqualTo(ReplicationState.CAUGHT_UP);
+            assertThat(descriptorFor(NON_OWNER).confirmedOffset()).isEqualTo(1L);
+        }
+
+        /// #445 must survive: an owner reporting `-1` is NOT trusted as the true tail even when self
+        /// holds data, because the acked history may live on a further-ahead survivor.
+        @Test
+        void backfill_selfAheadOfEmptyOwner_emptyResponse_staysSyncing_no445Regression() {
+            registry.registerReplica(STREAM, PARTITION, NON_OWNER); // self
+
+            var clock = new AtomicLong(BOUND.millis() + 1L);
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             fixedSource(List.of()),
+                                             ownerProbedAt(-1L),  // fresh owner, ring still empty
+                                             selfWatermarkOf(1L), // self holds acked history the owner lost
+                                             NON_OWNER,
+                                             BOUND,
+                                             clock::get,
+                                             () -> MEMBERS,
+                                             committedOwnerIs(OWNER));
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isFailure())
+                .as("an empty owner is never the true tail — the #445 distrust gate still governs")
+                .isTrue();
+            assertThat(descriptorFor(NON_OWNER).state()).isEqualTo(ReplicationState.SYNCING);
+        }
+
+        private static ReplicaWatermarkProbe ownerProbedAt(long watermark) {
+            return (_, _, _) -> Promise.success(watermark);
+        }
+
+        /// The incident topology, from #559's acceptance list: THREE replicas, both non-owners sitting
+        /// exactly at the owner's tail. This is what the single-replica case above cannot show — the
+        /// lowest-NodeId tie-break is live here, and pre-fix it is precisely what kept these two SYNCING.
+        /// Whichever non-owner loses the tie-break to the owner must STILL reach CAUGHT_UP, because being
+        /// caught up is not the same question as winning a promotion contest.
+        @Test
+        void backfill_threeReplicasAllAtOwnerTail_bothNonOwnersReachCaughtUp_neitherBlockedByTieBreak() {
+            var ranked = ReplicaPlacement.rank(STREAM, PARTITION, MEMBERS);
+            var secondReplica = ranked.get(1);
+            var thirdReplica = ranked.get(2);
+
+            registry.registerReplica(STREAM, PARTITION, secondReplica);
+            registry.registerReplica(STREAM, PARTITION, thirdReplica);
+
+            for (var replica : List.of(secondReplica, thirdReplica)) {
+                var backfill = partitionBackfill(registry,
+                                                 recovery,
+                                                 fixedSource(List.of()), // nothing at or beyond this replica's tail
+                                                 ownerProbedAt(1L),      // owner's true tail
+                                                 selfWatermarkOf(1L),    // this replica already holds it
+                                                 replica,
+                                                 BOUND,
+                                                 new AtomicLong(BOUND.millis() + 1L)::get,
+                                                 () -> MEMBERS,
+                                                 committedOwnerIs(OWNER));
+
+                assertThat(backfill.backfill(STREAM, PARTITION).await().isSuccess())
+                    .as("replica %s holds the owner's tail and must reach CAUGHT_UP", replica)
+                    .isTrue();
+                assertThat(descriptorFor(replica).state())
+                    .as("replica %s must not be parked in SYNCING by a tie-break it should never face", replica)
+                    .isEqualTo(ReplicationState.CAUGHT_UP);
+                assertThat(descriptorFor(replica).confirmedOffset()).isEqualTo(1L);
+            }
+        }
+
+        @Test
+        void backfill_ownerBecomesNonEmpty_promotesAtOwnerTail_recovery() {
+            // Arm (c) recovery: the owner's ring fills (transport now returns 0..4) → backfill promotes
+            // CAUGHT_UP at the owner's true tail, exactly as the redrive's owner re-pull would.
+            registry.registerReplica(STREAM, PARTITION, NON_OWNER); // self
+
+            var clock = new AtomicLong(BOUND.millis() + 1L); // bound already elapsed
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             fixedSource(eventsFrom(0, 5)), // owner now holds 0..4
+                                             failIfProbed(),
+                                             selfWatermarkOf(-1L),
+                                             NON_OWNER,
+                                             BOUND,
+                                             clock::get,
+                                             () -> MEMBERS,
+                                             committedOwnerIs(OWNER));
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isSuccess())
+                .as("a non-empty owner response promotes at the owner tail")
+                .isTrue();
+            assertThat(descriptorFor(NON_OWNER).state()).isEqualTo(ReplicationState.CAUGHT_UP);
+            assertThat(descriptorFor(NON_OWNER).confirmedOffset()).isEqualTo(4L);
+        }
+
+        private static ReplicaWatermarkProbe failIfProbed() {
+            return (_, _, _) -> {
+                throw new AssertionError("committed-owner gate must short-circuit before the cold-start probe");
+            };
+        }
+
+        private static CommittedStreamOwnerSource committedOwnerIs(NodeId owner) {
+            return (_, _) -> Option.some(new CommittedOwner(owner, Epoch.ZERO));
+        }
+
+        private SelfWatermark selfWatermarkOf(long watermark) {
+            return (_, _) -> watermark;
+        }
+    }
+
+    /// #631 GENESIS — a stream just created and NEVER written. Its HRW owner is legitimately at watermark
+    /// `-1` and self-promotes on the owner-immediate path; every replica then pulls from it, receives an
+    /// EMPTY response, and #445 routes that into the no-source path because an empty owner read is never
+    /// trustworthy. The suppression at the end of that path keyed on the mere EXISTENCE of a committed
+    /// owner record — always present for a freshly-created stream — so no replica could ever leave SYNCING.
+    /// Observed in `02y-stream-crash`: all 4 partitions of the suite's own fresh blueprint pinned for the
+    /// entire 240s deploy window, and 1436 pins on `entity:orders` in `03-scaling`.
+    ///
+    /// The distinction #445 cannot draw from the response alone — "empty because failover lost the history"
+    /// vs "empty because nothing was ever written" — is drawn here from the owner's probed TAIL. These
+    /// tests arm the bound with a FIRST call at t=0 and only then advance the clock: `firstNoSourceMs` is
+    /// recorded lazily on the same call that reads it, so setting the clock ahead beforehand yields
+    /// `waited == 0` and never reaches the branch at all.
+    @Nested
+    class GenesisEmptyStreamPromotion {
+        private static final NodeId NODE_AA = NodeId.nodeId("node-aa").unwrap();
+        private static final NodeId NODE_BB = NodeId.nodeId("node-bb").unwrap();
+        private static final NodeId NODE_CC = NodeId.nodeId("node-cc").unwrap();
+        private static final TimeSpan BOUND = TimeSpan.timeSpan(10).seconds();
+        private static final List<NodeId> MEMBERS = List.of(NODE_AA, NODE_BB, NODE_CC);
+        private static final NodeId OWNER = ReplicaPlacement.rank(STREAM, PARTITION, MEMBERS).getFirst();
+        private static final NodeId NON_OWNER = ReplicaPlacement.rank(STREAM, PARTITION, MEMBERS).getLast();
+
+        @Test
+        void backfill_freshStream_ownerAndSelfBothEmpty_boundElapsed_promotesToCaughtUp() {
+            registry.registerReplica(STREAM, PARTITION, NON_OWNER); // self
+
+            var clock = new AtomicLong(0L);
+            var backfill = genesisBackfill(NON_OWNER, allPeersEmpty(), clock);
+
+            backfill.backfill(STREAM, PARTITION).await(); // arm the bound at t=0
+            clock.set(BOUND.millis() + 1);                // bound elapsed
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isSuccess())
+                .as("a never-written stream whose owner is equally empty must not pin its replicas")
+                .isTrue();
+            assertThat(descriptorFor(NON_OWNER).state()).isEqualTo(ReplicationState.CAUGHT_UP);
+            assertThat(descriptorFor(NON_OWNER).confirmedOffset()).isEqualTo(-1L);
+        }
+
+        /// The `02y` topology, and the property the single-replica case above cannot show: the OWNER is a
+        /// registered replica too, so it sits in the cold-start contest's lowest-NodeId tie-break at the
+        /// same `-1` watermark as everyone else — while never running that path itself. A tie-break whose
+        /// designated winner never contests parks EVERY non-owner, so promoting one replica is not the
+        /// property #631 needs; promoting all of them is.
+        @Test
+        void backfill_freshStream_everyNonOwnerPromotes_noneParkedByTheOwnerTieBreak() {
+            MEMBERS.forEach(member -> registry.registerReplica(STREAM, PARTITION, member));
+
+            for (var replica : MEMBERS.stream().filter(member -> !member.equals(OWNER)).toList()) {
+                var clock = new AtomicLong(0L);
+                var backfill = genesisBackfill(replica, allPeersEmpty(), clock);
+
+                backfill.backfill(STREAM, PARTITION).await();
+                clock.set(BOUND.millis() + 1);
+
+                assertThat(backfill.backfill(STREAM, PARTITION).await().isSuccess())
+                    .as("non-owner %s of a never-written stream must reach CAUGHT_UP", replica)
+                    .isTrue();
+                assertThat(descriptorFor(replica).state())
+                    .as("non-owner %s must not be parked by an uncontested tie-break", replica)
+                    .isEqualTo(ReplicationState.CAUGHT_UP);
+            }
+        }
+
+        /// #445 must survive: an owner holding history this replica lacks is the genuine failover case.
+        @Test
+        void backfill_ownerAheadOfSelf_boundElapsed_staysSyncing_445Preserved() {
+            registry.registerReplica(STREAM, PARTITION, NON_OWNER); // self
+
+            var clock = new AtomicLong(0L);
+            var backfill = genesisBackfill(NON_OWNER, probedAt(OWNER, 5L), clock);
+
+            backfill.backfill(STREAM, PARTITION).await();
+            clock.set(BOUND.millis() + 1);
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isFailure())
+                .as("an owner ahead of self still suppresses the promote")
+                .isTrue();
+            assertThat(descriptorFor(NON_OWNER).state()).isEqualTo(ReplicationState.SYNCING);
+        }
+
+        @Test
+        void backfill_ownerUnreachable_boundElapsed_staysSyncing_unknownTailIsNotAnEmptyOne() {
+            registry.registerReplica(STREAM, PARTITION, NON_OWNER); // self
+
+            var clock = new AtomicLong(0L);
+            var backfill = genesisBackfill(NON_OWNER, unreachable(), clock);
+
+            backfill.backfill(STREAM, PARTITION).await();
+            clock.set(BOUND.millis() + 1);
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isFailure())
+                .as("an unknown owner tail must never be read as an empty one")
+                .isTrue();
+            assertThat(descriptorFor(NON_OWNER).state()).isEqualTo(ReplicationState.SYNCING);
+        }
+
+        /// The defer/promote decision must report the cause of the outcome it ACTUALLY reached. Attaching the
+        /// unreachable-owner fallback to the whole promise chain rather than to the probe's own `Result`
+        /// swallows a deliberate defer and a declined contest alike, re-reporting both as an unreachable
+        /// owner — a fabricated operator signal on the surface a pinned partition is diagnosed from, and the
+        /// same class of misleading evidence that cost this investigation three refuted hypotheses.
+        ///
+        /// The arrangement is #445's own: self holds acked history, the owner's ring is empty. That is NOT
+        /// genesis, so the single-winner election still governs and self legitimately loses it — the cause
+        /// must say so.
+        @Test
+        void backfill_reachableOwner_contestDeclines_reportsTheContestCause_notAFabricatedUnreachableOwner() {
+            registry.registerReplica(STREAM, PARTITION, NODE_BB); // peer: same watermark, lower NodeId
+            registry.registerReplica(STREAM, PARTITION, NODE_CC); // self
+
+            var clock = new AtomicLong(0L);
+            var probe = (ReplicaWatermarkProbe) (target, _, _) -> Promise.success(target.equals(OWNER) ? - 1L : 1L);
+            var backfill = backfillWith(NODE_CC, probe, 1L, clock);
+
+            backfill.backfill(STREAM, PARTITION).await();
+            clock.set(BOUND.millis() + 1);
+
+            var outcome = backfill.backfill(STREAM, PARTITION)
+                                  .await()
+                                  .fold(cause -> cause.message(), offset -> "promoted at " + offset);
+
+            assertThat(outcome)
+                .as("a declined contest must report its own cause, never a fabricated unreachable owner")
+                .isEqualTo(BackfillError.General.NOT_HIGHEST_WATERMARK.message());
+            assertThat(descriptorFor(NODE_CC).state()).isEqualTo(ReplicationState.SYNCING);
+        }
+
+        private PartitionBackfill genesisBackfill(NodeId self, ReplicaWatermarkProbe probe, AtomicLong clock) {
+            return backfillWith(self, probe, - 1L, clock); // self has never written either
+        }
+
+        private PartitionBackfill backfillWith(NodeId self, ReplicaWatermarkProbe probe, long selfWatermark, AtomicLong clock) {
+            return partitionBackfill(registry,
+                                     recovery,
+                                     fixedSource(List.of()), // the owner's ring is empty
+                                     probe,
+                                     (_, _) -> selfWatermark,
+                                     self,
+                                     BOUND,
+                                     clock::get,
+                                     () -> MEMBERS,
+                                     (_, _) -> Option.some(new CommittedOwner(OWNER, Epoch.ZERO)));
+        }
+
+        private ReplicaWatermarkProbe allPeersEmpty() {
+            return (_, _, _) -> Promise.success(- 1L);
+        }
+
+        private ReplicaWatermarkProbe probedAt(NodeId target, long watermark) {
+            return (probed, _, _) -> probed.equals(target)
+                                     ? Promise.success(watermark)
+                                     : Promise.success(- 1L);
+        }
+
+        private ReplicaWatermarkProbe unreachable() {
+            return (_, _, _) -> ReplicationError.General.REPLICATION_TIMEOUT.promise();
         }
     }
 
@@ -640,9 +1050,11 @@ class PartitionBackfillTest {
     /// (cold-start owner-self-promote) can later turn out to be a NON-owner once the member view populates,
     /// holding none of the real owner's history. The 5s redrive skips it (it is CAUGHT_UP) and on a
     /// write-idle partition the gap loop never fires, so it would serve stale/empty data forever. The fix
-    /// re-includes such a replica in {@link PartitionBackfill#redriveCandidates} (owner-aware, offset-
-    /// quiesced); re-arming `backfill` routes through the authoritative HRW owner and reaches CAUGHT_UP at
-    /// the owner's TRUE tail. The genuine single-node owner-self-promote case is NOT re-armed.
+    /// re-includes such a replica in {@link PartitionBackfill#redriveCandidates} (owner-aware, offset- and
+    /// interval-quiesced); re-arming `backfill` PROBES THE CURRENT HRW OWNER once and pulls ONLY when the
+    /// owner is ahead, reaching CAUGHT_UP at the owner's TRUE tail. A successful pull (and each probe
+    /// dispatch) stamps the re-verify clock, so a genuinely-complete replica is re-checked at most once per
+    /// interval — never every tick. The genuine single-node owner-self-promote case is NOT re-armed.
     @Nested
     class WriteIdleResidualReverify {
         private static final NodeId NODE_AA = NodeId.nodeId("node-aa").unwrap();
@@ -656,19 +1068,21 @@ class PartitionBackfillTest {
         private static final NodeId SELF_NON_OWNER = ReplicaPlacement.rank(STREAM, PARTITION, POPULATED).getLast();
 
         @Test
-        void redriveCandidates_caughtUpNonOwnerStaleAt0_reArmsBackfill_reachesOwnerTail() {
+        void redriveCandidates_caughtUpNonOwnerStaleAt0_reArmsBackfill_probesOwnerThenReachesTail() {
             // t0: empty member view, self is the SOLE registered replica. With no peer and the member view
-            // empty, the cold-start lone-replica path self-promotes self to CAUGHT_UP@0 once the bound
-            // elapses (the false-CAUGHT_UP@0 residual state).
+            // empty, the cold-start lone-replica path self-promotes self to CAUGHT_UP@-1 once the bound
+            // elapses — a NO-PULL promotion, so lastReverifyMs stays unset and the null ⇒ elapsed rule keeps
+            // the residual re-verify-eligible.
             registry.registerReplica(STREAM, PARTITION, SELF_NON_OWNER);
 
             var members = new AtomicReference<>(List.<NodeId>of()); // empty at t0
             var clock = new AtomicLong(0L);
+            var probeCount = new AtomicInteger(0);
             var transport = ownerSource(OWNER, 0L, eventsFrom(0, 16)); // owner holds 0..15
             var backfill = partitionBackfill(registry,
                                              recovery,
                                              transport,
-                                             reachableProbeNever(),
+                                             countingOwnerProbe(probeCount, 15L),
                                              localHeadWatermark(), // empty partition -> head -1
                                              SELF_NON_OWNER,
                                              BOUND,
@@ -680,21 +1094,126 @@ class PartitionBackfillTest {
             assertThat(backfill.backfill(STREAM, PARTITION).await().isSuccess()).isTrue();
             assertThat(descriptorFor(SELF_NON_OWNER).state()).isEqualTo(ReplicationState.CAUGHT_UP);
             assertThat(descriptorFor(SELF_NON_OWNER).confirmedOffset()).isEqualTo(-1L);
+            assertThat(probeCount.get()).as("cold-start lone-replica self-promote probes no peers").isEqualTo(0);
 
             // t1: member view populates; the HRW owner is now a DIFFERENT node holding 0..15. WITHOUT any
-            // new live batch, the redrive must re-include this stale CAUGHT_UP@0 non-owner partition...
+            // new live batch, the redrive must re-include this stale CAUGHT_UP@-1 non-owner partition (no
+            // pull ⇒ never re-verified)...
             members.set(POPULATED);
             assertThat(backfill.redriveCandidates()).containsExactly(PartitionKey.partitionKey(STREAM, PARTITION));
 
-            // ...and re-arming backfill re-backfills from the owner, reaching CAUGHT_UP at the TRUE tail (15).
+            // ...and re-arming backfill PROBES THE CURRENT HRW OWNER (exactly once — never a broad peer
+            // sweep); the owner is ahead (15 > -1) so it pulls and reaches CAUGHT_UP at the owner's TRUE tail.
             var applied = backfill.backfill(STREAM, PARTITION).await();
             assertThat(applied.isSuccess()).isTrue();
+            assertThat(probeCount.get()).as("re-verify probes the HRW owner exactly once").isEqualTo(1);
             assertThat(descriptorFor(SELF_NON_OWNER).state()).isEqualTo(ReplicationState.CAUGHT_UP);
             assertThat(descriptorFor(SELF_NON_OWNER).confirmedOffset()).isEqualTo(15L);
 
-            // Quiescence: once re-verified at the owner tail, the partition is no longer a redrive candidate
-            // (no per-tick owner probe on a genuinely-complete replica).
+            // Quiescence: the successful pull stamped lastReverifyMs (at promote), so within the interval the
+            // genuinely-complete replica is no longer a candidate — no per-tick owner probe.
             assertThat(backfill.redriveCandidates()).isEmpty();
+        }
+
+        @Test
+        void redriveCandidates_caughtUpNonOwner_intervalElapsed_ownerNotAhead_probesOnce_noOp_staysCaughtUp() {
+            // A non-owner replica already CAUGHT_UP at the owner's tail via a real pull (lastReverifyMs stamped
+            // at promote). Once the re-verify interval elapses it becomes a candidate again; the re-verify
+            // PROBES the owner exactly once, finds it NOT ahead, and is a PURE no-op — the replica stays
+            // CAUGHT_UP at its tail (no NO_SOURCE demotion, no SYNCING flip) and re-quiesces for the next
+            // interval. This is the idle-owner arm that must NOT trip the no-source demotion class.
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            registry.registerReplica(STREAM, PARTITION, SELF_NON_OWNER); // self, SYNCING
+
+            var clock = new AtomicLong(0L);
+            var probeCount = new AtomicInteger(0);
+            var transport = ownerSource(OWNER, 0L, eventsFrom(0, 16)); // owner holds 0..15
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             transport,
+                                             countingOwnerProbe(probeCount, 15L),
+                                             localHeadWatermark(),
+                                             SELF_NON_OWNER,
+                                             BOUND,
+                                             clock::get,
+                                             () -> POPULATED);
+
+            // Initial SYNCING pull → CAUGHT_UP@15 (stamps lastReverifyMs at promote); the pull path takes no
+            // probe, and the fresh pull-promotion is quiesced within the interval.
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isSuccess()).isTrue();
+            assertThat(descriptorFor(SELF_NON_OWNER).confirmedOffset()).isEqualTo(15L);
+            assertThat(probeCount.get()).as("the SYNCING pull path issues no probe").isEqualTo(0);
+            assertThat(backfill.redriveCandidates()).as("a fresh pull-promotion is quiesced within the interval").isEmpty();
+
+            // The interval elapses with no live write and the owner still at 15 → candidate → re-verify.
+            clock.set(BOUND.millis() + 1);
+            assertThat(backfill.redriveCandidates()).containsExactly(PartitionKey.partitionKey(STREAM, PARTITION));
+
+            var applied = backfill.backfill(STREAM, PARTITION).await();
+
+            // Owner not ahead (15 == 15) → pure no-op: one probe, a SUCCESS (0 applied), self stays
+            // CAUGHT_UP@15, NOT demoted to SYNCING and NOT failed with a NO_SOURCE cause.
+            assertThat(applied.isSuccess()).as("owner-not-ahead re-verify is a success no-op, not a NO_SOURCE failure").isTrue();
+            assertThat(probeCount.get()).as("the re-verify probes the owner exactly once").isEqualTo(1);
+            assertThat(descriptorFor(SELF_NON_OWNER).state()).isEqualTo(ReplicationState.CAUGHT_UP);
+            assertThat(descriptorFor(SELF_NON_OWNER).confirmedOffset()).isEqualTo(15L);
+            assertThat(backfill.redriveCandidates()).as("the no-op re-stamps lastReverifyMs, re-quiescing the replica").isEmpty();
+        }
+
+        @Test
+        void redriveCandidates_caughtUpNonOwnerColdStartNoPull_ownerNotAhead_reverifyNoOpQuiescesWithinInterval() {
+            // COVERAGE GAP (the NO-PULL path): a non-owner that reached CAUGHT_UP via a cold-start lone-replica
+            // self-promote (NOT a pull) has NO `reverifiedAtOffset` record. If its HRW owner is never ahead, the
+            // owner-not-ahead re-verify no-op MUST stamp `reverifiedAtOffset` — else `offsetMoved` reads the
+            // absent record as moved (.or(true)) FOREVER, making it a redrive candidate (an owner probe) EVERY
+            // tick. With the stamp it quiesces to at most ONE probe per interval. The pulled-first
+            // …intervalElapsed_ownerNotAhead_probesOnce_noOp… test above cannot catch this — there the pull
+            // already set `reverifiedAtOffset`, so `offsetMoved` was false regardless of the no-op stamp.
+            registry.registerReplica(STREAM, PARTITION, SELF_NON_OWNER);
+
+            var members = new AtomicReference<>(List.<NodeId>of()); // empty at t0
+            var clock = new AtomicLong(0L);
+            var probeCount = new AtomicInteger(0);
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             failIfCatchup(),                     // owner never ahead ⇒ never a pull
+                                             countingOwnerProbe(probeCount, -1L),  // HRW owner also empty (head -1)
+                                             localHeadWatermark(),                 // empty partition -> head -1
+                                             SELF_NON_OWNER,
+                                             BOUND,
+                                             clock::get,
+                                             members::get);
+
+            // Cold-start lone-replica self-promote to CAUGHT_UP@-1 (NO pull ⇒ reverifiedAtOffset + lastReverifyMs unset).
+            backfill.backfill(STREAM, PARTITION).await();   // arm the bound at t=0
+            clock.set(BOUND.millis() + 1);
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isSuccess()).isTrue();
+            assertThat(descriptorFor(SELF_NON_OWNER).state()).isEqualTo(ReplicationState.CAUGHT_UP);
+            assertThat(descriptorFor(SELF_NON_OWNER).confirmedOffset()).isEqualTo(-1L);
+            assertThat(probeCount.get()).as("cold-start lone-replica self-promote probes no peers").isEqualTo(0);
+
+            // Members populate; the HRW owner is a DIFFERENT node, also empty (head -1). First re-verify: the
+            // never-verified residual is a candidate, probes the owner once, finds it NOT ahead (-1 <= -1) → no-op.
+            members.set(POPULATED);
+            assertThat(backfill.redriveCandidates()).containsExactly(PartitionKey.partitionKey(STREAM, PARTITION));
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isSuccess()).isTrue();
+            assertThat(probeCount.get()).as("first re-verify probes the HRW owner exactly once").isEqualTo(1);
+            assertThat(descriptorFor(SELF_NON_OWNER).state()).isEqualTo(ReplicationState.CAUGHT_UP);
+            assertThat(descriptorFor(SELF_NON_OWNER).confirmedOffset()).as("the no-op never demotes the replica").isEqualTo(-1L);
+
+            // THE FIX: the no-op stamped reverifiedAtOffset(@-1), so WITHIN the interval offsetMoved is false and
+            // the replica is NOT a candidate — no per-tick owner probe. Without the stamp this would be a per-tick
+            // candidate (the bug): offsetMoved's absent-record .or(true) would dominate the staleCaughtUpNonOwner OR.
+            assertThat(backfill.redriveCandidates()).as("the no-op stamp quiesces offsetMoved within the interval").isEmpty();
+            assertThat(probeCount.get()).as("no per-tick probe within the interval").isEqualTo(1);
+
+            // After the interval elapses it becomes a candidate again and re-verifies EXACTLY once (per-interval,
+            // NOT per-tick), still a no-op, still CAUGHT_UP@-1.
+            clock.set(2 * BOUND.millis() + 2);
+            assertThat(backfill.redriveCandidates()).containsExactly(PartitionKey.partitionKey(STREAM, PARTITION));
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isSuccess()).isTrue();
+            assertThat(probeCount.get()).as("re-verify probes once PER INTERVAL, not per tick").isEqualTo(2);
+            assertThat(descriptorFor(SELF_NON_OWNER).confirmedOffset()).isEqualTo(-1L);
         }
 
         @Test
@@ -801,6 +1320,21 @@ class PartitionBackfillTest {
             return (_, _, _) -> {
                 throw new AssertionError("owner-source re-verify must not probe peers");
             };
+        }
+
+        /// A probe that counts every invocation and answers `ownerHead` for the HRW OWNER (any other target
+        /// is unreachable). Used by the probe-first re-verify arms to assert the owner is probed EXACTLY once
+        /// (never a broad peer sweep) and to drive the owner-ahead / owner-not-ahead branches.
+        private ReplicaWatermarkProbe countingOwnerProbe(AtomicInteger count, long ownerHead) {
+            return (target, _, _) -> probeOwner(count, target, ownerHead);
+        }
+
+        private Promise<Long> probeOwner(AtomicInteger count, NodeId target, long ownerHead) {
+            count.incrementAndGet();
+
+            return target.equals(OWNER)
+                   ? Promise.success(ownerHead)
+                   : ReplicationError.General.REPLICATION_TIMEOUT.promise();
         }
 
         private CatchupTransport failIfCatchup() {
@@ -1259,7 +1793,8 @@ class PartitionBackfillTest {
                                              selfWatermarkOf(25L),            // ring tail = 25 (authoritative)
                                              OWNER,
                                              BOUND,
-                                             () -> MEMBERS);
+                                             () -> MEMBERS,
+                                             CommittedStreamOwnerSource.none());
 
             // Frozen owner row is a redrive candidate precisely because its registry offset lags the ring tail.
             assertThat(descriptorFor(OWNER).state()).isEqualTo(ReplicationState.CAUGHT_UP);
@@ -1294,7 +1829,8 @@ class PartitionBackfillTest {
                                              localHeadWatermark(),
                                              NON_OWNER,
                                              BOUND,
-                                             () -> MEMBERS);
+                                             () -> MEMBERS,
+                                             CommittedStreamOwnerSource.none());
 
             var applied = backfill.backfill(STREAM, PARTITION).await();
 
@@ -1834,6 +2370,145 @@ class PartitionBackfillTest {
                                                        payloads,
                                                        timestamps));
             };
+        }
+    }
+
+    /// #567 — the append floor for a PEER-source catch-up pull.
+    ///
+    /// [StreamPartitionRecovery#appendRecoveredEvent] assigns SEQUENTIAL offsets at the ring tail, so a
+    /// `fromOffset` below the local head does not overwrite — it re-appends the overlap as brand-new
+    /// offsets, duplicating history. The only authority on "what have I already landed" is the local ring,
+    /// which is precisely what [SelfWatermark] exists to report and what its own contract warns about:
+    /// the registry self-descriptor `confirmedOffset` is NOT a substitute, because after a failover /
+    /// restart it reads `-1` while the ring holds real recovered events.
+    ///
+    /// Observed live (cluster B, `test-stream-replica-failover`): a replica holding 25 events pulled from
+    /// a caught-up peer at `fromOffset=0`, re-appended all 25 at the tail, and self-promoted owner at
+    /// watermark 49 — 50 entries, 25 distinct markers, `offset 25 -> marker 0000`.
+    @Nested
+    class PeerSourceAppendFloor {
+        private static final NodeId PEER = NodeId.randomNodeId();
+        private static final TimeSpan BOUND = TimeSpan.timeSpan(10).seconds();
+
+        /// THE regression. Self's registry descriptor is reset to `-1` (the post-failover SYNCING state)
+        /// while the local ring already holds the full history. The pull must start at the ring tail and
+        /// land nothing, NOT restart at 0 and double the partition.
+        @Test
+        void backfill_peerSource_selfDescriptorResetButRingHoldsHistory_pullsFromRingTail() {
+            var held = 25;
+            seedLocal(held);
+
+            registry.registerReplica(STREAM, PARTITION, PEER);
+            registry.updateWatermark(STREAM, PARTITION, PEER, held - 1L);
+            registry.registerReplica(STREAM, PARTITION, SELF);
+
+            assertThat(descriptorFor(SELF).confirmedOffset()).isEqualTo(-1L);
+
+            var requestedFrom = new AtomicLong(Long.MIN_VALUE);
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             recordingSource(requestedFrom, held),
+                                             benignProbe(),
+                                             localHeadWatermark(),
+                                             SELF,
+                                             BOUND,
+                                             new AtomicLong(0L)::get);
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isSuccess()).isTrue();
+
+            assertThat(requestedFrom.get()).isEqualTo((long) held);
+            assertThat(manager.readLocal(STREAM, PARTITION, 0, 200).or(List.of())).hasSize(held);
+        }
+
+        /// The partition's offsets stay contiguous and its markers stay distinct — the operator-visible
+        /// shape of the defect, asserted directly rather than inferred from the entry count.
+        @Test
+        void backfill_peerSource_ringHoldsHistory_offsetsStayContiguousAndDistinct() {
+            var held = 25;
+            seedLocal(held);
+
+            registry.registerReplica(STREAM, PARTITION, PEER);
+            registry.updateWatermark(STREAM, PARTITION, PEER, held - 1L);
+            registry.registerReplica(STREAM, PARTITION, SELF);
+
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             recordingSource(new AtomicLong(0L), held),
+                                             benignProbe(),
+                                             localHeadWatermark(),
+                                             SELF,
+                                             BOUND,
+                                             new AtomicLong(0L)::get);
+
+            backfill.backfill(STREAM, PARTITION).await();
+
+            var local = manager.readLocal(STREAM, PARTITION, 0, 200).or(List.of());
+            var markers = local.stream().map(event -> new String(event.data())).distinct().toList();
+
+            assertThat(markers).hasSize(held);
+            for (var i = 0; i < local.size(); i++) {
+                assertThat(local.get(i).offset()).isEqualTo((long) i);
+                assertThat(new String(local.get(i).data())).isEqualTo("event-" + i);
+            }
+        }
+
+        /// A genuinely-behind replica must still catch up — the fix must not turn the pull into a no-op.
+        /// Self holds 10 of the peer's 25; the pull starts at 10 and lands exactly the missing 15.
+        @Test
+        void backfill_peerSource_selfBehindSource_pullsOnlyTheMissingSuffix() {
+            var held = 10;
+            var sourceTotal = 25;
+            seedLocal(held);
+
+            registry.registerReplica(STREAM, PARTITION, PEER);
+            registry.updateWatermark(STREAM, PARTITION, PEER, sourceTotal - 1L);
+            registry.registerReplica(STREAM, PARTITION, SELF);
+
+            var requestedFrom = new AtomicLong(Long.MIN_VALUE);
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             recordingSource(requestedFrom, sourceTotal),
+                                             benignProbe(),
+                                             localHeadWatermark(),
+                                             SELF,
+                                             BOUND,
+                                             new AtomicLong(0L)::get);
+
+            assertThat(await(backfill.backfill(STREAM, PARTITION))).isEqualTo((long) (sourceTotal - held));
+
+            assertThat(requestedFrom.get()).isEqualTo((long) held);
+            assertThat(manager.readLocal(STREAM, PARTITION, 0, 200).or(List.of())).hasSize(sourceTotal);
+            assertThat(descriptorFor(SELF).state()).isEqualTo(ReplicationState.CAUGHT_UP);
+        }
+
+        private void seedLocal(int count) {
+            for (var i = 0; i < count; i++) {
+                recovery.appendRecoveredEvent(STREAM, PARTITION, ("event-" + i).getBytes(), 1000L + i).unwrap();
+            }
+        }
+
+        /// Self's local watermark = the local ring HEAD, backed by the same manager the recovery seam
+        /// writes into — the production wiring's notion, not the registry descriptor's.
+        private SelfWatermark localHeadWatermark() {
+            return (stream, partition) -> manager.partitionInfo(stream, partition)
+                                                 .map(StreamPartitionManager.PartitionInfo::headOffset)
+                                                 .or(-1L);
+        }
+
+        /// A peer holding `total` events (offsets `0..total-1`) that records the requested `fromOffset`
+        /// and serves exactly the suffix at/after it — an empty page when the caller is already at the tail.
+        private CatchupTransport recordingSource(AtomicLong requestedFrom, int total) {
+            return (target, request) -> {
+                requestedFrom.set(request.fromOffset());
+
+                var missing = (int) Math.max(0L, total - request.fromOffset());
+
+                return fixedSource(eventsFrom(request.fromOffset(), missing)).requestCatchup(target, request);
+            };
+        }
+
+        private ReplicaWatermarkProbe benignProbe() {
+            return (_, _, _) -> ReplicationError.General.REPLICATION_TIMEOUT.promise();
         }
     }
 

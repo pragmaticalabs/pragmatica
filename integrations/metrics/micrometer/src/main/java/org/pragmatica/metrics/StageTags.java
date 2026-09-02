@@ -14,7 +14,6 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.metrics;
 
 import java.util.ArrayList;
@@ -24,6 +23,7 @@ import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Tag;
 import io.micrometer.core.instrument.Timer;
+
 
 /// Base class for metrics builder stages providing common tag management and meter creation.
 /// Uses self-bounded generics to enable fluent API with correct return types.
@@ -65,9 +65,11 @@ public class StageTags<T extends StageTags<T>> {
         if (keyValues.length % 2 != 0) {
             throw new IllegalArgumentException("Tags must be provided as key-value pairs");
         }
+
         for (int i = 0; i < keyValues.length; i += 2) {
             tags.add(Tag.of(keyValues[i], keyValues[i + 1]));
         }
+
         return (T) this;
     }
 
@@ -96,9 +98,9 @@ public class StageTags<T extends StageTags<T>> {
     }
 
     protected Timer timer(TimerType type) {
-        var builder = Timer.builder(name())
-                           .tags(tags());
-        return ( switch (type) {
+        var builder = Timer.builder(name()).tags(tags());
+
+        return (switch (type) {
             case SUCCESS -> builder.tag("result", "success");
             case FAILURE -> builder.tag("result", "failure");
             case PLAIN -> builder;

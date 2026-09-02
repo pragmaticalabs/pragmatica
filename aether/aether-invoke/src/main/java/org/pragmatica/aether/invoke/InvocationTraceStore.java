@@ -19,6 +19,7 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
 
 
 public final class InvocationTraceStore {
@@ -121,11 +122,7 @@ public final class InvocationTraceStore {
     }
 
     private static Result<String> validateInjectionInput(String operation) {
-        if (operation == null || operation.isBlank()) {
-            return InjectionError.OPERATION_REQUIRED.result();
-        }
-
-        return Result.success(operation);
+        return Verify.ensure(operation, Verify.Is::present, InjectionError.OPERATION_REQUIRED);
     }
 
     private InvocationNode stampAndStoreInjection(String operation,

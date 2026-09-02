@@ -13,7 +13,9 @@ import org.pragmatica.aether.slice.SliceStore.EntryState;
 import org.pragmatica.aether.slice.SliceStore.LoadedSliceEntry;
 import org.pragmatica.aether.slice.SliceStore.sliceStore;
 import org.pragmatica.aether.slice.dependency.SliceRegistry;
+import org.pragmatica.config.ConfigError;
 import org.pragmatica.config.IntrinsicConfigProvider;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -111,7 +113,7 @@ class SliceStoreTest {
 
     @Test
     void slice_store_factory_creates_instance() {
-        var store = SliceStore.sliceStore(registry, List.of(), sharedLoader, STUB_INVOKER, SliceActionConfig.sliceActionConfig());
+        var store = SliceStore.sliceStoreWithoutResourceProvisioning(registry, List.of(), sharedLoader, STUB_INVOKER, SliceActionConfig.sliceActionConfig());
 
         assertThat(store).isNotNull();
         assertThat(store.loaded()).isEmpty();
@@ -170,7 +172,7 @@ class SliceStoreTest {
 
     @Test
     void activate_not_loaded_fails() {
-        var store = SliceStore.sliceStore(registry, List.of(), sharedLoader, STUB_INVOKER, SliceActionConfig.sliceActionConfig());
+        var store = SliceStore.sliceStoreWithoutResourceProvisioning(registry, List.of(), sharedLoader, STUB_INVOKER, SliceActionConfig.sliceActionConfig());
 
         store.activateSlice(artifact)
              .await()
@@ -235,7 +237,7 @@ class SliceStoreTest {
 
     @Test
     void deactivate_not_loaded_fails() {
-        var store = SliceStore.sliceStore(registry, List.of(), sharedLoader, STUB_INVOKER, SliceActionConfig.sliceActionConfig());
+        var store = SliceStore.sliceStoreWithoutResourceProvisioning(registry, List.of(), sharedLoader, STUB_INVOKER, SliceActionConfig.sliceActionConfig());
 
         store.deactivateSlice(artifact)
              .await()
@@ -299,7 +301,7 @@ class SliceStoreTest {
 
     @Test
     void unload_nonexistent_succeeds() {
-        var store = SliceStore.sliceStore(registry, List.of(), sharedLoader, STUB_INVOKER, SliceActionConfig.sliceActionConfig());
+        var store = SliceStore.sliceStoreWithoutResourceProvisioning(registry, List.of(), sharedLoader, STUB_INVOKER, SliceActionConfig.sliceActionConfig());
 
         store.unloadSlice(artifact)
              .await()
@@ -315,7 +317,7 @@ class SliceStoreTest {
         var artifact1 = Artifact.artifact("org.example:slice1:1.0.0").unwrap();
         var artifact2 = Artifact.artifact("org.example:slice2:1.0.0").unwrap();
 
-        var store = SliceStore.sliceStore(registry, List.of(), sharedLoader, STUB_INVOKER, SliceActionConfig.sliceActionConfig());
+        var store = SliceStore.sliceStoreWithoutResourceProvisioning(registry, List.of(), sharedLoader, STUB_INVOKER, SliceActionConfig.sliceActionConfig());
         addPreloadedSlice(store, artifact1, slice1, EntryState.LOADED);
         addPreloadedSlice(store, artifact2, slice2, EntryState.ACTIVE);
 
@@ -333,7 +335,7 @@ class SliceStoreTest {
         var slice = createTestSlice();
         var provider = org.pragmatica.config.IntrinsicConfigProvider.intrinsicConfigProvider(
                 "test", java.util.Map.of("topics.events.topic_name", "events"));
-        var store = SliceStore.sliceStore(registry, List.of(), sharedLoader, STUB_INVOKER, SliceActionConfig.sliceActionConfig());
+        var store = SliceStore.sliceStoreWithoutResourceProvisioning(registry, List.of(), sharedLoader, STUB_INVOKER, SliceActionConfig.sliceActionConfig());
         addPreloadedSliceWithConfig(store, artifact, slice, EntryState.LOADED, Option.some(provider));
 
         var composite = store.sliceComposite(artifact);
@@ -354,11 +356,112 @@ class SliceStoreTest {
 
     @Test
     void sliceComposite_returns_none_when_slice_not_loaded() {
-        var store = SliceStore.sliceStore(registry, List.of(), sharedLoader, STUB_INVOKER, SliceActionConfig.sliceActionConfig());
+        var store = SliceStore.sliceStoreWithoutResourceProvisioning(registry, List.of(), sharedLoader, STUB_INVOKER, SliceActionConfig.sliceActionConfig());
 
         var composite = store.sliceComposite(artifact);
 
         assertThat(composite.isEmpty()).isTrue();
+    }
+
+    // === Slice-intrinsic secret resolution (#269) ===
+    //
+    // No log-scraping here — this codebase's log backend (log4j2) doesn't support capturing
+    // appender output in unit tests (see ProvisioningRecoveryAfterFailureBurstProbeTest's own
+    // note on the same limitation). `resolveIntrinsicSecrets` and `intrinsicSecretsDroppedMessage`
+    // are package-private precisely so the behavior and the consequence-naming wording are each a
+    // first-class, directly assertable return value instead.
+
+    @Test
+    void resolveIntrinsicSecrets_resolvesPlaceholder_whenResolverSucceeds() {
+        var intrinsic = IntrinsicConfigProvider.intrinsicConfigProvider("slice.toml",
+                                                                        Map.of("database.password", "${secrets:db/password}",
+                                                                               "database.async_url", "postgresql://forge-postgres:5432/forge"));
+        Fn1<Promise<String>, String> resolver = path -> Promise.success("resolved-" + path);
+
+        var resolved = sliceStore.resolveIntrinsicSecrets(artifact, intrinsic, Option.some(resolver));
+
+        assertThat(resolved.isPresent()).isTrue();
+        assertThat(resolved.unwrap().getString("database.password").unwrap()).isEqualTo("resolved-db/password");
+        // Non-secret keys pass through unchanged.
+        assertThat(resolved.unwrap().getString("database.async_url").unwrap()).isEqualTo("postgresql://forge-postgres:5432/forge");
+    }
+
+    @Test
+    void resolveIntrinsicSecrets_passesThroughUnchanged_whenNoResolverConfigured() {
+        var intrinsic = IntrinsicConfigProvider.intrinsicConfigProvider("slice.toml",
+                                                                        Map.of("database.password", "${secrets:db/password}"));
+
+        var resolved = sliceStore.resolveIntrinsicSecrets(artifact, intrinsic, Option.empty());
+
+        assertThat(resolved.isPresent()).isTrue();
+        // Pre-#269 behavior when a slice runs with no secrets integration configured at all:
+        // the literal placeholder reaches the composite rather than failing the slice load.
+        assertThat(resolved.unwrap().getString("database.password").unwrap()).isEqualTo("${secrets:db/password}");
+    }
+
+    @Test
+    void resolveIntrinsicSecrets_dropsEntireLayer_whenResolverFails() {
+        // Two keys: only one references a secret. All-or-nothing means BOTH are gone from the
+        // result, not just the failed key — the composite's return type (Option.none()) makes
+        // that the only possible outcome, so no literal placeholder can leak through it either.
+        var intrinsic = IntrinsicConfigProvider.intrinsicConfigProvider("slice.toml",
+                                                                        Map.of("database.password", "${secrets:db/password}",
+                                                                               "database.async_url", "postgresql://forge-postgres:5432/forge"));
+        Fn1<Promise<String>, String> resolver = path -> Causes.cause("secret store unreachable").promise();
+
+        var resolved = sliceStore.resolveIntrinsicSecrets(artifact, intrinsic, Option.some(resolver));
+
+        assertThat(resolved.isEmpty()).isTrue();
+    }
+
+    @Test
+    void intrinsicSecretsDroppedMessage_namesSliceFailedKeyAndConsequence() {
+        var cause = ConfigError.secretResolutionFailed("database.password",
+                                                       "db/password",
+                                                       Causes.cause("secret store unreachable"));
+
+        var message = sliceStore.intrinsicSecretsDroppedMessage(artifact, cause);
+
+        assertThat(message).contains(artifact.asString());
+        assertThat(message).contains("database.password");
+        assertThat(message).contains("db/password");
+        assertThat(message).contains("dropping the ENTIRE");
+        assertThat(message).contains("not-configured at provision time");
+    }
+
+    // === logShadowedKeys redaction (R5) ===
+
+    @Test
+    void shadowedKeys_returnsKeyNamesOnly_neverTheValues() {
+        var secretLookingValue = "hunter2-super-secret-password";
+        var intrinsic = IntrinsicConfigProvider.intrinsicConfigProvider("slice.toml",
+                                                                        Map.of("database.password", secretLookingValue,
+                                                                               "database.async_url", "postgresql://forge-postgres:5432/forge"));
+        var nodeComposite = IntrinsicConfigProvider.intrinsicConfigProvider("node",
+                                                                            Map.of("database.password", "override-value",
+                                                                                   "database.async_url", "postgresql://forge-postgres:5432/forge"));
+
+        var shadowed = sliceStore.shadowedKeys(intrinsic, nodeComposite);
+
+        // Only the key whose value actually differs is reported...
+        assertThat(shadowed).containsExactly("database.password");
+        // ...and the returned list cannot possibly contain either value, for any input: the
+        // method's return type is List<String> of key names, so this is a structural guarantee,
+        // not a per-call coincidence. Asserted explicitly anyway, for the reader who won't trust
+        // the type alone.
+        assertThat(shadowed).doesNotContain(secretLookingValue, "override-value");
+    }
+
+    @Test
+    void shadowedKeys_returnsEmpty_whenValuesMatch() {
+        var intrinsic = IntrinsicConfigProvider.intrinsicConfigProvider("slice.toml",
+                                                                        Map.of("database.async_url", "postgresql://forge-postgres:5432/forge"));
+        var nodeComposite = IntrinsicConfigProvider.intrinsicConfigProvider("node",
+                                                                            Map.of("database.async_url", "postgresql://forge-postgres:5432/forge"));
+
+        var shadowed = sliceStore.shadowedKeys(intrinsic, nodeComposite);
+
+        assertThat(shadowed).isEmpty();
     }
 
     // === Helper Methods ===
@@ -393,7 +496,7 @@ class SliceStoreTest {
     }
 
     private SliceStore createStoreWithPreloadedSlice(Slice slice, EntryState state) {
-        var store = SliceStore.sliceStore(registry, List.of(), sharedLoader, STUB_INVOKER, SliceActionConfig.sliceActionConfig());
+        var store = SliceStore.sliceStoreWithoutResourceProvisioning(registry, List.of(), sharedLoader, STUB_INVOKER, SliceActionConfig.sliceActionConfig());
         addPreloadedSlice(store, artifact, slice, state);
         return store;
     }

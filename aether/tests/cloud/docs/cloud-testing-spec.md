@@ -5,6 +5,39 @@
 **Status:** Draft
 **Branch:** release-1.0.0-rc1
 
+> **Superseded in part — 2026-07-30 (rc3).** This spec was written against an in-house
+> `aether-lb` deployable that no longer exists: `aether/lb` is not a module in this
+> repository, no workflow builds an `aether-lb` image, and `ghcr.io/pragmaticalabs/aether-lb`
+> is not published. The harness therefore no longer runs an LB on the bastion.
+>
+> What actually happens now, per `deploy-cloud.sh`:
+> - **Management traffic** goes straight to a core node's own management port
+>   (`CORE_MGMT` = `<core-node-public-ip>:8080`, i.e. `[deployment.ports].management`).
+>   Any core node is a valid entry point, because a node forwards management requests it
+>   does not own to the leader or task-group owner.
+> - **Application traffic** goes through the managed Hetzner load balancer (`HLB_IP`),
+>   which the harness already provisions and which targets all core nodes.
+> - The `cloud-test-lb` VM still exists, but purely as an SSH jump host and Docker host
+>   (`TARGET_HOST`). It runs no Aether process.
+>
+> Sections below that describe an `aether-lb` container, or management on port `8081`,
+> describe the retired design and not current behaviour. The environment-variable tables in
+> §REQ-T01/T02 and the variable-mapping table have been corrected; the surrounding prose has
+> not been rewritten. This spans most of §3 (Phases 6 and 8, and the "Revised Design" routing
+> table), §5 (REQ-A02/A03/A05/A09's bastion-as-LB framing), §9 (the sequence diagram's "create
+> LB VM" step), and Open Question Q4 — they are kept for archival reference, not as a
+> description of what `deploy-cloud.sh` / `teardown-cloud.sh` do today. Sections marked
+> **Historical** below are the clusters where this matters most; the rest of the retired
+> prose is unmarked but covered by this notice.
+>
+> **2026-08-27 update:** the decision is now final for this release. `aether/docker/aether-lb/`
+> (the orphaned, unbuildable Dockerfile referencing a nonexistent `aether/lb` module) has been
+> deleted. There is no plan to reintroduce a standalone `aether-lb` deployable. Whether an LB
+> should return as a *mode* of `aether-node` built on `PassiveNode` (currently dead code, never
+> instantiated anywhere in the runtime) remains an open question, but only if the owner
+> confirms ingress AB/canary routing is actually roadmapped — deploy-side canary
+> (`aether deploy --canary`) already ships today and does not require it. See #560.
+
 ---
 
 ## 1. Overview
@@ -25,6 +58,12 @@ Validate the Aether distributed runtime in a production-like cloud environment o
 - Testing the `aether cluster destroy` command against Hetzner (it only does drain + shutdown of nodes; VM termination is handled by the teardown script).
 
 ### 1.3 Architecture
+
+> **Historical.** The diagram and VM table below depict the retired `aether-lb` VM as a live
+> Aether process (a "passive LB" on 8080/8081). It never shipped as a real deployable; see
+> the banner at the top of this document. Current behavior: `cloud-test-lb` is an SSH bastion
+> / Docker host only, management traffic goes directly to a core node's port 8080, and app
+> traffic goes through the Hetzner managed LB alone (single TCP service, port 80 -> 8070).
 
 ```
                 Internet
@@ -227,6 +266,10 @@ Decision: **Option A** -- keep public IPs initially for bootstrap health checks.
 
 #### Phase 6: Provision Aether LB VM
 
+> **Historical.** No `aether-lb` image exists to build or pull; this phase as written cannot
+> execute. The current `deploy-cloud.sh` still creates the `cloud-test-lb` VM (as a plain SSH
+> bastion / Docker host — no Aether container), but skips REQ-D20/D21 entirely.
+
 ```
 REQ-D18: Create LB VM: hcloud server create --name cloud-test-lb --type cx22 --image ubuntu-24.04
          --location fsn1 --ssh-key cloud-test-key --label aether-cluster=cloud-test --label aether-role=lb
@@ -258,6 +301,13 @@ REQ-D27: Remove public IP from postgres VM (or create without one using --withou
 [ASSUMPTION: `hcloud server create` supports `--without-ipv4` or we can detach the IPv4 after creation. The `hcloud` CLI may not support `--without-public-ip` directly. Alternative: create with public IP, then SSH via bastion to set up, then the firewall blocks inbound.]
 
 #### Phase 8: Create Hetzner Managed Load Balancer
+
+> **Historical.** The multi-service design below (app traffic + a separate management
+> service routed to the Aether LB VM's port 8081) was never built this way, and the
+> "Revised Design" sub-section's fallback (management direct to the LB VM's public IP) is
+> itself superseded: current `deploy-cloud.sh` creates a single-service Hetzner LB (TCP
+> 80 -> 8070, app traffic only) and routes management traffic directly to a core node's
+> port 8080, not to `cloud-test-lb` at all.
 
 ```
 REQ-D28: Create LB:
@@ -339,10 +389,10 @@ REQ-D38: Push example blueprint artifacts (url-shortener v1 and v2) via CLI:
          aether -c <aether-lb-public-ip>:8081 artifact push org.pragmatica.aether.example:url-shortener:1.0.0
          aether -c <aether-lb-public-ip>:8081 artifact push org.pragmatica.aether.example:url-shortener:1.0.1
 REQ-D39: Deploy v1 as baseline:
-         aether -c <aether-lb-public-ip>:8081 blueprint deploy org.pragmatica.aether.example:url-shortener:1.0.0
+         aether -c <core-node-public-ip>:8080 blueprint deploy org.pragmatica.aether.example:url-shortener:1.0.0
 REQ-D40: Wait for slices to become active (at least 1 instance running).
 REQ-D41: Export environment for test runner:
-         echo "CLUSTER_ENDPOINT=http://<aether-lb-public-ip>:8081"
+         echo "CLUSTER_ENDPOINT=http://<core-node-public-ip>:8080"
          echo "APP_ENDPOINT=https://<hetzner-lb-public-ip>:443"
          Write these to aether/tests/cloud/.cloud-env for sourcing.
 ```
@@ -385,12 +435,12 @@ REQ-D51: Check hcloud load-balancer list before creating Hetzner LB.
 ```
 REQ-T01: Source .cloud-env to get CLUSTER_ENDPOINT and APP_ENDPOINT.
 REQ-T02: Export:
-         TARGET_HOST=<aether-lb-public-ip>    (for common.sh)
-         MGMT_PORT=8081                        (LB management port)
-         LB_PORT=8081                          (same as MGMT_PORT for cloud)
-         LB_MGMT_PORT=8081                     (management API port)
+         TARGET_HOST=<bastion-public-ip>       (for common.sh; bastion is a jump host only)
+         MGMT_PORT=8080                        (core node management port)
+         LB_PORT=80                            (managed Hetzner LB, app traffic)
+         LB_MGMT_PORT=8080                     (same node management port; kept for set -u)
          APP_PORT=443                          (Hetzner LB public port)
-         CLUSTER_ENDPOINT=http://<aether-lb-public-ip>:8081
+         CLUSTER_ENDPOINT=http://<core-node-public-ip>:8080
          APP_ENDPOINT=https://<hetzner-lb-public-ip>:443
          AETHER_SSH_USER=root
          AETHER_SSH_KEY=<path-to-ssh-key>
@@ -446,6 +496,12 @@ REQ-T11: These are skipped via: SKIP_SUITES="07-cluster-mgmt/test-bootstrap.sh,0
 
 ## 5. Test Script Adaptations
 
+> **Historical.** REQ-A02, A03, A05, and A09 below describe `BASTION_IP` doubling as an
+> "Aether passive LB" that forwards management API calls via task-group-aware routing.
+> That LB never existed; `BASTION_IP` is purely an SSH jump host. Management API calls in
+> cloud mode go directly to a core node's port 8080 (see the banner at the top of this
+> document), not through the bastion's application layer.
+
 ### 5.1 Node Operations via SSH Bastion
 
 The local Docker tests use `remote_exec "docker kill aether-node-$i"` where `remote_exec` SSHes to TARGET_HOST. In cloud mode, core nodes have no public IP. Node operations must go through the bastion.
@@ -497,12 +553,12 @@ REQ-A09: leader_api_post() in cloud mode:
 
 | Variable | Local Docker | Cloud |
 |----------|-------------|-------|
-| `TARGET_HOST` | localhost or remote Docker host | Aether LB public IP |
-| `MGMT_PORT` | 5150 | 8081 |
-| `LB_PORT` | 9090 | 8081 |
-| `LB_MGMT_PORT` | 9091 | 8081 |
+| `TARGET_HOST` | localhost or remote Docker host | Bastion public IP (jump host) |
+| `MGMT_PORT` | 5150 | 8080 |
+| `LB_PORT` | 9090 | 80 |
+| `LB_MGMT_PORT` | 9091 | 8080 |
 | `APP_PORT` | 8070 | 443 |
-| `CLUSTER_ENDPOINT` | `http://<host>:9091` | `http://<aether-lb-ip>:8081` |
+| `CLUSTER_ENDPOINT` | `http://<host>:9091` | `http://<core-node-ip>:8080` |
 | `APP_ENDPOINT` | `http://<host>:9090` | `https://<hetzner-lb-ip>:443` |
 
 ```
@@ -630,6 +686,10 @@ The existing test suites at `aether/tests/integration/suites/` and libraries at 
 
 ## 9. Sequence Diagram: Full Test Run
 
+> **Historical.** The "create LB VM" step below implies an Aether process is installed on
+> that VM; current `deploy-cloud.sh` still creates the VM (as a bastion) but installs no
+> Aether container on it.
+
 ```
 Developer                 deploy-cloud.sh           Hetzner Cloud            run-cloud-tests.sh
     |                          |                          |                          |
@@ -688,7 +748,7 @@ REQ-S07: Hetzner LB uses TCP mode (no TLS termination). End-to-end encryption is
 | Q1 | Does `BootstrapOrchestrator` need to be extended to support private networks (attach-to-network)? | Core nodes won't have private IPs unless manually attached | Deferred -- deploy script handles it |
 | Q2 | Can `hcloud server create` use `--without-ipv4` to avoid public IP allocation? | Simplifies security model | Needs verification against hcloud CLI version |
 | Q3 | How does the Aether container discover peers when using private network IPs instead of Docker hostnames? | PEERS env var must use private IPs: `node-1:10.0.1.11:6000,...` | The cloud-init template uses `--network host` and peers discover via SWIM. Initial peer list comes from the bootstrap config. |
-| Q4 | Does the Aether passive LB image need to be published to GHCR, or can it be built on the VM? | Affects deploy script complexity | [ASSUMPTION: build on VM from local JAR, same as setup.sh does for Docker] |
+| Q4 | **Historical / moot.** Does the Aether passive LB image need to be published to GHCR, or can it be built on the VM? | N/A | Resolved 2026-08-27: no such image exists or is planned; `aether/docker/aether-lb/` (the orphaned Dockerfile) has been deleted. See banner at top of document and #560. |
 | Q5 | How does the bootstrap API key get propagated to test scripts? | Test scripts need `AETHER_API_KEY` set | Bootstrap prints it; deploy script captures from stdout and writes to .cloud-env |
 
 ---

@@ -100,7 +100,7 @@ class CoreSwimHealthDetectorTest {
             // QUIC eviction flows post-consensus via MembershipDecision.NodeRemoved
             // after the leader's MembershipFsm writes DECOMMISSIONED and TopologyObserver
             // fires the membership delta. The FAULTY observation still drives the
-            // leader-side aggregation path (emitLeaderHint + bufferHealthObservation).
+            // leader-side aggregation path via bufferHealthObservation.
             var faultyMember = SwimMember.swimMember(PEER_A, MemberState.FAULTY, 0,
                                                       new InetSocketAddress("127.0.0.2", 9002));
 

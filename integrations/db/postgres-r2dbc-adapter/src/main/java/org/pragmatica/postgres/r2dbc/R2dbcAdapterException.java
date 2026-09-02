@@ -14,10 +14,10 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.postgres.r2dbc;
 
 import io.r2dbc.spi.R2dbcException;
+
 
 /// Exception thrown at the R2DBC adapter boundary to convert
 /// Pragmatica [org.pragmatica.lang.Cause] failures into R2DBC-compatible exceptions.

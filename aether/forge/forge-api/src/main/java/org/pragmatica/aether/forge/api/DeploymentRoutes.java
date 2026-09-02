@@ -105,7 +105,7 @@ public sealed interface DeploymentRoutes {
                                                          Consumer<EventLogEntry> eventLogger,
                                                          String blueprintJson) {
         return findLeaderPort(cluster).async(LeaderNotAvailable.INSTANCE)
-                             .flatMap(port -> proxyPost(http, port, "/api/blueprints", blueprintJson))
+                             .flatMap(port -> proxyPost(http, port, "/api/v1/blueprints", blueprintJson))
                              .map(body -> logAndBuildBlueprintResponse(eventLogger, body));
     }
 
@@ -121,7 +121,7 @@ public sealed interface DeploymentRoutes {
 
     private static Promise<ClusterMetricsResponse> proxyClusterMetrics(EmberCluster cluster, JdkHttpOperations http) {
         return findLeaderPort(cluster).async(LeaderNotAvailable.INSTANCE)
-                             .flatMap(port -> proxyGet(http, port, "/api/metrics"))
+                             .flatMap(port -> proxyGet(http, port, "/api/v1/metrics"))
                              .map(ClusterMetricsResponse::new);
     }
 

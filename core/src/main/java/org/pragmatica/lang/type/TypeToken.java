@@ -1,10 +1,11 @@
 package org.pragmatica.lang.type;
 
-import org.pragmatica.lang.Option;
-
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
 import java.util.Arrays;
+
+import org.pragmatica.lang.Option;
+
 
 /// Simple implementation of type token which allows to capture full generic type.
 /// In order to use this class, one should create anonymous
@@ -32,6 +33,7 @@ public abstract class TypeToken<T> implements Comparable<TypeToken<T>> {
         if (! (getClass().getGenericSuperclass() instanceof ParameterizedType parameterizedType)) {
             throw new IllegalArgumentException("TypeToken constructed without actual type argument.");
         }
+
         token = parameterizedType.getActualTypeArguments() [0];
     }
 
@@ -63,23 +65,29 @@ public abstract class TypeToken<T> implements Comparable<TypeToken<T>> {
         if (indexes.length == 0) {
             return Option.option(rawClass(token));
         }
+
         for (var ndx : indexes) {
             if (ndx < 0) {
                 return Option.none();
             }
         }
+
         return recursivelyGetType(token, indexes);
     }
 
     private static Option<Class<?>> recursivelyGetType(Type type, int... indexes) {
         var index = indexes[0];
+
         if (! (type instanceof ParameterizedType parameterizedType)) {
             return Option.none();
         }
+
         if (parameterizedType.getActualTypeArguments().length <= index) {
             return Option.none();
         }
+
         var actualTypeArgument = parameterizedType.getActualTypeArguments() [index];
+
         if (indexes.length == 1) {
             return Option.option(rawClass(actualTypeArgument));
         } else {
@@ -99,23 +107,29 @@ public abstract class TypeToken<T> implements Comparable<TypeToken<T>> {
         if (indexes.length == 0) {
             return Option.option(this);
         }
+
         for (var ndx : indexes) {
             if (ndx < 0) {
                 return Option.none();
             }
         }
+
         return recursivelyGetSubType(token, indexes);
     }
 
     private static Option<TypeToken<?>> recursivelyGetSubType(Type type, int... indexes) {
         var index = indexes[0];
+
         if (! (type instanceof ParameterizedType parameterizedType)) {
             return Option.none();
         }
+
         if (parameterizedType.getActualTypeArguments().length <= index) {
             return Option.none();
         }
+
         var actualTypeArgument = parameterizedType.getActualTypeArguments() [index];
+
         if (indexes.length == 1) {
             return Option.option(new TypeToken<>(actualTypeArgument) {});
         } else {
@@ -132,9 +146,11 @@ public abstract class TypeToken<T> implements Comparable<TypeToken<T>> {
         if (this == o) {
             return true;
         }
+
         if (o instanceof TypeToken<?> typeToken) {
             return token.equals(typeToken.token);
         }
+
         return false;
     }
 

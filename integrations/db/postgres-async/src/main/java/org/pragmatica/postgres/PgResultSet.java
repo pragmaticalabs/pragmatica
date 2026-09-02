@@ -11,12 +11,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.pragmatica.postgres;
-
-import org.pragmatica.postgres.net.ResultSet;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.type.RecordTemplate;
 
 import java.util.Collection;
 import java.util.Iterator;
@@ -24,31 +19,42 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
 
+import org.pragmatica.postgres.net.ResultSet;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.type.RecordTemplate;
+
+
 /**
  * {@link ResultSet} constructed from Query/Execute response messages.
  *
  * @author Antti Laisi
  */
 public class PgResultSet implements ResultSet {
-
     private final List<PgRow> rows;
     private final Map<String, PgColumn> columnsByName;
     private final List<PgColumn> orderedColumns;
     private final int affectedRows;
 
-    public PgResultSet(Map<String, PgColumn> columnsByName, PgColumn[] orderedColumns, List<PgRow> rows, int affectedRows) {
-        this.columnsByName = columnsByName == null ? Map.of() : columnsByName;
-        this.orderedColumns = orderedColumns == null ? List.of() : List.of(orderedColumns);
-        this.rows = rows == null ? List.of() : rows;
+    public PgResultSet(Map<String, PgColumn> columnsByName,
+                       PgColumn[] orderedColumns,
+                       List<PgRow> rows,
+                       int affectedRows) {
+        this.columnsByName = columnsByName == null
+                             ? Map.of()
+                             : columnsByName;
+        this.orderedColumns = orderedColumns == null
+                              ? List.of()
+                              : List.of(orderedColumns);
+        this.rows = rows == null
+                    ? List.of()
+                    : rows;
         this.affectedRows = affectedRows;
     }
 
     public <T extends Record> Result<Stream<T>> stream(RecordTemplate<T> descriptor) {
-        var results = rows.stream()
-                          .map(descriptor::load);
+        var results = rows.stream().map(descriptor::load);
 
-        return Result.allOf(results)
-                     .map(Collection::stream);
+        return Result.allOf(results).map(Collection::stream);
     }
 
     @Override
@@ -89,6 +95,8 @@ public class PgResultSet implements ResultSet {
         for (var row : rows) {
             builder.append("  ").append(row).append(",\n");
         }
-        return builder.append("}]").toString();
+
+        return builder.append("}]")
+                      .toString();
     }
 }

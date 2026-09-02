@@ -11,10 +11,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.pragmatica.postgres.net;
 
 import org.pragmatica.lang.Contract;
+
 
 /// Sink that a `Converter<T>` writes a parameter value into during BIND.
 ///
@@ -22,10 +22,11 @@ import org.pragmatica.lang.Contract;
 /// Calling neither, or calling more than once, leaves the writer in an invalid
 /// state and the framework will reject the bind.
 public interface PgWriter {
-
     /// Write the parameter as text-format wire bytes.
-    @Contract void writeText(String value);
+    @Contract
+    void writeText(String value);
 
     /// Write the parameter as binary-format wire bytes.
-    @Contract void writeBinary(byte[] value);
+    @Contract
+    void writeBinary(byte[] value);
 }

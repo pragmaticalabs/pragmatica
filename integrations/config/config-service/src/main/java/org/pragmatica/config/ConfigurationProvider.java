@@ -1,5 +1,13 @@
 package org.pragmatica.config;
 
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
 import org.pragmatica.config.internal.DeepMerger;
 import org.pragmatica.config.source.EnvironmentConfigSource;
 import org.pragmatica.config.source.MapConfigSource;
@@ -10,16 +18,9 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 
-import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
+
 
 /// Layered configuration provider that merges multiple sources.
 ///
@@ -101,6 +102,7 @@ public interface ConfigurationProvider extends ConfigSource {
         /// @return This builder
         public Builder withSource(ConfigSource source) {
             sources.add(source);
+
             return this;
         }
 
@@ -109,8 +111,7 @@ public interface ConfigurationProvider extends ConfigSource {
         /// @param defaults Map of default key-value pairs
         /// @return This builder
         public Builder withDefaults(Map<String, String> defaults) {
-            return withSource(MapConfigSource.mapConfigSource("defaults", defaults, - 1000)
-                                             .unwrap());
+            return withSource(MapConfigSource.mapConfigSource("defaults", defaults, -1000).unwrap());
         }
 
         /// Add a TOML file source (priority: 0).
@@ -118,8 +119,8 @@ public interface ConfigurationProvider extends ConfigSource {
         /// @param path Path to the TOML file
         /// @return This builder
         public Builder withTomlFile(Path path) {
-            TomlConfigSource.tomlConfigSource(path)
-                            .onSuccess(this::withSource);
+            TomlConfigSource.tomlConfigSource(path).onSuccess(this::withSource);
+
             return this;
         }
 
@@ -128,8 +129,7 @@ public interface ConfigurationProvider extends ConfigSource {
         /// @param path Path to the TOML file
         /// @return Result containing this builder or error
         public Result<Builder> withRequiredTomlFile(Path path) {
-            return TomlConfigSource.tomlConfigSource(path)
-                                   .map(this::includeSourceAndReturn);
+            return TomlConfigSource.tomlConfigSource(path).map(this::includeSourceAndReturn);
         }
 
         /// Add environment variables with prefix (priority: 100).
@@ -159,15 +159,16 @@ public interface ConfigurationProvider extends ConfigSource {
         /// @return Configured provider with all sources merged
         public ConfigurationProvider build() {
             var sortedSources = sources.stream()
-                                       .sorted(Comparator.comparingInt(ConfigSource::priority)
-                                                         .reversed())
+                                       .sorted(Comparator.comparingInt(ConfigSource::priority).reversed())
                                        .toList();
             var mergedMap = DeepMerger.mergeSources(sortedSources);
+
             return new LayeredConfigurationProvider(sortedSources, mergedMap);
         }
 
         private Builder includeSourceAndReturn(ConfigSource source) {
             sources.add(source);
+
             return this;
         }
     }
@@ -211,14 +212,19 @@ final class LayeredConfigurationProvider implements ConfigurationProvider {
     @Override
     public Result<ConfigSource> reload() {
         var reloadedSources = new ArrayList<ConfigSource>();
+
         for (var source : sources) {
             var reloaded = source.reload();
+
             if (reloaded.isFailure()) {
                 return reloaded;
             }
+
             reloadedSources.add(reloaded.unwrap());
         }
+
         var newMerged = DeepMerger.mergeSources(reloadedSources);
+
         return success(new LayeredConfigurationProvider(reloadedSources, newMerged));
     }
 }

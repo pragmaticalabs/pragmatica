@@ -1,13 +1,14 @@
 package org.pragmatica.statemachine;
 
+import java.util.function.Function;
+
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
-import java.util.function.Function;
-
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
+
 
 /// Represents a state transition in the state machine.
 ///

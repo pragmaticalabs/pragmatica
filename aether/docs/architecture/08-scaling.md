@@ -1,5 +1,7 @@
 # Auto-Scaling
 
+**Status:** Current
+
 This document describes the two-tier scaling system: reactive (decision tree) and predictive (TTM).
 
 ## Scaling Architecture
@@ -219,8 +221,47 @@ graph TB
 - Graceful degradation: if TTM unavailable, decision tree handles everything
 - Problems escalate up, decisions flow down
 
+## Cluster Scaling: Mechanism & Limits
+
+The sections above describe **application auto-scaling** — how the runtime adjusts the *instance count of a slice* in response to load. This section describes the orthogonal question: **how far the cluster itself scales**, by what mechanism, and where the known limits are. An evaluator needs both the named mechanism and the ceiling; "it scales" without either undercuts trust rather than building it.
+
+### The mechanism, named
+
+Aether scales the cluster along **two composable axes** (detailed in [05-worker-pools.md](05-worker-pools.md)):
+
+1. **Within-community growth** — a worker community grows by adding SWIM-gossip worker nodes under its deterministic governor. No consensus is involved; workers scale horizontally.
+2. **Hierarchy of communities** — multiple worker communities attach to a single 5–9-node Rabia core. The core runs the control plane (consensus, deployment, membership); communities execute application slices. Adding communities, not core nodes, is how total node count grows.
+
+The core stays small on purpose: consensus is the one thing that must *not* scale with total node count.
+
+### Core sizing and fault-tolerance math
+
+The core is a Rabia consensus group of **5–9 nodes**. Quorum is a simple majority, `coreCount / 2 + 1` (`TopologyManager.quorumSize()`; `QuorumLossDetector.java:33`), so the core tolerates **⌊(N−1)/2⌋ simultaneous core losses** before it loses quorum and the minority self-dissolves (the partition contract in [14-consistency-and-partitions.md](14-consistency-and-partitions.md)):
+
+| Core size N | Quorum (N/2)+1 | Simultaneous losses tolerated |
+|-------------|----------------|-------------------------------|
+| 5 | 3 | 2 |
+| 7 | 4 | 3 |
+| 9 | 5 | 4 |
+
+Above ~9 the O(N²) all-to-all Rabia message cost dominates (72 messages/round at 9 nodes; see [05-worker-pools.md](05-worker-pools.md)), which is why total scale comes from communities, not a larger core.
+
+### Two scale dimensions — do not conflate
+
+The scaling story has two distinct dimensions, each with its **own** validation gate. Numbers live in one place — [`../reference/known-limitations.md`](../reference/known-limitations.md) — and this doc references them:
+
+| Dimension | What it measures | Target / number | Validation status |
+|-----------|------------------|-----------------|-------------------|
+| **Single community at scale** | One community at its node cap | ~100 nodes (design target; authoritative row in [known-limitations.md](../reference/known-limitations.md)) | **Pending validation** — single-community node-cap sweep (#365 / #366) |
+| **Multi-community / hierarchical seam** | Total reach across communities; the core coordination-load slope at 1→2→3 communities | Output of the barrier run, not pre-committed | **Pending validation** — 3×3 barrier sweep (#367) |
+| **Max communities** | How many communities one core coordinates | Bounded by the coordination-load slope above | **Pending validation** (#367) |
+
+> **Pending validation (#365 / #367).** Neither scale dimension is empirically confirmed at target yet. The single-community cap (~100) is what the node-cap sweep is built to *confirm*, not a measured ceiling; the hierarchical reach and max-community count are outputs of the multi-community barrier run (#367, the headline GA gate). Until those runs land, these are stated as design targets, not measured facts. When measured, the numbers replace the targets in [known-limitations.md](../reference/known-limitations.md) — in one place, referenced here.
+
 ## Related Documents
 
 - [07-observability.md](07-observability.md) - Metrics that drive scaling
 - [02-deployment.md](02-deployment.md) - Blueprint changes triggered by scaling
-- [05-worker-pools.md](05-worker-pools.md) - Scaling across worker groups
+- [05-worker-pools.md](05-worker-pools.md) - Two-layer topology, governors, and the community mechanism this section names
+- [14-consistency-and-partitions.md](14-consistency-and-partitions.md) - The partition contract the core's fault-tolerance math rests on
+- [../reference/known-limitations.md](../reference/known-limitations.md) - Single source for the scaling numbers and their validation status

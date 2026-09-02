@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
+import org.pragmatica.aether.api.ManagementApiResponses.StreamReplicasResponse;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.ReadPreference;
@@ -24,6 +25,7 @@ import org.pragmatica.aether.slice.stream.StreamNamespacesService;
 import org.pragmatica.aether.slice.stream.StreamRegistry;
 import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
 import org.pragmatica.aether.slice.stream.StreamVersionSpec;
+import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.aether.stream.StreamWriteRouter;
@@ -152,6 +154,28 @@ public final class StreamApiRoutes implements RouteSource {
 
     public record EventEntry(long offset, Instant timestamp, int partition, String payload) {}
 
+    public record PartitionDetail(int partition, long headOffset, long tailOffset, long eventCount) {
+        static PartitionDetail partitionDetail(StreamPartitionManager.PartitionInfo info) {
+            return new PartitionDetail(info.partition(), info.headOffset(), info.tailOffset(), info.eventCount());
+        }
+    }
+
+    /// Legacy CLI-facing read shape (`aether stream read`) — a flat event list, distinct from
+    /// [StreamEventsResponse]'s offset-cursor pagination used by the newer polling-tail endpoint.
+    /// Kept separate rather than consolidated: unifying them is a CLI-facing contract change outside
+    /// this migration's scope.
+    public record ReadEventsResponse(List<EventRecord> events) {
+        static ReadEventsResponse readEventsResponse(List<EventRecord> events) {
+            return new ReadEventsResponse(events);
+        }
+    }
+
+    public record EventRecord(long offset, String data, long timestamp) {
+        static EventRecord eventRecord(RawEvent event) {
+            return new EventRecord(event.offset(), new String(event.data(), StandardCharsets.UTF_8), event.timestamp());
+        }
+    }
+
     @Override
     public Stream<Route<?>> routes() {
         return Stream.of(
@@ -178,6 +202,66 @@ public final class StreamApiRoutes implements RouteSource {
                                                    PathParameter.aString())
                                          .toResult(this::streamMetadata)
                                          .asJson(),
+
+        // #742 fold: registration must reproduce every trailing token
+        // ManagementRoute.STREAM_GET/PARTITION/REPLICAS declare via the
+        // interleaved-tokens constructor (ManagementRoute.java:400-480), not just
+        // the real path params — RequestContext.matchPath binds every declared
+        // slot positionally (spacer or real) and RequestRouter's arity check
+        // rejects a withPath() that's short one slot. The earlier 4-arg form here
+        // omitted the interior literal, making these routes unreachable via the
+        // CLI-assembled URL (silent 404, not a dispatch to the wrong handler).
+        ManagementRoutes.<StreamRoutes.StreamInfoResponse> route(ManagementRoute.STREAM_GET)
+                        .withPath(PathParameter.aString(),
+                                  PathParameter.aString(),
+                                  PathParameter.aString(),
+                                  PathParameter.spacer("info"))
+                        .toResult(this::streamInfo)
+                        .asJson(),
+                         ManagementRoutes.<PartitionDetail> route(ManagementRoute.STREAM_PARTITION)
+                                         .withPath(PathParameter.aString(),
+                                                   PathParameter.aString(),
+                                                   PathParameter.aString(),
+                                                   PathParameter.spacer("partitions"),
+                                                   PathParameter.aInteger())
+                                         .toResult(this::partitionDetail)
+                                         .asJson(),
+                         ManagementRoutes.<StreamReplicasResponse> route(ManagementRoute.STREAM_REPLICAS)
+                                         .withPath(PathParameter.aString(),
+                                                   PathParameter.aString(),
+                                                   PathParameter.aString(),
+                                                   PathParameter.spacer("replicas"),
+                                                   PathParameter.aInteger())
+                                         .toResult(this::replicaDetail)
+                                         .asJson(),
+
+        // rc4 FLAG 2 ruling: `from`/`max`/`readPreference` are three independent query
+        // params, not the earlier composite `readOptions=from,max,readPreference` string.
+        // Raising `Route.PathBuilder4`'s query-arity ceiling (1 -> 3, `PathQueryBuilder4_3`)
+        // was additive — `Fn6..Fn15` already existed in `core/Functions`, only the
+        // hand-authored combinator was missing — so the composite's reason for existing
+        // (the DSL had no room) no longer holds.
+        //
+        // #742 fold: this registration had the same spacer-interleave defect described
+        // above STREAM_GET/PARTITION/REPLICAS — 4 plain path params with no slot for the
+        // interior `spacer("read")` literal `ManagementRoute.STREAM_READ` declares, making
+        // it unreachable via the CLI-assembled URL. Fixing it needs a 5-path + 3-query
+        // builder, one slot past `PathQueryBuilder4_3`'s ceiling — hence `PathQueryBuilder5_3`
+        // (integrations/http-routing/Route.java), the same kind of additive extension the
+        // comment above already describes. `readLiteral` binds the trailing `spacer("read")`
+        // segment — see partitionDetail's `partitionsLiteral` javadoc for why an unused
+        // literal parameter is required rather than filtered out.
+        ManagementRoutes.<ReadEventsResponse> route(ManagementRoute.STREAM_READ)
+                        .withPath(PathParameter.aString(),
+                                  PathParameter.aString(),
+                                  PathParameter.aString(),
+                                  PathParameter.spacer("read"),
+                                  PathParameter.aInteger())
+                        .withQuery(QueryParameter.aLong("from"),
+                                   QueryParameter.aInteger("max"),
+                                   QueryParameter.aString("readPreference"))
+                        .to(this::readEvents)
+                        .asJson(),
                          ManagementRoutes.<GroupListResponse> route(ManagementRoute.STREAMS_GROUPS_LIST)
                                          .withPath(PathParameter.aString(),
                                                    PathParameter.aString(),
@@ -298,6 +382,108 @@ public final class StreamApiRoutes implements RouteSource {
                               .map(StreamMetadataResponse::fromEntry);
     }
 
+    /// `partitionsLiteral` binds the interleaved `spacer("partitions")` trailing segment
+    /// [ManagementRoute#STREAM_PARTITION] declares in its tokens() (management-api-versioning-spec.md
+    /// §3.2); `RequestContext.matchPath` binds every declared path slot positionally, spacer or real,
+    /// so the handler must accept it even though the literal itself (always `"partitions"`) carries
+    /// no information here.
+    private Result<PartitionDetail> partitionDetail(String namespace,
+                                                    String stream,
+                                                    String version,
+                                                    String partitionsLiteral,
+                                                    Integer partition) {
+        return ResourceAddress.resourceAddress(namespace, stream, version)
+                              .flatMap(addr -> streamManager().partitionInfo(StreamManager.engineKey(addr),
+                                                                             partition))
+                              .map(PartitionDetail::partitionDetail);
+    }
+
+    /// #260/#261/#333 replica-state observability, catalog-identity variant — see
+    /// [StreamRoutes#replicaDetails] for the flat/LOCAL sibling and [StreamRoutes#toReplicasResponse]
+    /// for the shared view-to-DTO mapping. Always succeeds: an unknown address yields an empty
+    /// replica set with `servedByOwner=false`, itself the operator-meaningful answer.
+    /// `replicasLiteral` binds the interleaved `spacer("replicas")` trailing segment — see
+    /// [#partitionDetail]'s `partitionsLiteral` javadoc for why an unused literal parameter is
+    /// required rather than filtered out.
+    private Result<StreamReplicasResponse> replicaDetail(String namespace,
+                                                         String stream,
+                                                         String version,
+                                                         String replicasLiteral,
+                                                         Integer partition) {
+        return ResourceAddress.resourceAddress(namespace, stream, version).map(addr -> StreamRoutes.toReplicasResponse(streamReadRouter().replicaSnapshot(StreamManager.engineKey(addr),
+                                                                                                                                                          partition)));
+    }
+
+    /// Catalog-scoped STREAM_GET handler — #742 fold of [StreamRoutes#streamInfo]'s flat-name legacy
+    /// handler onto the catalog identity shape (namespace/stream/version). Reuses
+    /// [StreamRoutes.StreamInfoResponse] and [StreamRoutes.PartitionDetail] (both package-visible)
+    /// so the response shape has one definition, the same reuse pattern as [#replicaDetail] via
+    /// [StreamRoutes#toReplicasResponse]. `infoLiteral` binds the trailing `spacer("info")` segment —
+    /// see [#partitionDetail]'s `partitionsLiteral` javadoc.
+    private Result<StreamRoutes.StreamInfoResponse> streamInfo(String namespace,
+                                                               String stream,
+                                                               String version,
+                                                               String infoLiteral) {
+        return ResourceAddress.resourceAddress(namespace, stream, version).flatMap(addr -> buildStreamInfoResponse(StreamManager.engineKey(addr)));
+    }
+
+    private Result<StreamRoutes.StreamInfoResponse> buildStreamInfoResponse(String engineKey) {
+        return streamManager().streamInfo(engineKey)
+                            .toResult(STREAM_NOT_FOUND)
+                            .flatMap(info -> streamManager().allPartitionInfo(engineKey)
+                                                          .map(partitions -> partitions.stream()
+                                                                                       .map(StreamRoutes.PartitionDetail::fromPartitionInfo)
+                                                                                       .toList())
+                                                          .map(details -> new StreamRoutes.StreamInfoResponse(info.name(),
+                                                                                                              info.partitions(),
+                                                                                                              info.totalEvents(),
+                                                                                                              info.totalBytes(),
+                                                                                                              details)));
+    }
+
+    private Promise<ReadEventsResponse> readEvents(String namespace,
+                                                   String stream,
+                                                   String version,
+                                                   String readLiteral,
+                                                   Integer partition,
+                                                   Option<Long> fromOpt,
+                                                   Option<Integer> maxOpt,
+                                                   Option<String> preferenceOpt) {
+        var from = fromOpt.or(0L);
+        var max = maxOpt.or(DEFAULT_MAX_EVENTS);
+        var preference = preferenceOpt.fold(() -> ReadPreference.GOVERNOR, StreamApiRoutes::parseReadPreference);
+
+        return ResourceAddress.resourceAddress(namespace, stream, version)
+                              .async()
+                              .flatMap(addr -> readEventsAtPartition(addr, partition, from, max, preference));
+    }
+
+    private Promise<ReadEventsResponse> readEventsAtPartition(ResourceAddress addr,
+                                                              Integer partition,
+                                                              long fromOffset,
+                                                              int maxEvents,
+                                                              ReadPreference preference) {
+        return streamReadRouter().read(StreamManager.engineKey(addr),
+                                       partition,
+                                       fromOffset,
+                                       maxEvents,
+                                       preference)
+                               .map(StreamApiRoutes::toReadEventsResponse);
+    }
+
+    private static ReadEventsResponse toReadEventsResponse(List<RawEvent> events) {
+        return ReadEventsResponse.readEventsResponse(events.stream().map(EventRecord::eventRecord).toList());
+    }
+
+    private static ReadPreference parseReadPreference(String value) {
+        return switch (value.toUpperCase()) {
+            case "ANY_REPLICA", "ANY-REPLICA" -> ReadPreference.ANY_REPLICA;
+            case "NEAREST" -> ReadPreference.NEAREST;
+            case "LINEARIZABLE" -> ReadPreference.LINEARIZABLE;
+            default -> ReadPreference.GOVERNOR;
+        };
+    }
+
     private Result<GroupListResponse> listGroups(String namespace, String stream, String version) {
         return ResourceAddress.resourceAddress(namespace, stream, version).map(addr -> new GroupListResponse(addr.asString(),
                                                                                                              List.of()));
@@ -384,10 +570,10 @@ public final class StreamApiRoutes implements RouteSource {
     private static final int DEFAULT_MAX_EVENTS = 100;
     private static final int MAX_EVENTS_PER_PAGE = 1000;
 
-    private Promise<PublishResponse> publishEvent(String namespace,
-                                                  String stream,
-                                                  String version,
-                                                  PublishRequest request) {
+    /// Package-visible for direct unit coverage of the [StreamManager#engineKey] round-trip
+    /// property alongside [StreamRoutes#createStream] and [#deleteStream] — the entry point a real
+    /// `POST /streams/{namespace}/{stream}/{version}/events` request also goes through.
+    Promise<PublishResponse> publishEvent(String namespace, String stream, String version, PublishRequest request) {
         return ResourceAddress.resourceAddress(namespace, stream, version)
                               .async()
                               .flatMap(addr -> publishOne(addr, request).map(offset -> new PublishResponse(addr.asString(),
@@ -420,8 +606,12 @@ public final class StreamApiRoutes implements RouteSource {
     /// Owner-routed publish to partition 0. When this node is metadata-only (#265) the write is
     /// forwarded to the partition owner via [StreamWriteRouter] instead of failing PARTITION_NOT_LOCAL
     /// on a local append; an owner node appends locally (and awaits the min-sync barrier).
+    ///
+    /// Engine key via [StreamManager#engineKey], not `addr.asString()`: a `system`-namespace address
+    /// must resolve to the bare name the engine keys operator-created flat streams by, or this publish
+    /// materializes a stream under a different key than the one STREAM_CREATE minted.
     private Promise<Long> publishOne(ResourceAddress addr, PublishRequest request) {
-        var streamName = addr.asString();
+        var streamName = StreamManager.engineKey(addr);
         var payload = decodePayload(request.data());
 
         return ensureStreamExists(streamName).async()
@@ -511,15 +701,16 @@ public final class StreamApiRoutes implements RouteSource {
         return Result.allOf(leaveResults).map(_ -> new GroupResponse(addr.asString(), group, "deleted"));
     }
 
-    private Result<DeleteResponse> deleteStream(String namespace, String stream, String version) {
+    Result<DeleteResponse> deleteStream(String namespace, String stream, String version) {
         return ResourceAddress.resourceAddress(namespace, stream, version).flatMap(this::destroyAtAddress);
     }
 
+    /// Engine key via [StreamManager#engineKey] — same reasoning as [#publishOne]: a `system`-namespace
+    /// address must resolve to the bare name the engine keys the stream by, or this deletes the wrong key.
     private Result<DeleteResponse> destroyAtAddress(ResourceAddress addr) {
-        var streamName = addr.asString();
+        var streamName = StreamManager.engineKey(addr);
 
         return streamManager().destroyStream(streamName)
-                            .recover(_ -> org.pragmatica.lang.Unit.unit())
                             .map(_ -> new DeleteResponse(addr.asString(),
                                                          "deleted"));
     }

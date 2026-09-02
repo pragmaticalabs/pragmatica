@@ -13,11 +13,11 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.swim;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
+
 
 /// Informational hint emitted by Layer 0 (Transport / QUIC) toward Layer 1 (SWIM).
 ///

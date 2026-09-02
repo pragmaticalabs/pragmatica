@@ -7,6 +7,10 @@ import org.pragmatica.lang.Promise;
 
 /// Step Composition Example — Slice -> Step -> Leaf
 ///
+/// Does NOT demonstrate: failure handling, compensation, or tests. Every step is written on the
+/// happy path and the module has no test sources — it exists to pin the annotation processor's
+/// transitive-provisioning output, not to model an order domain.
+///
 /// This @Slice demonstrates the JBCT composition pattern where:
 /// - The slice orchestrates steps (Sequencer pattern)
 /// - Steps are plain interfaces with factory methods (not @Slice)

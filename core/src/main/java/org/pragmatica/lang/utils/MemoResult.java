@@ -14,13 +14,7 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.lang.utils;
-
-import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Functions.Fn1;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
 
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -28,6 +22,12 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+
 
 /// A memoization utility for Result-returning computations.
 ///
@@ -107,6 +107,7 @@ public interface MemoResult<K, V> {
     /// @return a new unbounded MemoResult instance
     static <K, V> MemoResult<K, V> memoResult(Fn1<Result<V>, K> computation) {
         Objects.requireNonNull(computation, "computation must not be null");
+
         return new UnboundedMemoResult<>(computation);
     }
 
@@ -125,6 +126,7 @@ public interface MemoResult<K, V> {
         if (maxSize <= 0) {
             return INVALID_MAX_SIZE.result();
         }
+
         return Result.success(new BoundedMemoResult<>(computation, maxSize));
     }
 
@@ -149,11 +151,15 @@ public interface MemoResult<K, V> {
         public Result<V> get(K key) {
             Objects.requireNonNull(key, "key must not be null");
             var cached = cache.get(key);
+
             if (cached != null) {
                 hits.incrementAndGet();
+
                 return Result.success(cached.value());
             }
+
             misses.incrementAndGet();
+
             return computation.apply(key)
                               .onSuccess(value -> cache.put(key,
                                                             ResultCacheEntry.resultCacheEntry(value)));
@@ -162,12 +168,14 @@ public interface MemoResult<K, V> {
         @Override
         public Unit invalidate(K key) {
             cache.remove(key);
+
             return Unit.unit();
         }
 
         @Override
         public Unit invalidateAll() {
             cache.clear();
+
             return Unit.unit();
         }
 
@@ -199,8 +207,8 @@ public interface MemoResult<K, V> {
             this.cache = Collections.synchronizedMap(new LinkedHashMap<>(16, 0.75f, true) {
                 @Override
                 protected boolean removeEldestEntry(Map.Entry<K, ResultCacheEntry<V>> eldest) {
-                                                         return size() > maxSize;
-                                                     }
+                    return size() > maxSize;
+                }
             });
         }
 
@@ -208,20 +216,25 @@ public interface MemoResult<K, V> {
         public Result<V> get(K key) {
             Objects.requireNonNull(key, "key must not be null");
             ResultCacheEntry<V> cached;
+
             synchronized (cache) {
                 cached = cache.get(key);
             }
+
             if (cached != null) {
                 hits.incrementAndGet();
+
                 return Result.success(cached.value());
             }
+
             misses.incrementAndGet();
+
             return computation.apply(key)
                               .onSuccess(value -> {
                                              synchronized (cache) {
-                                                 cache.put(key,
-                                                           ResultCacheEntry.resultCacheEntry(value));
-                                             }
+                                             cache.put(key,
+                                                       ResultCacheEntry.resultCacheEntry(value));
+                                         }
                                          });
         }
 
@@ -230,6 +243,7 @@ public interface MemoResult<K, V> {
             synchronized (cache) {
                 cache.remove(key);
             }
+
             return Unit.unit();
         }
 
@@ -238,6 +252,7 @@ public interface MemoResult<K, V> {
             synchronized (cache) {
                 cache.clear();
             }
+
             return Unit.unit();
         }
 

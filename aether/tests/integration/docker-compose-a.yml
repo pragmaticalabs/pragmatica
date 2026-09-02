@@ -70,6 +70,10 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      # #598: creates forge_testpersistence (test-persistence's own physical database)
+      # on every fresh pgdata volume. deploy_docker scp's this dir alongside the
+      # compose file on remote runs — keep the relative path.
+      - ./pg-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U forge"]
       interval: 5s

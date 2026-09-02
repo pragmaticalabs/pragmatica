@@ -1,13 +1,14 @@
 package org.pragmatica.jbct.init;
 
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
-import org.pragmatica.lang.utils.Causes;
-
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.regex.Pattern;
+
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
+
 
 /// Adds a new slice to an existing Aether slice project.
 public final class SliceAdder {
@@ -41,9 +42,8 @@ public final class SliceAdder {
 
     /// Create a SliceAdder with an optional package override.
     public static Result<SliceAdder> sliceAdder(Path projectDir, String sliceName, String packageOverride) {
-        return validateSliceName(sliceName)
-                  .flatMap(_ -> ProjectConfig.projectConfig(projectDir))
-                  .flatMap(config -> buildSliceAdder(projectDir, sliceName, packageOverride, config));
+        return validateSliceName(sliceName).flatMap(_ -> ProjectConfig.projectConfig(projectDir))
+                                .flatMap(config -> buildSliceAdder(projectDir, sliceName, packageOverride, config));
     }
 
     /// Add the slice files to the existing project.
@@ -73,15 +73,16 @@ public final class SliceAdder {
             var srcTestJava = projectDir.resolve("src/test/java");
             var metaInfDeps = projectDir.resolve("src/main/resources/META-INF/dependencies");
             var slicesDir = projectDir.resolve("src/main/resources/slices");
+
             Files.createDirectories(srcMainJava.resolve(packagePath));
             Files.createDirectories(srcTestJava.resolve(packagePath));
             Files.createDirectories(metaInfDeps);
             Files.createDirectories(slicesDir);
             Files.createDirectories(projectDir.resolve("src/main/resources/" + packagePath));
+
             return Result.success(Unit.unit());
         } catch (Exception e) {
-            return Causes.cause("Failed to create directories: " + e.getMessage())
-                         .result();
+            return Causes.cause("Failed to create directories: " + e.getMessage()).result();
         }
     }
 
@@ -89,13 +90,17 @@ public final class SliceAdder {
         var packagePath = slicePackage.replace(".", "/");
         var srcMainJava = projectDir.resolve("src/main/java");
         var srcTestJava = projectDir.resolve("src/test/java");
+
         return Result.allOf(ProjectFiles.writeNewFile(srcMainJava.resolve(packagePath).resolve(sliceName + ".java"),
                                                       substituteVariables(SLICE_INTERFACE_TEMPLATE)),
-                            ProjectFiles.writeNewFile(projectDir.resolve("src/main/resources/" + packagePath + "/routes.toml"),
+                            ProjectFiles.writeNewFile(projectDir.resolve("src/main/resources/" + packagePath
+                                                                        + "/routes.toml"),
                                                       substituteVariables(ROUTES_TOML_TEMPLATE)),
-                            ProjectFiles.writeNewFile(projectDir.resolve("src/main/resources/slices/" + sliceName + ".toml"),
+                            ProjectFiles.writeNewFile(projectDir.resolve("src/main/resources/slices/" + sliceName
+                                                                        + ".toml"),
                                                       substituteVariables(SLICE_CONFIG_TEMPLATE)),
-                            ProjectFiles.writeNewFile(projectDir.resolve("src/main/resources/META-INF/dependencies/" + slicePackage + "." + sliceName),
+                            ProjectFiles.writeNewFile(projectDir.resolve("src/main/resources/META-INF/dependencies/" + slicePackage
+                                                                        + "." + sliceName),
                                                       "# Slice dependencies (one artifact per line)\n"),
                             ProjectFiles.writeNewFile(srcTestJava.resolve(packagePath).resolve(sliceName + "Test.java"),
                                                       substituteVariables(SLICE_TEST_TEMPLATE)));
@@ -103,40 +108,49 @@ public final class SliceAdder {
 
     private static Result<Unit> validateSliceName(String sliceName) {
         if (sliceName == null || sliceName.isBlank()) {
-            return Causes.cause("Slice name must not be null or empty")
-                         .result();
+            return Causes.cause("Slice name must not be null or empty").result();
         }
+
         if (!JAVA_IDENTIFIER.matcher(sliceName).matches()) {
-            return Causes.cause("Slice name must be a valid Java identifier starting with uppercase: " + sliceName)
-                         .result();
+            return Causes.cause("Slice name must be a valid Java identifier starting with uppercase: " + sliceName).result();
         }
+
         return Result.success(Unit.unit());
     }
 
     private static Result<SliceAdder> buildSliceAdder(Path projectDir,
-                                                       String sliceName,
-                                                       String packageOverride,
-                                                       ProjectConfig config) {
+                                                      String sliceName,
+                                                      String packageOverride,
+                                                      ProjectConfig config) {
         var basePackage = config.basePackage();
         var slicePackage = resolveSlicePackage(config, sliceName, packageOverride);
         var slicePackagePath = projectDir.resolve("src/main/java/" + slicePackage.replace(".", "/"));
+
         if (Files.exists(slicePackagePath)) {
-            return Causes.cause("Package already exists: " + slicePackage + ". Choose a different slice name or package.")
-                         .result();
+            return Causes.cause("Package already exists: " + slicePackage
+                               + ". Choose a different slice name or package.").result();
         }
-        return Result.success(new SliceAdder(projectDir, config.groupId(), config.artifactId(), basePackage, sliceName, slicePackage));
+
+        return Result.success(new SliceAdder(projectDir,
+                                             config.groupId(),
+                                             config.artifactId(),
+                                             basePackage,
+                                             sliceName,
+                                             slicePackage));
     }
 
     private static String resolveSlicePackage(ProjectConfig config, String sliceName, String packageOverride) {
         if (packageOverride == null || packageOverride.isBlank()) {
             return config.basePackage() + "." + sliceName.toLowerCase();
         }
+
         return config.resolvePackage(packageOverride);
     }
 
     private String substituteVariables(String template) {
         var factoryMethodName = Character.toLowerCase(sliceName.charAt(0)) + sliceName.substring(1);
         var kebabCase = sliceName.replaceAll("([a-z])([A-Z])", "$1-$2").toLowerCase();
+
         return template.replace("{{slicePackage}}", slicePackage)
                        .replace("{{sliceName}}", sliceName)
                        .replace("{{factoryMethodName}}", factoryMethodName)
@@ -144,7 +158,6 @@ public final class SliceAdder {
     }
 
     // Inline templates
-
     private static final String SLICE_INTERFACE_TEMPLATE = """
         package {{slicePackage}};
 

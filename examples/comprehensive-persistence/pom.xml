@@ -7,7 +7,7 @@
     <parent>
         <groupId>org.pragmatica-lite</groupId>
         <artifactId>examples</artifactId>
-        <version>1.0.0-rc2</version>
+        <version>1.0.0-rc3</version>
     </parent>
 
     <groupId>org.pragmatica.aether.example</groupId>
@@ -123,6 +123,19 @@
                         <goals>
                             <goal>package-slices</goal>
                             <goal>generate-blueprint</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>install-slices</id>
+                        <phase>install</phase>
+                        <goals>
+                            <goal>install-slices</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>verify-slice</id>
+                        <goals>
+                            <goal>verify-slice</goal>
                         </goals>
                     </execution>
                 </executions>

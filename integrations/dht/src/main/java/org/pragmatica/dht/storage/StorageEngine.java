@@ -13,8 +13,9 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.dht.storage;
+
+import java.util.List;
 
 import org.pragmatica.dht.ConsistentHashRing;
 import org.pragmatica.dht.DHTMessage;
@@ -23,7 +24,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
-import java.util.List;
 
 /// Storage engine interface for DHT data storage.
 /// Implementations may use in-memory storage, off-heap memory, or persistent storage.
@@ -84,16 +84,12 @@ public interface StorageEngine {
 
     /// Get approximate number of entries.
     long size();
-
     /// Clear all entries.
     Promise<Unit> clear();
-
     /// Shutdown the storage engine and release resources.
     Promise<Unit> shutdown();
-
     /// Get all keys in storage.
     Promise<List<byte[]>> keys();
-
     /// Get all entries as key-value pairs.
     Promise<List<DHTMessage.KeyValue>> entries();
 

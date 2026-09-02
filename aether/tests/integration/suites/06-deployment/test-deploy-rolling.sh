@@ -27,7 +27,7 @@ test_rolling_start() {
     await_generation_quiesced "$CLUSTER_ENDPOINT" "current" 30 || log_warn "v1 baseline did not quiesce"
     assert_active_version "$BLUEPRINT_V1" "Baseline v1 ACTIVE before rolling upgrade"
     push_blueprint "$BLUEPRINT_V2"
-    publish_blueprint "$BLUEPRINT_V2"
+    publish_blueprint_or_fail "$BLUEPRINT_V2" >/dev/null || return 1
     await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 30 || log_warn "v2 publish did not quiesce"
     local result
     result=$(deploy_start "$BLUEPRINT_V2" rolling --instances 2)

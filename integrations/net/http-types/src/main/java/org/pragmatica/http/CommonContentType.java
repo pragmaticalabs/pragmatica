@@ -13,8 +13,8 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.http;
+
 /// Common HTTP content types.
 ///
 /// Anything not listed here (e.g. Prometheus `text/plain; version=0.0.4`, vendor media types)

@@ -79,6 +79,15 @@ import static org.pragmatica.lang.Option.some;
 /// must never self-drain — that is normal cold-start, not quorum loss. Only a node that WAS
 /// quorate and then dropped below quorum should drain; `armed` captures exactly "has the
 /// cluster ever been quorate from this node's view".
+///
+/// **Terminal stop latch (#642).** [`#stop`] latches the detector permanently off. It is required
+/// rather than optional because the timers live on the process-wide [`SharedScheduler`] while the
+/// detector's inputs die with its node: after `AetherNode.stop()` the member count is frozen at its
+/// last below-threshold value and the #415 re-arm keeps retrying off it until the cold-boot window
+/// expires, at which point a detector belonging to a node that no longer exists fires a drain. See
+/// [`#stop`] for why the latch, not the future cancellation, is the part that closes this.
+// JBCT-RET-08: AtomicReference clear — null is the JDK sentinel, not Option-wrappable
+@SuppressWarnings("JBCT-RET-08")
 public final class QuorumLossDetector {
     private static final Logger log = LoggerFactory.getLogger(QuorumLossDetector.class);
 
@@ -92,6 +101,11 @@ public final class QuorumLossDetector {
     private volatile int memberCount;
     private volatile boolean armed;
     private volatile boolean quorumPresenceLost;
+    /// Terminal off-latch (#642). Set once by [`#stop`] and never cleared. Read at every point that
+    /// could still produce an effect after the owning node is gone — both firing checks, the
+    /// scheduling helpers, and [`#emitIntent`] — because cancelling the futures alone cannot stop a
+    /// check that [`SharedScheduler`] has already dispatched to a virtual thread.
+    private volatile boolean stopped;
     private volatile Consumer<QuorumLossIntent> listener = QuorumLossDetector::ignoreIntent;
     /// Membership co-confirmation supplier (Fix C, split-brain safety). When present, the firing
     /// check consults it to decide whether a STRICT-count quorum loss is a genuine partition or a
@@ -214,6 +228,38 @@ public final class QuorumLossDetector {
                            : supplier;
     }
 
+    /// Terminal quiesce (#642), called from `AetherNode.stop()`. Latches the detector permanently off
+    /// and cancels both scheduled slots: no check ever re-arms after this, whatever the member count
+    /// subsequently does.
+    ///
+    /// **The emission guarantee is bounded, not absolute.** `stop()` is deliberately NOT synchronized —
+    /// the firing checks hold this object's monitor while they call `listener.accept`, and the listener
+    /// IS the drain path, so taking the lock here would block node shutdown behind a drain in progress.
+    /// The cost of that choice is a real window: a check that has already passed [`#emitIntent`]'s
+    /// `stopped` read when `stop()` lands will still invoke the listener. So the honest claim is that
+    /// **at most one already-in-flight intent may be emitted concurrently with `stop()`**, and none
+    /// afterwards — not "none, ever". Callers needing the absolute property must order `stop()` before
+    /// whatever the listener resolves against; `EmberCluster` does exactly that by removing the node
+    /// from its registry.
+    ///
+    /// The latch, not the cancellation, is what closes the ghost. [`SharedScheduler`] is process-wide
+    /// and hands each task body to a virtual thread, so `cancel(false)` cannot stop a check already
+    /// dispatched. The latch is set BEFORE the cancels so a racing check sees it at whichever guarded
+    /// point it reaches next.
+    ///
+    /// **Why a stopped detector is dangerous without this.** `presenceSampler.stop()` freezes the
+    /// member count at its last value, which on a shutting-down node is below threshold. The #415
+    /// re-arm then retries off that frozen count at `splitTimeout` cadence until the cold-boot window
+    /// measured from the OLD boot expires — and then fires. Under a shared-JVM host (forge/Ember) the
+    /// drain is resolved by node id against the LIVE registry, so the ghost intent terminates the
+    /// node's NEXT incarnation rather than the dead one that armed it.
+    @Contract
+    public void stop() {
+        stopped = true;
+        cancelPendingFuture();
+        cancelPresenceFuture();
+    }
+
     /// Observability — current member count (as last supplied; includes self).
     public int currentMemberCount() {
         return memberCount;
@@ -283,6 +329,10 @@ public final class QuorumLossDetector {
     }
 
     private void scheduleFiringCheck(long windowStartNanos) {
+        if (stopped) {
+            return;
+        }
+
         cancelPendingFuture();
         var future = scheduler.schedule(() -> onFiringCheck(windowStartNanos), config.splitTimeout());
 
@@ -298,6 +348,10 @@ public final class QuorumLossDetector {
     }
 
     private void schedulePresenceCheck(long armedAtNanos) {
+        if (stopped) {
+            return;
+        }
+
         cancelPresenceFuture();
         var future = scheduler.schedule(() -> onPresenceCheck(armedAtNanos), config.splitTimeout());
 
@@ -317,7 +371,7 @@ public final class QuorumLossDetector {
     /// task). Mirrors the count-path firing check's arm + still-lost re-verification.
     @Contract
     private synchronized void onPresenceCheck(long armedAtNanos) {
-        if (!armed || !quorumPresenceLost) {
+        if (stopped || !armed || !quorumPresenceLost) {
             return;
         }
 
@@ -334,7 +388,7 @@ public final class QuorumLossDetector {
     }
 
     private synchronized void onFiringCheck(long windowStartNanos) {
-        if (belowThresholdSinceNanos.get() != windowStartNanos) {
+        if (stopped || belowThresholdSinceNanos.get() != windowStartNanos) {
             return;
         }
 
@@ -402,6 +456,12 @@ public final class QuorumLossDetector {
     /// threshold would be a co-confirmation/gate bug, made visible by this very line).
     @Contract
     private void emitIntent(QuorumLossIntent intent, Runnable coldBootRearm) {
+        // #642 last gate before any effect: `stop()` may have landed after the caller's own check,
+        // and neither the re-arm nor the listener call may outlive the owning node.
+        if (stopped) {
+            return;
+        }
+
         if (coldBootSupplier.getAsBoolean()) {
             log.warn("QUORUM_LOSS drain SUPPRESSED (cold-boot convergence): observedStrictQuorumCount={} "
                     + "requiredThreshold={} — node is still forming and SWIM has not yet confirmed peers "

@@ -55,14 +55,14 @@ mvn test                   # Run tests after build
 <dependency>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>core</artifactId>
-    <version>1.0.0-rc2</version>
+    <version>1.0.0-rc3</version>
 </dependency>
 
 <!-- Aether Slice API (for writing slices) -->
 <dependency>
     <groupId>org.pragmatica-lite.aether</groupId>
     <artifactId>slice-api</artifactId>
-    <version>1.0.0-rc2</version>
+    <version>1.0.0-rc3</version>
     <scope>provided</scope>
 </dependency>
 
@@ -70,7 +70,7 @@ mvn test                   # Run tests after build
 <plugin>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>jbct-maven-plugin</artifactId>
-    <version>1.0.0-rc2</version>
+    <version>1.0.0-rc3</version>
 </plugin>
 ```
 

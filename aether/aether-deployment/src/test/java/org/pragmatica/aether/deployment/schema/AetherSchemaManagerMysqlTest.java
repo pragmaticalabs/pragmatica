@@ -17,6 +17,7 @@ import org.pragmatica.aether.resource.db.PoolConfig;
 import org.pragmatica.aether.resource.db.RowMapper;
 import org.pragmatica.aether.resource.db.RowMapper.RowAccessor;
 import org.pragmatica.aether.resource.db.SqlConnector;
+import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -67,6 +68,7 @@ class AetherSchemaManagerMysqlTest {
     private static final SchemaPolicy POLICY = SchemaPolicy.schemaPolicy();
     private static final String NODE_ID = "node-1";
     private static final long CHECKSUM = 7L;
+    private static final BlueprintId OWNER = BlueprintId.blueprintId("org.example:orders-app:1.0.0").unwrap();
 
     private static final String THREE_STATEMENTS = """
         CREATE TABLE mysql_clean_a (id INT);
@@ -101,6 +103,7 @@ class AetherSchemaManagerMysqlTest {
         var connector = newConnector();
         connector.execUpdate("DROP TABLE IF EXISTS aether_schema_history");
         connector.execUpdate("DROP TABLE IF EXISTS aether_schema_history_meta");
+        connector.execUpdate("DROP TABLE IF EXISTS aether_schema_owner");
         dropMigrationTables(connector);
     }
 
@@ -166,7 +169,7 @@ class AetherSchemaManagerMysqlTest {
         void migrate_finalizesSuccessAtStatementCount_forCleanMysqlRun() {
             var connector = newConnector();
 
-            schemaManager().migrate("ds", List.of(migrationEntry("V1__clean.sql", THREE_STATEMENTS, CHECKSUM)), connector, NODE_ID)
+            schemaManager().migrate("ds", List.of(migrationEntry("V1__clean.sql", THREE_STATEMENTS, CHECKSUM)), connector, NODE_ID, OWNER)
                            .await()
                            .onFailure(cause -> fail("Migration failed: " + cause.message()));
 
@@ -193,7 +196,7 @@ class AetherSchemaManagerMysqlTest {
             connector.execUpdate("CREATE TABLE mysql_resume_a (id INT)");
             seedInProgressCheckpoint(connector, 1, 1);
 
-            schemaManager().migrate("ds", List.of(migrationEntry("V1__resume.sql", RESUME_THREE_STATEMENTS, CHECKSUM)), connector, NODE_ID)
+            schemaManager().migrate("ds", List.of(migrationEntry("V1__resume.sql", RESUME_THREE_STATEMENTS, CHECKSUM)), connector, NODE_ID, OWNER)
                            .await()
                            .onFailure(cause -> fail("Migration failed: " + cause.message()));
 

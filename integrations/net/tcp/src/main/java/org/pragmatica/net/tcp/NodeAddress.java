@@ -13,8 +13,10 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.net.tcp;
+
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -23,8 +25,6 @@ import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.Codec;
 
-import java.net.InetAddress;
-import java.net.InetSocketAddress;
 
 /// Network node address (host and port).
 @Codec
@@ -47,9 +47,10 @@ public record NodeAddress(String host, int port) {
                      .toResult(BLANK_HOST)
                      .flatMap(sa -> {
                                   // Prefer getHostAddress() for consistent IP representation; fall back to getHostString() for unresolved
-        var host = Option.option(sa.getAddress())
-                         .map(InetAddress::getHostAddress)
-                         .or(sa::getHostString);
+                                  var host = Option.option(sa.getAddress())
+                                                   .map(InetAddress::getHostAddress)
+                                                   .or(sa::getHostString);
+
                                   return nodeAddress(host,
                                                      sa.getPort());
                               });

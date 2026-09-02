@@ -212,6 +212,9 @@ public final class ScheduledTaskRoutes implements RouteSource {
         return validateInjectRequest(req).flatMap(this::executeInject);
     }
 
+    // RET-06: `req` is the deserialized request body (null when absent); the null check IS the
+    // parse-don't-validate entry validation.
+    @SuppressWarnings("JBCT-RET-06")
     private Promise<ScheduledTaskInjectRequest> validateInjectRequest(ScheduledTaskInjectRequest req) {
         if (req == null) {
             return InjectError.MISSING_BODY.promise();

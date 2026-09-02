@@ -516,13 +516,18 @@ _api_call() {
     # poll loop (wait_for / wait_for_node_count) burns ~30s/iteration and starves
     # the rest of cluster-B. On cloud, fast-fail the connect so a dead endpoint
     # surfaces as a curl failure in ~3s and the caller can rotate to a live node
-    # on the next poll (it re-refreshes MGMT_ENTRY_POINT). docker/local/remote keep
-    # the original `-m 30` with no connect cap — byte-identical behaviour there.
+    # on the next poll (it re-refreshes MGMT_ENTRY_POINT).
+    #
+    # docker/local/remote keep `-m 30` but gain a connect cap too (2026-08-24): a
+    # killed container's published port usually refuses instantly, but a mid-restart
+    # or fire-walled port can SYN-hang, and the 02w per-node sweeps multiply any such
+    # stall by nodes × passes × keys. The cap bounds only connection ESTABLISHMENT;
+    # a slow-but-connected server keeps the full 30s.
     local conn_opts=()
     if [ "${CLOUD_MODE:-false}" = "true" ]; then
         conn_opts=(--connect-timeout "${CLOUD_API_CONNECT_TIMEOUT:-3}" -m "${CLOUD_API_MAX_TIME:-15}")
     else
-        conn_opts=(-m 30)
+        conn_opts=(--connect-timeout "${API_CONNECT_TIMEOUT:-5}" -m 30)
     fi
     if [ -n "$body" ]; then
         response=$(curl -sk "${conn_opts[@]}" -X "$method" -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
@@ -591,11 +596,11 @@ connectivity_preflight() {
     local timeout="${PREFLIGHT_TIMEOUT:-10}"
 
     # --- Probe 1: raw HTTP via curl (the api_get transport). ---
-    # `/api/nodes/status` is a genuine management read (same endpoint cluster_leader_http
+    # `/api/v1/nodes/status` is a genuine management read (same endpoint cluster_leader_http
     # uses), not a bare /health/live that a half-booted node answers — so a curl OK here
     # means the management API is genuinely serving over plain HTTP from this machine.
     local curl_ok=false
-    if curl -sfk -m "$timeout" -H "X-API-Key: ${API_KEY}" "${endpoint}/api/nodes/status" >/dev/null 2>&1; then
+    if curl -sfk -m "$timeout" -H "X-API-Key: ${API_KEY}" "${endpoint}/api/v1/nodes/status" >/dev/null 2>&1; then
         curl_ok=true
     fi
 
@@ -808,6 +813,11 @@ wait_for() {
         _refresh_mgmt_entry_point >/dev/null 2>&1 || true
     fi
     while [ "$SECONDS" -lt "$deadline" ]; do
+        # #628: the deadline is only checked BETWEEN iterations, so a predicate that
+        # hangs on remote transport overruns arbitrarily (4596s observed against a
+        # 480s budget). Export the remaining budget so transport-touching predicates
+        # can bound themselves via remote_exec_bounded.
+        export WAIT_FOR_REMAINING=$((deadline - SECONDS))
         # Capture rc without tripping `set -e` from the caller — `eval` as a standalone
         # command would propagate its non-zero exit and abort the entire script when
         # the predicate is simply false. The `&& rc=0 || rc=$?` idiom swallows the exit
@@ -939,8 +949,37 @@ SSH_OPTS=(-o StrictHostKeyChecking=no
 remote_exec() {
     : "${AETHER_SSH_USER:?AETHER_SSH_USER must be set for remote_exec}"
     : "${AETHER_SSH_KEY:?AETHER_SSH_KEY must be set for remote_exec}"
-    ssh -i "$AETHER_SSH_KEY" "${SSH_OPTS[@]}" \
+    # `-n` (stdin from /dev/null) is LOAD-BEARING, not hygiene. Without it ssh SLURPS STDIN, so any
+    # remote_exec reached from inside a `while read ... done < file` loop eats the rest of that file
+    # and the loop silently runs a couple of iterations instead of all of them.
+    #
+    # This was already known and fixed ONE LEVEL DOWN — `node_app_endpoints` closes stdin around
+    # `host_port_for_container` with a comment describing this exact failure (measured 2026-08-14: a
+    # healthy 5-node cluster reported "1 per-node app endpoint resolved"). But the guard was applied at
+    # the call site, so every other path stayed exposed. On 2026-08-23 it bit again, further out:
+    # 02w's durability assertion iterates its ACKED-key file on stdin and calls read_amount per key;
+    # that reaches refresh_app_endpoints -> node_app_endpoints -> remote_exec "docker ps ...", which is
+    # NOT guarded. The loop checked 2 of 40 acked entities and reported "1/2 lost" — a durability
+    # verdict rendered over 5% of its population, in the one assertion the suite exists to make.
+    #
+    # Guarding the TOOL rather than each caller is the fix: 59 call sites, none of which feeds stdin
+    # deliberately (verified — no heredoc, no pipe, no redirect into remote_exec anywhere in the tree).
+    ssh -n -i "$AETHER_SSH_KEY" "${SSH_OPTS[@]}" \
         "${AETHER_SSH_USER}@${TARGET_HOST}" "$@"
+}
+
+# #628: bounded remote execution for POLL PREDICATES and probes. The REMOTE `timeout`
+# binary bounds the command itself (a hung `docker ps` on a contended daemon), which
+# SSH's ConnectTimeout cannot — that guards connection SETUP only, and the 2026-08-22
+# 02-chaos run overran its budgets exactly this way. Runs `timeout` on the Linux
+# docker host, so macOS runners need no coreutils. rc 124 = the command hit the bound;
+# every other rc passes through ssh's contract unchanged. Callers MUST check rc —
+# distinguishing empty-from-unreachable is the point.
+# Usage: remote_exec_bounded <seconds> "<command>"
+remote_exec_bounded() {
+    local secs="$1"
+    shift
+    remote_exec "timeout ${secs} $*"
 }
 
 # Copy a local file to a remote path on TARGET_HOST.
@@ -1018,7 +1057,7 @@ MGMT_SCHEME="${MGMT_SCHEME:-http}"
 #   `${CLOUD_SOURCE_NAME}-core-0`, etc.
 #
 # Use this whenever a test calls a management endpoint that takes a node-id path
-# parameter (e.g. /api/nodes/drain/<id>, /api/node/lifecycle/<id>). Test helpers
+# parameter (e.g. /api/v1/nodes/drain/<id>, /api/node/lifecycle/<id>). Test helpers
 # that go through SSH (cloud_ssh / kill_node) already translate internally; use
 # this only when the node id reaches the runtime as-is.
 to_node_id() {
@@ -1188,10 +1227,10 @@ cloud_public_ip() {
     if [ -z "$ip" ]; then
         # bootstrap-state.json only records the nodes provisioned at bootstrap. A
         # CTM-provisioned REPLACEMENT VM (cloud auto-heal) is NOT in that file — its
-        # node-id reaches us from /api/nodes/status, not from bootstrap. Ask THIS
+        # node-id reaches us from /api/v1/nodes/status, not from bootstrap. Ask THIS
         # cluster's own management API for the node's advertised transport address.
         #
-        # `GET /api/nodes/endpoint/<id>` (harness-resilience spec A1) returns
+        # `GET /api/v1/nodes/endpoint/<id>` (harness-resilience spec A1) returns
         # {"nodeId":..,"address":"host:port","reachable":bool} where `address` is the
         # node's own view of its cluster-transport endpoint. The advertise-host fix
         # makes `host` a routable public IP on cloud, so we take the host portion.
@@ -1206,7 +1245,7 @@ cloud_public_ip() {
         #
         # Resolve by the ORIGINAL node_id (CTM ids do not carry `<source>-core-N`).
         local ep_body ep_addr
-        ep_body=$(api_get "/api/nodes/endpoint/${node_id}" 2>/dev/null || true)
+        ep_body=$(api_get "/api/v1/nodes/endpoint/${node_id}" 2>/dev/null || true)
         if [ -n "$ep_body" ]; then
             ep_addr=$(json_value "$ep_body" "address")
             ip="${ep_addr%%:*}"   # strip ":port"; leave a bare host/IP
@@ -1215,7 +1254,7 @@ cloud_public_ip() {
             printf '%s\n' "$ip"
             return 0
         fi
-        log_fail "cloud_public_ip: no entry for '${target}' (input='${node_id}') in ${state_file} and this cluster's /api/nodes/endpoint/${node_id} returned no address"
+        log_fail "cloud_public_ip: no entry for '${target}' (input='${node_id}') in ${state_file} and this cluster's /api/v1/nodes/endpoint/${node_id} returned no address"
         return 1
     fi
     printf '%s\n' "$ip"

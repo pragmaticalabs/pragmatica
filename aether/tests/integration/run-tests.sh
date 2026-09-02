@@ -10,6 +10,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+# NOTE: REPO_ROOT is the AETHER directory, not the repository root (every path built from it below is
+# aether-relative, and the tools/ calls compensate with `${REPO_ROOT}/..`). build.sh lives at the actual
+# repository root, so it needs its own variable. Until 2026-08-16 the Step-1 build guard tested
+# `${REPO_ROOT}/build.sh`, which never exists — so the harness NEVER built, `--skip-build` was a no-op,
+# and every run silently used whatever jars happened to be on disk. That is how a run on 2026-08-15
+# tested a build from BEFORE the fix it was meant to verify.
+MONOREPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
 # Set TARGET_HOST default before sourcing common.sh (which requires it)
 : "${TARGET_HOST:=localhost}"
@@ -78,7 +85,11 @@ CLUSTER_A_SUITES=(00 04 06 07 08 09 10 11 14 15)
 #   12 network   — partition tests, but partitions heal (reversible)
 #   03 scaling   — scale-up exercises the provisionNode path that can stall under churn
 #   02 chaos     — test-kill-multiple is the proven 2-node-burst wedge → runs LAST
-CLUSTER_B_SUITES=(05 13 12 03 02)
+# 02y (#508 stream crash-durability) runs on cluster B but is DELIBERATELY its own suite
+# rather than a member of 02-chaos: the 8th test of that suite fails whichever test it is
+# (see #593, and #594 for the probable cause). Listing it here means it gets its own
+# cluster-B pass instead of inheriting six chaos tests' worth of un-reconciled churn.
+CLUSTER_B_SUITES=(05 13 12 03 02 02y 02w)
 
 # ---------------------------------------------------------------------------
 # Argument parsing
@@ -224,6 +235,27 @@ resolve_suite_dir() {
     ls -d "${SCRIPT_DIR}/suites/${prefix}-"* 2>/dev/null | head -1
 }
 
+# #598 harness catch: a --suites entry matching no suite directory used to be DROPPED
+# SILENTLY — `--suites 6,10` ran only suite 10 and exited 0, and the half-coverage read
+# as a full green run. A selector typo is a broken run, not a smaller one: fail loudly.
+validate_selected_suites() {
+    [ -z "$SELECTED_SUITES" ] && return 0
+    local selected bad=()
+    IFS=',' read -ra selected <<< "$SELECTED_SUITES"
+    local sel
+    for sel in "${selected[@]}"; do
+        if [ ! -d "${SCRIPT_DIR}/suites/${sel}" ] && [ -z "$(resolve_suite_dir "$sel")" ]; then
+            bad+=("$sel")
+        fi
+    done
+    if [ ${#bad[@]} -gt 0 ]; then
+        log_error "--suites entries match no suite directory: ${bad[*]} (select by zero-padded prefix, e.g. 06,10; available: $(ls "${SCRIPT_DIR}/suites" | cut -d- -f1 | tr '\n' ' '))"
+        return 1
+    fi
+    return 0
+}
+validate_selected_suites || exit 3
+
 # ---------------------------------------------------------------------------
 # Deploy blueprints to a cluster
 # ---------------------------------------------------------------------------
@@ -274,6 +306,49 @@ collect_blueprints() {
 # ---------------------------------------------------------------------------
 # Run a single suite against a specific cluster
 # ---------------------------------------------------------------------------
+# Best-effort node-log capture for a failed suite. Never fails the run: it exists to
+# preserve evidence, and losing evidence must not also lose the result that produced it.
+capture_node_logs() {
+    local suite_name="$1" target_cluster="$2"
+    local out_dir="${SCRIPT_DIR}/failure-logs/${suite_name}"
+
+    mkdir -p "$out_dir" 2>/dev/null || return 0
+    # Clear STALE captures first: this dir accumulates across runs, and run3's diagnosis
+    # nearly used run2's node-5.log sitting beside run3's fresh files. A capture must
+    # only ever contain THIS run's evidence.
+    rm -f "${out_dir}"/*.log 2>/dev/null || true
+    date -u '+captured %Y-%m-%dT%H:%M:%SZ' > "${out_dir}/capture-manifest.txt" 2>/dev/null || true
+
+    local names
+    case "$ENV_TYPE" in
+        docker)
+            names=$(docker ps -a --format '{{.Names}}' --filter "name=aether-${target_cluster}-node-" 2>/dev/null)
+            for n in $names; do
+                docker logs --tail 400 "$n" > "${out_dir}/${n}.log" 2>&1 || true
+            done
+            ;;
+        remote)
+            names=$(remote_exec "docker ps -a --format '{{.Names}}' --filter name=aether-${target_cluster}-node-" 2>/dev/null)
+            for n in $names; do
+                remote_exec "docker logs --tail 400 ${n}" > "${out_dir}/${n}.log" 2>&1 || true
+            done
+            # Streamed logs survive `docker rm` (auto-heal destroys a dying node's container
+            # WITH its logs — node-5 in run2, node-3 in run4 died undiagnosable). The streamer
+            # daemon (start_log_streamers, lib/cluster.sh) appends to per-container files on
+            # the remote host; fetch whatever it has, prefixed so live-capture and streamed
+            # views of the same node stay distinguishable.
+            local streamed
+            streamed=$(remote_exec "ls /tmp/aether-node-logs/*.log 2>/dev/null" 2>/dev/null || true)
+            for f in $streamed; do
+                remote_exec "tail -c 2000000 ${f}" > "${out_dir}/streamed-$(basename "$f")" 2>&1 || true
+            done
+            ;;
+        *) return 0 ;;
+    esac
+
+    log_info "${suite_name}: node logs captured to ${out_dir}"
+}
+
 run_suite() {
     local suite_prefix="$1"
     # CRITICAL: name this `target_cluster` not `cluster`. `parse_suite_conf` sources
@@ -360,6 +435,15 @@ run_suite() {
     # multiple suites' stdout interleaves. Combined with TEST_TAG (set by run_test
     # in lib/common.sh) the format is `[suite-name/test_name]`.
     export SUITE_TAG="$suite_name"
+    # #628: gate between test FILES. A test file's cleanup flags a failed baseline
+    # restore through this marker (restore_cluster_baseline_or_flag); the loop then
+    # captures evidence IMMEDIATELY — before anything else destroys the window, which
+    # is exactly how the 2026-08-22 evidence died — and aborts the remaining files
+    # with the same quarantine semantics the between-suites gate below applies: a
+    # broken cluster fails every downstream test on its OWN subject (#628's shape).
+    local restore_marker="${TMPDIR:-/tmp}/aether-suite-${suite_name}-restore-failed"
+    rm -f "$restore_marker"
+    export SUITE_RESTORE_FAILED_MARKER="$restore_marker"
     local suite_pass=0 suite_fail=0
     for test_file in "$suite_dir"/test-*.sh; do
         [ -f "$test_file" ] || continue
@@ -369,12 +453,27 @@ run_suite() {
         else
             suite_fail=$((suite_fail + 1))
         fi
+        if [ -f "$restore_marker" ]; then
+            log_fail "${suite_name}: baseline restore failed after $(basename "$test_file") — capturing evidence and aborting the remaining test files (quarantine)"
+            capture_node_logs "${suite_name}-restore-failed" "$target_cluster" || true
+            suite_fail=$((suite_fail + 1))
+            break
+        fi
     done
+    rm -f "$restore_marker"
+    unset SUITE_RESTORE_FAILED_MARKER
     unset SUITE_TAG
 
     local duration=$(( $(date +%s) - start_time ))
     local status="passed"
     [ "$suite_fail" -gt 0 ] && status="failed"
+
+    # Capture node logs while the cluster is STILL UP. Teardown deletes the containers,
+    # so without this a failed suite leaves no evidence and the only way to investigate
+    # is to reproduce it — which does not work for a failure that does not reproduce.
+    if [ "$status" = "failed" ]; then
+        capture_node_logs "$suite_name" "$target_cluster" || true
+    fi
 
     echo "{\"suite\":\"${suite_name}\",\"status\":\"${status}\",\"pass\":${suite_pass},\"fail\":${suite_fail},\"duration\":${duration}}" >> "$RESULTS_FILE"
 
@@ -447,8 +546,12 @@ run_cluster_b_suites() {
             dir=$(resolve_suite_dir "$suite")
             local name
             name=$(basename "${dir:-${suite}-unknown}")
-            log_warn "SKIP: ${name} (cluster B unrecoverable)"
-            echo "{\"suite\":\"${name}\",\"status\":\"skipped\",\"pass\":0,\"fail\":0,\"duration\":0}" >> "$RESULTS_FILE"
+            # Distinct status from a benign capability-skip (run_suite's "skipped"):
+            # this suite was NOT run because cluster B is unrecoverable. print_results
+            # tallies "skipped-unrecoverable" separately and FAILS the run (non-zero
+            # exit) so a hard-aborted sweep can never be misread as a clean pass.
+            log_warn "SKIP (unrecoverable): ${name} — cluster B did not recover; suite hard-aborted, not run"
+            echo "{\"suite\":\"${name}\",\"status\":\"skipped-unrecoverable\",\"pass\":0,\"fail\":0,\"duration\":0}" >> "$RESULTS_FILE"
             continue
         fi
 
@@ -528,6 +631,83 @@ rebuild_remote_node_image() {
     remote_exec "cd ~/aether-build && docker build --no-cache -q -f docker/aether-node/Dockerfile -t aether-node:local . 2>&1 | tail -5"
 }
 
+# ---------------------------------------------------------------------------
+# CLI / node-image version-parity preflight (#440)
+# ---------------------------------------------------------------------------
+# Incident: the gate silently resolved a STALE rc1 `aether` from ~/.aether/bin
+# (PATH fallback) and ran it against a freshly-built rc2 node image — every node
+# aborted boot on the version mismatch and a full provision cycle burned before
+# anyone noticed. Assert BEFORE any `aether cluster bootstrap` that the `aether`
+# CLI in use reports the SAME Implementation-Version as the node artifact this run
+# deploys (node/target/aether-node.jar — the jar baked into aether-node:local and
+# the reference version for the cloud jar_url). Loud-abort on mismatch.
+#   AETHER_BIN=/path/to/aether  pins an explicit freshly-built CLI (still checked);
+#   its directory is prepended to PATH so every downstream bare-`aether` call
+#   (common.sh aether_failover, `aether cluster bootstrap`, suite subshells) uses it.
+version_parity_preflight() {
+    if [ -n "${AETHER_BIN:-}" ]; then
+        if [ ! -x "$AETHER_BIN" ]; then
+            log_error "version-parity preflight: AETHER_BIN='${AETHER_BIN}' is not an executable file"
+            return 1
+        fi
+        # Resolution below is BY NAME (`command -v aether`) after prepending this file's
+        # directory to PATH, so a differently-named binary would validate here and then be
+        # silently ignored — the stale CLI on PATH wins and only the version check catches it.
+        if [ "$(basename "$AETHER_BIN")" != "aether" ]; then
+            log_error "version-parity preflight: AETHER_BIN='${AETHER_BIN}' must be named 'aether' (resolution is by name on PATH)"
+            return 1
+        fi
+        local _bin_dir
+        _bin_dir="$(cd "$(dirname "$AETHER_BIN")" && pwd)"
+        PATH="${_bin_dir}:${PATH}"
+        export PATH
+    fi
+
+    # Banner: always log WHICH binary is in use (post-PATH-repin) so the next
+    # PATH surprise is visible in any captured log.
+    local resolved
+    resolved="$(command -v aether || true)"
+    log_info "version-parity preflight: aether CLI = ${resolved:-<none on PATH>} (AETHER_BIN=${AETHER_BIN:-<unset>})"
+    if [ -z "$resolved" ]; then
+        log_error "version-parity preflight: no 'aether' CLI on PATH (and AETHER_BIN unset/invalid) — cannot bootstrap"
+        return 1
+    fi
+
+    # Expected version = the node artifact this run deploys.
+    local node_jar="${REPO_ROOT}/node/target/aether-node.jar"
+    if [ ! -f "$node_jar" ]; then
+        log_warn "version-parity preflight: node jar not found at ${node_jar} — skipping parity check (run build.sh to enable it)"
+        return 0
+    fi
+    local manifest node_version
+    manifest="$(unzip -p "$node_jar" META-INF/MANIFEST.MF 2>/dev/null | tr -d '\r')" || true
+    node_version="$(printf '%s\n' "$manifest" | sed -n 's/^Implementation-Version:[[:space:]]*//p' | sed -n '1p')"
+    if [ -z "$node_version" ]; then
+        log_warn "version-parity preflight: could not read Implementation-Version from ${node_jar} — skipping parity check"
+        return 0
+    fi
+
+    # CLI version: `aether --version` -> "Aether <version> (built <date>)".
+    local cli_raw cli_version
+    cli_raw="$(aether --version 2>/dev/null)" || true
+    cli_version="$(printf '%s\n' "$cli_raw" | sed -n 's/^Aether[[:space:]]\{1,\}\([^[:space:]]\{1,\}\).*/\1/p' | sed -n '1p')"
+    if [ -z "$cli_version" ]; then
+        log_error "version-parity preflight: could not parse a version from 'aether --version' (got: '${cli_raw}') via ${resolved}"
+        return 1
+    fi
+
+    log_info "version-parity preflight: CLI=${cli_version}  node-image=${node_version}  (jar ${node_jar})"
+    if [ "$cli_version" != "$node_version" ]; then
+        log_error "version-parity preflight: CLI/node-image VERSION MISMATCH — 'aether' reports '${cli_version}' but the node artifact this run deploys is '${node_version}'."
+        log_error "  aether CLI in use: ${resolved}"
+        log_error "  Pin the freshly-built CLI with AETHER_BIN=/path/to/aether, or fix PATH so a stale ~/.aether/bin does not shadow it."
+        log_error "  Aborting BEFORE bootstrap: a stale CLI against a mismatched node image aborts every node's boot and burns a full provision cycle (#440)."
+        return 1
+    fi
+    log_pass "version-parity preflight: CLI and node image agree on ${cli_version}"
+    return 0
+}
+
 deploy_docker() {
     local host="${TARGET_HOST:-localhost}"
 
@@ -579,6 +759,11 @@ deploy_docker() {
         docker compose -f "$COMPOSE_A" up -d 2>&1 | tail -5
     else
         remote_scp "$COMPOSE_A" "~/docker-compose-a.yml"
+        # #598: the compose file mounts ./pg-init (relative to its own location) into
+        # docker-entrypoint-initdb.d — ship the dir alongside it or the mount is empty
+        # and forge_testpersistence is never created.
+        remote_exec "mkdir -p ~/pg-init"
+        remote_scp "${SCRIPT_DIR}/pg-init/10-forge-testpersistence.sh" "~/pg-init/10-forge-testpersistence.sh"
         remote_exec "cd ~ && docker compose -f docker-compose-a.yml down -v 2>/dev/null || true; docker rm -f \$(docker ps -aq --filter name=aether-a-node-) 2>/dev/null || true; docker rm -f \$(docker ps -aq --filter name=aether-default-node-) 2>/dev/null || true; docker volume rm -f aether_pgdata 2>/dev/null || true"
         cleanup_cluster_zombies "a"
         remote_exec "cd ~ && docker compose -f docker-compose-a.yml up -d 2>&1 | tail -5"
@@ -603,6 +788,9 @@ deploy_docker() {
         remote_exec "cd ~ && docker rm -f \$(docker ps -aq --filter name=aether-b-node-) 2>/dev/null; docker rm -f \$(docker ps -aq --filter name=aether-default-node-) 2>/dev/null || true; docker compose -f docker-compose-b.yml down -v 2>/dev/null || true"
         cleanup_cluster_zombies "b"
         remote_exec "cd ~ && docker compose -f docker-compose-b.yml up -d 2>&1 | tail -5"
+        # Capture-before-heal: streamed log files survive the `docker rm` auto-heal performs
+        # on a dying node — without this, the container's death destroys its own evidence.
+        start_log_streamers
     fi
 }
 
@@ -720,6 +908,9 @@ teardown() {
                 docker compose -f "$COMPOSE_A" down -v 2>/dev/null || true
                 docker compose -f "$COMPOSE_B" down -v 2>/dev/null || true
             else
+                # Stop the capture-before-heal streamers BEFORE removing their containers,
+                # so the daemon is not left re-attaching to a cluster being torn down.
+                stop_log_streamers
                 # Same order on remote: sweep CTM containers before compose down
                 remote_exec "docker rm -f \$(docker ps -aq --filter name=aether-a-node-) 2>/dev/null; docker rm -f \$(docker ps -aq --filter name=aether-b-node-) 2>/dev/null; docker rm -f \$(docker ps -aq --filter name=aether-default-node-) 2>/dev/null || true"
                 remote_exec "docker compose -f ~/docker-compose-a.yml down -v 2>/dev/null || true"
@@ -746,11 +937,23 @@ teardown() {
             # Those rows are dropped by the per-cluster orphan filter and survived
             # teardown last run (4 orphan VMs leaked). A final bare reaper run (no
             # --cluster) matches ANY `aether-cluster` OR `aether-node-id` label and
-            # closes the gap. Safe here: the integration run owns every aether-labeled
-            # resource in the account, and both cluster reaps already ran — anything
-            # still labeled is an orphan from THIS run. Only fired when a cloud cluster
-            # was actually provisioned this run.
-            if [ "${A_SUITES_SELECTED:-0}" -gt 0 ] || [ ${#B_SUITES[@]} -gt 0 ]; then
+            # closes the gap. Only fired when cloud resources were ACTUALLY provisioned
+            # this run.
+            #
+            # 2026-08-03 — TWO corrections after this deleted the standing `test-pg` VM:
+            #
+            #   1. The previous guard tested SUITES SELECTED, not resources provisioned, so
+            #      a run that died during bootstrap (unresolvable ${env:PG_*} secrets, 15s in,
+            #      zero VMs created) still reached this line. It now gates on
+            #      CLOUD_RESOURCES_PROVISIONED, set only after a bootstrap call returns.
+            #
+            #   2. The previous comment claimed "Safe here: the integration run owns every
+            #      aether-labeled resource in the account." That premise was FALSE. `test-pg`
+            #      is aether-labeled, long-lived, and owned by no run. cloud-reaper.sh now
+            #      protects it by default (PROTECTED_CLUSTERS), so this bare reap can no
+            #      longer take it even if the guard above is wrong again — the tool enforces
+            #      it rather than every caller having to remember.
+            if [ "${CLOUD_RESOURCES_PROVISIONED:-false}" = true ]; then
                 ("${REPO_ROOT}/../tools/cloud-reaper.sh" --destroy --force 2>&1 | tail -3 || true)
             fi
             # Re-close PG firewall (5432 → denied) after cluster teardown.
@@ -798,7 +1001,7 @@ print_results() {
     echo "  INTEGRATION TEST RESULTS"
     echo "========================================"
 
-    local total=0 passed=0 failed=0 skipped=0
+    local total=0 passed=0 failed=0 skipped=0 unrecoverable=0
     while IFS= read -r line; do
         [ -z "$line" ] && continue
         local suite status pass fail dur
@@ -813,11 +1016,13 @@ print_results() {
             passed)  passed=$((passed + 1)); printf "  [PASS] %-25s %3dp/%df  (%ds)\n" "$suite" "$pass" "$fail" "$dur" ;;
             failed)  failed=$((failed + 1)); printf "  [FAIL] %-25s %3dp/%df  (%ds)\n" "$suite" "$pass" "$fail" "$dur" ;;
             skipped) skipped=$((skipped + 1)); printf "  [SKIP] %-25s\n" "$suite" ;;
+            skipped-unrecoverable) unrecoverable=$((unrecoverable + 1)); printf "  [ABORT] %-25s (not run — cluster B unrecoverable)\n" "$suite" ;;
         esac
     done < "$results_file"
 
     echo "========================================"
-    printf "  Total: %d | Passed: %d | Failed: %d | Skipped: %d\n" "$total" "$passed" "$failed" "$skipped"
+    printf "  Total: %d | Passed: %d | Failed: %d | Skipped: %d | Unrecoverable: %d\n" \
+        "$total" "$passed" "$failed" "$skipped" "$unrecoverable"
     echo "========================================"
 
     print_timing_report
@@ -838,7 +1043,11 @@ print_results() {
     echo "]" >> "$RESULTS_JSON"
     log_info "JSON report: ${RESULTS_JSON}"
 
-    [ "$failed" -eq 0 ]
+    # Non-zero exit on ANY real failure OR a hard-abort: a run that quarantined
+    # remaining suites because cluster B never recovered is NOT a pass, even when
+    # zero suites reported test failures. "Unrecoverable" is tallied above and gates
+    # the exit here so the outcome is visible in both the summary and the exit code.
+    [ "$failed" -eq 0 ] && [ "$unrecoverable" -eq 0 ]
 }
 
 # ===========================================================================
@@ -854,9 +1063,16 @@ log_step "Lint integration tests"
 "${SCRIPT_DIR}/lib/contract-test.sh"
 
 # --- Step 1: Build ---
-if [ "$SKIP_BUILD" = false ] && [ -x "${REPO_ROOT}/build.sh" ]; then
+if [ "$SKIP_BUILD" = false ]; then
+    if [ ! -x "${MONOREPO_ROOT}/build.sh" ]; then
+        log_error "build.sh not found or not executable at ${MONOREPO_ROOT}/build.sh — refusing to run against jars of unknown provenance"
+        log_error "  (pass --skip-build to run deliberately against whatever is already built)"
+        exit 1
+    fi
     log_step "Building project"
-    "${REPO_ROOT}/build.sh"
+    "${MONOREPO_ROOT}/build.sh"
+else
+    log_warn "--skip-build: running against the jars already on disk. Their provenance is NOT verified — confirm they contain the change under test (javap the symbol; mtime is not evidence)."
 fi
 
 # --- Compute selected suites early so cluster bootstrap can be skipped per-cluster ---
@@ -879,6 +1095,23 @@ trap '[ "$SKIP_TEARDOWN" = false ] && teardown' EXIT
 # in-cluster forge-postgres container, not the shared Hetzner PG VM).
 if [ "$ENV_TYPE" = "cloud" ]; then
     "${REPO_ROOT}/../tools/pg-firewall.sh" open 2>&1 | tail -1
+    # #598: ensure test-persistence's own database exists on the PG VM (its named
+    # datasource must not share url-shortener's physical DB — the fixed-name schema
+    # history/owner tables are per-physical-database). Idempotent; same SSH
+    # docker-exec pattern as tools/provision-test-pg.sh's smoke test. Non-fatal on
+    # failure: suite 10 will surface it loudly, and a wedged SSH here must not kill
+    # runs that never touch PG.
+    ensure_cloud_pg_database "${PG_DB}_testpersistence" \
+        || log_warn "could not ensure PG database ${PG_DB}_testpersistence — suite 10 (test-persistence) will fail if it runs"
+fi
+
+# --- Step 1.5: CLI / node-image version-parity preflight (#440) ---
+# Runs BEFORE any provisioning / `aether cluster bootstrap`: a version-mismatched
+# CLI would otherwise abort every node's boot and burn a full provision cycle.
+log_step "CLI/node-image version-parity preflight"
+if ! version_parity_preflight; then
+    log_error "Aborting before cluster bootstrap — CLI/node-image version parity check failed (see above)."
+    exit 3
 fi
 
 # --- Step 2: Deploy clusters ---
@@ -929,6 +1162,9 @@ if [ "$SKIP_DEPLOY" = false ]; then
             export CLOUD_TOML_A CLOUD_TOML_B
             if [ ${#A_SUITES[@]} -gt 0 ]; then
                 bootstrap_cloud_cluster_a
+                # Records that cloud resources were ACTUALLY provisioned this run, which is
+                # what the teardown safety-net must gate on. See the guard below.
+                CLOUD_RESOURCES_PROVISIONED=true
             else
                 log_info "Skipping Cluster A bootstrap (no A-suites selected)"
             fi

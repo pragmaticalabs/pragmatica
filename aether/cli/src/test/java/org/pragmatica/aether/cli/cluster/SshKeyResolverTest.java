@@ -31,6 +31,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 
 class SshKeyResolverTest {
 
@@ -84,7 +85,7 @@ class SshKeyResolverTest {
     }
 
     private static ClusterBootstrapConfig configWith(InfrastructureConfig infra) {
-        var cloudSource = SourceProfile.sourceProfile("cloud-1",
+        var cloudSource = SourceProfile.sourceProfile(sourceNameOrDefault("cloud-1"),
                                                        SourceType.CLOUD,
                                                        Option.empty(),
                                                        Option.empty(),
@@ -114,7 +115,7 @@ class SshKeyResolverTest {
     }
 
     private static ClusterBootstrapConfig configWithoutCloudSource() {
-        var forgeSource = SourceProfile.sourceProfile("forge-1",
+        var forgeSource = SourceProfile.sourceProfile(sourceNameOrDefault("forge-1"),
                                                        SourceType.FORGE,
                                                        Option.empty(),
                                                        Option.empty(),

@@ -11,7 +11,7 @@ Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 - **Branch:** `release-1.0.0-rc1`. **Written against working-tree HEAD `c6b88e27a` + the local unpushed `8b812d04d` (death-ward).**
 - **Release target:** `1.0.0-rc1` (foundational by the RC1/RC2 scope rule — anything affecting architecture/foundation belongs in RC1; RC2 is polish only. Failure-detector robustness and role-correct counting are foundation — see Wave 6 / Wave 2).
 - **Supersedes (this document is the new keystone):** `swim-driven-topology-spec.md`, `membership-architecture-v2-spec.md`, `cluster-generation-spec.md` (membership content), `membership-unification-spec.md`, and folds in `membership-fsm-unification-spec.md` + `membership-convergence-fsm.md` as the now-adopted model. See the disposition table (§13).
-- **Foundation documents:** the independent architecture audit `pragmatica-store/cluster-topology-architecture-audit-2026-06-10.md` (findings C1–C4, H1–H10, M1–M12, roadmap §5, open questions §6) AND its companion `…/aether/docs/internal/audits/worker-topology-membership-analysis-2026-06-10.md` (worker-tier Class 1 findings W1–W6, the in-scope subset). Both were written against pushed HEAD `d3ebb3c8d` and are partly stale; §3 reconciles to ground truth.
+- **Foundation documents:** the independent architecture audit `pragmatica-store/cluster-topology-architecture-audit-2026-06-10.md` (findings C1–C4, H1–H10, M1–M12, roadmap §5, open questions §6) AND its companion `…/aether/docs/.internal/audits/worker-topology-membership-analysis-2026-06-10.md` (worker-tier Class 1 findings W1–W6, the in-scope subset). Both were written against pushed HEAD `d3ebb3c8d` and are partly stale; §3 reconciles to ground truth.
 - **Audience:** Aether runtime contributors implementing the membership / transport / topology integration; reviewers ratifying the design.
 - **Out of scope:** Rabia consensus internals; HLC packed-value overflow (`membership-convergence-fsm §9.4`); slice routing/placement except where membership feeds them; **the worker tier beyond Class 1 hygiene** — community formation, worker-slice execution, spokesman ignition (Class 2 severed wires), 1K–10K scalability posture (Class 3), and #241 proper are explicitly out (§5.2 non-goals + §15); PEERS seed-list shaping (`#222`); the boot-epoch (per-process ULID) restart-distinction (RC2, §6.5d).
 
@@ -362,6 +362,17 @@ The user ratified the spine and all enrichments. The worker-hygiene wave was add
 - **D7 — RATIFIED AS SPEC'D.** `ReevaluateMembership` is **deleted** (Wave 4) — the FSM delta edge replaces the 2026-06-09 death-edge re-poke structurally.
 - **D8 — RATIFIED.** §6.5/M5 in scope: Wave 8.6 / §5.9 (rejoin-as-KV-convergence + the §5.8 activation-gated replay; AMENDED 2026-06-11 — consumer-side action log superseded by sync → activate → replay). Boot-epoch restart-distinction RC2.
 - **D9 — RATIFIED.** §6.4 mixed-wipe: Wave-1 boot-time detect-only WARN; recovery design RC2.
+  **SUPERSEDED IN PART, 2026-08-27 (#660).** Detection is unchanged — the candidate compared against
+  the persisted phase is still the max over peer sync RESPONSES, and the WARN plus the
+  `onBootFutureHistory` journal feed still fire. What changed is the OUTCOME: D9 as ratified restored
+  anyway, regressing the node onto the cluster's older state. #660's sync-adoption floor
+  (`RabiaEngine.ownStateFloor`) refuses a candidate behind the node's own state, so a node carrying
+  future history now HOLDS that history and installs nothing. Reason for the supersession: committed
+  state must not be discardable by sync adoption — the safety argument outranks detect-only. The
+  change is only reachable with durable persistence configured (`AetherNode.resolvePersistence`
+  defaults to in-memory). Operator consequence and recovery action are in
+  `aether/docs/operators/runbooks/backup-recovery.md` ("Intentionally resetting a cluster"); both
+  halves are pinned by `RabiaSyncAdoptionQuorumTest.BootFutureHistoryD9`.
 - **D10 — RATIFIED (2026-06-10, user: "LGTM"): worker accounting hygiene (Wave 2, W1–W6)** and the resulting wave renumber 2–9. W1–W6 are live correctness bugs (a single worker inflates quorum/heal/role-assignment) and the worker-tier echo of the already-approved audit item 6 (one quorum denominator); placing them early prevents W3-class role mis-assignment from polluting the #245 gate. Scope is deliberately narrow (Class 1 only; Class 2/3 and #241 explicitly out, §5.2).
 - **Enrichment A (ratified)** — per-node persistent transition journal (FSM + PeerState), bounded, dumpable, permanent (Wave 1, §5.1 item 1).
 - **Enrichment B (ratified)** — leader-canonical principle is invariant **A7** (§4.2). The role-correct-counting principle is the new invariant **A8** (from Wave 2 / D10).
@@ -465,7 +476,7 @@ Per wave: findings closed, integration suites/scenarios that prove it, and the r
 | Membership / Placement Split | `aether/docs/specs/membership-placement-split-spec.md` | **UPDATE** | Core decisions (membership out of the committed snapshot; NTT-derived local membership; placement epoch fence) CONSISTENT with this spec and partly live. Update NTT references to `PresenceSampler`/`MembershipFsm`; re-point the supersession to defer to this spec for the authority model. The M5 rejoin-convergence here aligns with §5.9. Keep as the placement-split spec of record. |
 | Membership-Convergence FSM (Phase-0 model) | `aether/docs/specs/membership-convergence-fsm.md` | **KEEP / FOLD** | The model THIS spec adopts (FSM state space, level-triggered + incarnation-fencing §9). Mark "ADOPTED — the FSM model here is the spine of `cluster-topology-overhaul-spec`; see §3.1 for the delta-emission constraint that doc did not yet have." Keep as the design rationale. |
 | Membership-FSM Unification (executor + per-node authority) | `aether/docs/specs/membership-fsm-unification-spec.md` | **KEEP / FOLD** | The LIVE model (Phase-2). Mark "ADOPTED and EXTENDED by `cluster-topology-overhaul-spec` (Waves 5/7 complete the executor cutover and the broadcast-set fix; Wave 2 implements the §6 `QuorumLossDetector → role=core` direction)." Keep as the executor-design rationale. |
-| Worker-Topology Membership Analysis (companion audit) | `aether/docs/internal/audits/worker-topology-membership-analysis-2026-06-10.md` | **KEEP** | The source for Wave 2 (Class 1) and the #241 pre-hygiene framing. Historical analysis; no edit. |
+| Worker-Topology Membership Analysis (companion audit) | `aether/docs/.internal/audits/worker-topology-membership-analysis-2026-06-10.md` | **KEEP** | The source for Wave 2 (Class 1) and the #241 pre-hygiene framing. Historical analysis; no edit. |
 | (internal progress notes) | `…/internal/progress/*membership*`, `*ntt-convergence*` | **KEEP** | Historical; no action. |
 | (internal audit) | `…/internal/audits/membership-state-tracker-audit-2026-05-07.md` | **KEEP** | Historical; superseded by the 2026-06-10 audits + this spec. |
 
@@ -473,8 +484,8 @@ Per wave: findings closed, integration suites/scenarios that prove it, and the r
 
 ### Foundation
 - `pragmatica-store/cluster-topology-architecture-audit-2026-06-10.md` — the core audit (HEAD `d3ebb3c8d`); findings C1–C4, H1–H10, M1–M12, roadmap §5, open questions §6.
-- `…/aether/docs/internal/audits/worker-topology-membership-analysis-2026-06-10.md` — the companion worker-tier audit; Class 1 (W1–W6, in scope), Class 2/3 + #241 (out of scope, §5.2).
-- `aether/docs/internal/progress/session-handover-2026-06-10b.md` — #94/#245 saga; the three-mis-diagnosis hard lesson; the `down -v` log-wipe trap.
+- `…/aether/docs/.internal/audits/worker-topology-membership-analysis-2026-06-10.md` — the companion worker-tier audit; Class 1 (W1–W6, in scope), Class 2/3 + #241 (out of scope, §5.2).
+- `aether/docs/.internal/progress/session-handover-2026-06-10b.md` — #94/#245 saga; the three-mis-diagnosis hard lesson; the `down -v` log-wipe trap.
 
 ### Adopted model
 - `aether/docs/specs/membership-fsm-unification-spec.md` — FSM-as-authority + transport-as-executor (LIVE); §6 `QuorumLossDetector → role=core` direction (Wave 2).

@@ -1359,6 +1359,36 @@ class CstLinterTest {
                 """);
             assertNoRule(diagnostics, "JBCT-MIX-01");
         }
+
+        // #452 migration pinning: 'domain' as a substring of a segment ('mydomain') is NOT a domain
+        // segment. The classifier is segment-based, unlike the old '.domain.' substring check, so
+        // MIX-01 stays clean here. This delta is intentional per #452.
+        @Test
+        void allowsIoWhenDomainIsSubstringOfSegment() {
+            var diagnostics = lint("""
+                package com.x.mydomain;
+                import java.io.File;
+                public class Data {
+                    File f;
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-MIX-01");
+        }
+
+        // #452 migration pinning: the old '.domain.' substring flagged this package; the classifier
+        // resolves the deepest layer segment ('adapter'), so it is not a domain package and MIX-01
+        // stays clean. This delta is intentional per #452.
+        @Test
+        void allowsIoWhenDeepestLayerSegmentIsAdapter() {
+            var diagnostics = lint("""
+                package com.x.domain.adapter;
+                import java.io.File;
+                public class Data {
+                    File f;
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-MIX-01");
+        }
     }
 
     // ========== JBCT-STATIC-* Static Import Rules ==========
@@ -1626,6 +1656,40 @@ class CstLinterTest {
                 """);
             assertNoRule(diagnostics, "JBCT-NEST-01");
         }
+
+        /// Masking regression guard (#448): monadic-op tokens spelled inside a string literal in the
+        /// lambda body no longer count — the regex era fired here, the masked facet does not.
+        @Test
+        void ignoresNestedOpsInsideStringLiteral() {
+            var diagnostics = lint("""
+                package com.example.usecase.test;
+                import org.pragmatica.lang.Result;
+                public class Test {
+                    public Result<String> process(Result<String> input) {
+                        return input.flatMap(inner -> render(inner, "x.map(a).map(b)"));
+                    }
+                    private Result<String> render(String s, String note) { return Result.success(s); }
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-NEST-01");
+        }
+
+        /// Masking regression guard (#448): a re-chain spelled inside an inline comment in the lambda
+        /// body no longer counts.
+        @Test
+        void ignoresNestedOpsInsideComment() {
+            var diagnostics = lint("""
+                package com.example.usecase.test;
+                import org.pragmatica.lang.Result;
+                public class Test {
+                    public Result<String> process(Result<String> input) {
+                        return input.flatMap(inner -> render(/* inner.map(a).map(b) */ inner));
+                    }
+                    private Result<String> render(String s) { return Result.success(s); }
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-NEST-01");
+        }
     }
 
     // ========== JBCT-ZONE-* Zone Rules ==========
@@ -1768,6 +1832,89 @@ class CstLinterTest {
                 interface RequestProcessor { Result<String> processRequest(String s); }
                 """);
             assertNoRule(diagnostics, "JBCT-ZONE-03");
+        }
+
+        /// Masking regression guard (#448): a Zone-3 verb spelled inside a commented-out chain no
+        /// longer fires — the regex era matched it in the raw method text, the masked facet does not.
+        @Test
+        void ignoresZone3VerbInsideComment() {
+            var diagnostics = lint("""
+                package com.example.usecase.test;
+                import org.pragmatica.lang.Result;
+                public class Test {
+                    public Result<String> process(Result<String> input) {
+                        // return input.flatMap(s -> s.parseData(s));
+                        return input.flatMap(this::handle);
+                    }
+                    private Result<String> handle(String s) { return Result.success(s); }
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-ZONE-03");
+        }
+
+        /// Masking regression guard (#448): a Zone-3 verb spelled inside a string argument no longer fires.
+        @Test
+        void ignoresZone3VerbInsideStringLiteral() {
+            var diagnostics = lint("""
+                package com.example.usecase.test;
+                import org.pragmatica.lang.Result;
+                public class Test {
+                    public Result<String> process(Result<String> input) {
+                        return input.flatMap(s -> handle(s, "s.parseData(x)"));
+                    }
+                    private Result<String> handle(String s, String note) { return Result.success(s); }
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-ZONE-03");
+        }
+    }
+
+    // ========== JBCT-PAT-02 Pattern Mixing Rule ==========
+    @Nested
+    @DisplayName("JBCT-PAT-02: No Fork-Join nested inside Sequencer lambdas")
+    class PatternMixingTests {
+        @Test
+        void detectsForkJoinNestedInFlatMapLambda() {
+            var diagnostics = lint("""
+                package com.example.usecase.test;
+                import org.pragmatica.lang.Result;
+                public class Test {
+                    Object run(Req req) {
+                        return validate(req).flatMap(email -> save(Result.all(a, b)));
+                    }
+                }
+                """);
+            assertHasRule(diagnostics, "JBCT-PAT-02");
+        }
+
+        @Test
+        void allowsSequencerStepWithoutNestedForkJoin() {
+            var diagnostics = lint("""
+                package com.example.usecase.test;
+                import org.pragmatica.lang.Result;
+                public class Test {
+                    Object run(Req req) {
+                        return validate(req).flatMap(this::save);
+                    }
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-PAT-02");
+        }
+
+        /// Masking regression guard (#448): a Fork-Join call spelled inside a string argument of a
+        /// flatMap lambda no longer fires — the regex era matched the raw token, the masked facet does not.
+        @Test
+        void ignoresForkJoinTokenInsideStringLiteral() {
+            var diagnostics = lint("""
+                package com.example.usecase.test;
+                import org.pragmatica.lang.Result;
+                public class Test {
+                    Object run(Req req) {
+                        return validate(req).flatMap(email -> save(email, "Result.all(a, b)"));
+                    }
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-PAT-02");
         }
     }
 

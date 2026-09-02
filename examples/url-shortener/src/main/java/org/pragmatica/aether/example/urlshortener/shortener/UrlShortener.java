@@ -14,6 +14,15 @@ import java.security.MessageDigest;
 import java.util.regex.Pattern;
 
 
+/// URL shortener slice, artifact version 1.0.0 -- the baseline half of the rolling-update pair.
+///
+/// Demonstrates: parse-don't-validate on both requests, a @PgSql UrlPersistence adapter for the
+/// code-to-URL mapping, deterministic SHA-256 base62 short codes (the same URL always shortens to
+/// the same code, so `shorten` is idempotent), and click events published to the Analytics slice.
+///
+/// Does NOT demonstrate: the `version` field in responses -- that is exactly what url-shortener-v2
+/// adds, and deploying the two side by side is the point of the pair. No auth, no rate limiting, no
+/// short-code expiry.
 @Slice public interface UrlShortener {
     String BASE62_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 

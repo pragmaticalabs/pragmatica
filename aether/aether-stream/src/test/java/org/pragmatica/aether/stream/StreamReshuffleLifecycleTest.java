@@ -391,4 +391,128 @@ class StreamReshuffleLifecycleTest {
             }
         }
     }
+
+    /// Starvation preemption. A slot used to be held for as long as a partition stayed a not-caught-up
+    /// REPLICA, with no upper bound, and `PartitionBackfill` retries forever once its bounded wait elapses
+    /// with a committed owner present — so the release condition was exactly the condition that would never
+    /// become true. Live cost (02y-stream-crash, 2026-08-16): two `entity:orders` partitions held both slots
+    /// for 4m55s with ZERO releases, the two `multipart-events` partitions this node was the designated
+    /// replica for sat queued behind them, never became in-sync, and were lost outright when their owner was
+    /// SIGKILLed. Budget is deliberately ample here so SLOTS are the only constraint under test.
+    @Nested
+    class StalledSlotPreemption {
+
+        private static StreamPartitionManager pacedManager(ConcurrentHashMap<String, Role> roles,
+                                                           java.util.Set<String> caughtUp) {
+            var manager = streamPartitionManager(64 * 1024 * 1024L);
+
+            manager.placementRoleSupplier((stream, partition) -> roles.getOrDefault(stream + "#" + partition, Role.NONE));
+            manager.replicaCatchupSource((stream, partition) -> new CatchupView(Integer.MAX_VALUE,
+                                                                                caughtUp.contains(stream + "#" + partition)));
+            manager.onStreamConfigPut(configPut(cfg("app", 8, 1)));
+
+            return manager;
+        }
+
+        @Test
+        void stalledReplicas_afterTenureBound_arePreempted_soAQueuedPartitionProceeds() {
+            var roles = new ConcurrentHashMap<String, Role>();
+            var caughtUp = ConcurrentHashMap.<String>newKeySet();
+            var manager = pacedManager(roles, caughtUp);
+            try {
+                roles.put("app#0", Role.REPLICA);
+                roles.put("app#1", Role.REPLICA);
+                roles.put("app#2", Role.REPLICA);
+
+                manager.materializePartition("app", 0).onFailure(_ -> fail("first slot should materialize"));
+                manager.materializePartition("app", 1).onFailure(_ -> fail("second slot should materialize"));
+                manager.materializePartition("app", 2)
+                       .onSuccess(_ -> fail("app#2 must be paced — both slots are taken"))
+                       .onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.ReshufflePaced.class));
+                assertThat(queueDepth(manager)).isEqualTo(1L);
+
+                // Neither holder EVER becomes caught up — the stall this fix exists for.
+                for (var i = 0; i < StreamPartitionManager.RESHUFFLE_SLOT_MAX_TICKS - 1; i++) {
+                    manager.reconcileReshuffle();
+                }
+                assertThat(materialized(manager, "app", 2))
+                    .as("a slot must not be preempted before its tenure bound — that would defeat the pacing")
+                    .isFalse();
+
+                manager.reconcileReshuffle();
+
+                assertThat(materialized(manager, "app", 2))
+                    .as("at the tenure bound a stalled slot is preempted and the starving partition proceeds")
+                    .isTrue();
+                assertThat(queueDepth(manager)).isEqualTo(0L);
+            } finally {
+                manager.close();
+            }
+        }
+
+        @Test
+        void emptyQueue_neverPreempts_soThePacingBoundIsPreserved() {
+            var roles = new ConcurrentHashMap<String, Role>();
+            var caughtUp = ConcurrentHashMap.<String>newKeySet();
+            var manager = pacedManager(roles, caughtUp);
+            try {
+                roles.put("app#0", Role.REPLICA);
+                roles.put("app#1", Role.REPLICA);
+
+                manager.materializePartition("app", 0).onFailure(_ -> fail("first slot should materialize"));
+                manager.materializePartition("app", 1).onFailure(_ -> fail("second slot should materialize"));
+
+                // Nothing is waiting, so tenure is irrelevant however long it runs.
+                for (var i = 0; i < StreamPartitionManager.RESHUFFLE_SLOT_MAX_TICKS * 2; i++) {
+                    manager.reconcileReshuffle();
+                }
+
+                roles.put("app#2", Role.REPLICA);
+                manager.materializePartition("app", 2)
+                       .onSuccess(_ -> fail("no queue means no preemption — both slots must still be held"))
+                       .onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.ReshufflePaced.class));
+            } finally {
+                manager.close();
+            }
+        }
+
+        /// PERMIT ACCOUNTING. Preemption releases the permit while the backfill keeps running, so the ref is
+        /// tracked as preempted rather than simply dropped: it must not release a SECOND permit when it later
+        /// completes, and must not take a second one if it re-enters the acquire path. A double release would
+        /// silently raise effective concurrency above the bound — invisible except as a flood under failover.
+        @Test
+        void preemptedSlotCompletingLater_doesNotReleaseASecondPermit() {
+            var roles = new ConcurrentHashMap<String, Role>();
+            var caughtUp = ConcurrentHashMap.<String>newKeySet();
+            var manager = pacedManager(roles, caughtUp);
+            try {
+                roles.put("app#0", Role.REPLICA);
+                roles.put("app#1", Role.REPLICA);
+                roles.put("app#2", Role.REPLICA);
+
+                manager.materializePartition("app", 0).onFailure(_ -> fail("first slot should materialize"));
+                manager.materializePartition("app", 1).onFailure(_ -> fail("second slot should materialize"));
+                manager.materializePartition("app", 2).onSuccess(_ -> fail("app#2 must be paced"));
+
+                // Both stalled holders are preempted (2 permits released); the drain admits app#2 (1 taken).
+                for (var i = 0; i < StreamPartitionManager.RESHUFFLE_SLOT_MAX_TICKS; i++) {
+                    manager.reconcileReshuffle();
+                }
+                assertThat(materialized(manager, "app", 2)).isTrue();
+
+                // A preempted partition finally finishes. Its permit was already returned at preemption.
+                caughtUp.add("app#0");
+                manager.reconcileReshuffle();
+
+                roles.put("app#3", Role.REPLICA);
+                roles.put("app#4", Role.REPLICA);
+                manager.materializePartition("app", 3).onFailure(_ -> fail("exactly one permit should remain free"));
+                manager.materializePartition("app", 4)
+                       .onSuccess(_ -> fail("a completing preempted slot must NOT return a second permit — concurrency would exceed the bound"))
+                       .onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.ReshufflePaced.class));
+            } finally {
+                manager.close();
+            }
+        }
+    }
 }

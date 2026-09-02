@@ -6,6 +6,7 @@ package org.pragmatica.aether.cli.cluster;
 
 import java.security.SecureRandom;
 
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.PortMapping;
 
@@ -105,7 +106,7 @@ sealed interface DockerComposeGenerator {
         sb.append("      start_period: 30s\n");
     }
 
-    private static String buildComposePeers(String clusterName, int totalNodes, int clusterPort) {
+    private static String buildComposePeers(ClusterName clusterName, int totalNodes, int clusterPort) {
         var sb = new StringBuilder();
 
         for (int i = 0; i < totalNodes; i++) {

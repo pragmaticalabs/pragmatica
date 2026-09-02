@@ -1,13 +1,14 @@
 package org.pragmatica.jbct.lint.cst.rules;
 
+import java.util.stream.Stream;
+
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
 import org.pragmatica.jbct.parser.Cursor;
 
-import java.util.stream.Stream;
-
 import static org.pragmatica.jbct.parser.CstNodes.*;
+
 
 /// JBCT-PAT-01: Use functional iteration instead of raw loops.
 ///
@@ -27,8 +28,8 @@ public class CstRawLoopRule implements CstLintRule {
         }
         // Find all loop statements
         return findAllStatements(root).stream()
-                      .filter(this::isLoopStatement)
-                      .map(stmt -> createDiagnostic(stmt, ctx));
+                                .filter(this::isLoopStatement)
+                                .map(stmt -> createDiagnostic(stmt, ctx));
     }
 
     private boolean isLoopStatement(Cursor stmt) {
@@ -37,16 +38,19 @@ public class CstRawLoopRule implements CstLintRule {
         if (stmtText.startsWith("for ") || stmtText.startsWith("for(")) {
             // Enhanced for-each has colon before the closing paren
             var parenClose = stmtText.indexOf(')');
+
             if (parenClose > 0) {
                 var header = stmtText.substring(0, parenClose);
+
                 if (header.contains(":")) {
                     return false;
                 }
             }
+
             return true;
         }
-        return stmtText.startsWith("while ") || stmtText.startsWith("while(") ||
-        stmtText.startsWith("do ");
+
+        return stmtText.startsWith("while ") || stmtText.startsWith("while(") || stmtText.startsWith("do ");
     }
 
     private Diagnostic createDiagnostic(Cursor stmt, LintContext ctx) {
@@ -56,6 +60,7 @@ public class CstRawLoopRule implements CstLintRule {
                        : stmtText.startsWith("while")
                          ? "while"
                          : "do-while";
+
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
@@ -63,7 +68,7 @@ public class CstRawLoopRule implements CstLintRule {
                                      startColumn(stmt),
                                      "Raw " + loopType + " loop - prefer functional iteration",
                                      "JBCT prefers stream operations over imperative loops. "
-                                     + "Use .stream().map/filter/forEach instead.")
+                                    + "Use .stream().map/filter/forEach instead.")
                          .withExample("""
             // Before: raw loop
             List<String> results = new ArrayList<>();

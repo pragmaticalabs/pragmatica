@@ -54,6 +54,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// a single (unpinned) attempt when no cloud zones are configured — so a zone running out of capacity
 /// during a replacement no longer wedges the cluster's heal.
 class ClusterTopologyManagerZoneRotationTest {
+    /// RFC-0017 C1 — desired topology replaced the core-only scalar; tests that only care about a
+    /// core count build a single-source entry.
+    private static java.util.List<org.pragmatica.aether.slice.kvstore.AetherValue.TopologyEntry> coreTopology(int count) {
+        return java.util.List.of(new org.pragmatica.aether.slice.kvstore.AetherValue.TopologyEntry("primary", "core", count));
+    }
+
     private static final NodeId SELF = nodeId("node-self").unwrap();
     private static final NodeId PEER_A = nodeId("node-a").unwrap();
     private static final NodeId PEER_B = nodeId("node-b").unwrap();
@@ -281,7 +287,7 @@ class ClusterTopologyManagerZoneRotationTest {
         private final AtomicReference<Option<ClusterConfigValue>> current = new AtomicReference<>(Option.none());
 
         void seedToml(String toml) {
-            current.set(Option.some(new ClusterConfigValue(toml, "prod-cluster", "1.0.0", 5, 3, 9, "cloud", 1L, System.currentTimeMillis())));
+            current.set(Option.some(new ClusterConfigValue(toml, "prod-cluster", "1.0.0", coreTopology(5), 3, 9, "cloud", 1L, System.currentTimeMillis())));
         }
 
         Option<ClusterConfigValue> current() {

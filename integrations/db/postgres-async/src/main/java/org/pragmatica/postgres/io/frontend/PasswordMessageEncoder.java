@@ -11,13 +11,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.pragmatica.postgres.io.frontend;
-
-import org.pragmatica.postgres.message.frontend.PasswordMessage;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
+
+import org.pragmatica.postgres.message.frontend.PasswordMessage;
+
 
 /**
  * See <a href="https://www.postgresql.org/docs/11/protocol-message-formats.html">Postgres message formats</a>
@@ -35,7 +35,6 @@ import java.nio.charset.Charset;
  * @author Antti Laisi
  */
 public class PasswordMessageEncoder extends SkipableEncoder<PasswordMessage> {
-
     @Override
     public Class<PasswordMessage> getMessageType() {
         return PasswordMessage.class;
@@ -43,13 +42,14 @@ public class PasswordMessageEncoder extends SkipableEncoder<PasswordMessage> {
 
     @Override
     protected byte getMessageId() {
-        return (byte) 'p';
+        return (byte)'p';
     }
 
     @Override
     public void writeBody(PasswordMessage msg, ByteBuffer buffer, Charset encoding) {
-        buffer.put(msg.passwordHash() != null ? msg.passwordHash() : msg.password().getBytes(encoding));
+        buffer.put(msg.passwordHash() != null
+                   ? msg.passwordHash()
+                   : msg.password().getBytes(encoding));
         buffer.put((byte) 0);
     }
-
 }

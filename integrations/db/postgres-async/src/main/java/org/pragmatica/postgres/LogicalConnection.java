@@ -1,5 +1,11 @@
 package org.pragmatica.postgres;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BiConsumer;
+import java.util.function.Consumer;
+
 import org.pragmatica.postgres.conversion.DataConverter;
 import org.pragmatica.postgres.net.Connection;
 import org.pragmatica.postgres.net.Listening;
@@ -10,13 +16,8 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
-import java.util.LinkedHashMap;
-import java.util.Map;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.BiConsumer;
-import java.util.function.Consumer;
-
 import static org.pragmatica.lang.Unit.unit;
+
 
 /**
  * Logical connection for transaction-mode pooling. Borrows a physical connection per query/transaction
@@ -25,14 +26,19 @@ import static org.pragmatica.lang.Unit.unit;
 public class LogicalConnection implements Connection {
     private static final AtomicInteger LOGICAL_ID_COUNTER = new AtomicInteger();
 
-    private enum State { IDLE, ACTIVE, IN_TX, PINNED, CLOSED }
+    private enum State {
+        IDLE,
+        ACTIVE,
+        IN_TX,
+        PINNED,
+        CLOSED
+    }
 
     private final PgTransactionPool pool;
     private final DataConverter dataConverter;
     private final int logicalId;
     private final AtomicInteger nameCounter = new AtomicInteger();
     private final LinkedHashMap<String, StatementEntry> statementRegistry;
-
     private State state = State.IDLE;
     private PgConnection physical;
     private int lastPhysicalId;
@@ -49,13 +55,13 @@ public class LogicalConnection implements Connection {
         this.dataConverter = dataConverter;
         this.logicalId = LOGICAL_ID_COUNTER.incrementAndGet();
         this.statementRegistry = maxStatements > 0
-            ? new LinkedHashMap<>(16, 0.75f, true) {
-                @Override
-                protected boolean removeEldestEntry(Map.Entry<String, StatementEntry> eldest) {
-                    return size() > maxStatements;
-                }
+                                 ? new LinkedHashMap<>(16, 0.75f, true) {
+            @Override
+            protected boolean removeEldestEntry(Map.Entry<String, StatementEntry> eldest) {
+                return size() > maxStatements;
             }
-            : null;
+        }
+                                 : null;
     }
 
     @Override
@@ -66,14 +72,16 @@ public class LogicalConnection implements Connection {
         if (state == State.CLOSED) {
             return Promise.failure(new SqlError.LogicalConnectionClosed("Logical connection is closed"));
         }
+
         return pool.borrowConnection()
                    .flatMap(conn -> {
-                       physical = conn;
-                       state = State.ACTIVE;
-                       lastPhysicalId = System.identityHashCode(conn);
-                       return conn.script(onColumns, onRow, onAffected, sql)
-                                  .withResult(_ -> returnPhysical());
-                   });
+                                physical = conn;
+                                state = State.ACTIVE;
+                                lastPhysicalId = System.identityHashCode(conn);
+
+                                return conn.script(onColumns, onRow, onAffected, sql)
+                                           .withResult(_ -> returnPhysical());
+                            });
     }
 
     @Override
@@ -84,17 +92,20 @@ public class LogicalConnection implements Connection {
         if (state == State.CLOSED) {
             return Promise.failure(new SqlError.LogicalConnectionClosed("Logical connection is closed"));
         }
+
         if (state == State.PINNED) {
             return physical.query(onColumns, onRow, sql, params);
         }
+
         return pool.borrowConnection()
                    .flatMap(conn -> {
-                       physical = conn;
-                       state = State.ACTIVE;
-                       lastPhysicalId = System.identityHashCode(conn);
-                       return conn.query(onColumns, onRow, sql, params)
-                                  .withResult(_ -> returnPhysical());
-                   });
+                                physical = conn;
+                                state = State.ACTIVE;
+                                lastPhysicalId = System.identityHashCode(conn);
+
+                                return conn.query(onColumns, onRow, sql, params)
+                                           .withResult(_ -> returnPhysical());
+                            });
     }
 
     @Override
@@ -105,42 +116,64 @@ public class LogicalConnection implements Connection {
 
         if (statementRegistry != null) {
             var entry = statementRegistry.get(sql);
+
             if (entry != null) {
                 return pool.borrowConnection()
                            .flatMap(conn -> {
-                               physical = conn;
-                               state = State.ACTIVE;
-                               int currentPhysicalId = System.identityHashCode(conn);
-                               if (entry.physicalId() == currentPhysicalId) {
-                                   lastPhysicalId = currentPhysicalId;
-                                   return Promise.success(wrapPreparedStatement(sql, entry.name(), conn));
-                               }
-                               var newName = nextStatementName();
-                               return conn.preparedStatementOf(sql, parametersTypes)
-                                          .map(pgPs -> {
-                                              lastPhysicalId = currentPhysicalId;
-                                              statementRegistry.put(sql, entry.withName(newName, currentPhysicalId));
-                                              return wrapPreparedStatement(sql, pgPs.sname(), conn);
-                                          });
-                           });
+                                        physical = conn;
+                                        state = State.ACTIVE;
+                                        int currentPhysicalId = System.identityHashCode(conn);
+
+                                        if (entry.physicalId() == currentPhysicalId) {
+                                        lastPhysicalId = currentPhysicalId;
+
+                                        return Promise.success(wrapPreparedStatement(sql,
+                                                                                     entry.name(),
+                                                                                     conn));
+                                    }
+
+                                        var newName = nextStatementName();
+
+                                        return conn.preparedStatementOf(sql, parametersTypes)
+                                                   .map(pgPs -> {
+                                                            lastPhysicalId = currentPhysicalId;
+                                                            statementRegistry.put(sql,
+                                                                                  entry.withName(newName,
+                                                                                                 currentPhysicalId));
+
+                                                            return wrapPreparedStatement(sql,
+                                                                                         pgPs.sname(),
+                                                                                         conn);
+                                                        });
+                                    });
             }
         }
 
         return pool.borrowConnection()
                    .flatMap(conn -> {
-                       physical = conn;
-                       state = State.ACTIVE;
-                       int currentPhysicalId = System.identityHashCode(conn);
-                       lastPhysicalId = currentPhysicalId;
-                       return conn.preparedStatementOf(sql, parametersTypes)
-                                  .map(pgPs -> {
-                                      if (statementRegistry != null) {
-                                          var name = pgPs.sname();
-                                          statementRegistry.put(sql, new StatementEntry(sql, name, parametersTypes, currentPhysicalId));
-                                      }
-                                      return wrapPreparedStatement(sql, pgPs.sname(), conn);
-                                  });
-                   });
+                                physical = conn;
+                                state = State.ACTIVE;
+                                int currentPhysicalId = System.identityHashCode(conn);
+
+                                lastPhysicalId = currentPhysicalId;
+
+                                return conn.preparedStatementOf(sql, parametersTypes)
+                                           .map(pgPs -> {
+                                                    if (statementRegistry != null) {
+                                                    var name = pgPs.sname();
+
+                                                    statementRegistry.put(sql,
+                                                                          new StatementEntry(sql,
+                                                                                             name,
+                                                                                             parametersTypes,
+                                                                                             currentPhysicalId));
+                                                }
+
+                                                    return wrapPreparedStatement(sql,
+                                                                                 pgPs.sname(),
+                                                                                 conn);
+                                                });
+                            });
     }
 
     private PreparedStatement wrapPreparedStatement(String sql, String sname, PgConnection conn) {
@@ -164,7 +197,8 @@ public class LogicalConnection implements Connection {
 
         @Override
         public Promise<PgResultSet> query(Object... params) {
-            return boundPhysical.prepareStatement(sql, dataConverter.assumeTypes(params))
+            return boundPhysical.prepareStatement(sql,
+                                                  dataConverter.assumeTypes(params))
                                 .flatMap(ps -> ps.query(params));
         }
 
@@ -172,13 +206,15 @@ public class LogicalConnection implements Connection {
         public Promise<Integer> fetch(BiConsumer<Map<String, PgColumn>, PgColumn[]> onColumns,
                                       Consumer<PgRow> processor,
                                       Object... params) {
-            return boundPhysical.prepareStatement(sql, dataConverter.assumeTypes(params))
+            return boundPhysical.prepareStatement(sql,
+                                                  dataConverter.assumeTypes(params))
                                 .flatMap(ps -> ps.fetch(onColumns, processor, params));
         }
 
         @Override
         public Promise<Unit> close() {
             returnPhysical();
+
             return Promise.success(unit());
         }
     }
@@ -188,14 +224,16 @@ public class LogicalConnection implements Connection {
         if (state == State.CLOSED) {
             return Promise.failure(new SqlError.LogicalConnectionClosed("Logical connection is closed"));
         }
+
         return pool.borrowConnection()
                    .flatMap(conn -> {
-                       physical = conn;
-                       state = State.IN_TX;
-                       lastPhysicalId = System.identityHashCode(conn);
-                       return conn.completeScript("BEGIN")
-                                  .map(_ -> new LogicalTransaction(0));
-                   });
+                                physical = conn;
+                                state = State.IN_TX;
+                                lastPhysicalId = System.identityHashCode(conn);
+
+                                return conn.completeScript("BEGIN")
+                                           .map(_ -> new LogicalTransaction(0));
+                            });
     }
 
     @Override
@@ -203,30 +241,34 @@ public class LogicalConnection implements Connection {
         if (state == State.CLOSED) {
             return Promise.failure(new SqlError.LogicalConnectionClosed("Logical connection is closed"));
         }
+
         if (state == State.PINNED && physical != null) {
             subscriptionCount++;
+
             return physical.subscribe(channel, onNotification)
                            .map(listening -> wrapListening(listening));
         }
+
         return pool.borrowConnection()
                    .flatMap(conn -> {
-                       physical = conn;
-                       state = State.PINNED;
-                       lastPhysicalId = System.identityHashCode(conn);
-                       subscriptionCount = 1;
-                       return conn.subscribe(channel, onNotification)
-                                  .map(listening -> wrapListening(listening));
-                   });
+                                physical = conn;
+                                state = State.PINNED;
+                                lastPhysicalId = System.identityHashCode(conn);
+                                subscriptionCount = 1;
+
+                                return conn.subscribe(channel, onNotification)
+                                           .map(listening -> wrapListening(listening));
+                            });
     }
 
     private Listening wrapListening(Listening inner) {
         return () -> inner.unlisten()
                           .withSuccess(_ -> {
-                              subscriptionCount--;
-                              if (subscriptionCount <= 0 && state == State.PINNED) {
-                                  returnPhysical();
-                              }
-                          })
+                                           subscriptionCount--;
+                                           if (subscriptionCount <= 0 && state == State.PINNED) {
+                                           returnPhysical();
+                                       }
+                                       })
                           .mapToUnit();
     }
 
@@ -235,6 +277,7 @@ public class LogicalConnection implements Connection {
         if (state == State.CLOSED) {
             return Promise.success(unit());
         }
+
         return switch (state) {
             case IDLE -> {
                 state = State.CLOSED;
@@ -242,16 +285,16 @@ public class LogicalConnection implements Connection {
             }
             case IN_TX -> {
                 var conn = physical;
+
                 state = State.CLOSED;
-                yield conn.completeScript("ROLLBACK")
-                          .withResult(_ -> {
-                              pool.returnConnection(conn);
-                              physical = null;
-                          })
-                          .mapToUnit();
+                yield conn.completeScript("ROLLBACK").withResult(_ -> {
+                    pool.returnConnection(conn);
+                    physical = null;
+                }).mapToUnit();
             }
             case PINNED -> {
                 var conn = physical;
+
                 state = State.CLOSED;
                 pool.returnConnection(conn);
                 physical = null;
@@ -273,6 +316,7 @@ public class LogicalConnection implements Connection {
     private void returnPhysical() {
         if (physical != null && state != State.IN_TX && state != State.PINNED && state != State.CLOSED) {
             var conn = physical;
+
             physical = null;
             state = State.IDLE;
             pool.returnConnection(conn);
@@ -289,6 +333,7 @@ public class LogicalConnection implements Connection {
         @Override
         public Promise<Transaction> begin() {
             int next = depth + 1;
+
             return physical.completeScript("SAVEPOINT sp_" + next)
                            .map(_ -> new LogicalTransaction(next));
         }
@@ -300,7 +345,9 @@ public class LogicalConnection implements Connection {
                                .withResult(_ -> returnFromTx())
                                .mapToUnit();
             }
-            return physical.completeScript("RELEASE SAVEPOINT sp_" + depth).mapToUnit();
+
+            return physical.completeScript("RELEASE SAVEPOINT sp_" + depth)
+                           .mapToUnit();
         }
 
         @Override
@@ -310,13 +357,14 @@ public class LogicalConnection implements Connection {
                                .withResult(_ -> returnFromTx())
                                .mapToUnit();
             }
-            return physical.completeScript("ROLLBACK TO SAVEPOINT sp_" + depth).mapToUnit();
+
+            return physical.completeScript("ROLLBACK TO SAVEPOINT sp_" + depth)
+                           .mapToUnit();
         }
 
         @Override
         public Promise<Unit> close() {
-            return commit()
-                .fold(this::handleException);
+            return commit().fold(this::handleException);
         }
 
         @Override
@@ -349,6 +397,7 @@ public class LogicalConnection implements Connection {
 
         private void returnFromTx() {
             var conn = physical;
+
             physical = null;
             state = State.IDLE;
             pool.returnConnection(conn);

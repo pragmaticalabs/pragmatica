@@ -1,10 +1,5 @@
 package org.pragmatica.jbct.init;
 
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
-import org.pragmatica.lang.utils.Causes;
-
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -12,14 +7,19 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 
 /// Initializes a new Aether slice project structure.
 public final class SliceProjectInitializer {
     private static final Logger log = LoggerFactory.getLogger(SliceProjectInitializer.class);
     private static final String TEMPLATES_PATH = "/templates/slice/";
-
     // Default versions - used as fallback when offline
     private static final String DEFAULT_JBCT_VERSION = GitHubVersionResolver.defaultJbctVersion();
     private static final String DEFAULT_PRAGMATICA_VERSION = GitHubVersionResolver.defaultPragmaticaVersion();
@@ -57,7 +57,11 @@ public final class SliceProjectInitializer {
     public static Result<SliceProjectInitializer> sliceProjectInitializer(Path projectDir,
                                                                           String groupId,
                                                                           String artifactId) {
-        return sliceProjectInitializer(projectDir, groupId, artifactId, null, GitHubVersionResolver.gitHubVersionResolver());
+        return sliceProjectInitializer(projectDir,
+                                       groupId,
+                                       artifactId,
+                                       null,
+                                       GitHubVersionResolver.gitHubVersionResolver());
     }
 
     /// Create initializer with project parameters and version resolver.
@@ -74,7 +78,11 @@ public final class SliceProjectInitializer {
                                                                           String groupId,
                                                                           String artifactId,
                                                                           String sliceName) {
-        return sliceProjectInitializer(projectDir, groupId, artifactId, sliceName, GitHubVersionResolver.gitHubVersionResolver());
+        return sliceProjectInitializer(projectDir,
+                                       groupId,
+                                       artifactId,
+                                       sliceName,
+                                       GitHubVersionResolver.gitHubVersionResolver());
     }
 
     /// Create initializer with explicit slice name and version resolver.
@@ -84,17 +92,18 @@ public final class SliceProjectInitializer {
                                                                           String sliceName,
                                                                           GitHubVersionResolver resolver) {
         if (artifactId == null || artifactId.isBlank()) {
-            return Causes.cause("artifactId must not be null or empty")
-                         .result();
+            return Causes.cause("artifactId must not be null or empty").result();
         }
+
         if (groupId == null || groupId.isBlank()) {
-            return Causes.cause("groupId must not be null or empty")
-                         .result();
+            return Causes.cause("groupId must not be null or empty").result();
         }
+
         var basePackage = groupId + "." + artifactId.replace("-", "");
         var effectiveName = (sliceName != null && !sliceName.isBlank())
                             ? sliceName
                             : ProjectFiles.toCamelCase(artifactId);
+
         return Result.success(new SliceProjectInitializer(projectDir,
                                                           groupId,
                                                           artifactId,
@@ -114,17 +123,18 @@ public final class SliceProjectInitializer {
                                                                           String pragmaticaVersion,
                                                                           String aetherVersion) {
         if (artifactId == null || artifactId.isBlank()) {
-            return Causes.cause("artifactId must not be null or empty")
-                         .result();
+            return Causes.cause("artifactId must not be null or empty").result();
         }
+
         if (groupId == null || groupId.isBlank()) {
-            return Causes.cause("groupId must not be null or empty")
-                         .result();
+            return Causes.cause("groupId must not be null or empty").result();
         }
+
         var basePackage = groupId + "." + artifactId.replace("-", "");
         var effectiveName = (sliceName != null && !sliceName.isBlank())
                             ? sliceName
                             : ProjectFiles.toCamelCase(artifactId);
+
         return Result.success(new SliceProjectInitializer(projectDir,
                                                           groupId,
                                                           artifactId,
@@ -143,13 +153,14 @@ public final class SliceProjectInitializer {
     }
 
     private Result<Unit> createDirectories() {
-        try{
+        try {
             var srcMainJava = projectDir.resolve("src/main/java");
             var srcTestJava = projectDir.resolve("src/test/java");
             var srcTestResources = projectDir.resolve("src/test/resources");
             var metaInfDeps = projectDir.resolve("src/main/resources/META-INF/dependencies");
             var slicesDir = projectDir.resolve("src/main/resources/slices");
             var schemaDir = projectDir.resolve("schema");
+
             Files.createDirectories(srcMainJava);
             Files.createDirectories(srcTestJava);
             Files.createDirectories(srcTestResources);
@@ -158,13 +169,14 @@ public final class SliceProjectInitializer {
             Files.createDirectories(schemaDir);
             var packagePath = basePackage.replace(".", "/");
             var sliceSubPackage = sliceName.toLowerCase();
+
             Files.createDirectories(srcMainJava.resolve(packagePath + "/" + sliceSubPackage));
             Files.createDirectories(srcTestJava.resolve(packagePath + "/" + sliceSubPackage));
             Files.createDirectories(projectDir.resolve("src/main/resources/" + packagePath + "/" + sliceSubPackage));
+
             return Result.success(Unit.unit());
         } catch (Exception e) {
-            return Causes.cause("Failed to create directories: " + e.getMessage())
-                         .result();
+            return Causes.cause("Failed to create directories: " + e.getMessage()).result();
         }
     }
 
@@ -177,8 +189,7 @@ public final class SliceProjectInitializer {
                             createInfraFiles(),
                             createRunScripts(),
                             createRoutes(),
-                            createSchema())
-                     .flatMap(this::combineWithDependencyManifest);
+                            createSchema()).flatMap(this::combineWithDependencyManifest);
     }
 
     private Result<List<Path>> combineWithDependencyManifest(List<List<Path>> fileLists) {
@@ -189,12 +200,15 @@ public final class SliceProjectInitializer {
         var allFiles = fileLists.stream()
                                 .flatMap(List::stream)
                                 .collect(java.util.stream.Collectors.toCollection(ArrayList::new));
+
         allFiles.add(manifest);
+
         return allFiles;
     }
 
     private Result<List<Path>> createSliceConfigFiles() {
         var slicesDir = projectDir.resolve("src/main/resources/slices");
+
         return createFile("slice.toml.template", slicesDir.resolve(sliceName + ".toml")).map(path -> List.of(path));
     }
 
@@ -209,16 +223,16 @@ public final class SliceProjectInitializer {
         var packagePath = basePackage.replace(".", "/") + "/" + sliceSubPackage;
         var srcMainJava = projectDir.resolve("src/main/java");
         var srcTestJava = projectDir.resolve("src/test/java");
+
         return Result.allOf(createFile("Slice.java.template",
-                                       srcMainJava.resolve(packagePath)
-                                                  .resolve(sliceName + ".java")),
+                                       srcMainJava.resolve(packagePath).resolve(sliceName + ".java")),
                             createFile("SliceTest.java.template",
-                                       srcTestJava.resolve(packagePath)
-                                                  .resolve(sliceName + "Test.java")));
+                                       srcTestJava.resolve(packagePath).resolve(sliceName + "Test.java")));
     }
 
     private Result<List<Path>> createTestResources() {
         var srcTestResources = projectDir.resolve("src/test/resources");
+
         return createFile("log4j2-test.xml.template", srcTestResources.resolve("log4j2-test.xml")).map(path -> List.of(path));
     }
 
@@ -228,9 +242,7 @@ public final class SliceProjectInitializer {
                             createFile("deploy-test.sh.template",
                                        projectDir.resolve("deploy-test.sh")),
                             createFile("deploy-prod.sh.template",
-                                       projectDir.resolve("deploy-prod.sh")),
-                            createFile("generate-blueprint.sh.template",
-                                       projectDir.resolve("generate-blueprint.sh")))
+                                       projectDir.resolve("deploy-prod.sh")))
                      .onSuccess(scripts -> scripts.forEach(SliceProjectInitializer::makeExecutable));
     }
 
@@ -241,9 +253,12 @@ public final class SliceProjectInitializer {
     }
 
     private Result<List<Path>> createRunScripts() {
-        return Result.allOf(createFile("run-forge.sh.template", projectDir.resolve("run-forge.sh")),
-                            createFile("start-postgres.sh.template", projectDir.resolve("start-postgres.sh")),
-                            createFile("stop-postgres.sh.template", projectDir.resolve("stop-postgres.sh")))
+        return Result.allOf(createFile("run-forge.sh.template",
+                                       projectDir.resolve("run-forge.sh")),
+                            createFile("start-postgres.sh.template",
+                                       projectDir.resolve("start-postgres.sh")),
+                            createFile("stop-postgres.sh.template",
+                                       projectDir.resolve("stop-postgres.sh")))
                      .onSuccess(scripts -> scripts.forEach(SliceProjectInitializer::makeExecutable));
     }
 
@@ -251,6 +266,7 @@ public final class SliceProjectInitializer {
         var sliceSubPackage = sliceName.toLowerCase();
         var packagePath = basePackage.replace(".", "/") + "/" + sliceSubPackage;
         var routesDir = projectDir.resolve("src/main/resources/" + packagePath);
+
         return createFile("routes.toml.template", routesDir.resolve("routes.toml")).map(path -> List.of(path));
     }
 
@@ -259,14 +275,15 @@ public final class SliceProjectInitializer {
     }
 
     private Result<Path> createDependencyManifest() {
-        try{
+        try {
             var resources = projectDir.resolve("src/main/resources/META-INF/dependencies");
             var dependencyFile = resources.resolve(basePackage + "." + sliceName.toLowerCase() + "." + sliceName);
+
             Files.writeString(dependencyFile, "# Slice dependencies (one artifact per line)\n");
+
             return Result.success(dependencyFile);
         } catch (Exception e) {
-            return Causes.cause("Failed to create dependency manifest: " + e.getMessage())
-                         .result();
+            return Causes.cause("Failed to create dependency manifest: " + e.getMessage()).result();
         }
     }
 
@@ -274,17 +291,20 @@ public final class SliceProjectInitializer {
         if (Files.exists(targetPath)) {
             return Result.success(targetPath);
         }
+
         try (var in = getClass().getResourceAsStream(TEMPLATES_PATH + templateName)) {
             if (in == null) {
                 return createFromInlineTemplate(templateName, targetPath);
             }
+
             var content = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+
             content = substituteVariables(content);
             Files.writeString(targetPath, content);
+
             return Result.success(targetPath);
         } catch (IOException e) {
-            return Causes.cause("Failed to create " + targetPath + ": " + e.getMessage())
-                         .result();
+            return Causes.cause("Failed to create " + targetPath + ": " + e.getMessage()).result();
         }
     }
 
@@ -294,13 +314,14 @@ public final class SliceProjectInitializer {
     }
 
     private Result<Path> writeTemplate(String template, Path targetPath) {
-        try{
+        try {
             var content = substituteVariables(template);
+
             Files.writeString(targetPath, content);
+
             return Result.success(targetPath);
         } catch (IOException e) {
-            return Causes.cause("Failed to create " + targetPath + ": " + e.getMessage())
-                         .result();
+            return Causes.cause("Failed to create " + targetPath + ": " + e.getMessage()).result();
         }
     }
 
@@ -315,7 +336,6 @@ public final class SliceProjectInitializer {
             case "deploy-forge.sh.template" -> Option.some(DEPLOY_FORGE_TEMPLATE);
             case "deploy-test.sh.template" -> Option.some(DEPLOY_TEST_TEMPLATE);
             case "deploy-prod.sh.template" -> Option.some(DEPLOY_PROD_TEMPLATE);
-            case "generate-blueprint.sh.template" -> Option.some(GENERATE_BLUEPRINT_TEMPLATE);
             case "slice.toml.template" -> Option.some(SLICE_CONFIG_TEMPLATE);
             case "forge.toml.template" -> Option.some(FORGE_TOML_TEMPLATE);
             case "aether.toml.template" -> Option.some(AETHER_TOML_TEMPLATE);
@@ -331,6 +351,7 @@ public final class SliceProjectInitializer {
 
     private String substituteVariables(String content) {
         var slicePackage = basePackage + "." + sliceName.toLowerCase();
+
         return content.replace("{{groupId}}", groupId)
                       .replace("{{artifactId}}", artifactId)
                       .replace("{{sliceName}}", sliceName)
@@ -344,8 +365,9 @@ public final class SliceProjectInitializer {
     }
 
     private static void makeExecutable(Path path) {
-        try{
+        try {
             var perms = Files.getPosixFilePermissions(path);
+
             perms.add(java.nio.file.attribute.PosixFilePermission.OWNER_EXECUTE);
             perms.add(java.nio.file.attribute.PosixFilePermission.GROUP_EXECUTE);
             Files.setPosixFilePermissions(path, perms);
@@ -556,39 +578,46 @@ public final class SliceProjectInitializer {
         import org.pragmatica.lang.Result;
         import org.pragmatica.lang.Verify;
 
+
         /// {{sliceName}} slice.
         @Slice
         public interface {{sliceName}} {
             record ValidGreetRequest(String name) {
                 public static Result<ValidGreetRequest> validGreetRequest(String name) {
-                    return Verify.ensure(name,
-                                         Verify.Is::present,
-                                         GreetError.invalidName())
-                                 .map(ValidGreetRequest::new);
+                    return Verify.ensure(name, Verify.Is::present, GreetError.General.INVALID_NAME).map(ValidGreetRequest::new);
                 }
             }
 
             record GreetResponse(String greeting) {}
 
             sealed interface GreetError extends Cause {
-                record InvalidName() implements GreetError {
+                enum General implements GreetError {
+                    INVALID_NAME("Name cannot be empty");
+                    private final String message;
+                    General(String message) {
+                        this.message = message;
+                    }
                     @Override
                     public String message() {
-                        return "Name cannot be empty";
+                        return message;
                     }
-                }
-
-                static GreetError invalidName() {
-                    return new InvalidName();
                 }
             }
 
             Promise<GreetResponse> greet(String name);
 
             static {{sliceName}} {{factoryMethodName}}() {
-                return name -> ValidGreetRequest.validGreetRequest(name)
-                                                .map(request -> new GreetResponse("Hello, " + request.name() + "!"))
-                                                .async();
+                return {{sliceName}}::doGreet;
+            }
+
+            private static Promise<GreetResponse> doGreet(String name) {
+                return ValidGreetRequest.validGreetRequest(name)
+                                        .map({{sliceName}}::toGreeting)
+                                        .async();
+            }
+
+            private static GreetResponse toGreeting(ValidGreetRequest request) {
+                return new GreetResponse("Hello, " + request.name() + "!");
             }
         }
         """;
@@ -601,8 +630,8 @@ public final class SliceProjectInitializer {
         import static org.assertj.core.api.Assertions.assertThat;
         import static org.junit.jupiter.api.Assertions.fail;
 
-        class {{sliceName}}Test {
 
+        class {{sliceName}}Test {
             private final {{sliceName}} slice = {{sliceName}}.{{factoryMethodName}}();
 
             @Test
@@ -641,32 +670,44 @@ public final class SliceProjectInitializer {
 
     private static final String DEPLOY_TEST_TEMPLATE = """
         #!/bin/bash
-        # Deploy slice to test Aether cluster
-        # Requires: aether CLI configured for test environment
+        # Deploy this slice to a test Aether cluster.
+        #
+        # Requires the `aether` CLI on PATH, pointed at your test cluster with either
+        #   -c <host:port>            (per invocation), or
+        #   AETHER_ENDPOINT=<host:port>  (environment).
         set -e
 
-        echo "Building and installing..."
+        COORDS="{{groupId}}:{{artifactId}}:1.0.0-SNAPSHOT"
+
+        echo "Building and installing to local Maven repository..."
         mvn clean install -DskipTests
 
-        BLUEPRINT="target/blueprint.toml"
-        if [ ! -f "$BLUEPRINT" ]; then
-            echo "ERROR: Blueprint not found. Run: mvn package jbct:generate-blueprint"
-            exit 1
-        fi
+        echo ""
+        echo "Pushing blueprint + slice artifacts to the cluster repository..."
+        aether artifacts push "$COORDS"
 
         echo ""
-        echo "Pushing artifacts to test cluster..."
-        aether artifact push --env test
+        echo "Deploying blueprint $COORDS..."
+        aether blueprints deploy "$COORDS" --wait
 
         echo ""
-        echo "Deployed to test environment."
+        echo "Deployed to test cluster."
         """;
 
     private static final String DEPLOY_PROD_TEMPLATE = """
         #!/bin/bash
-        # Deploy slice to production Aether cluster
-        # Requires: aether CLI configured for production environment
+        # Deploy this slice to a PRODUCTION Aether cluster.
+        #
+        # Prerequisites:
+        #   1. A provisioned cluster. To create one, use `aether cluster bootstrap`
+        #      with a bootstrap TOML — see `aether cluster bootstrap --help` and the
+        #      bootstrap configuration reference in the Aether docs (docs/reference/).
+        #   2. The `aether` CLI on PATH, pointed at your cluster with either
+        #        -c <host:port>              (per invocation), or
+        #        AETHER_ENDPOINT=<host:port>    (environment).
         set -e
+
+        COORDS="{{groupId}}:{{artifactId}}:1.0.0-SNAPSHOT"
 
         echo "WARNING: Deploying to PRODUCTION"
         echo ""
@@ -681,15 +722,13 @@ public final class SliceProjectInitializer {
         echo "Building and verifying..."
         mvn clean verify
 
-        BLUEPRINT="target/blueprint.toml"
-        if [ ! -f "$BLUEPRINT" ]; then
-            echo "ERROR: Blueprint not found."
-            exit 1
-        fi
+        echo ""
+        echo "Pushing blueprint + slice artifacts to the cluster repository..."
+        aether artifacts push "$COORDS"
 
         echo ""
-        echo "Pushing artifacts to production cluster..."
-        aether artifact push --env prod
+        echo "Deploying blueprint $COORDS..."
+        aether blueprints deploy "$COORDS" --wait
 
         echo ""
         echo "Deployed to production."
@@ -702,27 +741,6 @@ public final class SliceProjectInitializer {
         [blueprint]
         # Number of instances to deploy (default: 3)
         instances = 3
-        """;
-
-    private static final String GENERATE_BLUEPRINT_TEMPLATE = """
-        #!/bin/bash
-        # Generate blueprint.toml from slice manifests
-        set -e
-
-        echo "Generating blueprint..."
-        mvn package jbct:generate-blueprint -DskipTests
-
-        BLUEPRINT="target/blueprint.toml"
-
-        if [ -f "$BLUEPRINT" ]; then
-            echo ""
-            echo "Blueprint generated: $BLUEPRINT"
-            echo ""
-            cat "$BLUEPRINT"
-        else
-            echo "ERROR: Blueprint generation failed"
-            exit 1
-        fi
         """;
 
     private static final String LOG4J2_TEST_XML_TEMPLATE = """
@@ -759,6 +777,15 @@ public final class SliceProjectInitializer {
 
     private static final String AETHER_TOML_TEMPLATE = """
         # Aether runtime configuration
+        #
+        # --- Cloud provisioning (production) ---
+        # `./run-forge.sh` runs a local, in-JVM simulator and needs nothing here. To provision a
+        # real cluster, use `aether cluster bootstrap` with a bootstrap TOML — see
+        # `aether cluster bootstrap --help` and the bootstrap configuration reference in the Aether
+        # docs (docs/reference/) for a minimal, provider-specific example. `./deploy-prod.sh`
+        # then pushes and deploys this slice to that cluster.
+        #
+        # --- Database (optional) ---
         # Uncomment to enable database access (requires running PostgreSQL):
         # [database]
         # async_url = "postgresql://postgres:postgres@localhost:5432/forge"
@@ -803,7 +830,10 @@ public final class SliceProjectInitializer {
         echo "Test: curl http://localhost:8070/api/hello/World"
         echo ""
 
-        exec $FORGE_CMD --config "$SCRIPT_DIR/forge.toml" --blueprint "$SCRIPT_DIR/target/blueprint.toml"
+        # Forge resolves the blueprint (and its slices) by artifact coordinates from the local
+        # Maven repository the build above installed to. The coordinates are
+        # groupId:artifactId:version:blueprint — NOT a file path.
+        exec $FORGE_CMD --config "$SCRIPT_DIR/forge.toml" --blueprint "{{groupId}}:{{artifactId}}:1.0.0-SNAPSHOT:blueprint"
         """;
 
     private static final String START_POSTGRES_SH_TEMPLATE = """

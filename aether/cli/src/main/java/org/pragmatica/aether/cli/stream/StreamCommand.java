@@ -84,15 +84,21 @@ public class StreamCommand implements Runnable {
         @CommandLine.ParentCommand
         private StreamCommand streamParent;
 
-        @Parameters(index = "0", description = "Stream name (the partition manager's local stream name, e.g. system:cluster-events:1.0.0)")
+        @Parameters(index = "0", description = "Stream identity — with --local: the local engine key (bare name for "
+                                             + "system-namespace streams, namespace:stream:version for others); "
+                                             + "without: a namespace:stream:version catalog address")
         private String stream;
 
         @Parameters(index = "1", description = "Partition number")
         private int partition;
 
+        @CommandLine.Option(names = "--local", description = "Ask the ADDRESSED node for its OWN view (never delegate-routed; #490) — "
+                                                           + "query the resolved owner's management port to see servedByOwner=true")
+        private boolean local;
+
         @Override
         public Integer call() {
-            return fetchReplicas(stream, partition, streamParent.parent());
+            return fetchReplicas(stream, partition, local, streamParent.parent());
         }
     }
 
@@ -253,9 +259,37 @@ public class StreamCommand implements Runnable {
                                                                                new Column("HRW-OWNER", "isHrwOwner", 9)),
                                                                        "replicas");
 
-    private static int fetchReplicas(String stream, int partition, AetherCli cli) {
+    /// #753/local-key-shape fix: `STREAM_REPLICAS_LOCAL`'s "name" param is the raw engine key
+    /// ([StreamManager#engineKey] — bare name for `system`-namespace streams, full
+    /// `namespace:stream:version` for others), never uniformly a rendered catalog address, so
+    /// `--local` keeps passing `stream` through unparsed exactly as before. The catalog-form
+    /// `STREAM_REPLICAS` route is genuinely `(namespace, stream, version, partition)`-shaped and has
+    /// no bare-name convenience (unlike `streams status/publish/delete`'s default-to-`system`): a
+    /// stream identity that could silently mean two different engine keys is worse than requiring
+    /// the caller to say which one, so the non-`--local` path demands a full address and fails
+    /// clearly otherwise (see [StreamAddressArg#parse]).
+    private static int fetchReplicas(String stream, int partition, boolean local, AetherCli cli) {
+        if (local) {
+            return renderReplicas(cli.fetch(ManagementRoute.STREAM_REPLICAS_LOCAL,
+                                            List.of(stream, Integer.toString(partition))),
+                                  cli);
+        }
+
+        return StreamAddressArg.parse(stream).fold(StreamCommand::handleAddressError,
+                                                   addr -> fetchReplicasCatalog(addr, partition, cli));
+    }
+
+    private static int fetchReplicasCatalog(ResourceAddress addr, int partition, AetherCli cli) {
         var response = cli.fetch(ManagementRoute.STREAM_REPLICAS,
-                                 List.of(stream, Integer.toString(partition)));
+                                 List.of(addr.namespace().value(),
+                                         addr.name().value(),
+                                         addr.version().asString(),
+                                         Integer.toString(partition)));
+
+        return renderReplicas(response, cli);
+    }
+
+    private static int renderReplicas(String response, AetherCli cli) {
         var errorCode = OutputFormatter.checkResponseError(response, cli.outputOptions(), "Failed to load replica state");
 
         if (errorCode >= 0) {

@@ -13,17 +13,16 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.net.tcp;
+
+import java.util.List;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
-
-import java.util.List;
-import java.util.function.Consumer;
-import java.util.function.Supplier;
 
 import io.netty.bootstrap.Bootstrap;
 import io.netty.bootstrap.ServerBootstrap;
@@ -41,21 +40,17 @@ import io.netty.handler.ssl.SslContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// Convenient wrapper for Netty server setup boilerplate.
 /// Supports TLS, socket options, client connections, and optional UDP binding reusing the same worker group.
 public interface Server {
     Logger log = LoggerFactory.getLogger(Server.class);
-
     String name();
-
     int port();
-
     /// Get the boss EventLoopGroup for metrics collection.
     EventLoopGroup bossGroup();
-
     /// Get the worker EventLoopGroup for metrics collection.
     EventLoopGroup workerGroup();
-
     /// Get the optional UDP channel, if UDP was configured and bound.
     Option<Channel> udpChannel();
 
@@ -101,16 +96,17 @@ public interface Server {
                       Option<Channel> udpChannel,
                       Supplier<List<ChannelHandler>> channelHandlers,
                       Option<SslContext> clientSslContext) implements Server {
-
             @Override
             public Promise<Unit> stop(Supplier<Promise<Unit>> intermediate) {
-                var stopPromise = Promise.<Unit>promise();
+                var stopPromise = Promise.<Unit> promise();
+
                 udpChannel.onPresent(Channel::close);
                 log.trace("Stopping {}: closing server channel", name());
                 serverChannel.close()
                              .addListener(_ -> intermediate.get()
                                                            .onResult(_ -> shutdownGroups())
                                                            .onResult(stopPromise::resolve));
+
                 return stopPromise;
             }
 
@@ -129,29 +125,25 @@ public interface Server {
                                                .option(ChannelOption.TCP_NODELAY, true)
                                                .option(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
                                                .handler(createTcpChildHandler(channelHandlers, clientSslContext));
-                var promise = Promise.<Channel>promise();
+                var promise = Promise.<Channel> promise();
+
                 bootstrap.connect(address.host(),
                                   address.port())
                          .addListener((ChannelFutureListener) future -> {
                                           if (future.isSuccess()) {
-                                              promise.succeed(future.channel());
-                                          } else {
-                                              promise.fail(Causes.fromThrowable(future.cause()));
-                                          }
+                                          promise.succeed(future.channel());
+                                      } else {
+                                          promise.fail(Causes.fromThrowable(future.cause()));
+                                      }
                                       });
+
                 return promise;
             }
         }
         // Handle TLS configuration for server (incoming connections)
-        var sslContext = config.tls()
-                               .await()
-                               .flatMap(TlsContextFactory::createServer)
-                               .option();
+        var sslContext = config.tls().await().flatMap(TlsContextFactory::createServer).option();
         // Handle TLS configuration for client (outgoing connections)
-        var clientSslContext = config.clientTls()
-                                     .await()
-                                     .flatMap(TlsContextFactory::createClient)
-                                     .option();
+        var clientSslContext = config.clientTls().await().flatMap(TlsContextFactory::createClient).option();
         var bossGroup = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
         var workerGroup = new MultiThreadIoEventLoopGroup(NioIoHandler.newFactory());
         var socketOptions = config.socketOptions();
@@ -167,32 +159,38 @@ public interface Server {
                                              .childOption(ChannelOption.TCP_NODELAY,
                                                           socketOptions.tcpNoDelay())
                                              .childOption(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT);
-        var promise = Promise.<Server>promise();
+        var promise = Promise.<Server> promise();
+
         bootstrap.bind(config.port())
                  .addListener((ChannelFutureListener) future -> {
                                   if (future.isSuccess()) {
-                                      logTcpStarted(config, sslContext);
-                                      var tcpChannel = future.channel();
-                                      bindUdpIfConfigured(config, workerGroup, udpHandlers,
-                                                          udpChannel -> promise.succeed(new server(config.name(),
-                                                                                                   config.port(),
-                                                                                                   bossGroup,
-                                                                                                   workerGroup,
-                                                                                                   tcpChannel,
-                                                                                                   udpChannel,
-                                                                                                   channelHandlers,
-                                                                                                   clientSslContext)));
-                                  } else {
-                                      bossGroup.shutdownGracefully();
-                                      workerGroup.shutdownGracefully();
-                                      promise.fail(Causes.fromThrowable(future.cause()));
-                                  }
+                                  logTcpStarted(config, sslContext);
+                                  var tcpChannel = future.channel();
+
+                                  bindUdpIfConfigured(config,
+                                                      workerGroup,
+                                                      udpHandlers,
+                                                      udpChannel -> promise.succeed(new server(config.name(),
+                                                                                               config.port(),
+                                                                                               bossGroup,
+                                                                                               workerGroup,
+                                                                                               tcpChannel,
+                                                                                               udpChannel,
+                                                                                               channelHandlers,
+                                                                                               clientSslContext)));
+                              } else {
+                                  bossGroup.shutdownGracefully();
+                                  workerGroup.shutdownGracefully();
+                                  promise.fail(Causes.fromThrowable(future.cause()));
+                              }
                               });
+
         return promise;
     }
 
     private static void logTcpStarted(ServerConfig config, Option<SslContext> sslContext) {
         var protocol = sslContext.map(_ -> "TLS").or("TCP");
+
         log.info("Server {} started on port {} ({})", config.name(), config.port(), protocol);
     }
 
@@ -214,8 +212,12 @@ public interface Server {
                                           .channel(NioDatagramChannel.class)
                                           .option(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
                                           .handler(createUdpHandler(params.handlers()));
+
         udpBootstrap.bind(params.port())
-                    .addListener((ChannelFutureListener) udpFuture -> handleUdpBindResult(config, params, udpFuture, callback));
+                    .addListener((ChannelFutureListener) udpFuture -> handleUdpBindResult(config,
+                                                                                          params,
+                                                                                          udpFuture,
+                                                                                          callback));
     }
 
     private static void handleUdpBindResult(ServerConfig config,
@@ -226,17 +228,21 @@ public interface Server {
             log.info("Server {} UDP bound on port {}", config.name(), params.port());
             callback.accept(Option.some(udpFuture.channel()));
         } else {
-            log.warn("Server {} failed to bind UDP port {}: {}", config.name(), params.port(), udpFuture.cause().getMessage());
+            log.warn("Server {} failed to bind UDP port {}: {}",
+                     config.name(),
+                     params.port(),
+                     udpFuture.cause().getMessage());
             callback.accept(Option.empty());
         }
     }
 
     private static ChannelInitializer<SocketChannel> createTcpChildHandler(Supplier<List<ChannelHandler>> channelHandlers,
-                                                                            Option<SslContext> sslContext) {
+                                                                           Option<SslContext> sslContext) {
         return new ChannelInitializer<>() {
             @Override
             protected void initChannel(SocketChannel ch) {
                 var pipeline = ch.pipeline();
+
                 sslContext.onPresent(ctx -> pipeline.addLast(ctx.newHandler(ch.alloc())));
                 for (var handler : channelHandlers.get()) {
                     pipeline.addLast(handler);
@@ -250,6 +256,7 @@ public interface Server {
             @Override
             protected void initChannel(DatagramChannel ch) {
                 var pipeline = ch.pipeline();
+
                 for (var handler : udpHandlers.get()) {
                     pipeline.addLast(handler);
                 }

@@ -14,7 +14,6 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.cloud.aws.api;
 
 import java.util.List;
@@ -24,35 +23,27 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import tools.jackson.dataformat.xml.annotation.JacksonXmlElementWrapper;
 import tools.jackson.dataformat.xml.annotation.JacksonXmlProperty;
 
+
 /// EC2 instance model.
 @JsonIgnoreProperties(ignoreUnknown = true)
-public record Instance(
-    @JacksonXmlProperty(localName = "instanceId") String instanceId,
-    @JacksonXmlProperty(localName = "instanceType") String instanceType,
-    @JacksonXmlProperty(localName = "imageId") String imageId,
-    @JacksonXmlProperty(localName = "privateIpAddress") String privateIpAddress,
-    @JacksonXmlProperty(localName = "publicIpAddress") String publicIpAddress,
-    @JacksonXmlProperty(localName = "instanceState") InstanceState instanceState,
-    @JacksonXmlProperty(localName = "tagSet") TagSet tagSet
-) {
+public record Instance(@JacksonXmlProperty(localName = "instanceId") String instanceId,
+                       @JacksonXmlProperty(localName = "instanceType") String instanceType,
+                       @JacksonXmlProperty(localName = "imageId") String imageId,
+                       @JacksonXmlProperty(localName = "privateIpAddress") String privateIpAddress,
+                       @JacksonXmlProperty(localName = "publicIpAddress") String publicIpAddress,
+                       @JacksonXmlProperty(localName = "instanceState") InstanceState instanceState,
+                       @JacksonXmlProperty(localName = "tagSet") TagSet tagSet) {
     /// EC2 instance state.
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record InstanceState(
-        @JacksonXmlProperty(localName = "name") String name,
-        @JacksonXmlProperty(localName = "code") int code
-    ) {}
+    public record InstanceState(@JacksonXmlProperty(localName = "name") String name,
+                                @JacksonXmlProperty(localName = "code") int code) {}
 
     /// Container for instance tags.
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record TagSet(
-        @JacksonXmlElementWrapper(useWrapping = false)
-        @JacksonXmlProperty(localName = "item") List<Tag> items
-    ) {}
+    public record TagSet(@JacksonXmlElementWrapper(useWrapping = false) @JacksonXmlProperty(localName = "item") List<Tag> items) {}
 
     /// EC2 resource tag.
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record Tag(
-        @JacksonXmlProperty(localName = "key") String key,
-        @JacksonXmlProperty(localName = "value") String value
-    ) {}
+    public record Tag(@JacksonXmlProperty(localName = "key") String key,
+                      @JacksonXmlProperty(localName = "value") String value) {}
 }

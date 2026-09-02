@@ -23,12 +23,12 @@ test_cluster_ready() {
 # but kept explicit). An empty list IS a valid response — there may be zero
 # thresholds — so we assert HTTP status, not body content.
 test_thresholds_endpoint() {
-    assert_http_status "${CLUSTER_ENDPOINT}/api/thresholds" "200" \
-        "GET /api/thresholds returns 200" \
+    assert_http_status "${CLUSTER_ENDPOINT}/api/v1/thresholds" "200" \
+        "GET /api/v1/thresholds returns 200" \
         -H "X-API-Key: ${API_KEY}"
 }
 
-# Strict: POST a threshold, then GET /api/thresholds and verify it appears.
+# Strict: POST a threshold, then GET /api/v1/thresholds and verify it appears.
 # This converts "endpoint responds" into "endpoint accepts and persists my write".
 test_set_alert_threshold() {
     # Server contract: ThresholdRequest{metric, warning, critical} — see AlertRoutes.java.
@@ -38,31 +38,31 @@ test_set_alert_threshold() {
     local body
     body="{\"metric\":\"${ALERT_METRIC}\",\"warning\":1,\"critical\":5}"
     local create_result
-    if ! create_result=$(api_post "/api/thresholds" "$body"); then
-        log_fail "POST /api/thresholds failed (api_post returned non-zero)"
+    if ! create_result=$(api_post "/api/v1/thresholds" "$body"); then
+        log_fail "POST /api/v1/thresholds failed (api_post returned non-zero)"
         return 1
     fi
     # Read back and verify our threshold appears in the list (matched by metric name —
     # the server response shape uses the metric as the identity, not a synthetic name).
     local thresholds
-    if ! thresholds=$(api_get "/api/thresholds"); then
-        log_fail "GET /api/thresholds failed after creation"
+    if ! thresholds=$(api_get "/api/v1/thresholds"); then
+        log_fail "GET /api/v1/thresholds failed after creation"
         return 1
     fi
     assert_contains "$thresholds" "$ALERT_METRIC" \
-        "Created threshold for metric '${ALERT_METRIC}' is visible in /api/thresholds"
+        "Created threshold for metric '${ALERT_METRIC}' is visible in /api/v1/thresholds"
 }
 
-# Drive the alert path explicitly via POST /api/alerts/inject. The runtime does
+# Drive the alert path explicitly via POST /api/v1/alerts/inject. The runtime does
 # not publish a test-only metric, so threshold-driven firing on `${ALERT_METRIC}`
 # can't be exercised end-to-end here. The injection endpoint exists for exactly
-# this gap — see aether/docs/reference/management-api.md → POST /api/alerts/inject.
+# this gap — see aether/docs/reference/management-api.md → POST /api/v1/alerts/inject.
 test_trigger_alert_condition() {
     local body
     body="{\"name\":\"${ALERT_NAME}\",\"severity\":\"${ALERT_SEVERITY}\",\"message\":\"${ALERT_MESSAGE}\",\"metric\":\"${ALERT_METRIC}\",\"value\":42.0}"
     local response
-    if ! response=$(api_post "/api/alerts/inject" "$body"); then
-        log_fail "POST /api/alerts/inject failed (api_post returned non-zero)"
+    if ! response=$(api_post "/api/v1/alerts/inject" "$body"); then
+        log_fail "POST /api/v1/alerts/inject failed (api_post returned non-zero)"
         return 1
     fi
     # Server returns {alertId, name, severity, message, timestamp}. Grab alertId so
@@ -75,7 +75,7 @@ test_trigger_alert_condition() {
     log_pass "Injected alert id=${INJECTED_ALERT_ID} name=${ALERT_NAME}"
 }
 
-# Verify the injected alert is visible via GET /api/alerts (active list). The
+# Verify the injected alert is visible via GET /api/v1/alerts (active list). The
 # injection endpoint is local-to-node by design (alerts are node-local state, not
 # KV-replicated), but api_get hits the same endpoint cluster used for the POST
 # via _resolve_live_endpoint — same target node, same in-memory store.
@@ -85,16 +85,16 @@ test_check_alerts_fired() {
         return 1
     fi
     local alerts
-    if ! alerts=$(api_get "/api/alerts"); then
-        log_fail "GET /api/alerts failed (api_get returned non-zero)"
+    if ! alerts=$(api_get "/api/v1/alerts"); then
+        log_fail "GET /api/v1/alerts failed (api_get returned non-zero)"
         return 1
     fi
     assert_contains "$alerts" "$INJECTED_ALERT_ID" \
-        "GET /api/alerts must surface the injected alertId=${INJECTED_ALERT_ID}"
+        "GET /api/v1/alerts must surface the injected alertId=${INJECTED_ALERT_ID}"
 }
 
 # With an injected alert present, assert each contract field carries a sensible
-# value. Substring match (not literal "key":"value" syntax) because /api/alerts
+# value. Substring match (not literal "key":"value" syntax) because /api/v1/alerts
 # returns `AlertsResponse(Object active, Object history)` and the Object fields
 # currently hold pre-serialized String JSON which Jackson re-encodes with
 # escaped quotes — making the literal-form assertion brittle. Substring on
@@ -107,8 +107,8 @@ test_alerts_have_fields() {
         return 1
     fi
     local alerts
-    if ! alerts=$(api_get "/api/alerts"); then
-        log_fail "GET /api/alerts failed (api_get returned non-zero)"
+    if ! alerts=$(api_get "/api/v1/alerts"); then
+        log_fail "GET /api/v1/alerts failed (api_get returned non-zero)"
         return 1
     fi
     assert_contains "$alerts" "$ALERT_NAME" \

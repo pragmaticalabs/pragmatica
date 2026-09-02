@@ -419,11 +419,11 @@ load_balancer = "elected"
 
 [source.primary.core]
 count = 5
-instance_type = "cx32"
+instance_type = "cx33"
 
 [source.primary.worker]
 count = 2
-instance_type = "cx32"
+instance_type = "cx33"
 
 [source.primary.databases]
 database_host = "db.internal"

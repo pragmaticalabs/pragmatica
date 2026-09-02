@@ -13,11 +13,11 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.dht;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
+
 
 /// Error causes for distributed DHT operations.
 public sealed interface DHTError extends Cause {
@@ -47,8 +47,9 @@ public sealed interface DHTError extends Cause {
     record StaleEpochWrite(long epochTerm, long epochCounter) implements DHTError {
         @Override
         public String message() {
-            return "Stale-epoch DHT write rejected: presented owner epoch " + epochTerm + ":" + epochCounter
-                   + " is older than the partition high-water";
+            return "Stale-epoch DHT write rejected: presented owner epoch " + epochTerm
+                 + ":" + epochCounter
+                 + " is older than the partition high-water";
         }
     }
 

@@ -2,6 +2,7 @@ package org.pragmatica.aether.example.banking.shared;
 
 import java.time.Instant;
 
+
 /// Full receipt for a completed transfer.
 public record TransferReceipt(TransferId transferId,
                               AccountId sourceAccountId,
@@ -10,14 +11,17 @@ public record TransferReceipt(TransferId transferId,
                               Money destinationAmount,
                               TransferStatus status,
                               Instant completedAt) {
-
     public static TransferReceipt transferReceipt(TransferId transferId,
                                                   AccountId source,
                                                   AccountId destination,
                                                   Money sourceAmount,
                                                   Money destinationAmount) {
-        return new TransferReceipt(transferId, source, destination,
-                                   sourceAmount, destinationAmount,
-                                   TransferStatus.COMPLETED, Instant.now());
+        return new TransferReceipt(transferId,
+                                   source,
+                                   destination,
+                                   sourceAmount,
+                                   destinationAmount,
+                                   TransferStatus.COMPLETED,
+                                   Instant.now());
     }
 }

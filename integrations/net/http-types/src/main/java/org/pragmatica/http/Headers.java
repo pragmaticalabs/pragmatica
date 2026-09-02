@@ -13,23 +13,21 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.http;
-
-import org.pragmatica.lang.Option;
 
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import org.pragmatica.lang.Option;
+
+
 /// HTTP headers with case-insensitive lookup (per HTTP specification).
 public interface Headers {
     /// Get the first value for a header (case-insensitive lookup).
     Option<String> get(String name);
-
     /// Get all values for a header (case-insensitive lookup).
     List<String> getAll(String name);
-
     /// Get all headers as a map (keys are lowercase).
     Map<String, List<String>> asMap();
 
@@ -45,8 +43,7 @@ public interface Headers {
 
             @Override
             public List<String> getAll(String name) {
-                return Option.option(normalized.get(name.toLowerCase()))
-                             .or(List::of);
+                return Option.option(normalized.get(name.toLowerCase())).or(List::of);
             }
 
             @Override
@@ -55,14 +52,18 @@ public interface Headers {
             }
         }
         var normalized = new HashMap<String, List<String>>();
+
         raw.forEach((k, v) -> normalized.put(k.toLowerCase(), List.copyOf(v)));
+
         return new headers(Map.copyOf(normalized));
     }
 
     /// Create headers from a single-value map (convenience for simple cases).
     static Headers fromSingleValueMap(Map<String, String> raw) {
         var multi = new HashMap<String, List<String>>();
+
         raw.forEach((k, v) -> multi.put(k.toLowerCase(), List.of(v)));
+
         return headers(multi);
     }
 

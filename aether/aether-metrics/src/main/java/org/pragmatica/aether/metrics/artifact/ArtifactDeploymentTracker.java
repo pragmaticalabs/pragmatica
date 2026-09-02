@@ -62,14 +62,14 @@ class ArtifactDeploymentTrackerImpl implements ArtifactDeploymentTracker {
                   deploymentCounts.getOrDefault(artifact, 0));
     }
 
-    @SuppressWarnings("JBCT-RET-03")
+    @SuppressWarnings({"JBCT-RET-03", "JBCT-RET-06"})  // JDK Map.compute remap: the count arg is null when the artifact key is absent
     private static Integer incrementCount(Integer count) {
         return count == null
                ? 1
                : count + 1;
     }
 
-    @SuppressWarnings("JBCT-RET-03")
+    @SuppressWarnings({"JBCT-RET-03", "JBCT-RET-06"})  // JDK Map.compute remap: the count arg is null when the artifact key is absent
     private static Integer decrementCount(Integer count) {
         return (count == null || count <= 1)
                ? null

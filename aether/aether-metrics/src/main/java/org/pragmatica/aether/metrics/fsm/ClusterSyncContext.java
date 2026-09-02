@@ -19,8 +19,6 @@ import org.pragmatica.aether.metrics.ClusterSyncCollector;
 import org.pragmatica.aether.metrics.PeriodicObservationConfig;
 import org.pragmatica.aether.metrics.observation.PeerObservationStore;
 import org.pragmatica.aether.slice.generation.Epoch;
-import org.pragmatica.aether.slice.generation.HealthSignal;
-import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
 import org.pragmatica.cluster.metrics.PeerConnectivityObservation;
 import org.pragmatica.cluster.metrics.PeerHealthObservation;
@@ -47,7 +45,6 @@ public final class ClusterSyncContext {
     private final ClusterSyncCollector collector;
     private final TimeSpan interval;
     private final Supplier<Long> rabiaTermSupplier;
-    private final HealthSignalSink signalSink;
     private final int pingTimeoutThreshold;
     private final Supplier<Epoch> epochSupplier;
     /// #231 regression fix — ping DISPATCH is leader-only. Sourced from the SAME leader signal as
@@ -101,7 +98,6 @@ public final class ClusterSyncContext {
                               ClusterSyncCollector collector,
                               TimeSpan interval,
                               Supplier<Long> rabiaTermSupplier,
-                              HealthSignalSink signalSink,
                               int pingTimeoutThreshold,
                               Supplier<Epoch> epochSupplier,
                               PeerObservationStore observationStore) {
@@ -111,7 +107,6 @@ public final class ClusterSyncContext {
              collector,
              interval,
              rabiaTermSupplier,
-             signalSink,
              pingTimeoutThreshold,
              epochSupplier,
              observationStore,
@@ -125,7 +120,6 @@ public final class ClusterSyncContext {
                               ClusterSyncCollector collector,
                               TimeSpan interval,
                               Supplier<Long> rabiaTermSupplier,
-                              HealthSignalSink signalSink,
                               int pingTimeoutThreshold,
                               Supplier<Epoch> epochSupplier,
                               PeerObservationStore observationStore,
@@ -136,7 +130,6 @@ public final class ClusterSyncContext {
              collector,
              interval,
              rabiaTermSupplier,
-             signalSink,
              pingTimeoutThreshold,
              epochSupplier,
              observationStore,
@@ -150,7 +143,6 @@ public final class ClusterSyncContext {
                               ClusterSyncCollector collector,
                               TimeSpan interval,
                               Supplier<Long> rabiaTermSupplier,
-                              HealthSignalSink signalSink,
                               int pingTimeoutThreshold,
                               Supplier<Epoch> epochSupplier,
                               PeerObservationStore observationStore,
@@ -162,7 +154,6 @@ public final class ClusterSyncContext {
              collector,
              interval,
              rabiaTermSupplier,
-             signalSink,
              pingTimeoutThreshold,
              epochSupplier,
              observationStore,
@@ -177,7 +168,6 @@ public final class ClusterSyncContext {
                               ClusterSyncCollector collector,
                               TimeSpan interval,
                               Supplier<Long> rabiaTermSupplier,
-                              HealthSignalSink signalSink,
                               int pingTimeoutThreshold,
                               Supplier<Epoch> epochSupplier,
                               PeerObservationStore observationStore,
@@ -190,7 +180,6 @@ public final class ClusterSyncContext {
         this.collector = collector;
         this.interval = interval;
         this.rabiaTermSupplier = rabiaTermSupplier;
-        this.signalSink = signalSink;
         this.pingTimeoutThreshold = pingTimeoutThreshold;
         this.epochSupplier = epochSupplier;
         this.observationStore = observationStore;
@@ -400,14 +389,11 @@ public final class ClusterSyncContext {
         if (missed < pingTimeoutThreshold) {
             return;
         }
-
-        signalSink.emit(new HealthSignal.PingTimeout(peer, missed, epochSupplier.get()));
         // RC1 (S01 fix, owner-side SWIM symmetry) + option 1: do NOT feed an unreachable hint for a
         // peer SWIM still observes as HEALTHY. Pong delivery is leader-coupled, so during a
         // leader-loss / re-election window a LIVE SWIM-HEALTHY peer can transiently miss
         // `pingTimeoutThreshold` pongs. SWIM already trusts that peer, so feeding a conflicting
-        // unreachable hint would be self-defeating. The `PingTimeout` signal above is still emitted —
-        // it is advisory liveness telemetry the SWIM-gated FSM arbitrates independently.
+        // unreachable hint would be self-defeating.
         if (collector.peerLocallyAlive(peer)) {
             log.debug("ClusterSync: skipping ping-timeout unreachable hint for {} — SWIM says ALIVE (missed={})",
                       peer,

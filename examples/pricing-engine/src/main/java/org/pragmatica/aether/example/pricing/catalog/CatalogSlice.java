@@ -17,6 +17,14 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 
 
+/// Pricing orchestrator -- the entry slice of the pricing-engine example.
+///
+/// Demonstrates: slice-to-slice calls into DiscountSlice and TaxSlice, an @Sql SqlConnector for
+/// product lookup, and a Publisher emitting HighValueOrderEvent that AnalyticsSlice subscribes to.
+/// The response carries a callPath so a load test can see which hop served each request.
+///
+/// Does NOT demonstrate: caching, currency handling (every amount is integer cents), authorization,
+/// or retries between slices -- it is shaped to be driven by the k6 load scripts in `k6/`.
 @Slice
 public interface CatalogSlice {
     int HIGH_VALUE_THRESHOLD_CENTS = 50000;

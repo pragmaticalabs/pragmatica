@@ -13,7 +13,6 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.swim;
 
 import java.util.ArrayList;
@@ -24,6 +23,7 @@ import java.util.concurrent.ConcurrentLinkedDeque;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.swim.SwimMessage.MembershipUpdate;
 import org.pragmatica.swim.SwimMember.MemberState;
+
 
 /// Bounded buffer for membership updates piggybacked on protocol messages.
 /// Thread-safe: multiple protocol threads may add/peek updates concurrently.
@@ -76,14 +76,13 @@ public final class PiggybackBuffer {
             }
 
             result.add(item.update());
-
             var incremented = item.withDissemination();
+
             if (incremented.disseminationCount() < maxDisseminations) {
                 toRequeue.add(incremented);
             }
             // else: evicted — disseminated enough times
         }
-
         // Re-add non-evicted updates to the back
         toRequeue.forEach(buffer::addLast);
 
@@ -98,7 +97,8 @@ public final class PiggybackBuffer {
     /// Current number of buffered FAULTY updates (P2 — used to assert isolation-era expiry).
     public int faultyCount() {
         return (int) buffer.stream()
-                           .filter(tracked -> tracked.update().state() == MemberState.FAULTY)
+                           .filter(tracked -> tracked.update()
+                                                     .state() == MemberState.FAULTY)
                            .count();
     }
 
@@ -111,7 +111,10 @@ public final class PiggybackBuffer {
     /// retained — only the death verdicts are dropped. Returns the number of entries dropped.
     public int expireFaultyUpdates() {
         var before = buffer.size();
-        buffer.removeIf(tracked -> tracked.update().state() == MemberState.FAULTY);
+
+        buffer.removeIf(tracked -> tracked.update()
+                                          .state() == MemberState.FAULTY);
+
         return before - buffer.size();
     }
 

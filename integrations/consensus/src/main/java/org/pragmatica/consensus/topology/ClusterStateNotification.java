@@ -13,12 +13,12 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.topology;
+
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.pragmatica.messaging.Message;
 
-import java.util.concurrent.atomic.AtomicLong;
 
 /// Authoritative cluster-state notifications with monotonic sequencing for stale-delivery
 /// rejection. Emitted by the consensus bridge in response to `RabiaEngine` phase transitions
@@ -34,7 +34,10 @@ import java.util.concurrent.atomic.AtomicLong;
 public record ClusterStateNotification(State state, long sequence) implements Message.Local {
     private static final AtomicLong SEQUENCE = new AtomicLong();
 
-    public enum State { ACTIVE, PASSIVE }
+    public enum State {
+        ACTIVE,
+        PASSIVE
+    }
 
     public static ClusterStateNotification active() {
         return new ClusterStateNotification(State.ACTIVE, SEQUENCE.incrementAndGet());
@@ -48,12 +51,14 @@ public record ClusterStateNotification(State state, long sequence) implements Me
     /// Returns false if stale (should be ignored).
     public boolean advanceSequence(AtomicLong tracker) {
         long prev;
+
         do {
             prev = tracker.get();
             if (sequence <= prev) {
                 return false;
             }
         } while (!tracker.compareAndSet(prev, sequence));
+
         return true;
     }
 }

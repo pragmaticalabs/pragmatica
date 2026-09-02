@@ -7,6 +7,7 @@ package org.pragmatica.aether.deployment.cluster;
 import java.net.SocketAddress;
 import java.time.Instant;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -18,6 +19,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -32,6 +34,7 @@ import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.config.cluster.SourceType;
 import org.pragmatica.aether.config.cluster.SshDeploymentConfig;
 import org.pragmatica.aether.deployment.DeploymentMap;
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.InstanceInfo;
@@ -39,6 +42,7 @@ import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.PlacementHint;
 import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.ProvisionSpec;
+import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -54,7 +58,6 @@ import org.pragmatica.consensus.topology.MembershipDecision.NodeDecommissioned;
 import org.pragmatica.consensus.topology.MembershipDecision.NodeJoined;
 import org.pragmatica.consensus.topology.MembershipDecision.NodeRemoved;
 import org.pragmatica.consensus.topology.MembershipView;
-import org.pragmatica.consensus.topology.NodeHealth;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.consensus.topology.NodeState;
@@ -97,7 +100,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     LongSupplier clock,
                                     Consumer<NodeId> drainCommandSink,
                                     Consumer<NodeId> drainCommandClear,
-                                    Supplier<Option<TomlDocument>> resolvedLocalConfig) implements ClusterTopologyManager {
+                                    Supplier<Option<TomlDocument>> resolvedLocalConfig,
+                                    AtomicBoolean workerReconcileInFlight,
+                                    AtomicBoolean workerReconcilePending) implements ClusterTopologyManager {
     private static final Logger log = LoggerFactory.getLogger(ClusterTopologyManager.class);
     private static final int MINIMUM_CLUSTER_SIZE = 3;
     private static final int MAX_CONSECUTIVE_PROVISIONING_FAILURES = 3;
@@ -195,15 +200,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 new AtomicLong(clock.getAsLong()),
                                                 new AtomicBoolean(true),
                                                 clock,
-                                                drainCommandSink == null
-                                                ? _ -> {}
-                                                : drainCommandSink,
-                                                drainCommandClear == null
-                                                ? _ -> {}
-                                                : drainCommandClear,
-                                                resolvedLocalConfig == null
-                                                ? Option::none
-                                                : resolvedLocalConfig);
+                                                Option.option(drainCommandSink).or(_ -> {}),
+                                                Option.option(drainCommandClear).or(_ -> {}),
+                                                Option.option(resolvedLocalConfig).or((Supplier<Option<TomlDocument>>) Option::none),
+                                                new AtomicBoolean(false),
+                                                new AtomicBoolean(false));
     }
 
     private long nowMs() {
@@ -220,48 +221,105 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     @Override
-    public Promise<Unit> setDesiredSize(int size) {
-        if (size < MINIMUM_CLUSTER_SIZE) {
+    public Promise<Unit> setDesiredCount(SourceName sourceName, NodeRole role, int count) {
+        // The quorum floor is a property of the CORE tier only; worker and spot tiers may legitimately
+        // scale to zero.
+        if (role == NodeRole.CORE && count < MINIMUM_CLUSTER_SIZE) {
             return Causes.cause("Cluster size cannot be below " + MINIMUM_CLUSTER_SIZE + " (quorum requirement)").promise();
         }
 
-        resetProvisioningCircuit("setDesiredSize=" + size);
+        resetProvisioningCircuit("setDesiredCount " + sourceName + "/" + role.value() + "=" + count);
 
-        return writeDesiredCoreCount(size);
+        return applyDesiredCount(clusterConfigReader,
+                                 commandApplier,
+                                 sourceName.value(),
+                                 role.value(),
+                                 count,
+                                 DESIRED_COUNT_CAS_ATTEMPTS);
     }
 
-    private Promise<Unit> writeDesiredCoreCount(int size) {
-        var existing = clusterConfigReader.get();
+    static final int DESIRED_COUNT_CAS_ATTEMPTS = 3;
+
+    /// Fenced read-modify-write of one `(source, role)` desired count (RFC-0018, #570).
+    ///
+    /// The applier's successor fence rejects a `Put` built on a stale read, so a concurrent writer
+    /// (a scale racing an auto-heal) can no longer be silently overwritten — but the rejection is
+    /// invisible in the apply result: under batch merging every submitter receives the FULL merged
+    /// result list and cannot attribute an element to its own command. So this loop confirms
+    /// semantically instead — after the apply resolves, the local state machine has applied the
+    /// batch (the engine runs `process` before resolving the promise, and `setDesiredCount` is
+    /// leader-gated so the reader is the applying node), and a re-read tells us whether the count
+    /// we asked for landed. If it did not, we lost the race: recompute from the fresh committed
+    /// value and retry, bounded. If the reader lags the commit, a retry recomputes the same version
+    /// and loses again — burning an attempt but never lying.
+    ///
+    /// Static and collaborator-injected so the loop is testable without wiring the full CTM record.
+    static Promise<Unit> applyDesiredCount(Supplier<Option<ClusterConfigValue>> reader,
+                                           Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
+                                           String sourceName,
+                                           String role,
+                                           int count,
+                                           int attemptsLeft) {
+        var existing = reader.get();
 
         if (existing.isEmpty()) {
             return Causes.cause("ClusterConfigValue atom missing — bootstrap must seed it before scale operations are accepted").promise();
         }
 
-        var updated = withCoreCount(existing.unwrap(), size);
+        var updated = existing.unwrap().withDesiredCount(sourceName, role, count);
         @SuppressWarnings("unchecked")
         var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<AetherKey, AetherValue>(ClusterConfigKey.CURRENT,
                                                                                                      updated);
 
-        return commandApplier.apply(List.of(command))
-                             .onFailure(cause -> log.warn("CTM: failed to write ClusterConfigValue coreCount={}: {}",
-                                                          size,
-                                                          cause.message()))
-                             .onSuccess(_ -> log.info("CTM: wrote ClusterConfigValue coreCount={} (configVersion={})",
-                                                      size,
-                                                      updated.configVersion()))
-                             .mapToUnit();
+        return applier.apply(List.of(command))
+                      .onFailure(cause -> log.warn("CTM: failed to write ClusterConfigValue {}/{}={}: {}",
+                                                   sourceName,
+                                                   role,
+                                                   count,
+                                                   cause.message()))
+                      .flatMap(_ -> confirmOrRetry(reader,
+                                                   applier,
+                                                   sourceName,
+                                                   role,
+                                                   count,
+                                                   attemptsLeft,
+                                                   updated.configVersion()));
     }
 
-    private ClusterConfigValue withCoreCount(ClusterConfigValue existing, int newCoreCount) {
-        return new ClusterConfigValue(existing.tomlContent(),
-                                      existing.clusterName(),
-                                      existing.version(),
-                                      newCoreCount,
-                                      existing.coreMin(),
-                                      existing.coreMax(),
-                                      existing.deploymentType(),
-                                      existing.configVersion() + 1,
-                                      nowMs());
+    private static Promise<Unit> confirmOrRetry(Supplier<Option<ClusterConfigValue>> reader,
+                                                Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
+                                                String sourceName,
+                                                String role,
+                                                int count,
+                                                int attemptsLeft,
+                                                long intendedVersion) {
+        var landed = reader.get().map(fresh -> fresh.desiredCountFor(sourceName, role) == count).or(false);
+
+        if (landed) {
+            log.info("CTM: wrote ClusterConfigValue {}/{}={} (configVersion={})",
+                     sourceName,
+                     role,
+                     count,
+                     intendedVersion);
+
+            return Promise.unitPromise();
+        }
+
+        log.warn("CTM: desired-count CAS lost — {}/{}={} did not land at configVersion={}, {} attempt(s) left",
+                 sourceName,
+                 role,
+                 count,
+                 intendedVersion,
+                 attemptsLeft - 1);
+        if (attemptsLeft <= 1) {
+            return Causes.cause("Desired-count write for " + sourceName
+                               + "/" + role
+                               + "=" + count
+                               + " lost the version race " + DESIRED_COUNT_CAS_ATTEMPTS
+                               + " times — a concurrent writer keeps advancing the cluster config; re-issue the scale").promise();
+        }
+
+        return applyDesiredCount(reader, applier, sourceName, role, count, attemptsLeft - 1);
     }
 
     @Override
@@ -400,9 +458,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         var prev = consecutiveProvisioningFailures.getAndSet(0);
 
         nextProvisioningAllowedMs.set(0L);
-        var clusterName = clusterConfigReader.get().map(ClusterConfigValue::clusterName).or("");
-
-        lifecycleManager.resetProvisionerState(clusterName);
+        lifecycleManager.resetProvisionerState(resolveClusterName());
         if (prev > 0) {
             log.info("CTM: provisioning circuit breaker reset ({}); cleared {} prior failure(s)", reason, prev);
         }
@@ -478,20 +534,45 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// `nodeId:host:port` entry via the same `observer.get(id)` → `formatPeerEntry` mechanism
     /// `buildProvisionContext` uses; ids that do not resolve are dropped, and `self` is always
     /// included (the CTM runs on the leader, which is alive by definition). Seeding from the
-    /// live set — instead of `observer.topology()` ∩ `isHealthyPeer` — keeps just-killed
+    /// live set — instead of `observer.topology()` ∩ `isDiscoveredPeer` — keeps just-killed
     /// hostnames out of the PEERS list, preventing DOA replacements (dead-host PEERS →
     /// QUIC NPE). If `clusterMembers` is empty (cold paths), the seed falls back to
-    /// `buildProvisionContext`'s topology-derived peers. `failedPeer` is observability-only.
+    /// `buildProvisionContext`'s topology-derived peers, which additionally intersects with
+    /// `liveObservedPeer` (#678) so the cold-path fallback keeps the same dead-host protection
+    /// this live-set path gets for free from `clusterMembers` itself. `failedPeer` is
+    /// observability-only.
+    ///
+    /// The source profile name is resolved here from the persisted cluster config
+    /// ([#replacementSourceName]) rather than hardcoded, so a core replacement is stamped with the
+    /// `aether-source` label of the source that actually backs its role.
     @Override
     public Promise<ProvisionDisposition> provisionReplacement(NodeId newNodeId,
                                                               Option<NodeId> failedPeer,
                                                               Set<NodeId> clusterMembers,
                                                               NodeRole intendedRole) {
-        log.info("CTM v2: provisionReplacement requested (newNodeId={}, failedPeer={}, clusterMembers.size={}, intendedRole={})",
+        return provisionReplacement(newNodeId,
+                                    failedPeer,
+                                    clusterMembers,
+                                    intendedRole,
+                                    replacementSourceName(intendedRole));
+    }
+
+    /// RFC-0017 stage 5 — the source-explicit form. `sourceName` becomes the provider's
+    /// `aether-source` label, which is one third of the selector the worker reconcile pass lists
+    /// ACTUAL inventory with, so it MUST be the name the desired-topology entry was published
+    /// under. The worker path passes `entry.sourceName()` verbatim; the core auto-heal path above
+    /// resolves it from the persisted cluster config.
+    private Promise<ProvisionDisposition> provisionReplacement(NodeId newNodeId,
+                                                               Option<NodeId> failedPeer,
+                                                               Set<NodeId> clusterMembers,
+                                                               NodeRole intendedRole,
+                                                               SourceName sourceName) {
+        log.info("CTM v2: provisionReplacement requested (newNodeId={}, failedPeer={}, clusterMembers.size={}, intendedRole={}, source={})",
                  newNodeId,
                  failedPeer,
                  clusterMembers.size(),
-                 intendedRole.value());
+                 intendedRole.value(),
+                 sourceName);
         // #148 — runaway-provisioning cap. If a provisioned node crash-loops (boots, fails to
         // become a member, the LeaderReconciler re-derives the same deficit and calls back here),
         // the consecutive-failure counter trips this breaker and provisioning is suspended for a
@@ -511,7 +592,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             return Promise.success(ProvisionDisposition.deferred(ProvisionDisposition.DeferralReason.CIRCUIT_OPEN));
         }
 
-        var contextBase = buildProvisionContext(newNodeId, intendedRole);
+        var contextBase = buildProvisionContext(newNodeId, intendedRole, sourceName);
         var memberPeers = liveMemberPeers(clusterMembers);
         var contextSeeded = memberPeers.isEmpty()
                             ? contextBase
@@ -525,7 +606,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             return Promise.success(ProvisionDisposition.deferred(ProvisionDisposition.DeferralReason.NO_HEALTHY_PEERS));
         }
 
-        var baseSpec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "default", "core", contextSeeded).unwrap();
+        var baseSpec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND,
+                                                   roleInstanceType(intendedRole),
+                                                   intendedRole.value(),
+                                                   contextSeeded)
+                                    .unwrap();
         var renderedSpec = renderReplacementUserData(contextSeeded, intendedRole).map(baseSpec::withUserData)
                                                     .or(baseSpec);
 
@@ -634,6 +719,214 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         return ClusterBootstrapConfigParser.parse(toml).option();
     }
 
+    /// RFC-0017 stage 5 — the instance type for a provision of `intendedRole`, resolved from the
+    /// role's OWN sub-table in the persisted cluster TOML (same parse path as
+    /// [#replacementZones]). The spec used to hardcode `"default"` with role string `"core"`,
+    /// which was survivable while only core replacements flowed through here — a worker provision
+    /// would have booted on the CORE's fallback size. Falls back to `"default"` (provider-level
+    /// `[cloud.compute] server_type` then applies) when the TOML is unparseable or the role
+    /// declares no instance type.
+    private String roleInstanceType(NodeRole intendedRole) {
+        return Option.option(clusterConfigReader.get().map(ClusterConfigValue::tomlContent).or(""))
+                     .filter(toml -> !toml.isBlank())
+                     .flatMap(ClusterTopologyManagerRecord::parseConfig)
+                     .flatMap(config -> cloudSourceFor(config, intendedRole))
+                     .flatMap(source -> Option.option(source.roles().get(intendedRole)))
+                     .flatMap(role -> role.instanceType())
+                     .or("default");
+    }
+
+    /// RFC-0017 stage 5 — the source profile NAME backing a provision of `intendedRole`, resolved
+    /// from the persisted cluster TOML through the SAME [#cloudSourceFor] lookup that already
+    /// resolves the role's zones and instance type, so all three ride one source profile. This is
+    /// what the provider stamps as `aether-source`.
+    ///
+    /// Falls back to [ProvisionContext#DEFAULT_SOURCE_NAME] when no cloud source backs the role —
+    /// the TOML is blank/unparseable (tests, forge) or the provider is non-cloud (Docker) and has
+    /// no source concept at all. That fallback is honest rather than convenient: there is no source
+    /// name to round-trip, and nothing lists those instances by a source-scoped selector. The
+    /// worker reconcile path never relies on it — it passes the topology entry's own source name,
+    /// which is authoritative and, under multi-source topologies, the only correct answer
+    /// (`cloudSourceFor` returns the FIRST cloud source declaring the role).
+    private SourceName replacementSourceName(NodeRole intendedRole) {
+        return Option.option(clusterConfigReader.get().map(ClusterConfigValue::tomlContent).or(""))
+                     .filter(toml -> !toml.isBlank())
+                     .flatMap(ClusterTopologyManagerRecord::parseConfig)
+                     .flatMap(config -> cloudSourceFor(config, intendedRole))
+                     .map(SourceProfile::name)
+                     .or(ProvisionContext.DEFAULT_SOURCE_NAME);
+    }
+
+    /// RFC-0017 stage 5 — reconcile ACTUAL worker/spot cloud inventory toward the desired
+    /// per-(source, role) topology published in cluster state. The core tier is deliberately NOT
+    /// touched here: core reconciliation lives in the hardened [LeaderReconciler]-driven path with
+    /// its quorum-safety, cold-start and debounce machinery, none of which applies to workers — a
+    /// worker deficit is never quorum-ambiguous and a worker surplus never threatens consensus.
+    ///
+    /// ACTUAL is the provider's label inventory (`aether-cluster`/`aether-source`/`aether-role`),
+    /// not SWIM membership: for create/destroy decisions, "the VM exists" is the honest ground
+    /// truth — a created-but-not-yet-joined worker must not be double-provisioned.
+    ///
+    /// Leader-gated by `active` (the same guard the membership actuator path uses) and serialized
+    /// by `workerReconcileInFlight` — config commits can arrive faster than a pass completes, and
+    /// two concurrent passes would both see the same deficit and double-provision. A trigger that
+    /// arrives mid-pass is NOT dropped: it is recorded in `workerReconcilePending` and replayed as
+    /// exactly one follow-up pass when the in-flight one releases. Replay cannot self-perpetuate —
+    /// the follow-up consumes the flag before it runs, so only a genuinely new external trigger can
+    /// set it again. Deferred provisions (open circuit, no peers) surface on the next commit or
+    /// leader activation, matching the deferral semantics of [#provisionReplacement].
+    @Contract
+    @Override
+    public void reconcileWorkerTopology() {
+        if (!active.get()) {
+            return;
+        }
+
+        if (!workerReconcileInFlight.compareAndSet(false, true)) {
+            // The in-flight pass may already have read the state this trigger is about, so it
+            // cannot stand in for it. Record the miss and let the completing pass replay it.
+            workerReconcilePending.set(true);
+            log.debug("CTM: worker reconcile already in flight — deferring trigger to a follow-up pass");
+
+            return;
+        }
+
+        runWorkerReconcilePass().onResult(_ -> completeWorkerReconcilePass());
+    }
+
+    /// Release the serialization flag FIRST, then replay a missed trigger. In that order a trigger
+    /// racing the release either wins the CAS and runs its own pass, or loses it and re-arms
+    /// `workerReconcilePending` for whichever pass is now in flight — no interleaving drops it. The
+    /// replay re-enters [#reconcileWorkerTopology], so it is leader-gated exactly like any other
+    /// trigger.
+    @Contract
+    private void completeWorkerReconcilePass() {
+        workerReconcileInFlight.set(false);
+        if (workerReconcilePending.compareAndSet(true, false)) {
+            log.debug("CTM: replaying worker reconcile trigger deferred during the previous pass");
+            reconcileWorkerTopology();
+        }
+    }
+
+    private Promise<Unit> runWorkerReconcilePass() {
+        return clusterConfigReader.get()
+                                  .fold(Promise::unitPromise, this::reconcileWorkerEntries);
+    }
+
+    private Promise<Unit> reconcileWorkerEntries(ClusterConfigValue config) {
+        var entries = config.desiredTopology().stream().filter(entry -> !entry.isCore()).toList();
+        var pass = Promise.unitPromise();
+
+        for (var entry : entries) {
+            pass = pass.flatMap(_ -> reconcileWorkerEntry(ClusterName.maybeClusterName(config.clusterName()),
+                                                          entry));
+        }
+
+        return pass;
+    }
+
+    private Promise<Unit> reconcileWorkerEntry(Option<ClusterName> clusterName, AetherValue.TopologyEntry entry) {
+        // Renders an unresolvable persisted name as the EMPTY selector value, byte-identical to the
+        // historical `.or("")` — the KV `ClusterConfigValue.clusterName` is a `String` written by the
+        // bootstrap parser (which validated it), so the empty case is unreachable in practice and is
+        // kept only so this pass cannot change which instances it counts.
+        var filter = Map.of("aether-cluster",
+                            clusterName.map(ClusterName::value).or(""),
+                            "aether-source",
+                            entry.sourceName(),
+                            "aether-role",
+                            entry.role());
+
+        return lifecycleManager.listInstances(filter)
+                               .flatMap(actual -> applyWorkerDelta(entry, actual))
+                               .onFailure(cause -> log.warn("CTM: worker reconcile for {}/{} failed: {}",
+                                                            entry.sourceName(),
+                                                            entry.role(),
+                                                            cause.message()))
+                               .fold(_ -> Promise.unitPromise());
+    }
+
+    private Promise<Unit> applyWorkerDelta(AetherValue.TopologyEntry entry, List<InstanceInfo> actual) {
+        var delta = entry.count() - actual.size();
+
+        if (delta == 0) {
+            return Promise.unitPromise();
+        }
+
+        log.info("CTM: worker topology {}/{} — desired={}, actual={}, {} {}",
+                 entry.sourceName(),
+                 entry.role(),
+                 entry.count(),
+                 actual.size(),
+                 delta > 0
+                 ? "provisioning"
+                 : "terminating",
+                 Math.abs(delta));
+
+        return delta > 0
+               ? provisionWorkers(entry, delta)
+               : terminateSurplusWorkers(actual, -delta);
+    }
+
+    private Promise<Unit> provisionWorkers(AetherValue.TopologyEntry entry, int deficit) {
+        var role = NodeRole.nodeRole(entry.role()).option().or(NodeRole.WORKER);
+        var members = observer.coreNodes();
+        var pass = Promise.unitPromise();
+
+        for (int i = 0; i < deficit; i++) {
+            var minted = mintWorkerNodeId(entry, i);
+
+            pass = pass.flatMap(_ -> provisionReplacement(minted, Option.none(), members, role, workerSourceName(entry)).mapToUnit());
+        }
+
+        return pass;
+    }
+
+    /// The `aether/slice` boundary conversion for the worker path. [AetherValue.TopologyEntry] keeps a
+    /// `String` source name by design — that module does not depend on this layer — so the deployment
+    /// layer types it here, exactly as it already does for `role`. The TOTAL conversion is used rather
+    /// than the validating factory because a topology entry is minted from a parsed config's source key
+    /// and cannot be blank, and because a blank one must keep reaching the provider's fail-closed
+    /// firewall check (which names this very fallback) instead of aborting the whole reconcile pass.
+    private static SourceName workerSourceName(AetherValue.TopologyEntry entry) {
+        return SourceName.sourceNameOrDefault(entry.sourceName());
+    }
+
+    /// Base36 leader-clock suffix: unique across passes, and LEXICOGRAPHICALLY LATER than any
+    /// bootstrap-minted `<source>-<role>-<index>` sibling (digits sort before `r`), so
+    /// newest-first surplus termination reaps cluster-provisioned workers before bootstrap ones.
+    /// Leader-side only — never evaluated in the consensus applier, so the wall clock is safe here.
+    private NodeId mintWorkerNodeId(AetherValue.TopologyEntry entry, int ordinal) {
+        return NodeId.nodeId(entry.sourceName()
+                            + "-" + entry.role()
+                            + "-r" + Long.toString(clock.getAsLong(), 36)
+                            + "-" + ordinal).unwrap();
+    }
+
+    /// Newest first (REQ-SCALE-03 ordering by id: minted `-r<base36-clock>` ids sort after
+    /// bootstrap `-<index>` ids, and later mints sort after earlier ones). An instance without a
+    /// node-id label cannot be terminated through the node-id path and is skipped — pre-#579
+    /// orphans are the cloud reaper's job, not the reconciler's.
+    private Promise<Unit> terminateSurplusWorkers(List<InstanceInfo> actual, int surplus) {
+        var victims = actual.stream()
+                            .flatMap(instance -> instance.nodeId()
+                                                         .stream())
+                            .sorted(Comparator.<String> naturalOrder().reversed())
+                            .limit(surplus)
+                            .toList();
+        var pass = Promise.unitPromise();
+
+        for (var victim : victims) {
+            pass = pass.flatMap(_ -> lifecycleManager.terminateNode(NodeId.nodeId(victim).unwrap())
+                                                     .onFailure(cause -> log.warn("CTM: worker termination of {} failed: {}",
+                                                                                  victim,
+                                                                                  cause.message()))
+                                                     .fold(_ -> Promise.unitPromise()));
+        }
+
+        return pass;
+    }
+
     /// Render the replacement node's cloud-init user-data so a CTM-provisioned (cloud) replacement
     /// boots with the SAME identity a bootstrap-minted node receives — the new node-id, the LIVE
     /// PEERS list (not the dead seed peers baked into the static `[cloud...] user_data` blob), the
@@ -680,6 +973,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                             NodeRole intendedRole) {
         return ReplacementNodeConfigComposer.compose(config,
                                                      source,
+                                                     intendedRole,
                                                      clusterSecretFromEnv(),
                                                      leaderSshKeyIds())
                                             .option()
@@ -891,11 +1185,14 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         // only establishes its reconciler state for observability — it neither seeds slots nor
         // schedules a safety-net reconcile poll.
         activateWithCurrentTopology();
+        // RFC-0017 stage 5 — leader gain is a worker-convergence point: a scale committed under the
+        // previous leader may have died mid-provisioning, and only the active CTM acts on it.
+        reconcileWorkerTopology();
     }
 
     @Contract
     private void activateWithCurrentTopology() {
-        var actual = observer.healthyActiveNodeCount();
+        var actual = observer.reportedActiveNodeCount();
         var desired = activationDesiredSize();
         var readyCount = observer.readyNodeCount();
         var effectiveActual = Math.max(actual, readyCount);
@@ -1035,7 +1332,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             return;
         }
 
-        var actual = observer.healthyActiveNodeCount();
+        var actual = observer.reportedActiveNodeCount();
         var desired = snapshotDesiredCoreSize();
 
         if (desired == 0) {
@@ -1069,7 +1366,18 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         inFlightProvisions.clear();
     }
 
-    private ProvisionContext buildProvisionContext(NodeId newNodeId, NodeRole intendedRole) {
+    /// The cluster this CTM heals, parsed from the KV `ClusterConfigValue`. The KV record keeps a
+    /// `String` (the `aether/slice` module deliberately does not depend on these layers), so the
+    /// conversion happens HERE, once, and both consumers — the provisioner-state reset sweep and the
+    /// replacement provisioning context — read the same [Option]. Empty means the cluster config is
+    /// not yet seeded; a provider then declines to stamp or sweep rather than guessing a scope.
+    private Option<ClusterName> resolveClusterName() {
+        return clusterConfigReader.get()
+                                  .map(ClusterConfigValue::clusterName)
+                                  .flatMap(ClusterName::maybeClusterName);
+    }
+
+    private ProvisionContext buildProvisionContext(NodeId newNodeId, NodeRole intendedRole, SourceName sourceName) {
         // Always include self as a fallback bootstrap target — the CTM runs on the leader, which
         // is alive by definition. Without this fallback, transient "no healthy remote peers"
         // windows during chaos (e.g., a leader has just decommissioned several SWIM-faulty peers
@@ -1078,32 +1386,69 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         // preflightCheck` would defensively reject it. Including self guarantees the replacement
         // can always reach at least one live consensus peer.
         var selfEntry = formatPeerEntry(observer.self());
+        var isDiscoveredAndLive = ((Predicate<NodeId>) this::isDiscoveredPeer).and(liveObservedPeer());
         var remoteEntries = observer.topology()
                                     .stream()
-                                    .filter(this::isHealthyPeer)
+                                    .filter(isDiscoveredAndLive)
                                     .flatMap(nodeId -> observer.get(nodeId)
                                                                .stream())
                                     .map(ClusterTopologyManagerRecord::formatPeerEntry)
                                     .filter(entry -> !entry.equals(selfEntry));
         var peers = Stream.concat(Stream.of(selfEntry), remoteEntries).collect(Collectors.joining(","));
-        var clusterName = clusterConfigReader.get().map(ClusterConfigValue::clusterName).or("");
+        var clusterName = resolveClusterName();
         // Thread the leader-minted identity through so the provisioned node boots under exactly
         // this id (provider injects it as AETHER_NODE_ID / Docker container name; the node adopts
         // it as `self`). NodeId.id() is `node-<lowercase-ULID>` — alphanumeric + hyphen, a valid
         // Docker container name and cluster boot identity. The intended role (Wave 2 / W4) rides
         // the same context so the provider stamps AETHER_ROLE / aether.role explicitly instead of
-        // inheriting the provisioning host's env.
+        // inheriting the provisioning host's env, and `sourceName` rides it so the provider's
+        // `aether-source` label round-trips with the reconcile pass's inventory selector.
         return ProvisionContext.forReplacement(clusterName,
                                                intendedRole.value(),
+                                               sourceName,
                                                newNodeId.id(),
                                                peers,
                                                snapshotDesiredCoreSize());
     }
 
-    private boolean isHealthyPeer(NodeId nodeId) {
+    /// Discovery, NOT liveness — and the name now says so (#558).
+    ///
+    /// This was `isHealthyPeer`, reading `state.health() == NodeHealth.HEALTHY`. Nothing ever drove
+    /// a node out of HEALTHY, so the predicate was constant-true for every discovered node and the
+    /// filter at its call site was an identity function. Deleting the dead health vocabulary makes
+    /// that explicit rather than changing it: the behaviour here is unchanged. Liveness is now a
+    /// SEPARATE filter — see [#liveObservedPeer] — applied alongside this one at the call site
+    /// (#678), not folded into this predicate's meaning.
+    private boolean isDiscoveredPeer(NodeId nodeId) {
         return observer.getState(nodeId)
-                       .map(state -> state.health() == NodeHealth.HEALTHY)
-                       .or(false);
+                       .isPresent();
+    }
+
+    /// #678 — the real liveness gate `isDiscoveredPeer` never was. `buildProvisionContext` is the
+    /// COLD-PATH PEERS fallback used when the reconciler's live `clusterMembers` set is empty (see
+    /// [#provisionReplacement]'s class docstring); before this, its only filter was discovery
+    /// (`isDiscoveredPeer`), which admits a peer the instant SWIM gossip first mentions it and never
+    /// removes it — a just-killed host stays "discovered" forever, so a cold-path replacement could
+    /// be seeded with a dead peer, contradicting the class docstring's claim that seeding from a live
+    /// set "keeps just-killed hostnames out of the PEERS list."
+    ///
+    /// Sources the SAME observed-reachability projection the observer's own quorum arithmetic
+    /// trusts: `snapshotSource.currentMembershipView()` is, in production
+    /// (`PresenceGenerationSnapshotSource`), backed by `MembershipFsm.coreObservedMembers` — core
+    /// members narrowed to first-hand reachability evidence (a completed QUIC handshake or a SWIM
+    /// ALIVE observation), plus self. `coreMemberIds()` on that view IS that projection (`#557`,
+    /// see the docstring on `TopologyObserver.Manager.knownCorePeerCount`). No new dependency: this
+    /// module already holds `snapshotSource` for `resolveClusterName` reads elsewhere.
+    ///
+    /// Before any snapshot exists (BOOTING — no reachability evidence has been latched yet, e.g. a
+    /// fresh leader that has not completed a single QUIC handshake), there is nothing to narrow by;
+    /// this returns "everyone discovered passes", matching every other BOOTING/NORMAL fallback in
+    /// this file (`resolveClusterName`, `healthyActivePeerCount`) rather than inventing a stricter
+    /// cold-start behaviour nothing else in the class uses.
+    private Predicate<NodeId> liveObservedPeer() {
+        return snapshotSource.currentMembershipView()
+                             .map(view -> (Predicate<NodeId>) view.coreMemberIds()::contains)
+                             .or(() -> _ -> true);
     }
 
     private static String formatPeerEntry(NodeInfo info) {

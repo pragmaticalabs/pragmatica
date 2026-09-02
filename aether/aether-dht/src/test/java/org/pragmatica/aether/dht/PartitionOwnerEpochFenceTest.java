@@ -67,7 +67,7 @@ class PartitionOwnerEpochFenceTest {
         @Test
         void dhtKey_roundTripsToTheSameArc_asPartitionOf() {
             var key = "o-42";
-            var expected = OwnershipDomain.streamPartition(KEYSPACE, arc.partitionOf(key));
+            var expected = OwnershipDomain.streamPartition(EntityPartitionArc.arcName(KEYSPACE), arc.partitionOf(key));
 
             assertThat(EntityPartitionArc.arcOf(arc.dhtKey(key)).or(otherArc()))
                 .as("the arc parsed from the DHT key bytes must equal the arc the entity stamps against")
@@ -122,7 +122,7 @@ class PartitionOwnerEpochFenceTest {
             var partition = arc.partitionOf("o-1");
 
             // Same generation (rabiaTerm 8), advanced ownershipTerm 1 -> 2: a same-generation reshuffle.
-            highWater.advance(OwnershipDomain.streamPartition(KEYSPACE, partition), Epoch.epoch(8, 2));
+            highWater.advance(OwnershipDomain.streamPartition(EntityPartitionArc.arcName(KEYSPACE), partition), Epoch.epoch(8, 2));
 
             assertThat(gate.isStale(key, 8L, 1L))
                 .as("a deposed partition owner's (8,1) write is stale against the reshuffled (8,2) high-water")
@@ -138,7 +138,7 @@ class PartitionOwnerEpochFenceTest {
             var fencedPartition = arc.partitionOf("o-1");
             var otherPartition = (fencedPartition + 1) % PARTITION_COUNT;
 
-            highWater.advance(OwnershipDomain.streamPartition(KEYSPACE, fencedPartition), Epoch.epoch(8, 2));
+            highWater.advance(OwnershipDomain.streamPartition(EntityPartitionArc.arcName(KEYSPACE), fencedPartition), Epoch.epoch(8, 2));
 
             assertThat(gate.isStale(fencedKey, 8L, 1L)).isTrue();
             // A key whose partition we synthesize directly in the OTHER partition is unaffected.

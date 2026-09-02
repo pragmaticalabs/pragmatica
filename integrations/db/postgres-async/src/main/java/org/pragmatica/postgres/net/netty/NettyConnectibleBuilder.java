@@ -11,8 +11,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.pragmatica.postgres.net.netty;
+
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.nio.charset.Charset;
 
 import org.pragmatica.postgres.PgConnectionPool;
 import org.pragmatica.postgres.PgDatabase;
@@ -22,14 +25,12 @@ import org.pragmatica.postgres.SqlError;
 import org.pragmatica.postgres.net.Connectible;
 import org.pragmatica.postgres.net.ConnectibleBuilder;
 import org.pragmatica.postgres.net.PoolMode;
+import org.pragmatica.lang.Promise;
+
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
 import io.netty.channel.nio.NioIoHandler;
-import org.pragmatica.lang.Promise;
 
-import java.net.InetAddress;
-import java.net.InetSocketAddress;
-import java.nio.charset.Charset;
 
 /**
  * Builder for creating {@link Connectible} instances.
@@ -44,6 +45,7 @@ public class NettyConnectibleBuilder extends ConnectibleBuilder {
     public NettyConnectibleBuilder eventLoopGroup(EventLoopGroup eventLoopGroup) {
         this.eventLoopGroup = eventLoopGroup;
         this.ownsEventLoopGroup = false;
+
         return this;
     }
 
@@ -56,6 +58,7 @@ public class NettyConnectibleBuilder extends ConnectibleBuilder {
             eventLoopGroup = new MultiThreadIoEventLoopGroup(properties.ioThreads(), NioIoHandler.newFactory());
             ownsEventLoopGroup = true;
         }
+
         return eventLoopGroup;
     }
 
@@ -63,9 +66,12 @@ public class NettyConnectibleBuilder extends ConnectibleBuilder {
         try {
             var address = InetAddress.getByName(properties.hostname());
             var sockAddr = new InetSocketAddress(address, properties.port());
-            return Promise.success(
-                new NettyPgProtocolStream(sockAddr, properties.hostname(), properties.sslConfig(),
-                    Charset.forName(properties.encoding()), resolveEventLoopGroup()));
+
+            return Promise.success(new NettyPgProtocolStream(sockAddr,
+                                                             properties.hostname(),
+                                                             properties.sslConfig(),
+                                                             Charset.forName(properties.encoding()),
+                                                             resolveEventLoopGroup()));
         } catch (Exception e) {
             return Promise.failure(SqlError.fromThrowable(e));
         }
@@ -73,8 +79,8 @@ public class NettyConnectibleBuilder extends ConnectibleBuilder {
 
     public Connectible pool() {
         return properties.poolMode() == PoolMode.TRANSACTION
-            ? new PgTransactionPool(properties, this::obtainStream)
-            : new PgConnectionPool(properties, this::obtainStream);
+               ? new PgTransactionPool(properties, this::obtainStream)
+               : new PgConnectionPool(properties, this::obtainStream);
     }
 
     public Connectible plain() {

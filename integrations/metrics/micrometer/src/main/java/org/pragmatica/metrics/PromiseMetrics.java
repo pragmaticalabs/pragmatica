@@ -14,18 +14,18 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.metrics;
+
+import java.util.function.Supplier;
 
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 
-import java.util.function.Supplier;
-
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
+
 
 /// Aspect decorator for adding Micrometer metrics to Promise-returning functions.
 /// Supports timer-based metrics (duration + counts), counter-based metrics (counts only),
@@ -145,6 +145,7 @@ public interface PromiseMetrics {
         public <T, R> Fn1<Promise<R>, T> around(Fn1<Promise<R>, T> fn) {
             return input -> {
                 var sample = Timer.start();
+
                 return fn.apply(input)
                          .onResult(result -> recordResult(sample, result));
             };
@@ -154,6 +155,7 @@ public interface PromiseMetrics {
         public <R> Supplier<Promise<R>> around(Supplier<Promise<R>> supplier) {
             return () -> {
                 var sample = Timer.start();
+
                 return supplier.get()
                                .onResult(result -> recordResult(sample, result));
             };
@@ -195,6 +197,7 @@ public interface PromiseMetrics {
         public <T, R> Fn1<Promise<R>, T> around(Fn1<Promise<R>, T> fn) {
             return input -> {
                 var sample = Timer.start();
+
                 return fn.apply(input)
                          .onResult(result -> recordResult(sample, result));
             };
@@ -204,6 +207,7 @@ public interface PromiseMetrics {
         public <R> Supplier<Promise<R>> around(Supplier<Promise<R>> supplier) {
             return () -> {
                 var sample = Timer.start();
+
                 return supplier.get()
                                .onResult(result -> recordResult(sample, result));
             };

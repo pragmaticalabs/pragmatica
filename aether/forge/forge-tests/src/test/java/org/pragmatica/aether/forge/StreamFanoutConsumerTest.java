@@ -8,6 +8,7 @@ package org.pragmatica.aether.forge;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.parallel.Execution;
@@ -55,6 +56,7 @@ import org.pragmatica.aether.ember.EmberCluster;
 /// The `test-stream` stream is a single shared log; each scenario captures `base` (the head
 /// offset before it publishes) and treats it as that scenario's logical "offset 0", so the tests
 /// are robust to the shared, accumulating log and to `@Nested` execution order.
+@Tag("Heavy")
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class StreamFanoutConsumerTest {
@@ -120,13 +122,27 @@ class StreamFanoutConsumerTest {
                .pollInterval(POLL_INTERVAL)
                .failFast(this::failIfSliceFailed)
                .until(this::appHttpReady);
+
+        // appHttpReady only proves the READ path serves. Immediately after deployment a publish can still
+        // land before the partition OWNER has materialized its buffer, so the forwarded append briefly
+        // fails; gate on a warm-up publish actually succeeding so tests start write-ready.
+        //
+        // NOTE: the 5s forward timeouts this gate originally chased were NOT "governor write-readiness
+        // lag" — they were the #467 defect where the app publish path forwarded to the STREAMING leader
+        // instead of the partition owner and could send-to-self (which QUIC silently drops). That is now
+        // fixed at the source (owner-routed publish + self-guard); this gate only smooths genuine
+        // owner-materialization lag.
+        await().atMost(WAIT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .failFast(this::failIfSliceFailed)
+               .until(this::publishReady);
     }
 
     @AfterAll
     void tearDown() {
         if (cluster != null) {
             var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
-            httpDelete(leaderPort, "/api/blueprints/" + BLUEPRINT_ID);
+            httpDelete(leaderPort, "/api/v1/blueprints/" + BLUEPRINT_ID);
             cluster.stop()
                    .await();
         }
@@ -392,6 +408,22 @@ class StreamFanoutConsumerTest {
         return !body.contains("\"error\"") && body.contains("events");
     }
 
+    /// Warm-up publish readiness: immediately after deployment a publish can land before the partition
+    /// OWNER has materialized its buffer (placement / stream-config lag), so the forwarded append briefly
+    /// fails even though the READ path already serves. Returns true once a publish actually succeeds. (The
+    /// prior 5s-timeout symptom was the #467 leader-misroute defect, now fixed — not this materialization lag.)
+    private boolean publishReady() {
+        var ports = cluster.getAvailableAppHttpPorts();
+
+        if (ports.isEmpty()) {
+            return false;
+        }
+
+        var response = httpPost(ports.getFirst(), "/api/stream/publish", "{\"payload\":\"__warmup__\"}");
+
+        return !response.contains("\"error\"") && response.contains("published");
+    }
+
     private void failIfSliceFailed() {
         var failed = cluster.slicesStatus()
                             .stream()
@@ -426,7 +458,7 @@ class StreamFanoutConsumerTest {
 
     private boolean checkNodeHealth(int port) {
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + "/api/health"))
+                                 .uri(URI.create("http://localhost:" + port + "/api/v1/health"))
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();
@@ -442,7 +474,7 @@ class StreamFanoutConsumerTest {
         var lastResponse = ERROR_FALLBACK;
 
         for (int attempt = 1; attempt <= 3; attempt++) {
-            lastResponse = httpPostToml(port, "/api/blueprints", body);
+            lastResponse = httpPostToml(port, "/api/v1/blueprints", body);
 
             if (!lastResponse.contains("\"error\"")) {
                 return lastResponse;

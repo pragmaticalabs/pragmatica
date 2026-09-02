@@ -5,9 +5,14 @@
 package org.pragmatica.aether.config.cluster;
 
 import org.pragmatica.lang.Option;
+import org.pragmatica.aether.config.ConfigKeyLive;
 
 
-public record RuntimeProfile(String name,
+/// `name` is #693: parsed and stored in every `RuntimeProfile`, but nothing reads this accessor — the
+/// map key it's grouped under (`ClusterBootstrapConfig.runtimes(): Map<String, RuntimeProfile>`) carries
+/// the name identity for every real consumer instead. `@ConfigKeyLive`-suppressed rather than deleted:
+/// #693 owns the fix, not #519's dead-surface guard.
+public record RuntimeProfile(@ConfigKeyLive("#693: parsed but never read — ClusterBootstrapConfig.runtimes() map key carries name instead") String name,
                              RuntimeType type,
                              Option<String> image,
                              Option<String> jvmArgs,

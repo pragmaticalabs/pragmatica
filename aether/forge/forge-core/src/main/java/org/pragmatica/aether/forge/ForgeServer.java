@@ -8,11 +8,17 @@ import java.awt.Desktop;
 import java.net.URI;
 import java.net.http.HttpRequest;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Supplier;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.ember.EmberConfig;
@@ -39,7 +45,9 @@ import org.pragmatica.http.JdkHttpOperations;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.io.FileOps;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.http.HttpResult;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -62,16 +70,25 @@ public final class ForgeServer {
     private volatile Option<ScheduledExecutorService> metricsScheduler = Option.empty();
     private volatile Option<StatusWebSocketPublisher> wsPublisher = Option.empty();
 
-    private final StatusWebSocketHandler wsHandler = new StatusWebSocketHandler(WebSocketAuthenticator.webSocketAuthenticator(SecurityValidator.noOpValidator(),
+    private final StatusWebSocketHandler wsHandler = new StatusWebSocketHandler(WebSocketAuthenticator.webSocketAuthenticator(SecurityValidator.permitAllValidator(),
                                                                                                                               false));
 
-    private final StatusWebSocketHandler dashboardWsHandler = new StatusWebSocketHandler(WebSocketAuthenticator.webSocketAuthenticator(SecurityValidator.noOpValidator(),
+    private final StatusWebSocketHandler dashboardWsHandler = new StatusWebSocketHandler(WebSocketAuthenticator.webSocketAuthenticator(SecurityValidator.permitAllValidator(),
                                                                                                                                        false));
 
-    private final StatusWebSocketHandler eventWsHandler = new StatusWebSocketHandler(WebSocketAuthenticator.webSocketAuthenticator(SecurityValidator.noOpValidator(),
+    private final StatusWebSocketHandler eventWsHandler = new StatusWebSocketHandler(WebSocketAuthenticator.webSocketAuthenticator(SecurityValidator.permitAllValidator(),
                                                                                                                                    false));
 
     private final HttpOperations http = JdkHttpOperations.jdkHttpOperations();
+    /// The credential Forge presents on its OWN control-plane calls (currently the startup blueprint
+    /// deploy). Empty when no keys are configured, which is the default and leaves every request
+    /// unauthenticated exactly as before.
+    ///
+    /// Enabling app-HTTP security without this made Forge unable to start at all: the deploy POST to
+    /// its own leader came back `401 X-API-Key header required`, and `failStartupDeploy` correctly
+    /// exited rather than run an empty cluster that looked healthy. Forge must authenticate to the
+    /// cluster it just secured.
+    private final AtomicReference<Option<String>> operatorApiKey = new AtomicReference<>(Option.none());
     private final long startTime = System.currentTimeMillis();
     private volatile String lastEventTimestamp = "";
 
@@ -232,6 +249,8 @@ public final class ForgeServer {
                                                         forgeConfig.coreMax());
 
         applyApiVersioning(clusterInstance);
+        applyAppHttpSecurity(clusterInstance);
+        applyForgeDataDir(clusterInstance);
         var entryPointMetrics = EntryPointMetrics.entryPointMetrics();
         Supplier<List<Integer>> portSupplier = forgeConfig.lbEnabled()
                                                ? () -> List.of(forgeConfig.lbPort())
@@ -276,6 +295,95 @@ public final class ForgeServer {
                                                                                       appHttp.apiVersionHeaderName()));
     }
 
+    /// #573 — make `forge run` honor `[app-http] security_mode` and `[app-http.api-keys.<key>]` from the
+    /// sibling `aether.toml`, the same file [#applyApiVersioning] reads and via the same
+    /// [ConfigLoader] parser, so Forge and a production node agree on what a credential is.
+    ///
+    /// Without this an embedded cluster took [EmberCluster]'s hard-coded [SecurityMode#NONE] and empty
+    /// key map, so `securityEnabled()` was false, every node installed `denyUnlessPublicValidator`, and
+    /// an application declaring `role:admin` or `authenticated` routes had all of them refused with no
+    /// credential able to satisfy them and no config or environment path able to reach the node —
+    /// Aether's own local simulator could not demonstrate the access-control model applications are
+    /// expected to declare.
+    ///
+    /// When no `aether.toml` is present (or it fails to parse) the mode stays NONE and the cluster is
+    /// byte-for-byte unchanged. The same holds when the file declares no keys: `ConfigLoader` defaults
+    /// `security_mode` to API_KEY per #290 whether or not an `[app-http]` section exists, so applying
+    /// it unconditionally would flip EVERY existing Forge run from `denyUnlessPublicValidator` to
+    /// `apiKeyValidator({})` — both refuse gated routes, but the failure changes from
+    /// NO_VALIDATOR_CONFIGURED to MISSING_API_KEY and the startup warning disappears. Gating on a
+    /// non-empty key map keeps the no-credential path exactly as it was and changes behaviour only for
+    /// a run that actually supplies a credential.
+    ///
+    /// `ConfigLoader` resolves keys from `AETHER_API_KEYS` before any TOML, so a credential need never
+    /// be written into committed config.
+    private void applyAppHttpSecurity(EmberCluster clusterInstance) {
+        startupConfig.forgeConfig()
+                     .map(path -> path.resolveSibling("aether.toml"))
+                     .filter(path -> path.toFile()
+                                         .exists())
+                     .map(ConfigLoader::load)
+                     .flatMap(Result::option)
+                     .map(AetherConfig::appHttp)
+                     .filter(appHttp -> !appHttp.apiKeys()
+                                                .isEmpty())
+                     .onPresent(appHttp -> {
+                                    clusterInstance.withAppHttpSecurity(appHttp.securityMode(),
+                                                                        appHttp.apiKeys());
+                                    operatorApiKey.set(adminCapableKey(appHttp));
+                                });
+    }
+
+    /// Pick the credential Forge itself will present. An ADMIN-roled key is preferred because the
+    /// control-plane routes Forge calls require it; falling back to any configured key keeps the
+    /// failure informative — a VIEWER-only configuration then fails authorization with a role error
+    /// rather than a missing-header error, which names the actual problem.
+    private static Option<String> adminCapableKey(AppHttpConfig appHttp) {
+        return appHttp.apiKeys()
+                      .entrySet()
+                      .stream()
+                      .filter(entry -> "ADMIN".equalsIgnoreCase(entry.getValue().authorizationRole()))
+                      .map(Map.Entry::getKey)
+                      .findFirst()
+                      .map(Option::some)
+                      .orElseGet(() -> appHttp.apiKeys()
+                                              .keySet()
+                                              .stream()
+                                              .findFirst()
+                                              .map(Option::some)
+                                              .orElseGet(Option::none));
+    }
+
+    /// #515 — a local-dev Forge simulator must not inherit the production `/data/aether` storage
+    /// default (read-only on a laptop → a per-node "Stream WAL disabled" WARN wall + non-crash-durable
+    /// streaming). Point every embedded node at a writable, restart-stable base dir under
+    /// `$AETHER_HOME` (or the user-home `.aether/forge-data` fallback), which turns the artifact disk
+    /// tier and the per-partition stream WAL writable so Forge streaming is crash-durable by default.
+    /// Production nodes never take this path — they keep the `/data/aether` default from `StorageConfig`
+    /// / `ConfigLoader`. The single loud line (info on success, error on failure) replaces the silent
+    /// per-node WARN wall for the operator.
+    private void applyForgeDataDir(EmberCluster clusterInstance) {
+        var baseDir = forgeDataBaseDir();
+
+        FileOps.createDirectories(baseDir)
+               .onSuccess(_ -> log.info("Forge data dir: {} (stream WAL crash-durable)",
+                                        baseDir))
+               .onFailure(cause -> log.error("Forge data dir {} not writable: {} — streaming will run "
+                                            + "non-crash-durable (in-memory tail only)",
+                                             baseDir,
+                                             cause.message()));
+        clusterInstance.withDataBaseDir(baseDir);
+    }
+
+    private static Path forgeDataBaseDir() {
+        return Option.option(System.getenv("AETHER_HOME"))
+                     .filter(home -> !home.isBlank())
+                     .map(home -> Path.of(home, "forge-data"))
+                     .or(Path.of(System.getProperty("user.home"),
+                                 ".aether",
+                                 "forge-data"));
+    }
+
     private static String serializeStatus(EmberCluster cluster,
                                           ForgeMetrics metrics,
                                           long startTime,
@@ -283,7 +391,7 @@ public final class ForgeServer {
         var status = StatusRoutes.buildFullStatus(cluster, metrics, startTime, loadRunner);
 
         return CODEC.serialize(status)
-                    .map(bytes -> new String(bytes, java.nio.charset.StandardCharsets.UTF_8))
+                    .map(bytes -> new String(bytes, StandardCharsets.UTF_8))
                     .or("{}");
     }
 
@@ -310,22 +418,17 @@ public final class ForgeServer {
     private void pollNodeEvents() {
         try {
             var port = cluster.flatMap(EmberCluster::getLeaderManagementPort).or(forgeConfig.managementPort());
-            var uriStr = "http://localhost:" + port + "/api/events";
+            var uriStr = "http://localhost:" + port + "/api/v1/events";
 
             if (!lastEventTimestamp.isEmpty()) {
-                uriStr += "?since=" + java.net.URLEncoder.encode(lastEventTimestamp,
-                                                                 java.nio.charset.StandardCharsets.UTF_8);
+                uriStr += "?since=" + URLEncoder.encode(lastEventTimestamp, StandardCharsets.UTF_8);
             }
 
-            var request = HttpRequest.newBuilder()
-                                     .uri(URI.create(uriStr))
-                                     .GET()
-                                     .timeout(java.time.Duration.ofSeconds(2))
-                                     .build();
+            var request = HttpRequest.newBuilder().uri(URI.create(uriStr)).GET().timeout(Duration.ofSeconds(2)).build();
 
             http.sendString(request)
                 .await(TimeSpan.timeSpan(3).seconds())
-                .flatMap(org.pragmatica.http.HttpResult::toResult)
+                .flatMap(HttpResult::toResult)
                 .onSuccess(this::parseAndMergeEvents);
         } catch (Exception e) {
             log.trace("Event polling failed: {}", e.getMessage());
@@ -333,11 +436,13 @@ public final class ForgeServer {
     }
 
     private void parseAndMergeEvents(String json) {
-        if (json == null || json.length() < 3 || !json.startsWith("[")) {
+        var text = Option.option(json).or("");
+
+        if (text.length() < 3 || !text.startsWith("[")) {
             return;
         }
 
-        var content = json.substring(1, json.length() - 1).trim();
+        var content = text.substring(1, text.length() - 1).trim();
 
         if (content.isEmpty()) {
             return;
@@ -361,7 +466,7 @@ public final class ForgeServer {
     }
 
     private static List<String> splitJsonObjects(String content) {
-        var objects = new java.util.ArrayList<String>();
+        var objects = new ArrayList<String>();
         var depth = 0;
         var start = -1;
 
@@ -426,29 +531,46 @@ public final class ForgeServer {
         log.info("Deploying blueprint artifact: {}...", artifactCoords);
         var leaderPort = cluster.flatMap(EmberCluster::getLeaderManagementPort).or(forgeConfig.managementPort());
         var body = "{\"artifact\":\"" + artifactCoords + "\"}";
-        var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + leaderPort + "/api/blueprints/deploy"))
-                                 .header("Content-Type", "application/json")
-                                 .POST(HttpRequest.BodyPublishers.ofString(body))
-                                 .build();
+        var builder = HttpRequest.newBuilder()
+                                 .uri(URI.create("http://localhost:" + leaderPort + "/api/v1/blueprints/deploy"))
+                                 .header("Content-Type", "application/json");
 
-        log.info("Deploying blueprint by coordinates: POST /api/blueprints/deploy — {}", artifactCoords);
+        operatorApiKey.get().onPresent(key -> builder.header("X-API-Key", key));
+        var request = builder.POST(HttpRequest.BodyPublishers.ofString(body)).build();
+
+        log.info("Deploying blueprint by coordinates: POST /api/v1/blueprints/deploy — {}", artifactCoords);
         http.sendString(request)
             .await(TimeSpan.timeSpan(10).seconds())
             .onSuccess(result -> handleDeployResponse(result, artifactCoords))
-            .onFailure(cause -> log.error("Failed to deploy blueprint: {}",
-                                          cause.message()));
+            .onFailure(cause -> failStartupDeploy(artifactCoords,
+                                                  cause.message()));
     }
 
-    private void handleDeployResponse(org.pragmatica.http.HttpResult<String> result, String artifactCoords) {
+    private void handleDeployResponse(HttpResult<String> result, String artifactCoords) {
         if (result.isSuccess()) {
             log.info("Blueprint deployed from artifact: {}", artifactCoords);
             apiHandler.onPresent(h -> h.addEvent("BLUEPRINT_DEPLOYED",
                                                  "Blueprint deployed from artifact " + artifactCoords));
             TimeSpan.timeSpan(1).seconds().sleep();
         } else {
-            log.error("Blueprint deploy failed (HTTP {}): {}", result.statusCode(), result.body());
+            failStartupDeploy(artifactCoords,
+                              "HTTP " + result.statusCode() + ": " + result.body());
         }
+    }
+
+    /// A `--blueprint` was supplied, so the whole point of this Forge run is to serve that slice. If
+    /// the startup deploy fails we must NOT keep running an empty cluster that looks healthy (banner +
+    /// dashboard up, but every request 404s) — that stranded a cold user in the #513 getting-started
+    /// dry-run. Fail loud: the thrown exception propagates out of [#start] to [#main], which logs it
+    /// and exits non-zero. Runs without `--blueprint` never reach this path and are unchanged.
+    private void failStartupDeploy(String artifactCoords, String detail) {
+        log.error("Startup blueprint deploy failed for '{}': {}", artifactCoords, detail);
+
+        throw new IllegalStateException("Startup blueprint deploy failed for '" + artifactCoords
+                                       + "': " + detail
+                                       + " — exiting so the cluster does not run empty while appearing healthy. "
+                                       + "Check the coordinates (groupId:artifactId:version:blueprint) and that the "
+                                       + "artifacts are installed to the resolvable repository (mvn install).");
     }
 
     private void loadLoadConfig(Path loadConfigPath) {

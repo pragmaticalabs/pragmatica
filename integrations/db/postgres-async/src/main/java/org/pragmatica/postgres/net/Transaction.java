@@ -11,11 +11,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.pragmatica.postgres.net;
 
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+
 
 /**
  * A unit of work. Transactions must be committed or rolled back, otherwise a
@@ -25,26 +25,21 @@ import org.pragmatica.lang.Unit;
  * @author Antti Laisi
  */
 public interface Transaction extends QueryExecutor {
-
     /**
      * Commits a transaction
      */
     Promise<Unit> commit();
-
     /**
      * Rollbacks a transaction.
      */
     Promise<Unit> rollback();
-
     /**
      * Commits a transaction and rollbacks it if an error occurs.
      */
     Promise<Unit> close();
-
     /**
      * Returns a connection, this transaction belongs to.
      */
     Connection getConnection();
-
     Promise<Transaction> begin();
 }

@@ -13,7 +13,6 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.swim;
 
 import java.net.InetSocketAddress;
@@ -21,6 +20,7 @@ import java.util.Map;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.serialization.Codec;
+
 
 /// A member in the SWIM protocol membership list.
 ///
@@ -33,9 +33,11 @@ import org.pragmatica.serialization.Codec;
 ///                    transitive piggyback (back-compat default). Never on the SWIM wire —
 ///                    `SwimMember` is not a `SwimMessage` variant.
 @Codec
-public record SwimMember(NodeId nodeId, MemberState state, long incarnation, InetSocketAddress address,
+public record SwimMember(NodeId nodeId,
+                         MemberState state,
+                         long incarnation,
+                         InetSocketAddress address,
                          Map<String, String> labels) {
-
     /// Compact constructor ensures labels are an immutable copy.
     public SwimMember {
         labels = Map.copyOf(labels);
@@ -60,8 +62,11 @@ public record SwimMember(NodeId nodeId, MemberState state, long incarnation, Ine
     }
 
     /// Factory creating a member with all parameters and explicit labels.
-    public static SwimMember swimMember(NodeId nodeId, MemberState state, long incarnation,
-                                        InetSocketAddress address, Map<String, String> labels) {
+    public static SwimMember swimMember(NodeId nodeId,
+                                        MemberState state,
+                                        long incarnation,
+                                        InetSocketAddress address,
+                                        Map<String, String> labels) {
         return new SwimMember(nodeId, state, incarnation, address, labels);
     }
 

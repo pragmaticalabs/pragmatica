@@ -14,12 +14,12 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.lang.utils;
 
 import java.util.Random;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.DoubleSupplier;
+
 
 /// Reusable jitter helper for retry/scheduling sites.
 ///
@@ -34,10 +34,8 @@ import java.util.function.DoubleSupplier;
 public sealed interface JitterUtil {
     /// Default lower factor (0.5x). Pair with `MAX_FACTOR_DEFAULT` for ±50% jitter.
     double MIN_FACTOR_DEFAULT = 0.5d;
-
     /// Default upper factor (1.5x). Pair with `MIN_FACTOR_DEFAULT` for ±50% jitter.
     double MAX_FACTOR_DEFAULT = 1.5d;
-
     /// Light jitter lower factor (0.8x). For protocol-sensitive timers (Rabia sync, SWIM probe).
     double LIGHT_MIN_FACTOR = 0.8d;
 
@@ -51,7 +49,10 @@ public sealed interface JitterUtil {
     /// @param maxFactor upper bound of the multiplicative factor (typically 1.5 or 1.2)
     /// @return jittered delay in milliseconds, never less than 1ms when `baseMs > 0`
     static long applyJitter(long baseMs, double minFactor, double maxFactor) {
-        return applyJitter(baseMs, minFactor, maxFactor, () -> ThreadLocalRandom.current().nextDouble());
+        return applyJitter(baseMs,
+                           minFactor,
+                           maxFactor,
+                           () -> ThreadLocalRandom.current().nextDouble());
     }
 
     /// Apply jitter using an injected `[0.0, 1.0)` random supplier (for deterministic tests).
@@ -59,8 +60,10 @@ public sealed interface JitterUtil {
         if (baseMs <= 0L) {
             return baseMs;
         }
+
         var factor = minFactor + (maxFactor - minFactor) * randomSupplier.getAsDouble();
-        return Math.max(1L, (long) (baseMs * factor));
+
+        return Math.max(1L, (long)(baseMs * factor));
     }
 
     /// Apply default jitter (0.5x — 1.5x).

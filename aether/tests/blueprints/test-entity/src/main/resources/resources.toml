@@ -1,0 +1,40 @@
+# Application-level (blueprint) resources for test-entity (#345 increments I0/I1).
+#
+# Packaged into the blueprint JAR as META-INF/resources.toml by the JBCT maven-plugin. At deploy
+# time BlueprintService stores this content in the KV-Store; each node's slice loader resolves the
+# @OrderEntity qualifier's `config = "entities.orders"` lookup against it.
+#
+# THIS IS THE FIRST DurableEntity RESOURCE DECLARATION IN THE REPOSITORY. Before it, nothing
+# anywhere named a durable entity, so `resource/durable-entity` was unreachable from any running
+# node and no build could tell whether it worked.
+#
+# Binding contract (SpiResourceProvider.loadConfig -> ProviderBasedConfigService.bindToClass):
+# the section is bound to the ResourceFactory's `configType()`, here
+# `DurableEntityConfig(String keyspace, int partitionCount, int replicationFactor)`. The binder
+# prefers the record's static `durableEntityConfig(...)` factory over its constructor, so every
+# validation rule below is enforced at BIND time and a rejected value fails slice loading with a
+# named cause. Record components are looked up after `toSnakeCase`, so `partitionCount` must be
+# spelled `partition_count`. Every component must be present — the binder has no default-value
+# fallback.
+[entities.orders]
+keyspace = "orders"
+
+# The number of (keyspace, partition) ownership arcs "orders" keys are spread across. This is the
+# fence GRANULARITY: a reshuffle that moves one arc must not fence a key that hashes to another,
+# which is the property PartitionFencedDurableEntityFenceTest pins down. Small enough that a 5-node
+# cluster puts several arcs on every node.
+partition_count = 8
+
+# HONOURED (#345 I3), after two earlier readings of this same field. I0 declared 3 here and got
+# exactly one un-replicated process-local copy: accepted, recorded, and silently meaningless. I1
+# made that loud by refusing anything but 1, which was the honest answer while entity state lived in
+# a per-node StorageEngine that nothing spanned. I3 moved entity state onto a fenced, fsync-durable,
+# replicated stream partition, so the field finally buys what it always claimed to.
+#
+# This is the total number of copies of each partition INCLUDING the owner, and it becomes the
+# backing stream's `replicas`. At 3, DurableEntityConfig.minSyncReplicas() derives 2 — the owner plus
+# one peer must hold a record before the write acks — which is what makes state survive the OWNER'S
+# DEATH and not merely its restart. Declaring 1 here would still be legal and would still be durable
+# across a restart, but a new owner would recover only to the last checkpoint; that is the weaker
+# guarantee and it has to be asked for on purpose.
+replication_factor = 3

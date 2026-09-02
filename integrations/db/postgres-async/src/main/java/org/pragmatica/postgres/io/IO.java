@@ -11,11 +11,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.pragmatica.postgres.io;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
+
 
 /**
  * Static utility methods for input/output.
@@ -23,18 +23,22 @@ import java.nio.charset.Charset;
  * @author Antti Laisi
  */
 public class IO {
-
     public static String getCString(ByteBuffer buffer, Charset charset) {
         int start = buffer.position();
+
         while (buffer.get() != 0) {}
+
         int length = buffer.position() - start - 1;
+
         if (length == 0) {
             return "";
         }
+
         byte[] bytes = new byte[length];
+
         buffer.position(start);
         buffer.get(bytes);
-        buffer.get(); // consume null terminator
+        buffer.get();  // consume null terminator
         return new String(bytes, charset);
     }
 
@@ -42,7 +46,7 @@ public class IO {
         if (!value.isEmpty()) {
             buffer.put(value.getBytes(charset));
         }
+
         buffer.put((byte) 0);
     }
-
 }

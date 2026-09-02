@@ -14,6 +14,7 @@ import org.pragmatica.aether.deployment.cluster.NodeReconcilerState;
 import org.pragmatica.aether.deployment.cluster.ProvisionDisposition;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.environment.ProvisionContext;
+import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -45,6 +46,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Delayed;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -52,6 +54,7 @@ import java.util.function.Consumer;
 import java.util.function.IntSupplier;
 import java.util.function.Supplier;
 
+import static org.pragmatica.aether.environment.ClusterName.maybeClusterName;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import static org.pragmatica.aether.deployment.membership.MembershipConfig.membershipConfig;
@@ -148,7 +151,7 @@ class LeaderReconcilerTest {
                                       configuredCoreCount,
                                       leaderTerm,
                                       ctm,
-                                      () -> "test-cluster",
+                                      () -> maybeClusterName("test-cluster"),
                                       timeSource,
                                       scheduler);
         reconciler.setReconcileListener(listener);
@@ -836,8 +839,8 @@ class LeaderReconcilerTest {
         private final NodeId seed4 = new NodeId("aether-test-cluster-node-4");
         private final NodeId seed5 = new NodeId("aether-test-cluster-node-5");
         /// Ephemeral CTM-provisioned replacements — ULID suffix → preferred as victims.
-        private final NodeId ctm1 = NodeId.randomNodeId(ProvisionContext.coreNodeNamePrefix("test-cluster"));
-        private final NodeId ctm2 = NodeId.randomNodeId(ProvisionContext.coreNodeNamePrefix("test-cluster"));
+        private final NodeId ctm1 = NodeId.randomNodeId(ProvisionContext.coreNodeNamePrefix(maybeClusterName("test-cluster")));
+        private final NodeId ctm2 = NodeId.randomNodeId(ProvisionContext.coreNodeNamePrefix(maybeClusterName("test-cluster")));
 
         /// A slice owner is removed from the victim pool entirely: with configured=1 and a 2-node
         /// surplus, the ONLY ephemeral candidate that would otherwise be drained is shielded as a
@@ -1513,6 +1516,50 @@ class LeaderReconcilerTest {
             assertThat(ctm.provisionReplacementCalls()).hasSize(1);
         }
 
+        /// #603 — the operator's `aether cluster topology auto-heal disable` (`ClusterTopologyManager
+        /// .setAutoHealEnabled`) must suppress replacement provisioning, not just flip the status
+        /// route's response. Same genuine-departure-past-debounce setup as the row above (every other
+        /// gate open), but with auto-heal turned off: no provision, ever — advancing time further
+        /// doesn't unstick it, unlike the debounce cases, because this is an operator override, not a
+        /// timer.
+        @Test
+        void autoHealDisabled_suppressesProvisioning_evenPastDebounceWithGenuineDeparture() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            assertThat(reconciler.isReachedFullMembership()).isTrue();
+            ctm.setAutoHealEnabled(false, "test: operator disabled during incident");
+            listener.clear();
+
+            removePeers(PEER_D);
+            triggerAndFireReconcile();
+            assertThat(ctm.provisionReplacementCalls()).isEmpty();
+            // #603 review Warning 10 — at this point BOTH gates are closed: auto-heal is disabled AND
+            // the debounce window has not yet elapsed. Asserting AUTO_HEAL_DISABLED here, not only
+            // after the debounce advance below, is what actually pins the evaluation order —
+            // suppressionReason() must check the operator override before the debounce timer, or this
+            // would read WITHIN_DEBOUNCE instead and the later assertion would still pass by
+            // coincidence (debounce is the only gate left closed there).
+            assertThat(reconciler.lastProvisioningDecision().unwrap().reason()).isEqualTo("AUTO_HEAL_DISABLED");
+            timeSource.advanceTimeMillis(EXPECTED_DEBOUNCE_WINDOW.millis() + 1);
+            listener.clear();
+            triggerAndFireReconcile();
+
+            assertThat(listener.events().getLast().provisionCount()).isZero();
+            assertThat(ctm.provisionReplacementCalls()).isEmpty();
+            // #603 review Gap 3 — the #336 management-API surface must attribute this suppression
+            // to the operator override, not to the debounce timer it just outlasted.
+            assertThat(reconciler.lastProvisioningDecision().unwrap().reason()).isEqualTo("AUTO_HEAL_DISABLED");
+
+            // Re-enabling clears the override immediately — no relatch, no re-debounce needed since
+            // the deficit is still the same aged run.
+            ctm.setAutoHealEnabled(true, "test: operator re-enabled");
+            listener.clear();
+            triggerAndFireReconcile();
+            assertThat(ctm.provisionReplacementCalls()).hasSize(1);
+        }
+
         /// Row 4 — after the latch, a departure whose debounce has NOT elapsed is suppressed
         /// (`WITHIN_DEBOUNCE`) AND a single re-evaluation follow-up reconcile is scheduled so the
         /// deficit is acted on when the gate clears, without any further presence sampler event.
@@ -2103,6 +2150,67 @@ class LeaderReconcilerTest {
         }
     }
 
+    /// #509 probe — post-full-cluster-restart deficit-fill for stable-id members that are merely
+    /// slow to rejoin.
+    ///
+    /// The ticket (2026-07-24) reports that after a full-cluster restart the reconciler sees
+    /// `clusterMembers < configured` and provisions EMPTY replacements for configured peers that
+    /// have not finished rejoining, `failedPeer=None`, un-gated by auto-heal-off. These tests
+    /// reproduce that shape against CURRENT code rather than assuming it still holds: several gates
+    /// landed on or after that date (the arm-latch, `reachedFullMembership`, the deficit debounce),
+    /// and `MembershipFsm#seed` promotes the whole CONFIGURED core set to MEMBER at wiring time —
+    /// which, if it applies here, means a restarted leader counts the slow rejoiners and sees no
+    /// deficit at all.
+    ///
+    /// Whichever way these land they are worth keeping: they pin the restart-with-laggards
+    /// behaviour, which nothing else in this class covers.
+    @Nested
+    class PostRestartSlowRejoin {
+        /// The restart shape: the leader's FSM is seeded from CONFIGURED topology (as `AetherNode`
+        /// does at wiring), only a quorum actually rejoins, and leadership is gained on a term > 1
+        /// so `reachedFullMembership` is pre-latched via the re-election path. Nothing here carries
+        /// a death verdict — the missing peers are known stable IDs that simply have not come back.
+        @Test
+        void reconcile_configuredPeersSeededButNotYetRejoined_doesNotProvisionReplacements() {
+            configuredCoreCount.set(5);
+            // Config-topology seed: every configured core, including the two that have not rejoined.
+            membershipFsm.seed(Set.of(PEER_A, PEER_B, PEER_C, PEER_D));
+            // Only PEER_A and PEER_B actually came back and are observed.
+            seedClusterWithPeers(PEER_A, PEER_B);
+            leaderTerm.set(2L);
+
+            reconciler.activate();
+            triggerAndFireReconcile();
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
+
+            assertThat(ctm.provisionReplacementCalls()).as(
+                "#509: configured peers that are merely slow to rejoin must not be replaced by empty nodes")
+                      .isEmpty();
+        }
+
+        /// Control: a peer carrying a genuine death verdict MUST still be replaced, otherwise a
+        /// "grace" for slow rejoiners would silently disable auto-heal. Without this, the assertion
+        /// above could be satisfied by provisioning being broken outright.
+        @Test
+        void reconcile_configuredPeerConfirmedDead_stillProvisionsReplacement() {
+            configuredCoreCount.set(5);
+            membershipFsm.seed(Set.of(PEER_A, PEER_B, PEER_C, PEER_D));
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            leaderTerm.set(2L);
+
+            reconciler.activate();
+            triggerAndFireReconcile();
+            removePeers(PEER_D);
+            triggerAndFireReconcile();
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
+
+            assertThat(ctm.provisionReplacementCalls()).as("a confirmed-dead peer is a departure and must still auto-heal")
+                      .isNotEmpty();
+        }
+    }
+
     /// Recording `ClusterTopologyManager` stub. Phase 1.5 verification surface for
     /// `provisionReplacement` / `drainNode` / `reconcile` v2 calls.
     private static final class RecordingCtm implements ClusterTopologyManager {
@@ -2185,7 +2293,7 @@ class LeaderReconcilerTest {
         }
 
         @Override
-        public Promise<Unit> setDesiredSize(int size) {
+        public Promise<Unit> setDesiredCount(SourceName sourceName, NodeRole role, int count) {
             return Promise.success(unit());
         }
 
@@ -2248,14 +2356,19 @@ class LeaderReconcilerTest {
             return 0;
         }
 
+        // #603 — real mutable state (default enabled, matching production's construction-time
+        // default) so a test can flip it and assert the reconciler actually honours the flag,
+        // rather than a fake that always reports enabled regardless of what was set.
+        private final AtomicBoolean autoHealEnabled = new AtomicBoolean(true);
+
         @Override
         public boolean isAutoHealEnabled() {
-            return true;
+            return autoHealEnabled.get();
         }
 
         @Override
         public boolean setAutoHealEnabled(boolean enabled, String reason) {
-            return true;
+            return autoHealEnabled.getAndSet(enabled);
         }
 
         @Override

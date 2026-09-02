@@ -1,13 +1,14 @@
 package org.pragmatica.jbct.init;
 
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
-import org.pragmatica.lang.utils.Causes;
-
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.regex.Pattern;
+
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
+
 
 /// Adds pub-sub event annotation files to an existing Aether slice project.
 public final class EventAdder {
@@ -38,19 +39,21 @@ public final class EventAdder {
 
     /// Create an EventAdder with optional package and config key overrides.
     public static Result<EventAdder> eventAdder(Path projectDir,
-                                                  String eventName,
-                                                  String packageOverride,
-                                                  String configKeyOverride) {
-        return validateEventName(eventName)
-                  .flatMap(_ -> ProjectConfig.projectConfig(projectDir))
-                  .flatMap(config -> buildEventAdder(projectDir, eventName, packageOverride, configKeyOverride, config));
+                                                String eventName,
+                                                String packageOverride,
+                                                String configKeyOverride) {
+        return validateEventName(eventName).flatMap(_ -> ProjectConfig.projectConfig(projectDir))
+                                .flatMap(config -> buildEventAdder(projectDir,
+                                                                   eventName,
+                                                                   packageOverride,
+                                                                   configKeyOverride,
+                                                                   config));
     }
 
     /// Add the event annotation files and messaging config to the project.
     public Result<List<Path>> addEvent() {
-        return appendMessagingConfig()
-                  .flatMap(_ -> createDirectories())
-                  .flatMap(_ -> createAnnotationFiles());
+        return appendMessagingConfig().flatMap(_ -> createDirectories())
+                                    .flatMap(_ -> createAnnotationFiles());
     }
 
     /// Whether aether.toml exists and could be updated.
@@ -78,11 +81,12 @@ public final class EventAdder {
         try {
             var packagePath = annotationPackage.replace(".", "/");
             var srcMainJava = projectDir.resolve("src/main/java");
+
             Files.createDirectories(srcMainJava.resolve(packagePath));
+
             return Result.success(Unit.unit());
         } catch (Exception e) {
-            return Causes.cause("Failed to create directories: " + e.getMessage())
-                         .result();
+            return Causes.cause("Failed to create directories: " + e.getMessage()).result();
         }
     }
 
@@ -91,57 +95,65 @@ public final class EventAdder {
         var srcMainJava = projectDir.resolve("src/main/java");
         var publisherPath = srcMainJava.resolve(packagePath).resolve(eventCamelCase + "Publisher.java");
         var subscriptionPath = srcMainJava.resolve(packagePath).resolve(eventCamelCase + "Subscription.java");
+
         return Result.allOf(ProjectFiles.writeNewFile(publisherPath, substituteVariables(PUBLISHER_TEMPLATE)),
                             ProjectFiles.writeNewFile(subscriptionPath, substituteVariables(SUBSCRIPTION_TEMPLATE)));
     }
 
     private Result<Unit> appendMessagingConfig() {
         var aetherToml = projectDir.resolve("aether.toml");
+
         if (!Files.exists(aetherToml)) {
             return Result.success(Unit.unit());
         }
+
         try {
             var existing = Files.readString(aetherToml);
             var sectionHeader = "[" + configKey + "]";
+
             if (existing.contains(sectionHeader)) {
                 return Result.success(Unit.unit());
             }
+
             var configSection = substituteVariables(MESSAGING_CONFIG_TEMPLATE);
+
             Files.writeString(aetherToml, existing + configSection);
+
             return Result.success(Unit.unit());
         } catch (Exception e) {
-            return Causes.cause("Failed to update aether.toml: " + e.getMessage())
-                         .result();
+            return Causes.cause("Failed to update aether.toml: " + e.getMessage()).result();
         }
     }
 
     private static Result<Unit> validateEventName(String eventName) {
         if (eventName == null || eventName.isBlank()) {
-            return Causes.cause("Event name must not be null or empty")
-                         .result();
+            return Causes.cause("Event name must not be null or empty").result();
         }
+
         if (!KEBAB_CASE.matcher(eventName).matches()) {
-            return Causes.cause("Event name must be kebab-case (e.g., 'expensive-order'): " + eventName)
-                         .result();
+            return Causes.cause("Event name must be kebab-case (e.g., 'expensive-order'): " + eventName).result();
         }
+
         return Result.success(Unit.unit());
     }
 
     private static Result<EventAdder> buildEventAdder(Path projectDir,
-                                                        String eventName,
-                                                        String packageOverride,
-                                                        String configKeyOverride,
-                                                        ProjectConfig config) {
+                                                      String eventName,
+                                                      String packageOverride,
+                                                      String configKeyOverride,
+                                                      ProjectConfig config) {
         var camelCase = ProjectFiles.toCamelCase(eventName);
         var annotationPackage = config.resolvePackage(packageOverride);
         var configKey = (configKeyOverride != null && !configKeyOverride.isBlank())
                         ? configKeyOverride
                         : "messaging." + eventName;
+
         return Result.success(new EventAdder(projectDir, eventName, camelCase, annotationPackage, configKey));
     }
 
     private String substituteVariables(String template) {
         var eventDescription = eventName.replace("-", " ");
+
         return template.replace("{{annotationPackage}}", annotationPackage)
                        .replace("{{eventCamelCase}}", eventCamelCase)
                        .replace("{{configKey}}", configKey)
@@ -150,7 +162,6 @@ public final class EventAdder {
     }
 
     // Templates
-
     private static final String PUBLISHER_TEMPLATE = """
         package {{annotationPackage}};
 

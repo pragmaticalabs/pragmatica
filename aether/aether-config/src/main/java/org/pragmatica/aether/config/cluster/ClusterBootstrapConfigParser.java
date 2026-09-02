@@ -4,19 +4,23 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.config.cluster;
 
-import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.IntStream;
 
+import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.parse.Number;
 
+import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
@@ -35,30 +39,27 @@ public final class ClusterBootstrapConfigParser {
     private static final String OPERATIONS_TLS_SECTION = "operations.tls";
     private static final String OPERATIONS_TIMEOUTS_SECTION = "operations.timeouts";
     private static final String OPERATIONS_PORTS_SECTION = "operations.ports";
-    private static final String SOURCE_PREFIX = "source.";
+    /// The one true spelling of a source stanza's section prefix: `[source.<name>]`, SINGULAR. Public
+    /// because readers outside the parser also address source stanzas by name — notably the CLI's
+    /// bootstrap-time credential mining (`BootstrapPhaseProvision.extractStanza`), which duplicated this
+    /// literal as a plural `"sources."` and consequently mined nothing from every real config (#521).
+    /// Anything that needs to name a source section MUST derive it from here rather than re-spell it.
+    public static final String SOURCE_PREFIX = "source.";
     private static final String RUNTIME_PREFIX = "runtime.";
     private static final String FIREWALL_SUFFIX = ".firewall";
     private static final String DATABASES_PREFIX = "databases.";
     private static final Set<String> ROLE_NAMES = Set.of("core", "worker", "spot");
 
-    public static Result<ClusterBootstrapConfig> parseFile(Path path) {
-        return TomlParser.parseFile(path)
-                         .mapError(ClusterBootstrapConfigParser::wrapError)
-                         .flatMap(ClusterBootstrapConfigParser::validateConfigVersion)
-                         .flatMap(doc -> resolveIncludes(doc, path))
-                         .flatMap(resolved -> TemplateInheritanceResolver.resolve(resolved).mapError(ClusterBootstrapConfigParser::wrapError))
-                         .flatMap(ClusterBootstrapConfigParser::fromDocument);
-    }
-
-    private static Result<TomlDocument> resolveIncludes(TomlDocument doc, Path path) {
-        return IncludeResolver.resolve(doc,
-                                       path.getParent())
-                              .mapError(ClusterBootstrapConfigParser::wrapError);
-    }
-
+    /// The single parse boundary both readers share: the CLI bootstrap AND the KV-persisted re-parse
+    /// a leader/CTM does (`ClusterConfigRoutes`/`ClusterTopologyManagerRecord` call this). #480 — the
+    /// W6 `config_version` gate ([#validateConfigVersion]) runs FIRST, before template inheritance
+    /// resolution, so an old/newer-format config surfaces the Q1 named error rather than a
+    /// template-resolution error. (A former `parseFile` overload existed but had zero callers, #479 —
+    /// deleted; this is the only entry point.)
     public static Result<ClusterBootstrapConfig> parse(String content) {
         return TomlParser.parse(content)
                          .mapError(ClusterBootstrapConfigParser::wrapError)
+                         .flatMap(ClusterBootstrapConfigParser::validateConfigVersion)
                          .flatMap(resolved -> TemplateInheritanceResolver.resolve(resolved).mapError(ClusterBootstrapConfigParser::wrapError))
                          .flatMap(ClusterBootstrapConfigParser::fromDocument);
     }
@@ -87,16 +88,63 @@ public final class ClusterBootstrapConfigParser {
                                                                               operations));
     }
 
+    /// W6 — document-level format gate (RFC-0016 §3.5). `config_version` is the version of the whole
+    /// persisted cluster-TOML format; every read (bootstrap parse AND the KV-persisted re-parse the
+    /// leader/CTM does) requires an EXACT match with this build's [#REQUIRED_CONFIG_VERSION]. Absent or
+    /// older → re-bootstrap; NEWER → refuse loudly (binary-rollback-after-migration: restore the
+    /// pre-upgrade persisted state). There is no `absent = legacy-baseline` and no migration ladder in
+    /// rc3 (designed in RFC-0016 §3.5, built only when the first real rung exists); a persisted config
+    /// whose format changes (e.g. W3's SourceProfile) bumps this constant.
     private static Result<String> parseConfigVersion(TomlDocument doc) {
         return doc.getString("", "config_version")
-                  .toResult(parseFailed("Missing required field: config_version"))
+                  .toResult(parseFailed("Persisted config has no config_version (document format version); this build requires " + REQUIRED_CONFIG_VERSION
+                                       + " — re-bootstrap the cluster."))
                   .flatMap(ClusterBootstrapConfigParser::validateVersionValue);
     }
 
     private static Result<String> validateVersionValue(String version) {
-        return REQUIRED_CONFIG_VERSION.equals(version)
-               ? success(version)
-               : parseFailed("Unsupported config_version: '" + version + "'. Expected '" + REQUIRED_CONFIG_VERSION + "'").result();
+        if (REQUIRED_CONFIG_VERSION.equals(version)) {
+            return success(version);
+        }
+
+        return isNewerThanRequired(version)
+               ? parseFailed("Persisted config_version '" + version
+                            + "' is NEWER than this build supports (" + REQUIRED_CONFIG_VERSION
+                            + "); restore the pre-upgrade persisted state — this build "
+                            + "cannot read a forward-versioned config.").result()
+               : parseFailed("Persisted config_version '" + version
+                            + "' is not supported by this build (requires " + REQUIRED_CONFIG_VERSION
+                            + ") — re-bootstrap the cluster.").result();
+    }
+
+    private static boolean isNewerThanRequired(String version) {
+        return compareConfigVersion(version, REQUIRED_CONFIG_VERSION) > 0;
+    }
+
+    private static int compareConfigVersion(String left, String right) {
+        var leftParts = versionParts(left);
+        var rightParts = versionParts(right);
+
+        return IntStream.range(0,
+                               Math.max(leftParts.size(),
+                                        rightParts.size()))
+                        .map(i -> Integer.compare(partOrZero(leftParts, i),
+                                                  partOrZero(rightParts, i)))
+                        .filter(cmp -> cmp != 0)
+                        .findFirst()
+                        .orElse(0);
+    }
+
+    private static List<Integer> versionParts(String version) {
+        return Arrays.stream(version.split("\\."))
+                     .map(part -> Number.parseInt(part).or(0))
+                     .toList();
+    }
+
+    private static int partOrZero(List<Integer> parts, int index) {
+        return index < parts.size()
+               ? parts.get(index)
+               : 0;
     }
 
     private static Result<TomlDocument> validateConfigVersion(TomlDocument doc) {
@@ -161,10 +209,21 @@ public final class ClusterBootstrapConfigParser {
         return names.keySet();
     }
 
+    /// The parse boundary for a source's NAME. A section key is raw input — `[source.]` yields a blank
+    /// one — and a blank name makes the `aether-source` label selector match everything or nothing, so
+    /// it is rejected here rather than carried as a `String` to the provider edge.
     private static Result<SourceProfile> parseOneSource(TomlDocument doc, String name) {
         var parentSection = SOURCE_PREFIX + name;
 
-        return parseSourceType(doc, parentSection).map(type -> buildSourceProfile(doc, name, parentSection, type));
+        return Result.all(parseSourceName(name, parentSection), parseSourceType(doc, parentSection)).flatMap((sourceName, type) -> buildSourceProfile(doc,
+                                                                                                                                                      sourceName,
+                                                                                                                                                      parentSection,
+                                                                                                                                                      type));
+    }
+
+    private static Result<SourceName> parseSourceName(String name, String section) {
+        return SourceName.sourceName(name).mapError(cause -> parseFailed("Invalid source name in [" + section
+                                                                        + "]: " + cause.message()));
     }
 
     private static Result<SourceType> parseSourceType(TomlDocument doc, String section) {
@@ -174,9 +233,38 @@ public final class ClusterBootstrapConfigParser {
                   .mapError(cause -> parseFailed(cause.message()));
     }
 
-    private static SourceProfile buildSourceProfile(TomlDocument doc, String name, String section, SourceType type) {
-        var provider = doc.getString(section, "provider")
-                          .flatMap(raw -> CloudProviderName.cloudProviderName(raw).option());
+    private static Result<SourceProfile> buildSourceProfile(TomlDocument doc,
+                                                            SourceName name,
+                                                            String section,
+                                                            SourceType type) {
+        return parseProvider(doc, section).map(provider -> assembleSourceProfile(doc, name, section, type, provider));
+    }
+
+    /// `provider` is optional (SSH / forge / docker sources have none) but must NOT be silently
+    /// dropped on a typo. Absent → `Success(None)`; present + valid → `Success(Some)`; present +
+    /// invalid → a loud `ParseFailed` naming the bad value and the valid provider names, matching
+    /// how `type` fails loudly at [#parseSourceType]. Before this, an invalid provider resolved to
+    /// `Option.empty()`, dropping cloud-provider identity from the source profile without a word.
+    private static Result<Option<CloudProviderName>> parseProvider(TomlDocument doc, String section) {
+        return doc.getString(section, "provider")
+                  .fold(() -> success(none()),
+                        raw -> resolveProvider(section, raw));
+    }
+
+    private static Result<Option<CloudProviderName>> resolveProvider(String section, String raw) {
+        return CloudProviderName.cloudProviderName(raw)
+                                .map(Option::some)
+                                .mapError(cause -> parseFailed(section
+                                                              + ".provider: " + cause.message()
+                                                              + " (was '" + raw
+                                                              + "')"));
+    }
+
+    private static SourceProfile assembleSourceProfile(TomlDocument doc,
+                                                       SourceName name,
+                                                       String section,
+                                                       SourceType type,
+                                                       Option<CloudProviderName> provider) {
         var credentials = doc.getString(section, "credentials");
         var region = doc.getString(section, "region");
         var zone = doc.getString(section, "zone");
@@ -188,9 +276,9 @@ public final class ClusterBootstrapConfigParser {
         var loadBalancerIps = doc.getStringList(section, "load_balancer_ips").or(List.of());
         var loadBalancerEndpoint = doc.getString(section, "load_balancer_endpoint");
         var databases = parseDatabases(doc, section);
-        var roles = parseRoles(doc, name, type);
-        var firewallRules = parseFirewallRules(doc, name);
-        var nodeConfig = parseNodeConfig(doc, name);
+        var roles = parseRoles(doc, name.value(), type);
+        var firewallRules = parseFirewallRules(doc, name.value());
+        var nodeConfig = parseNodeConfig(doc, name.value());
 
         return SourceProfile.sourceProfile(name,
                                            type,
@@ -295,9 +383,10 @@ public final class ClusterBootstrapConfigParser {
         var count = doc.getInt(section, "count");
         var hosts = doc.getStringList(section, "hosts");
         var instanceType = doc.getString(section, "instance_type");
+        var image = doc.getString(section, "image");
         var runtimeRef = doc.getString(section, "runtime").or(defaultRuntimeRef(type));
 
-        return RoleSubTable.roleSubTable(role, count, hosts, instanceType, runtimeRef);
+        return RoleSubTable.roleSubTable(role, count, hosts, instanceType, image, runtimeRef);
     }
 
     private static String defaultRuntimeRef(SourceType type) {
@@ -308,10 +397,31 @@ public final class ClusterBootstrapConfigParser {
         };
     }
 
-    @SuppressWarnings("unchecked")
+    /// Both TOML spellings of `allow_ingress` must parse:
+    ///
+    /// - inline array under an explicit `[source.X.firewall]` section, and
+    /// - a bare array-of-tables `[[source.X.firewall.allow_ingress]]`, which needs NO
+    ///   `[source.X.firewall]` header — and is exactly what `aether cluster init` writes.
+    ///
+    /// Gating the whole lookup on `hasSection(source.X.firewall)` dropped the second shape silently,
+    /// so every wizard-generated firewall block parsed to zero rules while the file plainly contained
+    /// them. That is a second inertness layer beneath #574: even once the rules were applied, the
+    /// ones the wizard produced never reached [SourceProfile].
     private static List<FirewallRule> parseFirewallRules(TomlDocument doc, String sourceName) {
         var firewallSection = SOURCE_PREFIX + sourceName + FIREWALL_SUFFIX;
+        var inline = inlineFirewallRules(doc, firewallSection);
 
+        if (!inline.isEmpty()) {
+            return inline;
+        }
+
+        return doc.getTableArray(firewallSection + ".allow_ingress")
+                  .map(ClusterBootstrapConfigParser::parseFirewallList)
+                  .or(List.of());
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<FirewallRule> inlineFirewallRules(TomlDocument doc, String firewallSection) {
         if (!doc.hasSection(firewallSection)) {
             return List.of();
         }
@@ -323,9 +433,7 @@ public final class ClusterBootstrapConfigParser {
             return parseFirewallList((List<Map<String, Object>>) list);
         }
 
-        return doc.getTableArray(firewallSection + ".allow_ingress")
-                  .map(ClusterBootstrapConfigParser::parseFirewallList)
-                  .or(List.of());
+        return List.of();
     }
 
     private static List<FirewallRule> parseFirewallList(List<Map<String, Object>> tables) {

@@ -5,18 +5,19 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Unit.unit;
+
 
 final class DefaultPrefetchManager implements PrefetchManager {
     private static final Logger log = LoggerFactory.getLogger(DefaultPrefetchManager.class);
@@ -39,8 +40,7 @@ final class DefaultPrefetchManager implements PrefetchManager {
             return;
         }
 
-        accessCounts.computeIfAbsent(blockId.hexString(), _ -> new AtomicInteger())
-                    .incrementAndGet();
+        accessCounts.computeIfAbsent(blockId.hexString(), _ -> new AtomicInteger()).incrementAndGet();
     }
 
     @Override
@@ -64,16 +64,14 @@ final class DefaultPrefetchManager implements PrefetchManager {
             return;
         }
 
-        hints.stream()
-             .filter(this::aboveThreshold)
-             .filter(this::notOnCooldown)
-             .forEach(this::attemptPrefetch);
+        hints.stream().filter(this::aboveThreshold).filter(this::notOnCooldown).forEach(this::attemptPrefetch);
     }
 
     @Override
     public Result<Unit> activate() {
         active = true;
         log.info("PrefetchManager activated for storage '{}'", storage.name());
+
         return Result.success(unit());
     }
 
@@ -83,6 +81,7 @@ final class DefaultPrefetchManager implements PrefetchManager {
         accessCounts.clear();
         cooldowns.clear();
         log.info("PrefetchManager deactivated for storage '{}'", storage.name());
+
         return Result.success(unit());
     }
 
@@ -92,10 +91,10 @@ final class DefaultPrefetchManager implements PrefetchManager {
     }
 
     // --- Hint selection ---
-
     private List<PrefetchHint> selectTopHints(List<Map.Entry<String, AtomicInteger>> snapshot) {
         return snapshot.stream()
-                       .filter(e -> e.getValue().get() >= config.accessThreshold())
+                       .filter(e -> e.getValue()
+                                     .get() >= config.accessThreshold())
                        .sorted(descendingByCount())
                        .limit(config.maxHintsPerGossip())
                        .map(DefaultPrefetchManager::toHint)
@@ -103,16 +102,17 @@ final class DefaultPrefetchManager implements PrefetchManager {
     }
 
     private static Comparator<Map.Entry<String, AtomicInteger>> descendingByCount() {
-        return Comparator.<Map.Entry<String, AtomicInteger>>comparingInt(e -> e.getValue().get())
-                         .reversed();
+        return Comparator.<Map.Entry<String, AtomicInteger>> comparingInt(e -> e.getValue()
+                                                                                .get()).reversed();
     }
 
     private static PrefetchHint toHint(Map.Entry<String, AtomicInteger> entry) {
-        return PrefetchHint.prefetchHint(entry.getKey(), entry.getValue().get(), TierLevel.MEMORY.name());
+        return PrefetchHint.prefetchHint(entry.getKey(),
+                                         entry.getValue().get(),
+                                         TierLevel.MEMORY.name());
     }
 
     // --- Hint processing ---
-
     private boolean aboveThreshold(PrefetchHint hint) {
         return hint.accessCount() >= config.accessThreshold();
     }
@@ -120,19 +120,16 @@ final class DefaultPrefetchManager implements PrefetchManager {
     private boolean notOnCooldown(PrefetchHint hint) {
         var now = System.currentTimeMillis();
 
-        return option(cooldowns.get(hint.blockIdHex()))
-            .map(lastAttempt -> (now - lastAttempt) >= config.cooldownMs())
-            .or(true);
+        return option(cooldowns.get(hint.blockIdHex())).map(lastAttempt -> (now - lastAttempt) >= config.cooldownMs())
+                     .or(true);
     }
 
     private void attemptPrefetch(PrefetchHint hint) {
-        BlockId.fromHex(hint.blockIdHex())
-               .onSuccess(id -> checkAndFetch(id, hint.blockIdHex()));
+        BlockId.fromHex(hint.blockIdHex()).onSuccess(id -> checkAndFetch(id, hint.blockIdHex()));
     }
 
     private void checkAndFetch(BlockId id, String blockIdHex) {
-        storage.exists(id)
-               .onSuccess(exists -> initiateIfMissing(exists, id, blockIdHex));
+        storage.exists(id).onSuccess(exists -> initiateIfMissing(exists, id, blockIdHex));
     }
 
     private void initiateIfMissing(boolean exists, BlockId id, String blockIdHex) {
@@ -142,9 +139,10 @@ final class DefaultPrefetchManager implements PrefetchManager {
 
         cooldowns.put(blockIdHex, System.currentTimeMillis());
         log.debug("Prefetching block {} from remote tier", id);
-
         storage.get(id)
                .onSuccess(opt -> opt.onPresent(_ -> log.debug("Prefetch complete for block {}", id)))
-               .onFailure(cause -> log.debug("Prefetch failed for block {}: {}", id, cause.message()));
+               .onFailure(cause -> log.debug("Prefetch failed for block {}: {}",
+                                             id,
+                                             cause.message()));
     }
 }

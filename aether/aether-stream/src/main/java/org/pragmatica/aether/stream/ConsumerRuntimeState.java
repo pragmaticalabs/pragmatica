@@ -15,7 +15,8 @@ import java.util.function.LongConsumer;
 import org.pragmatica.aether.slice.ConsumerConfig;
 import org.pragmatica.aether.slice.ConsumerConfig.ErrorStrategy;
 import org.pragmatica.aether.stream.consumer.TransactionalCursorCommit;
-import org.pragmatica.aether.stream.segment.CursorStore;
+import org.pragmatica.aether.stream.segment.ConsumerCursorStore;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -44,8 +45,9 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
 
     private final StreamPartitionManager partitionManager;
     private final DeadLetterHandler dlHandler;
-    private final Option<CursorStore> cursorStore;
+    private final Option<ConsumerCursorStore> cursorStore;
     private final Option<TransactionalCursorCommit> transactionalCommit;
+    private final PartitionReader reader;
     private final ConcurrentHashMap<ConsumerKey, ConsumerState> consumers = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private final ScheduledFuture<?> idleConsumerChecker;
@@ -56,31 +58,53 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
 
     ConsumerRuntimeState(StreamPartitionManager partitionManager,
                          DeadLetterHandler dlHandler,
-                         Option<CursorStore> cursorStore) {
+                         Option<ConsumerCursorStore> cursorStore) {
         this(partitionManager, dlHandler, cursorStore, none());
     }
 
     ConsumerRuntimeState(StreamPartitionManager partitionManager,
                          DeadLetterHandler dlHandler,
-                         Option<CursorStore> cursorStore,
+                         Option<ConsumerCursorStore> cursorStore,
                          Option<TransactionalCursorCommit> transactionalCommit) {
+        this(partitionManager,
+             dlHandler,
+             cursorStore,
+             transactionalCommit,
+             StreamConsumerRuntime.localPartitionReader(partitionManager));
+    }
+
+    ConsumerRuntimeState(StreamPartitionManager partitionManager,
+                         DeadLetterHandler dlHandler,
+                         Option<ConsumerCursorStore> cursorStore,
+                         Option<TransactionalCursorCommit> transactionalCommit,
+                         PartitionReader reader) {
         this.partitionManager = partitionManager;
         this.dlHandler = dlHandler;
         this.cursorStore = cursorStore;
         this.transactionalCommit = transactionalCommit;
+        this.reader = reader;
         this.idleConsumerChecker = SharedScheduler.scheduleAtFixedRate(this::reapIdleConsumers,
                                                                        TimeSpan.timeSpan(IDLE_CHECK_INTERVAL_MS).millis());
     }
 
-    @SuppressWarnings("JBCT-NULL-01")
     @Override
     public Result<Unit> subscribe(String streamName, int partition, ConsumerConfig config, ConsumerCallback callback) {
+        return subscribe(streamName, partition, config, callback, IdlePolicy.REAP_WHEN_IDLE);
+    }
+
+    @SuppressWarnings("JBCT-NULL-01")
+    @Override
+    public Result<Unit> subscribe(String streamName,
+                                  int partition,
+                                  ConsumerConfig config,
+                                  ConsumerCallback callback,
+                                  IdlePolicy idlePolicy) {
         if (closed.get()) {
             return StreamError.General.CONSUMER_RUNTIME_CLOSED.result();
         }
 
         var key = ConsumerKey.consumerKey(streamName, partition, config.groupId());
-        var state = ConsumerState.consumerState(config, callback, 0L);
+        var state = ConsumerState.consumerState(config, callback, 0L, idlePolicy);
 
         if (consumers.putIfAbsent(key, state) != null) {
             return StreamError.General.CONSUMER_ALREADY_SUBSCRIBED.result();
@@ -89,6 +113,24 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         loadCursorAndStart(key, state, config.groupId(), streamName, partition);
 
         return success(unit());
+    }
+
+    @Override
+    public List<SubscriptionSnapshot> subscriptions() {
+        return consumers.entrySet()
+                        .stream()
+                        .map(entry -> toSnapshot(entry.getKey(),
+                                                 entry.getValue()))
+                        .toList();
+    }
+
+    private static SubscriptionSnapshot toSnapshot(ConsumerKey key, ConsumerState state) {
+        return new SubscriptionSnapshot(key.streamName(),
+                                        key.partition(),
+                                        key.groupId(),
+                                        state.cursor(),
+                                        state.isStalled(),
+                                        state.idlePolicy());
     }
 
     @Override
@@ -136,16 +178,25 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     }
 
     private void reapIdleConsumers() {
+        reapIdleConsumers(System.currentTimeMillis());
+    }
+
+    /// Time-injected seam: the reap threshold is 60s, so a test that waited for wall-clock would be
+    /// both slow and flaky. Package-private for [StreamConsumerRuntimeTest].
+    @Contract
+    void reapIdleConsumers(long now) {
         if (closed.get()) {
             return;
         }
-
-        var now = System.currentTimeMillis();
 
         consumers.forEach((key, state) -> reapIfIdleConsumer(key, state, now));
     }
 
     private void reapIfIdleConsumer(ConsumerKey key, ConsumerState state, long now) {
+        if (state.idlePolicy() == IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED) {
+            return;
+        }
+
         var elapsed = now - state.lastPollTime();
 
         if (elapsed <= CONSUMER_TIMEOUT_MS) {
@@ -196,7 +247,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     }
 
     private void registerPushListener(OffHeapRingBuffer buffer, ConsumerKey key, ConsumerState state) {
-        LongConsumer listener = _ -> pollPartition(key, state);
+        LongConsumer listener = _ -> onAppend(key, state);
 
         state.pushListener(listener);
         buffer.addAppendListener(listener);
@@ -227,45 +278,82 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         state.scheduledFuture(future);
     }
 
+    /// The scheduled poll loop is SERIAL: the next poll is scheduled only once the current cycle —
+    /// read AND delivery — has completed.
+    ///
+    /// The previous shape rescheduled eagerly, so a second poll could read from a cursor the first poll
+    /// had not yet advanced and re-deliver the same events. That was harmless while every read was a
+    /// synchronous local one, but it becomes a duplicate generator the moment a consumer assigned to a
+    /// non-owner node reads THROUGH the owner (#535): those reads take a network round trip, during
+    /// which the eager 1ms reschedule would stack further reads on the same offset.
+    @Contract
     private void pollAndReschedule(ConsumerKey key, ConsumerState state) {
-        pollPartition(key, state);
-        scheduleNextPoll(key, state);
+        pollCycle(key, state).onFailure(cause -> logPollFailure(key, cause)).onResult(_ -> scheduleNextPoll(key, state));
     }
 
-    private void pollPartition(ConsumerKey key, ConsumerState state) {
-        if (closed.get() || state.isCancelled() || state.isStalled()) {
-            return;
+    /// Push-listener entry point. An append notification is fire-and-forget by construction — the ring
+    /// buffer hands out a `LongConsumer` — so the cycle's outcome has no caller to return to and is
+    /// logged instead. Only reachable when the ring IS local, where the read resolves without I/O.
+    @Contract
+    private void onAppend(ConsumerKey key, ConsumerState state) {
+        pollCycle(key, state).onFailure(cause -> logPollFailure(key, cause));
+    }
+
+    /// One poll cycle: read the partition, then deliver what came back. The returned promise resolves
+    /// when the cycle is DONE. It fails only when the READ failed; a DELIVERY failure is handled by the
+    /// consumer's error strategy ([#handleDeliveryFailure]) and deliberately never surfaces here, so a
+    /// handler error cannot be mistaken for an unreachable partition.
+    private Promise<Unit> pollCycle(ConsumerKey key, ConsumerState state) {
+        if (closed.get() || state.isCancelled() || state.isStalled() || state.isDeadLetterInFlight()) {
+            return Promise.unitPromise();
         }
 
         state.touchLastPollTime();
-        var fromOffset = state.cursor();
 
-        partitionManager.readLocal(key.streamName(),
-                                   key.partition(),
-                                   fromOffset,
-                                   MAX_POLL_BATCH)
-                        .onSuccess(events -> handlePollSuccess(key, state, events))
-                        .onFailure(cause -> logPollFailure(key, cause));
+        return reader.read(key.streamName(),
+                           key.partition(),
+                           state.cursor(),
+                           MAX_POLL_BATCH)
+                     .fold(result -> result.fold(cause -> pollFailed(state, cause),
+                                                 events -> pollSucceeded(key, state, events)));
     }
 
-    private void handlePollSuccess(ConsumerKey key, ConsumerState state, List<OffHeapRingBuffer.RawEvent> events) {
+    private Promise<Unit> pollSucceeded(ConsumerKey key, ConsumerState state, List<OffHeapRingBuffer.RawEvent> events) {
         state.adjustPollInterval(!events.isEmpty());
-        deliverEvents(key, state, events);
+
+        return deliverEvents(key, state, events);
     }
 
-    private void deliverEvents(ConsumerKey key, ConsumerState state, List<OffHeapRingBuffer.RawEvent> events) {
-        deliverNextEvent(key, state, events, 0);
+    /// Back off on failure too, not just on an empty successful read.
+    ///
+    /// `currentPollMs` starts at `MIN_POLL_MS` (1ms) and previously only ever grew on a successful
+    /// read, so a consumer whose partition is not materialized locally — `readLocal` fails with
+    /// `PARTITION_NOT_LOCAL` — rescheduled every millisecond forever, ~1000 wakeups/s per consumer,
+    /// each on its own virtual thread. The declarative path (#488) can enter that window legitimately:
+    /// HRW can name this node OWNER of a partition whose ring is still materializing, so the poll path
+    /// is reachable before the push listener exists.
+    private Promise<Unit> pollFailed(ConsumerState state, Cause cause) {
+        state.adjustPollInterval(false);
+
+        return cause.promise();
     }
 
-    private void deliverNextEvent(ConsumerKey key,
-                                  ConsumerState state,
-                                  List<OffHeapRingBuffer.RawEvent> events,
-                                  int index) {
-        if (index >= events.size() || state.isCancelled() || state.isStalled()) {
-            return;
+    private Promise<Unit> deliverEvents(ConsumerKey key, ConsumerState state, List<OffHeapRingBuffer.RawEvent> events) {
+        return deliverNextEvent(key, state, events, 0).fold(_ -> Promise.unitPromise());
+    }
+
+    private Promise<Unit> deliverNextEvent(ConsumerKey key,
+                                           ConsumerState state,
+                                           List<OffHeapRingBuffer.RawEvent> events,
+                                           int index) {
+        if (index >= events.size() || state.isCancelled() || state.isStalled() || state.isDeadLetterInFlight()) {
+            return Promise.unitPromise();
         }
 
-        deliverSingleEvent(key, state, events.get(index)).onSuccess(_ -> deliverNextEvent(key, state, events, index + 1));
+        return deliverSingleEvent(key, state, events.get(index)).flatMap(_ -> deliverNextEvent(key,
+                                                                                               state,
+                                                                                               events,
+                                                                                               index + 1));
     }
 
     private Promise<Unit> deliverSingleEvent(ConsumerKey key, ConsumerState state, OffHeapRingBuffer.RawEvent event) {
@@ -307,8 +395,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         var attempt = state.incrementRetryCount();
 
         if (attempt >= state.maxRetries()) {
-            recordDeadLetter(key, event, errorMessage, attempt);
-            advanceCursor(key, state, event.offset());
+            appendDeadLetterThenAdvance(key, state, event, errorMessage, attempt, 1);
 
             return;
         }
@@ -344,8 +431,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         var attempt = state.incrementRetryCount();
 
         if (attempt >= state.maxRetries()) {
-            recordDeadLetter(key, event, errorMessage, attempt);
-            advanceCursor(key, state, event.offset());
+            appendDeadLetterThenAdvance(key, state, event, errorMessage, attempt, 1);
 
             return;
         }
@@ -366,8 +452,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                 key.partition(),
                 event.offset(),
                 errorMessage);
-        recordDeadLetter(key, event, errorMessage, 1);
-        advanceCursor(key, state, event.offset());
+        appendDeadLetterThenAdvance(key, state, event, errorMessage, 1, 1);
     }
 
     private void handleStall(ConsumerKey key,
@@ -383,11 +468,82 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         state.stall();
     }
 
-    private void recordDeadLetter(ConsumerKey key,
-                                  OffHeapRingBuffer.RawEvent event,
-                                  String errorMessage,
-                                  int attemptCount) {
-        dlHandler.record(key.streamName(), key.partition(), event.offset(), event.data(), errorMessage, attemptCount);
+    /// Dead-lettering an event and advancing past it is ONE unit: the cursor moves only after the
+    /// sink has accepted the entry (durable-pubsub-spec §9 — no event is skipped past a sink that
+    /// has not stored it). While the append is unresolved the partition's delivery loop is held by
+    /// [ConsumerState#isDeadLetterInFlight] — without that guard the next poll cycle would re-read
+    /// from the un-advanced cursor and re-deliver the exhausted event to the handler. A failed
+    /// append retries with backoff indefinitely: capping and advancing anyway would BE the silent
+    /// loss this contract exists to prevent; the stall is deliberate and operator-visible via the
+    /// held cursor (the §9 `DLQ_STALL` alarm surface arrives with the D3 batch).
+    private void appendDeadLetterThenAdvance(ConsumerKey key,
+                                             ConsumerState state,
+                                             OffHeapRingBuffer.RawEvent event,
+                                             String errorMessage,
+                                             int attemptCount,
+                                             int appendAttempt) {
+        state.markDeadLetterInFlight();
+        dlHandler.append(key.streamName(),
+                         key.partition(),
+                         event.offset(),
+                         key.groupId(),
+                         event.data(),
+                         errorMessage,
+                         attemptCount)
+                 .onSuccess(_ -> completeDeadLetter(key, state, event))
+                 .onFailure(cause -> retryDeadLetterAppend(key,
+                                                           state,
+                                                           event,
+                                                           errorMessage,
+                                                           attemptCount,
+                                                           appendAttempt,
+                                                           cause));
+    }
+
+    private void completeDeadLetter(ConsumerKey key, ConsumerState state, OffHeapRingBuffer.RawEvent event) {
+        advanceCursor(key, state, event.offset());
+        state.clearDeadLetterInFlight();
+        resumeAfterDeadLetter(key, state);
+    }
+
+    /// A push-mode consumer is only ever driven by append notifications, and every notification
+    /// that arrived while the dead-letter append was in flight was absorbed by the guard — so
+    /// releasing the hold must also re-drive the loop, or events already in the ring sit
+    /// undelivered until the NEXT append happens to arrive. Poll-mode consumers resume on their
+    /// own schedule and treat this as one extra cycle.
+    @Contract
+    private void resumeAfterDeadLetter(ConsumerKey key, ConsumerState state) {
+        pollCycle(key, state).onFailure(cause -> logPollFailure(key, cause));
+    }
+
+    private void retryDeadLetterAppend(ConsumerKey key,
+                                       ConsumerState state,
+                                       OffHeapRingBuffer.RawEvent event,
+                                       String errorMessage,
+                                       int attemptCount,
+                                       int appendAttempt,
+                                       Cause cause) {
+        LOG.log(System.Logger.Level.WARNING,
+                "Dead-letter append failed for {0}[{1}]@{2} (attempt {3}), holding cursor: {4}",
+                key.streamName(),
+                key.partition(),
+                event.offset(),
+                appendAttempt,
+                cause.message());
+        if (state.isCancelled()) {
+            return;
+        }
+        // computeBackoff shifts 1L << (attempt - 1); an uncapped attempt count overflows the shift
+        // at 64 and the min() then picks the negative product, so the argument is clamped below it.
+        var cappedAttempt = Math.min(appendAttempt, 30);
+
+        SharedScheduler.schedule(() -> appendDeadLetterThenAdvance(key,
+                                                                   state,
+                                                                   event,
+                                                                   errorMessage,
+                                                                   attemptCount,
+                                                                   appendAttempt + 1),
+                                 TimeSpan.timeSpan(computeBackoff(cappedAttempt)).millis());
     }
 
     private static long computeBackoff(int attempt) {
@@ -396,7 +552,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         return JitterUtil.applyJitter(base, JitterUtil.MIN_FACTOR_DEFAULT, JitterUtil.MAX_FACTOR_DEFAULT);
     }
 
-    private static void logPollFailure(ConsumerKey key, org.pragmatica.lang.Cause cause) {
+    private static void logPollFailure(ConsumerKey key, Cause cause) {
         LOG.log(System.Logger.Level.DEBUG,
                 "Poll failed for {0}[{1}]: {2}",
                 key.streamName(),
@@ -412,30 +568,42 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
 
     static final class ConsumerState {
         private static final long CHECKPOINT_EVENT_THRESHOLD = 1000;
-        private static final long CHECKPOINT_TIME_THRESHOLD_MS = 30_000;
 
         private final ConsumerConfig config;
         private final ConsumerCallback callback;
+        private final IdlePolicy idlePolicy;
         private final AtomicLong cursor;
         private final AtomicLong eventsSinceCheckpoint = new AtomicLong(0);
         private final AtomicInteger retryCount = new AtomicInteger(0);
         private final AtomicBoolean stalled = new AtomicBoolean(false);
         private final AtomicBoolean cancelled = new AtomicBoolean(false);
         private final AtomicBoolean cursorInitialized = new AtomicBoolean(false);
+        private final AtomicBoolean deadLetterInFlight = new AtomicBoolean(false);
         private volatile ScheduledFuture<?> future;
         private volatile LongConsumer pushListenerRef;
         private final AtomicLong currentPollMs = new AtomicLong(MIN_POLL_MS);
         private final AtomicLong lastCheckpointTime = new AtomicLong(System.currentTimeMillis());
         private final AtomicLong lastPollTime = new AtomicLong(System.currentTimeMillis());
 
-        private ConsumerState(ConsumerConfig config, ConsumerCallback callback, long initialCursor) {
+        private ConsumerState(ConsumerConfig config,
+                              ConsumerCallback callback,
+                              long initialCursor,
+                              IdlePolicy idlePolicy) {
             this.config = config;
             this.callback = callback;
+            this.idlePolicy = idlePolicy;
             this.cursor = new AtomicLong(initialCursor);
         }
 
-        static ConsumerState consumerState(ConsumerConfig config, ConsumerCallback callback, long initialCursor) {
-            return new ConsumerState(config, callback, initialCursor);
+        static ConsumerState consumerState(ConsumerConfig config,
+                                           ConsumerCallback callback,
+                                           long initialCursor,
+                                           IdlePolicy idlePolicy) {
+            return new ConsumerState(config, callback, initialCursor, idlePolicy);
+        }
+
+        IdlePolicy idlePolicy() {
+            return idlePolicy;
         }
 
         ConsumerCallback callback() {
@@ -491,8 +659,14 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
             eventsSinceCheckpoint.incrementAndGet();
         }
 
+        /// Time half honors the DECLARED `checkpointInterval` (previously inert — read by nothing;
+        /// safe to honor because #576's validator rejects non-default declarative values, so only
+        /// the 1s factory default and explicit programmatic values exist). The event half stays at
+        /// the class constant: a cadence-dominated bound, tightened per durable-pubsub-spec §7 for
+        /// durable-topic groups by their 500ms attach-time interval.
         boolean shouldCheckpoint() {
-            return eventsSinceCheckpoint.get() >= CHECKPOINT_EVENT_THRESHOLD || (System.currentTimeMillis() - lastCheckpointTime.get()) >= CHECKPOINT_TIME_THRESHOLD_MS;
+            return eventsSinceCheckpoint.get() >= CHECKPOINT_EVENT_THRESHOLD || (System.currentTimeMillis() - lastCheckpointTime.get()) >= config.checkpointInterval()
+                                                                                                                                                 .millis();
         }
 
         @Contract
@@ -503,6 +677,24 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
 
         boolean isStalled() {
             return stalled.get();
+        }
+
+        /// True while a dead-letter append for this consumer's current head event is unresolved.
+        /// Holds the delivery loop so the un-advanced cursor cannot re-deliver the exhausted event
+        /// (see [ConsumerRuntimeState#appendDeadLetterThenAdvance]). Cleared strictly AFTER the
+        /// cursor advance, so a loop that observes the flag clear always reads the moved cursor.
+        boolean isDeadLetterInFlight() {
+            return deadLetterInFlight.get();
+        }
+
+        @Contract
+        void markDeadLetterInFlight() {
+            deadLetterInFlight.set(true);
+        }
+
+        @Contract
+        void clearDeadLetterInFlight() {
+            deadLetterInFlight.set(false);
         }
 
         @Contract

@@ -16,12 +16,21 @@ retention = "time"
 retention-value = "5m"
 max-event-size = "64KB"
 
-[database]
-# Required by PersistenceSlice's PgSqlConnector qualifier.
-# Values are overridden at deploy time from the node's aether.toml / environment.
+[database.testpersistence]
+# Required by PersistenceSlice's PgSqlConnector qualifier (@TestPersistenceDb).
+# NAMED datasource (#598): datasource names are cluster-global and the single-migrator
+# gate keys on them — the bare `database` default raced url-shortener's claim when
+# cluster-A suites ran in parallel. The name maps to schema/testpersistence/ and to
+# this section; the URL points at this blueprint's OWN physical database because the
+# schema history/owner tables are fixed-name-per-physical-database (a shared DB would
+# re-create the collision at the owner-table level). The database is ensured by the
+# harness preflight (docker/remote: forge-postgres init + ensure_pg_database; cloud:
+# the [database.testpersistence] node_config section in env/cloud-hetzner*.toml).
+# Values are overridden at deploy time ONLY by an exactly-matching node config
+# section — the connector resolves config by full section name.
 username = "forge"
 password = "forge"
-async_url = "postgresql://forge-postgres:5432/forge"
+async_url = "postgresql://forge-postgres:5432/forge_testpersistence"
 
 [scheduling.heartbeat]
 # Fixed-rate interval — leader-only (default). Short period so suite 08's

@@ -1,19 +1,21 @@
 package org.pragmatica.postgres.net;
 
-import org.pragmatica.postgres.PgColumn;
-import org.pragmatica.postgres.PgResultSet;
-import org.pragmatica.postgres.PgRow;
-import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Unit;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
+
+import org.pragmatica.postgres.PgColumn;
+import org.pragmatica.postgres.PgResultSet;
+import org.pragmatica.postgres.PgRow;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 
 /**
  * QueryExecutor submits SQL for execution.
@@ -39,8 +41,7 @@ public interface QueryExecutor {
         return script(assembly::start,
                       assembly::add,
                       affected -> results.add(assembly.asResultSet(affected)),
-                      sql)
-                .map(_ -> results);
+                      sql).map(_ -> results);
     }
 
     /**
@@ -75,8 +76,8 @@ public interface QueryExecutor {
      */
     default Promise<PgResultSet> completeQuery(String sql, Object... params) {
         var assembly = new ResultSetAssembly();
-        return query(assembly::start, assembly::add, sql, params)
-                .map(assembly::asResultSet);
+
+        return query(assembly::start, assembly::add, sql, params).map(assembly::asResultSet);
     }
 
     /**
@@ -111,7 +112,9 @@ public interface QueryExecutor {
 
         private PgResultSet asResultSet(int affectedRows) {
             var rs = new PgResultSet(columnsByName, orderedColumns, rows, affectedRows);
+
             reset();
+
             return rs;
         }
 

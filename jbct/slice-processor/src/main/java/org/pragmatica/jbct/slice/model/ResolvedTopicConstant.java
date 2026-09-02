@@ -2,20 +2,7 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.jbct.slice.model;
-
-import org.pragmatica.lang.Functions.Fn1;
-import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.utils.Causes;
-
-import com.sun.source.tree.ExpressionTree;
-import com.sun.source.tree.LiteralTree;
-import com.sun.source.tree.MethodInvocationTree;
-import com.sun.source.tree.VariableTree;
-import com.sun.source.util.Trees;
 
 import javax.annotation.processing.ProcessingEnvironment;
 import javax.lang.model.element.Element;
@@ -30,6 +17,19 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
+
+import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
+
+import com.sun.source.tree.ExpressionTree;
+import com.sun.source.tree.LiteralTree;
+import com.sun.source.tree.MethodInvocationTree;
+import com.sun.source.tree.VariableTree;
+import com.sun.source.util.Trees;
+
 
 /// Resolution of a single-source `Topic<T>` constant referenced by a pub/sub `@ResourceQualifier`
 /// (#396).
@@ -86,12 +86,15 @@ public record ResolvedTopicConstant(String configIdentifier,
                                                      ProcessingEnvironment env) {
         var bindings = new LinkedHashMap<String, ResolvedTopicConstant>();
         var errors = new ArrayList<String>();
+
         for (var dependency : model.dependencies()) {
             resolvePublisherDependency(model, dependency, roots, env, bindings, errors);
         }
+
         for (var method : model.methods()) {
             resolveSubscriptionMethod(model, method, roots, env, bindings, errors);
         }
+
         return new SliceTopicBindings(Map.copyOf(bindings), List.copyOf(errors));
     }
 
@@ -104,18 +107,18 @@ public record ResolvedTopicConstant(String configIdentifier,
         if (!dependency.isPublisher()) {
             return;
         }
-        var config = dependency.resourceQualifier()
-                               .map(ResourceQualifierModel::configSection)
-                               .or("");
+
+        var config = dependency.resourceQualifier().map(ResourceQualifierModel::configSection).or("");
+
         if (!looksLikeConstantReference(config)) {
             return;
         }
+
         var subject = "publisher '" + dependency.parameterName() + "'";
-        var injectedType = dependency.publisherMessageType()
-                                     .or("");
-        resolve(config, roots, env)
-            .onEmpty(() -> errors.add(unknownConstantMessage(model, subject, config)))
-            .onPresent(constant -> bindMatched(model, subject, config, injectedType, constant, bindings, errors));
+        var injectedType = dependency.publisherMessageType().or("");
+
+        resolve(config, roots, env).onEmpty(() -> errors.add(unknownConstantMessage(model, subject, config)))
+               .onPresent(constant -> bindMatched(model, subject, config, injectedType, constant, bindings, errors));
     }
 
     private static void resolveSubscriptionMethod(SliceModel model,
@@ -126,7 +129,13 @@ public record ResolvedTopicConstant(String configIdentifier,
                                                   List<String> errors) {
         for (var binding : method.reactive()) {
             if (SUBSCRIPTION_CATEGORY.equals(binding.category())) {
-                resolveSubscriptionBinding(model, method, binding.qualifier().configSection(), roots, env, bindings, errors);
+                resolveSubscriptionBinding(model,
+                                           method,
+                                           binding.qualifier().configSection(),
+                                           roots,
+                                           env,
+                                           bindings,
+                                           errors);
             }
         }
     }
@@ -141,16 +150,20 @@ public record ResolvedTopicConstant(String configIdentifier,
         if (!looksLikeConstantReference(config)) {
             return;
         }
+
         var subject = "subscription method '" + method.name() + "'";
         var handlerType = subscriptionHandlerType(method);
-        resolve(config, roots, env)
-            .onEmpty(() -> errors.add(unknownConstantMessage(model, subject, config)))
-            .onPresent(constant -> bindMatched(model, subject, config, handlerType, constant, bindings, errors));
+
+        resolve(config, roots, env).onEmpty(() -> errors.add(unknownConstantMessage(model, subject, config)))
+               .onPresent(constant -> bindMatched(model, subject, config, handlerType, constant, bindings, errors));
     }
 
     private static String subscriptionHandlerType(MethodModel method) {
         return method.hasSingleParam()
-               ? method.parameters().getFirst().type().toString()
+               ? method.parameters()
+                       .getFirst()
+                       .type()
+                       .toString()
                : "";
     }
 
@@ -174,15 +187,19 @@ public record ResolvedTopicConstant(String configIdentifier,
                                                          Collection<? extends Element> roots,
                                                          ProcessingEnvironment env) {
         var matches = new ArrayList<VariableElement>();
+
         for (var root : roots) {
             collectMatches(config, root, matches);
         }
-        return Option.option(matches.isEmpty() ? null : matches.getFirst())
-                     .map(field -> fromField(field, env));
+
+        return Option.option(matches.isEmpty()
+                             ? null
+                             : matches.getFirst()).map(field -> fromField(field, env));
     }
 
     private static ResolvedTopicConstant fromField(VariableElement field, ProcessingEnvironment env) {
         var holder = (TypeElement) field.getEnclosingElement();
+
         return new ResolvedTopicConstant(field.getSimpleName().toString(),
                                          holder.getQualifiedName().toString(),
                                          field.getSimpleName().toString(),
@@ -196,33 +213,36 @@ public record ResolvedTopicConstant(String configIdentifier,
     /// yields an empty name (its `Topic.of(...)` call is not a compile-time constant expression, so the
     /// element model cannot read the literal either).
     private static Option<String> extractTopicName(VariableElement field, ProcessingEnvironment env) {
-        return Result.lift(TREE_FAILURE, () -> topicNameFromTree(field, env))
-                     .or(Option.none());
+        return Result.lift(TREE_FAILURE, () -> topicNameFromTree(field, env)).or(Option.none());
     }
 
     private static Option<String> topicNameFromTree(VariableElement field, ProcessingEnvironment env) {
         var tree = Trees.instance(env).getTree(field);
+
         return tree instanceof VariableTree variableTree
                ? firstStringLiteral(variableTree.getInitializer())
                : Option.none();
     }
 
     private static Option<String> firstStringLiteral(ExpressionTree initializer) {
-        if (!(initializer instanceof MethodInvocationTree invocation)) {
+        if (! (initializer instanceof MethodInvocationTree invocation)) {
             return Option.none();
         }
+
         for (var argument : invocation.getArguments()) {
             if (argument instanceof LiteralTree literal && literal.getValue() instanceof String value) {
                 return Option.some(value);
             }
         }
+
         return Option.none();
     }
 
     private static void collectMatches(String identifier, Element element, List<VariableElement> out) {
-        if (!(element instanceof TypeElement typeElement)) {
+        if (! (element instanceof TypeElement typeElement)) {
             return;
         }
+
         for (var enclosed : typeElement.getEnclosedElements()) {
             collectFromEnclosed(identifier, enclosed, out);
         }
@@ -232,33 +252,46 @@ public record ResolvedTopicConstant(String configIdentifier,
         if (enclosed instanceof VariableElement field && isTopicConstant(field, identifier)) {
             out.add(field);
         }
+
         collectMatches(identifier, enclosed, out);
     }
 
     private static boolean isTopicConstant(VariableElement field, String identifier) {
-        return field.getSimpleName().toString().equals(identifier)
-               && field.getModifiers().contains(Modifier.STATIC)
-               && field.getModifiers().contains(Modifier.FINAL)
+        return field.getSimpleName()
+                    .toString()
+                    .equals(identifier)
+               && field.getModifiers()
+                       .contains(Modifier.STATIC)
+               && field.getModifiers()
+                       .contains(Modifier.FINAL)
                && isTopicType(field.asType());
     }
 
     private static boolean isTopicType(TypeMirror type) {
         return type instanceof DeclaredType declaredType
                && declaredType.asElement() instanceof TypeElement typeElement
-               && typeElement.getQualifiedName().toString().equals(TOPIC_TYPE);
+               && typeElement.getQualifiedName()
+                             .toString()
+                             .equals(TOPIC_TYPE);
     }
 
     private static String payloadTypeName(VariableElement field) {
-        return field.asType() instanceof DeclaredType declaredType && !declaredType.getTypeArguments().isEmpty()
-               ? declaredType.getTypeArguments().getFirst().toString()
+        return field.asType() instanceof DeclaredType declaredType && !declaredType.getTypeArguments()
+                                                                                   .isEmpty()
+               ? declaredType.getTypeArguments()
+                             .getFirst()
+                             .toString()
                : "";
     }
 
     private static String unknownConstantMessage(SliceModel model, String subject, String config) {
-        return "Slice " + model.simpleName() + ": @ResourceQualifier(config = \"" + config + "\") on " + subject
-               + " names no visible `static final Topic<?> " + config + "` constant. Declare the Topic constant"
-               + " in a shared interface both the publishing and subscribing slices can see, or use a lowercase"
-               + " topic-section name for the legacy resources.toml form.";
+        return "Slice " + model.simpleName()
+             + ": @ResourceQualifier(config = \"" + config
+             + "\") on " + subject
+             + " names no visible `static final Topic<?> " + config
+             + "` constant. Declare the Topic constant"
+             + " in a shared interface both the publishing and subscribing slices can see, or use a lowercase"
+             + " topic-section name for the legacy resources.toml form.";
     }
 
     private static String typeMismatchMessage(SliceModel model,
@@ -266,8 +299,11 @@ public record ResolvedTopicConstant(String configIdentifier,
                                               String config,
                                               String usageType,
                                               String payloadType) {
-        return "Slice " + model.simpleName() + ": " + subject + " binds payload type '" + usageType
-               + "' to Topic constant '" + config + "' whose declared payload type is '" + payloadType
-               + "'. The injected Publisher or handler payload type must match the Topic's payload type.";
+        return "Slice " + model.simpleName()
+             + ": " + subject
+             + " binds payload type '" + usageType
+             + "' to Topic constant '" + config
+             + "' whose declared payload type is '" + payloadType
+             + "'. The injected Publisher or handler payload type must match the Topic's payload type.";
     }
 }

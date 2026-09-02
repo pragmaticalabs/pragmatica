@@ -108,13 +108,8 @@ public enum SimulatorMode {
         return sb.toString();
     }
     public sealed interface ModeError extends Cause {
-        record Empty() implements ModeError {
-            private static final Empty INSTANCE = empty().unwrap();
-
-            public static Result<Empty> empty() {
-                return success(new Empty());
-            }
-
+        enum Empty implements ModeError {
+            INSTANCE;
             @Override
             public String message() {
                 return "Mode name cannot be empty";

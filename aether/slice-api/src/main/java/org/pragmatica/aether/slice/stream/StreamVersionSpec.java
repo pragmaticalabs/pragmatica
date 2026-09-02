@@ -76,6 +76,7 @@ public sealed interface StreamVersionSpec {
         }
     }
 
+    @SuppressWarnings("JBCT-RET-06")  // parse-don't-validate factory: distinguishes null (NULL_VALUE) from blank (BLANK_VALUE), which Verify.Is.present conflates
     static Result<StreamVersionSpec> streamVersionSpec(String value) {
         if (value == null) {
             return StreamVersionSpecError.General.NULL_VALUE.result();

@@ -16,13 +16,17 @@
 
 package org.pragmatica.consensus.net.quic;
 
+import org.pragmatica.net.tcp.TlsConfig;
+import io.netty.handler.codec.quic.QuicChannel;
 import io.netty.handler.codec.quic.QuicSslContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.consensus.ConsensusCodecs;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.net.ClusterFormationConfig;
 import org.pragmatica.consensus.net.NetCodecs;
 import org.pragmatica.consensus.net.NetworkMessage;
@@ -36,8 +40,8 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.messaging.StreamType;
 import org.pragmatica.net.tcp.NodeAddress;
-import org.pragmatica.net.tcp.TlsConfig;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
 
@@ -51,6 +55,8 @@ import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 
 /// Verifies the periodic missing-peer reconciler in [`QuicClusterNetwork`]: every tick walks
@@ -73,9 +79,9 @@ class QuicClusterNetworkReconcilerTest {
     @BeforeEach
     void setUp() {
         codec = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(), combinedCodecs());
-        serverSsl = QuicTlsProvider.serverContext(TlsConfig.selfSignedServer())
+        serverSsl = QuicTlsProvider.serverContext(ClusterTestTls.clusterTls("test-server"))
                                     .fold(_ -> fail("Server SSL failed"), ssl -> ssl);
-        clientSsl = QuicTlsProvider.clientContext(TlsConfig.insecureClient())
+        clientSsl = QuicTlsProvider.clientContext(ClusterTestTls.clusterTls("test-client"))
                                     .fold(_ -> fail("Client SSL failed"), ssl -> ssl);
     }
 
@@ -400,6 +406,249 @@ class QuicClusterNetworkReconcilerTest {
             .isGreaterThanOrEqualTo(1L);
     }
 
+    @Test
+    void reconcileMissingPeersTick_higherSelfId_previouslyConnectedEvictedPeer_forceDialsWithinGrace() {
+        // #491 F1: the 60s higher-id grace exists ONLY to avoid the cold-boot dual-Hello race for a
+        // NEVER-connected peer. A LIVE authoritative member that reached CONNECTED and is now EVICTED
+        // (an asymmetrically-dropped link) is a lost connection to a known-live node — there is no
+        // dual-Hello race to avoid — so the higher-id side MUST force-dial it on the NEXT tick, WITHIN
+        // the grace window. Direct contrast with reconcileMissingPeersTick_higherSelfIdBeforeGrace_
+        // doesNotForceDial: an INIT (never-connected) peer under the SAME higher-id ordering stays
+        // un-dialed (lookups == 0) until the 60s grace elapses. The clock is frozen at T=0 (deep inside
+        // grace) so only the previously-CONNECTED bypass can explain a dial here.
+        var self = new NodeId("zzz-self");
+        var lowerPeer = new NodeId("aaa-lower");
+        var peerInfo = NodeInfo.nodeInfo(lowerPeer, addressOf("127.0.0.1", 1));
+        var stub = countingTopology(self, List.of(peerInfo), Set.of(self, lowerPeer));
+        var clock = new AtomicLong(0L);
+        var network = createNetwork(self, List.of(peerInfo), MessageRouter.mutable(), stub);
+        network.overrideWallClockForTests(clock::get);
+        // Seed the peer as a member that CONNECTED then lost its link (EVICTED, ever-connected).
+        var seeded = network.seedPeerForTests(lowerPeer, evictedAfterConnected(lowerPeer));
+        assertThat(seeded.hasEverConnected())
+            .as("precondition: seeded peer completed a Hello handshake before eviction")
+            .isTrue();
+        assertThat(seeded.phase())
+            .as("precondition: seeded peer is EVICTED (lost link to a known-live member)")
+            .isEqualTo(PeerState.Phase.EVICTED);
+
+        network.reconcileMissingPeersTick();
+
+        assertThat(stub.lookups.getOrDefault(lowerPeer, 0L))
+            .as("#491: a previously-CONNECTED evicted live member is force-dialed within grace (grace bypassed)")
+            .isEqualTo(1L);
+    }
+
+    @Test
+    void reconcileMissingPeersTick_previouslyConnectedEvictedPeer_repeatTickWithinBackoff_deduped() {
+        // #491 F1 dedup: the grace bypass fires the force-dial ONCE, then the per-peer reconcile
+        // backoff (and the in-flight beginConnecting guard) suppress redundant dials while the first
+        // attempt is outstanding. With the clock frozen at T=0, every subsequent tick — this test's
+        // extra manual ticks AND any concurrent scheduler tick — shares the same backoff window and is
+        // suppressed, so the topology lookup count stays at exactly one. reconcileBackoffAllows is
+        // synchronized, so the check-and-set is atomic under the concurrent scheduler.
+        var self = new NodeId("zzz-self");
+        var lowerPeer = new NodeId("aaa-lower");
+        var peerInfo = NodeInfo.nodeInfo(lowerPeer, addressOf("127.0.0.1", 1));
+        var stub = countingTopology(self, List.of(peerInfo), Set.of(self, lowerPeer));
+        var clock = new AtomicLong(0L);
+        var network = createNetwork(self, List.of(peerInfo), MessageRouter.mutable(), stub);
+        network.overrideWallClockForTests(clock::get);
+        network.seedPeerForTests(lowerPeer, evictedAfterConnected(lowerPeer));
+
+        network.reconcileMissingPeersTick();
+        network.reconcileMissingPeersTick();
+        network.reconcileMissingPeersTick();
+
+        assertThat(stub.lookups.getOrDefault(lowerPeer, 0L))
+            .as("#491: repeated ticks within the backoff window force-dial the evicted peer exactly once (deduped)")
+            .isEqualTo(1L);
+    }
+
+    @Test
+    void connect_removedPeer_isSkipped() {
+        // #491 Q3: connect(ConnectNode) must NOT dial a peer whose PeerState is REMOVED — a
+        // killed/decommissioned node is a terminal departure, and retrying it forever spammed the dial
+        // path (the sof-3 case). Any genuine transient-partition survivor is readmitted REMOVED->INIT
+        // by the incarnation-fenced missing-peer reconciler and never reaches connect() still REMOVED.
+        // The peer is absent from coreNodes() so the concurrent reconciler leaves it terminal on its
+        // own — the ONLY thing that could dial it here is connect(), and the Q3 gate must stop it
+        // BEFORE the topology lookup (lookups == 0 discriminates the gate from a plain shouldInitiate skip).
+        var self = new NodeId("aaa-self");
+        var removedPeer = new NodeId("zzz-removed");
+        var peerInfo = NodeInfo.nodeInfo(removedPeer, addressOf("127.0.0.1", 1));
+        var stub = countingTopology(self, List.of(peerInfo), Set.of(self));
+        var clock = new AtomicLong(1_000_000L);
+        var network = createNetwork(self, List.of(peerInfo), MessageRouter.mutable(), stub);
+        network.overrideWallClockForTests(clock::get);
+
+        var removedState = PeerState.peerState(removedPeer, 1L);
+        removedState.authoritativeRemove(2L);
+        network.seedPeerForTests(removedPeer, removedState);
+
+        network.connect(new NetworkServiceMessage.ConnectNode(removedPeer));
+
+        assertThat(removedState.phase())
+            .as("#491 Q3: connect(ConnectNode) leaves a REMOVED peer terminal")
+            .isEqualTo(PeerState.Phase.REMOVED);
+        assertThat(stub.lookups.getOrDefault(removedPeer, 0L))
+            .as("#491 Q3: connect(ConnectNode) performs no topology lookup / dial for a REMOVED peer")
+            .isEqualTo(0L);
+    }
+
+    @Test
+    void reconcileMissingPeersTick_higherSelfId_memberBeforeGrace_eagerlyCreatesPeerStateWithoutDial() {
+        // #491 m3(i): a higher-id self does NOT dial a lower-id member before the grace window, but the
+        // authoritative desired/topology set means the member should still receive an eager INIT
+        // PeerState — so outbound to it BUFFERS (offline buffer) instead of hard-dropping on a null
+        // state. No dial happens (single-dialer ordering honoured): the topology lookup stays 0, yet
+        // the PeerState now exists in INIT.
+        var self = new NodeId("zzz-self");
+        var lowerPeer = new NodeId("aaa-lower");
+        var peerInfo = NodeInfo.nodeInfo(lowerPeer, addressOf("127.0.0.1", 1));
+        var stub = countingTopology(self, List.of(peerInfo), Set.of(self, lowerPeer));
+        var clock = new AtomicLong(1_000_000L);
+        var network = createNetwork(self, List.of(peerInfo), MessageRouter.mutable(), stub);
+        network.overrideWallClockForTests(clock::get);
+
+        network.reconcileMissingPeersTick();
+
+        network.peerPhaseForTests(lowerPeer)
+               .onEmpty(() -> fail("#491 m3(i): a member peer we are not yet dialing must get an eager INIT PeerState"))
+               .onPresent(phase -> assertThat(phase)
+                   .as("eagerly-created PeerState is INIT (never dialed) so outbound buffers")
+                   .isEqualTo(PeerState.Phase.INIT));
+        assertThat(stub.lookups.getOrDefault(lowerPeer, 0L))
+            .as("#491 m3(i): eager PeerState creation performs NO dial (single-dialer ordering preserved)")
+            .isEqualTo(0L);
+    }
+
+    @Test
+    void send_toEagerlyCreatedMemberPeer_buffersInsteadOfDroppingToUnknown() {
+        // #491 m3(i): once the reconciler has eagerly created the INIT PeerState, an outbound send to
+        // that not-yet-connected member BUFFERS (offline buffer) rather than hard-dropping. The
+        // drop-to-unknown metric stays flat; the backpressure-queued metric advances by one.
+        var self = new NodeId("zzz-self");
+        var lowerPeer = new NodeId("aaa-lower");
+        var peerInfo = NodeInfo.nodeInfo(lowerPeer, addressOf("127.0.0.1", 1));
+        var stub = countingTopology(self, List.of(peerInfo), Set.of(self, lowerPeer));
+        var clock = new AtomicLong(1_000_000L);
+        var network = createNetwork(self, List.of(peerInfo), MessageRouter.mutable(), stub);
+        network.overrideWallClockForTests(clock::get);
+        network.reconcileMissingPeersTick();
+
+        var dropsBefore = network.quicMetrics().dropToUnknownPeerCount();
+        var queuedBefore = network.quicMetrics().backpressureQueuedCount();
+
+        network.send(lowerPeer, stubProtocolMessage(self));
+
+        assertThat(network.quicMetrics().dropToUnknownPeerCount() - dropsBefore)
+            .as("send to an eagerly-created INIT member buffers — no drop-to-unknown")
+            .isEqualTo(0L);
+        assertThat(network.quicMetrics().backpressureQueuedCount() - queuedBefore)
+            .as("the buffered send advances the offline-buffer (backpressure-queued) metric")
+            .isEqualTo(1L);
+    }
+
+    @Test
+    void reconcileMissingPeersTick_higherSelfId_nonMemberPeer_staysNullAndHardDrops() {
+        // #491 m3(i): eager PeerState creation is MEMBERSHIP-gated. A peer ABSENT from coreNodes()
+        // (departed / not a member) is NOT eagerly materialised — it stays null and outbound to it
+        // still HARD-DROPS with the drop-to-unknown metric. Only genuine members earn the buffer.
+        var self = new NodeId("zzz-self");
+        var lowerPeer = new NodeId("aaa-lower");
+        var peerInfo = NodeInfo.nodeInfo(lowerPeer, addressOf("127.0.0.1", 1));
+        // coreNodes() OMITS the peer — not a member of the authoritative membership.
+        var stub = countingTopology(self, List.of(peerInfo), Set.of(self));
+        var clock = new AtomicLong(1_000_000L);
+        var network = createNetwork(self, List.of(peerInfo), MessageRouter.mutable(), stub);
+        network.overrideWallClockForTests(clock::get);
+
+        network.reconcileMissingPeersTick();
+
+        assertThat(network.peerPhaseForTests(lowerPeer).isEmpty())
+            .as("#491 m3(i): a non-member peer is NOT eagerly created — stays null")
+            .isTrue();
+
+        var dropsBefore = network.quicMetrics().dropToUnknownPeerCount();
+        network.send(lowerPeer, stubProtocolMessage(self));
+        assertThat(network.quicMetrics().dropToUnknownPeerCount() - dropsBefore)
+            .as("outbound to a null (non-member) peer still hard-drops to the unknown-peer metric")
+            .isEqualTo(1L);
+    }
+
+    @Test
+    void send_toNullMemberPeer_createsPeerStateAndBuffersInsteadOfDropping() {
+        // #491 unicast buffering: a send to an authoritative MEMBER with NO PeerState (the backfill-unicast
+        // race — the catch-up send from the backfill thread can precede the missing-peer reconciler's eager
+        // creation) must EAGERLY create an INIT PeerState and BUFFER the message in its offline buffer (the
+        // exact Queued path broadcast uses), NOT hard-drop. The drop-to-unknown metric stays flat; the
+        // buffered message is delivered on the next attach via the shared drain (PeerStateTest-proven).
+        var self = new NodeId("zzz-self");
+        var member = new NodeId("aaa-member");
+        var peerInfo = NodeInfo.nodeInfo(member, addressOf("127.0.0.1", 1));
+        var stub = countingTopology(self, List.of(peerInfo), Set.of(self, member));
+        var network = createNetwork(self, List.of(peerInfo), MessageRouter.mutable(), stub);
+
+        var dropsBefore = network.quicMetrics().dropToUnknownPeerCount();
+
+        network.send(member, stubProtocolMessage(self));
+
+        network.peerPhaseForTests(member)
+               .onEmpty(() -> fail("#491: a unicast to a null-state member must eagerly create its PeerState"))
+               .onPresent(phase -> assertThat(phase)
+                   .as("the eagerly-created PeerState buffers (INIT/CONNECTING/EVICTED — never a null hard-drop)")
+                   .isIn(PeerState.Phase.INIT, PeerState.Phase.CONNECTING, PeerState.Phase.EVICTED));
+        assertThat(network.offlineBufferSizeForTests(member))
+            .as("#491: the message is buffered in the member's offline buffer, not dropped")
+            .isEqualTo(1);
+        assertThat(network.quicMetrics().dropToUnknownPeerCount() - dropsBefore)
+            .as("a buffered unicast to a member does not increment the drop-to-unknown metric")
+            .isEqualTo(0L);
+    }
+
+    @Test
+    void sendOutcome_toNullMemberPeer_buffersAndReportsSent() {
+        // #491: the outcome-tracking sendOutcome variant must ALSO buffer (not NoPeerState-drop) a unicast to
+        // a null-state member, and report Sent per the offline-buffer convention so the DHT caller treats it
+        // as enqueued for eventual delivery.
+        var self = new NodeId("zzz-self");
+        var member = new NodeId("aaa-member");
+        var peerInfo = NodeInfo.nodeInfo(member, addressOf("127.0.0.1", 1));
+        var stub = countingTopology(self, List.of(peerInfo), Set.of(self, member));
+        var network = createNetwork(self, List.of(peerInfo), MessageRouter.mutable(), stub);
+
+        var outcome = network.sendOutcome(member, stubProtocolMessage(self)).await(AWAIT_TIMEOUT);
+
+        outcome.onFailure(cause -> fail("sendOutcome should resolve: " + cause.message()))
+               .onSuccess(result -> assertThat(result)
+                   .as("#491: sendOutcome to a null-state member buffers and reports Sent")
+                   .isInstanceOf(WriteOutcome.Sent.class));
+        assertThat(network.offlineBufferSizeForTests(member))
+            .as("the sendOutcome message is buffered in the member's offline buffer")
+            .isEqualTo(1);
+    }
+
+    @Test
+    void send_toNullMemberPeer_offlineBufferBoundHolds() {
+        // #491: buffering a unicast to a null-state member uses the SAME bounded offline buffer as broadcast —
+        // OFFLINE_BUFFER_MAX-capped, oldest-evicted on overflow. Spot-check the bound: sending past the cap
+        // holds the buffer at OFFLINE_BUFFER_MAX (never unbounded growth).
+        var self = new NodeId("zzz-self");
+        var member = new NodeId("aaa-member");
+        var peerInfo = NodeInfo.nodeInfo(member, addressOf("127.0.0.1", 1));
+        var stub = countingTopology(self, List.of(peerInfo), Set.of(self, member));
+        var network = createNetwork(self, List.of(peerInfo), MessageRouter.mutable(), stub);
+
+        for (var i = 0; i < PeerState.OFFLINE_BUFFER_MAX + 2; i++) {
+            network.send(member, stubProtocolMessage(self));
+        }
+
+        assertThat(network.offlineBufferSizeForTests(member))
+            .as("#491: the offline buffer is bounded at OFFLINE_BUFFER_MAX on overflow (oldest evicted)")
+            .isEqualTo(PeerState.OFFLINE_BUFFER_MAX);
+    }
+
     private static NodeAddress addressOf(String host, int port) {
         return NodeAddress.nodeAddress(host, port).fold(_ -> fail("bad address"), a -> a);
     }
@@ -420,6 +669,36 @@ class QuicClusterNetworkReconcilerTest {
             Thread.sleep(25);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+        }
+    }
+
+    /// Builds a `PeerState` for a member that CONNECTED then lost its link: INIT → CONNECTING →
+    /// CONNECTED (via a live-channel attach, marking it ever-connected) → EVICTED. This is the exact
+    /// shape `previouslyConnectedNowEvicted` keys the #491 grace bypass off — distinct from a hung
+    /// cold-boot dial (CONNECTING → EVICTED) which never connected. The mocked channel only needs to
+    /// report active so the attach is ACCEPTED; the connection is dropped by `evict`.
+    private static PeerState evictedAfterConnected(NodeId peerId) {
+        var state = PeerState.peerState(peerId, 1L);
+        state.beginConnecting(2L);
+        state.attach(liveConnectionFor(peerId), 3L);
+        state.evict(4L);
+        return state;
+    }
+
+    private static QuicPeerConnection liveConnectionFor(NodeId peerId) {
+        var channel = mock(QuicChannel.class);
+        when(channel.isActive()).thenReturn(true);
+        return QuicPeerConnection.quicPeerConnection(peerId, channel);
+    }
+
+    private static StubProtocolMessage stubProtocolMessage(NodeId sender) {
+        return new StubProtocolMessage(sender);
+    }
+
+    private record StubProtocolMessage(NodeId sender) implements ProtocolMessage {
+        @Override
+        public StreamType streamType() {
+            return StreamType.CONSENSUS;
         }
     }
 

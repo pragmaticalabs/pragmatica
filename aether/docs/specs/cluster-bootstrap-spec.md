@@ -158,11 +158,11 @@ include = ["path/to/fragment.toml", ...]
 
 `config_version` is a **top-level scalar** (not inside any section). It identifies which version of this specification the config file was written against. The CLI validates it before any other processing.
 
-**REQ-3.2.1**: `config_version` MUST be present. Absent → validation error: "Missing required field `config_version`. Add `config_version = \"1.0.0\"` at the top of your config file."
+**REQ-3.2.1**: `config_version` MUST be present. It is the persisted-document format version, gated by an **exact match** with the build's required version (W6, RFC-0016 §3.5). Absent → validation error: "Persisted config has no config_version (document format version); this build requires `1.0.0` — re-bootstrap the cluster."
 
-**REQ-3.2.2**: The CLI MUST reject config files with an unrecognized `config_version`. The error MUST name both the file's version and the versions the CLI supports. This enables safe evolution: future CLI versions can support multiple config versions with backward-compatible parsing, and old CLIs fail fast on config files written for a newer spec.
+**REQ-3.2.2**: The CLI MUST reject config files with a non-current `config_version` (exact-match gate). The error names the file's version and the required version, and distinguishes direction: an **older/unsupported** version → "…is not supported by this build (requires `1.0.0`) — re-bootstrap the cluster"; a **newer** version → "…is NEWER than this build supports…; restore the pre-upgrade persisted state…" (the binary-rollback-after-migration failure mode). There is no `absent = legacy-baseline` case.
 
-**REQ-3.2.3**: `config_version` is checked BEFORE include resolution, template inheritance, and variable substitution. A file with a wrong version is rejected before any external I/O (env var lookups, file reads, cloud API calls).
+**REQ-3.2.3**: `config_version` is checked FIRST — before template inheritance and variable substitution — at the single `parse` boundary both readers share (the CLI bootstrap and the leader/CTM KV re-parse). An old- or newer-format config is therefore rejected with the clean version message rather than a downstream template-resolution error, and before any external I/O (env-var lookups, cloud API calls). (#480: the live path was reordered so the gate precedes `TemplateInheritanceResolver`.)
 
 ### 3.3 `[cluster]` -- Cluster Identity
 
@@ -361,7 +361,7 @@ databases.default = "postgresql://user@rds.example.com:5432/app"
 
 [source.hetzner-eu-fsn1-dc14.core]
 count = 3
-instance_type = "cx22"
+instance_type = "cx23"
 runtime = "default"
 ```
 
@@ -462,17 +462,17 @@ Every source declares one or more **role sub-tables**. The allowed role names ar
 ```toml
 [source.hetzner-eu-fsn1-dc14.core]
 count = 3
-instance_type = "cx22"
+instance_type = "cx23"
 runtime = "default"
 
 [source.hetzner-eu-fsn1-dc14.worker]
 count = 5
-instance_type = "cx32"
+instance_type = "cx33"
 runtime = "default"
 
 [source.hetzner-eu-fsn1-dc14.spot]
 count = 10
-instance_type = "cx32"
+instance_type = "cx33"
 runtime = "default"
 ```
 
@@ -500,7 +500,7 @@ The `spot` role carries specific restrictions because spot/preemptible instances
 
 **REQ-5.1.7.1**: Spot sub-tables on `ssh`, `forge`, or `docker` sources are a pre-flight error (PF-15).
 
-**REQ-5.1.7.2**: Cloud providers that do not support preemptible instances reject spot sub-tables at pre-flight via `CloudProvider.supportsPreemptible()` (PF-16). Hetzner returns `false` and therefore rejects spot at pre-flight. AWS / GCP / Azure are schema-recognized in v1 but `provisionSpot` remains a stub that errors during Phase 2 execution (see KL-10).
+**REQ-5.1.7.2**: Cloud providers that do not support preemptible instances reject spot sub-tables at pre-flight via `ClusterBootstrapConfigValidator.SPOT_UNSUPPORTED_REASONS` (PF-16) — a static map keyed on `CloudProviderName`, which is the single place to extend when a provider's spot arm lands. Hetzner is in that map and therefore rejects spot at pre-flight. AWS has a real spot arm; GCP / Azure are schema-recognized but remain listed as unsupported until their client surfaces support it (see KL-10). (Corrected 2026-08-12: this requirement previously cited `CloudProvider.supportsPreemptible()`. That method was implemented by all five providers and called by nothing — the gate has always been the validator map — and the `CloudProvider` SPI has since been deleted as dead surface.)
 
 **REQ-5.1.7.3**: Elected LB sources MUST contain at least one `core` or `worker` sub-table (PF-14). A source with only a `spot` sub-table cannot hold a floating IP.
 
@@ -538,7 +538,9 @@ The `protocol` field matters for HTTP/3 support: HTTP/3 runs over QUIC (UDP), wh
 
 **REQ-5.1.8.3**: The cluster port (default 8090) and management port (default 8080) are **operator-managed**, not touched by Aether — consistent with `[infrastructure.networking] type = "manual"`. Operators are responsible for inter-node cluster reachability and management-API ingress. Default security-group behavior per cloud provider is documented in §6.2.
 
-**REQ-5.1.8.4**: Firewall rules are created via `CloudProvider.openIngress(port, protocol, cidr, description, sourceId)` and destroyed via `CloudProvider.closeIngress(port, protocol, cidr, sourceId)`. Pre-flight validation (PF-18) rejects invalid ports, unknown protocols, or malformed CIDRs before any call is issued.
+**REQ-5.1.8.4**: Firewall rules are created via `ComputeProvider.openIngress(sourceId, port, protocol, cidr, description)` and destroyed via `ComputeProvider.closeIngress(sourceId, port, protocol, cidr)`. Pre-flight validation (PF-18) rejects invalid ports, unknown protocols, or malformed CIDRs before any call is issued; PF-23 rejects `allow_ingress` on providers with no implemented ingress arm.
+
+`openIngress` is **create-or-patch** and returns an `IngressHandle` carrying the provider resource id. All of a source's rules land on ONE provider resource (a `"tcp+udp"` entry is two rules on one firewall), so repeated calls for the same source return the same handle. The handle is threaded into instance-create (`firewall_ids`) so rules are in force **before** the instance exists — applying them post-create would leave a window in which the node is up and, per §6.2, fully open on Hetzner. Rules the caller did not name are never touched: a patch sends the union of current and new rules, never a replacement set.
 
 ### 5.2 Runtime Profiles `[runtime.<name>]`
 
@@ -838,14 +840,14 @@ The bootstrap command `aether cluster bootstrap --config <file>` executes six se
 
 | Source Type | Action                                                                                  |
 |-------------|-----------------------------------------------------------------------------------------|
-| Cloud       | For each role sub-table, call `CloudProvider.provision` (or `provisionSpot` for spot). Wait for `running` status. Then create firewall rules (see below). |
+| Cloud       | For each role sub-table, call `CloudProviderSupport.provisionVia(ComputeProvider, NodeGroupConfig)` (spot is expressed as `InstanceType.SPOT` on the resolved `ProvisionRequest`, not a separate method). Wait for `running` status. Then create firewall rules (see below). |
 | SSH         | No-op for node provisioning. Hosts already exist.                                        |
 | Forge       | No-op for node provisioning. Ember nodes are created in-process during Phase 4.          |
 | Docker      | For each role sub-table, create containers via `DockerComputeProvider`. Wait for `running` status. |
 
 **Firewall step (per source, after node provisioning)**:
 
-- If `[source.X.firewall]` is declared, call `CloudProvider.openIngress(port, cidr, description, sourceId)` for each entry.
+- If `[source.X.firewall]` is declared, call `ComputeProvider.openIngress(sourceId, port, protocol, sourceCidr, description)` for each entry. (Ingress moved from the deleted `CloudProvider` SPI to `ComputeProvider` — see the CHANGELOG 'Dead `CloudProvider` ingress SPI' entry.)
 - Else if `load_balancer = "elected"` and no `[source.X.firewall]` block exists, auto-create `{ port = app_http, source_cidr = "0.0.0.0/0" }` and log a warning (REQ-5.1.8.2).
 - Cluster and management ports are never touched — see REQ-5.1.8.3.
 
@@ -853,7 +855,7 @@ The bootstrap command `aether cluster bootstrap --config <file>` executes six se
 
 **REQ-8.2.2**: If any VM fails to reach `running` status within `operations.timeouts.health_check`, the phase fails.
 
-**REQ-8.2.3**: A spot sub-table on a provider whose `CloudProvider.supportsPreemptible()` returned `false` MUST have been rejected at pre-flight (PF-16). A spot sub-table on a provider whose `provisionSpot` is a v1 stub (AWS/GCP/Azure) fails the phase with a clear "spot provisioning not implemented in v1 for provider X" error. Tracked as KL-10.
+**REQ-8.2.3**: A spot sub-table on a provider listed in `ClusterBootstrapConfigValidator.SPOT_UNSUPPORTED_REASONS` MUST have been rejected at pre-flight (PF-16). A spot sub-table on a provider whose `provisionSpot` is a v1 stub (AWS/GCP/Azure) fails the phase with a clear "spot provisioning not implemented in v1 for provider X" error. Tracked as KL-10.
 
 ### Phase 3: Collect Addresses
 
@@ -1022,10 +1024,14 @@ Apply these changes? [y/N]
 | `aether cluster status` | Cluster health summary and node list |
 | `aether cluster topology` | Source + role sub-table topology view |
 | `aether cluster drain <node>` | Drain a specific node (remove from routing, wait for in-flight) |
-| `aether cluster scale <source> <role> --count <N>` | Quick resize of a `(source, role)` sub-table without editing config |
+| `aether cluster scale [--source <name>] --role <role> --count <N>` | Quick resize of a `(source, role)` sub-table without editing config |
 | `aether cluster export [--file <output.toml>]` | Export current cluster state as TOML config (flattened) |
 
-**REQ-10.2.1**: `aether cluster scale <source> <role> --count <N>` is a convenience shortcut. It modifies the stored config for the specified sub-table and triggers the same logic as `apply`. The operator SHOULD update their config file to match afterwards. If the local file is left stale, a subsequent `aether cluster apply --dry-run` will show the drift. The recovery path is `aether cluster export --file cluster.toml` (REQ-10.2.2) to regenerate a drift-free local file from the stored state.
+**REQ-10.2.1**: `aether cluster scale [--source <name>] --role <role> --count <N>` is a convenience shortcut. It modifies the stored config for the specified sub-table and triggers the same logic as `apply`. The operator SHOULD update their config file to match afterwards. If the local file is left stale, a subsequent `aether cluster apply --dry-run` will show the drift. The recovery path is `aether cluster export --file cluster.toml` (REQ-10.2.2) to regenerate a drift-free local file from the stored state.
+
+**REQ-10.2.1a**: `--source` MAY be omitted. The server resolves it against the stored topology and MUST refuse rather than guess: exactly one source declaring `role` resolves to that source; several MUST be refused with the candidate source names in the message. A `(source, role)` pair the stored topology does not declare MUST be refused rather than created — creating it would make a mistyped source name a provisioning target. `--role` defaults to `core`.
+
+**REQ-10.2.1b**: Quorum validation (odd, `>= 3`, within `core.min`/`core.max`) applies to the `core` role only, and MUST be evaluated against the resulting **cluster-wide** core total rather than the per-source count. A per-source count is not a cluster total: scaling one core source to 1 is valid when another source carries 2. Validation is server-side; the CLI does not hold the whole topology and therefore cannot perform this arithmetic.
 
 **REQ-10.2.2**: `aether cluster export` generates a valid config file that, if used as input to `aether cluster apply`, would produce no changes (idempotent round-trip). Exports **flatten** includes, template inheritance, and variable substitution: the output contains no `include = [...]`, no `[template.X]` blocks, no `inherit` fields, and all `${env:...}` / `${secrets:...}` placeholders are resolved to their literal values.
 
@@ -1154,6 +1160,8 @@ The `CloudProvider` SPI in §11.1 is a **new, higher-level** interface specifica
 | PF-20  | Docker sub-tables: `runtime` must be `"docker"` or omitted           | Docker      | Error    |
 | PF-21  | Cloud sub-tables: `runtime` must be `"container"` or `"jvm"`         | Cloud       | Error    |
 | PF-22  | SSH sub-tables: `runtime` must be `"container"`, `"jvm"`, or `"ember"` | SSH       | Error    |
+| PF-23  | Provider implements ingress management when `allow_ingress` declared  | Cloud       | Error    |
+| PF-24  | Management port not open to `0.0.0.0/0` while `security_mode = "none"` | Cloud       | Error    |
 
 ### 12.2 Cluster-Level Checks
 
@@ -1241,7 +1249,7 @@ Each bootstrap phase records completion state to enable resume on failure.
 
 `aether cluster destroy` cleans up:
 - Provisioned VMs (cloud) / stopped containers (forge)
-- Firewall rules created via `CloudProvider.closeIngress`
+- Firewall rules created via `ComputeProvider.closeIngress`
 - Bootstrap state file
 - Cluster registry entry
 - Local API key file
@@ -1325,7 +1333,7 @@ databases.default = "${env:DATABASE_URL}"
 
 [source.hetzner-eu-fsn1-dc14.core]
 count = 5
-instance_type = "cx22"
+instance_type = "cx23"
 runtime = "default"
 
 [source.hetzner-eu-fsn1-dc14.firewall]
@@ -1382,7 +1390,7 @@ load_balancer_ips = ["138.201.1.1"]
 
 [source.hetzner-eu-fsn1-dc14.core]
 count = 1
-instance_type = "cx22"
+instance_type = "cx23"
 runtime = "default"
 
 [source.hetzner-eu-fsn1-dc15]
@@ -1393,7 +1401,7 @@ load_balancer_ips = ["138.201.2.1"]
 
 [source.hetzner-eu-fsn1-dc15.core]
 count = 1
-instance_type = "cx22"
+instance_type = "cx23"
 runtime = "default"
 
 [source.aws-us-east-1a]
@@ -1527,12 +1535,12 @@ load_balancer_ips = ["138.201.1.1", "138.201.1.2"]
 
 [source.hetzner-eu-fsn1-dc14.core]
 count = 3
-instance_type = "cx22"
+instance_type = "cx23"
 runtime = "default"
 
 [source.hetzner-eu-fsn1-dc14.worker]
 count = 5
-instance_type = "cx32"
+instance_type = "cx33"
 runtime = "large"
 
 [source.hetzner-eu-fsn1-dc14.firewall]

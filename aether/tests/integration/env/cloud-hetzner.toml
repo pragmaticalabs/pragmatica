@@ -84,6 +84,17 @@ username = "${env:PG_USER}"
 password = "${env:PG_PASSWORD}"
 async_url = "postgresql://${env:PG_HOST}:5432/${env:PG_DB}"
 
+# #598: test-persistence's NAMED datasource (config="database.testpersistence"). The
+# connector resolves config by exact section name, so the flat [database] override
+# above does not reach it — this section must exist or the blueprint keeps its baked
+# forge-postgres URL and never connects on cloud. Points at its OWN database on the
+# PG VM (fixed-name schema history/owner tables are per-physical-database); run-tests.sh
+# ensures the database exists right after the PG firewall opens.
+[source.hetzner-eu.node_config.database.testpersistence]
+username = "${env:PG_USER}"
+password = "${env:PG_PASSWORD}"
+async_url = "postgresql://${env:PG_HOST}:5432/${env:PG_DB}_testpersistence"
+
 [runtime.default]
 type = "container"
-image = "ghcr.io/pragmaticalabs/aether-node:1.0.0-rc2-candidate"
+image = "ghcr.io/pragmaticalabs/aether-node:1.0.0-rc3-candidate"

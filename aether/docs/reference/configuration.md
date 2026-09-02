@@ -320,7 +320,7 @@ max_group_size = 100
 |-------|------|---------|-------------|
 | `group_name` | string | `"default"` | Logical group name for this worker pool |
 | `zone` | string | `"local"` | Zone identifier for zone-aware grouping. Workers in the same zone auto-cluster |
-| `max_group_size` | int | `100` | Maximum members per group before splitting. Groups split at this threshold; merge below 50% |
+| `max_group_size` | int | `100` | **Inert today** — declared for the worker-group splitting mechanism, which is not built (#673: `GroupAssignment.computeGroups` has no live caller; communities are one-per-source). Parsed and validated (`< 2` refuses at parse); changes no behavior until #673's wire-or-delete decision. Community size in the shipping product is the per-source worker count. |
 
 Zone is also extracted from the NodeId: everything before the last dash (e.g., `us-east-worker-1` → zone `us-east-worker`). The explicit `zone` config takes precedence for group computation.
 
@@ -363,9 +363,62 @@ target_rf = 3
 | `cooldown_rate` | int | `10000` | Max entries/sec during replication warmup |
 | `target_rf` | int | `3` | Target replication factor (0 = full replication) |
 
+## Streaming Configuration
+
+```toml
+[streaming]
+publish_forward_timeout = "5s"
+read_forward_timeout = "2s"
+max_read_response_bytes = "28MB"
+reshuffle_concurrency = 2
+caught_up_max_lag_offsets = 1024
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `publish_forward_timeout` | timespan | `5s` | Wait for a publish forwarded to the partition owner |
+| `read_forward_timeout` | timespan | `2s` | Wait for a read forwarded to the partition owner |
+| `max_read_response_bytes` | data size | `28MB` | Cap on a single forwarded-read response |
+| `reshuffle_concurrency` | int | `2` | Partitions one node may hold in materialize+backfill at once. Must be `>= 1` |
+| `caught_up_max_lag_offsets` | long | `1024` | How far a `CAUGHT_UP` replica may trail the freshest peer watermark and still serve reads or count toward the ring-release catch-up gate. Must be `>= 0` |
+
+`reshuffle_concurrency` paces backfill work so a large reshuffle cannot flood a node. Raise it when
+partitions queue behind slow backfills; lower it when backfill traffic competes with serving. A partition
+that cannot get a slot is queued, not rejected, and the caller sees a retryable paced error naming this
+key. A slot held past a bounded tenure while others are queued is preempted — the backfill continues but
+stops counting against this limit — so a stalled backfill cannot starve the queue indefinitely.
+
+`caught_up_max_lag_offsets` exists because the `CAUGHT_UP` replication state never downgrades: nothing
+moves a replica out of it when it stops acking, so under a partition the state does not go stale — it
+FREEZES at its last good value and reads as healthy indefinitely. Without a freshness bound a replica
+that readers can still reach but which stopped acking to the owner keeps serving increasingly stale data
+with no error, and the ring-release gate over-counts it, so an owner can release its partition believing
+enough replicas are caught up.
+
+Lag is measured in OFFSETS relative to the freshest peer watermark, deliberately not as a time-to-live: a
+replica's watermark advances only on acks and backfill milestones, and nothing refreshes it on a quiet
+partition, so a time-based rule would age out every replica of a write-idle stream and stop serving reads
+from the healthiest streams in the cluster.
+
+Raise it if healthy replicas are being skipped as read sources under heavy write bursts — normal
+asynchronous replication means a healthy replica is transiently behind on every write. Lower it to demand
+tighter read freshness at the cost of forwarding more reads to the owner. `0` demands exact watermark
+parity and is legitimate but very strict. Two limits are inherent to a relative measure: a partition with
+a single registered peer has nothing to compare against and is always considered fresh, and if every
+replica freezes together their lags stay equal and none is flagged.
+
+**The default is not a measured value.** It has not been derived from an observed steady-state lag
+distribution; it is set above a typical in-flight batch depth and exposed as a knob so it can be relieved
+without a rebuild.
+
 ## Cloud Configuration
 
 Cloud provider integration is configured via the `[cloud]` TOML section. See [Cloud Integration](cloud-integration.md) for the full operator guide.
+
+> **Provisioning a new cluster?** `[cloud.*]` below is *generated output* — `aether cluster bootstrap`
+> composes it from a separate `[source.<name>]` schema you write once. See the
+> [Bootstrap Config Reference](bootstrap-config.md) for that schema and a minimal working example; you
+> should not hand-write `[cloud.*]` in a bootstrap-config file.
 
 ```toml
 [cloud]
@@ -413,6 +466,9 @@ poll_interval_ms = "15000"
 
 The `[database]` section configures the default datasource, used by `@Sql` and by migration scripts in the `schema/` root directory. Named datasources use `[database.<name>]` sections, corresponding to `schema/<name>/` subdirectories and `@ResourceQualifier(config="database.<name>")` annotations.
 
+**`@Sql` takes no argument** — it is `@ResourceQualifier(type = SqlConnector.class, config = "database")` fixed at the annotation definition
+[verified: `aether/resource/api/.../db/Sql.java`], so it always resolves the flat `[database]` section and only that one. `@Sql("name")` is not valid Java for this annotation and will not compile. To reach a *named* datasource, use `@ResourceQualifier(config = "database.<name>")` directly, as in `schema/analytics/` below — `@Sql` itself cannot select one (#577).
+
 ```toml
 [database]                        # default datasource (used by @Sql and schema/ root)
 name = "default"
@@ -436,6 +492,8 @@ password = "secret"
 **Strict resolution:** Every schema directory must have a corresponding config section. A missing section causes an explicit failure — there is no fallback or derivation between sections. This prevents silent misconfiguration where migrations run against the wrong database.
 
 **Single-datasource zero-config:** Slices using only `@Sql` place migration scripts directly in `schema/` (no subdirectory). The scripts map to `[database]` — the same section `@Sql` resolves from.
+
+**Bootstrapping a cluster:** a bootstrap-config `[source.<name>] databases.<name> = "url"` entry composes into a *named* `[database.<name>]` section on the provisioned node, never the flat `[database]` — a common trap for slices that expect the default datasource. See [Bootstrap Config Reference](bootstrap-config.md#c-databasesx-vs-flat-database).
 
 ## Blueprint Resources (`resources.toml`)
 
@@ -475,7 +533,7 @@ password = "${env:DB_ANALYTICS_PASSWORD}"
 
 ### Config Merge Hierarchy
 
-When a slice requests configuration (e.g., `@Sql("orders_db")`), the ConfigService resolves values in priority order:
+When a slice requests configuration (e.g., `@ResourceQualifier(config = "database.orders_db")`), the ConfigService resolves values in priority order:
 
 1. **SLICE** scope — per-slice overrides (highest priority)
 2. **NODE** scope — from `aether.toml` `[endpoints.*]` sections

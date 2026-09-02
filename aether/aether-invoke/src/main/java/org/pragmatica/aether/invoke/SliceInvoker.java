@@ -20,12 +20,14 @@ import org.pragmatica.aether.slice.MethodHandle;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.SliceBridge;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
+import org.pragmatica.aether.slice.SliceLoadingFailure;
 import org.pragmatica.aether.update.DeploymentManager;
 import org.pragmatica.aether.update.DeploymentManager.ActiveRouting;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.TransportObservation;
+import org.pragmatica.lang.utils.Deadline;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -326,7 +328,8 @@ class SliceInvokerImpl implements SliceInvoker {
                                 .async(SLICE_NOT_FOUND)
                                 .flatMap(bridge -> ObservabilityCells.around(bridge,
                                                                              method.name(),
-                                                                             () -> invokeViaBridge(bridge,
+                                                                             () -> invokeViaBridge(slice,
+                                                                                                   bridge,
                                                                                                    method,
                                                                                                    request)))
                                 .mapToUnit();
@@ -372,6 +375,12 @@ class SliceInvokerImpl implements SliceInvoker {
         if (stopped.get()) {
             return INVOKER_STOPPED.promise();
         }
+        // The ambient budget is captured HERE, on the caller's thread (#634 follow-up): the arm site
+        // sits behind encode/endpoint continuations that may run on another thread, where the
+        // ScopedValue is unbound — reading Deadline.current() there silently reports UNBOUNDED and the
+        // wait falls back to the full configured timeout (measured: 60,015ms elapsed under a 300ms
+        // budget before this capture existed).
+        var deadline = Deadline.current();
 
         return selectEndpointWithAffinity(slice, method, request).flatMap(endpoint -> endpoint.nodeId()
                                                                                               .equals(self)
@@ -382,17 +391,28 @@ class SliceInvokerImpl implements SliceInvoker {
                                                                                       : sendRequestResponse(endpoint,
                                                                                                             slice,
                                                                                                             method,
-                                                                                                            request));
+                                                                                                            request,
+                                                                                                            deadline))
+                                         .onFailure(cause -> log.warn("SLICE-INVOKE-FAIL slice={} method={} causeClass={} message=[{}]",
+                                                                      slice.asString(),
+                                                                      method.name(),
+                                                                      cause.getClass().getName(),
+                                                                      cause.message()));
     }
 
-    private <R> Promise<R> sendRequestResponse(Endpoint endpoint, Artifact slice, MethodName method, Object request) {
+    private <R> Promise<R> sendRequestResponse(Endpoint endpoint,
+                                               Artifact slice,
+                                               MethodName method,
+                                               Object request,
+                                               Deadline deadline) {
         return findSenderBridge(slice, request).<Promise<R>> fold(() -> SENDER_BRIDGE_NOT_FOUND.promise(),
                                                                   senderBridge -> senderBridge.encode(request)
                                                                                               .flatMap(payload -> sendAndAwaitResponse(endpoint,
                                                                                                                                        slice,
                                                                                                                                        method,
                                                                                                                                        payload,
-                                                                                                                                       senderBridge)));
+                                                                                                                                       senderBridge,
+                                                                                                                                       deadline)));
     }
 
     @SuppressWarnings("unchecked")
@@ -400,7 +420,8 @@ class SliceInvokerImpl implements SliceInvoker {
                                                 Artifact slice,
                                                 MethodName method,
                                                 byte[] payload,
-                                                SliceBridge senderBridge) {
+                                                SliceBridge senderBridge,
+                                                Deadline deadline) {
         var correlationId = IdGenerator.generate();
 
         return Promise.promise(pendingPromise -> setupPendingInvocation((Promise<Object>)(Promise<?>) pendingPromise,
@@ -409,7 +430,8 @@ class SliceInvokerImpl implements SliceInvoker {
                                                                         slice,
                                                                         method,
                                                                         payload,
-                                                                        senderBridge));
+                                                                        senderBridge,
+                                                                        deadline));
     }
 
     private void setupPendingInvocation(Promise<Object> pendingPromise,
@@ -418,7 +440,8 @@ class SliceInvokerImpl implements SliceInvoker {
                                         Artifact slice,
                                         MethodName method,
                                         byte[] payload,
-                                        SliceBridge senderBridge) {
+                                        SliceBridge senderBridge,
+                                        Deadline deadline) {
         var requestId = InvocationContext.getOrGenerateRequestId();
         var targetNode = endpoint.nodeId();
         var pending = new PendingInvocation(pendingPromise,
@@ -429,7 +452,7 @@ class SliceInvokerImpl implements SliceInvoker {
 
         pendingInvocations.put(correlationId, pending);
         pendingInvocationsByNode.computeIfAbsent(targetNode, _ -> ConcurrentHashMap.newKeySet()).add(correlationId);
-        pendingPromise.timeout(timeSpan(timeoutMs).millis())
+        pendingPromise.timeout(deadline.bounded(timeSpan(timeoutMs).millis()))
                       .onResult(_ -> removePendingInvocation(correlationId, targetNode));
         var invokeRequest = InvokeRequest.invokeRequest(self,
                                                         correlationId,
@@ -464,6 +487,8 @@ class SliceInvokerImpl implements SliceInvoker {
         }
 
         var requestId = InvocationContext.getOrGenerateRequestId();
+        // Ambient budget captured at entry, same reasoning as invoke(): the failover arm sites run in
+        // continuations where the ScopedValue is not bound.
         var ctx = new FailoverContext<>(slice,
                                         method,
                                         request,
@@ -472,7 +497,8 @@ class SliceInvokerImpl implements SliceInvoker {
                                         requestId,
                                         Set.of(),
                                         List.of(),
-                                        Option.none());
+                                        Option.none(),
+                                        Deadline.current());
 
         return Promise.promise(promise -> executeWithFailover(promise, ctx));
     }
@@ -485,7 +511,8 @@ class SliceInvokerImpl implements SliceInvoker {
                                       String requestId,
                                       java.util.Set<NodeId> failedNodes,
                                       java.util.List<NodeId> attemptedNodes,
-                                      Option<Cause> lastError) {
+                                      Option<Cause> lastError,
+                                      Deadline deadline) {
         FailoverContext<R> withFailure(NodeId failedNode, Cause error) {
             var newFailed = new java.util.HashSet<>(failedNodes);
 
@@ -502,7 +529,8 @@ class SliceInvokerImpl implements SliceInvoker {
                                          requestId,
                                          Set.copyOf(newFailed),
                                          List.copyOf(newAttempted),
-                                         Option.some(error));
+                                         Option.some(error),
+                                         deadline);
         }
 
         int attemptCount() {
@@ -557,7 +585,8 @@ class SliceInvokerImpl implements SliceInvoker {
                          .flatMap(bridge -> InvocationContext.runWithRequestId(ctx.requestId,
                                                                                () -> ObservabilityCells.around(bridge,
                                                                                                                ctx.method.name(),
-                                                                                                               () -> invokeViaBridge(bridge,
+                                                                                                               () -> invokeViaBridge(ctx.slice,
+                                                                                                                                     bridge,
                                                                                                                                      ctx.method,
                                                                                                                                      ctx.request))))
                          .onSuccess(result -> promise.succeed((R) result))
@@ -598,7 +627,7 @@ class SliceInvokerImpl implements SliceInvoker {
 
         pendingInvocations.put(correlationId, pending);
         pendingInvocationsByNode.computeIfAbsent(targetNode, _ -> ConcurrentHashMap.newKeySet()).add(correlationId);
-        pendingPromise.timeout(timeSpan(timeoutMs).millis())
+        pendingPromise.timeout(ctx.deadline().bounded(timeSpan(timeoutMs).millis()))
                       .onResult(_ -> removePendingInvocation(correlationId, targetNode));
         var invokeRequest = InvokeRequest.invokeRequest(self,
                                                         correlationId,
@@ -746,36 +775,60 @@ class SliceInvokerImpl implements SliceInvoker {
                                 .async(SLICE_NOT_FOUND)
                                 .flatMap(bridge -> ObservabilityCells.around(bridge,
                                                                              method.name(),
-                                                                             () -> invokeViaBridge(bridge,
+                                                                             () -> invokeViaBridge(slice,
+                                                                                                   bridge,
                                                                                                    method,
                                                                                                    request)));
     }
 
     @SuppressWarnings("unchecked")
-    private <R> Promise<R> invokeViaBridge(SliceBridge targetBridge, MethodName method, Object request) {
-        // Local invoke: target bridge IS the slice's own bridge — encode via the
-        // same bridge instead of round-tripping through classloader-based sender
-        // lookup, which fails when `request` lives in a parent loader (Unit, etc.).
-        return targetBridge.encode(request)
+    private <R> Promise<R> invokeViaBridge(Artifact slice,
+                                           SliceBridge targetBridge,
+                                           MethodName method,
+                                           Object request) {
+        // Encode with the SENDER's codec, not the target's. Slices load in isolated loaders, so a
+        // cross-slice request object is the CALLER's copy of `X.Request`; the target's codec knows
+        // only its own copy and rejects it with "No codec registered for class" -- which is why a
+        // local cross-slice call failed while the identical call over the wire worked. Encoding
+        // through the target was introduced to serve request types living in a parent loader (Unit
+        // and friends); findSenderBridge still falls back to the target for exactly those, so that
+        // case keeps working. The wire is tag-based (deterministicTag over the FQCN), so the target
+        // resolves the bytes through its own codec regardless of which codec wrote them, and the
+        // response is decoded back into the caller's own types the same way.
+        var senderBridge = findSenderBridge(slice, request).or(targetBridge);
+
+        return senderBridge.encode(request)
                            .flatMap(inputBytes -> targetBridge.invoke(method.name(),
                                                                       inputBytes))
-                           .flatMap(responseBytes -> targetBridge.decode(responseBytes))
+                           .flatMap(responseBytes -> senderBridge.decode(responseBytes))
                            .map(result -> (R) result);
     }
 
     private Option<SliceBridge> findSenderBridge(Artifact slice, Object request) {
-        // Prefer artifact-based lookup: works even when `request` lives in a parent
-        // classloader (e.g. `Unit.unit()` from the scheduled-tasks inject path, whose
-        // class is in pragmatica-core, not the slice loader — classloader-only lookup
-        // would miss the bridge). Fall back to classloader lookup for back-compat with
-        // request types that genuinely live in the slice loader. When neither lookup
-        // produces a bridge the caller MUST surface SENDER_BRIDGE_NOT_FOUND as a Promise
-        // failure — historically this path `.unwrap()`'d the empty Option and threw an
-        // unchecked exception that surfaced to clients as `500 {"error":"Internal Server
-        // Error"}` (see ScheduledTaskRoutes.invokeAndAdvanceState).
-        return invocationHandler.localSlice(slice)
-                                .orElse(() -> invocationHandler.findBridgeByClassLoader(request.getClass()
-                                                                                               .getClassLoader()));
+        // Prefer the bridge owning the REQUEST's classloader. Slices load in isolated loaders, so
+        // the callee's bridge knows `X.Request` as ITS Class object while the request instance here
+        // was built by the CALLER's loader -- same type name, different Class, and a Class-keyed
+        // codec registry misses with "No codec registered for class". Artifact lookup remains the
+        // fallback, which is what serves request types living in a parent loader (e.g. `Unit.unit()`
+        // from pragmatica-core, whose loader owns no bridge). When NEITHER lookup produces a
+        // bridge the caller MUST surface SENDER_BRIDGE_NOT_FOUND as a Promise failure -- this path
+        // historically `.unwrap()`'d the empty Option and threw, surfacing to clients as a bare
+        // `500 {"error":"Internal Server Error"}` (see ScheduledTaskRoutes.invokeAndAdvanceState).
+        var requestType = request.getClass();
+        // getClassLoader() returns null for a bootstrap-loaded type (`Unit`, `String`), which owns
+        // no bridge by definition -- lift it into an Option here rather than pushing a null into the
+        // lookup, whose ConcurrentHashMap would throw on it.
+        return Option.option(requestType.getClassLoader())
+                     .flatMap(invocationHandler::findBridgeByClassLoader)
+                     .filter(bridge -> canEncode(bridge, requestType))
+                     .orElse(() -> invocationHandler.findBridgeForType(requestType))
+                     .orElse(() -> invocationHandler.localSlice(slice));
+    }
+
+    private static boolean canEncode(SliceBridge bridge, Class<?> type) {
+        return bridge.sliceCodec()
+                     .map(codec -> codec.hasCodecFor(type))
+                     .or(false);
     }
 
     @Override
@@ -939,7 +992,15 @@ class SliceInvokerImpl implements SliceInvoker {
         var endpoints = endpointRegistry.findEndpoints(artifact, method);
 
         if (endpoints.isEmpty()) {
-            return Causes.cause("No endpoint found for " + artifact.asString() + "/" + method.name()).result();
+            // INTERMITTENT, not fatal. This runs at activation, and a blueprint's slices activate
+            // concurrently: a dependency that has not published its endpoint YET is a race, not a
+            // permanent defect. Returning an untyped Cause here classified as Fatal.UnexpectedError
+            // (SliceLoadingFailure.classify falls through to Fatal), which made the cluster abandon
+            // the slice with "will NOT retry" and collapse an otherwise healthy deployment to zero
+            // routes purely on activation order.
+            return new SliceLoadingFailure.Intermittent.ResourceUnavailable("endpoint " + artifact.asString()
+                                                                           + "/" + method.name(),
+                                                                            Causes.cause("not published yet")).result();
         }
 
         return Result.unitResult();

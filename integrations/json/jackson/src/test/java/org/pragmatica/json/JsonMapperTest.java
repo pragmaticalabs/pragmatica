@@ -227,6 +227,128 @@ class JsonMapperTest {
     }
 
     @Nested
+    class OptionElementContextualization {
+        record Amount(long minor, String currency) {}
+        record Refund(String id, Option<Long> partialAmount, Option<Amount> amount) {}
+        record Outcome(String id, Result<Amount> settlement) {}
+
+        // Option<String> works even without contextualization, so these tests pin non-String
+        // elements: pre-#696 a declared Option<Long> arrived as Integer and a record element as
+        // LinkedHashMap, failing only at first use.
+        @Test
+        void readString_deserializesTypedLongElement_forOptionLongField() {
+            var json = "{\"id\":\"r-1\",\"partialAmount\":42,\"amount\":null}";
+
+            mapper.readString(json, Refund.class)
+                .onFailure(cause -> fail("Should not fail: " + cause))
+                .onSuccess(refund -> {
+                    assertEquals(Option.some(Long.class), refund.partialAmount().map(Object::getClass));
+                    assertEquals(Option.some(42L), refund.partialAmount());
+                });
+        }
+
+        @Test
+        void readString_deserializesTypedRecordElement_forOptionRecordField() {
+            var json = "{\"id\":\"r-2\",\"partialAmount\":null,\"amount\":{\"minor\":100,\"currency\":\"EUR\"}}";
+
+            mapper.readString(json, Refund.class)
+                .onFailure(cause -> fail("Should not fail: " + cause))
+                .onSuccess(refund -> {
+                    assertEquals(Option.some(Amount.class), refund.amount().map(Object::getClass));
+                    assertEquals(Option.some(new Amount(100, "EUR")), refund.amount());
+                });
+        }
+
+        @Test
+        void readString_keepsNone_forAbsentOptionFields() {
+            var json = "{\"id\":\"r-3\"}";
+
+            mapper.readString(json, Refund.class)
+                .onFailure(cause -> fail("Should not fail: " + cause))
+                .onSuccess(refund -> {
+                    assertFalse(refund.partialAmount().isPresent());
+                    assertFalse(refund.amount().isPresent());
+                });
+        }
+
+        @Test
+        void readString_deserializesTypedRecordValue_forResultField() {
+            var json = "{\"id\":\"r-4\",\"settlement\":{\"success\":true,\"value\":{\"minor\":250,\"currency\":\"EUR\"}}}";
+
+            mapper.readString(json, Outcome.class)
+                .onFailure(cause -> fail("Should not fail: " + cause))
+                .onSuccess(outcome -> outcome.settlement()
+                                             .onFailure(cause -> fail("Settlement should be success: " + cause))
+                                             .onSuccess(amount -> assertEquals(new Amount(250, "EUR"), amount)));
+        }
+
+        // Nested-wrapper pins: element derivation must never re-derive the OUTER wrapper from the
+        // property and recurse (pre-guard: unbounded recursion -> StackOverflowError). The inner
+        // element stays untyped through these shapes — the pins assert no-crash and correct wrapper
+        // structure, deliberately not inner element types.
+        record NestedWrappers(String id,
+                              Result<Option<Long>> auth,
+                              Option<Result<Amount>> outcome,
+                              Option<Option<Long>> doubled) {}
+
+        @Test
+        void readString_doesNotRecurse_forResultOfOptionField() {
+            var json = "{\"id\":\"n-1\",\"auth\":{\"success\":true,\"value\":42},\"outcome\":null,\"doubled\":null}";
+
+            mapper.readString(json, NestedWrappers.class)
+                .onFailure(cause -> fail("Should not fail: " + cause))
+                .onSuccess(nested -> nested.auth()
+                                           .onFailure(cause -> fail("auth should be success: " + cause))
+                                           .onSuccess(value -> assertTrue(value.isPresent())));
+        }
+
+        @Test
+        void readString_doesNotRecurse_forOptionOfResultField() {
+            var json = "{\"id\":\"n-2\",\"auth\":{\"success\":true,\"value\":1},\"outcome\":{\"success\":true,\"value\":{\"minor\":5,\"currency\":\"EUR\"}},\"doubled\":null}";
+
+            mapper.readString(json, NestedWrappers.class)
+                .onFailure(cause -> fail("Should not fail: " + cause))
+                .onSuccess(nested -> assertTrue(nested.outcome().isPresent()));
+        }
+
+        @Test
+        void readString_doesNotRecurse_forOptionOfOptionField() {
+            var json = "{\"id\":\"n-3\",\"auth\":{\"success\":true,\"value\":1},\"outcome\":null,\"doubled\":7}";
+
+            mapper.readString(json, NestedWrappers.class)
+                .onFailure(cause -> fail("Should not fail: " + cause))
+                .onSuccess(nested -> assertTrue(nested.doubled().isPresent()));
+        }
+
+        record Shipment(String id, Option<List<Option<Long>>> slots) {}
+
+        @Test
+        void readString_doesNotRecurse_forContainerSeparatedSameWrapper() {
+            // Collection deserializers propagate the SAME property into content contextualization,
+            // so a same-wrapper element on the far side of a container re-derives the container
+            // forever unless container elements go through the type-directed path.
+            var json = "{\"id\":\"s-1\",\"slots\":[1,null,3]}";
+
+            mapper.readString(json, Shipment.class)
+                .onFailure(cause -> fail("Should not fail: " + cause))
+                .onSuccess(shipment -> shipment.slots()
+                                               .onPresent(slots -> assertEquals(3, slots.size())));
+        }
+
+        record Cart(String id, Option<List<Amount>> lines) {}
+
+        @Test
+        void readString_deserializesTypedListElements_forOptionListField() {
+            var json = "{\"id\":\"c-1\",\"lines\":[{\"minor\":100,\"currency\":\"EUR\"},{\"minor\":200,\"currency\":\"EUR\"}]}";
+
+            mapper.readString(json, Cart.class)
+                .onFailure(cause -> fail("Should not fail: " + cause))
+                .onSuccess(cart -> assertEquals(Option.some(List.of(new Amount(100, "EUR"), new Amount(200, "EUR"))),
+                                                cart.lines()));
+        }
+    }
+
+    @Nested
     class ErrorHandling {
         record User(String name, int age) {}
 

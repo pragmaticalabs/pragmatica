@@ -1,17 +1,17 @@
 package org.pragmatica.postgres.io.frontend;
 
+import java.nio.ByteBuffer;
+import java.nio.charset.Charset;
+
 import org.pragmatica.postgres.io.Encoder;
 import org.pragmatica.postgres.message.Message;
 
-import java.nio.ByteBuffer;
-import java.nio.charset.Charset;
 
 /**
  * @param <M> specific {@link Message} type.
  * @author Marat Gainullin
  */
 public abstract class SkipableEncoder<M extends Message> implements Encoder<M> {
-
     @Override
     public void write(M msg, ByteBuffer buffer, Charset encoding) {
         buffer.put(getMessageId());
@@ -21,7 +21,5 @@ public abstract class SkipableEncoder<M extends Message> implements Encoder<M> {
     }
 
     protected abstract byte getMessageId();
-
     protected abstract void writeBody(M msg, ByteBuffer buffer, Charset encoding);
-
 }

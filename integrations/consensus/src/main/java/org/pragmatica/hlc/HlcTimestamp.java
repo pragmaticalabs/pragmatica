@@ -13,11 +13,11 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.hlc;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.serialization.Codec;
+
 
 /// Hybrid Logical Clock timestamp combining physical time (epoch milliseconds) and a logical counter
 /// into a single packed long, paired with a node identifier for total ordering.
@@ -28,7 +28,6 @@ import org.pragmatica.serialization.Codec;
 public record HlcTimestamp(long packed, NodeId nodeId) implements Comparable<HlcTimestamp> {
     public static final HlcTimestamp ZERO = new HlcTimestamp(0L, new NodeId(""));
     public static final HlcTimestamp MIN = ZERO;
-
     private static final int COUNTER_BITS = 16;
     private static final long COUNTER_MASK = 0xFFFFL;
 
@@ -44,7 +43,7 @@ public record HlcTimestamp(long packed, NodeId nodeId) implements Comparable<Hlc
 
     /// Extracts the logical counter component from the packed value.
     public int counter() {
-        return (int) (packed & COUNTER_MASK);
+        return (int)(packed & COUNTER_MASK);
     }
 
     /// Compares two packed values without considering node identity.
@@ -56,7 +55,10 @@ public record HlcTimestamp(long packed, NodeId nodeId) implements Comparable<Hlc
     @Override
     public int compareTo(HlcTimestamp other) {
         var timeCompare = Long.compare(packed, other.packed);
-        return timeCompare != 0 ? timeCompare : nodeId.compareTo(other.nodeId);
+
+        return timeCompare != 0
+               ? timeCompare
+               : nodeId.compareTo(other.nodeId);
     }
 
     @Override

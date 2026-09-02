@@ -6,7 +6,7 @@ Slices access infrastructure — databases, HTTP clients, caches — through **r
 
 ### Built-In Qualifiers
 
-Aether ships three built-in qualifiers:
+Aether ships four built-in qualifiers:
 
 | Annotation | Resource Type | Config Section |
 |------------|--------------|----------------|
@@ -140,7 +140,14 @@ The annotation processor classifies factory parameters automatically:
 
 ### Configuration Section Naming
 
-Resource configuration lives in `aether.toml` using the pattern `[type.qualifier]`:
+Resource configuration is layered, not single-file. A slice may bundle its own
+`META-INF/resources.toml` inside the JAR — **slice-intrinsic defaults**, parsed by `SliceStore`
+with `${secrets:...}` placeholders resolved (see [Secret Handling](#secret-handling) below). The
+operator/node-level `aether.toml` (plus the KV-Store config overlay above it) is the **deployment
+layer**; it wins over the slice's intrinsic defaults when both define the same key [mechanism:
+first-wins `LayeredConfigProvider`, node-composite listed first].
+
+Both layers use the same section pattern, `[type.qualifier]`:
 
 ```toml
 [http.payment-gateway]
@@ -154,11 +161,63 @@ database = "orders"
 
 The `type` prefix determines which `ResourceFactory` handles provisioning. The `qualifier` suffix distinguishes multiple instances of the same resource type.
 
-### Secret Handling
+### Deploy-Time Validation
+
+Deploying a blueprint runs a pre-flight check over every slice's generic resource dependencies
+(`[type.qualifier]` sections — database, cache, HTTP client, idempotency store, and any other
+resource declared via `@ResourceQualifier`) before any node activates a slice. If one or more
+declared sections have no matching config anywhere in the target cluster, the deploy fails up front
+with the complete list of missing sections, naming the slice, the resource type, and the section —
+not one node at a time, discovered only when that node's `SpiResourceProvider` tries to load the
+resource [mechanism: `ConfigSectionPreflightValidator`, aggregated via `Result.allOf`].
+
+**Scope and honest limits:**
+- Only generic resources are checked. Pub-sub topics (publishers and subscribers) are exempt from
+  this pre-flight — see the fallback note below and [Pub-Sub Messaging](#pub-sub-messaging-subscriber).
+- The check verifies *presence*, not environmental correctness — a `[database.orders]` section that
+  resolves but points at an unreachable host still passes. It checks the **leader's** composite
+  configuration view (KV-Store operator overlay layered over the leader's own `aether.toml`),
+  checked once at deploy time — a section present there but absent from a *different* node's local
+  config file is not caught here `[design intent — unverified]`. A failing check's message names
+  this exact view so it is not mistaken for a cross-node homogeneity guarantee.
+- If the node has no configuration provider at all, the check fails **open** — deploy proceeds
+  unchanged, since absence of a provider means "not checkable," not "not configured." This is a
+  quiet gate by construction, so the skip itself is not: the node logs a warning naming how many
+  declared resource sections went unchecked, so a successful deploy's logs distinguish "checked and
+  passed" from "not checked"
+  [verified: `BlueprintPublishOwnershipTest.ConfigPreflight.publishFromArtifact_logsVisibleSkipWarning_whenNoConfigurationProviderIsWired`].
+- A slice whose declared sections are all present deploys unchanged; this check introduces no new
+  failure mode for a correctly-configured blueprint.
+
+**One resource type is exempt by design, not by omission.** A slice's publisher-side `TopicConfig`
+resource derives its topic name from the manifest (the generated factory already knows the `Topic<T>`
+constant it provisions), so a missing `resources.toml` section for it falls back to a topic named
+after the section instead of failing — there is nothing to synthesise, since the runtime never
+needed the operator to supply that value in the first place. See `SpiResourceProvider.topicNameFallback`
+for the mechanism. Every other resource type in this reference has no such fallback: a missing
+section is always a hard failure, either at this deploy-time pre-flight or, for pub-sub resources
+specifically, at slice activation.
 
 ### Secret Handling
 
-String values containing `${secrets:path/to/secret}` are resolved at configuration load time by `SecretResolvingConfigurationProvider`. The secret resolver function maps paths to values asynchronously. All placeholders are resolved eagerly before the configuration is made available to resource factories.
+String values containing `${secrets:path/to/secret}` are resolved eagerly at load time by
+`SecretResolvingConfigurationProvider` [verified: `AetherNode.java` — eager resolution against the
+node-composite provider]. This applies to `aether.toml`, the KV-Store overlay, **and a slice's
+bundled `resources.toml`** — the slice-intrinsic layer is resolved with the same node-configured
+secrets resolver [mechanism: `SliceStore.resolveIntrinsicSecrets` wraps the slice-intrinsic
+provider in `ConfigurationProvider.withSecretResolution` using the same resolver `node.toml` uses].
+
+**Failure is all-or-nothing per layer.** If any `${secrets:...}` key in a slice's `resources.toml`
+fails to resolve, the **entire slice-intrinsic layer is dropped**, not just the failed key — the
+same convention already used for a malformed `resources.toml`. A resource declared *only* in the
+slice's `resources.toml` (not overridden by `aether.toml`/KV) then fails as not-configured at
+provision time; the node log names the slice, the failed key, and this consequence. Resources whose
+config also appears in `aether.toml`/KV are unaffected, since the deployment layer still wins over
+the (now-missing) slice-intrinsic layer.
+
+If no secrets resolver is configured on the node at all, a literal `${secrets:...}` placeholder in
+`resources.toml` passes through unresolved, as before — put secrets that must always resolve in the
+operator-level `aether.toml` if a node may run without a secrets integration configured.
 
 ```toml
 [database.orders]
@@ -330,6 +389,28 @@ Migration scripts live in the `schema/` directory of your blueprint artifact. Th
 #### Strict Datasource Resolution
 
 Every schema directory must have a corresponding `[database]` or `[database.<name>]` config section. There is no fallback or derivation — a missing config section causes an explicit failure with a descriptive error message. This prevents silent misconfiguration.
+
+#### One Migrator Per Datasource
+
+Datasource names are **cluster-global**, not per-blueprint: the zero-config layout above names the
+datasource `database` for *every* blueprint, and all of them resolve it against the same
+`[database]` section on the node. Deploying a second blueprint whose `schema/` directory claims a
+datasource another blueprint already migrates is therefore **refused with HTTP 409** — two
+blueprints interleaving unrelated version sequences against one physical database is not a
+supported configuration. The check runs at deploy time and is not atomic against a simultaneous
+competing publish, so it reliably refuses the sequential case; do not rely on it to arbitrate two
+publishes racing each other.
+
+- Republishing the *same* blueprint at a newer version is fine; ownership matches on
+  `group:artifact` with the version stripped.
+- Reading and writing a shared datasource stays legal. Only declaring **migrations** for it is
+  exclusive: a blueprint with no `schema/` directory is never in conflict.
+- To give a second blueprint its own schema, give it its own named datasource — a
+  `schema/<name>/` subdirectory plus the matching `[database.<name>]` section.
+
+`aether schema status` shows the current owner of each datasource in its `OWNING BLUEPRINT`
+column. That owner also determines whose slices wait: while a datasource's migration is `PENDING`,
+`MIGRATING` or `FAILED`, only the **owning** blueprint's slices are withheld from activation.
 
 #### Migration Script Types
 
@@ -504,9 +585,9 @@ Nested under `[notification.smtp]`:
 |-------|------|---------|-------------|
 | `host` | `String` | required | SMTP server hostname |
 | `port` | `int` | `587` | SMTP server port |
-| `tls` | `SmtpTlsMode` | `STARTTLS` | TLS mode: `NONE`, `STARTTLS`, `IMPLICIT` |
-| `username` | `String` (optional) | none | AUTH PLAIN username |
-| `password` | `String` (optional) | none | AUTH PLAIN password |
+| `tls_mode` | `SmtpTlsMode` | `STARTTLS` | TLS mode: `NONE`, `STARTTLS`, `IMPLICIT` |
+| `auth.username` | `String` (optional, nested) | none | AUTH PLAIN username — under `[notification.smtp.auth]` |
+| `auth.password` | `String` (optional, nested) | none | AUTH PLAIN password — under `[notification.smtp.auth]` |
 | `connect_timeout` | duration | `10s` | TCP connection timeout |
 | `command_timeout` | duration | `30s` | SMTP command timeout |
 
@@ -516,10 +597,10 @@ Nested under `[notification.http]`:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `provider` | `String` | required | Vendor: `"sendgrid"`, `"mailgun"`, `"postmark"`, `"resend"` |
+| `provider_hint` | `String` | required | Vendor: `"sendgrid"`, `"mailgun"`, `"postmark"`, `"resend"` |
 | `api_key` | `String` | required | Vendor API key |
 | `endpoint` | `String` (optional) | vendor default | Override API endpoint URL |
-| `from` | `String` (optional) | none | Default sender address |
+| `from_address` | `String` (optional) | none | Default sender address |
 
 #### Retry Configuration
 
@@ -582,7 +663,9 @@ backend = "smtp"
 [notification.smtp]
 host = "smtp.example.com"
 port = 587
-tls = "STARTTLS"
+tls_mode = "STARTTLS"
+
+[notification.smtp.auth]
 username = "noreply@example.com"
 password = "${secrets:smtp/password}"
 
@@ -596,9 +679,9 @@ max_attempts = 3
 backend = "http"
 
 [notification.http]
-provider = "sendgrid"
+provider_hint = "sendgrid"
 api_key = "${secrets:sendgrid/api-key}"
-from = "noreply@example.com"
+from_address = "noreply@example.com"
 
 [notification.retry]
 max_attempts = 5
@@ -611,7 +694,7 @@ initial_delay_ms = 2000
 backend = "http"
 
 [notification.http]
-provider = "mailgun"
+provider_hint = "mailgun"
 api_key = "${secrets:mailgun/api-key}"
 ```
 
@@ -707,7 +790,7 @@ Custom vendors can be added via `VendorMapping` SPI (ServiceLoader in `integrati
 |------|---------|-------------|
 | `LOCAL` | In-memory on local node | Fastest, no network overhead |
 | `DISTRIBUTED` | DHT across the cluster | Shared cache, survives node loss |
-| `TIERED` | Local L1 + distributed L2 | Best of both: fast reads with cluster-wide consistency |
+| `TIERED` | Local L1 + distributed L2 | Best of both: fast local reads, falls back to the distributed L2 on a local miss [gap: no cross-node invalidation yet, so a write on one node can leave a stale L1 entry on another — tracked in #279; don't rely on cross-node consistency] |
 
 ### TOML Example
 
@@ -726,6 +809,12 @@ mode = "TIERED"
 
 Aspects are cross-cutting concerns applied to slice method invocations via configuration. Each aspect is a `ResourceFactory` that provisions a method interceptor.
 
+> **Limitation on pub-sub handlers:** an interceptor wraps a handler as `Fn1<Promise<Unit>, T>`,
+> typed on the event alone. A subscriber that takes a
+> [`MessageContext`](#delivery-context-durable-topics-only-386) therefore cannot also carry
+> interceptors — the chain has nowhere to put the context. Declaring both is a compile error rather
+> than a silent loss of the context.
+
 ### Retry
 
 **Resource type:** `RetryMethodInterceptor`
@@ -734,15 +823,34 @@ Aspects are cross-cutting concerns applied to slice method invocations via confi
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `max_attempts` | `int` | required | Maximum retry attempts (must be positive) |
-| `backoff_strategy` | `BackoffStrategy` | exponential | Backoff strategy between retries |
+| `backoff_strategy` | `BackoffStrategy` | exponential (3 attempts) | Backoff strategy between retries |
 
-Built-in backoff strategies:
-- **Exponential:** initial delay 100ms, max delay 10s, factor 2.0, no jitter
-- **Fixed:** constant interval between retries
+`backoff_strategy` is a **discriminated sub-section**: `[retry.<name>.backoff_strategy]` with a
+`type` key selecting the shape. A **wholly absent** `[retry.<name>]` section fails loud
+(`ConfigError.sectionNotFound`) — the binder's `hasSection` gate runs before any per-field default
+and never consults `RetryConfig.DEFAULT`. A **present** section that omits `backoff_strategy`
+entirely instead falls back component-wise to `RetryConfig.DEFAULT.backoffStrategy()` (3 attempts,
+exponential) — the per-field fallback that `CircuitBreakerConfig`/`RetryConfig`'s public `DEFAULT`
+exists to serve. These are opposite outcomes for what looks like the same "nothing configured"
+intent; don't conflate them
+[verified: `RetryConfigTomlBindingTest#config_whollyAbsentSection_failsLoud_doesNotFallBackToDefault`,
+`RetryConfigTomlBindingTest#config_presentSectionOmittingBackoffStrategy_fallsBackToRetryConfigDefault`, #278].
+
+| `type` | Required fields | Optional fields (default) |
+|--------|-----------------|----------------------------|
+| `fixed` | `interval` (duration) | — |
+| `exponential` | — | `initial_delay` (`100ms`), `max_delay` (`10s`), `factor` (`2.0`), `with_jitter` (`false`) |
+| `linear` | `initial_delay`, `increment`, `max_delay` (all durations) | — |
 
 ```toml
 [retry.payment-calls]
 max_attempts = 3
+
+[retry.payment-calls.backoff_strategy]
+type = "exponential"
+initial_delay = "200ms"
+max_delay = "5s"
+factor = 2.0
 ```
 
 ### Circuit Breaker
@@ -770,9 +878,12 @@ test_attempts = 5
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `max_requests` | `int` | `100` | Maximum requests allowed in the window |
-| `window` | duration | `1m` | Time window for rate limiting |
-| `burst` | `int` | `0` | Additional burst capacity above base rate |
+| `max_requests` | `int` | required | Maximum requests allowed in the window |
+| `window` | duration | required | Time window for rate limiting |
+| `burst` | `int` | required | Additional burst capacity above base rate |
+
+`RateLimitConfig` declares no `DEFAULT` static field either, so all three keys above are mandatory —
+omitting one fails config binding rather than falling back to a built-in value.
 
 ```toml
 [rate-limit.api-calls]
@@ -780,6 +891,46 @@ max_requests = 200
 window = "1m"
 burst = 50
 ```
+
+### Rate Guard (author-invoked SPI)
+
+**SPI type:** `RateGuard` (published in `slice-api`)
+**Error:** `RateGuardError` (`slice-api`)
+**Factory:** `RateGuardFactory` → `DefaultRateGuard`
+**Config:** `RateGuardConfig`
+
+`RateGuard` is a **second, distinct** rate limiter — do not conflate it with `[rate-limit.*]` above. Where `[rate-limit.*]` is a **declarative whole-method interceptor**, `RateGuard` is an **imperative SPI** the author calls to wrap one specific operation:
+
+```java
+public interface RateGuard {
+    <T> Promise<T> guard(Supplier<Promise<T>> operation);
+}
+```
+
+`guard(...)` runs the operation when a token is available, otherwise short-circuits with a typed `RateGuardError.LimitExceeded` carrying retry metadata — `retryAfterMs`, `limit`, `remaining`, `resetAtEpochMs`, plus `retryAfterSeconds()` / `resetAtEpochSeconds()` — so the caller can surface a precise `Retry-After`.
+
+**Mechanism:** a local, in-process **token bucket** (`DefaultRateGuard` over Pragmatica Core's `RateLimiter`), scoped per resource instance / per JVM. The config `type` field (`"local"`, the only value today) is the seam for the DHT-backed **distributed** RateGuard tracked by #144 — this SPI is the local half of that story.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `requestsPerSecond` | `int` | `100` | Sustained rate; must be positive. Fixed 1-second window |
+| `burst` | `int` | `20` | Extra capacity above the base rate; must be non-negative |
+| `type` | `String` | `"local"` | Limiter implementation; only `"local"` (in-process) ships today |
+
+Provisioned by `RateGuardFactory` (`ResourceFactory<RateGuard, RateGuardConfig>`) like any other resource. The slice processor classifies a `RateGuard`-qualified method as reactive category **`rate-guard`** and keeps it **route-coverage-relevant** (a rate guard is an interceptor on an HTTP route, not a transport — `SliceProcessor`), so a rate-guarded HTTP method still needs its declared route.
+
+**Choosing between them:**
+
+| | `[rate-limit.*]` | `RateGuard` |
+|--|------------------|-------------|
+| Style | Declarative method interceptor | Imperative SPI (`guard(...)`) |
+| Granularity | Whole method | A specific operation you wrap |
+| Type | `RateLimitMethodInterceptor` | `RateGuard` (`slice-api`) |
+| Config | `max_requests`, `window`, `burst` | `requestsPerSecond`, `burst`, `type` |
+| On limit | Interceptor rejects the invocation | Returns `RateGuardError.LimitExceeded` with retry metadata |
+| Scope today | Local | Local (`type="local"`); distributed is #144 |
+
+> **Status:** the `RateGuard` / `RateGuardError` SPI ships in author-facing `slice-api` and is unit-tested (`RateGuardTest`), but no bundled slice declares one yet — it is local infrastructure the distributed rate limiter (#144) extends. Treat it as experimental until #144 lands the declaration and distribution surface.
 
 ### Metrics
 
@@ -793,13 +944,30 @@ burst = 50
 | `record_counts` | `boolean` | `true` | Record success/failure counts |
 | `tags` | `List<String>` | empty | Additional metric tags (key-value pairs) |
 
-The `registry` field (Micrometer `MeterRegistry`) is injected programmatically, not via TOML.
+The `MeterRegistry` is not a config field — it is resolved from the node's real, Management-API-backed
+registry via `ProvisioningContext.extension(MeterRegistry.class)` at provision time, so metrics
+recorded by a slice interceptor land in the same registry `/metrics` scrapes
+[mechanism: `MetricsInterceptorFactory.provision`, #278]. **Requires `management_port > 0`**: the
+extension is registered only when the node's management server starts, so a slice declaring
+`[metrics.*]` on a node with the management port disabled fails to provision that interceptor today
+[design intent — unverified; open question, not yet resolved: fail-loud vs. a no-op fallback
+registry when management is disabled].
+
+`tags` binds as a comma-joined scalar, not a native TOML array — the generic binder now has a
+`List<String>` handler [mechanism: `ProviderBasedConfigService.collectListValue`, #278]. Each entry
+must be a **`"key=value"` pair** (`tags = "region=eu,tier=gold"`), not a bare label
+(`tags = "region"`) — `MetricsInterceptorFactory#parseTags` parses every entry once at provisioning
+time and hands the result to Micrometer's `MeterRegistry.timer(String, Tags)`, which requires named
+dimensions. A bare-label entry fails provisioning (a `Result`, not a thrown exception) with the
+offending value named, rather than surfacing on the interceptor's first invocation
+[verified: `MetricsConfigTomlBindingTest#metricsInterceptorFactory_failsProvisioning_whenTagMissingEqualsSign`, #278].
 
 ```toml
 [metrics.order-processing]
 name = "order.processing"
 record_timing = true
 record_counts = true
+tags = "region=eu,tier=gold"
 ```
 
 ### Logging
@@ -810,10 +978,13 @@ record_counts = true
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `name` | `String` | required | Logger name prefix |
-| `level` | `LogLevel` | `INFO` | Log level (`TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`) |
-| `log_args` | `boolean` | `true` | Log method arguments |
-| `log_result` | `boolean` | `true` | Log method results |
-| `log_duration` | `boolean` | `true` | Log execution duration |
+| `level` | `LogLevel` | required | Log level (`TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`) |
+| `log_args` | `boolean` | required | Log method arguments |
+| `log_result` | `boolean` | required | Log method results |
+| `log_duration` | `boolean` | required | Log execution duration |
+
+`LogConfig` declares no `DEFAULT` static field, so the generic config binder treats every key above
+as mandatory — there is no config-level fallback to `INFO`/`true` if a key is omitted from TOML.
 
 ```toml
 [logging.payment-flow]
@@ -853,25 +1024,80 @@ public interface OrderProcessor {
 }
 ```
 
+### Delivery context (durable topics only, #386)
+
+A handler on a **durable** topic may take a second parameter to receive the delivery's envelope:
+
+```java
+@Slice
+public interface OrderProcessor {
+    @OrderEvents
+    Promise<Unit> handleOrderEvent(OrderEvent event, MessageContext context);
+}
+```
+
+`MessageContext(String messageId, String topic, int partition, long offset)` — `messageId` is the
+publisher-assigned identity of the EVENT and is the key to deduplicate on; it survives dead-letter
+redrive. `partition` and `offset` locate *this delivery* and are not identities — a redelivery or a
+redrive can present different values for the same event, so never key on them.
+
+The one-argument shape remains the default and is unchanged. Two rules apply to the two-argument
+shape, both enforced at compile time:
+
+- **The topic must declare `durability = "durable"`.** On an ephemeral topic the declaration is a
+  compile error: ephemeral dispatch carries no envelope, so the message id, partition and offset
+  would be fabricated. If the processor cannot read `resources.toml` at all it refuses too, and says
+  so distinctly — an unreadable declaration is not evidence of an ephemeral one.
+- **A handler cannot carry both interceptors and `MessageContext`.** Aspects (`@WithRetry`,
+  `@WithCache`, and the rest of the [Aspects](#aspects-interceptors) section) wrap a handler as
+  `Fn1<Promise<Unit>, T>` — typed on the event alone, with nowhere to carry the context. Declaring
+  both is a compile error rather than a silent loss of the context. Use one or the other.
+
 ### Configuration
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `topic` | `String` | required | Topic name for message routing |
+| `topic_name` | `String` | required | Topic name for message routing |
+| `durability` | `String` | `"ephemeral"` | Delivery tier (#386): `"ephemeral"` keeps the RPC fan-out; `"durable"` backs the topic with a replicated stream |
+| `partitions` | `Integer` | `1` | Durable only. Partition count of the backing stream (per-partition ordering unit) |
+| `replicas` | `Integer` | `2` | Durable only. Copies of each partition, owner included. Must be `>= 2` |
+| `min_sync_replicas` | `Integer` | = `replicas` | Durable only. Write-ack floor, owner included. v1 constraint: MUST equal `replicas` (rejected at parse otherwise; relaxes when #411 lands) |
+| `retention` | `Duration` | `"7d"` | Durable only. Time retention of the backing stream (e.g. `"7d"`, `"12h"`). The effective replay window is min(this, the stream's ring count/byte sizing caps) |
+
+Declaring any of the four stream knobs on an ephemeral topic is a **deploy-time error** (the keys
+would be inert — same stance as #576): either declare `durability = "durable"` or remove them. An
+invalid durable declaration fails slice activation loudly; it never silently downgrades to
+ephemeral delivery.
 
 ### TOML Example
 
 ```toml
 [orders]
-topic = "order-events"
+topic_name = "order-events"
+
+[audit]
+topic_name = "audit-events"
+durability = "durable"
+partitions = 4
+retention = "14d"
 ```
 
 ### Behavior
 
-- The runtime registers the handler in the cluster KV-Store when the slice activates
-- Messages published to the topic are routed to any node with a subscriber loaded
-- Multiple slices can subscribe to the same topic
+- The runtime registers the handler in the cluster KV-Store when the slice activates (Rabia-replicated write — the registration itself is crash-durable and survives leader change)
+- Multiple slices can subscribe to the same topic; each is delivered to independently
 - Subscriptions are automatically removed when the slice deactivates
+
+**Ephemeral topics (the default):**
+- On publish, each subscribing slice receives one delivery, round-robined across that slice's live instances — not broadcast to every node that happens to have the handler loaded
+- **Delivery is at-most-once, unordered, and best-effort — not durable.** A publish that finds no live instance of a subscribing slice drops the message silently (the publish call still reports success); a delivery that fails mid-flight is not retried. Nothing is queued or persisted, so a subscriber that is down when a message is published misses it permanently, even after it comes back up. If your handler needs guaranteed processing, declare the topic durable — or build idempotent recovery on top (e.g. reconcile against a durable source). See `guarantees.md` §5.
+
+**Durable topics (`durability = "durable"`, #386):**
+- `publish` resolves when the event is persisted at the declared replication floor (owner + `min_sync_replicas − 1` peer acks) — NOT when subscribers process it. A subscriber down at publish time reads the event from the log when it returns.
+- Delivery is **at-least-once per subscribing slice**: your handler's returned `Promise<Unit>` IS the acknowledgment — success advances the group cursor, failure or timeout triggers redelivery (5 attempts with backoff), and an event that exhausts its retries lands in the topic's durable dead-letter stream (`topic:<address>.dlq`) attributed to your consumer group, never silently dropped.
+- Events of one partition are processed **in order** by your group; different partitions process independently. **Duplicates are possible** (crash-window redelivery, retry racing a slow attempt) — write handlers idempotent; the framework idempotency aspect for topics arrives with a later batch.
+- A slice upgrade keeps its consumer position (groups are version-stable) — no reprocessing storm on deploy.
+- Operator surfaces for the DLQ (list/inspect/redrive) and lag/stall alarms are a pending batch; see `guarantees.md` §5 for the current per-operation contract and its verification status.
 
 ---
 
@@ -906,9 +1132,11 @@ public interface OrderService {
 |-------|------|---------|-------------|
 | `interval` | `String` | — | Fixed-rate interval: `"30s"`, `"5m"`, `"1h"`, `"1d"`, `"2w"` |
 | `cron` | `String` | — | Standard 5-field cron: `minute hour dom month dow` |
-| `leaderOnly` | `boolean` | `true` | Whether only the leader node triggers the task |
+| `execution_mode` | `ExecutionMode` | `single` | `single`: leader-only; `all`: every quorum-participating node |
 
-Exactly one of `interval` or `cron` must be specified.
+Exactly one of `interval` or `cron` must be specified. `execution_mode` replaces the earlier
+`leaderOnly: boolean` design — see #272/#273
+[verified: `aether/resource/api/.../ScheduleConfig.java`, `ExecutionMode.java`].
 
 ### TOML Examples
 
@@ -916,21 +1144,21 @@ Exactly one of `interval` or `cron` must be specified.
 ```toml
 [scheduling.cleanup]
 interval = "5m"
-leaderOnly = true
+execution_mode = "single"
 ```
 
 **Cron-based (daily at midnight):**
 ```toml
 [scheduling.report]
 cron = "0 0 * * *"
-leaderOnly = true
+execution_mode = "single"
 ```
 
-**Non-leader task (runs on every node):**
+**Runs on every node (not leader-only):**
 ```toml
 [scheduling.local-cache-refresh]
 interval = "30s"
-leaderOnly = false
+execution_mode = "all"
 ```
 
 ### Cron Expression Format
@@ -950,8 +1178,12 @@ Examples: `*/5 * * * *` (every 5 min), `0 9 * * 1-5` (weekdays at 9am), `0 0 1 *
 ### Behavior
 
 - Scheduled tasks are registered in the cluster KV-Store on slice activation
-- `leaderOnly = true`: the leader starts a timer and invokes via `SliceInvoker`; any node with the slice may execute
-- `leaderOnly = false`: each node with the slice starts its own timer
+- `execution_mode = "single"`: only the leader's timer fires, invoking via `SliceInvoker`
+  [verified: `aether/aether-invoke/.../ScheduledTaskManager.java` — `shouldRunInCurrentState`,
+  `state instanceof Leading`]
+- `execution_mode = "all"`: every node currently participating in the quorum (leader or follower)
+  runs its own timer and executes the task independently — not "each node with the slice," but
+  specifically quorum members [verified: same file, `state instanceof Following || state instanceof Leading`]
 - Timers are quorum-gated: cancelled on quorum loss, restarted on quorum establishment
 - Schedule changes via Management API trigger automatic timer restart
 - Interval tasks use fixed-rate scheduling; cron tasks use one-shot timers that re-schedule after each execution

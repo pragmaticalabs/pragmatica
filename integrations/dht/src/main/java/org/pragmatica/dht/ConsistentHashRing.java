@@ -13,17 +13,17 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.dht;
-
-import org.pragmatica.lang.Contract;
-import org.pragmatica.lang.Option;
 
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.function.Predicate;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+
+import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
+
 
 /// Consistent hash ring for distributing data across nodes.
 /// Uses virtual nodes for even distribution and MurmurHash3-like hashing.
@@ -58,36 +58,35 @@ public final class ConsistentHashRing<N extends Comparable<N>> {
     /// Add a node to the ring.
     @Contract
     public void addNode(N node) {
-        lock.writeLock()
-            .lock();
-        try{
+        lock.writeLock().lock();
+        try {
             if (nodeToVirtualNodes.containsKey(node)) {
                 return;
             }
+
             List<Integer> virtualNodes = new ArrayList<>(virtualNodesPerPhysical);
+
             for (int i = 0; i < virtualNodesPerPhysical; i++) {
                 int hash = hash(node.toString() + "#" + i);
+
                 ring.put(hash, node);
                 virtualNodes.add(hash);
             }
+
             nodeToVirtualNodes.put(node, virtualNodes);
-        } finally{
-            lock.writeLock()
-                .unlock();
+        } finally {
+            lock.writeLock().unlock();
         }
     }
 
     /// Remove a node from the ring.
     @Contract
     public void removeNode(N node) {
-        lock.writeLock()
-            .lock();
-        try{
-            Option.option(nodeToVirtualNodes.remove(node))
-                  .onPresent(virtualNodes -> virtualNodes.forEach(ring::remove));
-        } finally{
-            lock.writeLock()
-                .unlock();
+        lock.writeLock().lock();
+        try {
+            Option.option(nodeToVirtualNodes.remove(node)).onPresent(virtualNodes -> virtualNodes.forEach(ring::remove));
+        } finally {
+            lock.writeLock().unlock();
         }
     }
 
@@ -107,17 +106,17 @@ public final class ConsistentHashRing<N extends Comparable<N>> {
     /// Get the primary node for a given key.
     /// Returns empty if no nodes are in the ring.
     public Option<N> primaryFor(byte[] key) {
-        lock.readLock()
-            .lock();
-        try{
+        lock.readLock().lock();
+        try {
             if (ring.isEmpty()) {
                 return Option.none();
             }
+
             int hash = hash(key);
+
             return Option.some(getNodeForHash(hash));
-        } finally{
-            lock.readLock()
-                .unlock();
+        } finally {
+            lock.readLock().unlock();
         }
     }
 
@@ -129,30 +128,31 @@ public final class ConsistentHashRing<N extends Comparable<N>> {
     /// Get the primary and replica nodes for a given key.
     /// Returns up to replicaCount nodes, starting with primary.
     public List<N> nodesFor(byte[] key, int replicaCount) {
-        lock.readLock()
-            .lock();
-        try{
+        lock.readLock().lock();
+        try {
             if (ring.isEmpty()) {
                 return List.of();
             }
+
             if (replicaCount <= 0) {
                 return List.of();
             }
+
             int hash = hash(key);
             Set<N> seen = new LinkedHashSet<>();
             // Start from the hash position and walk clockwise
-            int current = Option.option(ring.ceilingKey(hash))
-                                .or(ring::firstKey);
+            int current = Option.option(ring.ceilingKey(hash)).or(ring::firstKey);
+
             while (seen.size() < replicaCount && seen.size() < nodeToVirtualNodes.size()) {
                 N node = ring.get(current);
+
                 seen.add(node);
-                current = Option.option(ring.higherKey(current))
-                                .or(ring::firstKey);
+                current = Option.option(ring.higherKey(current)).or(ring::firstKey);
             }
+
             return new ArrayList<>(seen);
-        } finally{
-            lock.readLock()
-                .unlock();
+        } finally {
+            lock.readLock().unlock();
         }
     }
 
@@ -163,29 +163,30 @@ public final class ConsistentHashRing<N extends Comparable<N>> {
     /// @param replicaCount maximum number of nodes to return
     /// @param filter       predicate that must return true for a node to be included
     public List<N> nodesFor(byte[] key, int replicaCount, Predicate<N> filter) {
-        lock.readLock()
-            .lock();
-        try{
+        lock.readLock().lock();
+        try {
             if (ring.isEmpty() || replicaCount <= 0) {
                 return List.of();
             }
+
             int hash = hash(key);
             Set<N> seen = new LinkedHashSet<>();
             Set<N> visited = new HashSet<>();
-            int current = Option.option(ring.ceilingKey(hash))
-                                .or(ring::firstKey);
+            int current = Option.option(ring.ceilingKey(hash)).or(ring::firstKey);
+
             while (seen.size() < replicaCount && visited.size() < nodeToVirtualNodes.size()) {
                 N node = ring.get(current);
+
                 if (visited.add(node) && filter.test(node)) {
                     seen.add(node);
                 }
-                current = Option.option(ring.higherKey(current))
-                                .or(ring::firstKey);
+
+                current = Option.option(ring.higherKey(current)).or(ring::firstKey);
             }
+
             return new ArrayList<>(seen);
-        } finally{
-            lock.readLock()
-                .unlock();
+        } finally {
+            lock.readLock().unlock();
         }
     }
 
@@ -196,43 +197,37 @@ public final class ConsistentHashRing<N extends Comparable<N>> {
 
     /// Get all nodes currently in the ring.
     public Set<N> nodes() {
-        lock.readLock()
-            .lock();
-        try{
+        lock.readLock().lock();
+        try {
             return new HashSet<>(nodeToVirtualNodes.keySet());
-        } finally{
-            lock.readLock()
-                .unlock();
+        } finally {
+            lock.readLock().unlock();
         }
     }
 
     /// Get the number of nodes in the ring.
     public int nodeCount() {
-        lock.readLock()
-            .lock();
-        try{
+        lock.readLock().lock();
+        try {
             return nodeToVirtualNodes.size();
-        } finally{
-            lock.readLock()
-                .unlock();
+        } finally {
+            lock.readLock().unlock();
         }
     }
 
     /// Check if the ring is empty.
     public boolean isEmpty() {
-        lock.readLock()
-            .lock();
-        try{
+        lock.readLock().lock();
+        try {
             return ring.isEmpty();
-        } finally{
-            lock.readLock()
-                .unlock();
+        } finally {
+            lock.readLock().unlock();
         }
     }
 
     private N getNodeForHash(int hash) {
-        int key = Option.option(ring.ceilingKey(hash))
-                        .or(ring::firstKey);
+        int key = Option.option(ring.ceilingKey(hash)).or(ring::firstKey);
+
         return ring.get(key);
     }
 
@@ -240,16 +235,18 @@ public final class ConsistentHashRing<N extends Comparable<N>> {
     /// Provides good distribution for consistent hashing.
     private static int hash(byte[] data) {
         int h = 0x811c9dc5;
+
         for (byte b : data) {
             h ^= b;
             h *= 0x01000193;
         }
         // Final mix
-        h ^= h>>> 16;
+        h ^= h >>> 16;
         h *= 0x85ebca6b;
-        h ^= h>>> 13;
+        h ^= h >>> 13;
         h *= 0xc2b2ae35;
-        h ^= h>>> 16;
+        h ^= h >>> 16;
+
         return h;
     }
 

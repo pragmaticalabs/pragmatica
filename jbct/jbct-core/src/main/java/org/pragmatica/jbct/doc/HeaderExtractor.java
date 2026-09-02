@@ -1,12 +1,13 @@
 package org.pragmatica.jbct.doc;
 
-import org.pragmatica.lang.Result;
-
 import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Pattern;
 
+import org.pragmatica.lang.Result;
+
 import static org.pragmatica.lang.Result.success;
+
 
 /// Extracts the class-level markdown header (`///` block) from Java source content.
 ///
@@ -25,12 +26,10 @@ import static org.pragmatica.lang.Result.success;
 public sealed interface HeaderExtractor {
     record unused() implements HeaderExtractor {}
 
-    Pattern TYPE_DECLARATION = Pattern.compile(
-        "^(public\\s+|sealed\\s+|abstract\\s+|final\\s+|non-sealed\\s+)*"
-        + "(class|interface|record|enum|@interface)\\b.*");
+    Pattern TYPE_DECLARATION = Pattern.compile("^(public\\s+|sealed\\s+|abstract\\s+|final\\s+|non-sealed\\s+)*"
+                                              + "(class|interface|record|enum|@interface)\\b.*");
 
-    Pattern API_SIGNATURE = Pattern.compile(
-        "^ {4}(public |static |default )[^=;]*\\(.*");
+    Pattern API_SIGNATURE = Pattern.compile("^ {4}(public |static |default )[^=;]*\\(.*");
 
     /// Extract the header markdown. Works for both regular types (header precedes the type
     /// declaration) and `package-info.java` (header precedes the `package` statement).
@@ -45,17 +44,19 @@ public sealed interface HeaderExtractor {
 
     private static Result<String> header(List<String> lines, String name) {
         var block = collectHeaderBlock(lines);
-        return block.isEmpty() ? DocError.HeaderMissing.headerMissing(name)
-                                          .result()
-                              : success(stripPrefixes(block));
+
+        return block.isEmpty()
+               ? DocError.HeaderMissing.headerMissing(name).result()
+               : success(stripPrefixes(block));
     }
 
     private static List<String> collectHeaderBlock(List<String> lines) {
         var index = skipLicense(lines, 0);
         var block = new ArrayList<String>();
+
         for (var i = index; i < lines.size(); i++) {
-            var trimmed = lines.get(i)
-                               .strip();
+            var trimmed = lines.get(i).strip();
+
             if (trimmed.startsWith("///")) {
                 block.add(trimmed);
             } else if (endsHeaderBlock(trimmed, block)) {
@@ -64,80 +65,85 @@ public sealed interface HeaderExtractor {
                 block.clear();
             }
         }
+
         return List.of();
     }
 
     private static boolean endsHeaderBlock(String trimmed, List<String> block) {
-        return !block.isEmpty() && isDeclaration(trimmed);
+        return ! block.isEmpty() && isDeclaration(trimmed);
     }
 
     private static boolean resetsBlock(String trimmed, List<String> block) {
-        return !block.isEmpty() && !trimmed.isEmpty() && !trimmed.startsWith("@");
+        return ! block.isEmpty()
+               && !trimmed.isEmpty()
+               && !trimmed.startsWith("@");
     }
 
     private static boolean isDeclaration(String trimmed) {
-        return trimmed.startsWith("package ") || TYPE_DECLARATION.matcher(trimmed)
-                                                                 .matches();
+        return trimmed.startsWith("package ") || TYPE_DECLARATION.matcher(trimmed).matches();
     }
 
     private static int skipLicense(List<String> lines, int start) {
-        if (start < lines.size() && lines.get(start)
-                                         .strip()
-                                         .startsWith("/*")) {
+        if (start < lines.size() && lines.get(start).strip().startsWith("/*")) {
             return endOfBlockComment(lines, start) + 1;
         }
+
         return start;
     }
 
     private static int endOfBlockComment(List<String> lines, int start) {
         for (var i = start; i < lines.size(); i++) {
-            if (lines.get(i)
-                     .contains("*/")) {
+            if (lines.get(i).contains("*/")) {
                 return i;
             }
         }
+
         return lines.size() - 1;
     }
 
     private static String stripPrefixes(List<String> block) {
         return String.join("\n",
-                           block.stream()
-                                .map(HeaderExtractor::stripPrefix)
-                                .toList());
+                           block.stream().map(HeaderExtractor::stripPrefix).toList());
     }
 
     private static String stripPrefix(String line) {
         var withoutSlashes = line.substring(3);
-        return withoutSlashes.startsWith(" ") ? withoutSlashes.substring(1) : withoutSlashes;
+
+        return withoutSlashes.startsWith(" ")
+               ? withoutSlashes.substring(1)
+               : withoutSlashes;
     }
 
     private static String appendApi(String markdown, List<String> lines) {
         var signatures = collectSignatures(lines);
-        return signatures.isEmpty() ? markdown : markdown + "\n\n## Public API\n\n" + renderSignatures(signatures);
+
+        return signatures.isEmpty()
+               ? markdown
+               : markdown + "\n\n## Public API\n\n" + renderSignatures(signatures);
     }
 
     private static List<String> collectSignatures(List<String> lines) {
         return lines.stream()
                     .filter(line -> !line.strip()
                                          .startsWith("///"))
-                    .filter(line -> API_SIGNATURE.matcher(line)
-                                                 .matches())
+                    .filter(line -> API_SIGNATURE.matcher(line).matches())
                     .map(HeaderExtractor::toSignature)
                     .toList();
     }
 
     private static String toSignature(String line) {
         var trimmed = line.strip();
-        return trimmed.endsWith("{") ? trimmed.substring(0, trimmed.length() - 1)
-                                              .strip()
-                                    : trimmed;
+
+        return trimmed.endsWith("{")
+               ? trimmed.substring(0,
+                                   trimmed.length() - 1)
+                        .strip()
+               : trimmed;
     }
 
     private static String renderSignatures(List<String> signatures) {
         return String.join("\n",
-                           signatures.stream()
-                                     .map(signature -> "- `" + signature + "`")
-                                     .toList());
+                           signatures.stream().map(signature -> "- `" + signature + "`").toList());
     }
 
     private static List<String> splitLines(String content) {

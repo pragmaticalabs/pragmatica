@@ -14,10 +14,10 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.lang;
 
 import java.util.ServiceLoader;
+
 
 /// SPI for context propagation across async boundaries.
 ///
@@ -53,9 +53,7 @@ import java.util.ServiceLoader;
 public interface ContextPropagation {
     /// Singleton instance loaded via ServiceLoader.
     /// Falls back to NoOp if no implementation is found.
-    ContextPropagation INSTANCE = ServiceLoader.load(ContextPropagation.class)
-                                              .findFirst()
-                                              .orElseGet(NoOp::new);
+    ContextPropagation INSTANCE = ServiceLoader.load(ContextPropagation.class).findFirst().orElseGet(NoOp::new);
 
     /// Capture the current context for propagation.
     ///
@@ -68,7 +66,6 @@ public interface ContextPropagation {
     /// @param action   the action to run with restored context
     /// @return Unit for composition
     Unit runWith(Object snapshot, Runnable action);
-
     /// Sentinel object representing empty context (no-op).
     Object EMPTY_CONTEXT = new Object();
 
@@ -83,6 +80,7 @@ public interface ContextPropagation {
         @Override
         public Unit runWith(Object snapshot, Runnable action) {
             action.run();
+
             return Unit.unit();
         }
     }

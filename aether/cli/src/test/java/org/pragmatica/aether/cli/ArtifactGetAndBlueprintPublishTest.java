@@ -71,7 +71,7 @@ class ArtifactGetAndBlueprintPublishTest {
         @Test
         void route_methodIsPost_pathIsBlueprintsPublish() {
             assertEquals(HttpMethod.POST, ManagementRoute.BLUEPRINT_PUBLISH_ARTIFACT.method());
-            assertEquals("/api/blueprints/publish",
+            assertEquals("/api/v1/blueprints/publish",
                          ManagementRoute.BLUEPRINT_PUBLISH_ARTIFACT.prefix());
         }
 
@@ -80,7 +80,7 @@ class ArtifactGetAndBlueprintPublishTest {
             var result = ManagementRoute.BLUEPRINT_PUBLISH_ARTIFACT.assemble(List.of());
             assertTrue(result.isSuccess(),
                        "BLUEPRINT_PUBLISH_ARTIFACT takes no path params; body carries the artifact");
-            result.onSuccess(path -> assertEquals("/api/blueprints/publish", path));
+            result.onSuccess(path -> assertEquals("/api/v1/blueprints/publish", path));
         }
 
         @Test

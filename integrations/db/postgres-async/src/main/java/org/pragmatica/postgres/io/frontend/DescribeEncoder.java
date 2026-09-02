@@ -11,18 +11,18 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.pragmatica.postgres.io.frontend;
-
-import org.pragmatica.postgres.io.IO;
-import org.pragmatica.postgres.message.frontend.Describe;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
 
+import org.pragmatica.postgres.io.IO;
+import org.pragmatica.postgres.message.frontend.Describe;
+
+
 /**
  * See <a href="https://www.postgresql.org/docs/11/protocol-message-formats.html">Postgres message formats</a>
- *  
+ *
  * <pre>
  *  Describe (F)
  *   Byte1('D')
@@ -49,7 +49,7 @@ public class DescribeEncoder extends ExtendedQueryEncoder<Describe> {
 
     @Override
     protected byte getMessageId() {
-        return (byte) 'D';
+        return (byte)'D';
     }
 
     @Override

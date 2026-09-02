@@ -14,6 +14,7 @@ import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForwardResponse;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Deadline;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -131,6 +132,43 @@ class StreamForwardClientTest {
             var result = promise.await();
             assertThat(result.isSuccess()).isFalse();
             result.onFailure(cause -> assertThat(cause.message()).contains("timed out"));
+        }
+
+        /// Deadline budget: the ack wait is min(configured, remaining). A 60s-configured client under
+        /// ~150ms of ambient budget must resolve its unanswered publish in well under the configured
+        /// minute — pre-fix (full configured wait regardless of caller budget) turns this red.
+        @Test
+        void publishRemote_underSmallAmbientBudget_waitsTheBudgetNotTheConfiguredTimeout() {
+            var silentTransport = (StreamForwardTransport) (_, _) -> {};
+            var longClient = streamForwardClient(SELF, silentTransport, TimeSpan.timeSpan(60).seconds());
+            var startedAt = System.nanoTime();
+
+            var result = Deadline.runWith(Deadline.fromWireMillis(150),
+                                          () -> longClient.publishRemote(GOVERNOR, STREAM, PARTITION, PAYLOAD, TIMESTAMP))
+                                 .await();
+            var elapsedMillis = (System.nanoTime() - startedAt) / 1_000_000;
+
+            assertThat(result.isSuccess()).isFalse();
+            assertThat(elapsedMillis)
+                .as("ack wait capped by remaining budget, not the 60s configured timeout")
+                .isLessThan(10_000);
+        }
+
+        @Test
+        void readRemote_underSmallAmbientBudget_waitsTheBudgetNotTheConfiguredTimeout() {
+            var silentTransport = (StreamForwardTransport) (_, _) -> {};
+            var longClient = streamForwardClient(SELF, silentTransport, TimeSpan.timeSpan(60).seconds());
+            var startedAt = System.nanoTime();
+
+            var result = Deadline.runWith(Deadline.fromWireMillis(150),
+                                          () -> longClient.readRemote(GOVERNOR, STREAM, PARTITION, 0L, 10))
+                                 .await();
+            var elapsedMillis = (System.nanoTime() - startedAt) / 1_000_000;
+
+            assertThat(result.isSuccess()).isFalse();
+            assertThat(elapsedMillis)
+                .as("read wait capped by remaining budget, not the 60s configured timeout")
+                .isLessThan(10_000);
         }
     }
 

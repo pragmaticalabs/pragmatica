@@ -6,7 +6,7 @@
     <parent>
         <groupId>org.pragmatica-lite.aether</groupId>
         <artifactId>aether</artifactId>
-        <version>1.0.0-rc2</version>
+        <version>1.0.0-rc3</version>
     </parent>
 
     <artifactId>node</artifactId>
@@ -127,6 +127,21 @@
             <artifactId>resource-notification</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <!--
+            #345 I1(b): without this, a slice declaring a `@Durable DurableEntity` cannot load on a
+            production node at all — `resource-durable-entity` was a dependency of nothing but its
+            own parent, so the shaded runtime image carried neither `DurableEntityFactory` (invisible
+            to `SpiResourceProvider`'s ServiceLoader) nor the `DurableEntity` type itself (unresolvable
+            through `SliceClassLoader`'s parent chain). It lands together with the SPI wiring in
+            `AetherNode.registerEntityExtensionsOnSpi`: on its own it would convert a loud activation
+            failure into a silent wrong behaviour — a slice that deploys and then gives every node its
+            own private, unfenced copy of every entity.
+        -->
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>resource-durable-entity</artifactId>
+            <version>${project.version}</version>
+        </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>resource-db-async</artifactId>
@@ -135,6 +150,22 @@
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>resource-db-jdbc</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <!--
+            #716: third instance of the missing-provider class documented above (resource-http/
+            resource-notification) and by #345 I1(b) (resource-durable-entity). A slice declaring a
+            cache/log interceptor resolves both the interceptor TYPE (CacheMethodInterceptor/
+            LoggingMethodInterceptor, through SliceClassLoader's parent chain) and its
+            `ResourceFactory` (via SpiResourceProvider's ServiceLoader) from the runtime image;
+            resource-interceptors was a dependency of nothing but its own parent, so neither
+            aether-node.jar nor aether-forge.jar carried the factories, and every interceptor-using
+            slice failed to load with "No resource provider registered" — 8 of the ticketing
+            reference app's 24 slices, amplified to a full-blueprint rollback under ALL_OR_NOTHING.
+        -->
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>resource-interceptors</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
@@ -301,6 +332,9 @@
             <groupId>org.awaitility</groupId>
             <artifactId>awaitility</artifactId>
         </dependency>
+        <!-- asm removed with the #519 dead-surface gate, which moved to aether/dead-surface-gate:
+             it could never see a complete corpus from here, since modules that depend on node are
+             built after it. No other node test reads bytecode. -->
 
         <dependency>
             <groupId>org.apache.logging.log4j</groupId>

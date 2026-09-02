@@ -4,7 +4,7 @@ import org.pragmatica.jbct.parser.v6.Java25Lexer;
 import org.pragmatica.jbct.parser.v6.Java25ParserV6;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
-import org.pragmatica.peg.v6.diagnostic.Diagnostic;
+import org.pragmatica.peg.diagnostic.Diagnostic;
 
 import java.util.List;
 
