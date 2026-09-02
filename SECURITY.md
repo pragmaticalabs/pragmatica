@@ -18,7 +18,7 @@ in a public PR.
 
 ## Supported Versions
 
-Aether is pre-GA (`1.0.0-rc3` at this writing). There is currently one active release line — the
+Aether is pre-GA (`1.0.0-rc4` at this writing). There is currently one active release line — the
 latest release candidate — and no formal backport/LTS policy yet. See
 [`aether/docs/reference/versioning-and-compatibility.md`](aether/docs/reference/versioning-and-compatibility.md)
 for what is and isn't decided yet on versioning, including the open node-version-skew gap.

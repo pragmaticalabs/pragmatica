@@ -2,7 +2,7 @@
 
 Unified Application Runtime for Java -- scale horizontally without microservices complexity.
 
-> **Release status: `1.0.0-rc3` (release candidate).** This RC validates the distributed
+> **Release status: `1.0.0-rc4` (release candidate).** This RC validates the distributed
 > foundation — consensus, leader election, failure detection, membership, and topology
 > management — under sustained cloud load. Scope for this RC:
 > - **Single trust domain.** Aether assumes all cluster nodes and management clients are

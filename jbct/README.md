@@ -34,7 +34,7 @@ jbct upgrade                       # Self-update to latest version
 <plugin>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>jbct-maven-plugin</artifactId>
-    <version>1.0.0-rc3</version>
+    <version>1.0.0-rc4</version>
 </plugin>
 ```
 

@@ -108,5 +108,5 @@ async_url = "postgresql://${env:PG_HOST}:5432/${env:PG_DB}"
 type = "jvm"
 # Cluster version is 1.0.0 (strict semver); the JVM-mode URL deriver would
 # produce v1.0.0/aether-node.jar, but the rc2 candidate JAR is published under
-# v1.0.0-rc3-candidate. Pin the candidate JAR explicitly.
-jar_url = "https://github.com/pragmaticalabs/pragmatica/releases/download/v1.0.0-rc3-candidate/aether-node.jar"
+# v1.0.0-rc4-candidate. Pin the candidate JAR explicitly.
+jar_url = "https://github.com/pragmaticalabs/pragmatica/releases/download/v1.0.0-rc4-candidate/aether-node.jar"

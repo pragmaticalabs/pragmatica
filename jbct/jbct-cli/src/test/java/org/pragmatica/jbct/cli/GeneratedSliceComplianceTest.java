@@ -33,7 +33,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// Kept fast + hermetic (no Maven, no network): the heavy `run-forge.sh → hello` leg lives in
 /// `aether/forge/forge-tests` (GeneratedSliceForgeE2ETest).
 class GeneratedSliceComplianceTest {
-    private static final String VERSION = "1.0.0-rc3";
+    private static final String VERSION = "1.0.0-rc4";
 
     @TempDir
     Path tempDir;

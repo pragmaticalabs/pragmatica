@@ -4,6 +4,8 @@ All notable changes to Pragmatica will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.0.0-rc4] - Unreleased
+
 ## [1.0.0-rc3] - 2026-09-02
 
 ### Fixed (2026-08-31 — the ticketing example could never complete a purchase: seven defects, each found by running the product and reading what it said about itself)

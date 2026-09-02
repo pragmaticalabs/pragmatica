@@ -6,7 +6,7 @@
     <parent>
         <groupId>org.pragmatica-lite</groupId>
         <artifactId>examples</artifactId>
-        <version>1.0.0-rc3</version>
+        <version>1.0.0-rc4</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
@@ -20,7 +20,7 @@
     </description>
 
     <properties>
-        <platform.version>1.0.0-rc3</platform.version>
+        <platform.version>1.0.0-rc4</platform.version>
         <jbct.skip>false</jbct.skip>
         <maven.compiler.release>25</maven.compiler.release>
         <maven.deploy.skip>true</maven.deploy.skip>
