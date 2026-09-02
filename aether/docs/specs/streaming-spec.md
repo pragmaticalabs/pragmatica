@@ -1,9 +1,19 @@
 # Aether Streaming: Implementation Specification
 
 ## Version: 1.0
-## Status: Implementation-Ready
+## Status: Implementation-Ready (DESIGN only — see the inert-configuration warning below)
 ## Target Release: Post Passive Worker Pools Phase 1
-## Last Updated: 2026-07-04 (§10.6: #411 coverage-union promotion catch-up design)
+## Last Updated: 2026-08-29 (§3.2/§3.3: the #576 inert consumer keys marked rejected-at-deploy)
+
+> **⚠️ NOT EVERY KEY IN THIS SPEC IS WIRED, AND THE UNWIRED ONES ARE REJECTED.** The
+> "Implementation-Ready" status above describes the DESIGN. Several `[streams.X]` configuration keys
+> documented below — the whole per-consumer tuning family in §3.2/§3.3, plus `compression` and a
+> non-default `encryption-key-id` — are read by nothing at runtime, and since **#576** a blueprint
+> declaring them is **rejected at deploy time** rather than silently ignored. Copying an example from
+> those sections into a real `resources.toml` will therefore FAIL the deployment, not merely
+> under-deliver. Every such key is flagged in place. The wire-or-descope decision is **#677**; the
+> authoritative per-operation statement of what streaming actually guarantees is
+> [`../reference/guarantees.md`](../reference/guarantees.md) §4, which is honest about these keys.
 
 ---
 
@@ -50,7 +60,7 @@ Aether already has a pub/sub resource (`Publisher<T>` / `Subscriber`) for fire-a
 
 **Phase 1 (this spec):** In-memory ring buffer, standard consistency (governor-local sequencing), consumer groups, partition assignment via consensus, annotation processor integration, CDC adapter.
 
-**Phase 2:** Replication (governor-push), persistent storage via AHSE (sealed segments → local disk → S3), strong consistency (Rabia path), log compaction. These are explicitly out of scope for Phase 1 but the Phase 1 design must not preclude them (see Section 17 of the exploratory spec and [AHSE spec](hierarchical-storage-spec.md) §8.1 for constraints).
+**Phase 2:** Replication (governor-push), persistent storage via AHSE (sealed segments → local disk → S3), strong consistency (Rabia path), log compaction. These are explicitly out of scope for Phase 1 but the Phase 1 design must not preclude them (see Section 17 of the exploratory spec and [AHSE spec](future/hierarchical-storage-spec.md) §8.1 for constraints).
 
 **Phase 3:** Transactional cursor commits (PostgreSQL), exactly-once consumer semantics, compound retention policies.
 
@@ -361,21 +371,30 @@ backpressure = "drop-oldest"      # "block", "drop-oldest", "reject" (default: "
 
 Consumer groups are configured inline under the stream section. Each consumer group maps to a consumer annotation's config section.
 
+> **⚠️ EVERY KEY IN THIS EXAMPLE IS CURRENTLY REJECTED AT DEPLOY TIME (#576).** None of the
+> per-consumer tuning keys below is read at runtime, so a blueprint containing this block does not
+> deploy — `StreamResourceValidator.guardInertConfig` fails it as inert configuration. The block is
+> retained as the DESIGN target for #677, not as a working example. `auto-offset-reset` is the sharpest
+> case: the only value the validator accepts is `"earliest"`, because a never-committed consumer always
+> starts at offset 0 **by the #478 ruling, permanently** — so the `"latest"` shown here (and named as
+> the default) is precisely the value that will be refused.
+
 ```toml
+# DESIGN TARGET — does not deploy today; every key below is rejected as inert (#576, #677).
 [streams.order-events.consumers.analytics]
-auto-offset-reset = "latest"     # "latest" or "earliest" (default: "latest")
-checkpoint-interval = "1s"       # Cursor checkpoint frequency (default: "1s")
-batch-size = 100                 # Events per batch for batch consumers (default: 1)
-processing = "ordered"           # "ordered" or "parallel" (default: "ordered")
-on-failure = "retry"             # "retry", "skip", "stall" (default: "retry")
-max-retries = 3                  # Max retries before dead-letter or skip (default: 3)
-dead-letter = "order-events-dlq" # Dead-letter stream name (optional, omit for no DLQ)
+auto-offset-reset = "latest"     # REJECTED: only "earliest" is accepted (#478 makes it permanent)
+checkpoint-interval = "1s"       # REJECTED as inert: not read at runtime
+batch-size = 100                 # REJECTED as inert
+processing = "ordered"           # REJECTED as inert
+on-failure = "retry"             # REJECTED as inert
+max-retries = 3                  # REJECTED as inert
+dead-letter = "order-events-dlq" # REJECTED as inert
 
 [streams.order-events.consumers.audit]
-auto-offset-reset = "earliest"
-checkpoint-interval = "5s"
-processing = "ordered"
-on-failure = "stall"             # Stall on failure — manual intervention required
+auto-offset-reset = "earliest"   # the one accepted value
+checkpoint-interval = "5s"       # REJECTED as inert
+processing = "ordered"           # REJECTED as inert
+on-failure = "stall"             # REJECTED as inert
 ```
 
 ### 3.3 Configuration Reference
@@ -390,20 +409,24 @@ on-failure = "stall"             # Stall on failure — manual intervention requ
 | `max-event-size` | string | `"1MB"` | Maximum serialized event size. Events exceeding this are rejected at publish. |
 | `backpressure` | string | `"drop-oldest"` | Behavior when ring buffer is full: `"block"`, `"drop-oldest"`, `"reject"`. |
 | `storage` | string | `"memory"` | Storage mode: `"memory"` (Phase 1, in-memory only) or `"persistent"` (AHSE-backed, Phase 2+). |
-| `storage-instance` | string | auto | AHSE storage instance name. Default: `storage.{streamName}`. Only applies when `storage = "persistent"`. See [AHSE spec](hierarchical-storage-spec.md). |
+| `storage-instance` | string | auto | AHSE storage instance name. Default: `storage.{streamName}`. Only applies when `storage = "persistent"`. See [AHSE spec](future/hierarchical-storage-spec.md). |
 
 #### Consumer-Level Properties
 
-| Property | Type | Default | Description |
-|----------|------|---------|-------------|
-| `auto-offset-reset` | string | `"latest"` | Start position for new consumers: `"latest"` or `"earliest"`. |
-| `checkpoint-interval` | string | `"1s"` | How often cursors are checkpointed to consensus. |
-| `batch-size` | int | `1` | Number of events per delivery for batch consumers. Ignored for single-event consumers. |
-| `processing` | string | `"ordered"` | `"ordered"`: sequential within partition. `"parallel"`: virtual thread per partition. |
-| `on-failure` | string | `"retry"` | `"retry"`: retry with backoff. `"skip"`: skip failed event. `"stall"`: stop consuming until manual intervention. |
-| `max-retries` | int | `3` | Maximum retry attempts before dead-letter or skip. Only applies when `on-failure = "retry"`. |
-| `dead-letter` | string | (none) | Stream name to publish failed events to. If omitted and retries exhausted, event is logged and skipped. |
-| `consumer-group` | string | auto-generated | Override the consumer group name. Default: `{sliceName}-{methodName}`. |
+The `Status` column records what the RUNTIME does with each key today, which is not what the `Default`
+column describes — the defaults are the design's, and #576 turned the gap between them into a loud
+deploy-time rejection rather than silence. `Default` is therefore the #677 target, not current behaviour.
+
+| Property | Type | Default | Status today | Description |
+|----------|------|---------|--------------|-------------|
+| `auto-offset-reset` | string | `"latest"` | **Only `"earliest"` accepted** — anything else rejected (#576). A never-committed consumer always starts at offset 0, permanently, by the **#478 ruling**; wiring this key means reopening #478. Note `StreamConfig.DEFAULT` still declares `"latest"`, a value the validator refuses. | Start position for new consumers: `"latest"` or `"earliest"`. |
+| `checkpoint-interval` | string | `"1s"` | **Rejected as inert** for declarative streams. Honoured only for programmatically built consumers; durable-topic groups get 500 ms from `DurableGroupIdentity`. | How often cursors are checkpointed to consensus. |
+| `batch-size` | int | `1` | **Rejected as inert** (#576). | Number of events per delivery for batch consumers. Ignored for single-event consumers. |
+| `processing` | string | `"ordered"` | **Rejected as inert** (#576). | `"ordered"`: sequential within partition. `"parallel"`: virtual thread per partition. |
+| `on-failure` | string | `"retry"` | **Rejected as inert** (#576). | `"retry"`: retry with backoff. `"skip"`: skip failed event. `"stall"`: stop consuming until manual intervention. |
+| `max-retries` | int | `3` | **Rejected as inert** (#576). | Maximum retry attempts before dead-letter or skip. Only applies when `on-failure = "retry"`. |
+| `dead-letter` | string | (none) | **Rejected as inert** (#576) for declarative streams. Durable TOPICS get a DLQ unconditionally (`topic:<address>.dlq`, durable-pubsub-spec §9) — that path does not read this key. | Stream name to publish failed events to. If omitted and retries exhausted, event is logged and skipped. |
+| `consumer-group` | string | auto-generated | Wired. Durable-topic groups are version-stable (`groupId:artifactId#method`). | Override the consumer group name. Default: `{sliceName}-{methodName}`. |
 
 ### 3.4 Duration and Size String Formats
 
@@ -1070,7 +1093,7 @@ The ring buffer interface must support a `sealAndEvict` operation that:
 3. Writes the block to AHSE via `StorageInstance.put()`
 4. Only then advances `tailOffset`
 
-This is a Phase 2 concern, but the Phase 1 eviction path must be replaceable (interface, not hardcoded) to enable this swap. See: [hierarchical-storage-spec.md](hierarchical-storage-spec.md) §8.1
+This is a Phase 2 concern, but the Phase 1 eviction path must be replaceable (interface, not hardcoded) to enable this swap. See: [hierarchical-storage-spec.md](future/hierarchical-storage-spec.md) §8.1
 
 ### 6.7 Time-Based Retention
 
@@ -1845,8 +1868,8 @@ aether-stream (runtime implementation)
 
 ### Internal
 - [In-Memory Streams Exploratory Spec](in-memory-streams-spec.md) -- full design exploration and decision rationale
-- [Hierarchical Storage Engine (AHSE) Spec](hierarchical-storage-spec.md) -- tiered storage for streaming persistence, content store, and artifact storage
-- [KV-Store Scalability Analysis](../internal/kv-store-scalability.md) -- consensus data budget
+- [Hierarchical Storage Engine (AHSE) Spec](future/hierarchical-storage-spec.md) -- tiered storage for streaming persistence, content store, and artifact storage
+- [KV-Store Scalability Analysis](../.internal/kv-store-scalability.md) -- consensus data budget
 - [Slice API Reference](../reference/slice-api.md) -- `@ResourceQualifier`, manifest format, factory generation
 - [Envelope Versioning](../contributors/envelope-versioning.md) -- `ENVELOPE_FORMAT_VERSION` policy
 

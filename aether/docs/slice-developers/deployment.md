@@ -257,6 +257,24 @@ The blueprint generator performs two validations:
 
    Supported modes: `required` (default — fail build), `optional` (warn only), `external` (skip).
 
+### Deploy-Time Validation
+
+Build-time resource config validation (above) checks a blueprint against its own bundled
+`resources.toml` — the defaults the publishing team shipped. It cannot know what the *target
+cluster* actually has configured, so a second, independent check runs at deploy time against the
+live cluster: `ConfigSectionPreflightValidator` re-checks every `@ResourceQualifier(config = "X")`
+dependency against the leader's composite configuration view (KV-Store operator overlay layered
+over the leader's own `aether.toml`), once up front for the whole blueprint, before any node starts
+activating slices (#547). A blueprint that passed build-time validation can still fail (correctly)
+here if the target cluster's real configuration omits a section the blueprint depends on — that is
+the check doing its job, not a regression.
+
+Scope is deliberately narrower than the build-time check: only generic resources
+(`SliceTopology.resources()`) are covered. Pub-sub topics (`publishes()`/`subscribes()`) are exempt
+by construction — see [Resource Reference: Deploy-Time Validation](resource-reference.md) for the
+full asymmetry rationale. See that same section for the check's honest limits (leader-only view,
+fails open with no configuration provider, and the visible fail-open log line).
+
 ### Notes
 
 - External slices always use default configuration. The publishing team controls slice config via their own `SliceName.toml`.

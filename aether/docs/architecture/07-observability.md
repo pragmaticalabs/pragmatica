@@ -1,5 +1,7 @@
 # Observability
 
+**Status:** Current
+
 This document describes the metrics pipeline, alerting, dynamic aspects, and monitoring interfaces.
 
 ## Metrics Architecture

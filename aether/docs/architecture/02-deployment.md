@@ -1,5 +1,7 @@
 # Deployment and Lifecycle
 
+**Status:** Current
+
 This document describes how slices are deployed, managed, and scaled across the cluster.
 
 ## Blueprint Model

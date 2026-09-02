@@ -57,6 +57,8 @@ Dependencies are validated eagerly during activation — if a required slice isn
 
 Each slice runs in its own `SliceClassLoader` with child-first delegation. Two slices can use different versions of the same library without conflict. Shared dependencies (like Pragmatica Core core) are loaded once in a parent classloader and shared across all slices.
 
+Classloaders isolate **dependency versions**; the **cluster** isolates failures. Co-located slices share one JVM — heap, GC, native memory — so a slice that exhausts memory takes its neighbours down with it; the fault boundary is the *node*, and the runtime handles node loss through replication, retry, and rebalancing. Placement is tier-level (`CORE_ONLY`, `WORKERS_PREFERRED`, `WORKERS_ONLY`, `ALL`); pinning a slice to a specific node is **not supported** — a slice needing hard resource isolation gets it by being the only slice its placement tier can schedule there (see `architecture/15-resource-and-isolation-model.md`).
+
 ### Local Development: Forge
 
 Forge is a single-JVM multi-node simulator. It runs a full 5-node cluster on your laptop with a web dashboard for:
@@ -298,6 +300,8 @@ This is the same licensing model used by MariaDB, CockroachDB, and other product
 
 Aether uses the **Rabia** crash-fault-tolerant consensus algorithm. Unlike Raft, Rabia has no designated leader for consensus — any node can propose, and agreement is reached through a two-round voting protocol with a fast path (super-majority in round 1 skips round 2).
 
+Aether still has a leader — for **coordination** (deploy, scale, auto-heal are leader-pinned; see `reference/guarantees.md`), not for consensus — and the combination is the point, not a contradiction: because Rabia elects nothing, the ordered store stays available through the loss of the coordination leader, so the leader lease is just a value *in* that store and re-election is a **write rather than a protocol**. That is where the ~2ms leader-replacement figure in the table above comes from. Raft cannot do this by construction — its log *is* leader-ordered, so leader failure halts commits until an election completes.
+
 **What's stored in consensus (KV-Store):**
 - `SliceTargetKey` — desired deployment state (artifact, instance count, blueprint)
 - `SliceNodeKey` — actual per-node slice state (LOADING, ACTIVE, etc.)
@@ -390,7 +394,7 @@ This enables a clean mix: Aether-native resources (like cluster-wide pubsub wher
 - Advanced deployment strategy options (custom stages, A/B testing integration)
 - LLM-based cluster management (Layer 3 controller)
 
-See [development-priorities.md](internal/progress/development-priorities.md) for the full prioritized backlog.
+The `development-priorities.md` planning doc that formerly lived here was removed from the docs tree (2026-06-13); current backlog and priorities are tracked via GitHub Issues on `pragmaticalabs/pragmatica`.
 
 ---
 

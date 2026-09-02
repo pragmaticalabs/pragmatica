@@ -1,5 +1,7 @@
 # Aether Persistence (AEP) — PostgreSQL Persistence Adapter Specification
 
+**Status:** Implemented — [mechanism: `aether/pg-tools/` (pg-parser, pg-codegen, pg-schema, pg-maven-plugin modules implement the pipeline described below)]
+
 ## Overview
 
 Type-safe PostgreSQL persistence adapters for Aether slices with compile-time SQL validation. Queries are validated against the schema derived from migration files. If the code compiles, the queries work.
@@ -550,6 +552,54 @@ public final class OrderPersistenceFactory {
 | `Promise<Unit>` | `db.update(sql, params...)` |
 | `Promise<Long>` | `db.queryOne(sql, longMapper, params...)` |
 | `Promise<Boolean>` | `db.queryOne(sql, boolMapper, params...)` |
+
+## SQL Grammar Limitations
+
+Two deliberate deviations from PostgreSQL in `pg-parser`'s grammar. Both are user-visible: SQL that
+PostgreSQL accepts will be rejected or mis-parsed here.
+
+### Nested block comments — SUPPORTED (peglib 0.7.3)
+
+PostgreSQL nests `/* ... */` per the SQL standard, and `pg-parser` follows it:
+
+```sql
+SELECT 1 /* outer /* inner */ still a comment */ AS c;
+```
+
+The grammar declares `%nest '/*' '*/'`, which lexes the pair with a depth-counting scanner instead of
+a DFA path. That is the only way to express it: nested comments are not a regular language, so no DFA
+can match them, and the recursive spelling is refused by peglib's analyzer as
+`grammar.whitespace-cycle` because `BlockComment` is reachable from `%whitespace`. The scanner runs
+instead of the DFA at a token start when the block balances; an unterminated block falls through to
+the DFA, so malformed input reads exactly as it did before.
+
+**History (#619, upstream `siy/java-peglib#45`).** Before 0.7.3 the rule closed at the FIRST `*/` and
+the remainder leaked into the statement as live SQL. That was not reliably a parse error: when the
+leaked text composed into something valid the parser accepted a **different statement with no
+diagnostic** — `SELECT 1 /* /* */ , 999 -- */\n FROM t;` parsed as `SELECT 1, 999 FROM t`, because
+the trailing `-- */` swallowed the orphaned outer `*/`. Kept here because it is the reason to distrust
+"it would have failed loudly" as a mitigation for any lexer-level gap.
+
+One trap worth keeping, learned by getting it wrong: the leaked text must sit INSIDE the balanced
+span to diverge. `SELECT 1 /* a /* b */ -- */` followed by ` , 2 FROM t;` does NOT diverge — two
+opens, two closes, so `, 2` is legitimately outside the comment and two select-list items is correct
+under the old lexer and the new one alike. Count the delimiters before deciding what the right
+answer is.
+
+### `$` in identifiers — DELIBERATELY NARROWED
+
+PostgreSQL permits `$` in an identifier after the first character (`foo$bar`). `pg-parser` does not:
+
+```peg
+UnquotedIdentifier <- < [a-zA-Z_] [a-zA-Z0-9_]* >
+```
+
+With `$` in the continuation class, `world$$` in `$$hello world$$` lexes as a single 7-character
+identifier by maximal munch, swallowing the closing delimiter — dollar quoting cannot work at all.
+Dollar quoting is ubiquitous in real SQL (`$body$`, `$function$` bodies); `$` in identifiers is rare,
+and occurs **0 times** across every `.sql` file and every SQL string literal in this repository.
+
+**Impact:** an identifier containing `$` must be double-quoted (`"foo$bar"`).
 
 ## Phase 2 — Extensions
 

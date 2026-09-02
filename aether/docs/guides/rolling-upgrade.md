@@ -1,6 +1,13 @@
 # Rolling Cluster Upgrade
 
-This guide covers upgrading an Aether cluster with zero downtime using the rolling upgrade script.
+This guide covers upgrading an Aether cluster with **zero app-downtime** using the rolling upgrade
+script — slices stay served throughout via drain-before-shutdown and canary-gated reactivation.
+That claim is scoped to slice serving; it does not mean zero risk to the cluster's consensus tier.
+Roll **core** nodes one at a time: draining and restarting a core node reduces the quorum's spare
+majority margin for the duration of that node's cycle, so a second, unrelated core failure inside
+the same window can push the cluster into quorum loss (writes paused, minority self-fences — see
+[`../reference/guarantees.md`](../reference/guarantees.md) §3). The canary-wait step exists
+precisely to keep that window short and to catch a bad node before moving to the next one.
 
 ## Prerequisites
 

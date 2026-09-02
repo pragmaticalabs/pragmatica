@@ -181,7 +181,7 @@ load_balancer = "none"
 
 [source.hetzner-eu.core]
 count = 5
-instance_type = "cx22"
+instance_type = "cx23"
 
 [operations.ports]
 cluster = 6000

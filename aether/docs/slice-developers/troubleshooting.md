@@ -106,7 +106,7 @@ error: cannot find symbol
 **Fix:** Ensure pom.xml has:
 ```xml
 <dependency>
-    <groupId>org.pragmatica.jbct</groupId>
+    <groupId>org.pragmatica-lite</groupId>
     <artifactId>slice-processor</artifactId>
     <version>${jbct.version}</version>
     <scope>provided</scope>
@@ -403,13 +403,16 @@ when(inventory.reserve(any()))
 Cannot invoke factory - missing invoker parameter
 ```
 
-**Fix:** Provide mock invoker in integration tests:
+**Fix:** Provide a mock invoker in integration tests:
 ```java
 var invoker = mock(SliceInvokerFacade.class);
-when(invoker.invoke(anyString(), anyString(), any(), any()))
-    .thenReturn(Promise.success(expectedResponse));
+var methodHandle = mock(MethodHandle.class);
+when(methodHandle.invoke(any())).thenReturn(Promise.success(expectedResponse));
+when(invoker.methodHandle(anyString(), anyString(), any(), any()))
+    .thenReturn(Result.success(methodHandle));
 
-var slice = OrderServiceFactory.create(Aspect.identity(), invoker)
+var ctx = SliceCreationContext.sliceCreationContext(invoker, resources);
+var slice = OrderServiceFactory.create(ctx)
                                .await()
                                .unwrap();
 ```
@@ -498,9 +501,9 @@ Scale rejected: requested instances (1) below blueprint minimum (3)
 
 **Error:** After a failed deployment and rollback, HTTP routes from the failed slice remain registered.
 
-**Cause:** Fixed in 0.20.0. The `forceCleanupSlice` operation now cleans up routes, endpoints, and subscriptions.
+**Cause:** Historical bug, long resolved — `forceCleanupSlice` cleans up routes, endpoints, and subscriptions on rollback.
 
-**Fix:** Upgrade to 0.20.0+. If stuck on an older version, restart the affected nodes.
+**Fix:** Not reproducible on any currently-supported build. If you hit this, you're on an unsupported pre-release version; upgrade.
 
 ### "CLI returns 404 for all commands"
 
@@ -509,9 +512,9 @@ Scale rejected: requested instances (1) below blueprint minimum (3)
 Error: 404 Not Found
 ```
 
-**Cause:** Older CLI versions were missing the `/api/` prefix on management API paths.
+**Cause:** Historical bug, long resolved — older CLI builds were missing the `/api/` prefix on management API paths.
 
-**Fix:** Update to CLI version 0.20.0+ which includes the `/api/` prefix fix for all 31 management API paths.
+**Fix:** Not reproducible on any currently-supported build. If you hit this, you're on an unsupported pre-release version; upgrade.
 
 ## Getting Help
 

@@ -456,15 +456,20 @@ cd examples/ecommerce && mvn install -DskipTests
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/status` | GET | Full cluster status, metrics, load info |
-| `/api/add-node` | POST | Add a new node to the cluster |
-| `/api/kill/{nodeId}` | POST | Gracefully stop a node |
-| `/api/crash/{nodeId}` | POST | Abruptly terminate a node |
-| `/api/rolling-restart` | POST | Restart all nodes sequentially |
-| `/api/load/set/{rate}` | POST | Set request rate immediately |
-| `/api/load/ramp` | POST | Gradually ramp to target rate |
+| `/api/nodes/status` | GET | Full cluster status, metrics, load info |
+| `/api/nodes/metrics` | GET | Per-node metrics |
+| `/api/forge/status` | GET | Forge liveness check |
+| `/api/chaos/add-node` | POST | Add a new node to the cluster |
+| `/api/chaos/kill/{nodeId}` | POST | Gracefully stop a node |
+| `/api/chaos/inject` | POST | Inject a chaos event (node kill, latency spike, slice crash, CPU/memory pressure) |
+| `/api/chaos/stop/{eventId}` | POST | Stop one active chaos event |
+| `/api/chaos/stop-all` | POST | Stop all active chaos events |
+| `/api/chaos/start-rolling-restart` | POST | Restart all nodes sequentially |
+| `/api/chaos/rolling-restart-status` | GET | Rolling-restart progress |
+| `/api/load/rate/{rate}` | POST | Set request rate immediately |
+| `/api/load/start` \| `/pause` \| `/resume` \| `/stop` | POST | Control the load runner |
 | `/api/events` | GET | Get event timeline |
-| `/api/reset-metrics` | POST | Reset all metrics and events |
+| `/api/chaos/reset-metrics` | POST | Reset all metrics and events |
 
 ### Status Response Format
 

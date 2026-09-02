@@ -847,4 +847,4 @@ aether blueprint delete order-system:1.0.0
 
 - [Slice Patterns](slice-patterns.md) - Advanced slice patterns
 - [Forge Guide](forge-guide.md) - Chaos testing with Forge
-- [Architecture](../contributors/architecture.md) - Deep dive into Aether internals
+- [Architecture](../architecture/00-overview.md) - Deep dive into Aether internals

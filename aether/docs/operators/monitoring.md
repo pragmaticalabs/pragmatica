@@ -317,9 +317,13 @@ aether thresholds set cpu.usage 0.85 0.9   # 5% gap (alert fatigue)
 ### High-Availability
 
 Thresholds are replicated via consensus:
-- Safe to set from any node
-- Changes visible cluster-wide within seconds
-- No single point of failure
+- Safe to set from any node — the write goes through the single Rabia log, no leader required
+- Changes propagate in linearizable commit order, but each node's own read is served from its local
+  applied map (sequential, not linearizable) — "within seconds" bounds how far a node can trail the
+  committed value, not an instant cluster-wide flip
+- No single point of failure **for the write path** — this claim does not extend to leader-pinned
+  control-plane operations (deploy, scale, auto-heal) elsewhere in the system, which briefly pause
+  during re-election; see [`../reference/guarantees.md`](../reference/guarantees.md) §1, §3
 
 ## Troubleshooting
 

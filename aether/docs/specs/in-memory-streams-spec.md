@@ -75,7 +75,7 @@ This covers a large class of use cases:
 - Sensor/telemetry ingestion with downstream processors
 - Stream processing (map/filter/join/window operations)
 
-Use cases requiring unbounded retention, log compaction, or durable replay from epoch zero are out of scope **for Phase 1**. Phase 2 adds these capabilities via AHSE integration (see §18 and [hierarchical-storage-spec.md](hierarchical-storage-spec.md)), eliminating the need for external streaming infrastructure.
+Use cases requiring unbounded retention, log compaction, or durable replay from epoch zero are out of scope **for Phase 1**. Phase 2 adds these capabilities via AHSE integration (see §18 and [hierarchical-storage-spec.md](future/hierarchical-storage-spec.md)), eliminating the need for external streaming infrastructure.
 
 ---
 
@@ -97,7 +97,7 @@ The two-layer DHT already assigns governors to positions on the hash ring. Strea
 
 Streams are bounded ring buffers. Retention is by time, by entry count, or by memory size. There is no unbounded growth, no disk spill, no compaction. This keeps the implementation simple and memory behavior predictable.
 
-Phase 2 lifts the "bounded" constraint via AHSE integration: sealed segments spill to disk and S3, enabling unbounded retention with the ring buffer serving as a read cache. See [AHSE spec](hierarchical-storage-spec.md) §8.1.
+Phase 2 lifts the "bounded" constraint via AHSE integration: sealed segments spill to disk and S3, enabling unbounded retention with the ring buffer serving as a read cache. See [AHSE spec](future/hierarchical-storage-spec.md) §8.1.
 
 ---
 
@@ -181,14 +181,21 @@ consistency = "strong"           # produce path goes through Rabia
 
 Consumer groups can be declared in the blueprint (static) or created at runtime by slices (dynamic):
 
+> **⚠️ REJECTED AT DEPLOY TIME TODAY (#576).** Neither key below is read at runtime, so a blueprint
+> containing this block does not deploy — it is failed as inert configuration. `auto-offset-reset`
+> accepts only `"earliest"`, because a never-committed consumer always starts at offset 0 permanently
+> by the **#478 ruling**, so the `"latest"` shown here is the value that gets refused. Retained as the
+> design target for **#677**; see `streaming-spec.md` §3.2/§3.3 for the full per-key status.
+
 ```toml
+# DESIGN TARGET — does not deploy today (#576, #677).
 [streams.order-events.consumer-groups.analytics]
-auto-offset-reset = "latest"     # "latest" or "earliest"
-commit-interval = "1s"           # cursor commit frequency
+auto-offset-reset = "latest"     # REJECTED: only "earliest" is accepted (#478 makes it permanent)
+commit-interval = "1s"           # REJECTED as inert: not read at runtime
 
 [streams.order-events.consumer-groups.audit]
-auto-offset-reset = "earliest"
-commit-interval = "5s"
+auto-offset-reset = "earliest"   # the one accepted value
+commit-interval = "5s"           # REJECTED as inert
 ```
 
 ### 4.3 Consistency Levels
@@ -1028,7 +1035,7 @@ In this model:
 
 ### 17.2 AHSE as Persistent Backend
 
-Aether's Hierarchical Storage Engine (AHSE) provides tiered, content-addressable block storage. Stream partitions map naturally to AHSE storage instances — sealed ring buffer segments become immutable blocks stored through the tiered hierarchy (memory → local disk → S3). See [hierarchical-storage-spec.md](hierarchical-storage-spec.md) for the full AHSE specification.
+Aether's Hierarchical Storage Engine (AHSE) provides tiered, content-addressable block storage. Stream partitions map naturally to AHSE storage instances — sealed ring buffer segments become immutable blocks stored through the tiered hierarchy (memory → local disk → S3). See [hierarchical-storage-spec.md](future/hierarchical-storage-spec.md) for the full AHSE specification.
 
 The governor writes sealed segments to AHSE after eviction. AHSE handles replication (per-tier RF), demotion (age-based for streaming), and durability (local disk + S3). No external database is needed for the stream data path.
 
@@ -1075,8 +1082,8 @@ The in-memory Phase 1 design must not preclude the persistence path. Key constra
 ## References
 
 ### Internal
-- [Hierarchical Storage Engine (AHSE) Spec](hierarchical-storage-spec.md) — Tiered storage for streaming persistence, content store, and artifact storage
-- [KV-Store Scalability Analysis](../internal/kv-store-scalability.md) — Consensus data budget analysis
+- [Hierarchical Storage Engine (AHSE) Spec](future/hierarchical-storage-spec.md) — Tiered storage for streaming persistence, content store, and artifact storage
+- [KV-Store Scalability Analysis](../.internal/kv-store-scalability.md) — Consensus data budget analysis
 
 ### External
 - [Apache Kafka Design](https://kafka.apache.org/documentation/#design) — Partitioned log, consumer groups, ISR replication
