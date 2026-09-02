@@ -2,11 +2,11 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package com.example.collisionslice;
 
 import org.pragmatica.aether.slice.annotation.Slice;
 import org.pragmatica.lang.Promise;
+
 
 /// Regression slice for the route-import simple-name collision bug.
 ///
@@ -23,7 +23,6 @@ public interface CollisionSlice {
     record OpResponse(Long id, String status) {}
 
     Promise<OpResponse> buy(BuyRequest request);
-
     Promise<OpResponse> cancel(CancelRequest request);
 
     static CollisionSlice collisionSlice() {

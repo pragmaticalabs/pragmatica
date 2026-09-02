@@ -1,0 +1,9 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+package com.example.durabletopicstep;
+
+/// Query side of the [OrderAuditSlice] host — present so the slice has business surface of its own
+/// and the subscription under test is genuinely reached through the step.
+public record AuditQuery(String orderId) {}

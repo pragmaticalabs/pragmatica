@@ -1,5 +1,11 @@
 package org.pragmatica.jbct.update;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.jbct.init.AiToolsOutcome;
 import org.pragmatica.jbct.shared.GitHubContentFetcher;
@@ -10,14 +16,9 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.List;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 
 /// Updates AI tools from the coding-technology GitHub repository.
 /// Uses GitHub Tree API to dynamically discover files under ai-tools/.
@@ -48,14 +49,13 @@ public final class AiToolsUpdater {
     ///
     /// @return Latest commit SHA if update available
     public Result<Option<String>> checkForUpdate() {
-        return GitHubContentFetcher.getLatestCommitSha(http, REPO, BRANCH)
-                                   .map(this::checkIfUpdateNeeded);
+        return GitHubContentFetcher.getLatestCommitSha(http, REPO, BRANCH).map(this::checkIfUpdateNeeded);
     }
 
     private Option<String> checkIfUpdateNeeded(String latestSha) {
         var currentSha = getCurrentVersion();
-        var isUpToDate = currentSha.filter(sha -> sha.equals(latestSha))
-                                   .isPresent();
+        var isUpToDate = currentSha.filter(sha -> sha.equals(latestSha)).isPresent();
+
         return isUpToDate
                ? Option.none()
                : Option.some(latestSha);
@@ -73,17 +73,18 @@ public final class AiToolsUpdater {
     /// @param force Force update even if already up to date
     /// @return Outcome listing updated files and files skipped as already-global
     public Result<AiToolsOutcome> update(boolean force) {
-        return GitHubContentFetcher.getLatestCommitSha(http, REPO, BRANCH)
-                                   .flatMap(latestSha -> performUpdate(latestSha, force));
+        return GitHubContentFetcher.getLatestCommitSha(http, REPO, BRANCH).flatMap(latestSha -> performUpdate(latestSha,
+                                                                                                              force));
     }
 
     private Result<AiToolsOutcome> performUpdate(String latestSha, boolean force) {
         var currentSha = getCurrentVersion();
-        var isUpToDate = !force && currentSha.filter(sha -> sha.equals(latestSha))
-                                             .isPresent();
+        var isUpToDate = !force && currentSha.filter(sha -> sha.equals(latestSha)).isPresent();
+
         if (isUpToDate) {
             return Result.success(AiToolsOutcome.aiToolsOutcome(List.of(), List.of()));
         }
+
         return downloadFiles(latestSha);
     }
 
@@ -100,15 +101,17 @@ public final class AiToolsUpdater {
                                  .map(remotePath -> remotePath.substring(AI_TOOLS_PREFIX.length()))
                                  .map(relativePath -> processFile(relativePath, installed, skipped))
                                  .toList();
-        return Result.allOf(results)
-                     .map(_ -> AiToolsOutcome.aiToolsOutcome(installed, skipped));
+
+        return Result.allOf(results).map(_ -> AiToolsOutcome.aiToolsOutcome(installed, skipped));
     }
 
     private Result<Unit> processFile(String relativePath, List<Path> installed, List<Path> skipped) {
         if (existsGlobally(relativePath)) {
             skipped.add(Path.of(relativePath));
+
             return Result.unitResult();
         }
+
         return PathValidation.validateRelativePath(relativePath, claudeDir)
                              .flatMap(targetPath -> downloadFile(AI_TOOLS_PREFIX + relativePath, targetPath))
                              .onSuccess(installed::add)
@@ -120,34 +123,37 @@ public final class AiToolsUpdater {
     }
 
     private Result<Path> downloadFile(String remotePath, Path targetPath) {
-        return GitHubContentFetcher.downloadFile(http, REPO, BRANCH, remotePath, targetPath)
-                                   .map(_ -> targetPath);
+        return GitHubContentFetcher.downloadFile(http, REPO, BRANCH, remotePath, targetPath).map(_ -> targetPath);
     }
 
     private Option<String> getCurrentVersion() {
         var versionFile = claudeDir.resolve(VERSION_FILE);
+
         if (!Files.exists(versionFile)) {
             return Option.none();
         }
-        try{
-            var content = Files.readString(versionFile)
-                               .trim();
+
+        try {
+            var content = Files.readString(versionFile).trim();
+
             return Option.option(content);
         } catch (IOException e) {
             log.debug("Failed to read version file {}: {}", versionFile, e.getMessage());
+
             return Option.none();
         }
     }
 
     private Result<Path> saveCurrentVersion(String commitSha) {
-        try{
+        try {
             Files.createDirectories(claudeDir);
             var versionFile = claudeDir.resolve(VERSION_FILE);
+
             Files.writeString(versionFile, commitSha);
+
             return Result.success(versionFile);
         } catch (IOException e) {
-            return Causes.cause("Failed to save version file: " + e.getMessage())
-                         .result();
+            return Causes.cause("Failed to save version file: " + e.getMessage()).result();
         }
     }
 

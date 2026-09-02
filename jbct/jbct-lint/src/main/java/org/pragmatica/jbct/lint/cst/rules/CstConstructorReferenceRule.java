@@ -1,14 +1,15 @@
 package org.pragmatica.jbct.lint.cst.rules;
 
+import java.util.regex.Pattern;
+import java.util.stream.Stream;
+
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
 import org.pragmatica.jbct.parser.Cursor;
 
-import java.util.regex.Pattern;
-import java.util.stream.Stream;
-
 import static org.pragmatica.jbct.parser.CstNodes.*;
+
 
 /// JBCT-STY-02: Prefer constructor references (X::new).
 public class CstConstructorReferenceRule implements CstLintRule {
@@ -27,15 +28,16 @@ public class CstConstructorReferenceRule implements CstLintRule {
         if (!ctx.shouldLint(packageName(root))) {
             return Stream.empty();
         }
+
         return findAllLambdas(root).stream()
-                      .filter(this::isConstructorLambda)
-                      .map(lambda -> createDiagnostic(lambda, ctx));
+                             .filter(this::isConstructorLambda)
+                             .map(lambda -> createDiagnostic(lambda, ctx));
     }
 
     private boolean isConstructorLambda(Cursor lambda) {
         var lambdaText = text(lambda);
-        return CONSTRUCTOR_LAMBDA.matcher(lambdaText)
-                                 .find();
+
+        return CONSTRUCTOR_LAMBDA.matcher(lambdaText).find();
     }
 
     private Diagnostic createDiagnostic(Cursor lambda, LintContext ctx) {

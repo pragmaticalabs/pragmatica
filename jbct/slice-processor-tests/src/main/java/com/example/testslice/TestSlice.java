@@ -2,53 +2,42 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package com.example.testslice;
+
+import java.nio.charset.StandardCharsets;
+import java.util.List;
 
 import org.pragmatica.aether.slice.annotation.Slice;
 import org.pragmatica.http.routing.MultipartRequest;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 
-import java.nio.charset.StandardCharsets;
-import java.util.List;
 
 /// Test slice for verifying HTTP route generation.
 @Slice
 public interface TestSlice {
     // Body only (POST)
     Promise<CreateResponse> create(CreateRequest request);
-
     // Path only (GET with single param)
     Promise<GetResponse> getById(GetByIdRequest request);
-
     // Path only (GET with multiple params)
     Promise<ItemResponse> getItem(GetItemRequest request);
-
     // Path with trailing static segment after the param (GET /items/{id}/image) -> trailing spacer
     Promise<byte[]> getItemImage(ItemImageRequest request);
-
     // Query only (GET with query params)
     Promise<List<SearchResult>> search(SearchRequest request);
-
     // Path + body (PUT)
     Promise<UpdateResponse> update(UpdateRequest request);
-
     // Path + query (GET)
     Promise<List<OrderResponse>> getOrders(GetOrdersRequest request);
-
     // No parameters
     Promise<HealthResponse> health(HealthRequest request);
-
     // produces text/csv (String return, path param)
     Promise<String> exportCsv(ExportRequest request);
-
     // produces application/octet-stream (byte[] return, path param)
     Promise<byte[]> download(DownloadRequest request);
-
     // consumes text/plain (String param)
     Promise<UploadResponse> uploadText(String body);
-
     // consumes multipart/form-data (MultipartRequest param)
     Promise<UploadResponse> uploadForm(MultipartRequest request);
 
@@ -111,7 +100,8 @@ public interface TestSlice {
 
             @Override
             public Promise<UploadResponse> uploadForm(MultipartRequest request) {
-                return Promise.success(new UploadResponse("form-1", request.fields().size()));
+                return Promise.success(new UploadResponse("form-1",
+                                                          request.fields().size()));
             }
         };
     }

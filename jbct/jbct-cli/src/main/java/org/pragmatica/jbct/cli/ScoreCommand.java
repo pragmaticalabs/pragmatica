@@ -1,177 +1,122 @@
 package org.pragmatica.jbct.cli;
 
+import java.nio.file.Path;
+import java.util.List;
+import java.util.Locale;
+import java.util.concurrent.Callable;
+
 import org.pragmatica.jbct.config.ConfigLoader;
 import org.pragmatica.jbct.config.JbctConfig;
-import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.JbctLinter;
 import org.pragmatica.jbct.lint.LintContext;
+import org.pragmatica.jbct.lint.layer.LayerCoverage;
+import org.pragmatica.jbct.score.DensityGate;
 import org.pragmatica.jbct.score.ScoreCalculator;
-import org.pragmatica.jbct.score.ScoreCategory;
+import org.pragmatica.jbct.score.ScoreReport;
 import org.pragmatica.jbct.score.ScoreResult;
+import org.pragmatica.jbct.score.SourceScan;
 import org.pragmatica.jbct.shared.FileCollector;
-import org.pragmatica.jbct.shared.SourceFile;
 import org.pragmatica.lang.Option;
-
-import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.concurrent.Callable;
 
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Parameters;
 
-/// Score command for JBCT compliance scoring.
-@Command(
- name = "score",
- description = "Calculate JBCT compliance score",
- mixinStandardHelpOptions = true)
+
+/// Score command reporting JBCT violation density.
+@Command(name = "score", description = "Report JBCT violation density (violations per KLOC)", mixinStandardHelpOptions = true)
 public class ScoreCommand implements Callable<Integer> {
-    @Parameters(
-    paramLabel = "<path>",
-    description = "Files or directories to score",
-    arity = "1..*")
+    /// Exit code for a usage error, matching picocli's own.
+    static final int USAGE_ERROR = 2;
+
+    /// Output formats the command knows. Anything else is rejected rather than quietly rendered
+    /// as a terminal box — `--format badge` used to be real, so silently substituting a different
+    /// format for it would hand a CI job the wrong bytes with a zero exit code.
+    static final List<String> SUPPORTED_FORMATS = List.of("terminal", "json");
+
+    @Parameters(paramLabel = "<path>", description = "Files or directories to measure", arity = "1..*")
     List<Path> paths;
 
-    @picocli.CommandLine.Option(
-    names = {"--format", "-f"},
-    description = "Output format: terminal, json, badge",
-    defaultValue = "terminal")
+    @picocli.CommandLine.Option(names = {"--format", "-f"}, description = "Output format: terminal, json", defaultValue = "terminal")
     String format;
 
-    @picocli.CommandLine.Option(
-    names = {"--baseline", "-b"},
-    description = "Minimum acceptable score (fails if below)")
+    @picocli.CommandLine.Option(names = {"--max-density"}, description = "Maximum acceptable violations per KLOC (fails if above)")
+    Double maxDensity;
+
+    /// The removed 0-100 score gate, still bound so a command line that uses it fails loudly with
+    /// migration guidance instead of dying on "unknown option" — or, worse, being silently
+    /// re-interpreted in the opposite direction.
+    @picocli.CommandLine.Option(names = {"--baseline", "-b"}, hidden = true, description = "Removed: use --max-density")
     Integer baseline;
 
-    @picocli.CommandLine.Option(
-    names = {"--config"},
-    description = "Path to configuration file")
+    @picocli.CommandLine.Option(names = {"--config"}, description = "Path to configuration file")
     Path configPath;
 
     @Override
     public Integer call() {
+        if (baseline != null) {
+            System.err.println(DensityGate.REMOVED_BASELINE_MESSAGE);
+
+            return USAGE_ERROR;
+        }
+
+        if (!SUPPORTED_FORMATS.contains(format.toLowerCase(Locale.ROOT))) {
+            System.err.println("Unknown format '" + format + "'; supported formats: "
+                               + String.join(", ", SUPPORTED_FORMATS));
+
+            return USAGE_ERROR;
+        }
+
         var config = ConfigLoader.load(Option.option(configPath), Option.none());
         var context = createContext(config);
         var linter = JbctLinter.jbctLinter(context);
         var filesToProcess = FileCollector.collectJavaFiles(paths, config.files(), System.err::println);
+
         if (filesToProcess.isEmpty()) {
             System.err.println("No Java files found");
+
             return 1;
         }
-        var diagnostics = lintFiles(filesToProcess, linter);
-        var score = ScoreCalculator.calculate(diagnostics, filesToProcess.size());
+
+        var scan = SourceScan.sourceScan(filesToProcess, linter::lint, message -> System.err.println("  ✗ " + message));
+        var score = ScoreCalculator.calculate(scan);
+
+        LayerCoverage.coverage(filesToProcess, context)
+                     .map(LayerCoverage::render)
+                     .onPresent(System.err::println);
         outputScore(score);
-        if (baseline != null && score.overall() < baseline) {
-            System.err.println("\nScore " + score.overall() + " below baseline " + baseline);
-            return 1;
-        }
-        return 0;
+
+        return gateExitCode(score);
     }
 
     private LintContext createContext(JbctConfig jbctConfig) {
         return LintContext.defaultContext()
                           .withConfig(jbctConfig.lint())
-                          .withExcludePackages(jbctConfig.excludePackages());
+                          .withExcludePackages(jbctConfig.excludePackages())
+                          .withLayers(jbctConfig.layers());
     }
 
-    private List<Diagnostic> lintFiles(List<Path> files, JbctLinter linter) {
-        var diagnostics = new ArrayList<Diagnostic>();
-        for (var file : files) {
-            SourceFile.sourceFile(file)
-                      .flatMap(linter::lint)
-                      .onSuccess(diagnostics::addAll)
-                      .onFailure(cause -> System.err.println("  ✗ " + file + ": " + cause.message()));
+    private int gateExitCode(ScoreResult score) {
+        if (maxDensity != null && DensityGate.exceeds(score.totalDensityPerKloc(), maxDensity)) {
+            System.err.println("\n" + DensityGate.breachMessage(score.totalDensityPerKloc(), maxDensity));
+
+            return 1;
         }
-        return diagnostics;
+
+        return 0;
     }
 
     private void outputScore(ScoreResult score) {
-        switch (format.toLowerCase()) {
+        switch (format.toLowerCase(Locale.ROOT)) {
             case "json" -> outputJson(score);
-            case "badge" -> outputBadge(score);
             default -> outputTerminal(score);
         }
     }
 
     private void outputTerminal(ScoreResult score) {
-        System.out.println("╔═══════════════════════════════════════════════════╗");
-        System.out.printf("║     JBCT COMPLIANCE SCORE: %d/100            ║%n", score.overall());
-        System.out.println("╠═══════════════════════════════════════════════════╣");
-        for (var category : ScoreCategory.values()) {
-            var categoryScore = score.breakdown()
-                                     .get(category);
-            var percent = categoryScore.score();
-            var bar = createProgressBar(percent);
-            System.out.printf("║  %-18s %s %3d%%    ║%n",
-                              category.name()
-                                      .replace('_', ' '),
-                              bar,
-                              percent);
-        }
-        System.out.println("╚═══════════════════════════════════════════════════╝");
-    }
-
-    private String createProgressBar(int percent) {
-        var filled = percent / 5;
-        // 20 chars = 100%
-        var empty = 20 - filled;
-        return "█".repeat(filled) + "░".repeat(empty);
+        ScoreReport.terminalLines(score).forEach(System.out::println);
     }
 
     private void outputJson(ScoreResult score) {
-        System.out.println("{");
-        System.out.printf("  \"score\": %d,%n", score.overall());
-        System.out.println("  \"breakdown\": {");
-        var categories = ScoreCategory.values();
-        for (int i = 0; i < categories.length; i++) {
-            var category = categories[i];
-            var categoryScore = score.breakdown()
-                                     .get(category);
-            System.out.printf("    \"%s\": %d%s%n",
-                              category.name()
-                                      .toLowerCase(),
-                              categoryScore.score(),
-                              i < categories.length - 1
-                              ? ","
-                              : "");
-        }
-        System.out.println("  },");
-        System.out.printf("  \"filesAnalyzed\": %d%n", score.filesAnalyzed());
-        System.out.println("}");
-    }
-
-    private void outputBadge(ScoreResult score) {
-        var color = score.overall() >= 90
-                    ? "brightgreen"
-                    : score.overall() >= 75
-                      ? "green"
-                      : score.overall() >= 60
-                        ? "yellow"
-                        : score.overall() >= 50
-                          ? "orange"
-                          : "red";
-        var svg = """
-            <svg xmlns="http://www.w3.org/2000/svg" width="100" height="20">
-              <linearGradient id="b" x2="0" y2="100%%">
-                <stop offset="0" stop-color="#bbb" stop-opacity=".1"/>
-                <stop offset="1" stop-opacity=".1"/>
-              </linearGradient>
-              <mask id="a">
-                <rect width="100" height="20" rx="3" fill="#fff"/>
-              </mask>
-              <g mask="url(#a)">
-                <path fill="#555" d="M0 0h45v20H0z"/>
-                <path fill="%s" d="M45 0h55v20H45z"/>
-                <path fill="url(#b)" d="M0 0h100v20H0z"/>
-              </g>
-              <g fill="#fff" text-anchor="middle" font-family="DejaVu Sans,Verdana,Geneva,sans-serif" font-size="11">
-                <text x="22.5" y="15" fill="#010101" fill-opacity=".3">JBCT</text>
-                <text x="22.5" y="14">JBCT</text>
-                <text x="71.5" y="15" fill="#010101" fill-opacity=".3">%d/100</text>
-                <text x="71.5" y="14">%d/100</text>
-              </g>
-            </svg>
-            """.formatted(color, score.overall(), score.overall());
-        System.out.println(svg);
+        ScoreReport.jsonLines(score).forEach(System.out::println);
     }
 }

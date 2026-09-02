@@ -5,6 +5,7 @@ import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.jbct.shared.SourceFile;
 import org.pragmatica.lang.Result;
 
+
 /// JBCT code formatter implementation.
 ///
 /// Formats Java source code according to JBCT style rules:

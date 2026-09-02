@@ -1,20 +1,18 @@
 package org.pragmatica.jbct.cli;
 
+import java.util.concurrent.Callable;
+
 import org.pragmatica.jbct.upgrade.GitHubReleaseChecker;
 import org.pragmatica.jbct.upgrade.JarInstaller;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
-import java.util.concurrent.Callable;
-
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 
+
 /// Upgrade command - update JBCT to latest version.
-@Command(
- name = "upgrade",
- description = "Upgrade JBCT to the latest version",
- mixinStandardHelpOptions = true)
+@Command(name = "upgrade", description = "Upgrade JBCT to the latest version", mixinStandardHelpOptions = true)
 public class UpgradeCommand implements Callable<Integer> {
     @Option(names = {"--version", "-V"}, description = "Install specific version")
     String targetVersion;
@@ -33,10 +31,13 @@ public class UpgradeCommand implements Callable<Integer> {
         if (firstInstall) {
             return performFirstInstall();
         }
+
         var checker = GitHubReleaseChecker.releaseChecker();
         var currentVersion = getCurrentVersion();
+
         System.out.println("Current version: " + currentVersion);
         System.out.println("Checking for updates...");
+
         return checker.checkLatestRelease()
                       .onFailure(cause -> System.err.println("Error: " + cause.message()))
                       .map(release -> handleRelease(release, currentVersion))
@@ -51,11 +52,13 @@ public class UpgradeCommand implements Callable<Integer> {
             } else {
                 System.out.println("Already at latest version.");
             }
+
             return 0;
         }
         // Check if upgrade is needed
         if (!force && !GitHubReleaseChecker.isNewerVersion(currentVersion, release.version())) {
             System.out.println("Already at latest version. Use --force to reinstall.");
+
             return 0;
         }
         // Check for download URL
@@ -74,7 +77,9 @@ public class UpgradeCommand implements Callable<Integer> {
         System.out.println("Downloading version " + version + "...");
         var installer = JarInstaller.jarInstaller();
         var targetPath = JarInstaller.detectCurrentJar();
+
         System.out.println("Installing to: " + targetPath);
+
         return installer.install(downloadUrl, targetPath)
                         .onFailure(cause -> System.err.println("Error: " + cause.message()))
                         .onSuccess(_ -> System.out.println("Successfully upgraded to version " + version))
@@ -83,6 +88,7 @@ public class UpgradeCommand implements Callable<Integer> {
 
     private int performFirstInstall() {
         System.out.println("Performing first-time installation...");
+
         return JarInstaller.createInstallDir()
                            .flatMap(this::installScriptsAndDownload)
                            .onFailure(cause -> System.err.println("Error: " + cause.message()))
@@ -92,13 +98,14 @@ public class UpgradeCommand implements Callable<Integer> {
 
     private Result<String> installScriptsAndDownload(java.nio.file.Path installDir) {
         System.out.println("Created installation directory: " + installDir);
-        return JarInstaller.installWrapperScripts(installDir)
-                           .flatMap(_ -> downloadLatestRelease());
+
+        return JarInstaller.installWrapperScripts(installDir).flatMap(_ -> downloadLatestRelease());
     }
 
     private Result<String> downloadLatestRelease() {
         System.out.println("Installed wrapper scripts.");
         var checker = GitHubReleaseChecker.releaseChecker();
+
         return checker.checkLatestRelease()
                       .flatMap(this::downloadRelease);
     }
@@ -114,6 +121,7 @@ public class UpgradeCommand implements Callable<Integer> {
         System.out.println("Downloading version " + version + "...");
         var installer = JarInstaller.jarInstaller();
         var targetPath = JarInstaller.defaultInstallPath();
+
         return installer.install(url, targetPath)
                         .map(_ -> version);
     }

@@ -1,5 +1,11 @@
 package org.pragmatica.jbct.cli;
 
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.atomic.AtomicInteger;
+
 import org.pragmatica.jbct.config.ConfigLoader;
 import org.pragmatica.jbct.config.JbctConfig;
 import org.pragmatica.jbct.format.JbctFormatter;
@@ -7,44 +13,28 @@ import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.DiagnosticSeverity;
 import org.pragmatica.jbct.lint.JbctLinter;
 import org.pragmatica.jbct.lint.LintContext;
+import org.pragmatica.jbct.lint.layer.LayerCoverage;
 import org.pragmatica.jbct.shared.FileCollector;
 import org.pragmatica.jbct.shared.SourceFile;
 import org.pragmatica.lang.Option;
 
-import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.concurrent.Callable;
-import java.util.concurrent.atomic.AtomicInteger;
-
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Parameters;
 
+
 /// Check command - combines format check and lint (for CI).
-@Command(
- name = "check",
- description = "Run both format check and lint (for CI)",
- mixinStandardHelpOptions = true)
+@Command(name = "check", description = "Run both format check and lint (for CI)", mixinStandardHelpOptions = true)
 public class CheckCommand implements Callable<Integer> {
-    @Parameters(
-    paramLabel = "<path>",
-    description = "Files or directories to check",
-    arity = "1..*")
+    @Parameters(paramLabel = "<path>", description = "Files or directories to check", arity = "1..*")
     List<Path> paths;
 
-    @picocli.CommandLine.Option(
-    names = {"--fail-on-warning", "-w"},
-    description = "Treat warnings as errors")
+    @picocli.CommandLine.Option(names = {"--fail-on-warning", "-w"}, description = "Treat warnings as errors")
     boolean failOnWarning;
 
-    @picocli.CommandLine.Option(
-    names = {"--verbose", "-v"},
-    description = "Show verbose output")
+    @picocli.CommandLine.Option(names = {"--verbose", "-v"}, description = "Show verbose output")
     boolean verbose;
 
-    @picocli.CommandLine.Option(
-    names = {"--config"},
-    description = "Path to configuration file")
+    @picocli.CommandLine.Option(names = {"--config"}, description = "Path to configuration file")
     Path configPath;
 
     @Override
@@ -55,10 +45,13 @@ public class CheckCommand implements Callable<Integer> {
         var context = createContext(config);
         var linter = JbctLinter.jbctLinter(context);
         var filesToProcess = FileCollector.collectJavaFiles(paths, config.files(), System.err::println);
+
         if (filesToProcess.isEmpty()) {
             System.out.println("No Java files found.");
+
             return 0;
         }
+
         if (verbose) {
             System.out.println("Checking " + filesToProcess.size() + " Java file(s)...");
         }
@@ -70,10 +63,15 @@ public class CheckCommand implements Callable<Integer> {
         var lintErrors = new AtomicInteger(0);
         var warnings = new AtomicInteger(0);
         var parseErrors = new AtomicInteger(0);
+
         for (var file : filesToProcess) {
             checkFormat(file, formatter, needsFormatting, formatErrors);
             checkLint(file, linter, allDiagnostics, lintErrors, warnings, parseErrors);
         }
+
+        LayerCoverage.coverage(filesToProcess, context)
+                     .map(LayerCoverage::render)
+                     .onPresent(System.err::println);
         // Report format issues
         if (!needsFormatting.isEmpty()) {
             System.out.println();
@@ -91,30 +89,39 @@ public class CheckCommand implements Callable<Integer> {
         }
         // Summary
         System.out.println();
-        System.out.println("Check results: " + needsFormatting.size() + " format issue(s), " + lintErrors.get()
-                           + " lint error(s), " + warnings.get() + " warning(s)");
+        System.out.println("Check results: " + needsFormatting.size()
+                          + " format issue(s), " + lintErrors.get()
+                          + " lint error(s), " + warnings.get()
+                          + " warning(s)");
         // Determine exit code
         if (formatErrors.get() > 0 || parseErrors.get() > 0) {
             return 2;
         }
+
         if (!needsFormatting.isEmpty() || lintErrors.get() > 0) {
             return 1;
         }
+
         if (failOnWarning && warnings.get() > 0) {
             return 1;
         }
+
         System.out.println("✓ All checks passed.");
+
         return 0;
     }
 
     private LintContext createContext(JbctConfig jbctConfig) {
         var lintConfig = jbctConfig.lint();
+
         if (failOnWarning) {
             lintConfig = lintConfig.withFailOnWarning(true);
         }
+
         return LintContext.defaultContext()
                           .withConfig(lintConfig)
-                          .withExcludePackages(jbctConfig.excludePackages());
+                          .withExcludePackages(jbctConfig.excludePackages())
+                          .withLayers(jbctConfig.layers());
     }
 
     private void checkFormat(Path file, JbctFormatter formatter, List<Path> needsFormatting, AtomicInteger errors) {
@@ -122,10 +129,10 @@ public class CheckCommand implements Callable<Integer> {
                   .flatMap(formatter::isFormatted)
                   .onSuccess(isFormatted -> {
                                  if (!isFormatted) {
-                                     needsFormatting.add(file);
-                                 } else if (verbose) {
-                                     System.out.println("  ✓ format: " + file.getFileName());
-                                 }
+                                 needsFormatting.add(file);
+                             } else if (verbose) {
+                                 System.out.println("  ✓ format: " + file.getFileName());
+                             }
                              })
                   .onFailure(cause -> {
                                  errors.incrementAndGet();
@@ -144,15 +151,16 @@ public class CheckCommand implements Callable<Integer> {
                   .onSuccess(diagnostics -> {
                                  allDiagnostics.addAll(diagnostics);
                                  for (var d : diagnostics) {
-                                     switch (d.severity()) {
+                                 switch (d.severity()) {
             case ERROR -> errors.incrementAndGet();
             case WARNING -> warnings.incrementAndGet();
             default -> {}
         }
-                                 }
+                             }
+
                                  if (verbose && diagnostics.isEmpty()) {
-                                     System.out.println("  ✓ lint: " + file.getFileName());
-                                 }
+                                 System.out.println("  ✓ lint: " + file.getFileName());
+                             }
                              })
                   .onFailure(cause -> {
                                  parseErrors.incrementAndGet();

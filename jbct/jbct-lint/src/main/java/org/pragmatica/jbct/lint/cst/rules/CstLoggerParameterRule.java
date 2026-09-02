@@ -1,14 +1,15 @@
 package org.pragmatica.jbct.lint.cst.rules;
 
+import java.util.regex.Pattern;
+import java.util.stream.Stream;
+
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
 import org.pragmatica.jbct.parser.Cursor;
 
-import java.util.regex.Pattern;
-import java.util.stream.Stream;
-
 import static org.pragmatica.jbct.parser.CstNodes.*;
+
 
 /// JBCT-LOG-02: No logger as method parameter.
 public class CstLoggerParameterRule implements CstLintRule {
@@ -25,30 +26,39 @@ public class CstLoggerParameterRule implements CstLintRule {
         if (!ctx.shouldLint(packageName(root))) {
             return Stream.empty();
         }
+
         return findAllMethods(root).stream()
-                      .filter(this::hasLoggerParameter)
-                      .map(method -> createDiagnostic(method, ctx));
+                             .filter(this::hasLoggerParameter)
+                             .map(method -> createDiagnostic(method, ctx));
     }
 
     private boolean hasLoggerParameter(Cursor method) {
-        var methodText = text(method);
-        return methodText.contains("Logger ") && methodText.contains("(") &&
-        methodText.indexOf("Logger ") < methodText.indexOf(")");
+        // The DECLARATION text, not the member's: an annotation's own ')' would otherwise
+        // precede the parameter list and defeat the positional check below.
+        var methodText = memberDeclText(method);
+
+        return methodText.contains("Logger ")
+               && methodText.contains("(")
+               && methodText.indexOf("Logger ") < methodText.indexOf(")");
     }
 
     private Diagnostic createDiagnostic(Cursor method, LintContext ctx) {
-        var methodName = extractMethodName(text(method));
+        var methodName = extractMethodName(memberDeclText(method));
+
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
-                                     startLine(method),
-                                     startColumn(method),
+                                     startLine(anchorOf(method)),
+                                     startColumn(anchorOf(method)),
                                      "Method '" + methodName + "' has Logger parameter - use class-level logger",
                                      "Each component should own its logger as a final field.");
     }
 
     private static String extractMethodName(String memberText) {
         var matcher = METHOD_NAME_PATTERN.matcher(memberText);
-        return matcher.find() ? matcher.group(1) : "(unknown)";
+
+        return matcher.find()
+               ? matcher.group(1)
+               : "(unknown)";
     }
 }

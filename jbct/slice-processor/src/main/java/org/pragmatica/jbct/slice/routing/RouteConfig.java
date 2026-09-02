@@ -2,14 +2,14 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.jbct.slice.routing;
-
-import org.pragmatica.lang.Option;
 
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
+
+import org.pragmatica.lang.Option;
+
 
 /// Complete route configuration for a slice.
 ///
@@ -91,8 +91,16 @@ public record RouteConfig(String prefix,
                                           boolean requireVersionHeader,
                                           Map<Integer, VersionConfig> versions,
                                           Map<String, Integer> routeVersions) {
-        return new RouteConfig(prefix, routes, errors, securityDefault, overridePolicy, routeSecurity,
-                               apiPrefix, requireVersionHeader, versions, routeVersions);
+        return new RouteConfig(prefix,
+                               routes,
+                               errors,
+                               securityDefault,
+                               overridePolicy,
+                               routeSecurity,
+                               apiPrefix,
+                               requireVersionHeader,
+                               versions,
+                               routeVersions);
     }
 
     /// Factory method with security parameters but no versioning (unversioned slices).
@@ -102,14 +110,20 @@ public record RouteConfig(String prefix,
                                           RouteSecurityLevel securityDefault,
                                           OverridePolicy overridePolicy,
                                           Map<String, RouteSecurityLevel> routeSecurity) {
-        return new RouteConfig(prefix, routes, errors, securityDefault, overridePolicy, routeSecurity,
-                               "", false, Map.of(), Map.of());
+        return new RouteConfig(prefix,
+                               routes,
+                               errors,
+                               securityDefault,
+                               overridePolicy,
+                               routeSecurity,
+                               "",
+                               false,
+                               Map.of(),
+                               Map.of());
     }
 
     /// Backward-compatible factory method without security parameters.
-    public static RouteConfig routeConfig(String prefix,
-                                          Map<String, RouteDsl> routes,
-                                          ErrorPatternConfig errors) {
+    public static RouteConfig routeConfig(String prefix, Map<String, RouteDsl> routes, ErrorPatternConfig errors) {
         return new RouteConfig(prefix,
                                routes,
                                errors,
@@ -124,20 +138,18 @@ public record RouteConfig(String prefix,
 
     /// Whether this slice declares API versions (`[vN.routes]` blocks).
     public boolean isVersioned() {
-        return !versions.isEmpty();
+        return ! versions.isEmpty();
     }
 
     /// The API version of a route handler (`0` for unversioned routes).
     public int routeVersion(String handlerName) {
-        return Option.option(routeVersions.get(handlerName))
-                     .or(0);
+        return Option.option(routeVersions.get(handlerName)).or(0);
     }
 
     /// Resolve the effective security level for a route.
     /// Uses per-route override if present, otherwise the section default.
     public RouteSecurityLevel effectiveSecurity(String handlerName) {
-        return Option.option(routeSecurity.get(handlerName))
-                     .or(securityDefault);
+        return Option.option(routeSecurity.get(handlerName)).or(securityDefault);
     }
 
     /// Merge this configuration with another, with other taking precedence.
@@ -174,31 +186,44 @@ public record RouteConfig(String prefix,
         var mergedRequireHeader = other.requireVersionHeader || this.requireVersionHeader;
         var mergedVersions = mergeVersions(this.versions, other.versions);
         var mergedRouteVersions = mergeMaps(this.routeVersions, other.routeVersions);
-        return routeConfig(mergedPrefix, mergedRoutes, mergedErrors, mergedSecDefault, mergedPolicy, mergedRouteSec,
-                           mergedApiPrefix, mergedRequireHeader, mergedVersions, mergedRouteVersions);
+
+        return routeConfig(mergedPrefix,
+                           mergedRoutes,
+                           mergedErrors,
+                           mergedSecDefault,
+                           mergedPolicy,
+                           mergedRouteSec,
+                           mergedApiPrefix,
+                           mergedRequireHeader,
+                           mergedVersions,
+                           mergedRouteVersions);
     }
 
     private static <V> Map<String, V> mergeMaps(Map<String, V> base, Map<String, V> overlay) {
         var merged = new LinkedHashMap<>(base);
+
         merged.putAll(overlay);
+
         return Collections.unmodifiableMap(merged);
     }
 
     private static Map<Integer, VersionConfig> mergeVersions(Map<Integer, VersionConfig> base,
                                                              Map<Integer, VersionConfig> overlay) {
         var merged = new LinkedHashMap<>(base);
+
         merged.putAll(overlay);
+
         return Collections.unmodifiableMap(merged);
     }
 
     /// Check if configuration has any routes defined.
     public boolean hasRoutes() {
-        return !routes.isEmpty();
+        return ! routes.isEmpty();
     }
 
     /// Check if configuration has a prefix defined.
     public boolean hasPrefix() {
-        return !prefix.isEmpty();
+        return ! prefix.isEmpty();
     }
 
     /// Get the full path for a route, including prefix.
@@ -206,9 +231,8 @@ public record RouteConfig(String prefix,
     /// @param handlerName the handler method name
     /// @return full path if route found, empty Option otherwise
     public Option<String> fullPath(String handlerName) {
-        return Option.option(routes.get(handlerName))
-                     .map(route -> prefix.isEmpty()
-                                   ? route.pathTemplate()
-                                   : prefix + route.pathTemplate());
+        return Option.option(routes.get(handlerName)).map(route -> prefix.isEmpty()
+                                                                   ? route.pathTemplate()
+                                                                   : prefix + route.pathTemplate());
     }
 }

@@ -19,7 +19,9 @@ import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.stream.Collectors;
 
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.testing.compile.Compiler.javac;
@@ -60,14 +62,21 @@ class SliceProcessorTest {
             package org.pragmatica.serialization;
 
             import java.util.List;
+            import java.util.Set;
 
             public interface SliceCodec {
                 static int deterministicTag(String className) {
-                    return (className.hashCode() & 0x7FFFFFFF) % 16256 + 128;
+                    long hash = 0xcbf29ce484222325L;
+                    for (var i = 0; i < className.length(); i++) {
+                        hash ^= className.charAt(i);
+                        hash *= 0x100000001b3L;
+                    }
+                    return 16384 + (int) Long.remainderUnsigned(hash, (1 << 21) - 16384);
                 }
                 static void writeCompact(Object buf, int value) {}
                 static int readCompact(Object buf) { return 0; }
                 static SliceCodec sliceCodec(SliceCodec parent, List<TypeCodec<?>> codecs) { return parent; }
+                static SliceCodec sliceCodec(SliceCodec parent, List<TypeCodec<?>> codecs, Set<Class<?>> requiredTypes) { return parent; }
                 record TypeCodec<T>(Class<T> type, int tag, TypeWriter<T> writer, TypeReader<T> reader) {}
                 interface TypeWriter<T> { void writeBody(SliceCodec codec, Object buf, T value); }
                 interface TypeReader<T> { T readBody(SliceCodec codec, Object buf); }
@@ -288,13 +297,25 @@ class SliceProcessorTest {
             public @interface Key {}
             """);
 
+    private static final JavaFileObject PARTITION_KEY_ANNOTATION = JavaFileObjects.forSourceString(
+            "org.pragmatica.aether.slice.annotation.PartitionKey",
+            """
+            package org.pragmatica.aether.slice.annotation;
+
+            import java.lang.annotation.*;
+
+            @Target(ElementType.RECORD_COMPONENT)
+            @Retention(RetentionPolicy.RUNTIME)
+            public @interface PartitionKey {}
+            """);
+
     private List<JavaFileObject> commonSources() {
         return new ArrayList<>(List.of(
                 SLICE_ANNOTATION,
                 SLICE_CODEC, SLICE, SLICE_METHOD, METHOD_NAME, METHOD_HANDLE, INVOKER_FACADE,
                 METHOD_INTERCEPTOR, PROVISIONING_CONTEXT,
                 RESOURCE_PROVIDER_FACADE, CONFIG_FACADE, SLICE_CREATION_CONTEXT, RESOURCE_QUALIFIER,
-                CONFIGURATION_SECTION, KEY_ANNOTATION, UNIT
+                CONFIGURATION_SECTION, KEY_ANNOTATION, PARTITION_KEY_ANNOTATION, UNIT
         ));
     }
 
@@ -459,6 +480,148 @@ class SliceProcessorTest {
         return sources;
     }
 
+    /// Loads a generated slice manifest through [java.util.Properties] rather than asserting on raw
+    /// text: `Properties.store` escapes the `:` in a coordinate as `\:`, so substring assertions on
+    /// the file body silently encode that escaping and break for the wrong reason.
+    private static java.util.Properties sliceManifestProperties(Compilation compilation, String sliceName) throws IOException {
+        var manifestFile = compilation.generatedFile(StandardLocation.CLASS_OUTPUT,
+                                                     "META-INF/slice/" + sliceName + ".manifest");
+
+        assertThat(manifestFile.isPresent()).isTrue();
+
+        var props = new java.util.Properties();
+
+        props.load(new java.io.StringReader(manifestFile.get()
+                                                        .getCharContent(false)
+                                                        .toString()));
+
+        return props;
+    }
+
+    /// A cross-slice dependency coordinate must be keyed on the MODULE, never on package adjacency.
+    ///
+    /// `jbct:package-slices` builds the dependency file's `[slices]` section by prefix-matching
+    /// `groupId:baseArtifactId-`, so a coordinate derived from the provider's PACKAGE is dropped
+    /// silently rather than rejected: the section goes unwritten, the provider jar never reaches the
+    /// consumer's SliceClassLoader, and the consumer dies inside `getDeclaredMethods()` with a
+    /// NoClassDefFoundError naming the provider interface.
+    ///
+    /// The two packages here share only the module root — consumer under `booking.purchase`,
+    /// provider under `eventmanagement.capacity`. That is what a domain-organised app produces, and
+    /// it is precisely the shape an immediate-parent-package test fails to recognise.
+    @Test
+    void should_resolve_cross_subtree_slice_dependency_to_module_artifact() throws Exception {
+        var provider = JavaFileObjects.forSourceString("com.example.app.eventmanagement.capacity.seatsellability.SeatSellability",
+                                                        """
+            package com.example.app.eventmanagement.capacity.seatsellability;
+
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+
+            @Slice
+            public interface SeatSellability {
+                Promise<String> checkSeat(String seatId);
+
+                static SeatSellability seatSellability() {
+                    return null;
+                }
+            }
+            """);
+        var consumer = JavaFileObjects.forSourceString("com.example.app.booking.purchase.buyticket.BuyTicket",
+                                                        """
+            package com.example.app.booking.purchase.buyticket;
+
+            import com.example.app.eventmanagement.capacity.seatsellability.SeatSellability;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+
+            @Slice
+            public interface BuyTicket {
+                Promise<String> buy(String orderId);
+
+                static BuyTicket buyTicket(SeatSellability seatSellability) {
+                    return null;
+                }
+            }
+            """);
+        var sources = commonSources();
+
+        sources.add(provider);
+        sources.add(consumer);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor())
+                                         .withOptions("-Aslice.groupId=com.example", "-Aslice.artifactId=app")
+                                         .compile(sources);
+
+        assertCompilation(compilation).succeeded();
+
+        var consumerManifest = sliceManifestProperties(compilation, "BuyTicket");
+
+        assertThat(consumerManifest.getProperty("dependencies.count")).isEqualTo("1");
+        assertThat(consumerManifest.getProperty("dependency.0.interface"))
+                                   .isEqualTo("com.example.app.eventmanagement.capacity.seatsellability.SeatSellability");
+        assertThat(consumerManifest.getProperty("dependency.0.artifact")).isEqualTo("com.example:app-seat-sellability");
+
+        // The coordinate is only useful if it names the jar the provider is actually packaged into,
+        // so pin the agreement itself, not just its current spelling on one side.
+        var providerArtifactId = sliceManifestProperties(compilation, "SeatSellability").getProperty("slice.artifactId");
+
+        assertThat(consumerManifest.getProperty("dependency.0.artifact")).isEqualTo("com.example:" + providerArtifactId);
+    }
+
+    /// The narrow case the superseded immediate-parent-package test did handle — provider and
+    /// consumer as direct package siblings. Keying on the module must not regress it.
+    @Test
+    void should_resolve_sibling_package_slice_dependency_to_module_artifact() throws Exception {
+        var provider = JavaFileObjects.forSourceString("com.example.app.orders.stocklevel.StockLevel",
+                                                        """
+            package com.example.app.orders.stocklevel;
+
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+
+            @Slice
+            public interface StockLevel {
+                Promise<Integer> level(String sku);
+
+                static StockLevel stockLevel() {
+                    return null;
+                }
+            }
+            """);
+        var consumer = JavaFileObjects.forSourceString("com.example.app.orders.checkout.Checkout",
+                                                        """
+            package com.example.app.orders.checkout;
+
+            import com.example.app.orders.stocklevel.StockLevel;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+
+            @Slice
+            public interface Checkout {
+                Promise<String> checkout(String orderId);
+
+                static Checkout checkout(StockLevel stockLevel) {
+                    return null;
+                }
+            }
+            """);
+        var sources = commonSources();
+
+        sources.add(provider);
+        sources.add(consumer);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor())
+                                         .withOptions("-Aslice.groupId=com.example", "-Aslice.artifactId=app")
+                                         .compile(sources);
+
+        assertCompilation(compilation).succeeded();
+
+        var consumerManifest = sliceManifestProperties(compilation, "Checkout");
+
+        assertThat(consumerManifest.getProperty("dependency.0.artifact")).isEqualTo("com.example:app-stock-level");
+    }
+
     @Test
     void should_generate_proxy_for_external_dependency() {
         var externalService = JavaFileObjects.forSourceString("external.InventoryService",
@@ -504,6 +667,803 @@ class SliceProcessorTest {
                   .generatedSourceFile("test.OrderServiceFactory")
                   .contentsAsUtf8String()
                   .contains("record inventoryService(MethodHandle<");
+    }
+
+    /// #612: a non-Promise dependency method used to vanish silently from the generated proxy.
+    /// The default and static members on the same interface pin the exemption — only abstract
+    /// instance methods are proxy candidates, so only they are checked.
+    @Test
+    void should_fail_on_non_promise_dependency_method() {
+        var externalService = JavaFileObjects.forSourceString("external.InventoryService",
+                                                              """
+            package external;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface InventoryService {
+                Promise<Integer> checkStock(String productId);
+
+                String checkStockSync(String productId);
+
+                default String describe() { return "inventory"; }
+
+                static String version() { return "1"; }
+            }
+            """);
+
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import external.InventoryService;
+
+            @Slice
+            public interface OrderService {
+                Promise<String> placeOrder(String orderId);
+
+                static OrderService orderService(InventoryService inventory) {
+                    return null;
+                }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(externalService);
+        sources.add(source);
+
+        Compilation compilation = javac()
+                                       .withProcessors(new SliceProcessor())
+                                       .compile(sources);
+
+        assertCompilation(compilation).failed();
+        assertCompilation(compilation).hadErrorContaining("external.InventoryService.checkStockSync returns java.lang.String");
+        assertCompilation(compilation).hadErrorContaining("must return Promise<T>");
+    }
+
+    /// #612's nastier half: before the erasure check, ANY generic return extracted its first type
+    /// argument, so `Result<Integer>` was silently treated as `Promise<Integer>` and generated a
+    /// wrong-shaped proxy instead of an error.
+    @Test
+    void should_fail_on_result_returning_dependency_method() {
+        var externalService = JavaFileObjects.forSourceString("external.PricingService",
+                                                              """
+            package external;
+
+            import org.pragmatica.lang.Result;
+
+            public interface PricingService {
+                Result<Integer> quote(String productId);
+            }
+            """);
+
+        var source = JavaFileObjects.forSourceString("test.CheckoutService",
+                                                     """
+            package test;
+
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import external.PricingService;
+
+            @Slice
+            public interface CheckoutService {
+                Promise<String> checkout(String orderId);
+
+                static CheckoutService checkoutService(PricingService pricing) {
+                    return null;
+                }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(externalService);
+        sources.add(source);
+
+        Compilation compilation = javac()
+                                       .withProcessors(new SliceProcessor())
+                                       .compile(sources);
+
+        assertCompilation(compilation).failed();
+        assertCompilation(compilation).hadErrorContaining("external.PricingService.quote returns org.pragmatica.lang.Result<java.lang.Integer>");
+        assertCompilation(compilation).hadErrorContaining("must return Promise<T>");
+    }
+
+    /// #663: dependency methods inherited from super-interfaces were invisible to the
+    /// dependency-method scan — the generated proxy record omitted them while still
+    /// `implements`-ing the interface. The scan must follow Java interface-inheritance
+    /// semantics: the two-level chain pins transitivity, not just direct supers.
+    @Test
+    void should_generate_proxy_for_dependency_method_inherited_from_super_interface() throws Exception {
+        var auditedService = JavaFileObjects.forSourceString("external.AuditedService",
+                                                             """
+            package external;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface AuditedService {
+                Promise<String> auditLog(String entry);
+            }
+            """);
+
+        var stockQuery = JavaFileObjects.forSourceString("external.StockQuery",
+                                                         """
+            package external;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface StockQuery extends AuditedService {
+                Promise<Integer> stockOf(String productId);
+            }
+            """);
+
+        var externalService = JavaFileObjects.forSourceString("external.InventoryService",
+                                                              """
+            package external;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface InventoryService extends StockQuery {
+                Promise<Integer> checkStock(String productId);
+            }
+            """);
+
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import external.InventoryService;
+
+            @Slice
+            public interface OrderService {
+                Promise<String> placeOrder(String orderId);
+
+                static OrderService orderService(InventoryService inventory) {
+                    return null;
+                }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(auditedService);
+        sources.add(stockQuery);
+        sources.add(externalService);
+        sources.add(source);
+
+        Compilation compilation = javac()
+                                       .withProcessors(new SliceProcessor())
+                                       .compile(sources);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.OrderServiceFactory")
+                                        .get().getCharContent(false).toString();
+
+        // Declared method still proxied
+        assertThat(factoryContent).contains("MethodHandle<Integer, String> checkStockHandle");
+        // Direct super-interface method proxied
+        assertThat(factoryContent).contains("MethodHandle<Integer, String> stockOfHandle");
+        assertThat(factoryContent).contains("public Promise<Integer> stockOf(String productId)");
+        // Transitively inherited method proxied
+        assertThat(factoryContent).contains("MethodHandle<String, String> auditLogHandle");
+        assertThat(factoryContent).contains("public Promise<String> auditLog(String entry)");
+    }
+
+    /// #663: a generic super-interface's method must be proxied with the dependency's
+    /// actual type arguments (`lookup(K)` seen through `extends KeyedQuery<String>` is
+    /// `lookup(String)`), not with the raw type variable.
+    @Test
+    void should_substitute_type_arguments_for_generic_super_interface_dependency_method() throws Exception {
+        var keyedQuery = JavaFileObjects.forSourceString("external.KeyedQuery",
+                                                         """
+            package external;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface KeyedQuery<K> {
+                Promise<Integer> lookup(K key);
+            }
+            """);
+
+        var externalService = JavaFileObjects.forSourceString("external.InventoryService",
+                                                              """
+            package external;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface InventoryService extends KeyedQuery<String> {
+                Promise<Integer> checkStock(String productId);
+            }
+            """);
+
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import external.InventoryService;
+
+            @Slice
+            public interface OrderService {
+                Promise<String> placeOrder(String orderId);
+
+                static OrderService orderService(InventoryService inventory) {
+                    return null;
+                }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(keyedQuery);
+        sources.add(externalService);
+        sources.add(source);
+
+        Compilation compilation = javac()
+                                       .withProcessors(new SliceProcessor())
+                                       .compile(sources);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.OrderServiceFactory")
+                                        .get().getCharContent(false).toString();
+
+        assertThat(factoryContent).contains("MethodHandle<Integer, String> lookupHandle");
+        assertThat(factoryContent).contains("public Promise<Integer> lookup(String key)");
+    }
+
+    /// #663 × #612: an inherited non-Promise method must hit the same compile error as a
+    /// declared one — inheritance is not a hole in the #612 gate. The diagnostic names the
+    /// declaring interface (where the offending signature lives) and the dependency that
+    /// inherits it.
+    @Test
+    void should_fail_on_non_promise_dependency_method_inherited_from_super_interface() {
+        var legacyQuery = JavaFileObjects.forSourceString("external.LegacyQuery",
+                                                          """
+            package external;
+
+            public interface LegacyQuery {
+                String syncLookup(String id);
+            }
+            """);
+
+        var externalService = JavaFileObjects.forSourceString("external.InventoryService",
+                                                              """
+            package external;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface InventoryService extends LegacyQuery {
+                Promise<Integer> checkStock(String productId);
+            }
+            """);
+
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import external.InventoryService;
+
+            @Slice
+            public interface OrderService {
+                Promise<String> placeOrder(String orderId);
+
+                static OrderService orderService(InventoryService inventory) {
+                    return null;
+                }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(legacyQuery);
+        sources.add(externalService);
+        sources.add(source);
+
+        Compilation compilation = javac()
+                                       .withProcessors(new SliceProcessor())
+                                       .compile(sources);
+
+        assertCompilation(compilation).failed();
+        assertCompilation(compilation).hadErrorContaining("external.LegacyQuery.syncLookup returns java.lang.String");
+        assertCompilation(compilation).hadErrorContaining("must return Promise<T>");
+        assertCompilation(compilation).hadErrorContaining("inherited by dependency external.InventoryService");
+    }
+
+    /// #663: an override chain is ONE method — a signature declared in both the dependency
+    /// interface and its super-interface must produce exactly one proxy entry (the
+    /// subinterface's declaration wins). Two entries would generate a duplicate record
+    /// component. The pinned count is 2: one record component + one `invoke` call site.
+    @Test
+    void should_count_overridden_dependency_method_once() throws Exception {
+        var stockQuery = JavaFileObjects.forSourceString("external.StockQuery",
+                                                         """
+            package external;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface StockQuery {
+                Promise<Integer> checkStock(String productId);
+            }
+            """);
+
+        var externalService = JavaFileObjects.forSourceString("external.InventoryService",
+                                                              """
+            package external;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface InventoryService extends StockQuery {
+                @Override
+                Promise<Integer> checkStock(String productId);
+            }
+            """);
+
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import external.InventoryService;
+
+            @Slice
+            public interface OrderService {
+                Promise<String> placeOrder(String orderId);
+
+                static OrderService orderService(InventoryService inventory) {
+                    return null;
+                }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(stockQuery);
+        sources.add(externalService);
+        sources.add(source);
+
+        Compilation compilation = javac()
+                                       .withProcessors(new SliceProcessor())
+                                       .compile(sources);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.OrderServiceFactory")
+                                        .get().getCharContent(false).toString();
+        var occurrences = factoryContent.split("checkStockHandle", -1).length - 1;
+
+        assertThat(occurrences).isEqualTo(2);
+    }
+
+    /// #663 control: a flat dependency interface (no super-interfaces) generates exactly
+    /// the proxy record it generated before the super-interface walk — same components,
+    /// same declaration order.
+    @Test
+    void should_keep_flat_dependency_interface_proxy_unchanged() throws Exception {
+        var externalService = JavaFileObjects.forSourceString("external.InventoryService",
+                                                              """
+            package external;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface InventoryService {
+                Promise<Integer> checkStock(String productId);
+
+                Promise<String> nameOf(String productId);
+            }
+            """);
+
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import external.InventoryService;
+
+            @Slice
+            public interface OrderService {
+                Promise<String> placeOrder(String orderId);
+
+                static OrderService orderService(InventoryService inventory) {
+                    return null;
+                }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(externalService);
+        sources.add(source);
+
+        Compilation compilation = javac()
+                                       .withProcessors(new SliceProcessor())
+                                       .compile(sources);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.OrderServiceFactory")
+                                        .get().getCharContent(false).toString();
+
+        assertThat(factoryContent)
+                  .contains("record inventoryService(MethodHandle<Integer, String> checkStockHandle, "
+                           + "MethodHandle<String, String> nameOfHandle) implements InventoryService {");
+    }
+
+    /// #663 regression: a Java 9+ private super-interface instance method is neither static
+    /// nor default, so a modifier-skip filter let it into the scan; a private non-Promise
+    /// helper then drew a spurious #612 error for an interface that compiled before the
+    /// super-interface walk existed. Only ABSTRACT methods are proxy candidates.
+    @Test
+    void should_ignore_private_super_interface_helper_method() throws Exception {
+        var cachedQuery = JavaFileObjects.forSourceString("external.CachedQuery",
+                                                          """
+            package external;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface CachedQuery {
+                Promise<Integer> cachedLookup(String key);
+
+                private String cacheKey(String key) {
+                    return "cache:" + key;
+                }
+            }
+            """);
+
+        var externalService = JavaFileObjects.forSourceString("external.InventoryService",
+                                                              """
+            package external;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface InventoryService extends CachedQuery {
+                Promise<Integer> checkStock(String productId);
+            }
+            """);
+
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import external.InventoryService;
+
+            @Slice
+            public interface OrderService {
+                Promise<String> placeOrder(String orderId);
+
+                static OrderService orderService(InventoryService inventory) {
+                    return null;
+                }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(cachedQuery);
+        sources.add(externalService);
+        sources.add(source);
+
+        Compilation compilation = javac()
+                                       .withProcessors(new SliceProcessor())
+                                       .compile(sources);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.OrderServiceFactory")
+                                        .get().getCharContent(false).toString();
+
+        assertThat(factoryContent).contains("MethodHandle<Integer, String> cachedLookupHandle");
+        assertThat(factoryContent).doesNotContain("cacheKeyHandle");
+    }
+
+    /// #663 regression, the silent half: a private Promise-returning super-interface method
+    /// passed the modifier-skip filter and wrongly gained a record component + wiring + codec
+    /// entry — generated output changed for a previously-compiling slice. Private methods are
+    /// implementation detail; they never reach the proxy.
+    @Test
+    void should_not_proxy_private_promise_returning_super_interface_method() throws Exception {
+        var cachedQuery = JavaFileObjects.forSourceString("external.CachedQuery",
+                                                          """
+            package external;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface CachedQuery {
+                Promise<Integer> cachedLookup(String key);
+
+                private Promise<Integer> prefetch(String key) {
+                    return cachedLookup(key);
+                }
+            }
+            """);
+
+        var externalService = JavaFileObjects.forSourceString("external.InventoryService",
+                                                              """
+            package external;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface InventoryService extends CachedQuery {
+                Promise<Integer> checkStock(String productId);
+            }
+            """);
+
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import external.InventoryService;
+
+            @Slice
+            public interface OrderService {
+                Promise<String> placeOrder(String orderId);
+
+                static OrderService orderService(InventoryService inventory) {
+                    return null;
+                }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(cachedQuery);
+        sources.add(externalService);
+        sources.add(source);
+
+        Compilation compilation = javac()
+                                       .withProcessors(new SliceProcessor())
+                                       .compile(sources);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.OrderServiceFactory")
+                                        .get().getCharContent(false).toString();
+
+        assertThat(factoryContent).contains("MethodHandle<Integer, String> cachedLookupHandle");
+        assertThat(factoryContent).doesNotContain("prefetchHandle");
+    }
+
+    /// #663 regression: the Object-method exclusion must key on the TYPE, not its string
+    /// spelling — `equals(@Nullable Object)` (a TYPE_USE-annotated re-declaration) is still
+    /// Object's equals per JLS 9.2, but its parameter's toString carries the annotation and
+    /// escaped a string comparison, drawing a spurious #612 error.
+    @Test
+    void should_exclude_annotated_object_equals_redeclaration_from_dependency_scan() throws Exception {
+        var nullable = JavaFileObjects.forSourceString("external.Nullable",
+                                                       """
+            package external;
+
+            import java.lang.annotation.ElementType;
+            import java.lang.annotation.Retention;
+            import java.lang.annotation.RetentionPolicy;
+            import java.lang.annotation.Target;
+
+            @Target(ElementType.TYPE_USE)
+            @Retention(RetentionPolicy.CLASS)
+            public @interface Nullable {}
+            """);
+
+        var auditedQuery = JavaFileObjects.forSourceString("external.AuditedQuery",
+                                                           """
+            package external;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface AuditedQuery {
+                Promise<Integer> audit(String entry);
+
+                boolean equals(@Nullable Object other);
+            }
+            """);
+
+        var externalService = JavaFileObjects.forSourceString("external.InventoryService",
+                                                              """
+            package external;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface InventoryService extends AuditedQuery {
+                Promise<Integer> checkStock(String productId);
+            }
+            """);
+
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import external.InventoryService;
+
+            @Slice
+            public interface OrderService {
+                Promise<String> placeOrder(String orderId);
+
+                static OrderService orderService(InventoryService inventory) {
+                    return null;
+                }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(nullable);
+        sources.add(auditedQuery);
+        sources.add(externalService);
+        sources.add(source);
+
+        Compilation compilation = javac()
+                                       .withProcessors(new SliceProcessor())
+                                       .compile(sources);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.OrderServiceFactory")
+                                        .get().getCharContent(false).toString();
+
+        assertThat(factoryContent).contains("MethodHandle<Integer, String> auditHandle");
+        assertThat(factoryContent).doesNotContain("equalsHandle");
+    }
+
+    /// #663 pin: diamond tie-break is deterministic — when two super-interfaces both declare
+    /// the same signature, the winner follows extends-clause order (`getInterfaces()`), so
+    /// the FIRST listed super's declaration supplies the proxy method (observable through
+    /// its parameter name), and the signature yields exactly one record component.
+    @Test
+    void should_pick_first_extends_clause_declaration_for_diamond_dependency_method() throws Exception {
+        var alphaQuery = JavaFileObjects.forSourceString("external.AlphaQuery",
+                                                         """
+            package external;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface AlphaQuery {
+                Promise<Integer> lookup(String alphaKey);
+            }
+            """);
+
+        var betaQuery = JavaFileObjects.forSourceString("external.BetaQuery",
+                                                        """
+            package external;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface BetaQuery {
+                Promise<Integer> lookup(String betaKey);
+            }
+            """);
+
+        var externalService = JavaFileObjects.forSourceString("external.InventoryService",
+                                                              """
+            package external;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface InventoryService extends AlphaQuery, BetaQuery {
+                Promise<Integer> checkStock(String productId);
+            }
+            """);
+
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import external.InventoryService;
+
+            @Slice
+            public interface OrderService {
+                Promise<String> placeOrder(String orderId);
+
+                static OrderService orderService(InventoryService inventory) {
+                    return null;
+                }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(alphaQuery);
+        sources.add(betaQuery);
+        sources.add(externalService);
+        sources.add(source);
+
+        Compilation compilation = javac()
+                                       .withProcessors(new SliceProcessor())
+                                       .compile(sources);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.OrderServiceFactory")
+                                        .get().getCharContent(false).toString();
+
+        assertThat(factoryContent).contains("public Promise<Integer> lookup(String alphaKey)");
+        assertThat(factoryContent).doesNotContain("betaKey");
+
+        var occurrences = factoryContent.split("lookupHandle", -1).length - 1;
+
+        assertThat(occurrences).isEqualTo(2);
+    }
+
+    /// #663 pin: multi-level generic indirection — `KeyedQuery<K> extends BatchQuery<List<K>>`
+    /// with the dependency binding K=String means BatchQuery's `putAll(U)` must resolve as
+    /// `putAll(List<String>)`: `asMemberOf` composes the substitution U -> List<K> -> List<String>
+    /// across levels, not just a single direct binding.
+    @Test
+    void should_compose_substitution_across_generic_super_interface_levels() throws Exception {
+        var batchQuery = JavaFileObjects.forSourceString("external.BatchQuery",
+                                                         """
+            package external;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface BatchQuery<U> {
+                Promise<Integer> putAll(U items);
+            }
+            """);
+
+        var keyedQuery = JavaFileObjects.forSourceString("external.KeyedQuery",
+                                                         """
+            package external;
+
+            import java.util.List;
+            import org.pragmatica.lang.Promise;
+
+            public interface KeyedQuery<K> extends BatchQuery<List<K>> {
+                Promise<Integer> lookup(K key);
+            }
+            """);
+
+        var externalService = JavaFileObjects.forSourceString("external.InventoryService",
+                                                              """
+            package external;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface InventoryService extends KeyedQuery<String> {
+                Promise<Integer> checkStock(String productId);
+            }
+            """);
+
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import external.InventoryService;
+
+            @Slice
+            public interface OrderService {
+                Promise<String> placeOrder(String orderId);
+
+                static OrderService orderService(InventoryService inventory) {
+                    return null;
+                }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(batchQuery);
+        sources.add(keyedQuery);
+        sources.add(externalService);
+        sources.add(source);
+
+        Compilation compilation = javac()
+                                       .withProcessors(new SliceProcessor())
+                                       .compile(sources);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.OrderServiceFactory")
+                                        .get().getCharContent(false).toString();
+
+        assertThat(factoryContent).contains("public Promise<Integer> lookup(String key)");
+        assertThat(factoryContent).contains("putAll(List<java.lang.String> items)");
     }
 
     @Test
@@ -1152,6 +2112,187 @@ class SliceProcessorTest {
         assertThat(factoryContent).contains("ctx.resources().provide(DatabaseConnector.class, \"database.primary\")");
         assertThat(factoryContent).contains("record inventoryService(MethodHandle<");
         assertThat(factoryContent).contains("OrderRepository.orderRepository(db, inventory)");
+    }
+
+    // ========== Resource Type Argument Codec Derivation Tests ==========
+
+    /// A `DurableEntity<K, S>`-shaped resource: the state type crosses the serialization boundary
+    /// without ever appearing in a slice method signature, which is exactly the case the
+    /// method-walking codec sweep misses.
+    private static final JavaFileObject DURABLE_ENTITY = JavaFileObjects.forSourceString(
+            "test.infra.DurableEntity",
+            """
+            package test.infra;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface DurableEntity<K, S> {
+                Promise<S> create(K key, S initial);
+            }
+            """);
+
+    private static JavaFileObject entityQualifier(String name, String config) {
+        return JavaFileObjects.forSourceString("test.annotation." + name,
+                                               """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = test.infra.DurableEntity.class, config = "%s")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.PARAMETER)
+            public @interface %s {}
+            """.formatted(config, name));
+    }
+
+    @Test
+    void codec_generatesEntriesForRecordAndEnumTypeArguments_whenParameterIsResourceQualified() throws Exception {
+        var orderState = JavaFileObjects.forSourceString("test.state.OrderState",
+                                                         """
+            package test.state;
+            public record OrderState(String status, int amount) {}
+            """);
+        var auditLevel = JavaFileObjects.forSourceString("test.state.AuditLevel",
+                                                         """
+            package test.state;
+            public enum AuditLevel { OFF, FULL }
+            """);
+        var source = JavaFileObjects.forSourceString("test.EntitySlice",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.OrderEntity;
+            import test.annotation.AuditEntity;
+            import test.infra.DurableEntity;
+            import test.state.AuditLevel;
+            import test.state.OrderState;
+            @Slice
+            public interface EntitySlice {
+                Promise<String> create(String orderId);
+                static EntitySlice entitySlice(@OrderEntity DurableEntity<String, OrderState> orders,
+                                               @AuditEntity DurableEntity<String, AuditLevel> audit) { return null; }
+            }
+            """);
+
+        var sources = commonSources();
+
+        sources.add(DURABLE_ENTITY);
+        sources.add(entityQualifier("OrderEntity", "entities.orders"));
+        sources.add(entityQualifier("AuditEntity", "entities.audit"));
+        sources.add(orderState);
+        sources.add(auditLevel);
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.EntitySliceFactory")
+                                        .get().getCharContent(false).toString();
+
+        // The record state type gets a component-wise codec even though no method mentions it.
+        assertThat(factoryContent).contains("new SliceCodec.TypeCodec<test.state.OrderState>(test.state.OrderState.class");
+        assertThat(factoryContent).contains("codec.write(buf, val.status())");
+        assertThat(factoryContent).contains("return new test.state.OrderState(status, amount);");
+        // The enum state type gets the ordinal codec.
+        assertThat(factoryContent).contains("new SliceCodec.TypeCodec<test.state.AuditLevel>(test.state.AuditLevel.class");
+        assertThat(factoryContent).contains("test.state.AuditLevel.values()[SliceCodec.readCompact(buf)]");
+        // The String key is served by FrameworkCodecs, so no entry and no checklist for it.
+        assertThat(factoryContent).doesNotContain("java.lang.String.class");
+        assertThat(factoryContent).doesNotContain("Set.of(");
+    }
+
+    @Test
+    void codec_addsStartupChecklistEntry_whenResourceTypeArgumentCannotBeGenerated() throws Exception {
+        var opaqueState = JavaFileObjects.forSourceString("test.state.OpaqueState",
+                                                          """
+            package test.state;
+            public interface OpaqueState { String describe(); }
+            """);
+        var source = JavaFileObjects.forSourceString("test.EntitySlice",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.OrderEntity;
+            import test.infra.DurableEntity;
+            import test.state.OpaqueState;
+            @Slice
+            public interface EntitySlice {
+                Promise<String> create(String orderId);
+                static EntitySlice entitySlice(@OrderEntity DurableEntity<String, OpaqueState> orders) { return null; }
+            }
+            """);
+
+        var sources = commonSources();
+
+        sources.add(DURABLE_ENTITY);
+        sources.add(entityQualifier("OrderEntity", "entities.orders"));
+        sources.add(opaqueState);
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.EntitySliceFactory")
+                                        .get().getCharContent(false).toString();
+
+        // Nothing to generate for an interface — it goes on the startup checklist so slice load
+        // fails naming the type, instead of the first write failing with "No codec registered".
+        assertThat(factoryContent).contains("Set.of(test.state.OpaqueState.class));");
+        assertThat(factoryContent).doesNotContain("new SliceCodec.TypeCodec<test.state.OpaqueState>");
+        assertThat(factoryContent).contains("import java.util.Set;");
+    }
+
+    @Test
+    void codec_generatesNoEntries_whenResourceParameterHasNoTypeArguments() throws Exception {
+        var primaryDb = JavaFileObjects.forSourceString("test.annotation.PrimaryDb",
+                                                        """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = test.infra.DatabaseConnector.class, config = "database.primary")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.PARAMETER)
+            public @interface PrimaryDb {}
+            """);
+        var databaseConnector = JavaFileObjects.forSourceString("test.infra.DatabaseConnector",
+                                                                """
+            package test.infra;
+            import org.pragmatica.lang.Promise;
+            public interface DatabaseConnector { Promise<String> query(String sql); }
+            """);
+        var source = JavaFileObjects.forSourceString("test.OrderRepository",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.PrimaryDb;
+            import test.infra.DatabaseConnector;
+            @Slice
+            public interface OrderRepository {
+                Promise<String> findOrder(String orderId);
+                static OrderRepository orderRepository(@PrimaryDb DatabaseConnector db) { return null; }
+            }
+            """);
+
+        var sources = commonSources();
+
+        sources.add(primaryDb);
+        sources.add(databaseConnector);
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.OrderRepositoryFactory")
+                                        .get().getCharContent(false).toString();
+
+        // A raw resource contributes nothing; the codec override stays as it was before derivation.
+        assertThat(factoryContent).contains("return parent;");
+        assertThat(factoryContent).doesNotContain("Set.of(");
     }
 
     // ========== Duplicate Detection Tests ==========
@@ -2332,9 +3473,217 @@ class SliceProcessorTest {
         assertThat(factoryContent).contains("ctx.resources().provide(StreamAccess.class, \"streams.order-events\", ProvisioningContext.provisioningContext())");
     }
 
+    // ========== @PartitionKey Routing Tests (#507) ==========
+
+    private static JavaFileObject partitionedEvent(String body) {
+        return JavaFileObjects.forSourceString("test.dto.ShipmentEvent",
+                                               """
+            package test.dto;
+            import org.pragmatica.aether.slice.annotation.PartitionKey;
+            public record ShipmentEvent(%s) {}
+            """.formatted(body));
+    }
+
+    private static final JavaFileObject SHIPMENT_STREAM = JavaFileObjects.forSourceString("test.annotation.ShipmentStream",
+                                                                                           """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.StreamPublisher;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = StreamPublisher.class, config = "streams.shipments")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.PARAMETER)
+            public @interface ShipmentStream {}
+            """);
+
+    private static final JavaFileObject SHIPMENT_STREAM_ACCESS = JavaFileObjects.forSourceString("test.annotation.ShipmentStreamAccess",
+                                                                                                  """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.StreamAccess;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = StreamAccess.class, config = "streams.shipments")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.PARAMETER)
+            public @interface ShipmentStreamAccess {}
+            """);
+
+    private static final JavaFileObject SHIPMENT_PUBLISHER_SLICE = JavaFileObjects.forSourceString("test.ShipmentService",
+                                                                                                    """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.aether.slice.StreamPublisher;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.ShipmentStream;
+            import test.dto.ShipmentEvent;
+            @Slice
+            public interface ShipmentService {
+                Promise<String> ship(String shipmentId);
+                static ShipmentService shipmentService(@ShipmentStream StreamPublisher<ShipmentEvent> stream) { return null; }
+            }
+            """);
+
+    private static final JavaFileObject SHIPMENT_ACCESS_SLICE = JavaFileObjects.forSourceString("test.ShipmentAudit",
+                                                                                                 """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.aether.slice.StreamAccess;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.ShipmentStreamAccess;
+            import test.dto.ShipmentEvent;
+            @Slice
+            public interface ShipmentAudit {
+                Promise<String> audit(String shipmentId);
+                static ShipmentAudit shipmentAudit(@ShipmentStreamAccess StreamAccess<ShipmentEvent> access) { return null; }
+            }
+            """);
+
+    private Compilation compilePartitioned(JavaFileObject event, JavaFileObject qualifier, JavaFileObject slice) {
+        var sources = streamSources();
+
+        sources.add(event);
+        sources.add(qualifier);
+        sources.add(slice);
+
+        return javac().withProcessors(new SliceProcessor()).compile(sources);
+    }
+
     @Test
-    void should_process_stream_subscriber_method() throws Exception {
-        var orderConsumer = JavaFileObjects.forSourceString("test.annotation.OrderStreamConsumer",
+    void partitionKey_emitsKeyExtractorOnStreamPublisher_whenEventDeclaresOne() throws Exception {
+        var compilation = compilePartitioned(partitionedEvent("String shipmentId, @PartitionKey String customerId"),
+                                             SHIPMENT_STREAM,
+                                             SHIPMENT_PUBLISHER_SLICE);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.ShipmentServiceFactory")
+                                        .get().getCharContent(false).toString();
+
+        assertThat(factoryContent).contains("ctx.resources().provide(StreamPublisher.class, \"streams.shipments\", "
+                                           + "ProvisioningContext.provisioningContext()"
+                                           + ".withKeyExtractor((Fn1<String, ShipmentEvent>) ShipmentEvent::customerId))");
+        // The event type is import-tracked, so the emitted method reference stays unqualified.
+        assertThat(factoryContent).contains("import test.dto.ShipmentEvent;");
+        assertThat(factoryContent).doesNotContain("(Fn1<String, test.dto.ShipmentEvent>)");
+    }
+
+    @Test
+    void partitionKey_emitsKeyExtractorOnStreamAccess_whenEventDeclaresOne() throws Exception {
+        var compilation = compilePartitioned(partitionedEvent("String shipmentId, @PartitionKey String customerId"),
+                                             SHIPMENT_STREAM_ACCESS,
+                                             SHIPMENT_ACCESS_SLICE);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.ShipmentAuditFactory")
+                                        .get().getCharContent(false).toString();
+
+        assertThat(factoryContent).contains("ctx.resources().provide(StreamAccess.class, \"streams.shipments\", "
+                                           + "ProvisioningContext.provisioningContext()"
+                                           + ".withKeyExtractor((Fn1<String, ShipmentEvent>) ShipmentEvent::customerId))");
+    }
+
+    @Test
+    void partitionKey_selectsAnnotatedComponent_whenEventDeclaresSeveralComponents() throws Exception {
+        var compilation = compilePartitioned(partitionedEvent("String shipmentId, String region, @PartitionKey Long tenantId, String note"),
+                                             SHIPMENT_STREAM,
+                                             SHIPMENT_PUBLISHER_SLICE);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.ShipmentServiceFactory")
+                                        .get().getCharContent(false).toString();
+
+        assertThat(factoryContent).contains(".withKeyExtractor((Fn1<Long, ShipmentEvent>) ShipmentEvent::tenantId)");
+    }
+
+    @Test
+    void partitionKey_boxesPrimitiveKeyType_whenComponentIsPrimitive() throws Exception {
+        var compilation = compilePartitioned(partitionedEvent("String shipmentId, @PartitionKey long tenantId"),
+                                             SHIPMENT_STREAM,
+                                             SHIPMENT_PUBLISHER_SLICE);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.ShipmentServiceFactory")
+                                        .get().getCharContent(false).toString();
+        // Fn1's type argument rejects primitives, so the key type must be emitted boxed.
+        assertThat(factoryContent).contains(".withKeyExtractor((Fn1<Long, ShipmentEvent>) ShipmentEvent::tenantId)");
+        assertThat(factoryContent).doesNotContain("Fn1<long,");
+    }
+
+    @Test
+    void partitionKey_leavesProvisioningContextBare_whenEventDeclaresNone() throws Exception {
+        var compilation = compilePartitioned(partitionedEvent("String shipmentId, String customerId"),
+                                             SHIPMENT_STREAM,
+                                             SHIPMENT_PUBLISHER_SLICE);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.ShipmentServiceFactory")
+                                        .get().getCharContent(false).toString();
+
+        assertThat(factoryContent).contains("ctx.resources().provide(StreamPublisher.class, \"streams.shipments\", "
+                                           + "ProvisioningContext.provisioningContext())");
+        assertThat(factoryContent).doesNotContain("withKeyExtractor");
+    }
+
+    @Test
+    void partitionKey_failsCompilation_whenEventDeclaresMultiple() {
+        var compilation = compilePartitioned(partitionedEvent("@PartitionKey String shipmentId, @PartitionKey String customerId"),
+                                             SHIPMENT_STREAM,
+                                             SHIPMENT_PUBLISHER_SLICE);
+
+        assertCompilation(compilation).failed();
+        assertCompilation(compilation).hadErrorContaining("Multiple @PartitionKey annotations found on test.dto.ShipmentEvent");
+        assertCompilation(compilation).hadErrorContaining("shipmentId, customerId");
+    }
+
+    @Test
+    void partitionKey_leavesTopicPublisherBare_whenMessageDeclaresOne() throws Exception {
+        var message = JavaFileObjects.forSourceString("test.dto.OrderEvent",
+                                                      """
+            package test.dto;
+            import org.pragmatica.aether.slice.annotation.PartitionKey;
+            public record OrderEvent(@PartitionKey String orderId) {}
+            """);
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.aether.slice.Publisher;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.LegacyPublisher;
+            import test.dto.OrderEvent;
+            @Slice
+            public interface OrderService {
+                Promise<String> placeOrder(String orderId);
+                static OrderService orderService(@LegacyPublisher Publisher<OrderEvent> orderPublisher) { return null; }
+            }
+            """);
+        var sources = commonSources();
+
+        sources.add(PUBLISHER);
+        sources.add(SUBSCRIBER);
+        sources.add(message);
+        sources.add(publisherAnnotation("LegacyPublisher", "order-events"));
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.OrderServiceFactory")
+                                        .get().getCharContent(false).toString();
+        // Topics are unpartitioned — PublisherFactory never reads ProvisioningContext.keyExtractor(),
+        // so emitting one here would advertise routing that does not happen.
+        assertThat(factoryContent).contains("ctx.resources().provide(Publisher.class, \"order-events\", "
+                                           + "ProvisioningContext.provisioningContext())");
+        assertThat(factoryContent).doesNotContain("withKeyExtractor");
+    }
+
+    @Test
+    void should_process_stream_subscriber_method() throws Exception {        var orderConsumer = JavaFileObjects.forSourceString("test.annotation.OrderStreamConsumer",
                                                             """
             package test.annotation;
             import org.pragmatica.aether.slice.annotation.ResourceQualifier;
@@ -2510,11 +3859,11 @@ class SliceProcessorTest {
         assertThat(manifestFile.isPresent()).isTrue();
         var manifestContent = manifestFile.get().getCharContent(false).toString();
 
-        // Verify envelope version (bumped to 1007: value-object HTTP path/query segments now bind
-        // through the VO's ValueMapping — generated *Routes compose the framework String->P parser
-        // with the VO's lift, a lift failure yielding a typed 400 (#397). Earlier: 1006 typed pub/sub
-        // topicName from Topic<T> (#396); 1005 the full interleaved path with PathParameter.spacer).
-        assertThat(manifestContent).contains("envelope.version=1007");
+        // Verify envelope version: FROZEN at 1000 until GA (owner ruling 2026-07-18, #386) — the rc
+        // series is rebuild-together, so pre-GA envelope evolution rides without version bumps; the
+        // stamp is a membership-checked compatibility gate, not structural dispatch. Historical
+        // structure notes live on ManifestGenerator.ENVELOPE_FORMAT_VERSION.
+        assertThat(manifestContent).contains("envelope.version=1000");
 
         // Verify stream publisher metadata
         assertThat(manifestContent).contains("stream.publishers.count=1");
@@ -3040,6 +4389,451 @@ class SliceProcessorTest {
         assertThat(manifestContent).contains("reactive.0.messageType=test.dto.OrderEvent");
     }
 
+    /// #386 D5: the envelope context a durable subscriber may declare. Stubbed here exactly as the
+    /// other framework types are, so these pins do not wait on slice-api.
+    private static final JavaFileObject MESSAGE_CONTEXT = JavaFileObjects.forSourceString(
+            "org.pragmatica.aether.slice.topic.MessageContext",
+            """
+            package org.pragmatica.aether.slice.topic;
+
+            public record MessageContext(String messageId, String topic, int partition, long offset) {}
+            """);
+
+    private static final JavaFileObject CONTEXTUAL_EVENT = JavaFileObjects.forSourceString(
+            "org.pragmatica.aether.slice.topic.ContextualEvent",
+            """
+            package org.pragmatica.aether.slice.topic;
+
+            public record ContextualEvent(Object event, MessageContext context) {}
+            """);
+
+    private JavaFileObject orderTopicAnnotation() {
+        return JavaFileObjects.forSourceString("test.annotation.OrderTopic",
+                                               """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.Subscriber;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = Subscriber.class, config = "order-events")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.METHOD)
+            public @interface OrderTopic {}
+            """);
+    }
+
+    private JavaFileObject orderEventRecord() {
+        return JavaFileObjects.forSourceString("test.dto.OrderEvent",
+                                               """
+            package test.dto;
+            public record OrderEvent(String orderId) {}
+            """);
+    }
+
+    /// #386 D5 type-level honesty, exercised end-to-end through the processor. `resources.toml` is
+    /// unreadable in the in-memory compile-testing file manager, so durability here is always
+    /// UNDETERMINED rather than ephemeral — which is precisely the fail-closed case: absent evidence
+    /// of durability the context-carrying shape is refused rather than generated.
+    ///
+    /// Two consequences, both deliberate. The declared-ephemeral and declared-durable branches are
+    /// unreachable from this suite and are pinned directly in `MessageContextRuleTest`. And the
+    /// ACCEPTANCE half — the generated ContextualEvent adapter and the `reactive.N.context` manifest
+    /// key — is likewise unreachable here, so it is proven by real-compile fixtures in
+    /// slice-processor-tests, where the module compiles its own generated sources.
+    @Test
+    void should_reject_message_context_subscriber_when_durability_is_undetermined() {
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.aether.slice.topic.MessageContext;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.lang.Unit;
+            import test.annotation.OrderTopic;
+            import test.dto.OrderEvent;
+            @Slice
+            public interface OrderService {
+                @OrderTopic
+                Promise<Unit> onOrderPlaced(OrderEvent event, MessageContext context);
+                static OrderService orderService() { return null; }
+            }
+            """);
+
+        var sources = subscriberSources();
+        sources.add(MESSAGE_CONTEXT);
+        sources.add(CONTEXTUAL_EVENT);
+        sources.add(orderTopicAnnotation());
+        sources.add(orderEventRecord());
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+
+        assertCompilation(compilation).failed();
+        assertCompilation(compilation).hadErrorContaining("MessageContext requires a durable topic");
+    }
+
+    /// The refusal must name the REAL cause. Here the configuration could not be read, so reporting
+    /// the topic as ephemeral would send the author to fix a declaration that may already say
+    /// `durable`. The two causes must not be conflated (#386 ruling condition).
+    @Test
+    void should_report_unreadable_configuration_rather_than_claiming_ephemeral() {
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.aether.slice.topic.MessageContext;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.lang.Unit;
+            import test.annotation.OrderTopic;
+            import test.dto.OrderEvent;
+            @Slice
+            public interface OrderService {
+                @OrderTopic
+                Promise<Unit> onOrderPlaced(OrderEvent event, MessageContext context);
+                static OrderService orderService() { return null; }
+            }
+            """);
+
+        var sources = subscriberSources();
+        sources.add(MESSAGE_CONTEXT);
+        sources.add(CONTEXTUAL_EVENT);
+        sources.add(orderTopicAnnotation());
+        sources.add(orderEventRecord());
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+
+        assertCompilation(compilation).hadErrorContaining("could not be read");
+        assertCompilation(compilation).hadErrorContaining("refused rather than assumed");
+        assertCompilation(compilation).hadErrorContaining("order-events");
+    }
+
+    /// A second parameter that is not the envelope context is not the D5 shape — it is an ordinary
+    /// arity error, and must stay one rather than being waved through by the new branch.
+    @Test
+    void should_reject_two_arg_subscriber_whose_second_param_is_not_message_context() {
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.lang.Unit;
+            import test.annotation.OrderTopic;
+            import test.dto.OrderEvent;
+            @Slice
+            public interface OrderService {
+                @OrderTopic
+                Promise<Unit> onOrderPlaced(OrderEvent event, String trailer);
+                static OrderService orderService() { return null; }
+            }
+            """);
+
+        var sources = subscriberSources();
+        sources.add(MESSAGE_CONTEXT);
+        sources.add(orderTopicAnnotation());
+        sources.add(orderEventRecord());
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+
+        assertCompilation(compilation).failed();
+        assertCompilation(compilation).hadErrorContaining("must have exactly one parameter");
+    }
+
+    /// A same-named `MessageContext` from another package is a business parameter, not the envelope
+    /// context: detection matches the exact FQN, so this stays an arity error.
+    @Test
+    void should_reject_two_arg_subscriber_with_lookalike_message_context() {
+        var lookalike = JavaFileObjects.forSourceString("test.dto.MessageContext",
+                                                        """
+            package test.dto;
+            public record MessageContext(String messageId) {}
+            """);
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.lang.Unit;
+            import test.annotation.OrderTopic;
+            import test.dto.MessageContext;
+            import test.dto.OrderEvent;
+            @Slice
+            public interface OrderService {
+                @OrderTopic
+                Promise<Unit> onOrderPlaced(OrderEvent event, MessageContext context);
+                static OrderService orderService() { return null; }
+            }
+            """);
+
+        var sources = subscriberSources();
+        sources.add(lookalike);
+        sources.add(orderTopicAnnotation());
+        sources.add(orderEventRecord());
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+
+        assertCompilation(compilation).failed();
+        assertCompilation(compilation).hadErrorContaining("must have exactly one parameter");
+    }
+
+    /// Leading indentation is not the subject of these comparisons — the emitted text is. Stripping
+    /// it lets an expected block be written as a readable text block while still comparing the WHOLE
+    /// contiguous emission rather than a handful of substrings that could each stay green while
+    /// something new appeared beside them.
+    private static String strippedLines(String text) {
+        return text.lines()
+                   .map(String::strip)
+                   .filter(line -> !line.isEmpty())
+                   .collect(Collectors.joining("\n"));
+    }
+
+    /// The 1-arg subscriber path must be untouched by D5. This compares the COMPLETE emitted
+    /// `SliceMethod` entry and the COMPLETE delegate override, contiguously, rather than probing for
+    /// fragments. It is an equality-grade claim about those blocks modulo indentation — not the
+    /// literal byte-for-byte claim, which four substring assertions never supported.
+    @Test
+    void should_leave_single_arg_subscriber_adapter_unchanged() throws Exception {
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.lang.Unit;
+            import test.annotation.OrderTopic;
+            import test.dto.OrderEvent;
+            @Slice
+            public interface OrderService {
+                @OrderTopic
+                Promise<Unit> onOrderPlaced(OrderEvent event);
+                static OrderService orderService() { return null; }
+            }
+            """);
+
+        var sources = subscriberSources();
+        sources.add(MESSAGE_CONTEXT);
+        sources.add(CONTEXTUAL_EVENT);
+        sources.add(orderTopicAnnotation());
+        sources.add(orderEventRecord());
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.OrderServiceFactory")
+                                        .get().getCharContent(false).toString();
+
+        assertThat(strippedLines(factoryContent)).contains(strippedLines("""
+                new SliceMethod<>(
+                    MethodName.methodName("onOrderPlaced").expect("method name literal: onOrderPlaced"),
+                    delegate::onOrderPlaced,
+                    new TypeToken<Unit>() {},
+                    new TypeToken<OrderEvent>() {}
+                )"""));
+        assertThat(strippedLines(factoryContent)).contains(strippedLines("""
+                @Override
+                public Promise<Unit> onOrderPlaced(OrderEvent event) {
+                    return delegate.onOrderPlaced(event);
+                }"""));
+        assertThat(factoryContent).doesNotContain("ContextualEvent");
+        assertThat(factoryContent).doesNotContain("contextual ->");
+
+        var manifestContent = compilation.generatedFile(StandardLocation.CLASS_OUTPUT,
+                                                        "META-INF/slice/OrderService.manifest")
+                                         .get().getCharContent(false).toString();
+
+        assertThat(manifestContent).contains("reactive.0.category=subscription");
+        assertThat(manifestContent).contains("reactive.0.messageType=test.dto.OrderEvent");
+        assertThat(manifestContent).doesNotContain("context=message");
+        assertThat(manifestContent).doesNotContain("MessageContext");
+    }
+
+    /// The manifest addition is additive only: the envelope format stays frozen at 1000 (#386
+    /// no-bump ruling), so an older runtime keeps reading manifests it already understands.
+    @Test
+    void should_keep_envelope_version_frozen_for_single_arg_subscriber() throws Exception {
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.lang.Unit;
+            import test.annotation.OrderTopic;
+            import test.dto.OrderEvent;
+            @Slice
+            public interface OrderService {
+                @OrderTopic
+                Promise<Unit> onOrderPlaced(OrderEvent event);
+                static OrderService orderService() { return null; }
+            }
+            """);
+
+        var sources = subscriberSources();
+        sources.add(orderTopicAnnotation());
+        sources.add(orderEventRecord());
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        var manifestContent = compilation.generatedFile(StandardLocation.CLASS_OUTPUT,
+                                                        "META-INF/slice/OrderService.manifest")
+                                         .get().getCharContent(false).toString();
+
+        assertThat(manifestContent).contains("envelope.version=1000");
+    }
+
+    /// A context-carrying handler cannot also be intercepted: the interceptor chain is typed
+    /// `Fn1<Promise<Unit>, T>` on the payload alone, so there is nowhere to put the context. Left
+    /// ungated the generator emits a wrapper that does not implement the declared two-argument
+    /// signature — a javac error inside generated code. Refusing it names the real problem.
+    @Test
+    void should_reject_message_context_subscriber_carrying_interceptors() {
+        var withRetry = JavaFileObjects.forSourceString("test.annotation.WithRetry",
+                                                        """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.MethodInterceptor;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = MethodInterceptor.class, config = "retry.orders")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.METHOD)
+            public @interface WithRetry {}
+            """);
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.aether.slice.topic.MessageContext;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.lang.Unit;
+            import test.annotation.OrderTopic;
+            import test.annotation.WithRetry;
+            import test.dto.OrderEvent;
+            @Slice
+            public interface OrderService {
+                @OrderTopic
+                @WithRetry
+                Promise<Unit> onOrderPlaced(OrderEvent event, MessageContext context);
+                static OrderService orderService() { return null; }
+            }
+            """);
+
+        var sources = subscriberSources();
+        sources.add(MESSAGE_CONTEXT);
+        sources.add(CONTEXTUAL_EVENT);
+        sources.add(withRetry);
+        sources.add(orderTopicAnnotation());
+        sources.add(orderEventRecord());
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+
+        assertCompilation(compilation).failed();
+        assertCompilation(compilation).hadErrorContaining("cannot carry the delivery context");
+    }
+
+    /// The SCOPE case, and the one my first interceptor test could not see: the interceptor is on a
+    /// DIFFERENT method. The wrapper record is generated per slice (any method carrying an
+    /// interceptor) and then walks every method, so it drags the context-carrying handler through a
+    /// payload-typed function anyway. Ungated this emitted a 1-arg override inside a record declared
+    /// `implements OrderService`, plus `Fn1<Promise<Unit>, OrderEvent> = impl::onOrderPlaced` against
+    /// a two-argument method — non-compiling generated code the author never wrote.
+    @Test
+    void should_reject_message_context_subscriber_when_interceptor_is_on_another_method() {
+        var withRetry = JavaFileObjects.forSourceString("test.annotation.WithRetry",
+                                                        """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.MethodInterceptor;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = MethodInterceptor.class, config = "retry.orders")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.METHOD)
+            public @interface WithRetry {}
+            """);
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.aether.slice.topic.MessageContext;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.lang.Unit;
+            import test.annotation.OrderTopic;
+            import test.annotation.WithRetry;
+            import test.dto.OrderEvent;
+            @Slice
+            public interface OrderService {
+                @WithRetry
+                Promise<String> placeOrder(String orderId);
+
+                @OrderTopic
+                Promise<Unit> onOrderPlaced(OrderEvent event, MessageContext context);
+
+                static OrderService orderService() { return null; }
+            }
+            """);
+
+        var sources = subscriberSources();
+        sources.add(MESSAGE_CONTEXT);
+        sources.add(CONTEXTUAL_EVENT);
+        sources.add(withRetry);
+        sources.add(orderTopicAnnotation());
+        sources.add(orderEventRecord());
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+
+        assertCompilation(compilation).failed();
+        assertCompilation(compilation).hadErrorContaining("does not have to be on this handler");
+    }
+
+    /// The SILENT one. A slice depending on another slice whose interface declares a context-carrying
+    /// method used to generate cleanly: the proxy synthesized `dep_OnOrderPlacedRequest(OrderEvent,
+    /// MessageContext)` and a MethodHandle over it — a type the runtime is told to serialize that no
+    /// publisher will ever send, and a call a caller could only make by fabricating a context.
+    /// Nothing failed, which is why it needed finding rather than waiting for.
+    @Test
+    void should_reject_slice_dependency_method_taking_message_context() {
+        var listener = JavaFileObjects.forSourceString("test.dep.OrderListener",
+                                                        """
+            package test.dep;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.aether.slice.topic.MessageContext;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.lang.Unit;
+            import test.dto.OrderEvent;
+            @Slice
+            public interface OrderListener {
+                Promise<Unit> onOrderPlaced(OrderEvent event, MessageContext context);
+                static OrderListener orderListener() { return null; }
+            }
+            """);
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import test.dep.OrderListener;
+            @Slice
+            public interface OrderService {
+                Promise<String> placeOrder(String orderId);
+                static OrderService orderService(OrderListener listener) { return null; }
+            }
+            """);
+
+        var sources = subscriberSources();
+        sources.add(MESSAGE_CONTEXT);
+        sources.add(CONTEXTUAL_EVENT);
+        sources.add(orderEventRecord());
+        sources.add(listener);
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+
+        assertCompilation(compilation).failed();
+        assertCompilation(compilation).hadErrorContaining("not remotely invocable");
+    }
+
     @Test
     void should_include_transitive_methods_in_slice_adapter() throws Exception {
         var orderTopic = JavaFileObjects.forSourceString("test.annotation.OrderTopic",
@@ -3449,7 +5243,7 @@ class SliceProcessorTest {
                                   .get().getCharContent(false).toString();
         assertThat(manifest).contains("publish.topic.0.topicName=order-events");
         assertThat(manifest).contains("publish.topic.0.config=order-events");
-        assertThat(manifest).contains("envelope.version=1007");
+        assertThat(manifest).contains("envelope.version=1000");
     }
 
     @Test
@@ -3597,5 +5391,92 @@ class SliceProcessorTest {
                                         .get().getCharContent(false).toString();
         assertThat(factoryContent).contains("ctx.resources().provide(Publisher.class, \"order-events\", ProvisioningContext.provisioningContext())");
         assertThat(factoryContent).doesNotContain("TypedPublisher");
+    }
+
+    // ========== Interceptor Config Section Tests ==========
+
+    private static JavaFileObject interceptorAnnotation(String simpleName, String config) {
+        return JavaFileObjects.forSourceString("test.annotation." + simpleName,
+                                               """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.MethodInterceptor;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = MethodInterceptor.class, config = "%s")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.METHOD)
+            public @interface %s {}
+            """.formatted(config, simpleName));
+    }
+
+    private static JavaFileObject interceptedSlice(String... annotationNames) {
+        var annotations = Arrays.stream(annotationNames)
+                                .map(name -> "    @" + name)
+                                .collect(Collectors.joining("\n"));
+        var imports = Arrays.stream(annotationNames)
+                            .map(name -> "import test.annotation." + name + ";")
+                            .collect(Collectors.joining("\n"));
+
+        return JavaFileObjects.forSourceString("test.SeatService",
+                                               """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            %s
+            @Slice
+            public interface SeatService {
+            %s
+                Promise<String> findSeat(String seatId);
+                static SeatService seatService() { return null; }
+            }
+            """.formatted(imports, annotations));
+    }
+
+    @Test
+    void interceptorConfig_sanitizesIdentifier_forHyphenatedSection() throws Exception {
+        var sources = commonSources();
+        sources.add(interceptorAnnotation("Cached", "cache.availability.seat-status"));
+        sources.add(interceptedSlice("Cached"));
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+
+        assertCompilation(compilation).succeeded();
+        var factoryContent = compilation.generatedSourceFile("test.SeatServiceFactory")
+                                        .get().getCharContent(false).toString();
+        assertThat(factoryContent).contains("ctx.resources().provide(MethodInterceptor.class, \"cache.availability.seat-status\")");
+        assertThat(factoryContent).contains("methodInterceptor_cache_availability_seat_status");
+        assertThat(factoryContent).doesNotContain("methodInterceptor_cache_availability_seat-status");
+    }
+
+    @Test
+    void interceptorConfig_keepsDottedIdentifierForm_forConventionalSection() throws Exception {
+        var sources = commonSources();
+        sources.add(interceptorAnnotation("Cached", "cache.availability"));
+        sources.add(interceptedSlice("Cached"));
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+
+        assertCompilation(compilation).succeeded();
+        var factoryContent = compilation.generatedSourceFile("test.SeatServiceFactory")
+                                        .get().getCharContent(false).toString();
+        assertThat(factoryContent).contains("methodInterceptor_cache_availability.intercept(impl::findSeat)");
+    }
+
+    @Test
+    void interceptorConfig_issuesDistinctIdentifiers_whenSectionsDifferOnlyBySeparator() throws Exception {
+        var sources = commonSources();
+        sources.add(interceptorAnnotation("Hyphenated", "cache.seat-status"));
+        sources.add(interceptorAnnotation("Underscored", "cache.seat_status"));
+        sources.add(interceptedSlice("Hyphenated", "Underscored"));
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+
+        assertCompilation(compilation).succeeded();
+        var factoryContent = compilation.generatedSourceFile("test.SeatServiceFactory")
+                                        .get().getCharContent(false).toString();
+        assertThat(factoryContent).contains("ctx.resources().provide(MethodInterceptor.class, \"cache.seat-status\")");
+        assertThat(factoryContent).contains("ctx.resources().provide(MethodInterceptor.class, \"cache.seat_status\")");
+        assertThat(factoryContent).contains("methodInterceptor_cache_seat_status_2");
+        assertThat(factoryContent).contains("methodInterceptor_cache_seat_status.intercept(methodInterceptor_cache_seat_status_2.intercept(impl::findSeat))");
     }
 }

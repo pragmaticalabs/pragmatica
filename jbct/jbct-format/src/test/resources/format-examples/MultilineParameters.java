@@ -55,11 +55,11 @@ public class MultilineParameters {
 
     interface ReferralCode {}
 
-    interface ValidRequest {
+    class ValidRequest {
         ValidRequest(Object... args) {}
     }
 
-    interface Response {
+    class Response {
         Response(Object... args) {}
     }
 

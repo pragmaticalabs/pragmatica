@@ -1,13 +1,5 @@
 package org.pragmatica.jbct.lint.cst.rules;
 
-import org.pragmatica.jbct.lint.Diagnostic;
-import org.pragmatica.jbct.lint.LintContext;
-import org.pragmatica.jbct.lint.cst.CstLintRule;
-import org.pragmatica.jbct.parser.Cursor;
-import org.pragmatica.jbct.parser.CstNodes;
-import org.pragmatica.jbct.parser.RuleKind;
-import org.pragmatica.lang.Option;
-
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -15,25 +7,37 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import org.pragmatica.jbct.lint.Diagnostic;
+import org.pragmatica.jbct.lint.LintContext;
+import org.pragmatica.jbct.lint.cst.CstLintRule;
+import org.pragmatica.jbct.lint.cst.filetype.FileTypeClassifier;
+import org.pragmatica.jbct.parser.Cursor;
+import org.pragmatica.jbct.parser.CstNodes;
+import org.pragmatica.jbct.parser.RuleKind;
+import org.pragmatica.lang.Option;
+
 import static org.pragmatica.jbct.parser.CstNodes.*;
+
 
 /// JBCT-VO-01: Value objects need a factory method (returning T, Option<T>, or Result<T>).
 public class CstValueObjectFactoryRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-VO-01";
-
     private static final Pattern RECORD_NAME_PATTERN = Pattern.compile("\\brecord\\s+(\\w+)");
     private static final Pattern INTERFACE_NAME_PATTERN = Pattern.compile("\\binterface\\s+(\\w+)");
     private static final Pattern IDENTIFIER_PATTERN = Pattern.compile("\\b([A-Za-z_$][A-Za-z0-9_$]*)\\b");
     private static final Pattern METHOD_NAME_PATTERN = Pattern.compile("\\b([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*\\(");
-    private static final Pattern ANNOTATION_SIMPLE_NAME_PATTERN =
-        Pattern.compile("@\\s*(?:[A-Za-z_$][\\w$]*\\s*\\.\\s*)*([A-Za-z_$][\\w$]*)");
 
     /// Records nested in an interface carrying one of these annotations are framework shapes,
     /// not domain value objects: @Slice transport/stage/fact records and @PgSql row records.
-    /// Both are factory-less by design. (@ResourceQualifier fact records that live in their own
-    /// top-level file carry no per-file marker tying them to the qualifier — that linkage is
-    /// cross-file — so they are not detectable here; nested-in-@Slice fact records are covered.)
+    /// Both are factory-less by design. (A fact record living in its OWN top-level file has no
+    /// annotation tying it to its @ResourceQualifier subscription — that linkage is cross-file —
+    /// but it does carry an in-file marker: a `Topic<Self>` constant, see [#declaresSelfTopic].)
     private static final Set<String> FRAMEWORK_SHAPE_ANNOTATIONS = Set.of("Slice", "PgSql");
+
+    /// A pub-sub fact record's marker constant: `static final Topic<Self> TOPIC = Topic.of(...)`.
+    /// Group 1 is the topic's payload type, which must be the DECLARING record — a `Topic<Other>`
+    /// constant makes the record a publisher's holder, not the fact itself, and is not exempt.
+    private static final Pattern TOPIC_TYPE_PATTERN = Pattern.compile("(?:[A-Za-z_$][\\w$]*\\s*\\.\\s*)*Topic\\s*<\\s*([A-Za-z_$][\\w$]*)\\s*>");
 
     @Override
     public String ruleId() {
@@ -45,15 +49,17 @@ public class CstValueObjectFactoryRule implements CstLintRule {
         if (!ctx.shouldLint(packageName(root))) {
             return Stream.empty();
         }
+
         var sealedInterfaceNames = collectSealedInterfaceNames(root);
         // Check records
         return findAllRecords(root).stream()
-                      .filter(record -> needsFactoryMethod(root, record, sealedInterfaceNames))
-                      .map(record -> createDiagnostic(record, ctx));
+                             .filter(record -> needsFactoryMethod(root, record, sealedInterfaceNames))
+                             .map(record -> createDiagnostic(record, ctx));
     }
 
     private boolean needsFactoryMethod(Cursor root, Cursor record, Set<String> sealedInterfaceNames) {
         var recordName = extractRecordName(record);
+
         if (recordName.isEmpty()) return false;
         // Skip 'unused' records (sealed interface utility pattern marker)
         if ("unused".equals(recordName)) return false;
@@ -66,41 +72,68 @@ public class CstValueObjectFactoryRule implements CstLintRule {
         // Skip records nested in a framework-shape interface — @Slice transport/stage/fact records
         // and @PgSql row records are factory-less by design.
         if (nestedInFrameworkShapeInterface(root, record)) return false;
+        // Skip pub-sub fact records — a Topic<Self> constant is the fact's own in-file marker.
+        if (declaresSelfTopic(root, record, recordName)) return false;
         // Skip builder-pattern records (have with*() methods returning Self)
         if (hasBuilderMethods(record, recordName)) return false;
         // Skip local records defined inside methods (implementation records, not value objects)
         if (isLocalRecord(root, record)) return false;
         // Check for factory returning Result<T>, Option<T>, or T
         var recordText = text(record);
-        var hasResultFactory = recordText.contains("Result<" + recordName + ">")
-                               || recordText.contains("Result<" + recordName + " ")
-                               || recordText.contains("Result<" + recordName + "<");
-        var hasOptionFactory = recordText.contains("Option<" + recordName + ">")
-                               || recordText.contains("Option<" + recordName + " ")
-                               || recordText.contains("Option<" + recordName + "<");
+        var hasResultFactory = recordText.contains("Result<" + recordName + ">") || recordText.contains("Result<" + recordName
+                                                                                                       + " ") || recordText.contains("Result<" + recordName
+                                                                                                                                    + "<");
+        var hasOptionFactory = recordText.contains("Option<" + recordName + ">") || recordText.contains("Option<" + recordName
+                                                                                                       + " ") || recordText.contains("Option<" + recordName
+                                                                                                                                    + "<");
         var hasPlainFactory = recordText.contains("static " + recordName + " ");
-        return !hasResultFactory && !hasOptionFactory && !hasPlainFactory;
+
+        return ! hasResultFactory
+               && !hasOptionFactory
+               && !hasPlainFactory;
     }
 
     private boolean implementsEnclosingInterface(Cursor root, Cursor record) {
-        var implementedNames = childByRule(record, RuleKind.RECORD_DECL)
-                                          .flatMap(rd -> childByRule(rd, RuleKind.IMPLEMENTS_CLAUSE))
+        var implementedNames = childByRule(record, RuleKind.RECORD_DECL).flatMap(rd -> childByRule(rd,
+                                                                                                   RuleKind.IMPLEMENTS_CLAUSE))
                                           .map(this::extractImplementedNames)
                                           .or(Set.of());
+
         if (implementedNames.isEmpty()) return false;
         // Find the nearest enclosing TypeKind that is an interface
-        return findAncestor(root, record, RuleKind.TYPE_KIND)
-                          .filter(tk -> hasChildOfRule(tk, RuleKind.INTERFACE_DECL))
-                          .map(iface -> extractInterfaceNameFromTypeKind(iface))
-                          .filter(name -> !name.isEmpty())
-                          .map(implementedNames::contains)
-                          .or(false);
+        return findAncestor(root, record, RuleKind.TYPE_KIND).filter(tk -> hasChildOfRule(tk, RuleKind.INTERFACE_DECL))
+                           .map(iface -> extractInterfaceNameFromTypeKind(iface))
+                           .filter(name -> !name.isEmpty())
+                           .map(implementedNames::contains)
+                           .or(false);
     }
 
     private boolean isLocalRecord(Cursor root, Cursor record) {
-        return findAncestor(root, record, RuleKind.MEMBER)
-                          .filter(CstNodes::isMethodMember)
-                          .isPresent();
+        return FileTypeClassifier.isLocalDeclaration(root, record);
+    }
+
+    /// Whether the record declares a `Topic` constant parameterized by ITSELF — the pub-sub fact
+    /// contract (`public static final Topic<SeatReleased> TOPIC = Topic.of(...)` inside
+    /// `SeatReleased`). Such a record is a message on a topic, published and consumed through the
+    /// slice runtime rather than constructed by a validating factory (#647). Only constants
+    /// declared DIRECTLY by the record count, so a nested type's topic does not exempt its outer.
+    private boolean declaresSelfTopic(Cursor root, Cursor record, String recordName) {
+        return findAll(record, CstNodes::isFieldDecl).stream()
+                     .filter(field -> FileTypeClassifier.directlyEncloses(root, record, field))
+                     .anyMatch(field -> isSelfTopicConstant(field, recordName));
+    }
+
+    private boolean isSelfTopicConstant(Cursor field, String recordName) {
+        return childByRule(field, RuleKind.TYPE).map(CstNodes::tokenText)
+                          .map(type -> isTopicOf(type, recordName))
+                          .or(false);
+    }
+
+    private boolean isTopicOf(String typeText, String recordName) {
+        var matcher = TOPIC_TYPE_PATTERN.matcher(typeText.trim());
+
+        return matcher.matches() && matcher.group(1)
+                                           .equals(recordName);
     }
 
     /// A record nested inside an interface annotated with a framework-shape annotation
@@ -108,10 +141,9 @@ public class CstValueObjectFactoryRule implements CstLintRule {
     /// Detection is purely syntactic: the annotation is a direct child of the enclosing
     /// interface's holder node, a sibling of its TypeKind (grammar: `Annotation* Modifier* TypeKind`).
     private boolean nestedInFrameworkShapeInterface(Cursor root, Cursor record) {
-        return findAncestorPath(root, record)
-                          .flatMap(this::enclosingInterfaceAnnotationHolder)
-                          .map(this::declaresFrameworkShapeAnnotation)
-                          .or(false);
+        return findAncestorPath(root, record).flatMap(this::enclosingInterfaceAnnotationHolder)
+                               .map(this::declaresFrameworkShapeAnnotation)
+                               .or(false);
     }
 
     /// Parent node (TypeDecl/ClassMember) of the nearest enclosing interface's TypeKind — it holds
@@ -119,53 +151,50 @@ public class CstValueObjectFactoryRule implements CstLintRule {
     private Option<Cursor> enclosingInterfaceAnnotationHolder(List<Cursor> path) {
         for (int i = path.size() - 2; i >= 1; i--) {
             var node = path.get(i);
+
             if (isRule(node, RuleKind.TYPE_KIND) && hasChildOfRule(node, RuleKind.INTERFACE_DECL)) {
                 return Option.some(path.get(i - 1));
             }
         }
+
         return Option.none();
     }
 
     private boolean declaresFrameworkShapeAnnotation(Cursor annotationHolder) {
         return childrenByRule(annotationHolder, RuleKind.ANNOTATION).stream()
-                          .map(this::annotationSimpleName)
-                          .anyMatch(FRAMEWORK_SHAPE_ANNOTATIONS::contains);
-    }
-
-    /// Simple name of an annotation, robust to import vs FQN forms (`@Slice` and
-    /// `@org.pragmatica.aether.slice.annotation.Slice` both yield `Slice`).
-    private String annotationSimpleName(Cursor annotation) {
-        var matcher = ANNOTATION_SIMPLE_NAME_PATTERN.matcher(text(annotation));
-        return matcher.find() ? matcher.group(1) : "";
+                             .map(CstNodes::annotationSimpleName)
+                             .anyMatch(FRAMEWORK_SHAPE_ANNOTATIONS::contains);
     }
 
     private boolean hasNoComponents(Cursor record) {
         // record cursor is TypeKind wrapping RecordDecl; RecordComponents is a child of RecordDecl.
-        return childByRule(record, RuleKind.RECORD_DECL)
-                          .flatMap(rd -> childByRule(rd, RuleKind.RECORD_COMPONENTS))
+        return childByRule(record, RuleKind.RECORD_DECL).flatMap(rd -> childByRule(rd, RuleKind.RECORD_COMPONENTS))
                           .map(rc -> childrenByRule(rc, RuleKind.RECORD_COMP).isEmpty())
                           .or(true);
     }
 
     private boolean hasBuilderMethods(Cursor record, String recordName) {
         return findAllMethods(record).stream()
-                      .anyMatch(method -> isWithMethodReturningSelf(method, recordName));
+                             .anyMatch(method -> isWithMethodReturningSelf(method, recordName));
     }
 
     private boolean isWithMethodReturningSelf(Cursor method, String recordName) {
-        var methodText = text(method);
+        var methodText = memberDeclText(method);
         var nameMatcher = METHOD_NAME_PATTERN.matcher(methodText);
+
         if (!nameMatcher.find()) return false;
+
         var methodName = nameMatcher.group(1);
+
         if (!methodName.startsWith("with")) return false;
+
         return methodReturnType(method).map(type -> text(type).trim())
-                          .map(recordName::equals)
-                          .or(false);
+                               .map(recordName::equals)
+                               .or(false);
     }
 
     private boolean implementsSealedInterface(Cursor record, Set<String> sealedInterfaceNames) {
-        return childByRule(record, RuleKind.RECORD_DECL)
-                          .flatMap(rd -> childByRule(rd, RuleKind.IMPLEMENTS_CLAUSE))
+        return childByRule(record, RuleKind.RECORD_DECL).flatMap(rd -> childByRule(rd, RuleKind.IMPLEMENTS_CLAUSE))
                           .map(this::extractImplementedNames)
                           .or(Set.of())
                           .stream()
@@ -175,12 +204,15 @@ public class CstValueObjectFactoryRule implements CstLintRule {
     private Set<String> extractImplementedNames(Cursor implementsClause) {
         var matcher = IDENTIFIER_PATTERN.matcher(text(implementsClause));
         var names = new java.util.HashSet<String>();
+
         while (matcher.find()) {
             var token = matcher.group(1);
+
             if (!"implements".equals(token)) {
                 names.add(token);
             }
         }
+
         return names;
     }
 
@@ -188,10 +220,9 @@ public class CstValueObjectFactoryRule implements CstLintRule {
         // Check both top-level TypeDecl and nested ClassMember nodes for sealed interfaces.
         // In v6 modifiers are tokens (not CST children), so we detect 'sealed' textually
         // restricted to the head of the declaration (before the first '{').
-        var fromTypeDecls = findAll(root, RuleKind.TYPE_DECL).stream()
-                                   .filter(this::hasSealedModifier);
-        var fromClassMembers = findAll(root, RuleKind.CLASS_MEMBER).stream()
-                                      .filter(this::hasSealedModifier);
+        var fromTypeDecls = findAll(root, RuleKind.TYPE_DECL).stream().filter(this::hasSealedModifier);
+        var fromClassMembers = findAll(root, CstNodes::isMemberWrapper).stream().filter(this::hasSealedModifier);
+
         return Stream.concat(fromTypeDecls, fromClassMembers)
                      .filter(node -> containsInterface(node))
                      .map(this::extractInterfaceName)
@@ -202,39 +233,58 @@ public class CstValueObjectFactoryRule implements CstLintRule {
     private boolean hasSealedModifier(Cursor node) {
         var declText = text(node);
         var headEnd = declText.indexOf('{');
-        var head = headEnd >= 0 ? declText.substring(0, headEnd) : declText;
+        var head = headEnd >= 0
+                   ? declText.substring(0, headEnd)
+                   : declText;
         // Match 'sealed' as a whole-word modifier in the declaration head.
-        return Pattern.compile("\\bsealed\\b").matcher(head).find();
+        return Pattern.compile("\\bsealed\\b")
+                      .matcher(head)
+                      .find();
     }
 
     private Optional<String> extractInterfaceName(Cursor node) {
         var matcher = INTERFACE_NAME_PATTERN.matcher(text(node));
-        return matcher.find() ? Optional.of(matcher.group(1)) : Optional.empty();
+
+        return matcher.find()
+               ? Optional.of(matcher.group(1))
+               : Optional.empty();
     }
 
     private String extractRecordName(Cursor record) {
         var matcher = RECORD_NAME_PATTERN.matcher(text(record));
-        return matcher.find() ? matcher.group(1) : "";
+
+        return matcher.find()
+               ? matcher.group(1)
+               : "";
     }
 
     private String extractInterfaceNameFromTypeKind(Cursor typeKind) {
         var matcher = INTERFACE_NAME_PATTERN.matcher(text(typeKind));
-        return matcher.find() ? matcher.group(1) : "";
+
+        return matcher.find()
+               ? matcher.group(1)
+               : "";
     }
 
     private Diagnostic createDiagnostic(Cursor record, LintContext ctx) {
         var name = extractRecordName(record);
+
         if (name.isEmpty()) {
             name = "(unknown)";
         }
+
         var camelName = camelCase(name);
+
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
                                      startLine(record),
                                      startColumn(record),
-                                     "Record '" + name + "' should have a factory method (returning " + name
-                                     + ", Option<" + name + ">, or Result<" + name + ">)",
+                                     "Record '" + name
+                                    + "' should have a factory method (returning " + name
+                                    + ", Option<" + name
+                                    + ">, or Result<" + name
+                                    + ">)",
                                      "JBCT value objects use factory methods for construction and validation.")
                          .withExample("""
             // Plain factory (no validation needed):
@@ -254,6 +304,7 @@ public class CstValueObjectFactoryRule implements CstLintRule {
 
     private String camelCase(String name) {
         if (name == null || name.isEmpty()) return name;
+
         return Character.toLowerCase(name.charAt(0)) + name.substring(1);
     }
 }

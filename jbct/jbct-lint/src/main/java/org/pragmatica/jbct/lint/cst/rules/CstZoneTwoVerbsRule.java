@@ -1,16 +1,17 @@
 package org.pragmatica.jbct.lint.cst.rules;
 
+import java.util.Set;
+import java.util.regex.Pattern;
+import java.util.stream.Stream;
+
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
 import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.lang.Option;
 
-import java.util.Set;
-import java.util.regex.Pattern;
-import java.util.stream.Stream;
-
 import static org.pragmatica.jbct.parser.CstNodes.*;
+
 
 /// JBCT-ZONE-01: Step interfaces should use Zone 2 verbs.
 ///
@@ -22,7 +23,6 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 ///               manage, configure, initialize, execute, prepare, complete
 public class CstZoneTwoVerbsRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-ZONE-01";
-
     private static final Pattern INTERFACE_NAME_PATTERN = Pattern.compile("\\binterface\\s+(\\w+)");
 
     // Zone 2 orchestration-level verbs
@@ -84,25 +84,25 @@ public class CstZoneTwoVerbsRule implements CstLintRule {
         }
         // Find functional interfaces that look like step interfaces
         return findAllInterfaces(root).stream()
-                      .filter(this::isStepInterface)
-                      .flatMap(iface -> checkInterfaceName(iface, ctx));
+                                .filter(this::isStepInterface)
+                                .flatMap(iface -> checkInterfaceName(iface, ctx));
     }
 
     private boolean isStepInterface(Cursor iface) {
         var ifaceText = text(iface);
         // Check if it's a functional interface (single method)
         var methodCount = findAllMethods(iface).size();
+
         if (methodCount != 1) {
             return false;
         }
         // Check if method returns Result/Promise/Option (monadic type)
-        return ifaceText.contains("Result<") ||
-        ifaceText.contains("Promise<") ||
-        ifaceText.contains("Option<");
+        return ifaceText.contains("Result<") || ifaceText.contains("Promise<") || ifaceText.contains("Option<");
     }
 
     private Stream<Diagnostic> checkInterfaceName(Cursor iface, LintContext ctx) {
         var interfaceName = extractInterfaceName(text(iface));
+
         if (interfaceName.isEmpty()) {
             return Stream.empty();
         }
@@ -118,18 +118,24 @@ public class CstZoneTwoVerbsRule implements CstLintRule {
 
     private static String extractInterfaceName(String ifaceText) {
         var matcher = INTERFACE_NAME_PATTERN.matcher(ifaceText);
-        return matcher.find() ? matcher.group(1) : "";
+
+        return matcher.find()
+               ? matcher.group(1)
+               : "";
     }
 
     private Option<String> extractVerb(String interfaceName) {
         // Find the first word (verb) in CamelCase name
         var sb = new StringBuilder();
+
         for (var c : interfaceName.toCharArray()) {
             if (Character.isUpperCase(c) && !sb.isEmpty()) {
                 break;
             }
+
             sb.append(c);
         }
+
         return sb.isEmpty()
                ? Option.none()
                : Option.some(sb.toString());
@@ -161,7 +167,7 @@ public class CstZoneTwoVerbsRule implements CstLintRule {
                                      startColumn(node),
                                      "Step interface '" + interfaceName + "' uses Zone 3 verb '" + verb + "'",
                                      "Step interfaces should use Zone 2 orchestration verbs. "
-                                     + "Consider renaming to '" + suggestedVerb + interfaceName.substring(verb.length())
-                                     + "'.");
+                                    + "Consider renaming to '" + suggestedVerb + interfaceName.substring(verb.length())
+                                    + "'.");
     }
 }

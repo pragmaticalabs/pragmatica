@@ -2,12 +2,12 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.jbct.slice.routing;
 
 import javax.lang.model.element.TypeElement;
 import java.util.List;
 import java.util.stream.Collectors;
+
 
 /// Represents an ambiguous pattern match where a single error type
 /// matches multiple patterns with different HTTP status codes.
@@ -20,8 +20,7 @@ import java.util.stream.Collectors;
 ///
 /// @param errorType        the TypeElement with conflicting matches
 /// @param matchingPatterns list of all patterns that matched with their status codes
-public record ErrorConflict(TypeElement errorType,
-                            List<PatternMatch> matchingPatterns) {
+public record ErrorConflict(TypeElement errorType, List<PatternMatch> matchingPatterns) {
     public ErrorConflict {
         matchingPatterns = List.copyOf(matchingPatterns);
     }
@@ -38,8 +37,7 @@ public record ErrorConflict(TypeElement errorType,
     }
 
     /// Factory method for creating a conflict.
-    public static ErrorConflict errorConflict(TypeElement errorType,
-                                              List<PatternMatch> matchingPatterns) {
+    public static ErrorConflict errorConflict(TypeElement errorType, List<PatternMatch> matchingPatterns) {
         return new ErrorConflict(errorType, matchingPatterns);
     }
 
@@ -65,10 +63,11 @@ public record ErrorConflict(TypeElement errorType,
     /// Use explicit mapping to resolve conflict.
     /// ```
     public String errorMessage() {
-        var patterns = matchingPatterns.stream()
-                                       .map(pm -> "  - " + pm)
-                                       .collect(Collectors.joining("\n"));
-        return "Ambiguous error mapping for '" + simpleName() + "':\n" + patterns + "\n"
-               + "Use explicit mapping to resolve conflict.";
+        var patterns = matchingPatterns.stream().map(pm -> "  - " + pm).collect(Collectors.joining("\n"));
+
+        return "Ambiguous error mapping for '" + simpleName()
+             + "':\n" + patterns
+             + "\n"
+             + "Use explicit mapping to resolve conflict.";
     }
 }

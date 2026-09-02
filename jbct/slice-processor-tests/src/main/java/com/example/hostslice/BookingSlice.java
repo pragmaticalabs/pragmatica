@@ -2,12 +2,13 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package com.example.hostslice;
 
-import com.example.injectedslice.QuoteSlice;
 import org.pragmatica.aether.slice.annotation.Slice;
 import org.pragmatica.lang.Promise;
+
+import com.example.injectedslice.QuoteSlice;
+
 
 /// Host slice that INJECTS [QuoteSlice], where BOTH slices declare nested `Request`/`Response` records.
 ///
@@ -39,6 +40,8 @@ public interface BookingSlice {
     }
 
     private static Response confirm(Request request, QuoteSlice.Response quoted) {
-        return new Response(request.customer() + ":" + request.seat(), quoted.amountMinor(), "USD");
+        return new Response(request.customer() + ":" + request.seat(),
+                            quoted.amountMinor(),
+                            "USD");
     }
 }

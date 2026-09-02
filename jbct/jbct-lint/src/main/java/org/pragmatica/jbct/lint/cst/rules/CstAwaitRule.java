@@ -1,15 +1,18 @@
 package org.pragmatica.jbct.lint.cst.rules;
 
-import org.pragmatica.jbct.lint.Diagnostic;
-import org.pragmatica.jbct.lint.LintContext;
-import org.pragmatica.jbct.lint.cst.CstLintRule;
-import org.pragmatica.jbct.parser.Cursor;
-import org.pragmatica.jbct.parser.RuleKind;
-
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
+import org.pragmatica.jbct.lint.Diagnostic;
+import org.pragmatica.jbct.lint.LintContext;
+import org.pragmatica.jbct.lint.cst.CstLintRule;
+import org.pragmatica.jbct.lint.cst.filetype.FileType;
+import org.pragmatica.jbct.lint.cst.filetype.FileTypeClassifier;
+import org.pragmatica.jbct.parser.Cursor;
+import org.pragmatica.jbct.parser.RuleKind;
+
 import static org.pragmatica.jbct.parser.CstNodes.*;
+
 
 /// JBCT-PAT-03: Blocking `.await()` call.
 ///
@@ -31,9 +34,14 @@ public class CstAwaitRule implements CstLintRule {
         if (!ctx.shouldLint(packageName(root))) {
             return Stream.empty();
         }
+
+        if (FileTypeClassifier.classify(root) == FileType.TEST_CLASS) {
+            return Stream.empty();
+        }
+
         return findAllStatements(root).stream()
-            .filter(this::containsAwait)
-            .map(stmt -> createDiagnostic(root, stmt, ctx));
+                                .filter(this::containsAwait)
+                                .map(stmt -> createDiagnostic(root, stmt, ctx));
     }
 
     private boolean containsAwait(Cursor stmt) {
@@ -41,9 +49,9 @@ public class CstAwaitRule implements CstLintRule {
     }
 
     private Diagnostic createDiagnostic(Cursor root, Cursor stmt, LintContext ctx) {
-        var methodName = findAncestor(root, stmt, RuleKind.MEMBER)
-            .map(member -> extractMethodName(text(member)))
-            .or("(unknown)");
+        var methodName = enclosingMethodMember(root, stmt).map(member -> extractMethodName(memberDeclText(member)))
+                                     .or("(unknown)");
+
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
@@ -51,7 +59,7 @@ public class CstAwaitRule implements CstLintRule {
                                      startColumn(stmt),
                                      "Blocking .await() call in method '" + methodName + "'",
                                      ".await() blocks the calling thread. Compose with .map()/.flatMap() instead. "
-                                     + "Annotate with @TerminalOperation if blocking is intentional (CLI, lifecycle, background thread).")
+                                    + "Annotate with @TerminalOperation if blocking is intentional (CLI, lifecycle, background thread).")
                          .withExample("""
             // Before: blocking
             var result = fetchUser(id).await();
@@ -73,6 +81,9 @@ public class CstAwaitRule implements CstLintRule {
         // Find the first identifier followed by '(' — the method declaration.
         // Skips type names (handled by the `\\b` boundary and pattern shape).
         var matcher = METHOD_NAME_PATTERN.matcher(memberText);
-        return matcher.find() ? matcher.group(1) : "(unknown)";
+
+        return matcher.find()
+               ? matcher.group(1)
+               : "(unknown)";
     }
 }

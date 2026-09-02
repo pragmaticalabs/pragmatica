@@ -1,14 +1,32 @@
 # Java 25 PEG Grammar for JBCT
-# Synced from java-peglib peglib-core/src/test/resources/java25.peg (peglib 0.6.0)
+# Synced from java-peglib peglib-core/src/test/resources/java25.peg (peglib 0.7.1)
+#
+# Upstream is authoritative: re-sync rather than patching locally, so jbct inherits
+# peglib's javac-parse agreement (99.45% over the OpenJDK langtools suite at 0.7.1).
 #
 # Cut operator (^) commits to current alternative, preventing backtracking.
 # Used after discriminating keywords to improve error messages and performance.
 
 # === Compilation Units (JLS 7.3-7.8) ===
-CompilationUnit <- ModuleDecl / OrdinaryUnit
-OrdinaryUnit <- PackageDecl? ImportDecl* TypeDecl*
+# JLS 7.3: a ModularCompilationUnit is '{ImportDeclaration} ModuleDeclaration' — imports
+# may precede 'module', as in 'import a.Ann; @Ann module m { }'. This gap was masked
+# until the recovery loop stopped silently re-parsing the remainder as a second unit.
+CompilationUnit <- ModularUnit / OrdinaryUnit
+ModularUnit <- ImportDecl* ModuleDecl
+# JEP 512 (Compact Source Files and Instance Main Methods) — final in Java 25.
+# A compact source file has top-level methods/fields with no enclosing class; the
+# compiler wraps them in an implicitly declared class.
+#
+# TypeDecl MUST stay the first alternative. It and TopLevelMember share the
+# 'Annotation* Modifier*' prefix, so reversing them would let TopLevelMember
+# win on ordinary files and change their CST shape — which the corpus gates and
+# the CST-shape assertion would both flag.
+OrdinaryUnit <- PackageDecl ImportDecl* (TypeDecl / ';')* / ImportDecl* (TypeDecl / TopLevelMember / ';')*
+TopLevelMember <- Annotation* Modifier* !RecordKW (MethodDecl / FieldDecl)
 PackageDecl <- Annotation* 'package' ^ QualifiedName ';'
-ImportDecl  <- 'import' ^ ('module' QualifiedName ';' / 'static'? QualifiedName ('.' '*')? ';')
+ImportDecl  <- 'import' ^ ('module' QualifiedName ';' / 'static'? QualifiedName '.' '*' ';' / 'static'? QualifiedImportName ';')
+# At least one dot: importing from the unnamed package is not expressible.
+QualifiedImportName <- Identifier (&('.' Identifier) '.' Identifier)+
 
 # === Module Declarations (JLS 7.7) ===
 ModuleDecl <- Annotation* 'open'? 'module' ^ QualifiedName '{' ModuleDirective* '}'
@@ -19,58 +37,102 @@ OpensDirective <- 'opens' ^ QualifiedName ('to' QualifiedName (',' QualifiedName
 UsesDirective <- 'uses' ^ QualifiedName ';'
 ProvidesDirective <- 'provides' ^ QualifiedName 'with' QualifiedName (',' QualifiedName)* ';'
 
-TypeDecl <- Annotation* Modifier* TypeKind
+TypeDecl <- Annotation* (Modifier / ValueKW &(Modifier* (ClassKW / RecordKW)))* TypeKind
 TypeKind <- ClassDecl / InterfaceDecl / EnumDecl / RecordDecl / AnnotationDecl
-ClassDecl <- ClassKW ^ Identifier TypeParams? ('extends' Type)? ImplementsClause? PermitsClause? ClassBody
-InterfaceDecl <- InterfaceKW ^ Identifier TypeParams? ('extends' TypeList)? PermitsClause? ClassBody
-AnnotationDecl <- '@' InterfaceKW ^ Identifier AnnotationBody
+ClassDecl <- ClassKW ^ !RestrictedTypeName Identifier TypeParams? ('extends' Type)? ImplementsClause? PermitsClause? ClassBody
+InterfaceDecl <- InterfaceKW ^ !RestrictedTypeName Identifier TypeParams? ('extends' TypeList)? PermitsClause? InterfaceBody
+AnnotationDecl <- '@' InterfaceKW ^ !RestrictedTypeName Identifier TypeParams? ('extends' TypeList)? AnnotationBody
 # Type declaration keywords with word boundary (prevents 'class' matching prefix of 'className')
 ClassKW <- < 'class' ![a-zA-Z0-9_$] >
 InterfaceKW <- < 'interface' ![a-zA-Z0-9_$] >
 AnnotationBody <- '{' AnnotationMember* '}'
-AnnotationMember <- Annotation* Modifier* (AnnotationElemDecl / FieldDecl / TypeKind) / ';'
-AnnotationElemDecl <- Type Identifier '(' ')' ('default' AnnotationElem)? ';'
-EnumDecl <- EnumKW ^ Identifier ImplementsClause? EnumBody
+AnnotationMember <- Annotation* (Modifier / ValueKW &(Modifier* (ClassKW / RecordKW)))* (AnnotationElemDecl / FieldDecl / TypeKind) / ';'
+AnnotationElemDecl <- TypeParams? Type Identifier '(' Params? ')' Dims? Throws? ('default' AnnotationElem)? (Block / ';')
+EnumDecl <- EnumKW ^ !RestrictedTypeName Identifier ImplementsClause? EnumBody
 # Lookahead ensures this is a record declaration (record Name(...)) not:
 # - method call: record(...)
 # - field/variable of type 'record': record field;
-RecordDecl <- RecordKW &(Identifier TypeParams? '(') Identifier ^ TypeParams? '(' RecordComponents? ')' ImplementsClause? RecordBody
+RecordDecl <- RecordKW &(Identifier TypeParams? '(') !RestrictedTypeName Identifier ^ TypeParams? '(' RecordComponents? ')' ImplementsClause? RecordBody
 EnumKW <- < 'enum' ![a-zA-Z0-9_$] >
 RecordKW <- < 'record' ![a-zA-Z0-9_$] >
 ImplementsClause <- 'implements' ^ TypeList
 PermitsClause <- 'permits' ^ TypeList
 TypeList <- Type (',' Type)*
 TypeParams <- '<' TypeParam (',' TypeParam)* '>'
-TypeParam <- Identifier ('extends' Type ('&' Type)*)?
+TypeParam <- Annotation* Identifier ('extends' Type ('&' Type)*)?
 
 ClassBody <- '{' ClassMember* '}'
-ClassMember <- Annotation* Modifier* Member / InitializerBlock / ';'
-Member <- ConstructorDecl / TypeKind / MethodDecl / FieldDecl
+# An interface body is NOT a class body (JLS 9.1.4). A field is implicitly
+# 'public static final', so an initializer is REQUIRED — 'int X;' is illegal in an
+# interface though legal in a class. Interfaces also admit no initializer blocks
+# (instance or static) and no constructors, so neither InitializerBlock nor
+# ConstructorDecl appears here.
+InterfaceBody <- '{' InterfaceMember* '}'
+InterfaceMember <- Annotation* (Modifier / ValueKW &(Modifier* (ClassKW / RecordKW)))* (TypeKind / MethodDecl / InterfaceFieldDecl) / ';'
+InterfaceFieldDecl <- Type InterfaceVarDecl (',' InterfaceVarDecl)* ';'
+InterfaceVarDecl <- Identifier Dims? '=' VarInit
+ClassMember <- Annotation* (Modifier / ValueKW &(Modifier* (ClassKW / RecordKW)))* Member / InitializerBlock / ';'
+Member <- ConstructorDecl / TypeKind / !RecordKW (MethodDecl / FieldDecl)
 InitializerBlock <- 'static'? Block
 EnumBody <- '{' EnumConsts? (';' ClassMember*)? '}'
-EnumConsts <- EnumConst (',' EnumConst)* ','?
+EnumConsts <- EnumConst (',' EnumConst)* ','? / ','
 EnumConst <- Annotation* Identifier ('(' Args? ')')? ClassBody?
 RecordComponents <- RecordComp (',' RecordComp)*
-RecordComp <- Annotation* Type Identifier
+RecordComp <- Annotation* Type (Annotation* '...')? Identifier
 RecordBody <- '{' RecordMember* '}'
-RecordMember <- CompactConstructor / ClassMember
+# JLS 8.10.4: a record's state is exactly its components — no instance fields and no
+# instance initializer blocks. Static fields and static initializers are fine.
+# Requiring 'static' in the modifier list needs the !StaticKW guard because PEG
+# repetition is POSSESSIVE: a plain 'Modifier* StaticKW' can never match, since
+# Modifier* would consume the 'static' and never give it back.
+RecordMember <- CompactConstructor
+              / Annotation* (Modifier / ValueKW &(Modifier* (ClassKW / RecordKW)))* (ConstructorDecl / TypeKind / MethodDecl)
+              / Annotation* RecordStaticField
+              / StaticKW Block
+              / ';'
+RecordStaticField <- (!StaticKW Modifier)* StaticKW Modifier* Type VarDecls ';'
+StaticKW <- < 'static' ![a-zA-Z0-9_$] >
 CompactConstructor <- Annotation* Modifier* Identifier Block
 
 FieldDecl <- Type VarDecls ';'
 VarDecls <- VarDecl (',' VarDecl)*
 VarDecl <- Identifier Dims? ('=' VarInit)?
-VarInit <- '{' (VarInit (',' VarInit)* ','?)? '}' / Expr
-MethodDecl <- TypeParams? Type Identifier '(' ^ Params? ')' Dims? Throws? (Block / ';')
-Params <- Param (',' Param)*
-Param <- Annotation* Modifier* Type '...'? Identifier Dims?
+LocalVarDecls <- LocalVarDecl (',' LocalVarDecl)*
+LocalVarDecl <- Identifier Dims? ('=' VarInit)? / '_' ('=' VarInit)?
+VarInit <- '{' (VarInit (',' VarInit)*)? ','? '}' / Expr
+MethodDecl <- Annotation* TypeParams? Type Identifier '(' ^ Params? ')' Dims? Throws? ('default' AnnotationElem)? (Block / ';')
+# JLS 8.4.1: only the LAST parameter may be variable-arity, so every parameter before the
+# final one is matched by a rule that has no '...' alternative.
+Params <- ReceiverParam (',' OrdinaryParams)? / OrdinaryParams
+OrdinaryParams <- (PlainParam ',')* LastParam
+PlainParam <- Annotation* Modifier* Type Identifier Dims?
+# A receiver parameter (JLS 8.4.1) names 'this' instead of a variable; it exists so
+# 'this' can carry type annotations. Ordered first: for an ordinary parameter the
+# Type matches and the 'this' check fails, so it backtracks to the normal form.
+# Still over-permissive on position — the JLS allows a receiver parameter only in
+# first place, which is a validation concern, not a parsing one.
+#
+# An inner class constructor's receiver is QUALIFIED — 'Inner(Outer Outer.this)' —
+# so the type is followed by an optional qualifying name before 'this'.
+#
+# The ordinary form spells '...' and C-style Dims as ALTERNATIVES, not an optional
+# pair: JLS 8.4.1 forbids combining them, so 'int... x[]' is illegal. The '...' may
+# itself carry type annotations ('int @Ann ... x').
+# Factored out so Param and NonVarargsParam share it. The inline token-boundary form carries
+# a character class, which makes its enclosing rule MIXED; duplicating it would make a
+# second rule MIXED for no reason (RuleClassifierTest bounds how many may exist).
+ReceiverParam <- Annotation* Modifier* Type (QualifiedName '.')? < 'this' ![a-zA-Z0-9_$] >
+LastParam <- Annotation* Modifier* Type (Annotation* '...' Identifier / Identifier Dims?)
 Throws <- 'throws' ^ TypeList
-ConstructorDecl <- TypeParams? Identifier '(' ^ Params? ')' Throws? Block
+ConstructorDecl <- Annotation* TypeParams? Identifier '(' ^ Params? ')' Throws? Block
 
 # === Blocks and Statements (JLS 14) ===
 Block <- '{' BlockStmt* '}'
 BlockStmt <- LocalVar / LocalTypeDecl / Stmt
-LocalTypeDecl <- Annotation* Modifier* TypeKind
-LocalVar <- Annotation* Modifier* LocalVarType VarDecls ';'
+LocalTypeDecl <- Annotation* (!IllegalLocalClassMod Modifier / ValueKW &(Modifier* (ClassKW / RecordKW)))* TypeKind
+# JLS 14.3: a local class takes none of these — it is neither a member nor a top-level type.
+IllegalLocalClassMod <- < ('sealed' / 'non-sealed' / 'static') ![a-zA-Z0-9_$] >
+LocalVar <- Annotation* Modifier* (< 'var' ![a-zA-Z0-9_$] > LocalVarDecl / Type LocalVarDecls) ';'
 LocalVarType <- < 'var' ![a-zA-Z0-9_$] > / Type
 # Statement keywords use helper rules to combine keyword + word boundary as single token
 # This prevents the parser from skipping whitespace before the boundary check
@@ -82,7 +144,9 @@ Stmt <- Block
      / WhileKW ^ '(' Expr ')' Stmt
      / ForKW ^ '(' ForCtrl ')' Stmt
      / DoKW ^ Stmt 'while' '(' Expr ')' ';'
-     / TryKW ^ ResourceSpec? Block Catch* Finally?
+     # JLS 14.20: a try needs resources, or a catch, or a finally — 'try { }' alone is not
+     # a statement.
+     / TryKW ^ (ResourceSpec Block Catch* Finally? / Block (Catch+ Finally? / Finally))
      / SwitchKW ^ '(' Expr ')' SwitchBlock
      / ReturnKW Expr? ';'
      / ThrowKW Expr ';'
@@ -92,7 +156,7 @@ Stmt <- Block
      / SynchronizedKW ^ '(' Expr ')' Block
      / YieldKW Expr ';'
      / Identifier ':' Stmt
-     / Expr ';'
+     / StmtExpr ';'
      / ';'
 
 # Helper rules: keyword with word boundary INSIDE token (prevents whitespace skip before boundary check)
@@ -112,27 +176,46 @@ YieldKW <- < 'yield' ![a-zA-Z0-9_$] >
 CatchKW <- < 'catch' ![a-zA-Z0-9_$] >
 FinallyKW <- < 'finally' ![a-zA-Z0-9_$] >
 WhenKW <- < 'when' ![a-zA-Z0-9_$] >
-ForCtrl <- ForInit? ';' Expr? ';' ExprList? / LocalVarType Identifier ':' Expr
+ForCtrl <- ForInit? ';' Expr? ';' ExprList? / Annotation* Modifier* LocalVarType (Identifier / '_') ':' Expr
 ForInit <- LocalVarNoSemi / ExprList
-LocalVarNoSemi <- Annotation* Modifier* LocalVarType VarDecls
+LocalVarNoSemi <- Annotation* Modifier* (< 'var' ![a-zA-Z0-9_$] > LocalVarDecl / Type LocalVarDecls)
 ResourceSpec <- '(' Resource (';' Resource)* ';'? ')'
-Resource <- Annotation* Modifier* LocalVarType Identifier '=' Expr / QualifiedName
-Catch <- CatchKW ^ '(' Modifier* Type ('|' Type)* Identifier ')' Block
+# JLS 14.20.3: a resource is a declaration or a VARIABLE ACCESS. javac accepts a
+# parenthesised or computed receiver ('try ((v))', 'try (new X(){}.f.g)', 'try ((c?a:b).f)')
+# but rejects a bare creation ('try (new X())') with 'try.with.resources.expr.needs.var'.
+# So the expression form must END in a field access — spelled right-recursively because PEG
+# repetition is possessive. The declaration form is tried first, so 'try (var x = e)' is
+# unaffected, and a plain name is its own alternative.
+Resource <- Annotation* Modifier* LocalVarType (Identifier / '_') '=' Expr
+          / Primary ResourceChain
+          / QualifiedName
+          / '(' Expr ')'
+ResourceChain <- ChainOp ResourceChain / FieldOp
+FieldOp <- '.' Annotation* TypeArgs? Identifier
+Catch <- CatchKW ^ '(' Modifier* Type ('|' Type)* (Identifier / '_') ')' Block
 Finally <- FinallyKW ^ Block
 SwitchBlock <- '{' SwitchRule* '}'
 SwitchRule <- SwitchLabel '->' (Expr ';' / Block / ThrowKW Expr ';') / SwitchLabel ':' BlockStmt*
 # === Switch Labels and Patterns (JLS 14.11, 14.30) ===
-SwitchLabel <- 'case' ^ ('null' (',' 'default')? / CaseItem (',' CaseItem)* Guard?) / 'default'
+SwitchLabel <- 'case' ^ ('null' ',' 'default' / Pattern (',' Pattern)* Guard / CaseItem (',' CaseItem)*) / 'default'
 CaseItem <- Pattern / QualifiedName &('->' / ',' / ':' / 'when') / Expr
-Pattern <- RecordPattern / TypePattern
-TypePattern <- &(LocalVarType Identifier) LocalVarType Identifier / '_'
+Pattern <- RecordPattern / TopTypePattern
+# A pattern binding may be named '_' (JEP 456), both bare ('case _') and typed
+# ('case String _ when ...'). The typed form is what the bare-'_' alternative misses.
+TopTypePattern <- &(Annotation* Modifier* Type (Identifier / '_')) Annotation* Modifier* Type (Identifier / '_') / '_'
+TypePattern <- &(Annotation* Modifier* LocalVarType (Identifier / '_')) Annotation* Modifier* LocalVarType (Identifier / '_') / '_'
 RecordPattern <- RefType '(' PatternList? ')'
-PatternList <- Pattern (',' Pattern)*
-Guard <- WhenKW Expr
+PatternList <- ComponentPattern (',' ComponentPattern)*
+ComponentPattern <- RecordPattern / TypePattern
+# A guard is a boolean expression, never a lambda (JLS 14.11.1). Going through Expr would
+# try the Lambda alternative first and swallow the switch rule's arrow on a bare-identifier
+# guard: 'case Integer i when b -> {}' parsed 'b -> {}' as the guard. Assignment is Expr
+# minus the top-level Lambda alternative.
+Guard <- WhenKW Assignment
 
-Expr <- Assignment
-Assignment <- Ternary ((URShiftAssign / RShiftAssign / LShiftAssign / '=' / '+=' / '-=' / '*=' / '/=' / '%=' / '&=' / '|=' / '^=') Assignment)?
-Ternary <- LogOr ('?' Expr ':' Ternary)?
+Expr <- Lambda / Assignment
+Assignment <- Ternary ((URShiftAssign / RShiftAssign / LShiftAssign / '=' / '+=' / '-=' / '*=' / '/=' / '%=' / '&=' / '|=' / '^=') Expr)?
+Ternary <- LogOr ('?' Expr ':' (Lambda / Ternary))?
 LogOr <- LogAnd ('||' LogAnd)*
 LogAnd <- BitOr ('&&' BitOr)*
 BitOr <- BitXor (!'||' !'|=' '|' BitXor)*
@@ -152,50 +235,153 @@ RShiftAssign <- '>' '>' '='
 LShiftAssign <- '<' '<' '='
 Additive <- Multiplicative ((!'+=' '+' / !'-=' !'->' '-') Multiplicative)*
 Multiplicative <- Unary ((!'*=' '*' / !'/=' '/' / !'%=' '%') Unary)*
-Unary <- ('++' / '--' / '+' / '-' / '!' / '~') Unary / '(' Type ('&' Type)* ')' Unary / Postfix
+Unary <- ('++' / '--' / '+' / '-' / '!' / '~') Unary / '(' Type ('&' Type)* ')' (Lambda / Unary) / Postfix
 Postfix <- Primary PostOp*
-PostOp <- '.' TypeArgs? Identifier ('(' Args? ')')? / '.' 'class' / '.' 'this' / '.' 'super' / '[' Expr ']' / '(' Args? ')' / '++' / '--' / '::' TypeArgs? (Identifier / 'new')
-Primary <- Literal / < 'this' ![a-zA-Z0-9_$] > / < 'super' ![a-zA-Z0-9_$] > / < 'new' ![a-zA-Z0-9_$] > TypeArgs? ArrayType (DimExprs Dims? / Dims VarInit / '(' Args? ')' ClassBody?) / SwitchKW '(' Expr ')' SwitchBlock / Lambda / '(' Expr ')' / TypeExpr / QualifiedName
-TypeExpr <- Type ('.' < 'class' > / '::' TypeArgs? (< 'new' > / Identifier))
+# '.class' is NOT a postfix operator on an arbitrary expression: a class literal is
+# 'TypeName {[]} . class' (JLS 15.8.2), handled by TypeExpr. Leaving it here let
+# 'this.class' and '@Ann String.class' through.
+PostOp <- '.' 'new' TypeArgs? ArrayType ('(' Args? ')') ClassBody? / '.' Annotation* TypeArgs? Identifier ('(' Args? ')')? / '.' 'this' / '.' TypeArgs? < 'super' ![a-zA-Z0-9_$] > / '[' Expr ']' / '(' Args? ')' / '++' / '--' / '::' TypeArgs? (Identifier / 'new')
+Primary <- Literal / TypeArgs (< 'this' ![a-zA-Z0-9_$] > / < 'super' ![a-zA-Z0-9_$] >) '(' Args? ')' / < 'this' ![a-zA-Z0-9_$] > / < 'super' ![a-zA-Z0-9_$] > / < 'new' ![a-zA-Z0-9_$] > (RawArrayElemType (DimExprs Dims? / Dims VarInit) / TypeArgs? ArrayType ('(' Args? ')') ClassBody?) / SwitchKW '(' Expr ')' SwitchBlock / '(' Expr ')' / TypeExpr / QualifiedName
+TypeExpr <- UnannType '.' < 'class' > / Type '::' TypeArgs? (< 'new' > / Identifier)
+UnannType <- (VoidType / PrimType / PlainRefType) Dims?
+PlainRefType <- PlainTypeName (&('.' Identifier) '.' PlainTypeName)*
+PlainTypeName <- !RestrictedTypeName Identifier
 Lambda <- LambdaParams '->' (Expr / Block)
-LambdaParams <- Identifier / '_' / '(' LambdaParam? (',' LambdaParam)* ')'
-LambdaParam <- Annotation* Modifier* ((< 'var' ![a-zA-Z0-9_$] > / Type) &('...' / Identifier / '_'))? '...'? (Identifier / '_')
+# JLS 15.27.1: a lambda's parameter list must be uniform — all explicitly typed, all
+# 'var', or all inferred. Mixing them ('(var x, y) -> {}') is illegal, which a
+# per-parameter optional type cannot express. The three shapes are therefore spelled
+# as whole-list alternatives. Inferred is tried last: it is a prefix of the other two.
+LambdaParams <- Identifier / '_' / '(' LambdaParamList? ')'
+LambdaParamList <- TypedLambdaParams / VarLambdaParams / InferredLambdaParams
+TypedLambdaParams <- TypedLambdaParam (',' TypedLambdaParam)*
+TypedLambdaParam <- Annotation* Modifier* Type (Annotation* '...')? (Identifier / '_')
+VarLambdaParams <- VarLambdaParam (',' VarLambdaParam)*
+VarLambdaParam <- Annotation* Modifier* < 'var' ![a-zA-Z0-9_$] > (Identifier / '_')
+InferredLambdaParams <- (Identifier / '_') (',' (Identifier / '_'))*
+# JLS 14.8: only an assignment, pre/post increment or decrement, method invocation or
+# class instance creation may stand as a statement. '(a);' and a bare 'yield;' are
+# expressions but not statements. 'ends in a call' cannot be written as
+# 'Primary PostOp* CallOp' because PEG repetition is POSSESSIVE — PostOp* would eat the
+# final call and never give it back — so the chain is spelled right-recursively.
+StmtExpr <- ('++' / '--') Unary
+          / Postfix (URShiftAssign / RShiftAssign / LShiftAssign / '=' / '+=' / '-=' / '*=' / '/=' / '%=' / '&=' / '|=' / '^=') Expr
+          / &(< 'new' ![a-zA-Z0-9_$] >) Postfix
+          / TypeArgs (< 'this' ![a-zA-Z0-9_$] > / < 'super' ![a-zA-Z0-9_$] >) '(' Args? ')'
+          / !YieldKW Primary CallChain
+CallChain <- ChainOp CallChain / CallOp
+# Same as PostOp but WITHOUT the optional trailing call on member access. PostOp spells
+# that as "('(' Args? ')')?", and PEG '?' is possessive, so '.foo()' would be swallowed
+# whole and CallOp would never see the call — making 'this.foo();' unparseable as a
+# statement while 'a.foo();' worked only because QualifiedName greedily took 'a.foo'.
+ChainOp <- '.' 'new' TypeArgs? ArrayType ('(' Args? ')') ClassBody? / '.' Annotation* TypeArgs? Identifier / '.' 'this' / '.' TypeArgs? < 'super' ![a-zA-Z0-9_$] > / '[' Expr ']' / '::' TypeArgs? (Identifier / 'new') / '(' Args? ')' / '++' / '--'
+# A qualified class instance creation ('a.new B()') is itself a complete statement
+# expression, so it terminates the chain as well as continuing it.
+CallOp <- '(' Args? ')' / '++' / '--' / '.' 'new' TypeArgs? ArrayType ('(' Args? ')') ClassBody?
 Args <- Expr (',' Expr)*
 ExprList <- Expr (',' Expr)*
 
 # === Types with Type-Use Annotations (JSR 308 / JLS 4.11) ===
-Type <- Annotation* (PrimType / RefType) Dims?
-PrimType <- < ('boolean' / 'byte' / 'short' / 'int' / 'long' / 'float' / 'double' / 'char' / 'void') ![a-zA-Z0-9_$] >
+Type <- Annotation* (VoidType / (PrimType / RefType) Dims?)
+PrimType <- < ('boolean' / 'byte' / 'short' / 'int' / 'long' / 'float' / 'double' / 'char') ![a-zA-Z0-9_$] >
+VoidType <- < 'void' ![a-zA-Z0-9_$] >
 # Use lookahead BEFORE consuming '.' to avoid capturing it when followed by keyword (e.g., 'HashMap.class')
 RefType <- AnnotatedTypeName (&('.' ('@' / Identifier)) '.' AnnotatedTypeName)*
-AnnotatedTypeName <- Annotation* Identifier TypeArgs?
+# JLS 3.9: 'var' and 'yield' are RESTRICTED type names — legal as ordinary identifiers
+# ('int var = 3;', 'obj.yield()') but never as the name of a type in type-use position.
+# Identifier deliberately excludes only HARD keywords, so without this guard a
+# contextual keyword slips through as a type name. LocalVarType keeps its own explicit
+# 'var' alternative, so local type inference is unaffected.
+AnnotatedTypeName <- Annotation* !(RestrictedTypeName !'.') Identifier TypeArgs?
+RestrictedTypeName <- < ('var' / 'yield') ![a-zA-Z0-9_$] >
 Dims <- (Annotation* '[' ']')+
 # ArrayType is Type without trailing Dims - used for array creation expressions
 ArrayType <- Annotation* (PrimType / RefType)
+# JLS 15.10.1 — see above: only bare '<?>' wildcards are reifiable, so '<? extends N>'
+# and '<>' are excluded here while 'new Class<?>[0]' keeps working.
+RawArrayElemType <- Annotation* (PrimType / RawTypeName (&('.' ('@' / Identifier)) '.' RawTypeName)*)
+RawTypeName <- Annotation* !RestrictedTypeName Identifier WildcardOnlyTypeArgs?
+WildcardOnlyTypeArgs <- '<' Annotation* '?' (',' Annotation* '?')* '>'
 # DimExprs are dimension expressions with sizes - e.g., [10], [rows][cols]
 # Lookahead BEFORE consuming '[' prevents java-peglib bug where failed iterations leave partial matches
 DimExprs <- (Annotation* &('[' !']') '[' Expr ']')+
 TypeArgs <- '<' '>' / '<' TypeArg (',' TypeArg)* '>'
-TypeArg <- Type / '?' (Annotation* ('extends' / 'super') Type)?
+TypeArg <- Type / Annotation* '?' (Annotation* ('extends' / 'super') Type)?
 
 # Use lookahead BEFORE consuming '.' to avoid capturing it when followed by keyword (e.g., 'String.class')
 QualifiedName <- Identifier (&('.' Identifier) '.' Identifier)*
-Identifier <- !Keyword < [a-zA-Z_$] [a-zA-Z0-9_$]* >
+# JLS 3.8: an identifier is any run of Character.isJavaIdentifierPart, not just ASCII —
+# 'int café = 1;' is legal Java. The DFA alphabet is 0..255 plus ONE non-ASCII slot per
+# state (widening it to full Unicode is explicitly out of bounds), and that slot is emitted
+# only for '.' and for NEGATED character classes. So the sets are spelled as negations of the
+# ASCII characters an identifier may not contain, which picks up every non-ASCII codepoint for
+# free. Kept in the start set: '$' (\x24), A-Z, '_' (\x5F), a-z. The part set additionally
+# keeps 0-9.
+#
+# This is deliberately broader than Character.isJavaIdentifierPart: it admits any non-ASCII
+# codepoint, including symbols javac would reject. Narrowing that needs Unicode categories,
+# which a 256-way DFA cannot express.
+Identifier <- !Keyword < [^\x00-\x23\x25-\x40\x5B-\x5E\x60\x7B-\x7F] [^\x00-\x23\x25-\x2F\x3A-\x40\x5B-\x5E\x60\x7B-\x7F]* >
 
 Modifier <- < ('public' / 'protected' / 'private' / 'static' / 'final' / 'abstract' / 'native' / 'synchronized' / 'transient' / 'volatile' / 'strictfp' / 'default' / 'sealed' / 'non-sealed') ![a-zA-Z0-9_$] >
+# JEP 401 (Value Objects, preview in JDK 28) — 'value' is a contextual keyword.
+# It is a modifier ONLY in type-declaration position; everywhere else it must stay
+# an ordinary identifier ('var value = 3', 'int value;', 'value.foo()'), and it is
+# by far the most common identifier of any contextual keyword Java has added.
+#
+# Two deliberate choices keep that safe:
+#   1. The '(Modifier / ValueKW &(Modifier* (ClassKW / RecordKW)))*' group is spelled inline at exactly the four
+#      sites where a TypeKind can follow — TypeDecl, ClassMember, LocalTypeDecl,
+#      AnnotationMember. LocalVar / Param / Catch / Resource / LambdaParam keep
+#      plain Modifier*, so statement contexts never try the 'value' alternative.
+#      (A named DeclModifier rule cannot be used here: RuleClassifier types it as
+#      LEXER, and a lexer rule may not reference another rule — fromGrammar rejects
+#      it with SkippedRuleReferenced.)
+#   2. The lookahead references Modifier only, so 'value' cannot recurse into
+#      itself. It commits only when a class/record keyword genuinely follows,
+#      across any intervening modifiers ('sealed abstract value class X').
+ValueKW <- < 'value' ![a-zA-Z0-9_$] >
 Annotation <- '@' !'interface' QualifiedName ('(' AnnotationValue? ')')?
-AnnotationValue <- Identifier '=' AnnotationElem (',' Identifier '=' AnnotationElem)* / AnnotationElem
-AnnotationElem <- Annotation / '{' (AnnotationElem (',' AnnotationElem)* ','?)? '}' / Ternary
+AnnotationValue <- AnnotationArg (',' AnnotationArg)*
+AnnotationArg <- Identifier '=' AnnotationElem / AnnotationElem
+# A lambda may appear as an annotation value: '@Anno(value = x -> x)'. javac's parser
+# accepts it and rejects it in Attr. Lambda used to be reachable here via Primary.
+AnnotationElem <- Annotation / '{' (AnnotationElem (',' AnnotationElem)*)? ','? '}' / Lambda / Ternary
 
 Literal <- < ('null' / 'true' / 'false') ![a-zA-Z0-9_$] > / CharLit / StringLit / NumLit
-CharLit <- < '\'' ([^'\\] / '\\' .)* '\'' >
-StringLit <- < '"""' (!'"""' .)* '"""' > / < '"' ([^"\\] / '\\' .)* '"' >
-NumLit <- < '0' [xX] [0-9a-fA-F_]+ [lL]? > / < '0' [bB] [01_]+ [lL]? > / < [0-9][0-9_]* ('.' [0-9_]*)? ([eE] [+\-]? [0-9_]+)? [fFdDlL]? > / < '.' [0-9_]+ ([eE] [+\-]? [0-9_]+)? [fFdD]? >
+# JLS 3.10.6: the escape set is closed — b, s, t, n, f, r, ", ', backslash, an octal
+# escape, or a \\u sequence. '\\' . accepted anything, so '\\e' and '\\q' slipped through.
+# A char literal holds EXACTLY one element: '' is empty, and a raw newline may not appear
+# inside either a char or a (non-text-block) string literal.
+CharLit <- < '\'' ([^'\\\n\r] / '\\' ([btnfrs"'\\] / [0-3] [0-7] [0-7] / [0-7] [0-7]? / 'u'+ [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F])) '\'' >
+# The text-block body opts into backslash-escape awareness (see DfaBuilder
+# compileDelimitedBlock): a backslash consumes the next character whole, so an escaped
+# triple quote does not close the block. Block comments deliberately do NOT use this
+# shape — a backslash before */ does not escape it.
+StringLit <- < '"""' ('\\' . / !'"""' .)* '"""' >
+           / < '"' ([^"\\\n\r] / '\\' ([btnfrs"'\\] / [0-3] [0-7] [0-7] / [0-7] [0-7]? / 'u'+ [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F]))* '"' >
+# JLS 3.10.1: an underscore may appear only BETWEEN digits — never leading, never
+# trailing, never adjacent to '.', 'x', 'b', or a type suffix. Each digit run is
+# therefore spelled 'digit (digit-or-underscore* digit)?', which permits '1__0' (runs
+# of underscores are legal) while rejecting '1_', '0x_1' and '1_.5'. The runs are
+# written inline rather than factored into a Digits rule: a lexer rule may not
+# reference another rule, and fromGrammar rejects it with SkippedRuleReferenced.
+NumLit <- < '0' [xX] [0-9a-fA-F] ([0-9a-fA-F_]* [0-9a-fA-F])? ('.' ([0-9a-fA-F] ([0-9a-fA-F_]* [0-9a-fA-F])?)?)? [pP] [+\-]? [0-9] ([0-9_]* [0-9])? [fFdD]? >
+        / < '0' [xX] '.' [0-9a-fA-F] ([0-9a-fA-F_]* [0-9a-fA-F])? [pP] [+\-]? [0-9] ([0-9_]* [0-9])? [fFdD]? >
+        / < '0' [xX] [0-9a-fA-F] ([0-9a-fA-F_]* [0-9a-fA-F])? [lL]? >
+        / < '0' [bB] [01] ([01_]* [01])? [lL]? >
+        / < [0-9] ([0-9_]* [0-9])? ('.' ([0-9] ([0-9_]* [0-9])?)?)? ([eE] [+\-]? [0-9] ([0-9_]* [0-9])?)? [fFdDlL]? >
+        / < '.' [0-9] ([0-9_]* [0-9])? ([eE] [+\-]? [0-9] ([0-9_]* [0-9])?)? [fFdD]? >
 
 # Hard keywords only - contextual keywords (var, yield, record, sealed, non-sealed, permits, when, module) are handled by their specific rules
-Keyword <- ('abstract' / 'assert' / 'boolean' / 'break' / 'byte' / 'case' / 'catch' / 'char' / 'class' / 'const' / 'continue' / 'default' / 'double' / 'do' / 'else' / 'enum' / 'extends' / 'false' / 'finally' / 'final' / 'float' / 'for' / 'goto' / 'implements' / 'import' / 'instanceof' / 'interface' / 'int' / 'if' / 'long' / 'native' / 'new' / 'null' / 'package' / 'private' / 'protected' / 'public' / 'return' / 'short' / 'static' / 'strictfp' / 'super' / 'switch' / 'synchronized' / 'this' / 'throws' / 'throw' / 'transient' / 'true' / 'try' / 'void' / 'volatile' / 'while') ![a-zA-Z0-9_$]
+Keyword <- ('_' / 'abstract' / 'assert' / 'boolean' / 'break' / 'byte' / 'case' / 'catch' / 'char' / 'class' / 'const' / 'continue' / 'default' / 'double' / 'do' / 'else' / 'enum' / 'extends' / 'false' / 'finally' / 'final' / 'float' / 'for' / 'goto' / 'implements' / 'import' / 'instanceof' / 'interface' / 'int' / 'if' / 'long' / 'native' / 'new' / 'null' / 'package' / 'private' / 'protected' / 'public' / 'return' / 'short' / 'static' / 'strictfp' / 'super' / 'switch' / 'synchronized' / 'this' / 'throws' / 'throw' / 'transient' / 'true' / 'try' / 'void' / 'volatile' / 'while') ![a-zA-Z0-9_$]
 
-%whitespace <- [ \t\r\n]+ / '//' [^\n]* / '/*' (!'*/' .)* '*/'
+# 0.6.2 — the unsplit folded form is supported again: DfaBuilder.absorbWhitespace
+# absorbs each Choice alternative at its own trivia kind (WHITESPACE / LINE_COMMENT
+# / DOC_LINE_COMMENT / BLOCK_COMMENT / DOC_BLOCK_COMMENT), so the lexer's maximal-
+# munch loop emits one correctly-classified token per trivia chunk. The whitespace
+# alternative is absorbed as one-or-more, so the DFA start state never accepts the
+# empty string (no empty-match warning).
+%whitespace <- ([ \t\r\n] / '//' [^\n]* / '/*' (!'*/' .)* '*/')*
 
 # 0.6.1 — incremental-reparse boundaries consumed by IncrementalParser.
 # Each %checkpoint names a rule whose CST subtree may be re-parsed in
@@ -203,3 +389,12 @@ Keyword <- ('abstract' / 'assert' / 'boolean' / 'break' / 'byte' / 'case' / 'cat
 %checkpoint Stmt
 %checkpoint MethodDecl
 %checkpoint TypeDecl
+
+# 0.7.1 — position memo for the JLS 14.8 StmtExpr double parse. A call statement
+# is parsed once as 'Postfix (assign-op) Expr' and, when the assign-op fails,
+# re-parsed as 'Primary CallChain'. Those are different rules, so the shareable
+# unit is the argument list both paths parse at the same token position. The
+# generated parser salvages the Args subtree when backtracking drops it and
+# replays it in the second parse. Semantics-preserving; measured -8% warm parse
+# on the 40k-LOC selfhost fixture.
+%memo Args

@@ -7,7 +7,7 @@
     <parent>
         <groupId>org.pragmatica-lite</groupId>
         <artifactId>jbct-parent</artifactId>
-        <version>1.0.0-rc2</version>
+        <version>1.0.0-rc3</version>
     </parent>
 
     <artifactId>jbct-parser</artifactId>
@@ -17,7 +17,10 @@
     <description>Java 25 PEG parser with CST output for JBCT tools (v6 lex-then-parse pipeline)</description>
 
     <properties>
-        <peglib.maven.plugin.version>0.6.2</peglib.maven.plugin.version>
+        <!-- One version governs BOTH the runtime dependency and the generator plugin: they are
+             built and released together, and a generated parser must run against its own runtime.
+             The old name said "maven.plugin" while also versioning the runtime. -->
+        <peglib.version>0.7.3</peglib.version>
     </properties>
 
     <dependencies>
@@ -33,7 +36,7 @@
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>peglib-runtime</artifactId>
-            <version>${peglib.maven.plugin.version}</version>
+            <version>${peglib.version}</version>
         </dependency>
 
         <!-- Testing -->
@@ -55,13 +58,13 @@
                     <plugin>
                         <groupId>org.pragmatica-lite</groupId>
                         <artifactId>peglib-maven-plugin</artifactId>
-                        <version>${peglib.maven.plugin.version}</version>
+                        <version>${peglib.version}</version>
                         <executions>
                             <execution>
                                 <id>generate-java25-parser-v6</id>
                                 <phase>generate-sources</phase>
                                 <goals>
-                                    <goal>generate-v6</goal>
+                                    <goal>generate</goal>
                                 </goals>
                                 <configuration>
                                     <grammarFile>${project.basedir}/src/main/resources/grammars/java25.peg</grammarFile>

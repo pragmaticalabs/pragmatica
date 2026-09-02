@@ -1,34 +1,29 @@
 package org.pragmatica.jbct.cli;
 
-import org.pragmatica.jbct.init.PersistenceAdder;
-
 import java.nio.file.Path;
 import java.util.concurrent.Callable;
+
+import org.pragmatica.jbct.init.PersistenceAdder;
 
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 
+
 /// Add PostgreSQL persistence support to an existing Aether slice project.
-@Command(
- name = "add-persistence",
- description = "Add PostgreSQL persistence support (pg-codegen, schema, persistence interface)",
- mixinStandardHelpOptions = true)
+@Command(name = "add-persistence", description = "Add PostgreSQL persistence support (pg-codegen, schema, persistence interface)", mixinStandardHelpOptions = true)
 public class AddPersistenceCommand implements Callable<Integer> {
-    @Option(
-    names = {"--package", "-p"},
-    description = "Package for persistence interface. Starts with '.' = relative to basePackage. Default: .persistence")
+    @Option(names = {"--package", "-p"}, description = "Package for persistence interface. Starts with '.' = relative to basePackage. Default: .persistence")
     String packageOverride;
 
-    @Option(
-    names = {"--dir", "-d"},
-    description = "Project directory (default: current directory)")
+    @Option(names = {"--dir", "-d"}, description = "Project directory (default: current directory)")
     Path projectDir;
 
     @Override
     public Integer call() {
         var dir = org.pragmatica.lang.Option.option(projectDir)
-                     .map(Path::toAbsolutePath)
-                     .or(() -> Path.of(System.getProperty("user.dir")));
+                                            .map(Path::toAbsolutePath)
+                                            .or(() -> Path.of(System.getProperty("user.dir")));
+
         return PersistenceAdder.persistenceAdder(dir, packageOverride)
                                .flatMap(PersistenceAdder::addPersistence)
                                .onFailure(cause -> System.err.println("Error: " + cause.message()))
@@ -44,6 +39,7 @@ public class AddPersistenceCommand implements Callable<Integer> {
         for (var file : files) {
             System.out.println("  " + dir.relativize(file));
         }
+
         System.out.println();
         System.out.println("Next steps:");
         System.out.println("  1. Edit src/main/resources/schema/V001__initial.sql with your tables");

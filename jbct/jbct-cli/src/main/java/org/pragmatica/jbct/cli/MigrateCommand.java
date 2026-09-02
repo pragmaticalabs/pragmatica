@@ -1,32 +1,30 @@
 package org.pragmatica.jbct.cli;
 
+import java.nio.file.Path;
+import java.util.List;
+import java.util.concurrent.Callable;
+
 import org.pragmatica.jbct.init.GitHubVersionResolver;
 import org.pragmatica.jbct.init.VersionMigrator;
 import org.pragmatica.jbct.init.VersionMigrator.MigrationResult;
 import org.pragmatica.jbct.init.VersionMigrator.PropertyTarget;
 import org.pragmatica.lang.Option;
 
-import java.nio.file.Path;
-import java.util.List;
-import java.util.concurrent.Callable;
-
 import picocli.CommandLine.Command;
 
+
 /// Migrate command - bump project dependency versions in pom.xml.
-@Command(
- name = "migrate",
- description = "Bump project dependency versions in pom.xml to the latest (or a given) version",
- mixinStandardHelpOptions = true)
+@Command(name = "migrate", description = "Bump project dependency versions in pom.xml to the latest (or a given) version", mixinStandardHelpOptions = true)
 public class MigrateCommand implements Callable<Integer> {
-    @picocli.CommandLine.Option(
-    names = {"--version", "-V"},
-    description = "Target version (default: latest resolved from GitHub)")
+    @picocli.CommandLine.Option(names = {"--version", "-V"}, description = "Target version (default: latest resolved from GitHub)")
     String targetVersion;
 
     @Override
     public Integer call() {
         var projectDir = Path.of(System.getProperty("user.dir"));
-        return VersionMigrator.migrate(projectDir, resolveTargets())
+
+        return VersionMigrator.migrate(projectDir,
+                                       resolveTargets())
                               .onFailure(cause -> System.err.println("Error: " + cause.message()))
                               .onSuccess(this::printResult)
                               .map(_ -> 0)
@@ -50,6 +48,7 @@ public class MigrateCommand implements Callable<Integer> {
     private static List<PropertyTarget> resolvedTargets() {
         var resolver = GitHubVersionResolver.gitHubVersionResolver();
         var monorepo = resolver.pragmaticaLiteVersion();
+
         return List.of(new PropertyTarget("pragmatica-lite.version", monorepo),
                        new PropertyTarget("aether.version", resolver.aetherVersion()),
                        new PropertyTarget("jbct.version", resolver.jbctVersion()),
@@ -59,8 +58,10 @@ public class MigrateCommand implements Callable<Integer> {
     private void printResult(MigrationResult result) {
         if (result.isEmpty()) {
             System.out.println("All dependency versions are already up to date. Nothing to change.");
+
             return;
         }
+
         System.out.println("Updated dependency versions in pom.xml:");
         for (var change : result.changes()) {
             System.out.println("  " + change.property() + ": " + change.oldVersion() + " → " + change.newVersion());

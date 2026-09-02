@@ -1,4 +1,5 @@
 package org.pragmatica.jbct.lint;
+
 /// Severity level for lint diagnostics.
 public enum DiagnosticSeverity {
     /// Error - must be fixed, will cause check to fail.

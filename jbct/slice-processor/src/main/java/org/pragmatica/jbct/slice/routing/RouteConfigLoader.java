@@ -2,15 +2,8 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.jbct.slice.routing;
 
-import org.pragmatica.config.toml.TomlDocument;
-import org.pragmatica.config.toml.TomlParser;
-import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.utils.Causes;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -22,6 +15,14 @@ import java.util.Map;
 import java.util.TreeSet;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+
+import org.pragmatica.config.toml.TomlDocument;
+import org.pragmatica.config.toml.TomlParser;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
+
 
 /// Loader for route configuration from TOML files.
 ///
@@ -54,11 +55,11 @@ import java.util.stream.Collectors;
 public final class RouteConfigLoader {
     public static final String CONFIG_FILE = "routes.toml";
     public static final String BASE_CONFIG_FILE = "routes-base.toml";
-
     private static final Cause FILE_NOT_FOUND = Causes.cause("Route configuration file not found");
     private static final Cause PARSE_ERROR = Causes.cause("Failed to parse route configuration");
-    private static final SecuritySection DEFAULT_SECURITY =
-        new SecuritySection(RouteSecurityLevel.PUBLIC, OverridePolicy.STRENGTHEN_ONLY);
+
+    private static final SecuritySection DEFAULT_SECURITY = new SecuritySection(RouteSecurityLevel.PUBLIC,
+                                                                                OverridePolicy.STRENGTHEN_ONLY);
 
     /// Matches a `[vN.routes]` section header (the version-routes block) and captures the version number.
     private static final Pattern VERSION_ROUTES_SECTION = Pattern.compile("^v(\\d+)\\.routes$");
@@ -73,8 +74,9 @@ public final class RouteConfigLoader {
         if (!Files.exists(configPath) || !Files.isRegularFile(configPath)) {
             return FILE_NOT_FOUND.result();
         }
+
         return TomlParser.parseFile(configPath)
-                         .fold(_ -> PARSE_ERROR.<TomlDocument>result(),
+                         .fold(_ -> PARSE_ERROR.<TomlDocument> result(),
                                Result::success)
                          .flatMap(RouteConfigLoader::buildRouteConfig);
     }
@@ -84,26 +86,26 @@ public final class RouteConfigLoader {
         var versionNumbers = discoverVersions(toml);
         var hasFlatRoutes = !toml.keys("routes").isEmpty();
 
-        return VersionSchemaValidator.checkSchemaMixing(hasFlatRoutes, versionNumbers.size())
+        return VersionSchemaValidator.checkSchemaMixing(hasFlatRoutes,
+                                                        versionNumbers.size())
                                      .map(Causes::cause)
-                                     .map(Cause::<RouteConfig>result)
+                                     .map(Cause::<RouteConfig> result)
                                      .or(() -> versionNumbers.isEmpty()
                                                ? buildUnversionedConfig(toml, errorsConfig)
                                                : buildVersionedConfig(toml, errorsConfig, versionNumbers));
     }
 
     private static Result<RouteConfig> buildUnversionedConfig(TomlDocument toml, ErrorPatternConfig errorsConfig) {
-        var prefix = toml.getString("", "prefix")
-                         .or("");
+        var prefix = toml.getString("", "prefix").or("");
 
-        return parseSecurity(toml)
-            .flatMap(security -> parseRoutesWithSecurity(toml, "routes", security.securityDefault())
-                .map(routesPair -> RouteConfig.routeConfig(prefix,
-                                                           routesPair.routes(),
-                                                           errorsConfig,
-                                                           security.securityDefault(),
-                                                           security.overridePolicy(),
-                                                           routesPair.routeSecurity())));
+        return parseSecurity(toml).flatMap(security -> parseRoutesWithSecurity(toml,
+                                                                               "routes",
+                                                                               security.securityDefault()).map(routesPair -> RouteConfig.routeConfig(prefix,
+                                                                                                                                                     routesPair.routes(),
+                                                                                                                                                     errorsConfig,
+                                                                                                                                                     security.securityDefault(),
+                                                                                                                                                     security.overridePolicy(),
+                                                                                                                                                     routesPair.routeSecurity())));
     }
 
     /// Build a versioned [RouteConfig] (#198 §4, §6.4). Each `[vN.routes]` block is resolved (D8
@@ -117,18 +119,14 @@ public final class RouteConfigLoader {
     private static Result<RouteConfig> buildVersionedConfig(TomlDocument toml,
                                                             ErrorPatternConfig errorsConfig,
                                                             List<Integer> versionNumbers) {
-        var apiPrefix = toml.getString("api", "prefix")
-                            .or("");
-        var requireVersionHeader = toml.getBoolean("api", "requireVersionHeader")
-                                       .or(false);
+        var apiPrefix = toml.getString("api", "prefix").or("");
+        var requireVersionHeader = toml.getBoolean("api", "requireVersionHeader").or(false);
 
-        return parseSecurity(toml)
-            .flatMap(security -> parseVersions(toml, versionNumbers, security.securityDefault())
-                .map(versions -> assembleVersionedConfig(apiPrefix,
-                                                         requireVersionHeader,
-                                                         versions,
-                                                         errorsConfig,
-                                                         security)));
+        return parseSecurity(toml).flatMap(security -> parseVersions(toml, versionNumbers, security.securityDefault()).map(versions -> assembleVersionedConfig(apiPrefix,
+                                                                                                                                                               requireVersionHeader,
+                                                                                                                                                               versions,
+                                                                                                                                                               errorsConfig,
+                                                                                                                                                               security)));
     }
 
     private static RouteConfig assembleVersionedConfig(String apiPrefix,
@@ -140,14 +138,14 @@ public final class RouteConfigLoader {
         var flatRouteSecurity = new LinkedHashMap<String, RouteSecurityLevel>();
         var versionMap = new LinkedHashMap<Integer, VersionConfig>();
         var routeVersions = new LinkedHashMap<String, Integer>();
+
         for (var version : versions) {
             flatRoutes.putAll(version.routes());
             flatRouteSecurity.putAll(version.routeSecurity());
             versionMap.put(version.version(), version);
-            version.routes()
-                   .keySet()
-                   .forEach(methodName -> routeVersions.put(methodName, version.version()));
+            version.routes().keySet().forEach(methodName -> routeVersions.put(methodName, version.version()));
         }
+
         return RouteConfig.routeConfig("",
                                        flatRoutes,
                                        errorsConfig,
@@ -163,23 +161,24 @@ public final class RouteConfigLoader {
     /// Discover the version numbers declared by `[vN.routes]` blocks, sorted ascending.
     private static List<Integer> discoverVersions(TomlDocument toml) {
         var versions = new TreeSet<Integer>();
+
         for (var section : toml.sectionNames()) {
             var matcher = VERSION_ROUTES_SECTION.matcher(section);
+
             if (matcher.matches()) {
                 versions.add(Integer.parseInt(matcher.group(1)));
             }
         }
+
         return new ArrayList<>(versions);
     }
 
     private static Result<List<VersionConfig>> parseVersions(TomlDocument toml,
                                                              List<Integer> versionNumbers,
                                                              RouteSecurityLevel defaultSecurity) {
-        var results = versionNumbers.stream()
-                                    .map(version -> parseVersion(toml, version, defaultSecurity))
-                                    .toList();
-        return Result.allOf(results)
-                     .flatMap(RouteConfigLoader::checkSingleDefaultAcrossVersions);
+        var results = versionNumbers.stream().map(version -> parseVersion(toml, version, defaultSecurity)).toList();
+
+        return Result.allOf(results).flatMap(RouteConfigLoader::checkSingleDefaultAcrossVersions);
     }
 
     private static Result<List<VersionConfig>> checkSingleDefaultAcrossVersions(List<VersionConfig> versions) {
@@ -187,9 +186,10 @@ public final class RouteConfigLoader {
                                .filter(VersionConfig::defaultIfMissing)
                                .map(VersionConfig::version)
                                .collect(Collectors.toCollection(TreeSet::new));
+
         return VersionSchemaValidator.checkSingleDefault(defaults)
                                      .map(Causes::cause)
-                                     .map(Cause::<List<VersionConfig>>result)
+                                     .map(Cause::<List<VersionConfig>> result)
                                      .or(Result.success(versions));
     }
 
@@ -199,9 +199,10 @@ public final class RouteConfigLoader {
                                                       RouteSecurityLevel defaultSecurity) {
         var routesSection = "v" + version + ".routes";
         var bindKeys = new ArrayList<>(toml.keys(routesSection));
+
         return VersionSchemaValidator.checkDuplicateBindKey(version, bindKeys)
                                      .map(Causes::cause)
-                                     .map(Cause::<VersionConfig>result)
+                                     .map(Cause::<VersionConfig> result)
                                      .or(() -> buildVersion(toml, version, bindKeys, defaultSecurity));
     }
 
@@ -212,41 +213,39 @@ public final class RouteConfigLoader {
         var routeResults = bindKeys.stream()
                                    .map(bindKey -> parseVersionedRoute(toml, version, bindKey, defaultSecurity))
                                    .toList();
-        return Result.allOf(routeResults)
-                     .flatMap(parsed -> assembleVersion(toml, version, parsed));
+
+        return Result.allOf(routeResults).flatMap(parsed -> assembleVersion(toml, version, parsed));
     }
 
-    private static Result<VersionConfig> assembleVersion(TomlDocument toml,
-                                                         int version,
-                                                         List<VersionedRoute> parsed) {
+    private static Result<VersionConfig> assembleVersion(TomlDocument toml, int version, List<VersionedRoute> parsed) {
         var routes = new LinkedHashMap<String, RouteDsl>();
         var security = new LinkedHashMap<String, RouteSecurityLevel>();
         var bindKeyToMethod = new LinkedHashMap<String, String>();
+
         for (var route : parsed) {
             routes.put(route.methodName(), route.dsl());
             route.security().onPresent(sec -> security.put(route.methodName(), sec));
             bindKeyToMethod.put(route.bindKey(), route.methodName());
         }
+
         var metaSection = "v" + version;
-        var deprecated = toml.getBoolean(metaSection, "deprecated")
-                             .or(false);
-        var defaultIfMissing = toml.getBoolean(metaSection, "defaultIfMissing")
-                                   .or(false);
+        var deprecated = toml.getBoolean(metaSection, "deprecated").or(false);
+        var defaultIfMissing = toml.getBoolean(metaSection, "defaultIfMissing").or(false);
         var sunset = toml.getString(metaSection, "sunset");
-        return validateSunset(version, sunset)
-            .map(_ -> new VersionConfig(version,
-                                        Collections.unmodifiableMap(routes),
-                                        Collections.unmodifiableMap(security),
-                                        Collections.unmodifiableMap(bindKeyToMethod),
-                                        deprecated,
-                                        sunset,
-                                        defaultIfMissing));
+
+        return validateSunset(version, sunset).map(_ -> new VersionConfig(version,
+                                                                          Collections.unmodifiableMap(routes),
+                                                                          Collections.unmodifiableMap(security),
+                                                                          Collections.unmodifiableMap(bindKeyToMethod),
+                                                                          deprecated,
+                                                                          sunset,
+                                                                          defaultIfMissing));
     }
 
     private static Result<Option<String>> validateSunset(int version, Option<String> sunset) {
         return sunset.map(value -> VersionSchemaValidator.checkSunsetFormat(version, value)
                                                          .map(Causes::cause)
-                                                         .map(Cause::<Option<String>>result)
+                                                         .map(Cause::<Option<String>> result)
                                                          .or(Result.success(sunset)))
                      .or(Result.success(sunset));
     }
@@ -259,13 +258,13 @@ public final class RouteConfigLoader {
                                                               int version,
                                                               String bindKey,
                                                               RouteSecurityLevel defaultSecurity) {
-        return parseRouteWithSecurity(toml, "v" + version + ".routes", bindKey, defaultSecurity)
-            .map(parsed -> toVersionedRoute(version, parsed));
+        return parseRouteWithSecurity(toml, "v" + version + ".routes", bindKey, defaultSecurity).map(parsed -> toVersionedRoute(version,
+                                                                                                                                parsed));
     }
 
     private static VersionedRoute toVersionedRoute(int version, ParsedRoute parsed) {
-        var methodName = parsed.methodOverride()
-                               .or(() -> parsed.name() + "V" + version);
+        var methodName = parsed.methodOverride().or(() -> parsed.name() + "V" + version);
+
         return new VersionedRoute(parsed.name(), methodName, parsed.dsl(), parsed.security());
     }
 
@@ -292,8 +291,7 @@ public final class RouteConfigLoader {
             return Result.success(baseConfig);
         }
 
-        return load(slicePath)
-            .map(sliceConfig -> baseConfig.merge(Option.some(sliceConfig)));
+        return load(slicePath).map(sliceConfig -> baseConfig.merge(Option.some(sliceConfig)));
     }
 
     private static Result<SecuritySection> parseSecurity(TomlDocument toml) {
@@ -308,8 +306,7 @@ public final class RouteConfigLoader {
                          .map(OverridePolicy::parse)
                          .or(Result.success(OverridePolicy.STRENGTHEN_ONLY));
 
-        return Result.all(secDefault, policy)
-                     .map(SecuritySection::new);
+        return Result.all(secDefault, policy).map(SecuritySection::new);
     }
 
     private static Result<RoutesPair> parseRoutesWithSecurity(TomlDocument toml,
@@ -320,8 +317,7 @@ public final class RouteConfigLoader {
                                     .map(key -> parseRouteWithSecurity(toml, section, key, defaultSecurity))
                                     .toList();
 
-        return Result.allOf(routeResults)
-                     .map(RouteConfigLoader::buildRoutesPair);
+        return Result.allOf(routeResults).map(RouteConfigLoader::buildRoutesPair);
     }
 
     private static Result<ParsedRoute> parseRouteWithSecurity(TomlDocument toml,
@@ -347,14 +343,14 @@ public final class RouteConfigLoader {
     }
 
     private static Result<ParsedRoute> buildInlineRoute(String key, Map<String, Object> table, String routeStr) {
-        var methodOverride = Option.option(table.get("method"))
-                                   .map(Object::toString);
-        return Result.all(resolveMedia(table, "consumes"),
-                          resolveMedia(table, "produces"),
-                          resolveInlineSecurity(table))
-                     .flatMap((consumes, produces, security) ->
-                                  RouteDsl.parse(routeStr, consumes, produces)
-                                          .map(dsl -> new ParsedRoute(key, dsl, security, methodOverride)));
+        var methodOverride = Option.option(table.get("method")).map(Object::toString);
+
+        return Result.all(resolveMedia(table, "consumes"), resolveMedia(table, "produces"), resolveInlineSecurity(table)).flatMap((consumes, produces, security) -> RouteDsl.parse(routeStr,
+                                                                                                                                                                                   consumes,
+                                                                                                                                                                                   produces).map(dsl -> new ParsedRoute(key,
+                                                                                                                                                                                                                        dsl,
+                                                                                                                                                                                                                        security,
+                                                                                                                                                                                                                        methodOverride)));
     }
 
     private static Result<MediaType> resolveMedia(Map<String, Object> table, String field) {
@@ -379,8 +375,10 @@ public final class RouteConfigLoader {
         var dslResult = RouteDsl.parse(parts.getFirst());
         var secResult = RouteSecurityLevel.parse(parts.get(1));
 
-        return Result.all(dslResult, secResult)
-                     .map((dsl, sec) -> new ParsedRoute(key, dsl, Option.some(sec), Option.none()));
+        return Result.all(dslResult, secResult).map((dsl, sec) -> new ParsedRoute(key,
+                                                                                  dsl,
+                                                                                  Option.some(sec),
+                                                                                  Option.none()));
     }
 
     private static Result<ParsedRoute> parseStringRoute(TomlDocument toml,
@@ -390,7 +388,10 @@ public final class RouteConfigLoader {
         return toml.getString(section, key)
                    .map(RouteDsl::parse)
                    .or(Causes.cause("Missing route value: " + key).result())
-                   .map(dsl -> new ParsedRoute(key, dsl, Option.none(), Option.none()));
+                   .map(dsl -> new ParsedRoute(key,
+                                               dsl,
+                                               Option.none(),
+                                               Option.none()));
     }
 
     private static RoutesPair buildRoutesPair(List<ParsedRoute> parsed) {
@@ -402,17 +403,15 @@ public final class RouteConfigLoader {
             entry.security().onPresent(sec -> security.put(entry.name(), sec));
         }
 
-        return new RoutesPair(Collections.unmodifiableMap(routes),
-                              Collections.unmodifiableMap(security));
+        return new RoutesPair(Collections.unmodifiableMap(routes), Collections.unmodifiableMap(security));
     }
 
     private static ErrorPatternConfig parseErrors(TomlDocument toml) {
-        var defaultStatus = toml.getInt("errors", "default")
-                                .or(500);
+        var defaultStatus = toml.getInt("errors", "default").or(500);
         var statusPatterns = parseStatusPatterns(toml);
         var explicitMappings = parseExplicitMappings(toml);
-        var strict = toml.getBoolean("errors", "strict")
-                         .or(false);
+        var strict = toml.getBoolean("errors", "strict").or(false);
+
         return ErrorPatternConfig.errorPatternConfig(defaultStatus, statusPatterns, explicitMappings, strict);
     }
 
@@ -423,38 +422,46 @@ public final class RouteConfigLoader {
     private static Map<Integer, List<String>> parseStatusPatterns(TomlDocument toml) {
         var patterns = new HashMap<Integer, List<String>>();
         var errorsSection = toml.getSection("errors");
+
         for (var entry : errorsSection.entrySet()) {
             var key = entry.getKey();
             var statusCode = parseStatusKey(key);
+
             if (statusCode > 0) {
-                var patternList = toml.getStringList("errors", key)
-                                      .or(List.of());
+                var patternList = toml.getStringList("errors", key).or(List.of());
+
                 if (!patternList.isEmpty()) {
                     patterns.merge(statusCode, patternList, RouteConfigLoader::concatPatterns);
                 }
             }
         }
+
         return Map.copyOf(patterns);
     }
 
     private static List<String> concatPatterns(List<String> existing, List<String> added) {
         var combined = new ArrayList<>(existing);
+
         combined.addAll(added);
+
         return List.copyOf(combined);
     }
 
     private static Map<String, Integer> parseExplicitMappings(TomlDocument toml) {
         var mappings = new HashMap<String, Integer>();
         var explicitSection = toml.getSection("errors.explicit");
+
         for (var entry : explicitSection.entrySet()) {
             var typeName = entry.getKey();
+
             parseStatusCodeSafely(entry.getValue()).onPresent(statusCode -> mappings.put(typeName, statusCode));
         }
+
         return Map.copyOf(mappings);
     }
 
     private static Option<Integer> parseStatusCodeSafely(String value) {
-        try{
+        try {
             return Option.some(Integer.parseInt(value));
         } catch (NumberFormatException _) {
             return Option.none();
@@ -470,24 +477,23 @@ public final class RouteConfigLoader {
     }
 
     private static int parseBareStatus(String key) {
-        try{
+        try {
             return Integer.parseInt(key);
         } catch (NumberFormatException _) {
-            return - 1;
+            return -1;
         }
     }
 
     private static int parseHttpStatus(String key) {
-        try{
+        try {
             return Integer.parseInt(key.substring(5));
         } catch (NumberFormatException _) {
-            return - 1;
+            return -1;
         }
     }
 
     /// Internal record for parsed security section values.
-    private record SecuritySection(RouteSecurityLevel securityDefault,
-                                   OverridePolicy overridePolicy) {}
+    private record SecuritySection(RouteSecurityLevel securityDefault, OverridePolicy overridePolicy) {}
 
     /// Internal record for a parsed route entry with optional security override and optional
     /// slice-method override (`method = "..."`, used by versioned `[vN.routes]` bind keys, D8).
@@ -505,6 +511,5 @@ public final class RouteConfigLoader {
                                   Option<RouteSecurityLevel> security) {}
 
     /// Internal record holding separated routes and route security maps.
-    private record RoutesPair(Map<String, RouteDsl> routes,
-                              Map<String, RouteSecurityLevel> routeSecurity) {}
+    private record RoutesPair(Map<String, RouteDsl> routes, Map<String, RouteSecurityLevel> routeSecurity) {}
 }

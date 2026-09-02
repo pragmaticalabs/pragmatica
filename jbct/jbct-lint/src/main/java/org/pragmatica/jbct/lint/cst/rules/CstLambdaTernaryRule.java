@@ -1,14 +1,15 @@
 package org.pragmatica.jbct.lint.cst.rules;
 
+import java.util.stream.Stream;
+
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
 import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.jbct.parser.RuleKind;
 
-import java.util.stream.Stream;
-
 import static org.pragmatica.jbct.parser.CstNodes.*;
+
 
 /// JBCT-LAM-03: No ternary in lambdas.
 public class CstLambdaTernaryRule implements CstLintRule {
@@ -24,9 +25,10 @@ public class CstLambdaTernaryRule implements CstLintRule {
         if (!ctx.shouldLint(packageName(root))) {
             return Stream.empty();
         }
+
         return findAllLambdas(root).stream()
-                      .filter(this::containsActualTernary)
-                      .map(lambda -> createDiagnostic(lambda, ctx));
+                             .filter(this::containsActualTernary)
+                             .map(lambda -> createDiagnostic(lambda, ctx));
     }
 
     private boolean containsActualTernary(Cursor lambda) {
@@ -35,7 +37,8 @@ public class CstLambdaTernaryRule implements CstLintRule {
     }
 
     private static boolean isActualTernary(Cursor node) {
-        return node instanceof Cursor.Branch b && b.children().count() > 1;
+        return node instanceof Cursor.Branch b && b.children()
+                                                   .count() > 1;
     }
 
     private Diagnostic createDiagnostic(Cursor lambda, LintContext ctx) {

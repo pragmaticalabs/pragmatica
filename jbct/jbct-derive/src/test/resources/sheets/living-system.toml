@@ -1,0 +1,43 @@
+schema_version = "0.1"
+
+# A minimal LIVING-mode fixture exercising [current_vector] + [[floors]] parsing (issue #443
+# Phase A). Synthetic (not one of the four published runs, which are all greenfield). None of the
+# entry-gate rules read current_vector or floors; this fixture proves the model parses them.
+
+[meta]
+system = "legacy-monolith"
+era    = "2024-2026"
+author = "fixture"
+date   = "2026-07-19"
+mode   = "living"
+
+[[answers.q1]]
+scope     = "path:read"
+statement = "P95 under 100ms at peak"
+shape     = "system-clock"
+price     = "read latency is the felt speed"
+status    = "answered"
+
+[[answers.q5]]
+scope     = "path:read"
+statement = "5k requests per second sustained"
+shape     = "volume"
+status    = "answered"
+
+[current_vector]
+topology    = [{ value = "single deployable", scope = "system" }]
+substrate   = [{ value = "direct", scope = "system" }]
+read_write  = [{ value = "unified", scope = "system" }]
+state       = [{ value = "current-state", scope = "system" }]
+persistence = [{ value = "single shared", scope = "system" }]
+recovery    = [{ operation = "write", class = "design-out" }]
+
+[[floors]]
+path = "path:read"
+hops = [{ name = "lb", p50_ms = 1 }, { name = "db-read", p50_ms = 5 }]
+
+[[domain_shape]]
+operation   = "write"
+inverse     = "none"
+decays      = false
+reshapeable = ["append-only"]

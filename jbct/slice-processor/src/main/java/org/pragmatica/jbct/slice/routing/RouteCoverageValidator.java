@@ -2,12 +2,12 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.jbct.slice.routing;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+
 
 /// Pure compile-time coverage check for a slice's HTTP route table (#389, routes<->methods).
 ///
@@ -30,7 +30,6 @@ import java.util.Set;
 /// deliberately-internal methods keep building, and an ERROR only when the
 /// `-Ajbct.routes.coverage.strict=true` processor option is set.
 public sealed interface RouteCoverageValidator {
-
     /// A public slice method considered for route coverage.
     ///
     /// @param name       the method name, which is also the `[routes]` handler key it would be mapped by
@@ -60,22 +59,25 @@ public sealed interface RouteCoverageValidator {
     /// @param routesTomlPath     the resource path of the `routes.toml` to name in messages
     /// @return the unrouted-method problems in method order; empty when every HTTP-eligible method is
     ///         routed
-    static List<Issue> validate(List<MethodDescriptor> methods,
-                                Set<String> routedHandlerNames,
-                                String routesTomlPath) {
+    static List<Issue> validate(List<MethodDescriptor> methods, Set<String> routedHandlerNames, String routesTomlPath) {
         var issues = new ArrayList<Issue>();
+
         for (var method : methods) {
             if (!method.httpExempt() && !routedHandlerNames.contains(method.name())) {
                 issues.add(new Issue(IssueKind.UNROUTED_METHOD, unroutedMessage(method.name(), routesTomlPath)));
             }
         }
+
         return List.copyOf(issues);
     }
 
     private static String unroutedMessage(String methodName, String routesTomlPath) {
-        return "Unrouted slice method '" + methodName + "': no [routes] entry maps to it, so it is unreachable over HTTP. "
-               + "Add a route in " + routesTomlPath + " (e.g. " + methodName + " = \"GET /" + methodName
-               + "\"), or - if it is invoked by another transport - make it a reactive handler.";
+        return "Unrouted slice method '" + methodName
+             + "': no [routes] entry maps to it, so it is unreachable over HTTP. "
+             + "Add a route in " + routesTomlPath
+             + " (e.g. " + methodName
+             + " = \"GET /" + methodName
+             + "\"), or - if it is invoked by another transport - make it a reactive handler.";
     }
 
     record unused() implements RouteCoverageValidator {}

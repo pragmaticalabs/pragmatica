@@ -1,12 +1,13 @@
 package org.pragmatica.jbct.shared;
 
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.utils.Causes;
-
 import java.nio.file.Files;
 import java.nio.file.Path;
 
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
+
 import static org.pragmatica.lang.Result.lift;
+
 
 /// Value object representing a Java source file with its content.
 public record SourceFile(Path path, String content) {
@@ -25,6 +26,7 @@ public record SourceFile(Path path, String content) {
         return lift(Causes::fromThrowable,
                     () -> {
                         Files.writeString(path, content);
+
                         return this;
                     });
     }
@@ -38,5 +40,18 @@ public record SourceFile(Path path, String content) {
     public String fileName() {
         return path.getFileName()
                    .toString();
+    }
+
+    /// Physical non-blank lines — the single definition of LOC used across JBCT.
+    ///
+    /// "Physical" means source lines as written: comments, javadoc, annotations and braces all
+    /// count, because they are all lines a rule can fire on. Only lines that are empty or pure
+    /// whitespace are dropped, so the count never depends on parsing and cannot disagree between
+    /// the CLI and the Maven goal. This is the denominator of violation density, so it lives here
+    /// once rather than being re-derived per call site.
+    public int nonBlankLines() {
+        return (int) content.lines()
+                            .filter(line -> !line.isBlank())
+                            .count();
     }
 }

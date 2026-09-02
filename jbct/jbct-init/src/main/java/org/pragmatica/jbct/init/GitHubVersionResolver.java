@@ -1,5 +1,14 @@
 package org.pragmatica.jbct.init;
 
+import java.io.IOException;
+import java.net.URI;
+import java.net.http.HttpRequest;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Duration;
+import java.util.Properties;
+import java.util.regex.Pattern;
+
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
 import org.pragmatica.jbct.shared.HttpClients;
@@ -10,17 +19,9 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.utils.Causes;
 
-import java.io.IOException;
-import java.net.URI;
-import java.net.http.HttpRequest;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.time.Duration;
-import java.util.Properties;
-import java.util.regex.Pattern;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 
 /// Resolves the platform version used to scaffold new projects.
 /// All components (pragmatica-lite, aether, jbct) share the same monorepo version.
@@ -35,38 +36,35 @@ import org.slf4j.LoggerFactory;
 /// silently go stale: it is always the version of the running binary itself.
 public final class GitHubVersionResolver {
     private static final Logger log = LoggerFactory.getLogger(GitHubVersionResolver.class);
+
     private static final Path CACHE_FILE = Path.of(System.getProperty("user.home"),
                                                    ".jbct",
                                                    "cache",
                                                    "versions.properties");
-    private static final long CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
+    private static final long CACHE_TTL_MS = 24 * 60 * 60 * 1000;
     private static final String GITHUB_API_BASE = "https://api.github.com/repos";
     private static final Pattern TAG_PATTERN = Pattern.compile("\"tag_name\"\\s*:\\s*\"v?([^\"]+)\"");
     private static final Duration API_TIMEOUT = Duration.ofSeconds(10);
-
     // All components share the same version from the pragmatica monorepo.
     private static final String REPO_OWNER = "pragmaticalabs";
     private static final String REPO_NAME = "pragmatica";
     private static final String CACHE_KEY = REPO_OWNER + "/" + REPO_NAME;
     private static final String TIMESTAMP_KEY = CACHE_KEY + ".timestamp";
-
     // Reported by the String accessors when even the embedded version is unavailable (mirrors
     // slice-processor BuildInfo#UNKNOWN). Real builds always carry a filtered embedded version;
     // the fail-loud path lives in resolveMonorepoVersion().
     private static final String UNKNOWN = "unknown";
     private static final String BUILD_RESOURCE = "/jbct-init-build.properties";
-
     // Own build version, injected via the filtered build resource. Absent only when the resource is
     // missing or its placeholder was not filtered (an unpackaged/corrupt classpath).
     private static final Option<String> EMBEDDED_VERSION = loadEmbeddedVersion();
 
     // Actionable failure for the both-lookups-failed case: never guess a version, tell the user
     // which flag to pass (see InitCommand). Carries no version literal, so version-sweep ignores it.
-    private static final Cause UNRESOLVABLE_VERSION = Causes.cause(
-        "Unable to resolve the platform version: the GitHub release lookup failed and no embedded "
-        + "build version is available. Re-run with an explicit version, e.g. "
-        + "`jbct init --version <X.Y.Z>` (or --pragmatica-version / --aether-version / --jbct-version).");
+    private static final Cause UNRESOLVABLE_VERSION = Causes.cause("Unable to resolve the platform version: the GitHub release lookup failed and no embedded "
+                                                                  + "build version is available. Re-run with an explicit version, e.g. "
+                                                                  + "`jbct init --version <X.Y.Z>` (or --pragmatica-version / --aether-version / --jbct-version).");
 
     private final HttpOperations http;
     private final Properties cache;
@@ -141,6 +139,7 @@ public final class GitHubVersionResolver {
     public Result<Unit> clearCache() {
         resolvedVersion = Option.none();
         cache.clear();
+
         return Result.lift(Causes::fromThrowable,
                            () -> {
                                Files.deleteIfExists(CACHE_FILE);
@@ -158,7 +157,7 @@ public final class GitHubVersionResolver {
 
     private String resolveAndCache() {
         return resolveMonorepoVersion().onSuccess(this::memoize)
-                                       .or(selfVersion.or(UNKNOWN));
+                                     .or(selfVersion.or(UNKNOWN));
     }
 
     private void memoize(String version) {
@@ -171,7 +170,7 @@ public final class GitHubVersionResolver {
 
     private Result<String> fetchVersionWithCache() {
         return freshCachedVersion().map(Result::success)
-                                   .or(this::fetchAndCache);
+                                 .or(this::fetchAndCache);
     }
 
     private Result<String> fetchAndCache() {
@@ -179,23 +178,20 @@ public final class GitHubVersionResolver {
     }
 
     private Option<String> freshCachedVersion() {
-        return Option.option(cache.getProperty(CACHE_KEY))
-                     .filter(_ -> isCacheFresh());
+        return Option.option(cache.getProperty(CACHE_KEY)).filter(_ -> isCacheFresh());
     }
 
     private boolean isCacheFresh() {
         return cacheTimestamp().filter(timestamp -> System.currentTimeMillis() - timestamp < CACHE_TTL_MS)
-                               .isPresent();
+                             .isPresent();
     }
 
     private Option<Long> cacheTimestamp() {
-        return Option.option(cache.getProperty(TIMESTAMP_KEY))
-                     .flatMap(this::parseTimestamp);
+        return Option.option(cache.getProperty(TIMESTAMP_KEY)).flatMap(this::parseTimestamp);
     }
 
     private Option<Long> parseTimestamp(String raw) {
-        return Number.parseLong(raw)
-                     .option();
+        return Number.parseLong(raw).option();
     }
 
     private Result<String> fetchLatestVersion() {
@@ -207,6 +203,7 @@ public final class GitHubVersionResolver {
                                  .timeout(API_TIMEOUT)
                                  .GET()
                                  .build();
+
         return http.sendString(request)
                    .await()
                    .flatMap(HttpResult::toResult)
@@ -215,10 +212,10 @@ public final class GitHubVersionResolver {
 
     private Result<String> extractVersionFromResponse(String body) {
         var matcher = TAG_PATTERN.matcher(body);
+
         return matcher.find()
                ? Result.success(matcher.group(1))
-               : Causes.cause("Could not parse version from GitHub response")
-                       .result();
+               : Causes.cause("Could not parse version from GitHub response").result();
     }
 
     private void cacheVersion(String version) {
@@ -230,6 +227,7 @@ public final class GitHubVersionResolver {
 
     private static Properties loadCache() {
         var props = new Properties();
+
         if (Files.exists(CACHE_FILE)) {
             try (var reader = Files.newBufferedReader(CACHE_FILE)) {
                 props.load(reader);
@@ -237,6 +235,7 @@ public final class GitHubVersionResolver {
                 log.debug("Failed to load version cache from {}: {}", CACHE_FILE, e.getMessage());
             }
         }
+
         return props;
     }
 
@@ -245,8 +244,8 @@ public final class GitHubVersionResolver {
                            () -> {
                                Files.createDirectories(CACHE_FILE.getParent());
                                try (var writer = Files.newBufferedWriter(CACHE_FILE)) {
-                                   cache.store(writer, "JBCT version cache");
-                               }
+                               cache.store(writer, "JBCT version cache");
+                           }
                            });
     }
 
@@ -255,6 +254,7 @@ public final class GitHubVersionResolver {
     // is missing or its ${...} placeholder was not filtered.
     private static Option<String> loadEmbeddedVersion() {
         var props = new Properties();
+
         try (var in = GitHubVersionResolver.class.getResourceAsStream(BUILD_RESOURCE)) {
             if (in != null) {
                 props.load(in);
@@ -262,6 +262,7 @@ public final class GitHubVersionResolver {
         } catch (IOException e) {
             log.debug("Failed to load {}: {}", BUILD_RESOURCE, e.getMessage());
         }
+
         return Option.option(props.getProperty("version"))
                      .map(String::trim)
                      .filter(version -> !version.isBlank())
@@ -272,19 +273,23 @@ public final class GitHubVersionResolver {
     private static String maxVersion(String v1, String v2) {
         var parts1 = v1.split("\\.");
         var parts2 = v2.split("\\.");
+
         for (int i = 0; i < Math.min(parts1.length, parts2.length); i++) {
             final var index = i;
             var cmp = Result.all(Number.parseInt(parts1[index]),
                                  Number.parseInt(parts2[index]))
                             .map((num1, num2) -> Integer.compare(num1, num2))
                             .or(0);
+
             if (cmp > 0) {
                 return v1;
             }
+
             if (cmp < 0) {
                 return v2;
             }
         }
+
         return parts1.length >= parts2.length
                ? v1
                : v2;

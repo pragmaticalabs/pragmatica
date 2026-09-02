@@ -1,15 +1,16 @@
 package org.pragmatica.jbct.lint.cst.rules;
 
+import java.util.regex.Pattern;
+import java.util.stream.Stream;
+
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
 import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.lang.Option;
 
-import java.util.regex.Pattern;
-import java.util.stream.Stream;
-
 import static org.pragmatica.jbct.parser.CstNodes.*;
+
 
 /// JBCT-STY-05: Prefer method references over equivalent lambdas.
 ///
@@ -43,27 +44,33 @@ public class CstMethodReferencePreferenceRule implements CstLintRule {
         if (!ctx.shouldLint(packageName(root))) {
             return Stream.empty();
         }
+
         return findAllLambdas(root).stream()
-                      .map(lambda -> checkLambda(lambda, ctx))
-                      .flatMap(Option::stream);
+                             .map(lambda -> checkLambda(lambda, ctx))
+                             .flatMap(Option::stream);
     }
 
     private Option<Diagnostic> checkLambda(Cursor lambda, LintContext ctx) {
         var lambdaText = text(lambda).trim();
         // Check for constructor lambda: x -> new Type(x)
         var constructorMatch = CONSTRUCTOR_LAMBDA.matcher(lambdaText);
+
         if (constructorMatch.matches()) {
             var typeName = constructorMatch.group(2);
+
             return Option.some(createDiagnostic(lambda, lambdaText, typeName + "::new", ctx));
         }
         // Check for multi-arg constructor: (a, b) -> new Type(a, b)
         var multiArgMatch = MULTI_ARG_CONSTRUCTOR.matcher(lambdaText);
+
         if (multiArgMatch.matches()) {
             var typeName = multiArgMatch.group(3);
+
             return Option.some(createDiagnostic(lambda, lambdaText, typeName + "::new", ctx));
         }
         // Check for instance method: x -> x.method()
         var instanceMatch = INSTANCE_METHOD_LAMBDA.matcher(lambdaText);
+
         if (instanceMatch.matches()) {
             var methodName = instanceMatch.group(2);
             // For instance methods, we need the type, but we can suggest the pattern
@@ -71,11 +78,14 @@ public class CstMethodReferencePreferenceRule implements CstLintRule {
         }
         // Check for static method: x -> Type.method(x)
         var staticMatch = STATIC_METHOD_LAMBDA.matcher(lambdaText);
+
         if (staticMatch.matches()) {
             var typeName = staticMatch.group(2);
             var methodName = staticMatch.group(3);
+
             return Option.some(createDiagnostic(lambda, lambdaText, typeName + "::" + methodName, ctx));
         }
+
         return Option.none();
     }
 
