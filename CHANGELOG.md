@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - 2026-09-02
 
+### Changed (2026-09-02 — publish-time packaging, one commit after the `v1.0.0-rc3` tag)
+- **`aether-setup` no longer publishes its 30 MB executable as the module artifact.** The shaded jar is
+  now attached under the `uber` classifier (`aether-setup-<version>-uber.jar`), and the thin jar is the
+  main artifact, matching the `peglib-playground` pattern. rc2 shipped the fat jar as the main artifact
+  with a POM that still listed every dependency, so a consumer pulled both. Applied to the Maven Central
+  publish of rc3 from `main` after the tag was cut; the tagged tree carries the old configuration.
+
 ### Fixed (2026-08-31 — the ticketing example could never complete a purchase: seven defects, each found by running the product and reading what it said about itself)
 - **A scalar `@Query` ignored its own `RETURNING` clause.** `FactoryGenerator.inferScalarColumnName`
   derived the result column from the SELECT list and never consulted `RETURNING`, so
