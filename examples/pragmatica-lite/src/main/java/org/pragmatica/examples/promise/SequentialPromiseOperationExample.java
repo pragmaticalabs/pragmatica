@@ -1,25 +1,23 @@
 package org.pragmatica.examples.promise;
 
+import java.math.BigDecimal;
+import java.util.Currency;
+import java.util.List;
+
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.Retry;
 
-import java.math.BigDecimal;
-import java.util.Currency;
-import java.util.List;
-
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.lang.utils.Retry.BackoffStrategy.fixed;
 import static org.pragmatica.lang.utils.Retry.BackoffStrategy.linear;
 
+
 class SequentialPromiseOperationExample {
-    private final UserRepository userRepository = _ -> Causes.cause("User not found")
-                                                             .promise();
-    private final OrderRepository orderRepository = _ -> Causes.cause("Order not found")
-                                                               .promise();
-    private final InvoiceService invoiceService = _ -> Causes.cause("Invoice generation failed")
-                                                             .promise();
+    private final UserRepository userRepository = _ -> Causes.cause("User not found").promise();
+    private final OrderRepository orderRepository = _ -> Causes.cause("Order not found").promise();
+    private final InvoiceService invoiceService = _ -> Causes.cause("Invoice generation failed").promise();
 
     private final EmailService emailService = _ -> {};
 
@@ -63,8 +61,7 @@ class SequentialPromiseOperationExample {
                              .onFailure(cause -> logService.logError("Invoice generation failed", cause));
     }
 
-    private final PaymentService paymentService = _ -> Causes.cause("Payment failed")
-                                                             .promise();
+    private final PaymentService paymentService = _ -> Causes.cause("Payment failed").promise();
 
     record Amount(BigDecimal value) {}
 
@@ -76,9 +73,7 @@ class SequentialPromiseOperationExample {
         Promise<PaymentConfirmation> processPayment(Payment payment);
     }
 
-    private Retry retry = Retry.retry()
-                              .attempts(5)
-                              .strategy(fixed().interval(timeSpan(2).seconds()));
+    private Retry retry = Retry.retry().attempts(5).strategy(fixed().interval(timeSpan(2).seconds()));
 
     Promise<PaymentConfirmation> processPayment(Payment payment) {
         return retry.execute(() -> paymentService.processPayment(payment));

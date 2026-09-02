@@ -1,18 +1,16 @@
 package org.pragmatica.examples.promise;
 
-import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.utils.Causes;
-
 import java.util.List;
 import java.util.UUID;
 
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.utils.Causes;
+
+
 class ForkJoinPromiseUserProfileFetcher {
-    private final UserService userService = _ -> Causes.cause("Not implemented")
-                                                       .promise();
-    private final PostService postService = _ -> Causes.cause("Not implemented")
-                                                       .promise();
-    private final FriendService friendService = _ -> Causes.cause("Not implemented")
-                                                           .promise();
+    private final UserService userService = _ -> Causes.cause("Not implemented").promise();
+    private final PostService postService = _ -> Causes.cause("Not implemented").promise();
+    private final FriendService friendService = _ -> Causes.cause("Not implemented").promise();
 
     // Example data records
     record UserId(UUID id) {}

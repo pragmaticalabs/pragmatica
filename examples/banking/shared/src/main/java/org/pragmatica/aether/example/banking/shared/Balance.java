@@ -2,6 +2,7 @@ package org.pragmatica.aether.example.banking.shared;
 
 import java.math.BigDecimal;
 
+
 /// Account balance with available and pending amounts.
 public record Balance(Money available, Money pending) {
     public static Balance balance(Money available, Money pending) {
@@ -10,6 +11,7 @@ public record Balance(Money available, Money pending) {
 
     public static Balance zero(Currency currency) {
         var zero = Money.money(BigDecimal.ZERO, currency).unwrap();
+
         return new Balance(zero, zero);
     }
 }

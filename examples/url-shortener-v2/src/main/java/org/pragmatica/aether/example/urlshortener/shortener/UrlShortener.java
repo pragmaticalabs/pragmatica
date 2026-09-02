@@ -14,6 +14,15 @@ import java.security.MessageDigest;
 import java.util.regex.Pattern;
 
 
+/// URL shortener slice, artifact version 1.0.1 reporting API version 2.0 -- the upgraded half of the
+/// rolling-update pair.
+///
+/// Demonstrates: everything url-shortener (1.0.0) does, plus a `version` field on every response so
+/// a rolling update can be observed request by request, and the shared `Topics.CLICK_EVENTS`
+/// constant that types publisher and subscriber from a single declaration (#396).
+///
+/// Does NOT demonstrate: data migration between versions -- both versions read and write the same
+/// `urls` table unchanged. No auth, no rate limiting, no short-code expiry.
 @Slice public interface UrlShortener {
     String BASE62_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
