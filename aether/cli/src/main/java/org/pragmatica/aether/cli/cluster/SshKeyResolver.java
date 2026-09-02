@@ -60,7 +60,7 @@ public sealed interface SshKeyResolver {
             return Result.success(keys);
         }
 
-        return new MissingSshKey().result();
+        return MissingSshKey.INSTANCE.result();
     }
 
     private static boolean hasCloudSource(ClusterBootstrapConfig config) {
@@ -136,7 +136,8 @@ public sealed interface SshKeyResolver {
         }
     }
 
-    record MissingSshKey() implements Cause {
+    enum MissingSshKey implements Cause {
+        INSTANCE;
         @Override
         public String message() {
             return "Cluster has cloud source(s) but no SSH public key could be resolved. "

@@ -56,80 +56,80 @@ class AuthorizationPipelineTest {
     class ViewerRole {
         @Test
         void pipeline_success_viewerReadsStatus() {
-            runPipeline(VIEWER_KEY, "GET", "/api/nodes/status")
+            runPipeline(VIEWER_KEY, "GET", "/api/v1/nodes/status")
                 .onFailureRun(() -> fail("Expected success"))
                 .onSuccess(ctx -> assertThat(ctx.isAuthenticated()).isTrue());
         }
 
         @Test
         void pipeline_success_viewerReadsMetrics() {
-            runPipeline(VIEWER_KEY, "GET", "/api/metrics")
+            runPipeline(VIEWER_KEY, "GET", "/api/v1/metrics")
                 .onFailureRun(() -> fail("Expected success"))
                 .onSuccess(ctx -> assertThat(ctx.isAuthenticated()).isTrue());
         }
 
         @Test
         void pipeline_success_viewerReadsNodes() {
-            runPipeline(VIEWER_KEY, "GET", "/api/nodes")
+            runPipeline(VIEWER_KEY, "GET", "/api/v1/nodes")
                 .onFailureRun(() -> fail("Expected success"));
         }
 
         @Test
         void pipeline_success_viewerReadsSlices() {
-            runPipeline(VIEWER_KEY, "GET", "/api/slices")
+            runPipeline(VIEWER_KEY, "GET", "/api/v1/slices")
                 .onFailureRun(() -> fail("Expected success"));
         }
 
         @Test
         void pipeline_success_viewerReadsTraces() {
-            runPipeline(VIEWER_KEY, "GET", "/api/traces")
+            runPipeline(VIEWER_KEY, "GET", "/api/v1/traces")
                 .onFailureRun(() -> fail("Expected success"));
         }
 
         @Test
         void pipeline_denied_viewerDeploysBlueprint() {
-            runPipeline(VIEWER_KEY, "POST", "/api/blueprints")
+            runPipeline(VIEWER_KEY, "POST", "/api/v1/blueprints")
                 .onSuccessRun(() -> fail("Expected failure"))
                 .onFailure(AuthorizationPipelineTest::assertAccessDenied);
         }
 
         @Test
         void pipeline_denied_viewerScalesSlice() {
-            runPipeline(VIEWER_KEY, "POST", "/api/scale")
+            runPipeline(VIEWER_KEY, "POST", "/api/v1/scale")
                 .onSuccessRun(() -> fail("Expected failure"))
                 .onFailure(AuthorizationPipelineTest::assertAccessDenied);
         }
 
         @Test
         void pipeline_denied_viewerDrainsNode() {
-            runPipeline(VIEWER_KEY, "POST", "/api/nodes/drain/node-1")
+            runPipeline(VIEWER_KEY, "POST", "/api/v1/nodes/drain/node-1")
                 .onSuccessRun(() -> fail("Expected failure"))
                 .onFailure(AuthorizationPipelineTest::assertAccessDenied);
         }
 
         @Test
         void pipeline_denied_viewerStartsCanary() {
-            runPipeline(VIEWER_KEY, "POST", "/api/canary/start")
+            runPipeline(VIEWER_KEY, "POST", "/api/v1/canary/start")
                 .onSuccessRun(() -> fail("Expected failure"))
                 .onFailure(AuthorizationPipelineTest::assertAccessDenied);
         }
 
         @Test
         void pipeline_denied_viewerShutsDownNode() {
-            runPipeline(VIEWER_KEY, "POST", "/api/nodes/shutdown/node-1")
+            runPipeline(VIEWER_KEY, "POST", "/api/v1/nodes/shutdown/node-1")
                 .onSuccessRun(() -> fail("Expected failure"))
                 .onFailure(AuthorizationPipelineTest::assertAccessDenied);
         }
 
         @Test
         void pipeline_success_viewerValidatesBlueprint() {
-            runPipeline(VIEWER_KEY, "POST", "/api/blueprints/validate")
+            runPipeline(VIEWER_KEY, "POST", "/api/v1/blueprints/validate")
                 .onFailureRun(() -> fail("Expected success for blueprint validation"));
         }
 
         @Test
         void pipeline_denied_viewerDeletesLogLevel() {
-            runPipeline(VIEWER_KEY, "DELETE", "/api/logging/levels/com.example")
+            runPipeline(VIEWER_KEY, "DELETE", "/api/v1/logging/levels/com.example")
                 .onSuccessRun(() -> fail("Expected failure"))
                 .onFailure(AuthorizationPipelineTest::assertAccessDenied);
         }
@@ -143,14 +143,14 @@ class AuthorizationPipelineTest {
 
         @Test
         void pipeline_denied_viewerTriggersSchemaUndo() {
-            runPipeline(VIEWER_KEY, "POST", "/api/schema/undo/orders_db")
+            runPipeline(VIEWER_KEY, "POST", "/api/v1/schema/undo/orders_db")
                 .onSuccessRun(() -> fail("Expected failure"))
                 .onFailure(AuthorizationPipelineTest::assertAccessDenied);
         }
 
         @Test
         void pipeline_denied_viewerTriggersSchemaBaseline() {
-            runPipeline(VIEWER_KEY, "POST", "/api/schema/baseline/orders_db")
+            runPipeline(VIEWER_KEY, "POST", "/api/v1/schema/baseline/orders_db")
                 .onSuccessRun(() -> fail("Expected failure"))
                 .onFailure(AuthorizationPipelineTest::assertAccessDenied);
         }
@@ -160,91 +160,91 @@ class AuthorizationPipelineTest {
     class OperatorRole {
         @Test
         void pipeline_success_operatorReadsStatus() {
-            runPipeline(OPERATOR_KEY, "GET", "/api/nodes/status")
+            runPipeline(OPERATOR_KEY, "GET", "/api/v1/nodes/status")
                 .onFailureRun(() -> fail("Expected success"));
         }
 
         @Test
         void pipeline_success_operatorDrainsNode() {
-            runPipeline(OPERATOR_KEY, "POST", "/api/nodes/drain/node-1")
+            runPipeline(OPERATOR_KEY, "POST", "/api/v1/nodes/drain/node-1")
                 .onFailureRun(() -> fail("Expected success"))
                 .onSuccess(ctx -> assertThat(ctx.isAuthenticated()).isTrue());
         }
 
         @Test
         void pipeline_success_operatorScalesSlice() {
-            runPipeline(OPERATOR_KEY, "POST", "/api/scale")
+            runPipeline(OPERATOR_KEY, "POST", "/api/v1/scale")
                 .onFailureRun(() -> fail("Expected success"));
         }
 
         @Test
         void pipeline_success_operatorStartsCanary() {
-            runPipeline(OPERATOR_KEY, "POST", "/api/canary/start")
+            runPipeline(OPERATOR_KEY, "POST", "/api/v1/canary/start")
                 .onFailureRun(() -> fail("Expected success"));
         }
 
         @Test
         void pipeline_success_operatorStartsBlueGreen() {
-            runPipeline(OPERATOR_KEY, "POST", "/api/blue-green/deploy")
+            runPipeline(OPERATOR_KEY, "POST", "/api/v1/blue-green/deploy")
                 .onFailureRun(() -> fail("Expected success"));
         }
 
         @Test
         void pipeline_success_operatorTriggersSchemaRetry() {
-            runPipeline(OPERATOR_KEY, "POST", "/api/schema/retry/mydb")
+            runPipeline(OPERATOR_KEY, "POST", "/api/v1/schema/retry/mydb")
                 .onFailureRun(() -> fail("Expected success"));
         }
 
         @Test
         void pipeline_success_operatorCreatesBackup() {
-            runPipeline(OPERATOR_KEY, "POST", "/api/backups")
+            runPipeline(OPERATOR_KEY, "POST", "/api/v1/backups")
                 .onFailureRun(() -> fail("Expected success"));
         }
 
         @Test
         void pipeline_success_operatorDeploysBlueprintFromArtifact() {
-            runPipeline(OPERATOR_KEY, "POST", "/api/blueprints/deploy")
+            runPipeline(OPERATOR_KEY, "POST", "/api/v1/blueprints/deploy")
                 .onFailureRun(() -> fail("Expected success"));
         }
 
         @Test
         void pipeline_denied_operatorPublishesRawBlueprint() {
-            runPipeline(OPERATOR_KEY, "POST", "/api/blueprints")
+            runPipeline(OPERATOR_KEY, "POST", "/api/v1/blueprints")
                 .onSuccessRun(() -> fail("Expected failure"))
                 .onFailure(AuthorizationPipelineTest::assertAccessDenied);
         }
 
         @Test
         void pipeline_denied_operatorDeletesBlueprint() {
-            runPipeline(OPERATOR_KEY, "DELETE", "/api/blueprints/some-id")
+            runPipeline(OPERATOR_KEY, "DELETE", "/api/v1/blueprints/some-id")
                 .onSuccessRun(() -> fail("Expected failure"))
                 .onFailure(AuthorizationPipelineTest::assertAccessDenied);
         }
 
         @Test
         void pipeline_denied_operatorShutsDownNode() {
-            runPipeline(OPERATOR_KEY, "POST", "/api/nodes/shutdown/node-1")
+            runPipeline(OPERATOR_KEY, "POST", "/api/v1/nodes/shutdown/node-1")
                 .onSuccessRun(() -> fail("Expected failure"))
                 .onFailure(AuthorizationPipelineTest::assertAccessDenied);
         }
 
         @Test
         void pipeline_denied_operatorRestoresBackup() {
-            runPipeline(OPERATOR_KEY, "POST", "/api/backups/restore")
+            runPipeline(OPERATOR_KEY, "POST", "/api/v1/backups/restore")
                 .onSuccessRun(() -> fail("Expected failure"))
                 .onFailure(AuthorizationPipelineTest::assertAccessDenied);
         }
 
         @Test
         void pipeline_denied_operatorChangesLogLevel() {
-            runPipeline(OPERATOR_KEY, "POST", "/api/logging/levels")
+            runPipeline(OPERATOR_KEY, "POST", "/api/v1/logging/levels")
                 .onSuccessRun(() -> fail("Expected failure"))
                 .onFailure(AuthorizationPipelineTest::assertAccessDenied);
         }
 
         @Test
         void pipeline_denied_operatorDeletesLogLevel() {
-            runPipeline(OPERATOR_KEY, "DELETE", "/api/logging/levels/com.example")
+            runPipeline(OPERATOR_KEY, "DELETE", "/api/v1/logging/levels/com.example")
                 .onSuccessRun(() -> fail("Expected failure"))
                 .onFailure(AuthorizationPipelineTest::assertAccessDenied);
         }
@@ -254,49 +254,49 @@ class AuthorizationPipelineTest {
     class AdminRole {
         @Test
         void pipeline_success_adminReadsStatus() {
-            runPipeline(ADMIN_KEY, "GET", "/api/nodes/status")
+            runPipeline(ADMIN_KEY, "GET", "/api/v1/nodes/status")
                 .onFailureRun(() -> fail("Expected success"));
         }
 
         @Test
         void pipeline_success_adminDeploysBlueprint() {
-            runPipeline(ADMIN_KEY, "POST", "/api/blueprints")
+            runPipeline(ADMIN_KEY, "POST", "/api/v1/blueprints")
                 .onFailureRun(() -> fail("Expected success"));
         }
 
         @Test
         void pipeline_success_adminDeletesBlueprint() {
-            runPipeline(ADMIN_KEY, "DELETE", "/api/blueprints/some-id")
+            runPipeline(ADMIN_KEY, "DELETE", "/api/v1/blueprints/some-id")
                 .onFailureRun(() -> fail("Expected success"));
         }
 
         @Test
         void pipeline_success_adminShutsDownNode() {
-            runPipeline(ADMIN_KEY, "POST", "/api/nodes/shutdown/node-1")
+            runPipeline(ADMIN_KEY, "POST", "/api/v1/nodes/shutdown/node-1")
                 .onFailureRun(() -> fail("Expected success"));
         }
 
         @Test
         void pipeline_success_adminRestoresBackup() {
-            runPipeline(ADMIN_KEY, "POST", "/api/backups/restore")
+            runPipeline(ADMIN_KEY, "POST", "/api/v1/backups/restore")
                 .onFailureRun(() -> fail("Expected success"));
         }
 
         @Test
         void pipeline_success_adminChangesLogLevel() {
-            runPipeline(ADMIN_KEY, "POST", "/api/logging/levels")
+            runPipeline(ADMIN_KEY, "POST", "/api/v1/logging/levels")
                 .onFailureRun(() -> fail("Expected success"));
         }
 
         @Test
         void pipeline_success_adminDrainsNode() {
-            runPipeline(ADMIN_KEY, "POST", "/api/nodes/drain/node-1")
+            runPipeline(ADMIN_KEY, "POST", "/api/v1/nodes/drain/node-1")
                 .onFailureRun(() -> fail("Expected success"));
         }
 
         @Test
         void pipeline_success_adminScalesSlice() {
-            runPipeline(ADMIN_KEY, "POST", "/api/scale")
+            runPipeline(ADMIN_KEY, "POST", "/api/v1/scale")
                 .onFailureRun(() -> fail("Expected success"));
         }
     }
@@ -305,8 +305,8 @@ class AuthorizationPipelineTest {
     class AuthenticationFailures {
         @Test
         void pipeline_missingKey_returnsUnauthorized() {
-            var request = createRequest(null, "GET", "/api/nodes/status");
-            var permission = RoutePermissionRegistry.resolve("GET", "/api/nodes/status");
+            var request = createRequest(null, "GET", "/api/v1/nodes/status");
+            var permission = RoutePermissionRegistry.resolve("GET", "/api/v1/nodes/status");
             validator.validate(request, policy)
                      .flatMap(sc -> RoleEnforcer.enforce(sc, permission))
                      .onSuccessRun(() -> fail("Expected failure"))
@@ -315,8 +315,8 @@ class AuthorizationPipelineTest {
 
         @Test
         void pipeline_invalidKey_returnsForbidden() {
-            var request = createRequest("invalid-key-value-1", "GET", "/api/nodes/status");
-            var permission = RoutePermissionRegistry.resolve("GET", "/api/nodes/status");
+            var request = createRequest("invalid-key-value-1", "GET", "/api/v1/nodes/status");
+            var permission = RoutePermissionRegistry.resolve("GET", "/api/v1/nodes/status");
             validator.validate(request, policy)
                      .flatMap(sc -> RoleEnforcer.enforce(sc, permission))
                      .onSuccessRun(() -> fail("Expected failure"))
@@ -333,8 +333,8 @@ class AuthorizationPipelineTest {
                 keyWithNoRole, ApiKeyEntry.apiKeyEntry("no-role-svc", Set.of("service"))
             );
             var validatorNoRole = SecurityValidator.apiKeyValidator(entries);
-            var request = createRequest(keyWithNoRole, "GET", "/api/nodes/status");
-            var permission = RoutePermissionRegistry.resolve("GET", "/api/nodes/status");
+            var request = createRequest(keyWithNoRole, "GET", "/api/v1/nodes/status");
+            var permission = RoutePermissionRegistry.resolve("GET", "/api/v1/nodes/status");
             validatorNoRole.validate(request, policy)
                            .flatMap(sc -> RoleEnforcer.enforce(sc, permission))
                            .onFailureRun(() -> fail("Expected success — default VIEWER role grants /api/nodes/status"))
@@ -348,8 +348,8 @@ class AuthorizationPipelineTest {
                 keyWithBadRole, ApiKeyEntry.apiKeyEntry("bad-role-svc", Set.of("service"), "SUPERUSER")
             );
             var validatorBadRole = SecurityValidator.apiKeyValidator(entries);
-            var request = createRequest(keyWithBadRole, "GET", "/api/nodes/status");
-            var permission = RoutePermissionRegistry.resolve("GET", "/api/nodes/status");
+            var request = createRequest(keyWithBadRole, "GET", "/api/v1/nodes/status");
+            var permission = RoutePermissionRegistry.resolve("GET", "/api/v1/nodes/status");
             validatorBadRole.validate(request, policy)
                             .flatMap(sc -> RoleEnforcer.enforce(sc, permission))
                             .onFailureRun(() -> fail("Expected success — invalid role defaults to VIEWER"))

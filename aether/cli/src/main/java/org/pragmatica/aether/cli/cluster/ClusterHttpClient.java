@@ -22,6 +22,7 @@ import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
 import org.pragmatica.http.JdkHttpOperations;
+import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -37,8 +38,11 @@ public sealed interface ClusterHttpClient {
 
     AtomicReference<HttpOperations> HTTP_OPS_REF = new AtomicReference<>(JdkHttpOperations.jdkHttpOperations());
 
+    JsonMapper LIFECYCLE_MAPPER = JsonMapper.defaultJsonMapper();
+    String DECOMMISSIONED = "DECOMMISSIONED";
+
     @Contract
-    @SuppressWarnings({"JBCT-EX-01", "JBCT-PAT-01"})
+    @SuppressWarnings({"JBCT-EX-01", "JBCT-PAT-01", "JBCT-RET-08"})
     static void enableTlsSkipVerify() {
         try {
             var trustAll = new TrustManager[]{new TrustAllManager()};
@@ -127,9 +131,7 @@ public sealed interface ClusterHttpClient {
 
     static Result<String> fetch(ManagementRoute route, List<String> params, String queryString) {
         return route.assemble(params)
-                    .map(path -> queryString == null || queryString.isEmpty()
-                                 ? path
-                                 : path + "?" + queryString)
+                    .map(path -> appendQuery(path, queryString))
                     .flatMap(ClusterHttpClient::fetchPath);
     }
 
@@ -144,10 +146,14 @@ public sealed interface ClusterHttpClient {
 
     static Result<String> post(ManagementRoute route, List<String> params, String queryString, String jsonBody) {
         return route.assemble(params)
-                    .map(path -> queryString == null || queryString.isEmpty()
-                                 ? path
-                                 : path + "?" + queryString)
+                    .map(path -> appendQuery(path, queryString))
                     .flatMap(path -> postPath(path, jsonBody));
+    }
+
+    private static String appendQuery(String path, String queryString) {
+        return option(queryString).filter(query -> !query.isEmpty())
+                     .map(query -> path + "?" + query)
+                     .or(path);
     }
 
     static Result<String> put(ManagementRoute route, List<String> params, String jsonBody) {
@@ -320,7 +326,7 @@ public sealed interface ClusterHttpClient {
 
     /// #209: scheme-aware variant — operational commands against a TLS-on cluster must use `https`.
     static Result<Unit> drainNode(String scheme, String address, int managementPort, String nodeId) {
-        var url = scheme + "://" + address + ":" + managementPort + "/api/nodes/drain/" + nodeId;
+        var url = scheme + "://" + address + ":" + managementPort + "/api/v1/nodes/drain/" + nodeId;
 
         return postDirect(url, "{}").mapToUnit();
     }
@@ -349,7 +355,7 @@ public sealed interface ClusterHttpClient {
     }
 
     static Result<String> checkClusterHealth(String scheme, String address, int managementPort) {
-        var url = scheme + "://" + address + ":" + managementPort + "/api/health";
+        var url = scheme + "://" + address + ":" + managementPort + "/api/v1/health";
 
         return getDirect(url);
     }
@@ -363,13 +369,11 @@ public sealed interface ClusterHttpClient {
                                              int managementPort,
                                              String nodeId,
                                              long timeoutMs) {
-        var url = scheme + "://" + address + ":" + managementPort + "/api/nodes/lifecycle/" + nodeId;
+        var url = scheme + "://" + address + ":" + managementPort + "/api/v1/nodes/lifecycle/" + nodeId;
         var deadline = System.currentTimeMillis() + timeoutMs;
 
         while (System.currentTimeMillis() < deadline) {
-            var stateResult = getDirect(url);
-
-            if (stateResult.map(body -> body.contains("DECOMMISSIONED")).or(false)) {
+            if (isDecommissioned(getDirect(url))) {
                 return Result.unitResult();
             }
 
@@ -377,6 +381,19 @@ public sealed interface ClusterHttpClient {
         }
 
         return new HttpError.DrainTimeout(nodeId, timeoutMs).result();
+    }
+
+    /// Reads the lifecycle entry's `state` field rather than searching the whole response body
+    /// for the token (#522 sibling sweep): a body-wide match would report a drain complete the
+    /// moment any other field happened to mention the state — the wave would then restart a node
+    /// that is still shedding traffic. An unreadable response is never "decommissioned", so the
+    /// caller keeps waiting and ultimately fails with `DrainTimeout`.
+    static boolean isDecommissioned(Result<String> lifecycleResponse) {
+        return lifecycleResponse.flatMap(LIFECYCLE_MAPPER::readTree)
+                                .map(node -> node.path("state")
+                                                 .asText(""))
+                                .map(DECOMMISSIONED::equals)
+                                .or(false);
     }
 
     sealed interface HttpError extends Cause {

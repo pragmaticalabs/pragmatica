@@ -10,7 +10,6 @@ import org.mockito.Mockito;
 import org.pragmatica.aether.config.TimeoutsConfig.SwimTimeouts;
 import org.pragmatica.aether.metrics.observation.PeerObservationStore;
 import org.pragmatica.aether.slice.generation.Epoch;
-import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.TopologyConfig;
@@ -107,7 +106,6 @@ class CoreSwimHealthDetectorConfigTest {
                                                               topologyConfig(),
                                                               serializer,
                                                               deserializer,
-                                                              HealthSignalSink.noop(),
                                                               () -> Epoch.ZERO,
                                                               () -> true,
                                                               PeerObservationStore.peerObservationStore(),

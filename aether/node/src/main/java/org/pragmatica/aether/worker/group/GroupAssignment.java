@@ -9,6 +9,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import org.pragmatica.consensus.NodeId;
@@ -20,9 +21,25 @@ import static org.pragmatica.aether.worker.group.WorkerGroupId.workerGroupId;
 public sealed interface GroupAssignment {
     record unused() implements GroupAssignment {}
 
-    static Map<WorkerGroupId, List<NodeId>> computeGroups(List<NodeId> allMembers, String groupName, int maxGroupSize) {
+    /// Group members by zone, where the zone of a node is RESOLVED — read from the node's own advertised
+    /// labels — rather than inferred from its name.
+    ///
+    /// #592: this used to derive the zone by string-splitting the `NodeId` at its last dash, so `node-1`
+    /// grouped into a zone called `"node"` and a CTM-minted `…-r<clock36>` worker into everything before
+    /// the suffix. That is not zone awareness, it is identifier parsing: it happened to look right only
+    /// because uniform naming put every node in one zone, which hid the defect behind the
+    /// single-community case. The operator-facing `[worker] zone` knob and the `zone` label propagated
+    /// over the Hello handshake for exactly this purpose were both unread on this path.
+    ///
+    /// `zoneOf` is the seam so this stays pure and directly testable; `GroupMembershipTracker` binds it to
+    /// the SWIM membership labels, which is where the advertised zone actually arrives
+    /// (`AETHER_ZONE` → `NodeInfo.LABEL_ZONE` in `Main` → announce → `SwimMember.labels`).
+    static Map<WorkerGroupId, List<NodeId>> computeGroups(List<NodeId> allMembers,
+                                                          String groupName,
+                                                          int maxGroupSize,
+                                                          Function<NodeId, String> zoneOf) {
         var result = new TreeMap<WorkerGroupId, List<NodeId>>(Comparator.comparing(WorkerGroupId::communityId));
-        var zoneGroups = groupByZone(allMembers);
+        var zoneGroups = groupByZone(allMembers, zoneOf);
 
         zoneGroups.forEach((zone, members) -> assignZoneGroups(result, members, groupName, zone, maxGroupSize));
 
@@ -64,19 +81,10 @@ public sealed interface GroupAssignment {
         }
     }
 
-    private static String extractZone(NodeId nodeId) {
-        var id = nodeId.id();
-        var lastDash = id.lastIndexOf('-');
-
-        return lastDash < 0
-               ? "local"
-               : id.substring(0, lastDash);
-    }
-
-    private static Map<String, List<NodeId>> groupByZone(List<NodeId> members) {
+    private static Map<String, List<NodeId>> groupByZone(List<NodeId> members, Function<NodeId, String> zoneOf) {
         return members.stream()
                       .sorted()
-                      .collect(Collectors.groupingBy(GroupAssignment::extractZone,
+                      .collect(Collectors.groupingBy(zoneOf,
                                                      TreeMap::new,
                                                      Collectors.toList()));
     }

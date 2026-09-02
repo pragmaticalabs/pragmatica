@@ -8,17 +8,21 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.IntStream;
 
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapError;
+import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.RuntimeProfile;
 import org.pragmatica.aether.config.cluster.RuntimeType;
 import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.config.cluster.SourceType;
 import org.pragmatica.aether.config.cluster.SshConfig;
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ProvisionedNode;
+import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlWriter;
 import org.pragmatica.lang.Functions.Fn1;
@@ -28,6 +32,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
 import static org.pragmatica.aether.cli.cluster.BootstrapPhase.DEPLOY_RUNTIME;
+import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 import static org.pragmatica.lang.Result.success;
 
 
@@ -54,7 +59,7 @@ sealed interface BootstrapPhaseDeploy {
                                               "Deploying runtime to %d node(s)",
                                               ctx.addresses().size());
         for (var entry : ctx.config().sources().entrySet()) {
-            var sourceName = entry.getKey();
+            var sourceName = sourceNameOrDefault(entry.getKey());
             var source = entry.getValue();
             var deployResult = deploySource(ctx, source, sourceName, healthCheck, sshExec, envLookup);
 
@@ -98,7 +103,7 @@ sealed interface BootstrapPhaseDeploy {
     @SuppressWarnings("JBCT-PAT-01")
     private static Result<Unit> deploySource(BootstrapContext ctx,
                                              SourceProfile source,
-                                             String sourceName,
+                                             SourceName sourceName,
                                              Fn1<Result<String>, String> healthCheck,
                                              Fn3<Result<String>, String, String, SshConfig> sshExec,
                                              Fn1<String, String> envLookup) {
@@ -113,7 +118,7 @@ sealed interface BootstrapPhaseDeploy {
     @SuppressWarnings("JBCT-EX-01")
     static Result<Unit> deployCloudSource(BootstrapContext ctx,
                                           SourceProfile source,
-                                          String sourceName,
+                                          SourceName sourceName,
                                           Fn1<Result<String>, String> healthCheck) {
         Fn3<Result<String>, String, String, SshConfig> noopSsh = (host, command, config) -> Result.success("");
         Fn1<String, String> noopEnv = name -> "/dev/null";
@@ -124,7 +129,7 @@ sealed interface BootstrapPhaseDeploy {
     @SuppressWarnings("JBCT-EX-01")
     static Result<Unit> deployCloudSource(BootstrapContext ctx,
                                           SourceProfile source,
-                                          String sourceName,
+                                          SourceName sourceName,
                                           Fn1<Result<String>, String> healthCheck,
                                           Fn3<Result<String>, String, String, SshConfig> sshExec,
                                           Fn1<String, String> envLookup) {
@@ -141,7 +146,7 @@ sealed interface BootstrapPhaseDeploy {
     @SuppressWarnings("JBCT-EX-01")
     static Result<Unit> deployCloudSource(BootstrapContext ctx,
                                           SourceProfile source,
-                                          String sourceName,
+                                          SourceName sourceName,
                                           Fn1<Result<String>, String> healthCheck,
                                           Fn3<Result<String>, String, String, SshConfig> sshExec,
                                           Fn1<String, String> envLookup,
@@ -153,6 +158,17 @@ sealed interface BootstrapPhaseDeploy {
             System.out.printf("  [%s/cloud] No nodes to wait for%n", sourceName);
 
             return Result.unitResult();
+        }
+        // RFC-0017 stage 4 — discovery-based self-assembly. Cores discover their peers via the
+        // provider API (label lookup) and workers were baked core seeds at create, so there is
+        // nothing to push: no SSH preflight, no re-launch, and readiness is observed via the
+        // provider API (C4) instead of polling each node's management port — which a firewalled
+        // management port used to fail on HEALTHY nodes.
+        if (discoveryAssembly(ctx.config())) {
+            System.out.printf("  [%s/cloud] Discovery-based assembly: no SSH push; observing formation via provider labels%n",
+                              sourceName);
+
+            return awaitFormationViaLabels(ctx, source, sourceName);
         }
 
         var restartResult = restartNodesWithFinalPeers(ctx,
@@ -182,10 +198,95 @@ sealed interface BootstrapPhaseDeploy {
         return waitForCloudInit(sourceNodes, mgmtPort, scheme, timeoutMs, healthCheck, sourceName);
     }
 
+    /// Discovery-based assembly engages when EXACTLY ONE source carries cores and it is a CLOUD
+    /// source. Multi-core-source clusters keep the legacy SSH push: `discoverPeers` sees only its
+    /// own provider account, so cores spread across providers cannot find each other by label —
+    /// a structural limit of provider-native discovery, recorded in RFC-0017.
+    static boolean discoveryAssembly(ClusterBootstrapConfig config) {
+        var coreSources = config.sources().values().stream().filter(source -> coreCount(source) > 0).toList();
+
+        return coreSources.size() == 1 && coreSources.getFirst()
+                                                     .type() == SourceType.CLOUD;
+    }
+
+    private static int coreCount(SourceProfile source) {
+        return Option.option(source.roles().get(NodeRole.CORE))
+                     .flatMap(role -> role.count())
+                     .or(0);
+    }
+
+    /// C4 — readiness without inbound ports: poll the provider API for instances carrying
+    /// `aether-formed=true`, the label each core merges onto itself AFTER cluster formation
+    /// succeeds (`AetherNode.tagMatchingInstance`). Counting those labels counts FORMED cores,
+    /// through the same API bootstrap used to create the VMs — no SSH, no management port.
+    @SuppressWarnings("JBCT-EX-01")
+    private static Result<Unit> awaitFormationViaLabels(BootstrapContext ctx,
+                                                        SourceProfile source,
+                                                        SourceName sourceName) {
+        var clusterName = ctx.config().cluster().name();
+
+        return ProviderResolver.resolveCloudCompute(source).flatMap(compute -> pollFormedLabels(filter -> compute.listInstances(filter)
+                                                                                                                 .await()
+                                                                                                                 .map(List::size),
+                                                                                                ctx.config()
+                                                                                                   .derivedCoreCount(),
+                                                                                                clusterName,
+                                                                                                sourceName,
+                                                                                                ClusterBootstrapOrchestrator.parseDurationMs(ctx.config()
+                                                                                                                                                .operations()
+                                                                                                                                                .timeouts()
+                                                                                                                                                .healthCheck()),
+                                                                                                FORMED_LABEL_POLL_MS));
+    }
+
+    long FORMED_LABEL_POLL_MS = 5_000;
+
+    @SuppressWarnings("JBCT-EX-01")
+    static Result<Unit> pollFormedLabels(Fn1<Result<Integer>, Map<String, String>> formedCounter,
+                                         int expected,
+                                         ClusterName clusterName,
+                                         SourceName sourceName,
+                                         long timeoutMs,
+                                         long pollMs) {
+        var filter = Map.of("aether-cluster", clusterName.value(), "aether-formed", "true");
+        var deadline = System.currentTimeMillis() + timeoutMs;
+        var formed = 0;
+
+        System.out.printf("  [%s/cloud] Waiting for %d core(s) to report formation via labels (timeout: %ds)%n",
+                          sourceName,
+                          expected,
+                          timeoutMs / 1000);
+        while (System.currentTimeMillis() < deadline) {
+            formed = formedCounter.apply(filter)
+                                  .onFailure(cause -> System.out.printf("  [%s/cloud] label poll failed: %s%n",
+                                                                        sourceName,
+                                                                        cause.message()))
+                                  .or(formed);
+            if (formed >= expected) {
+                System.out.printf("  [%s/cloud] All %d core(s) formed%n", sourceName, expected);
+
+                return Result.unitResult();
+            }
+
+            ClusterBootstrapOrchestrator.sleepQuietly(pollMs);
+            if (Thread.currentThread().isInterrupted()) {
+                break;
+            }
+        }
+
+        return new BootstrapError.DeploymentFailed(sourceName.value(),
+                                                   "Only " + formed
+                                                  + " of " + expected
+                                                  + " cores reported formation (aether-formed label) within " + timeoutMs / 1000
+                                                  + "s. Nodes self-assemble via discovery; check the VMs' cloud-init logs,"
+                                                  + " that the aether-cluster/aether-node-id labels exist on all core VMs,"
+                                                  + " and that [cloud.discovery] cluster_name reached the node config.").result();
+    }
+
     @SuppressWarnings("JBCT-EX-01")
     private static Result<Unit> restartNodesWithFinalPeers(BootstrapContext ctx,
                                                            SourceProfile source,
-                                                           String sourceName,
+                                                           SourceName sourceName,
                                                            List<ProvisionedNode> sourceNodes,
                                                            Fn3<Result<String>, String, String, SshConfig> sshExec,
                                                            Fn1<String, String> envLookup,
@@ -279,7 +380,7 @@ sealed interface BootstrapPhaseDeploy {
     @SuppressWarnings("JBCT-EX-01")
     static Result<Unit> waitForSshReachable(List<ProvisionedNode> nodes,
                                             SshConfig sshConfig,
-                                            String sourceName,
+                                            SourceName sourceName,
                                             Fn3<Result<String>, String, String, SshConfig> sshExec) {
         return waitForSshReachable(nodes,
                                    sshConfig,
@@ -292,7 +393,7 @@ sealed interface BootstrapPhaseDeploy {
     @SuppressWarnings("JBCT-EX-01")
     static Result<Unit> waitForSshReachable(List<ProvisionedNode> nodes,
                                             SshConfig sshConfig,
-                                            String sourceName,
+                                            SourceName sourceName,
                                             Fn3<Result<String>, String, String, SshConfig> sshExec,
                                             long timeoutMs,
                                             long pollIntervalMs) {
@@ -322,7 +423,7 @@ sealed interface BootstrapPhaseDeploy {
         if (!unreachable.isEmpty()) {
             var ips = unreachable.stream().map(ProvisionedNode::publicIp).toList();
 
-            return new BootstrapError.DeploymentFailed(sourceName,
+            return new BootstrapError.DeploymentFailed(sourceName.value(),
                                                        "SSH preflight failed: " + unreachable.size()
                                                       + " host(s) unreachable after " + (timeoutMs / 1000)
                                                       + "s. Unreachable IPs: " + String.join(", ", ips)).result();
@@ -334,7 +435,7 @@ sealed interface BootstrapPhaseDeploy {
     }
 
     static String buildRestartCommand(String image,
-                                      String clusterName,
+                                      ClusterName clusterName,
                                       String nodeId,
                                       int clusterPort,
                                       int managementPort,
@@ -358,7 +459,7 @@ sealed interface BootstrapPhaseDeploy {
     /// emitted explicitly from the finalized `clusterSecret` param and EXCLUDED from the allow-list
     /// pass (`none()` ref) so it never appears twice. `envLookup` is injectable for unit testing.
     static String buildRestartCommand(String image,
-                                      String clusterName,
+                                      ClusterName clusterName,
                                       String nodeId,
                                       int clusterPort,
                                       int managementPort,
@@ -367,7 +468,7 @@ sealed interface BootstrapPhaseDeploy {
                                       Fn1<String, String> envLookup) {
         return "docker rm -f aether-node 2>/dev/null || true"
              + " && docker run -d --name aether-node --restart no --network host"
-             + " -l aether-cluster=" + clusterName
+             + " -l aether-cluster=" + clusterName.value()
              + " -l aether-node-id=" + nodeId
              + " -l aether-role=core"
              + " -v /opt/aether/config/aether.toml:/app/aether.toml:ro"
@@ -388,7 +489,7 @@ sealed interface BootstrapPhaseDeploy {
     /// AETHER_CLUSTER_SECRET, emitted explicitly by the caller). Mirrors the cloud-init start's
     /// emission so the re-launch keeps full env parity. Empty when no allow-list var is present
     /// (prod-safe: unset host env → nothing emitted).
-    private static String identityEnvFlags(String clusterName, Fn1<String, String> envLookup) {
+    private static String identityEnvFlags(ClusterName clusterName, Fn1<String, String> envLookup) {
         var sb = new StringBuilder();
 
         UserDataTemplate.emitIdentityEnv((name, value) -> appendRestartEnvFlag(sb, name, value),
@@ -414,8 +515,15 @@ sealed interface BootstrapPhaseDeploy {
                                          int clusterPort,
                                          int managementPort,
                                          String peers,
-                                         String clusterSecret) {
-        return buildJvmRestartCommand(nodeId, clusterPort, managementPort, peers, clusterSecret, "", System::getenv);
+                                         String clusterSecret,
+                                         ClusterName clusterName) {
+        return buildJvmRestartCommand(nodeId,
+                                      clusterPort,
+                                      managementPort,
+                                      peers,
+                                      clusterSecret,
+                                      clusterName,
+                                      System::getenv);
     }
 
     /// JVM re-launch with finalized PEERS. Same env-parity requirement as the container path
@@ -428,7 +536,7 @@ sealed interface BootstrapPhaseDeploy {
                                          int managementPort,
                                          String peers,
                                          String clusterSecret,
-                                         String clusterName,
+                                         ClusterName clusterName,
                                          Fn1<String, String> envLookup) {
         return "pkill -f '" + JVM_PKILL_PATTERN
              + "' 2>/dev/null || true"
@@ -455,7 +563,7 @@ sealed interface BootstrapPhaseDeploy {
     /// Inline `VAR="value"` assignments (space-prefixed) for the cluster-identity allow-list
     /// (minus AETHER_CLUSTER_SECRET, inlined explicitly by the caller), suitable for prefixing a
     /// `nohup java` invocation on a single SSH command line.
-    private static String identityEnvAssignments(String clusterName, Fn1<String, String> envLookup) {
+    private static String identityEnvAssignments(ClusterName clusterName, Fn1<String, String> envLookup) {
         var sb = new StringBuilder();
 
         UserDataTemplate.emitIdentityEnv((name, value) -> appendJvmEnvAssignment(sb, name, value),
@@ -513,11 +621,11 @@ sealed interface BootstrapPhaseDeploy {
         return Result.success(SshConfig.sshConfig(user, envKey, port));
     }
 
-    private static List<ProvisionedNode> collectSourceNodes(BootstrapContext ctx, String sourceName) {
+    private static List<ProvisionedNode> collectSourceNodes(BootstrapContext ctx, SourceName sourceName) {
         return ctx.nodes()
                   .stream()
                   .filter(n -> n.nodeId()
-                                .startsWith(sourceName + "-"))
+                                .startsWith(sourceName.value() + "-"))
                   .toList();
     }
 
@@ -527,7 +635,7 @@ sealed interface BootstrapPhaseDeploy {
                                                  String scheme,
                                                  long timeoutMs,
                                                  Fn1<Result<String>, String> healthCheck,
-                                                 String sourceName) {
+                                                 SourceName sourceName) {
         var deadline = System.currentTimeMillis() + timeoutMs;
         var unreachable = new ArrayList<>(nodes);
 
@@ -542,11 +650,20 @@ sealed interface BootstrapPhaseDeploy {
 
         if (!unreachable.isEmpty()) {
             var ips = unreachable.stream().map(ProvisionedNode::publicIp).toList();
-
-            return new BootstrapError.DeploymentFailed(sourceName,
-                                                       "Cloud-init did not finish on " + unreachable.size()
-                                                      + " node(s). Unreachable IPs: " + String.join(", ", ips)
-                                                      + ". Investigate /var/log/cloud-init-output.log on the host.").result();
+            // This gate polls the management API on each node's PUBLIC address; it does not inspect
+            // cloud-init. Naming only cloud-init sent a 2026-08-05 live investigation to the wrong
+            // place: the nodes had booted fine and the port was simply firewalled off.
+            return new BootstrapError.DeploymentFailed(sourceName.value(),
+                                                       unreachable.size()
+                                                      + " node(s) never answered the management"
+                                                      + " API on port " + mgmtPort
+                                                      + ". Unreachable IPs: " + String.join(", ", ips)
+                                                      + ". Most likely: ingress does not permit " + mgmtPort
+                                                      + "/tcp from this host (a declared [source.<name>.firewall]"
+                                                      + " is deny-by-default and Aether never opens the management"
+                                                      + " port itself), or the runtime failed to start —"
+                                                      + " check /var/log/cloud-init-output.log and the aether-node"
+                                                      + " service on the host.").result();
         }
 
         System.out.printf("  [%s/cloud] All nodes reported healthy%n", sourceName);
@@ -564,13 +681,13 @@ sealed interface BootstrapPhaseDeploy {
                           .isSuccess();
     }
 
-    private static Result<Unit> deployDockerSource(String sourceName) {
+    private static Result<Unit> deployDockerSource(SourceName sourceName) {
         System.out.printf("  [%s/docker] Containers already started during provisioning%n", sourceName);
 
         return Result.unitResult();
     }
 
-    private static Result<Unit> deployForgeSource(String sourceName) {
+    private static Result<Unit> deployForgeSource(SourceName sourceName) {
         System.out.printf("  [%s/forge] Ember cluster managed by forge binary — skipping runtime deploy%n", sourceName);
         System.out.println("  Ensure 'aether forge' is running before cluster formation begins");
 
@@ -578,7 +695,7 @@ sealed interface BootstrapPhaseDeploy {
     }
 
     @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"})
-    private static Result<Unit> deploySshSource(BootstrapContext ctx, SourceProfile source, String sourceName) {
+    private static Result<Unit> deploySshSource(BootstrapContext ctx, SourceProfile source, SourceName sourceName) {
         var sshConfig = buildSshConfig(source);
         var clusterName = ctx.config().cluster().name();
         var peers = buildThreePartPeers(ctx);
@@ -598,6 +715,7 @@ sealed interface BootstrapPhaseDeploy {
             var result = NodeConfigBuilder.compose(ctx,
                                                    source,
                                                    nodeIndex,
+                                                   NodeRole.CORE,
                                                    Option.empty(),
                                                    Option.some(clusterSecret))
                                           .flatMap(doc -> deploySshNode(node,
@@ -639,7 +757,7 @@ sealed interface BootstrapPhaseDeploy {
     private static Result<Unit> deploySshNode(ProvisionedNode node,
                                               String nodeConfig,
                                               SshConfig sshConfig,
-                                              String clusterName,
+                                              ClusterName clusterName,
                                               String nodeId,
                                               int clusterPort,
                                               int managementPort,
@@ -681,7 +799,7 @@ sealed interface BootstrapPhaseDeploy {
 
     private static Result<Unit> startRuntimeViaSsh(String host,
                                                    SshConfig sshConfig,
-                                                   String clusterName,
+                                                   ClusterName clusterName,
                                                    String nodeId,
                                                    int clusterPort,
                                                    int managementPort,
@@ -693,7 +811,7 @@ sealed interface BootstrapPhaseDeploy {
         var startCommand = "mkdir -p /opt/aether/config"
                          + " && docker pull ghcr.io/pragmaticalabs/aether-node:latest"
                          + " && docker run -d --name aether-node --restart no --network host"
-                         + " -l aether-cluster=" + clusterName
+                         + " -l aether-cluster=" + clusterName.value()
                          + " -e NODE_ID=\"" + nodeId
                          + "\""
                          + " -e CLUSTER_PORT=\"" + clusterPort
@@ -719,8 +837,9 @@ sealed interface BootstrapPhaseDeploy {
     static Result<TomlDocument> composeNodeConfig(BootstrapContext ctx,
                                                   SourceProfile source,
                                                   int nodeIndex,
+                                                  NodeRole role,
                                                   Option<String> dockerGid,
                                                   Option<String> clusterSecret) {
-        return NodeConfigBuilder.compose(ctx, source, nodeIndex, dockerGid, clusterSecret);
+        return NodeConfigBuilder.compose(ctx, source, nodeIndex, role, dockerGid, clusterSecret);
     }
 }

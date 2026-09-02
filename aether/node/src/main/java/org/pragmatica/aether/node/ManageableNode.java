@@ -9,6 +9,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.Supplier;
 
+import org.pragmatica.aether.worker.isolation.CoreAbsenceSnapshot;
 import org.pragmatica.aether.api.ClusterEventAggregator;
 import org.pragmatica.aether.backup.BackupService;
 import org.pragmatica.aether.controller.ControlLoop;
@@ -35,13 +36,14 @@ import org.pragmatica.aether.resource.artifact.ArtifactStore;
 import org.pragmatica.aether.resource.artifact.MavenProtocolHandler;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.generation.Epoch;
-import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.node.StorageFactory;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.node.stream.StreamConsumerManager;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.aether.stream.StreamWriteRouter;
+import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
 import org.pragmatica.aether.ttm.TTMManager;
@@ -102,6 +104,18 @@ public interface ManageableNode {
     ClusterEventAggregator eventAggregator();
     BackupService backupService();
     StreamPartitionManager streamPartitionManager();
+
+    /// The node's sealed-segment index (#634-3/4): per-partition [SegmentIndex.SegmentRef] ranges, the
+    /// third local retention-floor source beside the ring tail and the WAL watermark. The default is an
+    /// EMPTY index — for HAND-WRITTEN test implementations only ("no segments known" is the honest
+    /// answer for a fake with no stream storage); JDK dynamic proxies never reach it — they route
+    /// default methods to their handler like any other. The production
+    /// record supplies the live index as a component, so forgetting to wire it is a compile error, not
+    /// a silent empty.
+    default SegmentIndex streamSegmentIndex() {
+        return new SegmentIndex();
+    }
+
     StreamReadRouter streamReadRouter();
 
     /// Owner-routed publish path — the write-side mirror of [#streamReadRouter]. Since #265 made
@@ -115,6 +129,14 @@ public interface ManageableNode {
 
     ConsumerGroupCoordinator consumerGroupCoordinator();
     ConsumerGroupRegistry consumerGroupRegistry();
+
+    /// Declarative `[streams.X]` consumer manager (#488). The production node record supplies the
+    /// wired manager; the default keeps `ManageableNode` test proxies compiling with an inert one
+    /// that truthfully reports no declared consumers rather than fabricating any.
+    default StreamConsumerManager streamConsumerManager() {
+        return StreamConsumerManager.inactive();
+    }
+
     org.pragmatica.aether.slice.stream.StreamNamespacesService streamNamespacesService();
     Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver();
     Map<String, StorageFactory.StorageSetup> storageSetups();
@@ -148,6 +170,16 @@ public interface ManageableNode {
         return Option.none();
     }
 
+    /// #590 — this node's LOCAL core-absence view: has it ever heard the core, how long since the last
+    /// accepted `ClusterSyncPing`, and how long until it dissolves itself. The community-tier twin of
+    /// [#quorumLossSnapshot], and PER-NODE for the same reason — plus a sharper one. A node nearing its
+    /// core-absence fence is by definition one the core is losing contact with, so a leader-forwarded
+    /// answer is unobtainable during exactly the incident it describes; an operator polls the suspect
+    /// node directly. Default `Option.none()` keeps `ManageableNode` test proxies compiling.
+    default Option<CoreAbsenceSnapshot> coreAbsenceSnapshot() {
+        return Option.none();
+    }
+
     /// #345 item 1f — the node's live per-ownership-domain epoch high-water table (the DATA-plane
     /// mirror of the committed ownership records). `GET /api/ownership/{domain}` reads its
     /// [OwnershipEpochHighWater#snapshot] to surface each entry's LOCAL `highWater` epoch and the
@@ -178,7 +210,6 @@ public interface ManageableNode {
     long uptimeSeconds();
     List<NodeId> initialTopology();
     TopologyConfig topologyConfig();
-    HealthSignalSink healthSignalSink();
     InFlightRequestTracker inFlightRequestTracker();
     NodeLifecycle nodeLifecycle();
     /// RC1 Step 4 — exposes the node's canonical Hybrid Logical Clock so request-handling

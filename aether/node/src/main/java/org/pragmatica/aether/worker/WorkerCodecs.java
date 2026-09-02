@@ -21,6 +21,7 @@ import org.pragmatica.cluster.metrics.MetricsCodecs;
 import org.pragmatica.consensus.ConsensusCodecs;
 import org.pragmatica.consensus.net.NetCodecs;
 import org.pragmatica.consensus.rabia.RabiaCodecs;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.TcpCodecs;
 import org.pragmatica.serialization.CodecFor;
 import org.pragmatica.serialization.SliceCodec;
@@ -34,7 +35,7 @@ import static org.pragmatica.serialization.SliceCodec.writeCompact;
 import static org.pragmatica.serialization.SliceCodec.writeString;
 
 
-@CodecFor(InetSocketAddress.class)
+@CodecFor({InetSocketAddress.class, TimeSpan.class})
 @SuppressWarnings("JBCT-STY-03")
 public sealed interface WorkerCodecs {
     record unused() implements WorkerCodecs {}
@@ -65,9 +66,10 @@ public sealed interface WorkerCodecs {
         all.addAll(org.pragmatica.dht.DhtCodecs.CODECS);
         all.addAll(SwimCodecs.CODECS);
         all.add(inetSocketAddressCodec());
+        all.add(timeSpanCodec());
         var requiredTypes = collectRequiredTypes();
 
-        return SliceCodec.sliceCodec(parent, all, requiredTypes);
+        return SliceCodec.systemCodec(parent, all, requiredTypes);
     }
 
     private static Set<Class<?>> collectRequiredTypes() {
@@ -87,5 +89,17 @@ public sealed interface WorkerCodecs {
                                    writeCompact(buf, val.getPort());
                                },
                                (codec, buf) -> InetSocketAddress.createUnresolved(readString(buf), readCompact(buf)));
+    }
+
+    /// `SwimConfig` carries `TimeSpan` fields, so `SwimCodecs.REQUIRED_TYPES` demands a codec for it and
+    /// this registry never supplied one — `workerCodecs` threw on every call. Nothing calls it in
+    /// production, which is exactly why it went unnoticed; the pinning test builds both registries and
+    /// found it. Byte-identical to `NodeCodecs#timeSpanCodec`: the two must agree, because a worker and
+    /// a core exchange these values.
+    private static TypeCodec<TimeSpan> timeSpanCodec() {
+        return new TypeCodec<>(TimeSpan.class,
+                               deterministicTag("org.pragmatica.lang.io.TimeSpan"),
+                               (codec, buf, val) -> buf.writeLong(val.nanos()),
+                               (codec, buf) -> TimeSpan.timeSpan(buf.readLong()).nanos());
     }
 }

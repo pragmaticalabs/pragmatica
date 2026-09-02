@@ -33,6 +33,8 @@ import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.config.BuildInfo;
 import org.pragmatica.aether.config.ConfigLoader;
 import org.pragmatica.aether.management.route.ManagementRoute;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
+import org.pragmatica.aether.slice.resource.ResourceVersion;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.http.HttpOperations;
@@ -56,7 +58,7 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
 
 
-@Command(name = "aether", mixinStandardHelpOptions = true, versionProvider = AetherVersionProvider.class, description = "Command-line interface for Aether cluster management", subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, AetherCli.SlicesCommand.class, AetherCli.MetricsCommand.class, AetherCli.HealthCommand.class, AetherCli.ScaleCommand.class, AetherCli.BlueprintCommand.class, AetherCli.ArtifactCommand.class, AetherCli.InvocationMetricsCommand.class, AetherCli.ControllerCommand.class, AetherCli.AlertsCommand.class, AetherCli.ThresholdsCommand.class, AetherCli.TracesCommand.class, AetherCli.ObservabilityCommand.class, AetherCli.LoggingCommand.class, AetherCli.ConfigCommand.class, AetherCli.ScheduledTasksCommand.class, AetherCli.EventsCommand.class, AetherCli.WorkersCommand.class, AetherCli.BackupCommand.class, AetherCli.BackupSingularCommand.class, AetherCli.SchemaCommand.class, AetherCli.AbTestCommand.class, AetherCli.StreamCommand.class, org.pragmatica.aether.cli.stream.StreamCommand.class, AetherCli.CertCommand.class, AetherCli.RoutesCommand.class, AetherCli.VersionsCommand.class, AetherCli.DhtCommand.class, org.pragmatica.aether.cli.deploy.DeployCommand.class, org.pragmatica.aether.cli.cluster.ClusterCommand.class, org.pragmatica.aether.cli.storage.StorageCommand.class, org.pragmatica.aether.cli.whoami.WhoamiCommand.class, org.pragmatica.aether.cli.ttm.TtmCommand.class, GenerateCompletion.class})
+@Command(name = "aether", mixinStandardHelpOptions = true, versionProvider = AetherVersionProvider.class, description = "Command-line interface for Aether cluster management", subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, AetherCli.SlicesCommand.class, AetherCli.MetricsCommand.class, AetherCli.HealthCommand.class, AetherCli.ScaleCommand.class, AetherCli.BlueprintCommand.class, AetherCli.ArtifactCommand.class, AetherCli.InvocationMetricsCommand.class, AetherCli.ControllerCommand.class, AetherCli.AlertsCommand.class, AetherCli.ThresholdsCommand.class, AetherCli.TracesCommand.class, AetherCli.ObservabilityCommand.class, AetherCli.LoggingCommand.class, AetherCli.ConfigCommand.class, AetherCli.ScheduledTasksCommand.class, AetherCli.EventsCommand.class, AetherCli.WorkersCommand.class, AetherCli.BackupCommand.class, AetherCli.BackupSingularCommand.class, AetherCli.SchemaCommand.class, AetherCli.AbTestCommand.class, AetherCli.StreamCommand.class, org.pragmatica.aether.cli.stream.StreamCommand.class, AetherCli.CertCommand.class, AetherCli.RoutesCommand.class, AetherCli.VersionsCommand.class, AetherCli.DhtCommand.class, AetherCli.EntityCommand.class, org.pragmatica.aether.cli.deploy.DeployCommand.class, org.pragmatica.aether.cli.cluster.ClusterCommand.class, org.pragmatica.aether.cli.storage.StorageCommand.class, org.pragmatica.aether.cli.whoami.WhoamiCommand.class, org.pragmatica.aether.cli.ttm.TtmCommand.class, GenerateCompletion.class})
 @Contract
 public class AetherCli implements Runnable {
     private static final String DEFAULT_ADDRESS = "localhost:8080";
@@ -235,7 +237,8 @@ public class AetherCli implements Runnable {
         }
     }
 
-    @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"})
+    // JBCT-RET-08: SSLContext.init(null keyManagers, …) — null is the JDK TLS contract (trust-only context)
+    @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01", "JBCT-RET-08"})
     private static SSLContext createTrustAllSslContext() throws NoSuchAlgorithmException, KeyManagementException {
         var trustAll = new TrustManager[]{new TrustAllManager()};
         var sslContext = SSLContext.getInstance("TLS");
@@ -708,6 +711,8 @@ public class AetherCli implements Runnable {
                                                                                                                                            16)),
                                                                                                         "nodes");
 
+        // JBCT-RET-08: no array-path for this table (optional field); Option-ifying TableSpec.arrayPath globally is disproportionate
+        @SuppressWarnings("JBCT-RET-08")
         private static final OutputFormatter.TableSpec RESOLVE_TABLE = new OutputFormatter.TableSpec("Endpoint",
                                                                                                      List.of(new OutputFormatter.Column("NODE ID",
                                                                                                                                         "nodeId",
@@ -1245,7 +1250,7 @@ public class AetherCli implements Runnable {
                     return ExitCode.SUCCESS;
                 }
 
-                System.out.printf("  Current instances: %d / %d%n", currentInstances, instances);
+                System.out.printf("  Current instances: %s / %d%n", ScaleWait.describe(currentInstances), instances);
                 sleepQuietly();
             }
 
@@ -1257,30 +1262,10 @@ public class AetherCli implements Runnable {
             return ExitCode.TIMEOUT;
         }
 
+        /// Counts instances the cluster reports as ACTIVE for this artifact — the same
+        /// per-instance state `aether slices status` shows.
         private int queryCurrentInstances() {
-            var response = parent.fetch(SLICES_LIST);
-
-            return parseInstanceCount(response);
-        }
-
-        private int parseInstanceCount(String response) {
-            if (response.contains("\"error\"")) {
-                return -1;
-            }
-
-            return countMatchingInstances(response);
-        }
-
-        private int countMatchingInstances(String response) {
-            var index = 0;
-            var count = 0;
-
-            while ((index = response.indexOf(artifact, index)) >= 0) {
-                count++;
-                index += artifact.length();
-            }
-
-            return count;
+            return ScaleWait.activeInstances(parent.fetch(SLICES_LIST), artifact);
         }
 
         @SuppressWarnings("JBCT-EX-01")
@@ -2230,7 +2215,7 @@ public class AetherCli implements Runnable {
         }
 
         @Command(name = "deploy", description = "Deploy a blueprint from an artifact in the cluster repository")
-        @SuppressWarnings({"JBCT-PAT-01", "JBCT-SEQ-01"})
+        @SuppressWarnings("JBCT-SEQ-01")
         static class DeployArtifactCommand implements Callable<Integer> {
             private static final int POLL_INTERVAL_MS = 2000;
 
@@ -2268,55 +2253,48 @@ public class AetherCli implements Runnable {
                     return printResult;
                 }
 
-                return pollUntilDeployed();
+                return DeploymentWait.blueprintId(response)
+                                     .map(this::pollUntilDeployed)
+                                     .or(DeployArtifactCommand::reportUnknownBlueprintId);
             }
 
-            @SuppressWarnings("JBCT-EX-01")
-            private int pollUntilDeployed() {
-                System.out.printf("Waiting for %s deployment to complete (timeout: %ds)...%n", coords, timeoutSeconds);
-                var deadline = System.currentTimeMillis() + (long) timeoutSeconds * 1000;
+            private int pollUntilDeployed(String blueprintId) {
+                System.out.printf("Waiting for %s deployment to complete (timeout: %ds)...%n",
+                                  blueprintId,
+                                  timeoutSeconds);
+                var exitCode = DeploymentWait.awaitCompletion(() -> queryOverallStatus(blueprintId),
+                                                              System.currentTimeMillis() + (long) timeoutSeconds * 1000,
+                                                              POLL_INTERVAL_MS);
 
-                while (System.currentTimeMillis() < deadline) {
-                    var status = queryDeploymentStatus();
+                return exitCode == ExitCode.SUCCESS
+                       ? reportComplete(blueprintId)
+                       : reportTimeout(blueprintId);
+            }
 
-                    if (isDeploymentComplete(status)) {
-                        System.out.printf("Deployment complete: %s is active.%n", coords);
+            /// Reads the blueprint deployment status the node derives from its replicated
+            /// `DeploymentMap` — the same state `aether slices status` reports.
+            private String queryOverallStatus(String blueprintId) {
+                return DeploymentWait.overallStatus(blueprintParent.parent.fetch(BLUEPRINT_STATUS, List.of(blueprintId)));
+            }
 
-                        return ExitCode.SUCCESS;
-                    }
+            private static int reportComplete(String blueprintId) {
+                System.out.printf("Deployment complete: %s is active.%n", blueprintId);
 
-                    System.out.printf("  Deployment status: %s%n", status);
-                    sleepQuietly();
-                }
+                return ExitCode.SUCCESS;
+            }
 
-                System.err.printf("Timeout: %s deployment did not complete within %ds.%n", coords, timeoutSeconds);
+            private int reportTimeout(String blueprintId) {
+                System.err.printf("Timeout: %s deployment did not complete within %ds.%n", blueprintId, timeoutSeconds);
 
                 return ExitCode.TIMEOUT;
             }
 
-            private static boolean isDeploymentComplete(String status) {
-                return "ACTIVE".equalsIgnoreCase(status) || "DEPLOYED".equalsIgnoreCase(status);
-            }
+            /// The deploy call succeeded but the response carried no blueprint id, so there is
+            /// nothing to poll. Fail loudly rather than waiting on an unidentified deployment.
+            private static int reportUnknownBlueprintId() {
+                System.err.println("Cannot wait: deploy response did not report a blueprint id.");
 
-            private String queryDeploymentStatus() {
-                var response = blueprintParent.parent.fetch(SLICES_LIST);
-
-                if (response.contains("\"error\"")) {
-                    return "UNKNOWN";
-                }
-
-                return response.contains(coords)
-                       ? "ACTIVE"
-                       : "PENDING";
-            }
-
-            @SuppressWarnings("JBCT-EX-01")
-            private static void sleepQuietly() {
-                try {
-                    Thread.sleep(POLL_INTERVAL_MS);
-                } catch (InterruptedException _) {
-                    Thread.currentThread().interrupt();
-                }
+                return ExitCode.ERROR;
             }
         }
 
@@ -3805,7 +3783,11 @@ public class AetherCli implements Runnable {
         }
     }
 
-    @Command(name = "workers", description = "Manage worker nodes", subcommands = {WorkersCommand.ListCommand.class, WorkersCommand.HealthCommand.class, WorkersCommand.EndpointsCommand.class})
+    /// #525: `health` and `endpoints` subcommands removed. Per-worker health and per-worker
+    /// endpoints are never published to consensus, so those commands could only ever fail. The
+    /// routes remain declared and answer an honest 501 (see NotImplementedRoutes) for anyone
+    /// calling the HTTP API directly; the CLI simply stops offering what it cannot deliver.
+    @Command(name = "workers", description = "Inspect worker nodes", subcommands = {WorkersCommand.ListCommand.class})
     static class WorkersCommand implements Runnable {
         @CommandLine.ParentCommand
         private AetherCli parent;
@@ -3816,7 +3798,7 @@ public class AetherCli implements Runnable {
             CommandLine.usage(this, System.out);
         }
 
-        @Command(name = "list", description = "List worker nodes")
+        @Command(name = "list", description = "List worker nodes and the community each belongs to")
         static class ListCommand implements Callable<Integer> {
             @CommandLine.ParentCommand
             private WorkersCommand workersParent;
@@ -3828,38 +3810,47 @@ public class AetherCli implements Runnable {
                 return OutputFormatter.printQuery(response, workersParent.parent.outputOptions());
             }
         }
-
-        @Command(name = "health", description = "Show worker pool health summary")
-        static class HealthCommand implements Callable<Integer> {
-            @CommandLine.ParentCommand
-            private WorkersCommand workersParent;
-
-            @Override
-            public Integer call() {
-                var response = workersParent.parent.fetch(WORKERS_HEALTH);
-
-                return OutputFormatter.printQuery(response, workersParent.parent.outputOptions());
-            }
-        }
-
-        @Command(name = "endpoints", description = "List worker endpoints")
-        static class EndpointsCommand implements Callable<Integer> {
-            @CommandLine.ParentCommand
-            private WorkersCommand workersParent;
-
-            @Override
-            public Integer call() {
-                var response = workersParent.parent.fetch(WORKERS_ENDPOINTS);
-
-                return OutputFormatter.printQuery(response, workersParent.parent.outputOptions());
-            }
-        }
     }
 
     @Command(name = "schema", description = "Manage datasource schemas", subcommands = {SchemaCommand.StatusCommand.class, SchemaCommand.HistoryCommand.class, SchemaCommand.MigrateCommand.class, SchemaCommand.UndoCommand.class, SchemaCommand.BaselineCommand.class, SchemaCommand.RetryCommand.class})
     static class SchemaCommand implements Runnable {
         @CommandLine.ParentCommand
         private AetherCli parent;
+
+        /// `OWNING BLUEPRINT` is the blueprint whose migrations claim this datasource (#542/#550).
+        /// It is the field that says whose slices a non-COMPLETED status is holding: activation is
+        /// withheld from the slices of THIS blueprint only, never from an unrelated one.
+        ///
+        /// Package-visible (like `SchemaRoutes.baselineDatasource`) so `SchemaStatusTableTest` can
+        /// render the real column set over a real response body: a wrong `jsonPath` renders a blank
+        /// column rather than failing, so only a test that RUNS the renderer can catch it.
+        static final List<OutputFormatter.Column> SCHEMA_STATUS_COLUMNS = List.of(new OutputFormatter.Column("DATASOURCE",
+                                                                                                             "datasource",
+                                                                                                             20),
+                                                                                  new OutputFormatter.Column("STATUS",
+                                                                                                             "status",
+                                                                                                             10),
+                                                                                  new OutputFormatter.Column("VERSION",
+                                                                                                             "currentVersion",
+                                                                                                             7),
+                                                                                  new OutputFormatter.Column("LAST MIGRATION",
+                                                                                                             "lastMigration",
+                                                                                                             32),
+                                                                                  new OutputFormatter.Column("OWNING BLUEPRINT",
+                                                                                                             "owningBlueprint",
+                                                                                                             45));
+
+        static final OutputFormatter.TableSpec SCHEMA_STATUS_ALL_TABLE = new OutputFormatter.TableSpec("Schema Status",
+                                                                                                       SCHEMA_STATUS_COLUMNS,
+                                                                                                       "datasources");
+
+        // JBCT-RET-08: single-datasource responses are a bare object, so this table has no
+        // array-path (matching RESOLVE_TABLE); Option-ifying TableSpec.arrayPath globally is
+        // disproportionate
+        @SuppressWarnings("JBCT-RET-08")
+        static final OutputFormatter.TableSpec SCHEMA_STATUS_ONE_TABLE = new OutputFormatter.TableSpec("Schema Status",
+                                                                                                       SCHEMA_STATUS_COLUMNS,
+                                                                                                       null);
 
         @Contract
         @Override
@@ -3876,12 +3867,23 @@ public class AetherCli implements Runnable {
             private String datasource;
 
             @Override
+            @SuppressWarnings("JBCT-UTIL-02")
             public Integer call() {
+                var output = schemaParent.parent.outputOptions();
                 var response = datasource != null
                                ? schemaParent.parent.fetch(SCHEMA_STATUS_ONE, List.of(datasource))
                                : schemaParent.parent.fetch(SCHEMA_STATUS_ALL);
+                var errorCode = OutputFormatter.checkResponseError(response, output, "Failed to get schema status");
 
-                return OutputFormatter.printQuery(response, schemaParent.parent.outputOptions());
+                if (errorCode >= 0) {
+                    return errorCode;
+                }
+
+                return OutputFormatter.printQuery(response,
+                                                  output,
+                                                  datasource != null
+                                                  ? SCHEMA_STATUS_ONE_TABLE
+                                                  : SCHEMA_STATUS_ALL_TABLE);
             }
         }
 
@@ -3894,10 +3896,17 @@ public class AetherCli implements Runnable {
             private String datasource;
 
             @Override
+            @SuppressWarnings("JBCT-UTIL-02")
             public Integer call() {
+                var output = schemaParent.parent.outputOptions();
                 var response = schemaParent.parent.fetch(SCHEMA_HISTORY, List.of(datasource));
+                var errorCode = OutputFormatter.checkResponseError(response, output, "Failed to get schema history");
 
-                return OutputFormatter.printQuery(response, schemaParent.parent.outputOptions());
+                if (errorCode >= 0) {
+                    return errorCode;
+                }
+
+                return OutputFormatter.printQuery(response, output, SCHEMA_STATUS_ONE_TABLE);
             }
         }
 
@@ -3910,12 +3919,17 @@ public class AetherCli implements Runnable {
             private String datasource;
 
             @Override
+            @SuppressWarnings("JBCT-UTIL-02")
             public Integer call() {
+                var output = schemaParent.parent.outputOptions();
                 var response = schemaParent.parent.post(SCHEMA_MIGRATE, List.of(datasource), "{}");
+                var errorCode = OutputFormatter.checkResponseError(response, output, "Failed to trigger migration");
 
-                return OutputFormatter.printAction(response,
-                                                   schemaParent.parent.outputOptions(),
-                                                   "Migration triggered for " + datasource);
+                if (errorCode >= 0) {
+                    return errorCode;
+                }
+
+                return OutputFormatter.printAction(response, output, "Migration triggered for " + datasource);
             }
         }
 
@@ -3931,14 +3945,21 @@ public class AetherCli implements Runnable {
             private int targetVersion;
 
             @Override
+            @SuppressWarnings("JBCT-UTIL-02")
             public Integer call() {
+                var output = schemaParent.parent.outputOptions();
                 var response = schemaParent.parent.post(SCHEMA_UNDO,
                                                         List.of(datasource),
                                                         "targetVersion=" + targetVersion,
                                                         "{}");
+                var errorCode = OutputFormatter.checkResponseError(response, output, "Failed to undo migrations");
+
+                if (errorCode >= 0) {
+                    return errorCode;
+                }
 
                 return OutputFormatter.printAction(response,
-                                                   schemaParent.parent.outputOptions(),
+                                                   output,
                                                    "Undo to version " + targetVersion + " for " + datasource);
             }
         }
@@ -3954,17 +3975,28 @@ public class AetherCli implements Runnable {
             @CommandLine.Option(names = {"-v", "--version"}, required = true, description = "Baseline version")
             private int version;
 
+            /// Baselining inherits the existing record's owning blueprint, so a datasource with no
+            /// schema record cannot be baselined (#551) — the server answers with an error rather
+            /// than fabricating an unowned record. The error guard is what makes that visible:
+            /// without it the canned success line would be printed over the failure body.
             @Override
+            @SuppressWarnings("JBCT-UTIL-02")
             public Integer call() {
+                var output = schemaParent.parent.outputOptions();
                 var response = schemaParent.parent.post(SCHEMA_BASELINE, List.of(datasource), "version=" + version, "{}");
+                var errorCode = OutputFormatter.checkResponseError(response, output, "Failed to baseline datasource");
+
+                if (errorCode >= 0) {
+                    return errorCode;
+                }
 
                 return OutputFormatter.printAction(response,
-                                                   schemaParent.parent.outputOptions(),
+                                                   output,
                                                    "Baseline set at version " + version + " for " + datasource);
             }
         }
 
-        @Command(name = "retry", description = "Retry a failed schema migration")
+        @Command(name = "retry", description = "Retry a failed schema migration (clears the activation hold on the owning blueprint's slices)")
         static class RetryCommand implements Callable<Integer> {
             @CommandLine.ParentCommand
             private SchemaCommand schemaParent;
@@ -3973,12 +4005,17 @@ public class AetherCli implements Runnable {
             private String datasource;
 
             @Override
+            @SuppressWarnings("JBCT-UTIL-02")
             public Integer call() {
+                var output = schemaParent.parent.outputOptions();
                 var response = schemaParent.parent.post(SCHEMA_RETRY, List.of(datasource), "{}");
+                var errorCode = OutputFormatter.checkResponseError(response, output, "Failed to retry migration");
 
-                return OutputFormatter.printAction(response,
-                                                   schemaParent.parent.outputOptions(),
-                                                   "Migration retry triggered for " + datasource);
+                if (errorCode >= 0) {
+                    return errorCode;
+                }
+
+                return OutputFormatter.printAction(response, output, "Migration retry triggered for " + datasource);
             }
         }
     }
@@ -4104,7 +4141,51 @@ public class AetherCli implements Runnable {
         }
     }
 
-    @Command(name = "streams", description = "Manage event streams", subcommands = {StreamCommand.ListCommand.class, StreamCommand.StatusCommand.class, StreamCommand.PublishCommand.class, StreamCommand.ReadCommand.class, StreamCommand.CreateCommand.class, StreamCommand.DeleteCommand.class, StreamCommand.ConsumerGroupCommand.class})
+    /// #345 I3 — durable-entity checkpoint observability.
+    ///
+    /// A checkpoint is the only thing that bounds an entity log: until a partition is checkpointed the
+    /// retention floor reclaims nothing for it. A driver that silently stopped shows no other symptom —
+    /// writes and reads keep succeeding — so `writes` climbing is the signal an operator needs, and a
+    /// keyspace whose `writes` stays flat under load is the thing to act on.
+    @Command(name = "entity", description = "Inspect durable entity keyspaces", subcommands = {EntityCommand.CheckpointsCommand.class, EntityCommand.KeyspacesCommand.class})
+    static class EntityCommand {
+        @CommandLine.ParentCommand
+        AetherCli parent;
+
+        /// LOCAL route: each node checkpoints only the partitions it folds, so this reports the
+        /// RECEIVING node's own work. Query a specific node's management port to see that node's view.
+        @Command(name = "checkpoints", description = "Show this node's durable-entity checkpoint progress")
+        static class CheckpointsCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private EntityCommand entityParent;
+
+            @Override
+            public Integer call() {
+                var response = entityParent.parent.fetch(ENTITY_CHECKPOINTS);
+
+                return OutputFormatter.printQuery(response, entityParent.parent.outputOptions());
+            }
+        }
+
+        /// The HOSTING view (#634-3 fold-in): which nodes committed a registration for each keyspace —
+        /// the exact candidate set the leader mints entity-arc owners over. Assembled from replicated
+        /// KV, so any caught-up node answers identically; `partitionCountsDisagree: true` marks a
+        /// rolling-redeploy window where hosts declared different counts (arcs span the max).
+        @Command(name = "keyspaces", description = "Show durable-entity keyspaces with their hosting node sets")
+        static class KeyspacesCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private EntityCommand entityParent;
+
+            @Override
+            public Integer call() {
+                var response = entityParent.parent.fetch(ENTITY_KEYSPACES);
+
+                return OutputFormatter.printQuery(response, entityParent.parent.outputOptions());
+            }
+        }
+    }
+
+    @Command(name = "streams", description = "Manage event streams", subcommands = {StreamCommand.ListCommand.class, StreamCommand.StatusCommand.class, StreamCommand.ConsumersCommand.class, StreamCommand.PublishCommand.class, StreamCommand.ReadCommand.class, StreamCommand.CreateCommand.class, StreamCommand.DeleteCommand.class, StreamCommand.ConsumerGroupCommand.class})
     static class StreamCommand implements Runnable {
         @CommandLine.ParentCommand
         private AetherCli parent;
@@ -4115,6 +4196,25 @@ public class AetherCli implements Runnable {
             CommandLine.usage(this, System.out);
         }
 
+        /// Bare name (no colon) defaults to the system-namespace catalog address at the default
+        /// version, preserving `status`/`publish`/`read`/`delete`'s original single-name UX; anything
+        /// containing a colon is parsed as a full `namespace:stream:version` address via the canonical
+        /// [ResourceAddress#resourceAddress] parser. Needed because those four commands now address the
+        /// catalog-form routes (`STREAM_GET`/`STREAMS_PUBLISH`/`STREAM_READ`/`STREAMS_DELETE` —
+        /// management-api-versioning-spec.md hard cutover) instead of the old flat bare-name routes, so
+        /// a non-`system` namespace needs a way in that a bare name alone can't express.
+        private static Result<ResourceAddress> resolveStreamAddress(String raw) {
+            return raw.contains(":")
+                   ? ResourceAddress.resourceAddress(raw)
+                   : ResourceAddress.systemResource(raw, ResourceVersion.defaultVersion());
+        }
+
+        private static int handleAddressError(Cause cause) {
+            System.err.println("Error: invalid stream address: " + cause.message());
+
+            return ExitCode.ERROR;
+        }
+
         @Command(name = "list", description = "List all streams")
         static class ListCommand implements Callable<Integer> {
             @CommandLine.ParentCommand
@@ -4122,7 +4222,7 @@ public class AetherCli implements Runnable {
 
             @Override
             public Integer call() {
-                var response = streamParent.parent.fetch(STREAM_LIST);
+                var response = streamParent.parent.fetch(STREAMS_LIST);
 
                 return OutputFormatter.printQuery(response, streamParent.parent.outputOptions());
             }
@@ -4133,12 +4233,37 @@ public class AetherCli implements Runnable {
             @CommandLine.ParentCommand
             private StreamCommand streamParent;
 
-            @Parameters(index = "0", description = "Stream name")
-            private String name;
+            @Parameters(index = "0", description = "Stream name or address: name | namespace:stream:version (bare name defaults to system:name:1.0.0)")
+            private String address;
 
             @Override
             public Integer call() {
-                var response = streamParent.parent.fetch(STREAM_GET, List.of(name));
+                return resolveStreamAddress(address).fold(StreamCommand::handleAddressError, this::fetchStatus);
+            }
+
+            private int fetchStatus(ResourceAddress addr) {
+                var response = streamParent.parent.fetch(STREAM_GET,
+                                                         List.of(addr.namespace().value(),
+                                                                 addr.name().value(),
+                                                                 addr.version().asString()));
+
+                return OutputFormatter.printQuery(response, streamParent.parent.outputOptions());
+            }
+        }
+
+        /// #488/#535 operator surface: which declarative `[streams.X]` consumers this node knows about,
+        /// which partitions it consumes, and — since #535 — which node consumes each partition and which
+        /// owns it. LOCAL scope: the answer describes the node you asked, so `unassignedPartitions` and
+        /// the diagnostic are that node's view. Every node computes the same assignment, so one call is
+        /// enough to answer "who consumes partition 3".
+        @Command(name = "consumers", description = "Show declarative stream consumers on the target node")
+        static class ConsumersCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private StreamCommand streamParent;
+
+            @Override
+            public Integer call() {
+                var response = streamParent.parent.fetch(STREAM_DECLARATIVE_CONSUMERS);
 
                 return OutputFormatter.printQuery(response, streamParent.parent.outputOptions());
             }
@@ -4149,21 +4274,29 @@ public class AetherCli implements Runnable {
             @CommandLine.ParentCommand
             private StreamCommand streamParent;
 
-            @Parameters(index = "0", description = "Stream name")
-            private String name;
+            @Parameters(index = "0", description = "Stream name or address: name | namespace:stream:version (bare name defaults to system:name:1.0.0)")
+            private String address;
 
             @Parameters(index = "1", description = "Message content")
             private String message;
 
             @Override
             public Integer call() {
+                return resolveStreamAddress(address).fold(StreamCommand::handleAddressError, this::publish);
+            }
+
+            private int publish(ResourceAddress addr) {
                 var encoded = Base64.getEncoder().encodeToString(message.getBytes());
                 var body = "{\"data\":\"" + encoded + "\"}";
-                var response = streamParent.parent.post(STREAM_PUBLISH, List.of(name), body);
+                var response = streamParent.parent.post(STREAMS_PUBLISH,
+                                                        List.of(addr.namespace().value(),
+                                                                addr.name().value(),
+                                                                addr.version().asString()),
+                                                        body);
 
                 return OutputFormatter.printAction(response,
                                                    streamParent.parent.outputOptions(),
-                                                   "Published to stream " + name);
+                                                   "Published to stream " + addr.asString());
             }
         }
 
@@ -4172,8 +4305,8 @@ public class AetherCli implements Runnable {
             @CommandLine.ParentCommand
             private StreamCommand streamParent;
 
-            @Parameters(index = "0", description = "Stream name")
-            private String name;
+            @Parameters(index = "0", description = "Stream name or address: name | namespace:stream:version (bare name defaults to system:name:1.0.0)")
+            private String address;
 
             @Parameters(index = "1", description = "Partition number")
             private String partition;
@@ -4186,7 +4319,16 @@ public class AetherCli implements Runnable {
 
             @Override
             public Integer call() {
-                var response = streamParent.parent.fetch(STREAM_READ, List.of(name, partition), buildReadQuery());
+                return resolveStreamAddress(address).fold(StreamCommand::handleAddressError, this::read);
+            }
+
+            private int read(ResourceAddress addr) {
+                var response = streamParent.parent.fetch(STREAM_READ,
+                                                         List.of(addr.namespace().value(),
+                                                                 addr.name().value(),
+                                                                 addr.version().asString(),
+                                                                 partition),
+                                                         buildReadQuery());
 
                 return OutputFormatter.printQuery(response, streamParent.parent.outputOptions());
             }
@@ -4231,8 +4373,8 @@ public class AetherCli implements Runnable {
             @CommandLine.ParentCommand
             private StreamCommand streamParent;
 
-            @Parameters(index = "0", description = "Stream name")
-            private String name;
+            @Parameters(index = "0", description = "Stream name or address: name | namespace:stream:version (bare name defaults to system:name:1.0.0)")
+            private String address;
 
             @CommandLine.Option(names = {"--force", "-f"}, description = "Skip confirmation prompt")
             private boolean force;
@@ -4240,15 +4382,23 @@ public class AetherCli implements Runnable {
             @Override
             @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"})
             public Integer call() {
+                return resolveStreamAddress(address).fold(StreamCommand::handleAddressError, this::deleteStream);
+            }
+
+            @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"})
+            private int deleteStream(ResourceAddress addr) {
                 if (!force) {
-                    var confirmed = confirmDeletion(name);
+                    var confirmed = confirmDeletion(addr.asString());
 
                     if (!confirmed) {
                         return ExitCode.SUCCESS;
                     }
                 }
 
-                var response = streamParent.parent.delete(STREAM_DELETE, List.of(name));
+                var response = streamParent.parent.delete(STREAMS_DELETE,
+                                                          List.of(addr.namespace().value(),
+                                                                  addr.name().value(),
+                                                                  addr.version().asString()));
                 var errorCode = OutputFormatter.checkResponseError(response,
                                                                    streamParent.parent.outputOptions(),
                                                                    "Failed to delete stream");
@@ -4259,7 +4409,7 @@ public class AetherCli implements Runnable {
 
                 return OutputFormatter.printAction(response,
                                                    streamParent.parent.outputOptions(),
-                                                   "Deleted stream: " + name);
+                                                   "Deleted stream: " + addr.asString());
             }
 
             @SuppressWarnings("JBCT-SEQ-01")

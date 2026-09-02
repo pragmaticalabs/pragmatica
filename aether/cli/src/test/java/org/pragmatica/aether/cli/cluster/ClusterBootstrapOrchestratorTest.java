@@ -32,6 +32,7 @@ import static org.pragmatica.aether.config.cluster.OperationsConfig.defaultOpera
 import static org.pragmatica.aether.config.cluster.RoleSubTable.roleSubTable;
 import static org.pragmatica.aether.config.cluster.RuntimeProfile.runtimeProfile;
 import static org.pragmatica.aether.config.cluster.SourceProfile.sourceProfile;
+import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 
@@ -49,7 +50,7 @@ class ClusterBootstrapOrchestratorTest {
             ClusterBootstrapConfigValidator.validate(config)
                 .onFailure(cause -> fail("Expected validation success but got: " + cause.message()))
                 .onSuccess(validated -> {
-                    assertEquals("test-forge", validated.cluster().name());
+                    assertEquals("test-forge", validated.cluster().name().value());
                     assertFalse(validated.sources().isEmpty());
                 });
         }
@@ -70,7 +71,7 @@ class ClusterBootstrapOrchestratorTest {
 
     private static ClusterBootstrapConfig forgeConfig(String clusterName, int coreCount) {
         var forgeSource = sourceProfile(
-            "forge", SourceType.FORGE, none(), none(), none(), none(),
+            sourceNameOrDefault("forge"), SourceType.FORGE, none(), none(), none(), none(),
             none(), none(), none(), LoadBalancerMode.NONE, List.of(), none(),
             Map.of(),
             Map.of(NodeRole.CORE, roleSubTable(NodeRole.CORE, some(coreCount), none(), none(), RUNTIME_REF)),

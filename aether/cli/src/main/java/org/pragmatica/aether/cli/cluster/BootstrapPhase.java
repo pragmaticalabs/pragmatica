@@ -7,6 +7,7 @@ package org.pragmatica.aether.cli.cluster;
 public enum BootstrapPhase {
     VALIDATE,
     UPLOAD_SSH_KEYS,
+    CREATE_FIREWALL,
     PROVISION,
     COLLECT_ADDRESSES,
     DEPLOY_RUNTIME,

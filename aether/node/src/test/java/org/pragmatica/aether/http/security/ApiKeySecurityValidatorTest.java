@@ -90,7 +90,7 @@ class ApiKeySecurityValidatorTest {
 
     @Test
     void validate_returnsSystemContext_forNoOpValidator() {
-        var validator = SecurityValidator.noOpValidator();
+        var validator = SecurityValidator.permitAllValidator();
         var request = createRequest(Map.of());
 
         validator.validate(request, SecurityPolicy.apiKeyRequired())

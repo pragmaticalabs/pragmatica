@@ -163,6 +163,8 @@ public sealed interface StreamTailPoller {
         return "fromOffset=" + fromOffset + "&maxEvents=" + maxEvents;
     }
 
+    // RET-06: `s` is a possibly-null/malformed server response truncated for error display; defensive.
+    @SuppressWarnings("JBCT-RET-06")
     private static String truncate(String s, int max) {
         return s == null || s.length() <= max
                ? s

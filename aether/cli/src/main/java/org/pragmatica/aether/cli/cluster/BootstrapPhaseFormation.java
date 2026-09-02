@@ -11,6 +11,7 @@ import java.util.List;
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapError;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.NodeAddress;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Contract;
@@ -86,8 +87,8 @@ sealed interface BootstrapPhaseFormation {
     }
 
     @Contract
-    private static void persistApiKeyFile(String clusterName, String apiKey) {
-        var keyFile = Path.of(System.getProperty("user.home"), ".aether", "clusters", clusterName, "api-key");
+    private static void persistApiKeyFile(ClusterName clusterName, String apiKey) {
+        var keyFile = Path.of(System.getProperty("user.home"), ".aether", "clusters", clusterName.value(), "api-key");
         // #287: the persisted admin api-key file must be owner-only (0600). Replaces the deprecated
         // File.setReadable/setWritable dance with POSIX permissions via SecureFiles.
         ensureParentDir(keyFile).flatMap(_ -> SecureFiles.writeSecure(keyFile, apiKey))
@@ -218,7 +219,7 @@ sealed interface BootstrapPhaseFormation {
             return ClusterBootstrapOrchestrator.httpGet(readyUrl).isSuccess();
         }
 
-        var healthUrl = scheme + "://" + endpoint + ":" + managementPort + "/api/health";
+        var healthUrl = scheme + "://" + endpoint + ":" + managementPort + "/api/v1/health";
 
         return ClusterBootstrapOrchestrator.httpGet(healthUrl, apiKey)
                                            .flatMap(JSON::readTree)
@@ -252,7 +253,7 @@ sealed interface BootstrapPhaseFormation {
         var configJson = buildConfigJson(persistedToml);
         var configuredKey = extractConfiguredApiKey(ctx.config());
 
-        return retryFormationPost(endpoint + "/api/cluster/config", configJson, "cluster config", configuredKey).onSuccess(_ -> System.out.println("  Cluster config stored in KV-Store"));
+        return retryFormationPost(endpoint + "/api/v1/cluster/config", configJson, "cluster config", configuredKey).onSuccess(_ -> System.out.println("  Cluster config stored in KV-Store"));
     }
 
     @SuppressWarnings("JBCT-EX-01")
@@ -272,8 +273,8 @@ sealed interface BootstrapPhaseFormation {
                     + "\",\"authorizationRole\":\"ADMIN\",\"gracePeriodMs\":300000,\"auditAction\":\"CREATED\",\"operatorHint\":\"bootstrap\"}";
         var configuredKey = extractConfiguredApiKey(ctx.config());
 
-        return retryFormationPost(endpoint + "/api/cluster/keys", keyJson, "API key", configuredKey).onSuccess(_ -> System.out.printf("  API key stored (keyId=%s)%n",
-                                                                                                                                      keyId));
+        return retryFormationPost(endpoint + "/api/v1/cluster/keys", keyJson, "API key", configuredKey).onSuccess(_ -> System.out.printf("  API key stored (keyId=%s)%n",
+                                                                                                                                         keyId));
     }
 
     private static Option<String> extractConfiguredApiKey(ClusterBootstrapConfig config) {
@@ -363,6 +364,8 @@ sealed interface BootstrapPhaseFormation {
         return "{\"tomlContent\":\"" + escapeJsonString(rawTomlContent) + "\",\"expectedVersion\":0}";
     }
 
+    // RET-06: defensive null-coalescing when serializing possibly-absent TOML content to JSON.
+    @SuppressWarnings("JBCT-RET-06")
     private static String escapeJsonString(String s) {
         if (s == null) {
             return "";

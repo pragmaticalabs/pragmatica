@@ -233,6 +233,8 @@ public class DynamicConfigManager {
         return sb.toString();
     }
 
+    // RET-06: defensive null-coalescing when serializing a possibly-absent string field to JSON.
+    @SuppressWarnings("JBCT-RET-06")
     private String escapeJson(String s) {
         if (s == null) return "";
 

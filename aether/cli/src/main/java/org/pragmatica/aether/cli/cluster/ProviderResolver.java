@@ -13,11 +13,13 @@ import java.util.stream.Collectors;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.RoleSubTable;
 import org.pragmatica.aether.config.cluster.SourceProfile;
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.CloudConfig;
 import org.pragmatica.aether.environment.CloudCredentials;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
 import org.pragmatica.aether.environment.EnvironmentIntegrationFactory;
+import org.pragmatica.aether.environment.FirewallId;
 import org.pragmatica.aether.environment.FloatingIpProvider;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -45,13 +47,47 @@ public final class ProviderResolver {
     public static Result<ComputeProvider> resolveCloudCompute(SourceProfile source,
                                                               List<Long> sshKeyIds,
                                                               String userData) {
+        return resolveCloudCompute(source, sshKeyIds, userData, Option.<ClusterName> empty(), List.of());
+    }
+
+    /// Cluster-aware resolution. `clusterName` is REQUIRED for ingress management (the provider
+    /// refuses to create a firewall it could not later find), and `firewallIds` carry the ids the
+    /// firewall phase created into server-create.
+    public static Result<ComputeProvider> resolveCloudCompute(SourceProfile source,
+                                                              List<Long> sshKeyIds,
+                                                              String userData,
+                                                              ClusterName clusterName,
+                                                              List<FirewallId> firewallIds) {
+        return resolveCloudCompute(source, sshKeyIds, userData, Option.some(clusterName), firewallIds);
+    }
+
+    /// The absence-tolerant form behind the two convenience overloads above, which resolve a provider
+    /// for operations that never touch ingress. An empty cluster emits NO `cluster_name` discovery key
+    /// at all, which is what makes `HetznerComputeProvider.openIngress` refuse rather than create an
+    /// unlabelled firewall no cleanup sweep can reclaim.
+    private static Result<ComputeProvider> resolveCloudCompute(SourceProfile source,
+                                                               List<Long> sshKeyIds,
+                                                               String userData,
+                                                               Option<ClusterName> clusterName,
+                                                               List<FirewallId> firewallIds) {
         return source.provider()
                      .toResult(NO_PROVIDER)
                      .flatMap(provider -> lookupAndCreateCloud(provider.value(),
                                                                source,
                                                                sshKeyIds,
-                                                               userData))
+                                                               userData,
+                                                               clusterName,
+                                                               firewallIds))
                      .flatMap(ProviderResolver::extractCompute);
+    }
+
+    /// Seam shape for [BootstrapPhaseFirewall]: ingress needs the cluster but never pre-existing
+    /// firewall ids (it is what creates them).
+    static Result<ComputeProvider> resolveCloudCompute(SourceProfile source,
+                                                       List<Long> sshKeyIds,
+                                                       String userData,
+                                                       ClusterName clusterName) {
+        return resolveCloudCompute(source, sshKeyIds, userData, clusterName, List.of());
     }
 
     public static Result<FloatingIpProvider> resolveFloatingIpProvider(SourceProfile source) {
@@ -73,7 +109,20 @@ public final class ProviderResolver {
                                 .flatMap(ProviderResolver::extractCompute);
     }
 
+    /// #521 — an EMPTY `credentialEnvVars` used to report success here: the loop never ran, so `missing`
+    /// stayed empty and a `CloudConfig` with no credentials at all was handed to the provider factory,
+    /// which then failed with the misleading "Cloud credentials missing for provider 'hetzner': set
+    /// HCLOUD_TOKEN" — pointing the operator at an env var that WAS set. A cloud cleanup handle that names
+    /// no credential cannot produce one; say that, at the point where it is knowable.
     private static Result<CloudConfig> buildHandleConfig(SourceCleanupHandle handle) {
+        if (handle.credentialEnvVars().isEmpty()) {
+            return new BootstrapError.ProvisionFailed(handle.provider(),
+                                                      "Persisted cleanup handle names no credential env var, so no"
+                                                     + " credentials can be re-derived from it. Callers must fall back"
+                                                     + " to raw provider env credentials rather than resolving from"
+                                                     + " this handle.").result();
+        }
+
         var creds = new HashMap<String, String>();
         var missing = new ArrayList<String>();
 
@@ -112,17 +161,21 @@ public final class ProviderResolver {
     }
 
     private static Result<EnvironmentIntegration> lookupAndCreateCloud(String providerName, SourceProfile source) {
-        return lookupAndCreateCloud(providerName, source, List.of(), "");
+        return lookupAndCreateCloud(providerName, source, List.of(), "", Option.empty(), List.of());
     }
 
     private static Result<EnvironmentIntegration> lookupAndCreateCloud(String providerName,
                                                                        SourceProfile source,
                                                                        List<Long> sshKeyIds,
-                                                                       String userData) {
+                                                                       String userData,
+                                                                       Option<ClusterName> clusterName,
+                                                                       List<FirewallId> firewallIds) {
         return lookupFactory(providerName).flatMap(factory -> factory.create(buildCloudConfig(providerName,
                                                                                               source,
                                                                                               sshKeyIds,
-                                                                                              userData)));
+                                                                                              userData,
+                                                                                              clusterName,
+                                                                                              firewallIds)));
     }
 
     private static Result<EnvironmentIntegrationFactory> lookupFactory(String providerName) {
@@ -143,10 +196,35 @@ public final class ProviderResolver {
         return buildCloudConfig(providerName, source, List.of(), "");
     }
 
-    private static CloudConfig buildCloudConfig(String providerName,
-                                                SourceProfile source,
-                                                List<Long> sshKeyIds,
-                                                String userData) {
+    /// Package-private (not private) so `ProviderResolverTest` can assert the resolved compute map
+    /// directly — the public `resolveCloudCompute` returns an opaque [ComputeProvider], hiding the
+    /// `[cloud.compute]` map this method threads `server_type`/`ssh_key_ids` into.
+    ///
+    /// RFC-0016 W2 — no `image` is stamped here: the per-role VM image is threaded as tier-1
+    /// `ProvisionSpec.imageId` (see `BootstrapPhaseProvision.buildCloudProvisionSpec`), so a role
+    /// without its own image never inherits the core role's (which core-stamps-all did).
+    static CloudConfig buildCloudConfig(String providerName,
+                                        SourceProfile source,
+                                        List<Long> sshKeyIds,
+                                        String userData) {
+        return buildCloudConfig(providerName, source, sshKeyIds, userData, Option.empty(), List.of());
+    }
+
+    /// `clusterName` lands in the `discovery` map (the key `HetznerEnvironmentIntegrationFactory`
+    /// already reads) so the resolved provider knows its own cluster. Ingress management REQUIRES
+    /// it: a firewall created without the `aether-cluster` label is invisible to
+    /// `tools/cloud-reaper.sh` and leaks as a paid resource, so `openIngress` refuses without it.
+    ///
+    /// `firewallIds` are the ids [BootstrapPhaseFirewall] just created, threaded into
+    /// `[cloud.compute] firewall_ids` — the SAME key an operator uses for a pre-existing firewall,
+    /// consumed at `HetznerComputeProvider.buildCreateRequest`. Passing them at server-CREATE is
+    /// what closes the window in which a node would be up and unfirewalled (§6.2).
+    static CloudConfig buildCloudConfig(String providerName,
+                                        SourceProfile source,
+                                        List<Long> sshKeyIds,
+                                        String userData,
+                                        Option<ClusterName> clusterName,
+                                        List<FirewallId> firewallIds) {
         var credentials = new HashMap<String, String>();
 
         source.credentials()
@@ -168,13 +246,31 @@ public final class ProviderResolver {
             compute.put("user_data", userData);
         }
 
+        if (!firewallIds.isEmpty()) {
+            compute.put("firewall_ids", joinFirewallIds(firewallIds));
+        }
+
+        var discovery = clusterName.map(ProviderResolver::discoveryFor).or(Map.<String, String> of());
+
         return new CloudConfig(providerName,
                                Map.copyOf(credentials),
                                Map.copyOf(compute),
                                Map.of(),
-                               Map.of(),
+                               discovery,
                                Map.of(),
                                Map.of());
+    }
+
+    private static Map<String, String> discoveryFor(ClusterName clusterName) {
+        return Map.of("cluster_name", clusterName.value());
+    }
+
+    /// The provider config map is untyped text (it is the same `[cloud.compute] firewall_ids` key an
+    /// operator writes by hand), so the typed ids flatten HERE, at that boundary, and nowhere earlier.
+    private static String joinFirewallIds(List<FirewallId> ids) {
+        return ids.stream()
+                  .map(FirewallId::value)
+                  .collect(Collectors.joining(","));
     }
 
     private static String joinLongs(List<Long> ids) {

@@ -48,18 +48,47 @@ class ClusterMigrateCommand implements Callable<Integer> {
     @Mixin
     ClusterTargetMixin clusterTarget = new ClusterTargetMixin();
 
+    /// Pre-flight the PLAN route BEFORE prompting (#539).
+    ///
+    /// The prompt used to come first, so an operator was asked to authorise "this will migrate the
+    /// cluster to <provider>" — typed yes — and only then discovered the server has no migration
+    /// handler at all (`NotImplementedRoutes` answers 501; before #525 it was a bare 404). Asking
+    /// someone to confirm an action the server cannot perform is the most misleading shape available:
+    /// the confirmation itself advertises a capability that does not exist.
+    ///
+    /// The plan route is the honest pre-flight because it is the DRY-RUN of this very command — it is
+    /// read-only by construction, so probing costs nothing and needs no separate capability endpoint.
+    /// If it fails for ANY reason (501 unimplemented, unreachable, unauthorised) no prompt is shown:
+    /// we could not establish that the server can do this, so there is nothing to authorise. When the
+    /// handler is eventually built this same path starts succeeding and the confirmation returns —
+    /// with the plan already on screen, which is what an operator should be shown before consenting
+    /// to a whole-cluster migration anyway.
     @Override
     public Integer call() {
-        if (!dryRun && !confirmMigration()) {
+        return clusterTarget.applyOverrides()
+                            .flatMap(_ -> validateStrategy())
+                            .flatMap(this::sendPlanRequest)
+                            .fold(this::onFailure, this::afterPlan);
+    }
+
+    private int afterPlan(String planJson) {
+        if (dryRun) {
+            return OutputFormatter.printAction(planJson, parent.outputOptions(), "Migration plan generated.");
+        }
+
+        System.out.println(planJson);
+        if (!confirmMigration()) {
             System.out.println("Aborted.");
 
             return ExitCode.SUCCESS;
         }
 
-        return clusterTarget.applyOverrides()
-                            .flatMap(_ -> validateStrategy())
-                            .flatMap(this::sendMigrateRequest)
-                            .fold(this::onFailure, this::onSuccess);
+        return validateStrategy().flatMap(this::sendMigrateRequest)
+                               .fold(this::onFailure, this::onSuccess);
+    }
+
+    private Result<String> sendPlanRequest(String validStrategy) {
+        return ClusterHttpClient.post(CLUSTER_MIGRATE_PLAN, buildRequestJson(validStrategy));
     }
 
     private boolean confirmMigration() {
@@ -78,12 +107,7 @@ class ClusterMigrateCommand implements Callable<Integer> {
     }
 
     private Result<String> sendMigrateRequest(String validStrategy) {
-        var jsonBody = buildRequestJson(validStrategy);
-
-        return ClusterHttpClient.post(dryRun
-                                      ? CLUSTER_MIGRATE_PLAN
-                                      : CLUSTER_MIGRATE,
-                                      jsonBody);
+        return ClusterHttpClient.post(CLUSTER_MIGRATE, buildRequestJson(validStrategy));
     }
 
     private String buildRequestJson(String validStrategy) {
@@ -106,12 +130,9 @@ class ClusterMigrateCommand implements Callable<Integer> {
                     .replace("\"", "\\\"");
     }
 
+    /// Only reached for a real migration — the dry-run path returns from [#afterPlan].
     private int onSuccess(String json) {
-        var label = dryRun
-                    ? "Migration plan generated."
-                    : "Migration initiated.";
-
-        return OutputFormatter.printAction(json, parent.outputOptions(), label);
+        return OutputFormatter.printAction(json, parent.outputOptions(), "Migration initiated.");
     }
 
     private int onFailure(Cause cause) {

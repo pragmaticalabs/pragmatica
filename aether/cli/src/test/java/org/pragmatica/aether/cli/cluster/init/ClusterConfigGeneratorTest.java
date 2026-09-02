@@ -12,6 +12,7 @@ import org.pragmatica.aether.cli.cluster.init.ClusterConfigAnswers.SshAnswers;
 import org.pragmatica.aether.cli.cluster.init.ClusterConfigAnswers.TlsAnswers;
 import org.pragmatica.aether.config.cluster.CloudProviderName;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
+import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigValidator;
 import org.pragmatica.aether.config.cluster.SourceType;
 import org.pragmatica.lang.Option;
 
@@ -35,6 +36,22 @@ class ClusterConfigGeneratorTest {
                                          VERSION,
                                          SourceType.CLOUD,
                                          Option.some(new CloudAnswers(CloudProviderName.HETZNER, "hel1", "cx21", "HCLOUD_TOKEN")),
+                                         Option.none(),
+                                         split(3, 0),
+                                         Option.none(),
+                                         FirewallPreset.STANDARD,
+                                         Option.none(),
+                                         Option.none(),
+                                         List.of(),
+                                         new TlsAnswers.AutoGenerate(),
+                                         new SecretAnswers.AutoGenerate());
+    }
+
+    private static ClusterConfigAnswers cloudAnswersFor(CloudProviderName provider) {
+        return new ClusterConfigAnswers("prod-eu",
+                                         VERSION,
+                                         SourceType.CLOUD,
+                                         Option.some(new CloudAnswers(provider, "eu-west-1", "t3.medium", "AWS_ACCESS_KEY")),
                                          Option.none(),
                                          split(3, 0),
                                          Option.none(),
@@ -119,6 +136,54 @@ class ClusterConfigGeneratorTest {
         void generate_cloud_hasFirewallAllowIngress() {
             var toml = ClusterConfigGenerator.generate(cloudAnswers());
             assertThat(toml).contains("[[source.primary.firewall.allow_ingress]]");
+        }
+
+        /// The block the wizard writes must survive its own parser. Asserting the TEXT contains
+        /// `[[...allow_ingress]]` proves nothing about whether the rules reach `SourceProfile`.
+        @Test
+        void generate_cloud_firewallRulesSurviveRoundTripToSourceProfile() {
+            var toml = ClusterConfigGenerator.generate(cloudAnswers());
+
+            ClusterBootstrapConfigParser.parse(toml)
+                                        .onFailure(c -> fail("Parser rejected generated TOML: " + c.message()))
+                                        .onSuccess(config -> assertThat(config.sources()
+                                                                              .get("primary")
+                                                                              .firewallRules())
+                                                .as("wizard-generated allow_ingress must reach SourceProfile, not be dropped at parse")
+                                                .isNotEmpty());
+        }
+
+        /// #574 — the wizard must not emit a block pre-flight then rejects. Only Hetzner applies
+        /// `allow_ingress`; on AWS/GCP/Azure PF-23 rejects it, so scaffolding one would hand the
+        /// operator a generated config that fails its own bootstrap.
+        @Test
+        void generate_cloudOnAws_omitsFirewallAllowIngress() {
+            var toml = ClusterConfigGenerator.generate(cloudAnswersFor(CloudProviderName.AWS));
+            assertThat(toml).doesNotContain("[[source.primary.firewall.allow_ingress]]");
+        }
+
+        @Test
+        void generate_cloudOnGcp_omitsFirewallAllowIngress() {
+            var toml = ClusterConfigGenerator.generate(cloudAnswersFor(CloudProviderName.GCP));
+            assertThat(toml).doesNotContain("[[source.primary.firewall.allow_ingress]]");
+        }
+
+        @Test
+        void generate_cloudOnAzure_omitsFirewallAllowIngress() {
+            var toml = ClusterConfigGenerator.generate(cloudAnswersFor(CloudProviderName.AZURE));
+            assertThat(toml).doesNotContain("[[source.primary.firewall.allow_ingress]]");
+        }
+
+        /// Every generated config must survive its own validator — the wizard's whole promise is
+        /// "ready to bootstrap".
+        @Test
+        void generate_cloudOnAws_roundTripsAndValidates() {
+            var toml = ClusterConfigGenerator.generate(cloudAnswersFor(CloudProviderName.AWS));
+
+            ClusterBootstrapConfigParser.parse(toml)
+                                        .onFailure(c -> fail("Parser rejected generated TOML: " + c.message()))
+                                        .flatMap(ClusterBootstrapConfigValidator::validate)
+                                        .onFailure(c -> fail("Validator rejected generated TOML: " + c.message()));
         }
 
         @Test

@@ -20,7 +20,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 ///
 /// Pins the picocli wiring of:
 ///   `aether streams create <name> [--partitions N]`
-///   `aether streams delete <name> [--force]`
+///   `aether streams delete <name|address> [--force]` (catalog-form `STREAMS_DELETE` —
+///   bare name defaults client-side to `system:name:1.0.0`, see
+///   `AetherCli.StreamCommand#resolveStreamAddress`)
 ///   `aether streams consumer-group join <group> <stream> --consumer-id <id> [--partitions N]`
 ///   `aether streams consumer-group leave <group> <stream> --consumer-id <id>`
 ///   `aether streams consumer-group status <group> [<stream>]`
@@ -73,11 +75,11 @@ class StreamsLifecycleCommandTest {
     }
 
     @Test
-    void deleteCommand_nameBound_forceDefaultsFalse() throws Exception {
+    void deleteCommand_addressBound_forceDefaultsFalse() throws Exception {
         var cmd = new AetherCli.StreamCommand.DeleteCommand();
         new CommandLine(cmd).parseArgs("orders");
 
-        assertEquals("orders", readField(cmd, "name"));
+        assertEquals("orders", readField(cmd, "address"));
         assertFalse((boolean) readField(cmd, "force"));
     }
 

@@ -29,6 +29,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 
 class DockerComposeGeneratorTest {
 
@@ -37,7 +38,7 @@ class DockerComposeGeneratorTest {
         var roleSubTable = RoleSubTable.roleSubTable(
             NodeRole.CORE, Option.some(5), Option.none(), Option.some("bare-metal"), "default");
         var source = SourceProfile.sourceProfile(
-            "docker-source", SourceType.DOCKER, Option.none(), Option.none(), Option.none(),
+            sourceNameOrDefault("docker-source"), SourceType.DOCKER, Option.none(), Option.none(), Option.none(),
             Option.none(), Option.none(), Option.none(), Option.none(),
             LoadBalancerMode.NONE, List.of(), Option.none(), Map.of(),
             Map.of(NodeRole.CORE, roleSubTable), List.of());

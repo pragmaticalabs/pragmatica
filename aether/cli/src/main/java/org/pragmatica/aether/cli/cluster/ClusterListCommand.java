@@ -18,6 +18,8 @@ import picocli.CommandLine.Command;
 @Command(name = "list", description = "List all registered clusters")
 @SuppressWarnings("JBCT-RET-01")
 class ClusterListCommand implements Callable<Integer> {
+    // JBCT-RET-08: no array-path for this table (optional field); Option-ifying TableSpec.arrayPath globally is disproportionate
+    @SuppressWarnings("JBCT-RET-08")
     private static final OutputFormatter.TableSpec TABLE_SPEC = new OutputFormatter.TableSpec("Clusters",
                                                                                               List.of(new OutputFormatter.Column("",
                                                                                                                                  "marker",

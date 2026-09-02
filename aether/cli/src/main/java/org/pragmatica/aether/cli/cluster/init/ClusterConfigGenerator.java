@@ -12,7 +12,9 @@ import org.pragmatica.aether.cli.cluster.init.ClusterConfigAnswers.DatabaseAnswe
 import org.pragmatica.aether.cli.cluster.init.ClusterConfigAnswers.SecretAnswers;
 import org.pragmatica.aether.cli.cluster.init.ClusterConfigAnswers.SshAnswers;
 import org.pragmatica.aether.cli.cluster.init.ClusterConfigAnswers.TlsAnswers;
+import org.pragmatica.aether.config.cluster.CloudProviderName;
 import org.pragmatica.aether.config.cluster.FirewallRule;
+import org.pragmatica.aether.config.cluster.PortMapping;
 import org.pragmatica.aether.config.cluster.SourceType;
 
 
@@ -174,25 +176,40 @@ public sealed interface ClusterConfigGenerator {
         }
     }
 
+    /// Scaffold `allow_ingress` ONLY where Aether actually applies it — a generated config that
+    /// pre-flight then rejects (PF-23), or that is silently inert, is worse than no block at all.
+    ///
+    /// - Docker/Forge: no cloud API, nothing to manage.
+    /// - SSH: the host's firewall is the operator's; Aether never touches it.
+    /// - Cloud on AWS/GCP/Azure: ingress arms are not implemented, and PF-23 rejects the block.
+    ///   Their defaults deny inbound, so omitting it exposes nothing.
+    /// - `OPEN` preset: the operator asked for no rules.
     private static boolean skipFirewall(ClusterConfigAnswers answers) {
         var target = answers.target();
 
-        if (target == SourceType.DOCKER || target == SourceType.FORGE) {
+        if (target != SourceType.CLOUD) {
             return true;
         }
 
-        return answers.firewallPreset() == FirewallPreset.OPEN;
+        if (answers.firewallPreset() == FirewallPreset.OPEN) {
+            return true;
+        }
+
+        return ! answers.cloud()
+                        .map(cloud -> cloud.provider() == CloudProviderName.HETZNER)
+                        .or(false);
     }
 
     private static List<FirewallRule> effectiveFirewallRules(ClusterConfigAnswers answers) {
         if (answers.firewallPreset() == FirewallPreset.CUSTOM) {
             return answers.customFirewallRules();
         }
-
-        var adminCidr = answers.adminCidr().or(FirewallPresets.ANY_CIDR);
+        // An absent admin CIDR means "I did not say who may reach the control plane", which is
+        // never "everyone" — it used to default to 0.0.0.0/0, putting the management API on the
+        // public internet by default. Option is passed through so the preset omits those rules.
         var internalCidr = answers.internalCidr().or(FirewallPresets.DEFAULT_INTERNAL_CIDR);
 
-        return FirewallPresets.rulesFor(answers.firewallPreset(), adminCidr, internalCidr);
+        return FirewallPresets.rulesFor(answers.firewallPreset(), answers.adminCidr(), internalCidr);
     }
 
     private static void appendRuntime(StringBuilder sb, ClusterConfigAnswers answers) {
@@ -263,22 +280,22 @@ public sealed interface ClusterConfigGenerator {
                      "cluster",
                      String.valueOf(docker
                                     ? DOCKER_CLUSTER_PORT
-                                    : FirewallPresets.CLUSTER_PORT));
+                                    : PortMapping.defaultPortMapping().cluster()));
         appendKvBare(sb,
                      "management",
                      String.valueOf(docker
                                     ? DOCKER_MGMT_PORT
-                                    : FirewallPresets.MGMT_PORT));
+                                    : PortMapping.defaultPortMapping().management()));
         appendKvBare(sb,
                      "app_http",
                      String.valueOf(docker
                                     ? DOCKER_APP_HTTP_PORT
-                                    : FirewallPresets.APP_HTTP_PORT));
+                                    : PortMapping.defaultPortMapping().appHttp()));
         appendKvBare(sb,
                      "swim",
                      String.valueOf(docker
                                     ? DOCKER_SWIM_PORT
-                                    : FirewallPresets.SWIM_PORT));
+                                    : PortMapping.defaultPortMapping().swim()));
         appendBlank(sb);
     }
 
@@ -288,7 +305,11 @@ public sealed interface ClusterConfigGenerator {
         appendComment(sb, "------------------------------------------------------------");
         appendComment(sb, "");
         appendComment(sb, "[operations.auto_heal]");
-        appendComment(sb, "enabled = true");
+        // #575: `enabled` is deliberately absent from this scaffold — it parses into AutoHealSpec,
+        // which the runtime never reads (AutoHealConfig, the type it actually consumes, has no
+        // `enabled` field at all). ClusterBootstrapConfigValidator rejects `enabled = false`
+        // outright rather than let it scaffold a working-looking off switch; showing `enabled = true`
+        // here would be equally misleading since it claims a toggle that does not exist.
         appendComment(sb, "retry_interval = \"60s\"");
         appendComment(sb, "startup_cooldown = \"15s\"");
         appendComment(sb, "");

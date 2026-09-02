@@ -42,6 +42,15 @@ public sealed interface NodeCodecs {
         all.addAll(org.pragmatica.net.tcp.TcpCodecs.CODECS);
         all.addAll(org.pragmatica.cluster.state.kvstore.KvstoreCodecs.CODECS);
         all.addAll(org.pragmatica.cluster.metrics.MetricsCodecs.CODECS);
+        // #634-7 CI catch (the boot guard's first real find): ForwardApplyRequest/Response are routed
+        // wire types (ForwardingClusterNode sends them for command forwarding) but never had codecs —
+        // every forwarded command would have silently vanished at the transport (the #492 class).
+        all.addAll(org.pragmatica.cluster.node.forward.ForwardCodecs.CODECS);
+        // #492: worker-community metrics wire types (CommunityMetricsSnapshot + per-slice/per-method
+        // nested records) ride the core QUIC METRICS lane (routed to ControlLoop), but their generated
+        // codecs lived only in the orphaned WorkerCodecs registry — every broadcast from a core node
+        // threw "No codec registered" in writeToStream (44x per forge failover run).
+        all.addAll(org.pragmatica.aether.worker.metrics.MetricsCodecs.CODECS);
         all.addAll(org.pragmatica.dht.DhtCodecs.CODECS);
         all.addAll(org.pragmatica.aether.artifact.ArtifactCodecsSlice.CODECS);
         // SliceCodecs registry in org.pragmatica.aether.slice is contributed by four modules; reference each suffixed sub-registry to avoid shade collision.
@@ -55,12 +64,25 @@ public sealed interface NodeCodecs {
         all.addAll(org.pragmatica.aether.slice.blueprint.BlueprintCodecsSlice.CODECS);
         all.addAll(org.pragmatica.aether.invoke.InvokeCodecsInvoke.CODECS);
         all.addAll(org.pragmatica.aether.http.forward.ForwardCodecsInvoke.CODECS);
+        // #596 owner-forwarding wire pair. The generated registry existed but was never aggregated
+        // here — the #492 defect class ("generated codecs lived only in the orphaned registry"),
+        // second occurrence: every entity owner-forward left dispatch() and vanished, the sender
+        // burned its full correlation timeout, and 02w measured the system as one that can only
+        // write when the harness happens to hit the owner directly. Aggregation is manual, so a new
+        // @Codec package is INERT until this line exists — check here FIRST for any new wire type.
+        all.addAll(org.pragmatica.aether.node.entityforward.EntityforwardCodecsNode.CODECS);
         // aether-stream wire types (replication, read-forward, stream-consensus) — without these the
         // active replication / catch-up / forward sends throw "No codec registered" over the cluster network.
         all.addAll(org.pragmatica.aether.stream.consensus.ConsensusCodecsStream.CODECS);
         all.addAll(org.pragmatica.aether.stream.replication.ReplicationCodecsStream.CODECS);
         all.addAll(org.pragmatica.aether.stream.forward.ForwardCodecsStream.CODECS);
-        all.addAll(org.pragmatica.aether.dht.DhtCodecsInvoke.CODECS);
+        // #386 durable pub-sub wire types (TopicEventEnvelope on `topic:<address>` streams,
+        // DlqEnvelope on their `.dlq` streams) — MAILBOX-announced 2026-08-28 before this line.
+        all.addAll(org.pragmatica.aether.stream.topic.TopicCodecsStream.CODECS);
+        // `org.pragmatica.aether.dht.DhtCodecsInvoke` was removed with its last @Codec source
+        // (`DHTNotification`, deleted in f1aed3ff4 under #571). The aggregate is GENERATED per
+        // package, so once the package has no @Codec types the class does not exist — this line
+        // compiled locally only against a stale generated artifact and broke every fresh build.
         all.addAll(org.pragmatica.aether.http.handler.HandlerCodecs.CODECS);
         all.addAll(org.pragmatica.aether.http.handler.security.SecurityCodecs.CODECS);
         all.addAll(org.pragmatica.swim.SwimCodecs.CODECS);
@@ -74,7 +96,7 @@ public sealed interface NodeCodecs {
         all.add(isoDateTimeCodec());
         var requiredTypes = collectRequiredTypes();
 
-        return SliceCodec.sliceCodec(parent, all, requiredTypes);
+        return SliceCodec.systemCodec(parent, all, requiredTypes);
     }
 
     private static Set<Class<?>> collectRequiredTypes() {

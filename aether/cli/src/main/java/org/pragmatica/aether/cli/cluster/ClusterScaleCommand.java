@@ -17,29 +17,35 @@ import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Mixin;
 import picocli.CommandLine.Option;
-import picocli.CommandLine.Parameters;
 
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_CONFIG_GET;
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_SCALE;
 
 
-@Command(name = "scale", description = "Scale cluster node count")
+/// Scale one (source, role) of the cluster topology (RFC-0017 C1).
+///
+/// `--source` is optional: the server infers it when exactly one source declares the role, and
+/// refuses — naming the candidates — when several do. That refusal is the point. The former
+/// cluster-wide `--core N` could not say which source absorbed the change and answered the
+/// ambiguity by overwriting a single number.
+///
+/// Quorum arithmetic is deliberately NOT checked here. A per-source count is not the cluster
+/// total: scaling one core source to 1 is valid when another source carries 2. Only the server
+/// holds the whole topology, so only the server can do that arithmetic honestly.
+@Command(name = "scale", description = "Scale one source and role of the cluster topology")
 @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-SEQ-01"})
 class ClusterScaleCommand implements Callable<Integer> {
-    private static final int MINIMUM_CORE_COUNT = 3;
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
+    private static final String DEFAULT_ROLE = "core";
 
-    @Parameters(index = "0", description = "Source name", defaultValue = "")
-    private String sourceName;
+    @Option(names = "--source", description = "Source name; inferred when exactly one source declares the role")
+    private String sourceName = "";
 
-    @Parameters(index = "1", description = "Role (core, worker, spot)", defaultValue = "core")
-    private String roleName;
+    @Option(names = "--role", description = "Node role: core, worker or spot (default: core)")
+    private String roleName = DEFAULT_ROLE;
 
-    @Option(names = "--count", description = "Target node count")
+    @Option(names = "--count", description = "Target node count for this source and role")
     private int count;
-
-    @Option(names = "--core", description = "Legacy shortcut: scale core nodes across all sources")
-    private int coreCount;
 
     @Option(names = {"--yes", "--force"}, description = "Skip interactive confirmation")
     private boolean skipConfirmation;
@@ -53,87 +59,57 @@ class ClusterScaleCommand implements Callable<Integer> {
     @Override
     public Integer call() {
         return clusterTarget.applyOverrides()
-                            .flatMap(_ -> resolveEffective())
+                            .flatMap(_ -> requireCount())
                             .flatMap(this::confirmAndScale)
                             .fold(this::onFailure, this::onSuccess);
     }
 
-    private Result<String> confirmAndScale(EffectiveScale pair) {
-        if (!confirmScale(pair)) {
-            return new ScaleError.Aborted().result();
-        }
-
-        return validateCount(pair.count(),
-                             pair.role()).flatMap(this::fetchConfigVersion)
-                            .flatMap(version -> sendScaleRequest(version,
-                                                                 pair.count(),
-                                                                 pair.role()));
+    /// Zero is allowed: "scale workers to 0" is drain-all, and the server enforces core minimums.
+    private Result<Integer> requireCount() {
+        return count < 0
+               ? new ScaleError.MinimumCount(count).result()
+               : Result.success(count);
     }
 
-    private boolean confirmScale(EffectiveScale pair) {
+    private Result<String> confirmAndScale(int targetCount) {
+        if (!confirmScale(targetCount)) {
+            return ScaleError.Aborted.INSTANCE.result();
+        }
+
+        return fetchConfigVersion().flatMap(version -> sendScaleRequest(version, targetCount));
+    }
+
+    private boolean confirmScale(int targetCount) {
         return DestructiveAction.destructiveAction().confirm(skipConfirmation,
-                                                             "This will scale " + pair.role()
-                                                            + " nodes to " + pair.count()
+                                                             "This will scale " + describeTarget()
+                                                            + " to " + targetCount
                                                             + " (a scale-down terminates nodes).");
     }
 
-    private Result<EffectiveScale> resolveEffective() {
-        if (coreCount > 0) {
-            return Result.success(new EffectiveScale(coreCount, "core"));
-        }
-
-        if (count > 0) {
-            return Result.success(new EffectiveScale(count, roleName));
-        }
-
-        return new ScaleError.MissingCount().result();
+    private String describeTarget() {
+        return sourceName.isBlank()
+               ? roleName + " nodes"
+               : roleName + " nodes in source '" + sourceName + "'";
     }
 
-    private record EffectiveScale(int count, String role) {}
-
-    private static Result<Integer> validateCount(int targetCount, String role) {
-        if ("core".equals(role)) {
-            return validateCoreCount(targetCount);
-        }
-
-        return validateNonCoreCount(targetCount);
-    }
-
-    private static Result<Integer> validateCoreCount(int targetCount) {
-        if (targetCount < MINIMUM_CORE_COUNT) {
-            return new ScaleError.QuorumSafety(targetCount, MINIMUM_CORE_COUNT).result();
-        }
-
-        if (targetCount % 2 == 0) {
-            return new ScaleError.MustBeOdd(targetCount).result();
-        }
-
-        return Result.success(targetCount);
-    }
-
-    private static Result<Integer> validateNonCoreCount(int targetCount) {
-        if (targetCount < 1) {
-            return new ScaleError.MinimumCount(targetCount).result();
-        }
-
-        return Result.success(targetCount);
-    }
-
-    private Result<Long> fetchConfigVersion(int validatedCount) {
+    private Result<Long> fetchConfigVersion() {
         return ClusterHttpClient.fetch(CLUSTER_CONFIG_GET).flatMap(ClusterScaleCommand::extractConfigVersion);
     }
 
-    private Result<String> sendScaleRequest(long expectedVersion, int targetCount, String role) {
-        var jsonBody = buildScaleJson(targetCount, role, sourceName, expectedVersion);
-
-        return ClusterHttpClient.post(CLUSTER_SCALE, jsonBody);
+    private Result<String> sendScaleRequest(long expectedVersion, int targetCount) {
+        return ClusterHttpClient.post(CLUSTER_SCALE, buildScaleJson(sourceName, roleName, targetCount, expectedVersion));
     }
 
-    private static String buildScaleJson(int targetCount, String role, String source, long expectedVersion) {
-        return "{\"count\":" + targetCount
-             + ",\"role\":\"" + role
-             + "\",\"source\":\"" + source
-             + "\",\"expectedVersion\":" + expectedVersion
+    /// Field names here MUST match `ManagementApiResponses.ScaleRequest`. They did not: this command
+    /// sent `count`/`role`/`source` while the record read a lone `coreCount`, so every scale request
+    /// arrived without a usable count and no test crossed the boundary to notice. The CLI cannot
+    /// depend on `aether/node`, so the contract is spelled twice; `ClusterScaleCommandTest` and
+    /// `ScaleRequestContractTest` pin the two spellings to the same field names.
+    static String buildScaleJson(String source, String role, int targetCount, long expectedVersion) {
+        return "{\"source\":\"" + source
+             + "\",\"role\":\"" + role
+             + "\",\"count\":" + targetCount
+             + ",\"expectedVersion\":" + expectedVersion
              + "}";
     }
 
@@ -157,35 +133,15 @@ class ClusterScaleCommand implements Callable<Integer> {
     }
 
     sealed interface ScaleError extends Cause {
-        record QuorumSafety(int requested, int minimum) implements ScaleError {
-            @Override
-            public String message() {
-                return "Core count " + requested + " is below quorum minimum of " + minimum;
-            }
-        }
-
-        record MustBeOdd(int requested) implements ScaleError {
-            @Override
-            public String message() {
-                return "Core count must be odd for quorum safety, got " + requested;
-            }
-        }
-
         record MinimumCount(int requested) implements ScaleError {
             @Override
             public String message() {
-                return "Node count must be at least 1, got " + requested;
+                return "--count must be non-negative, got " + requested;
             }
         }
 
-        record MissingCount() implements ScaleError {
-            @Override
-            public String message() {
-                return "Either --count or --core must be specified";
-            }
-        }
-
-        record Aborted() implements ScaleError {
+        enum Aborted implements ScaleError {
+            INSTANCE;
             @Override
             public String message() {
                 return "Scale aborted by operator";

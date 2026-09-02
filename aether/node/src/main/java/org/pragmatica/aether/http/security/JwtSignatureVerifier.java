@@ -94,15 +94,17 @@ final class JwtSignatureVerifier {
     }
 
     private static int writeInteger(byte[] der, int pos, byte[] value, int fieldLen) {
-        der[pos++] = 0x02;
-        der[pos++] = (byte) fieldLen;
+        var offset = pos;
+
+        der[offset++] = 0x02;
+        der[offset++] = (byte) fieldLen;
         if (fieldLen > value.length) {
-            der[pos++] = 0x00;
+            der[offset++] = 0x00;
         }
 
-        System.arraycopy(value, 0, der, pos, value.length);
+        System.arraycopy(value, 0, der, offset, value.length);
 
-        return pos + value.length;
+        return offset + value.length;
     }
 
     private static byte[] trimLeadingZeros(byte[] data, int start, int end) {

@@ -235,6 +235,8 @@ public final class SystemStreamRegistrar {
         nextBackoff.set(nextBackoffAfter(delay));
     }
 
+    // JBCT-RET-08: AtomicReference clear — null is the JDK sentinel, not Option-wrappable
+    @SuppressWarnings("JBCT-RET-08")
     @Contract
     private void onRetryFire() {
         pendingRetry.set(null);

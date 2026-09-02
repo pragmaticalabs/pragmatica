@@ -10,11 +10,12 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.lang.Result;
 
 
 @SuppressWarnings("JBCT-SEQ-01")
-public record BootstrapState(String clusterName,
+public record BootstrapState(ClusterName clusterName,
                              String configHash,
                              String startedAt,
                              Map<BootstrapPhase, PhaseStatus> phases,
@@ -32,7 +33,7 @@ public record BootstrapState(String clusterName,
     }
 
     @SuppressWarnings("JBCT-VO-02")
-    public static BootstrapState bootstrapState(String clusterName,
+    public static BootstrapState bootstrapState(ClusterName clusterName,
                                                 String configHash,
                                                 String startedAt,
                                                 Map<BootstrapPhase, PhaseStatus> phases,
@@ -53,7 +54,7 @@ public record BootstrapState(String clusterName,
     }
 
     @SuppressWarnings("JBCT-VO-02")
-    public static BootstrapState bootstrapState(String clusterName,
+    public static BootstrapState bootstrapState(ClusterName clusterName,
                                                 String configHash,
                                                 String startedAt,
                                                 Map<BootstrapPhase, PhaseStatus> phases,
@@ -73,7 +74,7 @@ public record BootstrapState(String clusterName,
     }
 
     @SuppressWarnings("JBCT-VO-02")
-    public static BootstrapState bootstrapState(String clusterName,
+    public static BootstrapState bootstrapState(ClusterName clusterName,
                                                 String configHash,
                                                 String startedAt,
                                                 Map<BootstrapPhase, PhaseStatus> phases,
@@ -91,7 +92,7 @@ public record BootstrapState(String clusterName,
                               Map.of());
     }
 
-    public static BootstrapState initialState(String clusterName, String configHash, String startedAt) {
+    public static BootstrapState initialState(ClusterName clusterName, String configHash, String startedAt) {
         var phases = new EnumMap<BootstrapPhase, PhaseStatus>(BootstrapPhase.class);
 
         for (var phase : BootstrapPhase.values()) {

@@ -4,6 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import java.util.Set;
+import java.util.stream.Collectors;
+
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.management.route.ManagementRoute;
@@ -28,7 +31,7 @@ class StreamApiRoutesEventsTest {
         void streamsEvents_routeRegistered_hasExpectedShape() {
             var route = ManagementRoute.STREAMS_EVENTS;
             assertThat(route.method().name()).isEqualTo("GET");
-            assertThat(route.prefix()).isEqualTo("/api/streams/events");
+            assertThat(route.prefix()).isEqualTo("/api/v1/streams");
         }
 
         @Test
@@ -37,7 +40,7 @@ class StreamApiRoutesEventsTest {
                     .assemble("com.example.app", "orders", "1.0.0");
             assertThat(assembled.isSuccess()).isTrue();
             assembled.onSuccess(path -> assertThat(path)
-                    .isEqualTo("/api/streams/events/com.example.app/orders/1.0.0"));
+                    .isEqualTo("/api/v1/streams/com.example.app/orders/1.0.0/events"));
         }
 
         @Test
@@ -57,7 +60,7 @@ class StreamApiRoutesEventsTest {
         void streamsEvents_get_resolvesToAllAuthenticated() {
             var perm = RoutePermissionRegistry.resolve(
                     "GET",
-                    "/api/streams/events/com.example.app/orders/1.0.0");
+                    "/api/v1/streams/events/com.example.app/orders/1.0.0");
             assertThat(perm).isEqualTo(RoutePermission.ALL_AUTHENTICATED);
         }
 
@@ -65,7 +68,7 @@ class StreamApiRoutesEventsTest {
         void streamsTail_get_resolvesToAllAuthenticated() {
             var perm = RoutePermissionRegistry.resolve(
                     "GET",
-                    "/api/streams/tail/com.example.app/orders/1.0.0");
+                    "/api/v1/streams/tail/com.example.app/orders/1.0.0");
             assertThat(perm).isEqualTo(RoutePermission.ALL_AUTHENTICATED);
         }
     }
@@ -73,23 +76,40 @@ class StreamApiRoutesEventsTest {
     @Nested
     class RouteSourceWiring {
 
-        /// `StreamApiRoutes.routes()` enumerates every spec-required HTTP verb. After Wave 6B the
-        /// surface count went from 11 (Wave 4A) to 12 with the addition of `/events`. Asserting the
-        /// count + the presence of the new route name is a minimal smoke test that the stream is
-        /// emitting the expected entries even without a live HTTP server.
+        /// `StreamApiRoutes.routes()` must emit exactly one entry per spec-required verb: the read
+        /// surface (list/versions/latest/metadata/partition/replicas/read/groups-list/tail/events),
+        /// the write surface (publish/publish-batch/group-create/group-delete), and the destructive
+        /// surface (delete). Asserting the exact NAME SET — rather than a bare size — is a smoke test
+        /// that the stream is emitting exactly the expected entries, and it fails on the right
+        /// question (which route appeared or vanished) instead of just "a number moved."
+        private static final Set<String> EXPECTED_ROUTE_NAMES = Set.of(ManagementRoute.STREAMS_LIST.name(),
+                                                                        ManagementRoute.STREAMS_VERSIONS_LIST.name(),
+                                                                        ManagementRoute.STREAMS_LATEST.name(),
+                                                                        ManagementRoute.STREAMS_METADATA.name(),
+                                                                        ManagementRoute.STREAM_GET.name(),
+                                                                        ManagementRoute.STREAM_PARTITION.name(),
+                                                                        ManagementRoute.STREAM_REPLICAS.name(),
+                                                                        ManagementRoute.STREAM_READ.name(),
+                                                                        ManagementRoute.STREAMS_GROUPS_LIST.name(),
+                                                                        ManagementRoute.STREAMS_TAIL.name(),
+                                                                        ManagementRoute.STREAMS_EVENTS.name(),
+                                                                        ManagementRoute.STREAMS_PUBLISH.name(),
+                                                                        ManagementRoute.STREAMS_PUBLISH_BATCH.name(),
+                                                                        ManagementRoute.STREAMS_GROUP_CREATE.name(),
+                                                                        ManagementRoute.STREAMS_GROUP_DELETE.name(),
+                                                                        ManagementRoute.STREAMS_DELETE.name());
+
         @Test
-        void routes_includeStreamsEvents_andCountIsTwelve() {
+        void routes_enumerateEverySpecRequiredVerb_asExactNameSet() {
             var namespaces = StreamNamespacesService.inMemory();
             var routes = StreamApiRoutes.streamApiRoutes(() -> null,
                                                          namespaces,
                                                          ConsumerGroupCoordinator.noOp(),
                                                          ConsumerGroupRegistry.consumerGroupRegistry());
-            var routeList = routes.routes().toList();
-            assertThat(routeList).hasSize(12);
-            assertThat(routeList.stream().anyMatch(r -> r.name().equals(ManagementRoute.STREAMS_EVENTS.name())))
-                    .isTrue();
-            assertThat(routeList.stream().anyMatch(r -> r.name().equals(ManagementRoute.STREAMS_TAIL.name())))
-                    .isTrue();
+            var actualNames = routes.routes().map(r -> r.name()).collect(Collectors.toSet());
+
+            assertThat(actualNames).hasSameSizeAs(EXPECTED_ROUTE_NAMES)
+                                   .containsExactlyInAnyOrderElementsOf(EXPECTED_ROUTE_NAMES);
         }
     }
 }

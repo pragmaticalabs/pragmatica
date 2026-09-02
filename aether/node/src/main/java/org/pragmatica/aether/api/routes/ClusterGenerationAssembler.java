@@ -49,6 +49,11 @@ import org.pragmatica.net.tcp.NodeAddress;
 /// former generation projector + snapshot-route mappers: members from FSM core set, health
 /// from TTL-decayed hints (defaulting HEALTHY), communities/partitions/desiredSize from KV, and
 /// cluster/community quiescence from the pure [`ClusterQuiescenceEvaluator`]. Pure w.r.t. inputs.
+///
+/// Reading the epoch (#634 follow-up): its `localCounter` is a LEADERSHIP-TENURE TICK — bumped once
+/// per `pingInterval` (1s default) while the node is leader — so `1:4254` means "rabiaTerm 1, ~71
+/// minutes of uninterrupted leadership", not 4254 events. A large counter with a low term is the
+/// signature of a STABLE cluster; this exact value was once investigated as an anomaly.
 public sealed interface ClusterGenerationAssembler {
     String MODE_UNKNOWN = "unknown";
     String QUIESCENCE_UNKNOWN = "UNKNOWN";

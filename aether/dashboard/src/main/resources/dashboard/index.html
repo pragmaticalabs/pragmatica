@@ -230,6 +230,12 @@
                                         <span class="schema-badge" :class="$store.schema.statusClass(ds.status)" x-text="ds.status"></span>
                                         <span class="schema-version" x-text="'v' + ds.currentVersion"></span>
                                         <span class="schema-migration" x-text="ds.lastMigration"></span>
+                                        <span class="schema-owner"
+                                              title="Owning blueprint — while this migration is not COMPLETED, only this blueprint's slices are withheld from activation"
+                                              x-text="ds.owningBlueprint"></span>
+                                        <span class="schema-hold"
+                                              x-show="ds.blocksActivation"
+                                              :title="'Activation of ' + ds.owningBlueprint + ' slices is withheld until this migration reaches COMPLETED'">HOLDING</span>
                                         <button class="schema-retry-btn"
                                                 x-show="(ds.status || '').toUpperCase() === 'FAILED'"
                                                 @click="$store.schema.retrySchema(ds.name)">Retry</button>
@@ -258,6 +264,44 @@
                                     <div class="metric-value" x-text="$store.governors.totalMembers()"></div>
                                     <div class="metric-label">TOTAL MEMBERS</div>
                                 </div>
+                            </div>
+                        </div>
+
+                        <!-- Desired shape per source and role (RFC-0017 C1). Distinct from the
+                             observed counts above: this is what the cluster was ASKED for, and the
+                             gap between the two is what an operator acts on. -->
+                        <div class="panel" x-show="$store.desiredTopology.loaded">
+                            <h2 class="panel-header">
+                                DESIRED TOPOLOGY
+                                <span class="panel-count" x-text="$store.desiredTopology.entries.length + ' ENTRIES'"></span>
+                            </h2>
+                            <table class="desired-topology-table">
+                                <thead>
+                                    <tr><th>SOURCE</th><th>ROLE</th><th>DESIRED</th></tr>
+                                </thead>
+                                <tbody>
+                                    <template x-for="entry in $store.desiredTopology.entries"
+                                              :key="entry.sourceName + '/' + entry.role">
+                                        <tr>
+                                            <td x-text="$store.desiredTopology.sourceLabel(entry)"></td>
+                                            <td x-text="entry.role"></td>
+                                            <td x-text="entry.count"></td>
+                                        </tr>
+                                    </template>
+                                    <tr x-show="$store.desiredTopology.entries.length === 0">
+                                        <td colspan="3">No desired topology published.</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                            <div class="panel-hint">
+                                Cores <span x-text="$store.desiredTopology.coreCount"></span>
+                                (min <span x-text="$store.desiredTopology.coreMin"></span>,
+                                max <span x-text="$store.desiredTopology.coreMax"></span>) ·
+                                config v<span x-text="$store.desiredTopology.configVersion"></span>
+                            </div>
+                            <div class="panel-hint" x-show="$store.desiredTopology.scaleNeedsExplicitSource()">
+                                Cores live in more than one source — <code>aether cluster scale</code>
+                                requires <code>--source</code> here.
                             </div>
                         </div>
                     </div>
@@ -976,6 +1020,7 @@
     <script src="js/stores/streams.js"></script>
     <script src="js/stores/storage.js"></script>
     <script src="js/stores/topology.js"></script>
+    <script src="js/stores/desiredtopology.js"></script>
     <script src="js/stores/requests.js"></script>
     <script src="js/stores/forge.js"></script>
     <script src="js/components/sparkline.js"></script>

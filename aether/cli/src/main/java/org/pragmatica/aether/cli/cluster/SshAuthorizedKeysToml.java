@@ -23,7 +23,8 @@ import java.util.regex.Pattern;
 /// already declares `[infrastructure.ssh].authorized_keys` the operator's value wins and the input is
 /// returned unchanged; an existing `[infrastructure.ssh]` section without the key gets the key
 /// appended INTO it (TOML forbids duplicate section headers); otherwise a fresh section is appended.
-@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"})
+/// RET-06: `rawToml` is raw operator TOML content; its null/empty coalesce is parse-boundary handling.
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02", "JBCT-RET-06"})
 sealed interface SshAuthorizedKeysToml {
     record unused() implements SshAuthorizedKeysToml {}
 

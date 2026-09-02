@@ -10,6 +10,7 @@ import java.util.List;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigDiff;
 import org.pragmatica.aether.config.cluster.ClusterConfigError;
+import org.pragmatica.aether.config.cluster.DiffAction;
 import org.pragmatica.aether.config.cluster.DiffPlan;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
@@ -69,8 +70,18 @@ public final class ApplyOrchestrator {
 
     private static Result<DiffPlan> rejectImmutableChanges(DiffPlan plan) {
         return plan.hasImmutableChanges()
-               ? new ClusterConfigError.ImmutableFieldChange(plan.immutable().getFirst().description()).result()
+               ? new ClusterConfigError.ImmutableFieldChange(immutableFieldName(plan.immutable().getFirst())).result()
                : success(plan);
+    }
+
+    // #578 review Issue 2: field() names the config key, description() is a full sentence —
+    // description() here made the message read "Field 'cluster.name is immutable and cannot be
+    // changed' is immutable after bootstrap." See ClusterConfigRoutes.buildImmutableChangeError
+    // for the matching fix on the route side.
+    private static String immutableFieldName(DiffAction action) {
+        return action instanceof DiffAction.ImmutableFieldChange(var field)
+               ? field
+               : action.description();
     }
 
     private static Result<Unit> checkClusterHealth(ClusterBootstrapConfig stored) {

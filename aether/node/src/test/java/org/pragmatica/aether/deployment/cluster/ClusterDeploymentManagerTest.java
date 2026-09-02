@@ -14,7 +14,6 @@ import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
-import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
@@ -113,7 +112,6 @@ class ClusterDeploymentManagerTest {
                                                                   0,
                                                                   ClusterDeploymentManager.DEFAULT_RECONCILE_INTERVAL,
                                                                   NO_OP_SCHEMA,
-                                                                  HealthSignalSink.noop(),
                                                                   countedMembersSupplier(),
                                                                   () -> Set.copyOf(initialTopology),
                                                                   Set::of);

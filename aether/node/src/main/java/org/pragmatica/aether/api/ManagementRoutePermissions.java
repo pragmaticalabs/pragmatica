@@ -99,8 +99,6 @@ public sealed interface ManagementRoutePermissions {
                        ManagementRoute.SCHEMA_RETRY,
                        ManagementRoute.STORAGE_SNAPSHOT,
                        ManagementRoute.STREAM_CREATE,
-                       ManagementRoute.STREAM_PUBLISH,
-                       ManagementRoute.STREAM_DELETE,
                        ManagementRoute.STREAMS_PUBLISH,
                        ManagementRoute.STREAMS_PUBLISH_BATCH,
                        ManagementRoute.STREAMS_GROUP_CREATE,

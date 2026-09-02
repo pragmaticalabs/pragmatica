@@ -150,6 +150,7 @@ document.addEventListener('alpine:init', function() {
                 // for when WS misses INITIAL_STATE or drops connection
                 this.secondaryPollTimer = setInterval(function() {
                     Alpine.store('topology').refresh();
+                    Alpine.store('desiredTopology').refresh();
                     Alpine.store('governors').refresh();
                     Alpine.store('strategies').refresh();
                     Alpine.store('streams').refresh();
