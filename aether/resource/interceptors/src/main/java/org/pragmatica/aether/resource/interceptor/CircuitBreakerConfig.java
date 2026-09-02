@@ -14,10 +14,11 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 public record CircuitBreakerConfig(int failureThreshold, TimeSpan resetTimeout, int testAttempts) {
-    private static final CircuitBreakerConfig DEFAULTS = new CircuitBreakerConfig(5, timeSpan(30).seconds(), 3);
+    // Tunable, not identity-bearing - safe to expose for TOML-config binder defaulting (#278).
+    public static final CircuitBreakerConfig DEFAULT = new CircuitBreakerConfig(5, timeSpan(30).seconds(), 3);
 
     public static CircuitBreakerConfig circuitBreakerConfig() {
-        return DEFAULTS;
+        return DEFAULT;
     }
 
     public static Result<CircuitBreakerConfig> circuitBreakerConfig(int failureThreshold) {

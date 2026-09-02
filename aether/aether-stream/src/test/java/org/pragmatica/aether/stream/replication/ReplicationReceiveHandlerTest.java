@@ -8,6 +8,9 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.Result;
 
 import java.util.ArrayList;
@@ -103,6 +106,61 @@ class ReplicationReceiveHandlerTest {
     // skips duplicates, and never silently shifts local offsets when a batch is dropped/reordered.
 
     /// A successful append that tracks a local ring so the local-head seam advances as events land.
+    /// #634 item 1: the ack means "fsynced here". It must not leave before the durability barrier
+    /// resolves — an ack from RAM lets the owner's min-sync barrier count a copy that correlated power
+    /// loss can erase.
+    @Test
+    void ack_waitsForTheDurabilityBarrier_thenCarriesTheHighestAppliedOffset() {
+        var acks = new ArrayList<ReplicationMessage.ReplicateAck>();
+        var barrier = Promise.<Unit> promise();
+        ReplicationReceiveHandler.RecoveredAppender appender = (_, _, _, _, _) -> Result.success(0L);
+        var handler = ReplicationReceiveHandler.replicationReceiveHandler(SELF,
+                                                                          appender,
+                                                                          (_, _) -> 10L,
+                                                                          (target, message) -> acks.add((ReplicationMessage.ReplicateAck) message),
+                                                                          (_, _) -> {},
+                                                                          (_, _) -> barrier);
+
+        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 10L, payloads(3), timestamps(3), Epoch.ZERO));
+
+        assertThat(acks).as("no ack may leave before the batch is durable").isEmpty();
+
+        barrier.resolve(Result.success(Unit.unit()));
+
+        awaitAck(acks);
+
+        assertThat(acks).hasSize(1);
+        assertThat(acks.getFirst().confirmedOffset()).isEqualTo(12L);
+    }
+
+    /// A FAILED sync withholds the ack: the record is applied and serveable, but this replica must not
+    /// count toward the owner's durability barrier. Over-counting is the exact defect being closed.
+    @Test
+    void ack_isWithheld_whenTheDurabilityBarrierFails() {
+        var acks = new ArrayList<ReplicationMessage.ReplicateAck>();
+        ReplicationReceiveHandler.RecoveredAppender appender = (_, _, _, _, _) -> Result.success(0L);
+        var handler = ReplicationReceiveHandler.replicationReceiveHandler(SELF,
+                                                                          appender,
+                                                                          (_, _) -> 10L,
+                                                                          (target, message) -> acks.add((ReplicationMessage.ReplicateAck) message),
+                                                                          (_, _) -> {},
+                                                                          (_, _) -> Causes.cause("fsync failed").promise());
+
+        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 10L, payloads(3), timestamps(3), Epoch.ZERO));
+
+        assertThat(acks).as("a replica whose fsync failed must not be counted as a durable copy").isEmpty();
+    }
+
+    /// The ack rides the barrier promise's resolution, which may land on another thread — bounded wait,
+    /// never a bare sleep.
+    private static void awaitAck(java.util.List<ReplicationMessage.ReplicateAck> acks) {
+        var deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(2);
+
+        while (acks.isEmpty() && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+    }
+
     private static final class TrackingAppender implements ReplicationReceiveHandler.RecoveredAppender {
         private long head = -1L; // empty ring: next-expected offset is 0
 

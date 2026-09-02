@@ -9,9 +9,15 @@ import java.util.Map;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.aether.config.ConfigKeyLive;
 
 
-public record ClusterBootstrapConfig(String configVersion,
+/// `configVersion` is #693: parsed from the TOML file, but no downstream code reads this accessor — the
+/// live, KV-store-backed `ClusterConfigValue.configVersion()` (a different, unrelated record used by
+/// `ClusterConfigRoutes`/`ClusterTopologyManagerRecord` for the applied/desired topology's own version
+/// fencing) is the one every real consumer actually reads. `@ConfigKeyLive`-suppressed rather than
+/// deleted: #693 owns the fix, not #519's dead-surface guard.
+public record ClusterBootstrapConfig(@ConfigKeyLive("#693: parsed but never read — ClusterConfigValue.configVersion() is the live, unrelated accessor every consumer actually reads") String configVersion,
                                      ClusterIdentity cluster,
                                      CoreTopology coreTopology,
                                      Map<String, SourceProfile> sources,

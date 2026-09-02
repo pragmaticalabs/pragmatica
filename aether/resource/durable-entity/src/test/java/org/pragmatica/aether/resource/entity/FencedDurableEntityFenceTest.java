@@ -37,7 +37,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///
 ///   - a write stamped at the CURRENT committed owner epoch COMMITS and reads back;
 ///   - after a new owner takes over (the high-water advances), the now-DEPOSED owner's update is
-///     REJECTED with [DurableEntityError.StaleOwner] — the split-brain guarantee of spec §6.
+///     REJECTED with [EntityError.StaleOwnerEpoch] — the split-brain guarantee of spec §6.
 ///
 /// This is the single-JVM gate the plan reserves for the fence work; it needs no cluster because the
 /// engine enforces the fence at its own commit point (enforce-at-replica).
@@ -97,7 +97,7 @@ class FencedDurableEntityFenceTest {
     private OwnershipEpochHighWater highWater;
     private StorageEngine engine;
     private MutableOwnerEpoch ownerEpoch;
-    private DurableEntity<String, Integer> entity;
+    private DurableEntity<String, Integer, IntOp> entity;
 
     @BeforeEach
     void setUp() {
@@ -128,7 +128,7 @@ class FencedDurableEntityFenceTest {
         void update_commitsAndReadsBack_atCurrentOwnerEpoch() {
             entity.create("o-1", 7).await(AWAIT).onFailure(FencedDurableEntityFenceTest::failCause);
 
-            entity.update("o-1", value -> value + 5)
+            entity.update("o-1", new IntOp.Add(5))
                   .await(AWAIT)
                   .onFailure(FencedDurableEntityFenceTest::failCause)
                   .onSuccess(state -> assertThat(state).isEqualTo(12));
@@ -151,10 +151,10 @@ class FencedDurableEntityFenceTest {
             // This node is deposed but still believes it owns the arc at the old epoch 8:0.
             ownerEpoch.set(8L, 0L);
 
-            entity.update("o-1", value -> value + 5)
+            entity.update("o-1", new IntOp.Add(5))
                   .await(AWAIT)
                   .onSuccess(state -> fail("Deposed owner's update must be rejected, got " + state))
-                  .onFailure(cause -> assertThat(cause).isInstanceOf(DurableEntityError.StaleOwner.class));
+                  .onFailure(cause -> assertThat(cause).isInstanceOf(EntityError.StaleOwnerEpoch.class));
         }
 
         @Test
@@ -165,7 +165,7 @@ class FencedDurableEntityFenceTest {
             entity.create("o-2", 1)
                   .await(AWAIT)
                   .onSuccess(state -> fail("Deposed owner's create must be rejected, got " + state))
-                  .onFailure(cause -> assertThat(cause).isInstanceOf(DurableEntityError.StaleOwner.class));
+                  .onFailure(cause -> assertThat(cause).isInstanceOf(EntityError.StaleOwnerEpoch.class));
         }
 
         @Test
@@ -176,7 +176,7 @@ class FencedDurableEntityFenceTest {
             newOwnerTakesOver(Epoch.epoch(9, 0));
             ownerEpoch.set(9L, 0L);
 
-            entity.update("o-1", value -> value + 1)
+            entity.update("o-1", new IntOp.Add(1))
                   .await(AWAIT)
                   .onFailure(FencedDurableEntityFenceTest::failCause)
                   .onSuccess(state -> assertThat(state).isEqualTo(8));

@@ -92,7 +92,18 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// (a completed backfill or a release). OWNER materializations are NOT paced — an owner ring has no
     /// backfill (it is the source), so pacing it would only stall the owner write path with no throughput
     /// benefit. `2` is the spec default (one-at-a-time starves a large reshuffle; unbounded floods backfill).
+    /// DEFAULT reshuffle concurrency. `2` is the spec default (one-at-a-time starves a large reshuffle;
+    /// unbounded floods backfill). Overridable at wiring time via [#reshuffleConcurrency(int)], bound to
+    /// `[streaming] reshuffle_concurrency`. Until 2026-08-16 this was a hard-coded `static final` with NO
+    /// binding, while the paced-materialization error message named `reshuffle_concurrency` as though it
+    /// were a knob — an operator hitting the message went looking for a setting that did not exist.
     static final int RESHUFFLE_CONCURRENCY = 2;
+
+    /// Reconcile ticks a partition may hold a reshuffle slot before it is preempted to unblock a starving
+    /// queue ([#preemptStalledSlots]). At the 5s reconcile interval this is ~30s — comfortably past
+    /// `PartitionBackfill`'s own 20s bounded wait, so a healthy backfill completes or promotes long before it
+    /// is ever eligible. Only applies while partitions are actually queued.
+    static final int RESHUFFLE_SLOT_MAX_TICKS = 6;
 
     /// Flap-debounce grace, in reconcile ticks (#265 increment 5, spec §5.4 / §14.2). A materialized
     /// partition whose role transitions to NONE becomes a RELEASE CANDIDATE; it is released only after it has
@@ -140,6 +151,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// ring-create time, and an OWNER publish (`publishLocal`) does not ack until the event is
     /// fsync-durable in that WAL. The replica-receive path (`appendRecovered`) never writes the WAL.
     private final Option<Path> walBaseDir;
+    private final ConcurrentHashMap<String, Promise<Unit>> lastReplicatedWalWrite = new ConcurrentHashMap<>();
     /// Source of the durable last-sealed offset per `(stream, partition)` (streaming-persistence W4).
     /// Bounds WAL replay when a partition ring is (re)built: sealed segments already serve
     /// `[0, lastSealedOffset]`, so a recovered ring is seeded above that bound and replays only the
@@ -196,11 +208,16 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// the reconcile tick.
     private volatile OwnerReleaseGuard ownerReleaseGuard = OWNER_ELSEWHERE;
 
-    /// Reshuffle-concurrency permits (#265 increment 5): `RESHUFFLE_CONCURRENCY` slots gating REPLICA
+    /// Reshuffle-concurrency permits (#265 increment 5): [#reshuffleConcurrency] slots gating REPLICA
     /// materialize+backfill. Acquired in {@link #buildAndInstall} for a REPLICA partition, released when the
     /// partition reaches CAUGHT_UP / loses the role / is released. Fair=false (throughput over ordering; the
-    /// queue provides the ordering).
-    private final Semaphore reshuffleSlots = new Semaphore(RESHUFFLE_CONCURRENCY);
+    /// queue provides the ordering). Replaced wholesale by [#reshuffleConcurrency(int)] at wiring time, which
+    /// is why neither this nor the limit beside it is final.
+    private volatile Semaphore reshuffleSlots = new Semaphore(RESHUFFLE_CONCURRENCY);
+
+    /// The reshuffle-slot limit in force. Reported by [org.pragmatica.aether.stream.StreamError.ReshufflePaced]
+    /// so the operator-facing message states the ACTUAL bound rather than a compile-time constant.
+    private volatile int reshuffleConcurrency = RESHUFFLE_CONCURRENCY;
 
     /// Partitions currently holding a reshuffle slot (materialize+backfill in flight). Membership set paired
     /// with {@link #reshuffleSlots}: `add` is the "acquire", `remove`+release is the "free". Swept each tick
@@ -215,6 +232,18 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Dedup set across both queues + a fast "is queued" membership test — a repeat materialize request for an
     /// already-queued partition is a no-op (idempotent, like the lazy-materialize path itself).
     private final Set<PartitionRef> queuedMaterializations = ConcurrentHashMap.newKeySet();
+
+    /// Reconcile tick at which each in-flight partition ACQUIRED its slot — the input to starvation
+    /// preemption ([#preemptStalledSlots]). Removed when the slot is freed or preempted.
+    private final Map<PartitionRef, Long> slotAcquiredTick = new ConcurrentHashMap<>();
+
+    /// Partitions whose backfill is still running but which no longer hold a reshuffle slot, because they
+    /// were preempted for starving the queue. Load-bearing for permit accounting, NOT bookkeeping: slot
+    /// acquisition is idempotent VIA {@link #inFlightMaterializations} membership ("a ref already in flight
+    /// returns true without a second permit"), so a preempted ref that re-entered the acquire path would take
+    /// a SECOND permit and only ever release one — leaking the pool empty. A ref listed here reports its slot
+    /// as already held and never takes another.
+    private final Set<PartitionRef> preemptedSlots = ConcurrentHashMap.newKeySet();
 
     /// Release candidacy (#265 increment 5): a materialized partition whose role went NONE maps to the
     /// reconcile tick at which candidacy started. Debounced (survive [#RELEASE_DEBOUNCE_TICKS] ticks) then
@@ -448,8 +477,25 @@ public final class StreamPartitionManager implements AutoCloseable {
         this.placementRoleSupplier = supplier;
     }
 
-    /// Late-bind the cluster-size source for the aggregate partition guard (#265 increment 4). `AetherNode`
-    /// wires this to the topology observer's live count (the SAME source [ReplicaSetController] uses for HRW
+    /// Set the reshuffle-slot limit (`[streaming] reshuffle_concurrency`). Set ONCE at wiring, before any
+    /// materialization: it replaces the permit pool wholesale, so calling it with slots in flight would
+    /// desynchronise permits from {@link #inFlightMaterializations}. A value below 1 is ignored — a zero
+    /// limit would stall every REPLICA materialization permanently, and silently accepting it here would
+    /// reproduce the starvation this bound is meant to pace. `ConfigValidator` rejects it up front so the
+    /// operator sees the error rather than this defensive floor.
+    @Contract
+    public void reshuffleConcurrency(int limit) {
+        if (limit < 1) {
+            log.warn("Ignoring reshuffle_concurrency={} — must be >= 1; keeping {}", limit, reshuffleConcurrency);
+
+            return;
+        }
+
+        this.reshuffleConcurrency = limit;
+        this.reshuffleSlots = new Semaphore(limit);
+    }
+
+    /// Late-bind the cluster-size source for the aggregate partition guard (#265 increment 4). `AetherNode`    /// wires this to the topology observer's live count (the SAME source [ReplicaSetController] uses for HRW
     /// placement). Until then — and in Forge/unit/legacy managers — the default `() -> 0` reports "cluster
     /// size unknown" and the aggregate guard is skipped (only the per-stream ceiling applies). Set once at
     /// wiring; read on the create-admission and snapshot paths.
@@ -1189,7 +1235,58 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                  partition,
                                                                                  payload,
                                                                                  timestamp,
-                                                                                 ownerEpoch));
+                                                                                 ownerEpoch))
+                                 .onSuccess(offset -> walReplicated(streamName, partition, offset, payload, timestamp));
+    }
+
+    /// #634 item 1: a replicated/backfilled record enters the SAME per-partition WAL the owner's publish
+    /// path uses, so the "replicated" half of `minSyncReplicas` is crash-durable rather than RAM-until-seal
+    /// — before this, correlated power loss inside the unsealed window lost acked entity writes at ANY RF.
+    ///
+    /// The append is NOT awaited here: backfill replays thousands of records sequentially, and awaiting
+    /// each would serialize the pull on the group-commit cadence. Durability is claimed at the ACK, not
+    /// the append — [#syncReplicated] is the barrier, and the replication receive handler awaits it
+    /// before acking, so the owner's barrier counts only fsynced replicas. Group commit resolves appends
+    /// in offset order, so awaiting the LAST append's promise covers the whole prefix.
+    private void walReplicated(String streamName, int partition, long offset, byte[] payload, long timestamp) {
+        walFor(streamName, partition).onPresent(wal -> chainWalWrite(streamName,
+                                                                     partition,
+                                                                     wal,
+                                                                     offset,
+                                                                     payload,
+                                                                     timestamp));
+    }
+
+    /// Appends are CHAINED per partition — each starts only after its predecessor is durable — because
+    /// [PartitionWal#append] runs its file write on a per-call async supplier: unchained concurrent calls
+    /// race the FILE order, and file order is load-bearing (recovery derives `lastOffset` from the last
+    /// record; truncation assumes monotonic offsets). The cost per record equals what the owner's own
+    /// publish path already pays in `durablyLog`. A failed append deliberately POISONS the chain: a later
+    /// success after a mid-chain failure would leave a hole the ring does not have, so `localLogComplete`
+    /// would lie — instead every later [#syncReplicated] fails, acks stop, and the owner's barrier
+    /// degrades honestly until the replica is repaired or restarted.
+    private void chainWalWrite(String streamName,
+                               int partition,
+                               PartitionWal wal,
+                               long offset,
+                               byte[] payload,
+                               long timestamp) {
+        lastReplicatedWalWrite.compute(partitionKeyOf(streamName, partition),
+                                       (_, previous) -> previous == null
+                                                        ? wal.append(offset, payload, timestamp)
+                                                        : previous.flatMap(_ -> wal.append(offset, payload, timestamp)));
+    }
+
+    /// The durability barrier for replicated records: resolves once every WAL append issued by
+    /// [#appendRecovered] for `(streamName, partition)` so far is fsynced. Wall-less deployments (legacy,
+    /// Forge, the explicit non-durable opt-in) resolve immediately — the ack then means exactly what it
+    /// meant before this change.
+    public Promise<Unit> syncReplicated(String streamName, int partition) {
+        return option(lastReplicatedWalWrite.get(partitionKeyOf(streamName, partition))).or(Promise::unitPromise);
+    }
+
+    private static String partitionKeyOf(String streamName, int partition) {
+        return streamName + "#" + partition;
     }
 
     /// The offset the NEXT contiguous append would be assigned for `(streamName, partition)` — the
@@ -1358,6 +1455,76 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                        Collectors.counting()));
     }
 
+    /// Cheap point-in-time per-partition WAL + retention-floor view (#634-3) — the [#hydrationSnapshot]
+    /// pattern: assembled ON REQUEST from the live `streams` map, adds NO hot-path accounting. Per
+    /// MATERIALIZED partition it reports the WAL's [PartitionWal.WalStats] (absent on the no-WAL path),
+    /// the ring tail (earliest offset still retained in memory) and the durable sealed bound — two of
+    /// the three floors the #634-4 invariant spans; the third (the entity checkpoint floor) lives in
+    /// consensus KV and is joined by the node-side assembler, which is also where the invariant itself
+    /// is evaluated (a checker that cannot see all three floors is a lying sensor, per the ticket).
+    public WalSnapshot walSnapshot() {
+        return new WalSnapshot(streams.entrySet()
+                                      .stream()
+                                      .map(entry -> streamWalView(entry.getKey(),
+                                                                  entry.getValue()))
+                                      .filter(view -> !view.partitions()
+                                                           .isEmpty())
+                                      .toList());
+    }
+
+    private StreamWalView streamWalView(String name, StreamEntry entry) {
+        var partitions = IntStream.range(0,
+                                         entry.declaredPartitions())
+                                  .mapToObj(partition -> partitionWalView(name, partition, entry))
+                                  .flatMap(Option::stream)
+                                  .toList();
+
+        return new StreamWalView(name, partitions);
+    }
+
+    /// [Option#none] for a partition this node has not materialized — nothing local exists to report,
+    /// and reporting zeros would be indistinguishable from a real empty WAL.
+    private Option<PartitionWalView> partitionWalView(String streamName, int partition, StreamEntry entry) {
+        return Option.option(entry.materialized().get(partition)).map(materialized -> toWalView(streamName,
+                                                                                                partition,
+                                                                                                materialized));
+    }
+
+    /// One materialized partition's view (extracted per the lambda-format rule). The ring tail is
+    /// reported as `-1` for an EMPTY ring — review catch: `tailOffset()` is raw slot state, `0` on a
+    /// ring that never held a record, which would satisfy any covered-from check and silently declare
+    /// a restarted-empty partition healthy under a committed checkpoint, the exact blind spot the
+    /// retention surface exists to expose. Emptiness is judged by the head: allocation seeds
+    /// `headOffset = -1`, and a negative head means no record was ever appended.
+    private PartitionWalView toWalView(String streamName,
+                                       int partition,
+                                       StreamEntry.MaterializedPartition materialized) {
+        var ring = materialized.ring();
+        var ringTail = ring.headOffset() < 0
+                       ? -1L
+                       : ring.tailOffset();
+
+        return new PartitionWalView(partition,
+                                    materialized.wal().map(PartitionWal::stats),
+                                    ringTail,
+                                    lastSealedOffset.lastSealedOffset(streamName, partition));
+    }
+
+    /// Per-node WAL/floors view: one entry per stream with at least one materialized partition.
+    public record WalSnapshot(List<StreamWalView> streams) {}
+
+    public record StreamWalView(String stream, List<PartitionWalView> partitions) {}
+
+    /// @param wal                  the partition WAL's counters, absent on the no-WAL (non-durable) path
+    /// @param ringTailOffset       earliest offset still retained in the in-memory ring, `-1` when empty
+    /// @param sealedThroughOffset  durable sealed bound (`-1` when nothing sealed) — the same value that
+    ///                             drives WAL truncation, reported so the operator sees the floor the
+    ///                             truncation watermark chases
+    public record PartitionWalView(int partition,
+                                   Option<PartitionWal.WalStats> wal,
+                                   long ringTailOffset,
+                                   long sealedThroughOffset) {}
+
     /// Adapt this manager to the narrow {@link org.pragmatica.aether.stream.replication.StreamCatalog}
     /// consumed by `ReplicaSetController`. Exposes `(name, partitions, replicas, minSyncReplicas)` per
     /// stream — placement uses `replicas` (the replication factor), while `minSyncReplicas` (the write-
@@ -1466,6 +1633,10 @@ public final class StreamPartitionManager implements AutoCloseable {
         appMaterializeQueue.clear();
         queuedMaterializations.clear();
         releaseCandidacy.clear();
+        // #642: this manager owns the replication manager, and the batcher underneath it arms a
+        // fixed-rate flush on the process-wide SharedScheduler. Nothing else called its close(), so a
+        // stopped node kept flushing replication batches at its peers.
+        replicationManager.close();
     }
 
     private Result<StreamEntry> resolveStreamEntry(String streamName) {
@@ -1739,11 +1910,17 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Idempotent: a ref already in flight (its slot held) returns true without a second permit; a
     /// membership-add that cannot get a permit is rolled back so the ref is not falsely counted.
     private boolean tryAcquireReshuffleSlot(PartitionRef ref) {
+        if (preemptedSlots.contains(ref)) {
+            return true;
+        }
+
         if (!inFlightMaterializations.add(ref)) {
             return true;
         }
 
         if (reshuffleSlots.tryAcquire()) {
+            slotAcquiredTick.put(ref, reconcileTick.get());
+
             return true;
         }
 
@@ -1754,6 +1931,8 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     @Contract
     private void freeReshuffleSlot(PartitionRef ref) {
+        slotAcquiredTick.remove(ref);
+        preemptedSlots.remove(ref);
         if (inFlightMaterializations.remove(ref)) {
             reshuffleSlots.release();
         }
@@ -1770,13 +1949,15 @@ public final class StreamPartitionManager implements AutoCloseable {
              : appMaterializeQueue).add(ref);
         }
 
-        return new StreamError.ReshufflePaced(ref.streamName(), ref.partition(), RESHUFFLE_CONCURRENCY).result();
+        return new StreamError.ReshufflePaced(ref.streamName(), ref.partition(), reshuffleConcurrency).result();
     }
 
     /// Periodic reshuffle-lifecycle reconcile (#265 increment 5) — the release state machine + slot pacing
     /// tick. `AetherNode` schedules it every `STREAM_RESHUFFLE_RECONCILE_INTERVAL` (5s); tests call it directly
     /// to advance the machine deterministically. One tick, in order: (1) free reshuffle slots for partitions
-    /// that finished backfill (self CAUGHT_UP), became OWNER (no backfill), or lost the role; (2) evaluate
+    /// that finished backfill (self CAUGHT_UP), became OWNER (no backfill), or lost the role; (1b) preempt a
+    /// slot held past [#RESHUFFLE_SLOT_MAX_TICKS] while the queue is non-empty, so a stalled backfill cannot
+    /// starve the queue forever; (2) evaluate
     /// release candidates — a materialized partition whose role is NONE debounces [#RELEASE_DEBOUNCE_TICKS]
     /// ticks, then releases IFF the catch-up gate (≥ effective, clamped RF other replicas CAUGHT_UP) AND the
     /// owner rule (committed owner elsewhere) both pass, freeing the ring + its budget (WAL kept); (3) drain
@@ -1787,12 +1968,64 @@ public final class StreamPartitionManager implements AutoCloseable {
     public void reconcileReshuffle() {
         reconcileTick.incrementAndGet();
         freeCompletedSlots();
+        preemptStalledSlots();
         evaluateReleaseCandidates();
         drainMaterializeQueue();
     }
 
+    /// Anti-starvation preemption. A slot was held for as long as a partition stayed a not-caught-up REPLICA,
+    /// with NO upper bound — and [org.pragmatica.aether.stream.replication.PartitionBackfill] retries forever
+    /// once its bounded wait elapses with a committed owner present (the #445 distrust gate). The release
+    /// condition was therefore exactly the condition that would never become true, and a stalled backfill
+    /// occupied its slot indefinitely.
+    ///
+    /// Measured 2026-08-16 (02y-stream-crash, remote cluster B): `entity:orders[4]` and `[6]` held BOTH of a
+    /// node's slots for 4m55s with zero releases in the whole log, while `multipart-events[0]`/`[2]` — the
+    /// partitions it was the designated replica for — sat queued behind them, never became in-sync, and were
+    /// lost outright when their owner was killed.
+    ///
+    /// A backfill idle-waiting on an unreachable source performs no work, so it must not hold a work-pacing
+    /// slot while others wait. Preemption does NOT abort the backfill: it keeps running and keeps retrying,
+    /// it simply stops counting against `RESHUFFLE_CONCURRENCY`.
+    ///
+    /// TRADE, deliberate: this bounds tenure rather than detecting the stall, so a legitimately SLOW but
+    /// progressing backfill can also be preempted. That is harmless (it continues) and costs only that one
+    /// extra partition may materialize concurrently. Preemption is gated on a non-empty queue so a preempted
+    /// worker is SWAPPED for a waiting one rather than multiplying concurrency — with no waiter, the flood
+    /// pacing that this bound exists to preserve is untouched.
+    @Contract
+    private void preemptStalledSlots() {
+        if (queuedMaterializations.isEmpty()) {
+            return;
+        }
+
+        var tick = reconcileTick.get();
+
+        Set.copyOf(inFlightMaterializations)
+           .stream()
+           .filter(ref -> tick - slotAcquiredTick.getOrDefault(ref, tick) >= RESHUFFLE_SLOT_MAX_TICKS)
+           .forEach(this::preemptReshuffleSlot);
+    }
+
+    @Contract
+    private void preemptReshuffleSlot(PartitionRef ref) {
+        if (!inFlightMaterializations.remove(ref)) {
+            return;
+        }
+
+        slotAcquiredTick.remove(ref);
+        preemptedSlots.add(ref);
+        reshuffleSlots.release();
+        log.warn("Preempted reshuffle slot for {}[{}] after {} reconcile ticks — backfill continues but no longer counts against reshuffle concurrency ({} partitions were queued behind it)",
+                 ref.streamName(),
+                 ref.partition(),
+                 RESHUFFLE_SLOT_MAX_TICKS,
+                 queuedMaterializations.size());
+    }
+
     private void freeCompletedSlots() {
         Set.copyOf(inFlightMaterializations).forEach(this::freeSlotIfComplete);
+        Set.copyOf(preemptedSlots).stream().filter(this::slotComplete).forEach(preemptedSlots::remove);
     }
 
     @Contract

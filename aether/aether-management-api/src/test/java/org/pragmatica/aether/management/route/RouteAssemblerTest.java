@@ -18,21 +18,25 @@ class RouteAssemblerTest {
     @Test
     void assemble_parameterlessRoute_returnsPrefixUnchanged() {
         var path = ManagementRoute.CLUSTER_STATUS.assemble(List.of());
-        path.onSuccess(p -> assertThat(p).isEqualTo("/api/cluster/status"));
+        path.onSuccess(p -> assertThat(p).isEqualTo("/api/v1/cluster/status"));
         assertThat(path.isSuccess()).isTrue();
     }
 
     @Test
     void assemble_singleParam_appendsToTail() {
         var path = ManagementRoute.DEPLOY_PROMOTE.assemble("dep-1");
-        path.onSuccess(p -> assertThat(p).isEqualTo("/api/deploy/promote/dep-1"));
+        path.onSuccess(p -> assertThat(p).isEqualTo("/api/v1/deploy/promote/dep-1"));
         assertThat(path.isSuccess()).isTrue();
     }
 
+    /// STREAM_READ is interleaved (identity params, then the "read" literal, then partition), so
+    /// assembly no longer merely appends values to a static prefix -- each value must land at its
+    /// own `Param` position with the literal preserved between `version` and `partition`. Four
+    /// distinct values pin that ordering: any permutation, or a misplaced "read", changes the path.
     @Test
-    void assemble_multipleParams_appendsInOrder() {
-        var path = ManagementRoute.STREAM_READ.assemble("orders", "3");
-        path.onSuccess(p -> assertThat(p).isEqualTo("/api/streams/read/orders/3"));
+    void assemble_multipleParams_interleavesValuesInOrder() {
+        var path = ManagementRoute.STREAM_READ.assemble("orders", "events", "v2", "3");
+        path.onSuccess(p -> assertThat(p).isEqualTo("/api/v1/streams/orders/events/v2/read/3"));
         assertThat(path.isSuccess()).isTrue();
     }
 
@@ -40,8 +44,33 @@ class RouteAssemblerTest {
     void assemble_urlEncodesSegments() {
         // `/` is preserved so callers can pass pre-joined path fragments (e.g. Maven group paths).
         var path = ManagementRoute.DEPLOY_STATUS.assemble("a b/c");
-        path.onSuccess(p -> assertThat(p).isEqualTo("/api/deploy/a%20b/c"));
+        path.onSuccess(p -> assertThat(p).isEqualTo("/api/v1/deploy/a%20b/c"));
         assertThat(path.isSuccess()).isTrue();
+    }
+
+    /// #522: `blueprints deploy --wait` polls BLUEPRINT_STATUS with a blueprint id, which is
+    /// always artifact-shaped (`group:artifact:version`). The colons must survive assembly and
+    /// come back intact on match, or the wait gate would poll a route that never resolves.
+    @Test
+    void assemble_blueprintIdWithColons_percentEncodesThemIntoOneSegment() {
+        var path = ManagementRoute.BLUEPRINT_STATUS.assemble("org.example:hello:1.0.0-SNAPSHOT");
+        path.onSuccess(p -> assertThat(p)
+                .isEqualTo("/api/v1/blueprints/status/org.example%3Ahello%3A1.0.0-SNAPSHOT"));
+        assertThat(path.isSuccess()).isTrue();
+    }
+
+    @Test
+    void match_assembledBlueprintStatusPath_recoversTheOriginalBlueprintId() {
+        var blueprintId = "org.example:hello:1.0.0-SNAPSHOT";
+
+        ManagementRoute.BLUEPRINT_STATUS
+                .assemble(blueprintId)
+                .flatMap(path -> RouteMatcher.shared().match(ManagementRoute.BLUEPRINT_STATUS.method(), path))
+                .onSuccess(matched -> {
+                    assertThat(matched.route()).isEqualTo(ManagementRoute.BLUEPRINT_STATUS);
+                    assertThat(matched.param("id").or((String) null)).isEqualTo(blueprintId);
+                })
+                .onFailure(cause -> assertThat(cause).as("round trip must succeed").isNull());
     }
 
     @Test

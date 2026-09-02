@@ -30,11 +30,48 @@ public final class ConfigValidator {
 
         clusterErrors(config.cluster(), errors);
         nodeErrors(config.node(), errors);
+        absenceWindowErrors(config.timeouts().cluster(),
+                            errors);
+        streamingErrors(config.streaming(), errors);
         if (config.tlsEnabled()) {
             config.tls().onPresent(tls -> tlsErrors(tls, errors));
         }
 
         return toResult(config, errors);
+    }
+
+    /// #590 — the two absence windows are the two halves of one mechanism and their ORDER is a
+    /// correctness property, not a preference. A community must stop serving before the core hands its
+    /// slices to other nodes; inverted (or equal) windows put both live on the same slices at once.
+    ///
+    /// Reported rather than clamped: substituting a working pair would hide that the operator asked
+    /// for something whose failure mode is two live writers. Reported here rather than thrown from a
+    /// factory so it joins every other config problem in one collected report.
+    private static void absenceWindowErrors(TimeoutsConfig.ClusterTimeouts cluster, List<String> errors) {
+        if (!cluster.absenceWindowsOrdered()) {
+            errors.add(("timeouts.cluster.core_absence (%s) must be strictly less than "
+                       + "timeouts.cluster.community_absence (%s): a community has to stop serving before the core "
+                       + "re-places its slices, or both run at once").formatted(cluster.coreAbsence(),
+                                                                                cluster.communityAbsence()));
+        }
+    }
+
+    /// `reshuffle_concurrency` bounds how many partitions one node materializes+backfills at once. Zero or
+    /// negative would stall every REPLICA materialization permanently — the exact starvation the bound
+    /// exists to pace — so it is rejected here rather than silently floored, and joins the collected report
+    /// with every other config problem.
+    private static void streamingErrors(StreamingConfig streaming, List<String> errors) {
+        if (streaming.reshuffleConcurrency() < 1) {
+            errors.add("streaming.reshuffle_concurrency must be >= 1 (0 would stall every replica backfill). Got: " + streaming.reshuffleConcurrency());
+        }
+        // A negative bound would reject every peer including a perfectly in-sync one, so reads would stop
+        // being served from replicas and the ring-release catch-up gate could never be satisfied. Zero is
+        // ALLOWED and means "exact watermark parity", which is legitimate though very strict: replication
+        // is asynchronous, so a healthy peer is transiently behind on every write.
+        if (streaming.caughtUpMaxLagOffsets() < 0) {
+            errors.add("streaming.caught_up_max_lag_offsets must be >= 0 (a negative bound rejects every replica, "
+                      + "stopping replica-served reads and blocking the ring-release catch-up gate). Got: " + streaming.caughtUpMaxLagOffsets());
+        }
     }
 
     private static Result<AetherConfig> toResult(AetherConfig config, List<String> errors) {

@@ -460,8 +460,8 @@ final class DeploymentManagerImpl implements DeploymentManager {
                                      .orElse("");
         var value = DeploymentValue.deploymentValue(deployment.deploymentId(),
                                                     deployment.blueprintId(),
-                                                    deployment.oldVersion().toString(),
-                                                    deployment.newVersion().toString(),
+                                                    deployment.oldVersion().withQualifier(),
+                                                    deployment.newVersion().withQualifier(),
                                                     deployment.strategy().name(),
                                                     deployment.state().name(),
                                                     deployment.routing().toString(),

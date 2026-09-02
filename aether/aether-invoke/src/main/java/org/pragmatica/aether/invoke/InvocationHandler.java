@@ -17,6 +17,7 @@ import org.pragmatica.aether.slice.ObservabilityCellRegistrar;
 import org.pragmatica.aether.slice.SliceBridge;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.utils.Deadline;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -45,6 +46,20 @@ public interface InvocationHandler {
 
     Option<SliceBridge> localSlice(Artifact artifact);
     Option<SliceBridge> findBridgeByClassLoader(ClassLoader classLoader);
+
+    /// Find a locally-registered bridge whose OWN codec can encode `type`.
+    ///
+    /// Bridges are keyed by the loader of their slice IMPLEMENTATION, while a request object's class
+    /// comes from the CALLER's dependency resolution -- a different loader that owns no bridge. The
+    /// loader lookup therefore misses for cross-slice request types and the caller would otherwise
+    /// fall back to the CALLEE's bridge, whose codec knows only its own copies of those classes, so
+    /// encoding failed with "No codec registered for class". Asking which local codec can actually
+    /// encode the value sidesteps loader identity entirely. Default is none so alternate
+    /// implementations (stubs, tests) keep compiling.
+    default Option<SliceBridge> findBridgeForType(Class<?> type) {
+        return Option.none();
+    }
+
     Option<InvocationMetricsCollector> metricsCollector();
     TimeSpan DEFAULT_INVOCATION_TIMEOUT = timeSpan(15).seconds();
 
@@ -193,12 +208,23 @@ class InvocationHandlerImpl implements InvocationHandler {
     }
 
     @Override
+    public Option<SliceBridge> findBridgeForType(Class<?> type) {
+        return Option.from(localSlices.values()
+                                      .stream()
+                                      .filter(bridge -> bridge.sliceCodec()
+                                                              .map(codec -> codec.hasCodecFor(type))
+                                                              .or(false))
+                                      .findFirst());
+    }
+
+    @Override
     public Option<InvocationMetricsCollector> metricsCollector() {
         return metricsCollector;
     }
 
     @Override
-    @SuppressWarnings("JBCT-RET-01")
+    // JBCT-RET-08: absent invocation context — no principal/origin-node on this InvokeRequest path
+    @SuppressWarnings({"JBCT-RET-01", "JBCT-RET-08"})
     public void onInvokeRequest(InvokeRequest request) {
         if (log.isDebugEnabled()) {
             log.debug("[requestId={}] Received InvokeRequest [{}]: {}.{}",
@@ -229,6 +255,14 @@ class InvocationHandlerImpl implements InvocationHandler {
         }
     }
 
+    /// The invocation wait is capped by the ambient request budget (#634 follow-up — the invoke-layer
+    /// half of the deadline arc). HONEST STATUS (review catch): on the production path this cap is
+    /// INERT today — the only caller is the inbound network dispatch, `InvokeRequest` carries no
+    /// budget field, and ScopedValue bindings do not cross nodes, so `Deadline.current()` here is
+    /// always unbounded and `bounded` returns the configured timeout unchanged. The mechanism is
+    /// pinned by test (a bound budget DOES cap when present); it engages for real once the budget
+    /// travels on `InvokeRequest` — the recorded next step (`TimeoutsConfig` invocation-section
+    /// docs). Kept rather than removed so the wire step lands against a ready consumer.
     private void invokeSliceMethod(InvokeRequest request, SliceBridge bridge) {
         var startTime = System.nanoTime();
         var requestBytes = request.payload().length;
@@ -237,7 +271,7 @@ class InvocationHandlerImpl implements InvocationHandler {
         ObservabilityCells.around(bridge,
                                   request.method().name(),
                                   () -> invokeWithHttpRouting(request, bridge))
-                          .timeout(invocationTimeout)
+                          .timeout(Deadline.current().bounded(invocationTimeout))
                           .onSuccess(data -> handleInvocationSuccess(request, data, startTime, requestBytes))
                           .onFailure(cause -> handleInvocationFailure(request, cause, startTime, requestBytes));
     }

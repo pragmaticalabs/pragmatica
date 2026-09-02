@@ -4,11 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.config.cluster;
 
-import java.util.regex.Pattern;
-
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
 
 
 /// Cluster identity value object — single source of truth for cluster name across:
@@ -18,31 +16,29 @@ import org.pragmatica.lang.Unit;
 ///   - KV-Store (`ClusterConfigValue.clusterName` — String for serialization)
 ///   - operator-facing identifiers (`AETHER_<UPPER>_<NAME>_API_KEY`)
 ///
-/// Names are validated against `^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$` so they're safe everywhere — Hetzner
-/// label spec, DNS labels, env var derivation. Construction goes through a `Result` factory
-/// so all downstream readers can trust the invariant.
-public record ClusterIdentity(String name, String version) {
-    public static final Pattern NAME_PATTERN = Pattern.compile("^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$");
-
+/// The name is a [ClusterName] — the RFC-1035 grammar lives THERE, once, and this type no longer
+/// keeps a second copy of it. What this type adds is the pairing with a version and the
+/// bootstrap-config cause vocabulary: a rejection surfaces as [InvalidName] carrying the offending
+/// text, because the TOML parser's error report names the value the operator typed.
+public record ClusterIdentity(ClusterName name, String version) {
     public static Result<ClusterIdentity> clusterIdentity(String name, String version) {
-        return validateName(name).map(_ -> new ClusterIdentity(name, version));
+        return parseName(name).map(parsed -> new ClusterIdentity(parsed, version));
     }
 
     public Result<ClusterIdentity> withName(String newName) {
-        return validateName(newName).map(_ -> new ClusterIdentity(newName, version));
+        return parseName(newName).map(parsed -> new ClusterIdentity(parsed, version));
     }
 
-    private static Result<Unit> validateName(String candidate) {
-        if (candidate == null || candidate.isBlank()) {
-            return new InvalidName("Cluster name must not be blank").result();
-        }
+    /// Grammar delegated to [ClusterName#clusterName]; the rejection is re-clothed as [InvalidName]
+    /// so the cause type the bootstrap-config surface already reports is unchanged, and so the
+    /// message still echoes the candidate — [ClusterName]'s own cause describes the RULE (it is
+    /// shared by call sites that have no single offending value to name) and never the input.
+    private static Result<ClusterName> parseName(String candidate) {
+        return ClusterName.clusterName(candidate).mapError(cause -> invalidName(candidate, cause));
+    }
 
-        if (!NAME_PATTERN.matcher(candidate).matches()) {
-            return new InvalidName("Cluster name '" + candidate
-                                  + "' does not match required pattern " + NAME_PATTERN.pattern()).result();
-        }
-
-        return Result.success(Unit.unit());
+    private static Cause invalidName(String candidate, Cause cause) {
+        return new InvalidName("Cluster name '" + candidate + "' is invalid. " + cause.message());
     }
 
     public record InvalidName(String message) implements Cause {}

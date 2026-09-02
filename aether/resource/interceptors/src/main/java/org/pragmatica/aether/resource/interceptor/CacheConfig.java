@@ -11,6 +11,10 @@ import static org.pragmatica.lang.Verify.ensure;
 
 
 public record CacheConfig(String cacheName, CacheStrategy strategy, int ttlSeconds, int maxEntries, CacheMode mode) {
+    // Deliberately named DEFAULTS, not DEFAULT: cacheName is identity-bearing. Exposing this as a
+    // binder-visible DEFAULT would let multiple TOML-configured call sites silently collapse onto
+    // the same cache namespace ("default") when cacheName is omitted (#278). Callers MUST supply
+    // an explicit cacheName; a missing [cache.*] section fails loud via ConfigError.sectionNotFound.
     private static final CacheConfig DEFAULTS = new CacheConfig("default",
                                                                 CacheStrategy.CACHE_ASIDE,
                                                                 300,

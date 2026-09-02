@@ -35,6 +35,7 @@ public interface ObservabilityRegistry {
     Result<Unit> registerNodeCount(Supplier<Number> nodeCountSupplier);
     Result<Unit> registerSliceCount(Supplier<Number> sliceCountSupplier);
     Result<Unit> registerTransportMetrics(Supplier<java.util.Map<String, Number>> metricsSupplier);
+    Result<Unit> registerConsensusMetrics(Supplier<java.util.Map<String, Number>> metricsSupplier);
 
     static ObservabilityRegistry prometheus() {
         var prometheusRegistry = new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
@@ -132,6 +133,29 @@ public interface ObservabilityRegistry {
             return unitResult();
         }
 
+        /// #674: the consensus-load counters, served from the same supplier-map shape — and the same
+        /// key vocabulary (`RabiaMetrics.counterMap()`) — as the HTTP consensus block, so Prometheus
+        /// and the management API can never disagree about a counter's name or meaning. All are
+        /// monotonic totals except `consensus_pending_batches`, a level.
+        @Override
+        @SuppressWarnings("JBCT-PAT-01")
+        public Result<Unit> registerConsensusMetrics(Supplier<java.util.Map<String, Number>> metricsSupplier) {
+            registerTransportGauge("consensus_decisions_total", "Rabia decisions applied", metricsSupplier);
+            registerTransportGauge("consensus_proposals_total", "Rabia proposals submitted", metricsSupplier);
+            registerTransportGauge("consensus_vote_round1_total", "Rabia round-1 votes processed", metricsSupplier);
+            registerTransportGauge("consensus_vote_round2_total", "Rabia round-2 votes processed", metricsSupplier);
+            registerTransportGauge("consensus_fast_path_total", "Rabia fast-path agreements", metricsSupplier);
+            registerTransportGauge("consensus_sync_success_total", "Rabia sync rounds succeeded", metricsSupplier);
+            registerTransportGauge("consensus_sync_failure_total", "Rabia sync rounds failed", metricsSupplier);
+            registerTransportGauge("consensus_pending_batches",
+                                   "Rabia batches awaiting decision (level)",
+                                   metricsSupplier);
+
+            return unitResult();
+        }
+
+        /// Name notwithstanding, this is the generic supplied-map gauge binder — the consensus
+        /// registration reuses it verbatim (#674); only the historical name is transport-flavored.
         private void registerTransportGauge(String name,
                                             String description,
                                             Supplier<java.util.Map<String, Number>> metricsSupplier) {

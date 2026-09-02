@@ -305,10 +305,12 @@ public interface SliceRouter {
             }
 
             private HttpResponseData successToResponse(Object value, ContentType contentType) {
-                if (value == null) {
-                    return HttpResponseData.httpResponseData(204);
-                }
+                return Option.option(value)
+                             .map(present -> serializeSuccess(present, contentType))
+                             .or(HttpResponseData.httpResponseData(204));
+            }
 
+            private HttpResponseData serializeSuccess(Object value, ContentType contentType) {
                 var headers = headersForContentType(contentType);
 
                 return ResponseSerializer.serialize(value, contentType, jsonCodec).fold(_ -> HttpResponseData.httpResponseData(500,

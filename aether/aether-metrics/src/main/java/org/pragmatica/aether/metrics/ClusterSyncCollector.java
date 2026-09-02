@@ -227,6 +227,29 @@ public interface ClusterSyncCollector {
     @Contract
     default void setDrainCommandHandler(Runnable handler) {}
 
+    /// #590 — wire the observer invoked on every inbound `ClusterSyncPing` that CLEARS term fencing.
+    /// This is the community tier's core-liveness signal: the core spokesman pings on a `pingInterval`
+    /// cadence, so the absence of these calls is what tells a worker it has lost the core.
+    ///
+    /// Deliberately downstream of [#acceptPingFencing]: a ping from a stale leader must NOT refresh
+    /// liveness, or a partitioned-away former leader could hold a community open indefinitely.
+    /// Production wires it in `AetherNode` to `CoreAbsenceDetector#recordCorePing`. The observer MUST
+    /// be cheap and non-throwing — it runs on the ping path. Default no-op (test doubles inherit).
+    @Contract
+    default void setCorePingObserver(Runnable observer) {}
+
+    /// #590 — nanos since this node last received a `ClusterSyncPong` from `peer`, or `none()` if it
+    /// never has. The core half of the mechanism: the leader broadcasts pings cluster-wide and every
+    /// live node answers, so pong silence is the leader's DIRECT observation that a peer has gone
+    /// away — as opposed to `GovernorAnnouncementValue.memberCount`, which is the community's own
+    /// self-report and FREEZES at its last healthy value under partition rather than expiring.
+    ///
+    /// `none()` reads as "no evidence either way" and callers treat it as live, so an unwired
+    /// deployment and a just-joined node both keep legacy behaviour.
+    default Option<Long> sinceLastPongNanos(NodeId peer) {
+        return Option.none();
+    }
+
     static ClusterSyncCollector clusterSyncCollector(NodeId self, ClusterNetwork network) {
         return new ClusterSyncCollectorImpl(self, network, DEFAULT_slidingWindowMs);
     }
@@ -293,6 +316,10 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     /// no-op until `setDrainCommandHandler(...)` wires the local `DrainProcedure`. Invoked on
     /// every DRAIN ping; the handler must be idempotent (DrainProcedure is CAS-guarded).
     private final AtomicReference<Runnable> drainCommandHandler = new AtomicReference<>(() -> {});
+
+    private final AtomicReference<Runnable> corePingObserver = new AtomicReference<>(() -> {});
+
+    private final ConcurrentHashMap<NodeId, Long> lastPongNanos = new ConcurrentHashMap<>();
 
     /// Readiness-broadcast (failover-readability) — the current leader signal, used both to decide
     /// whether `reportedStates()` serves the authoritative fan view (leader) or the follower cache
@@ -429,7 +456,10 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
 
             return;
         }
-
+        // #590: the ping cleared fencing, so it is genuine evidence the core is reachable from here.
+        // Recorded BEFORE the metrics/eviction work below so a slow handler downstream cannot make a
+        // live core look absent.
+        corePingObserver.get().run();
         ping.allMetrics().forEach(this::storeRemoteMetrics);
         var incomingEpoch = Epoch.epoch(ping.epochTerm(), ping.epochCounter());
 
@@ -520,7 +550,10 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
             remoteMetrics.put(pong.sender(), pong.metrics());
             addToHistory(pong.sender(), pong.metrics());
         }
-
+        // #590: a pong is the leader's direct evidence that this peer answered. Recorded for EVERY
+        // sender including self (a self-pong is trivially fresh) so the community-liveness read never
+        // has to special-case the leader's own membership of a community.
+        lastPongNanos.put(pong.sender(), System.nanoTime());
         pongSignalFan.get().fan(pong);
         pongListeners.forEach(listener -> listener.accept(pong));
     }
@@ -670,6 +703,17 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
         drainCommandHandler.set(handler == null
                                 ? () -> {}
                                 : handler);
+    }
+
+    @Override
+    @Contract
+    public void setCorePingObserver(Runnable observer) {
+        corePingObserver.set(observer);
+    }
+
+    @Override
+    public Option<Long> sinceLastPongNanos(NodeId peer) {
+        return Option.option(lastPongNanos.get(peer)).map(last -> System.nanoTime() - last);
     }
 
     @Override

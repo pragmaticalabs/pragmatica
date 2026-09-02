@@ -15,6 +15,10 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 public record RetryConfig(int maxAttempts, BackoffStrategy backoffStrategy) {
+    // Pure tunable (no identity fields) - safe to expose for TOML-config binder defaulting (#278).
+    // Reuses the same exponential shape already applied when a caller omits strategy details.
+    public static final RetryConfig DEFAULT = withExponentialBackoff(3);
+
     public static Result<RetryConfig> retryConfig(int maxAttempts) {
         return ensure(maxAttempts, Verify.Is::positive).map(RetryConfig::withExponentialBackoff);
     }

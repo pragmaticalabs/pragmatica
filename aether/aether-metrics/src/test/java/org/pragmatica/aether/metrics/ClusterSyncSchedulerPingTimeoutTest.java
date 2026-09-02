@@ -6,8 +6,6 @@ package org.pragmatica.aether.metrics;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.generation.Epoch;
-import org.pragmatica.aether.slice.generation.HealthSignal;
-import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
@@ -20,10 +18,13 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import static org.assertj.core.api.Assertions.assertThat;
 
 
-/// Verifies that `ClusterSyncScheduler` emits `HealthSignal.PingTimeout` on its
-/// per-target miss counter after K consecutive ticks without a pong, and that
-/// `onPongReceived` resets the counter so the signal stops firing — per spec
-/// §8.1 (leader-side PingTimeout emission source).
+/// Verifies that `ClusterSyncScheduler` reports a peer to SWIM as transport-unreachable once its
+/// per-target miss counter reaches K consecutive ticks without a pong, and that `onPongReceived`
+/// resets the counter so the report stops firing — per spec §8.1 (leader-side ping-timeout
+/// detection).
+///
+/// Every test wires a `SwimAwareCollector` holding NO peers alive, so `emitPingTimeoutIfExceeded`
+/// clears its SWIM-HEALTHY early-skip and the `reportUnreachable` call becomes observable.
 ///
 /// Recipients are sourced from `connectedPeers()` (broadcast model), so each test uses a
 /// network whose connected set fixes the broadcast/miss-tracking recipients.
@@ -33,15 +34,19 @@ class ClusterSyncSchedulerPingTimeoutTest {
     private static final NodeId PEER_B = NodeId.nodeId("peer-b").unwrap();
 
     @Test
-    void kMissedPings_emitsPingTimeoutSignalWithMissedCount() {
-        var captured = new CopyOnWriteArrayList<HealthSignal>();
-        HealthSignalSink sink = captured::add;
+    void kMissedPings_reportsUnreachableForTarget() {
+        // Two facts the old assertion pinned are not carried by `reportUnreachable(NodeId)`:
+        // the missed count (3) and the observation stamp (`Epoch.epoch(7, 0)`). The count is
+        // still pinned one level down by `ClusterSyncFsmTest.CounterBehaviour` via
+        // `counterForPeer`; the epoch stamp has no live carrier anywhere.
+        var reported = new CopyOnWriteArrayList<NodeId>();
+        var collector = new SwimAwareCollector(Set.of());
+        collector.setUnreachableReporter(reported::add);
         var scheduler = ClusterSyncScheduler.clusterSyncScheduler(SELF,
                                                            new ConnectedPeersNetwork(Set.of(PEER_A)),
-                                                           new NoopClusterSyncCollector(),
+                                                           collector,
                                                            TimeSpan.timeSpan(1).seconds(),
                                                            () -> 7L,
-                                                           sink,
                                                            3,
                                                            () -> Epoch.epoch(7L, 0L));
         scheduler.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A)));
@@ -51,26 +56,19 @@ class ClusterSyncSchedulerPingTimeoutTest {
         scheduler.sendPingsNow();
         scheduler.sendPingsNow();
 
-        var pingTimeouts = captured.stream()
-                                    .filter(s -> s instanceof HealthSignal.PingTimeout)
-                                    .map(s -> (HealthSignal.PingTimeout) s)
-                                    .toList();
-        assertThat(pingTimeouts).hasSize(1);
-        assertThat(pingTimeouts.getFirst().nodeId()).isEqualTo(PEER_A);
-        assertThat(pingTimeouts.getFirst().missedIntervals()).isEqualTo(3);
-        assertThat(pingTimeouts.getFirst().observedAt()).isEqualTo(Epoch.epoch(7L, 0L));
+        assertThat(reported).containsExactly(PEER_A);
     }
 
     @Test
-    void missedPingsBelowThreshold_noSignalEmitted() {
-        var captured = new CopyOnWriteArrayList<HealthSignal>();
-        HealthSignalSink sink = captured::add;
+    void missedPingsBelowThreshold_noUnreachableReported() {
+        var reported = new CopyOnWriteArrayList<NodeId>();
+        var collector = new SwimAwareCollector(Set.of());
+        collector.setUnreachableReporter(reported::add);
         var scheduler = ClusterSyncScheduler.clusterSyncScheduler(SELF,
                                                            new ConnectedPeersNetwork(Set.of(PEER_A)),
-                                                           new NoopClusterSyncCollector(),
+                                                           collector,
                                                            TimeSpan.timeSpan(1).seconds(),
                                                            () -> 7L,
-                                                           sink,
                                                            3,
                                                            () -> Epoch.epoch(7L, 0L));
         scheduler.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A)));
@@ -79,19 +77,19 @@ class ClusterSyncSchedulerPingTimeoutTest {
         scheduler.sendPingsNow();
         scheduler.sendPingsNow();
 
-        assertThat(captured).isEmpty();
+        assertThat(reported).isEmpty();
     }
 
     @Test
     void onPongReceived_resetsMissedCounter() {
-        var captured = new CopyOnWriteArrayList<HealthSignal>();
-        HealthSignalSink sink = captured::add;
+        var reported = new CopyOnWriteArrayList<NodeId>();
+        var collector = new SwimAwareCollector(Set.of());
+        collector.setUnreachableReporter(reported::add);
         var scheduler = ClusterSyncScheduler.clusterSyncScheduler(SELF,
                                                            new ConnectedPeersNetwork(Set.of(PEER_A)),
-                                                           new NoopClusterSyncCollector(),
+                                                           collector,
                                                            TimeSpan.timeSpan(1).seconds(),
                                                            () -> 7L,
-                                                           sink,
                                                            3,
                                                            () -> Epoch.epoch(7L, 0L));
         scheduler.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A)));
@@ -103,19 +101,19 @@ class ClusterSyncSchedulerPingTimeoutTest {
         scheduler.sendPingsNow();
         scheduler.sendPingsNow();
 
-        assertThat(captured).isEmpty();
+        assertThat(reported).isEmpty();
     }
 
     @Test
     void kMissedPings_perTargetIsIndependent() {
-        var captured = new CopyOnWriteArrayList<HealthSignal>();
-        HealthSignalSink sink = captured::add;
+        var reported = new CopyOnWriteArrayList<NodeId>();
+        var collector = new SwimAwareCollector(Set.of());
+        collector.setUnreachableReporter(reported::add);
         var scheduler = ClusterSyncScheduler.clusterSyncScheduler(SELF,
                                                            new ConnectedPeersNetwork(Set.of(PEER_A, PEER_B)),
-                                                           new NoopClusterSyncCollector(),
+                                                           collector,
                                                            TimeSpan.timeSpan(1).seconds(),
                                                            () -> 7L,
-                                                           sink,
                                                            3,
                                                            () -> Epoch.epoch(7L, 0L));
         scheduler.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A, PEER_B)));
@@ -127,18 +125,8 @@ class ClusterSyncSchedulerPingTimeoutTest {
         scheduler.onPongReceived(PEER_B);
         scheduler.sendPingsNow();
 
-        var peerATimeouts = captured.stream()
-                                    .filter(s -> s instanceof HealthSignal.PingTimeout)
-                                    .map(s -> (HealthSignal.PingTimeout) s)
-                                    .filter(t -> t.nodeId().equals(PEER_A))
-                                    .toList();
-        assertThat(peerATimeouts).hasSize(1);
-        var peerBTimeouts = captured.stream()
-                                    .filter(s -> s instanceof HealthSignal.PingTimeout)
-                                    .map(s -> (HealthSignal.PingTimeout) s)
-                                    .filter(t -> t.nodeId().equals(PEER_B))
-                                    .toList();
-        assertThat(peerBTimeouts).isEmpty();
+        assertThat(reported).as("PEER_A crossed the threshold; PEER_B's pongs kept resetting it")
+                            .containsExactly(PEER_A);
     }
 
     /// `NoopNetwork` variant with a fixed `connectedPeers()` set — the broadcast/miss-tracking

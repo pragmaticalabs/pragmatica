@@ -11,8 +11,8 @@ import org.pragmatica.aether.dht.CommittedPartitionOwnerSource;
 import org.pragmatica.aether.dht.EntityPartitionArc;
 import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
+import org.pragmatica.aether.resource.Mutator;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
@@ -34,15 +34,18 @@ import static org.pragmatica.lang.Promise.unitPromise;
 /// [#get(Object)] and [#get(Object, ReadConsistency)] with [ReadConsistency#BOUNDED_STALE] serve the
 /// local committed-prefix read. [ReadConsistency#LINEARIZABLE] routes through an optional
 /// [LinearizableEntityServe] (committed-owner routing + no-op round + post-round epoch fence); when that
-/// component is absent — the default factory product, and the single-owner in-memory cut generally — a
+/// component is absent — the no-arg form, and the single-owner in-memory cut generally — a
 /// `LINEARIZABLE` read degrades to the local read, which on a single owner already reflects every
 /// acknowledged write. The wired form ([#inMemoryDurableEntity(NodeId, EntityPartitionArc,
-/// CommittedPartitionOwnerSource, Option, Option)]) is exercised by tests today and lands in production
-/// with the entity node wiring (#277).
+/// CommittedPartitionOwnerSource, Option, Option)]) is exercised by tests.
+///
+/// Neither form reaches a running node: [DurableEntityFactory] provisions only the fenced-log
+/// [PartitionFencedDurableEntity] and refuses without its fence collaborators. This entity is
+/// constructed directly, by tests and harnesses.
 ///
 /// @param <K> entity key type
 /// @param <S> entity state type (immutable)
-final class InMemoryDurableEntity<K, S> implements DurableEntity<K, S> {
+final class InMemoryDurableEntity<K, S, C extends Mutator<S>> implements DurableEntity<K, S, C> {
     private final ConcurrentHashMap<K, S> state;
     private final PerKeySerialExecutor<K> serializer;
     private final Option<LinearizableEntityServe<K, S>> linearizableServe;
@@ -68,18 +71,18 @@ final class InMemoryDurableEntity<K, S> implements DurableEntity<K, S> {
                                                                                              this::get));
     }
 
-    static <K, S> DurableEntity<K, S> inMemoryDurableEntity() {
+    static <K, S, C extends Mutator<S>> DurableEntity<K, S, C> inMemoryDurableEntity() {
         return new InMemoryDurableEntity<>();
     }
 
     /// Linearizable-capable in-memory entity: a [ReadConsistency#LINEARIZABLE] read routes to the key's
     /// committed partition owner via [LinearizableEntityServe] (owner-serve pipeline over the shared
-    /// ownership substrate). Used by tests today and by the entity node wiring (#277) in production.
-    static <K, S> DurableEntity<K, S> inMemoryDurableEntity(NodeId selfNodeId,
-                                                            EntityPartitionArc arc,
-                                                            CommittedPartitionOwnerSource committedOwnerSource,
-                                                            Option<OwnershipEpochHighWater> epochHighWater,
-                                                            Option<EntityLinearizableBarrier> barrier) {
+    /// ownership substrate). Constructed by tests; a node provisions the fenced-log entity instead.
+    static <K, S, C extends Mutator<S>> DurableEntity<K, S, C> inMemoryDurableEntity(NodeId selfNodeId,
+                                                                                     EntityPartitionArc arc,
+                                                                                     CommittedPartitionOwnerSource committedOwnerSource,
+                                                                                     Option<OwnershipEpochHighWater> epochHighWater,
+                                                                                     Option<EntityLinearizableBarrier> barrier) {
         return new InMemoryDurableEntity<>(selfNodeId, arc, committedOwnerSource, epochHighWater, barrier);
     }
 
@@ -112,7 +115,7 @@ final class InMemoryDurableEntity<K, S> implements DurableEntity<K, S> {
     }
 
     @Override
-    public Promise<S> update(K key, Fn1<S, S> mutator) {
+    public Promise<S> update(K key, C mutator) {
         return serializer.submit(key, () -> doUpdate(key, mutator));
     }
 
@@ -122,13 +125,13 @@ final class InMemoryDurableEntity<K, S> implements DurableEntity<K, S> {
     }
 
     @Override
-    public Promise<TimerToken> scheduleTimer(K key, Duration delay, Fn1<S, S> onFire) {
-        return new DurableEntityError.TimerNotSupported(String.valueOf(key)).promise();
+    public Promise<TimerToken> scheduleTimer(K key, Duration delay, C onFire, TimerToken token) {
+        return new EntityError.TimerNotSupported(String.valueOf(key)).promise();
     }
 
     @Override
     public Promise<Unit> cancelTimer(K key, TimerToken token) {
-        return new DurableEntityError.TimerNotSupported(String.valueOf(key)).promise();
+        return new EntityError.TimerNotSupported(String.valueOf(key)).promise();
     }
 
     private Promise<S> doCreate(K key, S initial) {
@@ -139,14 +142,14 @@ final class InMemoryDurableEntity<K, S> implements DurableEntity<K, S> {
         return Promise.success(option(state.get(key)));
     }
 
-    private Promise<S> doUpdate(K key, Fn1<S, S> mutator) {
+    private Promise<S> doUpdate(K key, C mutator) {
         return option(state.get(key)).fold(() -> keyNotFound(key), current -> mutate(key, current, mutator));
     }
 
     /// Apply the pure mutator and commit the result. Runs only under the per-key serialization (the
     /// tail), so the read-modify-write is single-threaded for this key; the mutator therefore runs
     /// outside any map bin lock — different keys mutate concurrently.
-    private Promise<S> mutate(K key, S current, Fn1<S, S> mutator) {
+    private Promise<S> mutate(K key, S current, C mutator) {
         return commit(key, mutator.apply(current));
     }
 
@@ -161,10 +164,10 @@ final class InMemoryDurableEntity<K, S> implements DurableEntity<K, S> {
     }
 
     private static <S> Promise<S> keyAlreadyExists(Object key) {
-        return new DurableEntityError.KeyAlreadyExists(String.valueOf(key)).promise();
+        return new EntityError.EntityAlreadyExists(String.valueOf(key)).promise();
     }
 
     private static <S> Promise<S> keyNotFound(Object key) {
-        return new DurableEntityError.KeyNotFound(String.valueOf(key)).promise();
+        return new EntityError.EntityNotFound(String.valueOf(key)).promise();
     }
 }

@@ -13,6 +13,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 
+import org.pragmatica.config.ConfigError;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.config.ProviderBasedConfigService;
@@ -36,20 +37,42 @@ public final class SpiResourceProvider implements ResourceProvider {
     private final Fn2<Result<?>, String, Class<?>> configLoader;
 
     private SpiResourceProvider(Fn2<Result<?>, String, Class<?>> configLoader) {
+        this(configLoader, discoverFactories());
+    }
+
+    /// Provider over an ALREADY-DISCOVERED factory set, rather than over a `ServiceLoader` scan of
+    /// the thread-context classloader.
+    ///
+    /// The scanning constructor above can only ever see what the node's own classloader can see, and
+    /// it runs once at node boot. A resource type defined later by a `SliceClassLoader` is therefore
+    /// unreachable through it (#773). This entry point lets a caller that DOES hold the slice's
+    /// loader hand over the factories it found there; the resulting map is frozen exactly like the
+    /// node's, and the node's own instance is not touched.
+    private SpiResourceProvider(Fn2<Result<?>, String, Class<?>> configLoader, List<ResourceFactory<?, ?>> discovered) {
         this.configLoader = configLoader;
         this.promiseCache = new ConcurrentHashMap<>();
         this.consumers = new ConcurrentHashMap<>();
         this.runtimeExtensions = new ConcurrentHashMap<>();
+        this.factories = indexByResourceType(discovered);
+    }
+
+    private static List<ResourceFactory<?, ?>> discoverFactories() {
+        var discovered = new ArrayList<ResourceFactory<?, ?>>();
+
+        ServiceLoader.load(ResourceFactory.class).stream().map(ServiceLoader.Provider::get).forEach(discovered::add);
+
+        return List.copyOf(discovered);
+    }
+
+    private static Map<Class<?>, List<ResourceFactory<?, ?>>> indexByResourceType(List<ResourceFactory<?, ?>> discovered) {
         Map<Class<?>, List<ResourceFactory<?, ?>>> factoryMap = new ConcurrentHashMap<>();
 
-        ServiceLoader.load(ResourceFactory.class)
-                     .stream()
-                     .map(ServiceLoader.Provider::get)
-                     .forEach(factory -> factoryMap.computeIfAbsent(factory.resourceType(),
-                                                                    _ -> new ArrayList<>())
-                                                   .add(factory));
+        discovered.forEach(factory -> factoryMap.computeIfAbsent(factory.resourceType(),
+                                                                 _ -> new ArrayList<>())
+                                                .add(factory));
         factoryMap.replaceAll((_, list) -> sortByPriorityDescending(list));
-        this.factories = Map.copyOf(factoryMap);
+
+        return Map.copyOf(factoryMap);
     }
 
     private static List<ResourceFactory<?, ?>> sortByPriorityDescending(List<ResourceFactory<?, ?>> list) {
@@ -62,7 +85,7 @@ public final class SpiResourceProvider implements ResourceProvider {
         return new SpiResourceProvider(SpiResourceProvider::loadFromConfigService);
     }
 
-    private static Result<?> loadFromConfigService(String section, Class<?> configClass) {
+    static Result<?> loadFromConfigService(String section, Class<?> configClass) {
         return ConfigService.instance()
                             .toResult(ResourceProvisioningError.ConfigServiceNotAvailable.INSTANCE)
                             .flatMap(svc -> svc.config(section, configClass));
@@ -74,6 +97,13 @@ public final class SpiResourceProvider implements ResourceProvider {
 
     public static SpiResourceProvider spiResourceProvider(Function<String, Result<?>> configLoader) {
         return new SpiResourceProvider((section, configClass) -> configLoader.apply(section));
+    }
+
+    /// Provider scoped to a set of factories the caller discovered itself — see the matching
+    /// constructor. Used to give a slice its own overlay over the node-wide provider (#773).
+    public static SpiResourceProvider spiResourceProvider(List<ResourceFactory<?, ?>> factories,
+                                                          Fn2<Result<?>, String, Class<?>> configLoader) {
+        return new SpiResourceProvider(configLoader, factories);
     }
 
     @SuppressWarnings("JBCT-RET-01")
@@ -164,17 +194,32 @@ public final class SpiResourceProvider implements ResourceProvider {
                      .or(() -> new SliceLoadingFailure.Fatal.ResourceFactoryNotFound(resourceType.getName()).promise());
     }
 
+    /// Layer the node-wide runtime extensions under whatever the caller already supplied.
+    ///
+    /// Runtime extensions are DEFAULTS, not overrides. A slice that deliberately supplies its own
+    /// value for an extension type — the deployed slice's codec as `Serializer`/`Deserializer`,
+    /// which is the only codec that knows the application's own record types — must keep it.
+    /// Overwriting unconditionally is what made application-typed stream events and distributed
+    /// cache entries unencodable (#526). Every other registered extension type is untouched by
+    /// this rule: none of them is ever supplied by a caller today, so the guard changes nothing
+    /// for them.
     private ProvisioningContext enrichWithRuntimeExtensions(ProvisioningContext context) {
         var enriched = context;
 
         for (var entry : runtimeExtensions.entrySet()) {
-            @SuppressWarnings("unchecked")
-            var type = (Class<Object>) entry.getKey();
-
-            enriched = enriched.withExtension(type, entry.getValue());
+            enriched = addUnlessSupplied(enriched, context, entry);
         }
 
         return enriched;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static ProvisioningContext addUnlessSupplied(ProvisioningContext enriched,
+                                                         ProvisioningContext supplied,
+                                                         Map.Entry<Class<?>, Object> entry) {
+        return supplied.hasExtension(entry.getKey())
+               ? enriched
+               : enriched.withExtension((Class<Object>) entry.getKey(), entry.getValue());
     }
 
     private <T> Promise<T> loadConfigAndInvoke(List<ResourceFactory<T, ?>> factoryList,
@@ -267,10 +312,33 @@ public final class SpiResourceProvider implements ResourceProvider {
     /// `Topic<T>` constant (the generated factory provisions the publisher by that name), so a missing
     /// resources.toml `[section]` — the author no longer writes `topic_name` — defaults to a topic
     /// named after the section instead of failing slice activation. Non-topic resources are unaffected.
+    ///
+    /// Only config ABSENCE takes the fallback — [ConfigError.SectionNotFound] (the section is not
+    /// in resources.toml) and [ResourceProvisioningError.ConfigServiceNotAvailable] (no config
+    /// service at all, e.g. minimal runtimes): in both states there is nothing declared to honor,
+    /// and the topic name is derivable, which is the point of #396. A section that EXISTS but
+    /// fails binding or validation (the durable-pubsub §3 constraint, inert ephemeral keys, a
+    /// mistyped `durability` enum value) must fail activation loudly — recovering it into an
+    /// ephemeral default would silently downgrade a declared-durable topic to fire-and-forget
+    /// delivery.
+    ///
+    /// This is the intentional exception to #547's "no resource type silently synthesises
+    /// configuration" gate: `TopicConfig` is a single-field record whose value the runtime already
+    /// knows independently of `resources.toml` (the topic name), so there is nothing to synthesise —
+    /// declaring it here, by design, rather than removing it, is #547's Gap-1 resolution. It also
+    /// means `ConfigSectionPreflightValidator`'s deploy-time pre-flight deliberately does not check
+    /// topic/stream sections at all; only generic [SliceTopology.ResourceDep] resources are gated.
     private static Result<Object> topicNameFallback(String section, Class<?> configType, Result<Object> loaded) {
         return configType.equals(TopicConfig.class)
-               ? loaded.recover(_ -> new TopicConfig(section))
+               ? loaded.fold(cause -> recoverAbsentTopicConfig(section, cause), Result::success)
                : loaded;
+    }
+
+    private static Result<Object> recoverAbsentTopicConfig(String section, Cause cause) {
+        return switch (cause) {
+            case ConfigError.SectionNotFound _, ResourceProvisioningError.ConfigServiceNotAvailable _ -> Result.success(new TopicConfig(section));
+            default -> cause.result();
+        };
     }
 
     /// Resolve the configuration loader for this provisioning call.

@@ -20,7 +20,6 @@ import static org.pragmatica.lang.Result.success;
 
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"})
 public final class ClusterBootstrapConfigValidator {
-    private static final Pattern CLUSTER_NAME_PATTERN = Pattern.compile("^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$");
     private static final Pattern SEMVER_PATTERN = Pattern.compile("^\\d+\\.\\d+\\.\\d+$");
 
     private static final Pattern CIDR_PATTERN = Pattern.compile("^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}/\\d{1,2}$");
@@ -42,6 +41,7 @@ public final class ClusterBootstrapConfigValidator {
         validateCoreTopology(config, errors);
         validateSources(config, errors);
         validatePortDistinctness(config, errors);
+        validateAutoHealDisableHonesty(config, errors);
         if (errors.isEmpty()) {
             return success(config);
         }
@@ -54,25 +54,53 @@ public final class ClusterBootstrapConfigValidator {
 
         checkCoreMajorityWarning(config, warnings);
         checkCapacityMajorityWarning(config, warnings);
+        config.sources()
+              .forEach((name, source) -> checkFirewallAllowsBootstrapPorts(name,
+                                                                           source,
+                                                                           config.operations().ports().management(),
+                                                                           warnings));
 
         return List.copyOf(warnings);
     }
 
+    /// #575: `[operations.auto_heal] enabled = false` (or the `[operations] auto_heal = false`
+    /// shortcut — both parse to the same [AutoHealSpec.enabled]) parses, validates, and diffs
+    /// cleanly, then changes nothing: the runtime reads a separately-hand-maintained
+    /// `AutoHealConfig` (`environment-integration`) that has no `enabled` field at all, so nothing
+    /// in the provisioning path ever consults the parsed value. An operator who sets this to stop
+    /// replacement provisioning during an incident gets silent no-op, not the suppression they
+    /// asked for. Mirrors [#checkIngressProviderSupport] (PF-23) — reject a declared knob loudly
+    /// rather than parse it and do nothing. `enabled = true` is NOT rejected: it matches the
+    /// runtime's actual always-on behavior, so it does not assert anything false, even though it is
+    /// equally inert.
+    ///
+    /// This does not leave auto-heal impossible to disable — [ClusterTopologyManager
+    /// #setAutoHealEnabled] (`aether cluster topology auto-heal disable`, #603) is a real,
+    /// already-wired runtime switch; it is simply a different mechanism (an imperative, per-leader
+    /// -term toggle) from this bootstrap-time declarative key.
+    private static void validateAutoHealDisableHonesty(ClusterBootstrapConfig config, List<String> errors) {
+        if (config.operations().autoHeal().enabled()) {
+            return;
+        }
+
+        errors.add("PF-25: [operations.auto_heal] enabled = false has no runtime effect — the parsed"
+                  + " value is never read by the cluster's provisioning path. Remove the key (or set"
+                  + " it to true, its only honest value) and use the live operator toggle instead:"
+                  + " `aether cluster topology auto-heal disable`, which actually suppresses"
+                  + " replacement provisioning for the current leader term.");
+    }
+
     private static void validateClusterLevel(ClusterBootstrapConfig config, List<String> errors) {
-        validateClusterName(config.cluster().name(),
-                            errors);
+        // CL-01 (cluster-name grammar) is not checked here: `config.cluster().name()` is a
+        // `ClusterName`, so an out-of-grammar name is unrepresentable at this point and the branch
+        // was provably dead. The rejection happens where the operator's text is still available —
+        // `ClusterIdentity.clusterIdentity`, which reports `InvalidName` naming the offending value.
         validateClusterVersion(config.cluster().version(),
                                errors);
         validateDerivedCoreCount(config.derivedCoreCount(), errors);
         validateAtLeastOneCoreSubTable(config, errors);
         validateSourceNamesNonEmpty(config, errors);
         validateRuntimeReferences(config, errors);
-    }
-
-    private static void validateClusterName(String name, List<String> errors) {
-        if (!CLUSTER_NAME_PATTERN.matcher(name).matches()) {
-            errors.add("CL-01: Cluster name '" + name + "' must match ^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$");
-        }
     }
 
     private static void validateClusterVersion(String version, List<String> errors) {
@@ -196,18 +224,24 @@ public final class ClusterBootstrapConfigValidator {
     }
 
     private static void validateSources(ClusterBootstrapConfig config, List<String> errors) {
-        config.sources().forEach((name, source) -> validateSource(name, source, config.runtimes(), errors));
+        config.sources()
+              .forEach((name, source) -> validateSource(name,
+                                                        source,
+                                                        config.runtimes(),
+                                                        config.operations().ports().management(),
+                                                        errors));
     }
 
     private static void validateSource(String name,
                                        SourceProfile source,
                                        Map<String, RuntimeProfile> runtimes,
+                                       int managementPort,
                                        List<String> errors) {
         validateRoleConstraints(name, source, errors);
         validateSpotRestriction(name, source, errors);
         validateElectedLbRestriction(name, source, errors);
         validateElectedLbHasNonSpot(name, source, errors);
-        validateFirewallRules(name, source, errors);
+        validateFirewallRules(name, source, managementPort, errors);
         validateRuntimeTypeCompatibility(name, source, runtimes, errors);
         validatePortConflictsOnSameHost(name, source, errors);
     }
@@ -260,11 +294,26 @@ public final class ClusterBootstrapConfigValidator {
         checkSpotProviderSupport(name, source, errors);
     }
 
+    /// Providers WITHOUT an implemented spot/preemptible arm reject a `[source.<provider>.spot]`
+    /// sub-table loudly (W10). Post-W1 ground truth: only AWS has a real spot arm (its `createFrom`
+    /// attaches EC2 `InstanceMarketOptions`); the others reject SPOT at `createFrom`. AWS is therefore
+    /// ABSENT from this map (a spot sub-table is allowed only on aws sources today). This map is the
+    /// single place to extend: when a GCP/Azure spot arm lands, remove that provider's entry.
+    private static final Map<CloudProviderName, String> SPOT_UNSUPPORTED_REASONS = Map.of(CloudProviderName.HETZNER,
+                                                                                          "Provider 'hetzner' does not support spot/preemptible",
+                                                                                          CloudProviderName.GCP,
+                                                                                          "Provider 'gcp' spot (provisioningModel=SPOT) provisioning is not yet implemented on this client",
+                                                                                          CloudProviderName.AZURE,
+                                                                                          "Provider 'azure' spot (priority=Spot) provisioning is not yet implemented on this client");
+
     private static void checkSpotProviderSupport(String name, SourceProfile source, List<String> errors) {
         source.provider()
-              .filter(provider -> provider == CloudProviderName.HETZNER)
-              .onPresent(provider -> errors.add("PF-16: Provider 'hetzner' does not support spot/preemptible on source '" + name
-                                               + "'"));
+              .flatMap(ClusterBootstrapConfigValidator::spotUnsupportedReason)
+              .onPresent(reason -> errors.add("PF-16: " + reason + " on source '" + name + "'"));
+    }
+
+    private static Option<String> spotUnsupportedReason(CloudProviderName provider) {
+        return Option.option(SPOT_UNSUPPORTED_REASONS.get(provider));
     }
 
     private static void validateElectedLbRestriction(String name, SourceProfile source, List<String> errors) {
@@ -285,8 +334,93 @@ public final class ClusterBootstrapConfigValidator {
         }
     }
 
-    private static void validateFirewallRules(String name, SourceProfile source, List<String> errors) {
+    private static void validateFirewallRules(String name,
+                                              SourceProfile source,
+                                              int managementPort,
+                                              List<String> errors) {
+        checkIngressProviderSupport(name, source, errors);
+        checkPublicManagementWithoutAuth(name, source, managementPort, errors);
         source.firewallRules().forEach(rule -> validateSingleFirewallRule(name, rule, errors));
+    }
+
+    /// Providers with no implemented ingress arm reject `allow_ingress` loudly rather than parsing it
+    /// and doing nothing (#574). Mirrors PF-16's per-provider shape.
+    ///
+    /// Only Hetzner is absent from this map — it is the one provider where the rules are actually
+    /// applied, and the one where the gap was DANGEROUS rather than merely inert: per §6.2 a Hetzner
+    /// server created with no firewall association accepts ALL inbound traffic, so unapplied rules
+    /// fail OPEN. On AWS/GCP/Azure the default security groups deny inbound, so the same gap fails
+    /// closed — unreachable, not exposed — and operators are directed to their own security groups.
+    /// Remove a provider's entry when its `openIngress` lands (#463).
+    /// AWS is absent because its `openIngress` LANDED (#463): security groups are created, tagged
+    /// `(aether-cluster, aether-source)`, attached at instance-create and reclaimed by `cluster destroy`.
+    /// GCP and Azure remain — remove each entry when its provider's `openIngress` lands, not before, or
+    /// pre-flight will accept `allow_ingress` that nothing enforces.
+    private static final Map<CloudProviderName, String> INGRESS_UNSUPPORTED_REASONS = Map.of(CloudProviderName.GCP,
+                                                                                             "Provider 'gcp' ingress management (firewall rules) is not yet implemented on this client",
+                                                                                             CloudProviderName.AZURE,
+                                                                                             "Provider 'azure' ingress management (network security groups) is not yet implemented on this client");
+
+    /// PF-24 — the management API reachable from the whole internet with authentication disabled is
+    /// unauthenticated remote control of the cluster: deploy, scale, config, secrets-adjacent surface.
+    /// Either half alone is a defensible operator choice; the PAIR is not, so it is an error rather
+    /// than a warning.
+    ///
+    /// `security_mode` lives in the per-source `node_config` overlay (`[app-http] security_mode`),
+    /// which is the same place the documented cloud example sets `"NONE"` to get past bootstrap's own
+    /// config write — so this combination is reachable by following the docs, not only by mistake.
+    private static void checkPublicManagementWithoutAuth(String name,
+                                                         SourceProfile source,
+                                                         int managementPort,
+                                                         List<String> errors) {
+        var publiclyOpen = source.firewallRules()
+                                 .stream()
+                                 .anyMatch(rule -> rule.port() == managementPort && ANY_CIDR.equals(rule.sourceCidr()));
+
+        if (!publiclyOpen || !securityDisabled(source)) {
+            return;
+        }
+
+        errors.add("PF-24: Source '" + name
+                  + "' opens the management port " + managementPort
+                  + " to " + ANY_CIDR
+                  + " while [app-http] security_mode = \"none\". That is an"
+                  + " unauthenticated management API on the public internet — anyone who can reach it"
+                  + " can deploy, scale and reconfigure the cluster. Scope source_cidr to your operator"
+                  + " network, or enable authentication.");
+    }
+
+    private static boolean securityDisabled(SourceProfile source) {
+        return source.nodeConfig()
+                     .flatMap(doc -> doc.getString("app-http", "security_mode"))
+                     .map(mode -> "none".equalsIgnoreCase(mode.trim()))
+                     .or(false);
+    }
+
+    private static final String ANY_CIDR = "0.0.0.0/0";
+
+    private static void checkIngressProviderSupport(String name, SourceProfile source, List<String> errors) {
+        if (source.firewallRules().isEmpty()) {
+            return;
+        }
+
+        if (source.type() != SourceType.CLOUD) {
+            errors.add("PF-23: Source '" + name
+                      + "' is type '" + source.type().value()
+                      + "', which has no cloud ingress API — `allow_ingress` would be silently ignored."
+                      + " Manage the host firewall yourself and remove `[source." + name
+                      + ".firewall]`.");
+
+            return;
+        }
+
+        source.provider()
+              .flatMap(provider -> Option.option(INGRESS_UNSUPPORTED_REASONS.get(provider)))
+              .onPresent(reason -> errors.add("PF-23: " + reason
+                                             + " on source '" + name
+                                             + "'. Manage ingress via your own security groups"
+                                             + " and remove `[source." + name
+                                             + ".firewall]`."));
     }
 
     private static void validateSingleFirewallRule(String sourceName, FirewallRule rule, List<String> errors) {
@@ -467,6 +601,62 @@ public final class ClusterBootstrapConfigValidator {
             errors.add("CL-11: Port '" + name + "' value " + port + " conflicts with another port");
         }
     }
+
+    /// A declared `allow_ingress` is DENY-BY-DEFAULT for everything it does not list, while bootstrap
+    /// reaches each node TWICE over its public address: DEPLOY_RUNTIME installs over **SSH (22)**, then
+    /// the readiness gate polls the **management API (default 8080)**. Omitting either locks bootstrap
+    /// out of the machines it just created.
+    ///
+    /// Both observed live on 2026-08-05, on correctly-provisioned nodes, purely because the firewall
+    /// was doing its job:
+    ///   - no 22   → `SSH preflight failed: 3 host(s) unreachable after 300s`
+    ///   - no 8080 → `Cloud-init did not finish on 3 node(s)` — the readiness gate, misattributed
+    ///
+    /// The management port is deliberately NOT auto-opened: REQ-5.1.8.3 makes it operator-managed.
+    /// A WARNING rather than an error: a pre-baked image or an out-of-band agent may need neither.
+    private static void checkFirewallAllowsBootstrapPorts(String name,
+                                                          SourceProfile source,
+                                                          int managementPort,
+                                                          List<String> warnings) {
+        if (source.type() != SourceType.CLOUD || source.firewallRules().isEmpty()) {
+            return;
+        }
+
+        warnIfPortClosed(name,
+                         source,
+                         SSH_PORT,
+                         warnings,
+                         "bootstrap deploys the runtime over SSH, so DEPLOY_RUNTIME will fail with"
+                        + " 'SSH preflight failed: host(s) unreachable'");
+        warnIfPortClosed(name,
+                         source,
+                         managementPort,
+                         warnings,
+                         "the bootstrap readiness gate polls the management API on each node's PUBLIC"
+                        + " address, so DEPLOY_RUNTIME will fail with 'Cloud-init did not finish on N"
+                        + " node(s)' even though the nodes booted correctly");
+    }
+
+    private static void warnIfPortClosed(String name,
+                                         SourceProfile source,
+                                         int port,
+                                         List<String> warnings,
+                                         String consequence) {
+        var open = source.firewallRules()
+                         .stream()
+                         .anyMatch(rule -> rule.port() == port && !"udp".equals(rule.protocol()));
+
+        if (!open) {
+            warnings.add("Source '" + name
+                        + "' declares [source." + name
+                        + ".firewall] but no rule opens port " + port
+                        + "/tcp. Ingress is deny-by-default, and " + consequence
+                        + ". Add a rule for port " + port
+                        + " (scope source_cidr to your operator network).");
+        }
+    }
+
+    private static final int SSH_PORT = 22;
 
     private static void checkCoreMajorityWarning(ClusterBootstrapConfig config, List<String> warnings) {
         var totalCores = config.derivedCoreCount();

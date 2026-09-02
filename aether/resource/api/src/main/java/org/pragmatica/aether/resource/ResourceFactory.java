@@ -26,6 +26,14 @@ public interface ResourceFactory<T, C> {
         return true;
     }
 
+    /// Default unload: close an [AutoCloseable] resource, absorbing (but no longer discarding) a failed
+    /// close. The promise still reports success either way — a resource that failed to close is released
+    /// from the provider's cache regardless, and failing the whole `releaseAll` chain over one resource
+    /// would block the release of every other. The throwable is LOGGED (JDK platform logging — this
+    /// module deliberately carries no logging dependency) because a factory whose close-time work is
+    /// load-bearing (e.g. the durable entity's registration retraction) would otherwise strand that work
+    /// with nothing anywhere saying why; such factories should still override this with a properly
+    /// reported close of their own.
     default Promise<Unit> close(T resource) {
         if (resource instanceof AutoCloseable closeable) {
             return Promise.promise(promise -> {
@@ -33,6 +41,11 @@ public interface ResourceFactory<T, C> {
                     closeable.close();
                     promise.succeed(Unit.unit());
                 } catch (Exception e) {
+                    System.getLogger(ResourceFactory.class.getName()).log(System.Logger.Level.WARNING,
+                                                                          "Resource close failed for " + resource.getClass()
+                                                                                                                 .getName()
+                                                                         + " — the resource is released from the cache anyway",
+                                                                          e);
                     promise.succeed(Unit.unit());
                 }
             });

@@ -60,14 +60,30 @@ public final class StreamPublisherFactory implements ResourceFactory<StreamPubli
         return ensureStreamExists(manager, config).map(_ -> assemblePublisher(manager, serializer, config, context));
     }
 
+    /// Shared publisher assembly — the ONE place the stream-publish collaborator set (partition
+    /// routing, forward client, HRW owner resolver, self-guard, min-sync barrier) is folded from a
+    /// [ProvisioningContext] into a [DefaultStreamPublisher]. Public because the durable-topic
+    /// publisher ([org.pragmatica.aether.stream.topic.DurableTopicSubstrate]) rides the identical
+    /// path over its `topic:<address>` stream; a second hand-rolled assembly would drift from this
+    /// one collaborator by collaborator.
     @SuppressWarnings("unchecked")
-    private static StreamPublisher assemblePublisher(StreamPartitionManager manager,
-                                                     Serializer serializer,
-                                                     StreamConfig config,
-                                                     ProvisioningContext context) {
+    public static StreamPublisher assemblePublisher(StreamPartitionManager manager,
+                                                    Serializer serializer,
+                                                    StreamConfig config,
+                                                    ProvisioningContext context) {
         var keyExtractor = extractPartitionKeyFunction(context);
         var forwardClient = context.extension(StreamForwardClient.class).option();
-        var governorResolver = context.extension(GovernorResolver.class).option().map(GovernorResolver::resolver);
+        var governor = context.extension(GovernorResolver.class).option();
+        var governorResolver = governor.map(GovernorResolver::resolver);
+        var self = context.extension(NodeId.class).option();
+        // #467: bind the stream name into the partition-aware HRW owner-resolver so app-stream EVENTUAL
+        // publishes route to the SAME HRW owner the ReplicaSetController places the replica set on (one
+        // placement authority) instead of the STREAMING leader. Absent (test / minimal runtime) => the
+        // publish path keeps the arg-less leader resolver, and the self identity gates the self-guard.
+        var streamName = config.name();
+        Option<Function<Integer, Option<NodeId>>> partitionOwnerResolver = governor.flatMap(GovernorResolver::partitionOwnerResolver)
+                                                                                   .map(resolver -> partition -> resolver.apply(streamName,
+                                                                                                                                partition));
 
         return DefaultStreamPublisher.streamPublisher(manager,
                                                       serializer,
@@ -78,7 +94,9 @@ public final class StreamPublisherFactory implements ResourceFactory<StreamPubli
                                                       Option.none(),
                                                       config.minSyncReplicas(),
                                                       forwardClient,
-                                                      governorResolver);
+                                                      governorResolver,
+                                                      partitionOwnerResolver,
+                                                      self);
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})

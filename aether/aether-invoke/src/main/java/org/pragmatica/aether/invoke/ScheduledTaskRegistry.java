@@ -77,7 +77,7 @@ public interface ScheduledTaskRegistry {
                                              value.cron(),
                                              value.executionMode(),
                                              value.paused());
-                var previous = tasks.put(key, task);
+                var previous = Option.option(tasks.put(key, task));
 
                 log.debug("Registered scheduled task: {}", task);
                 notifyIfChanged(key, previous, task);
@@ -124,8 +124,8 @@ public interface ScheduledTaskRegistry {
                 changeListener.set(listener);
             }
 
-            private void notifyIfChanged(ScheduledTaskKey key, ScheduledTask previous, ScheduledTask current) {
-                if (previous == null || scheduleChanged(previous, current)) {
+            private void notifyIfChanged(ScheduledTaskKey key, Option<ScheduledTask> previous, ScheduledTask current) {
+                if (previous.map(prev -> scheduleChanged(prev, current)).or(true)) {
                     notifyListener(key, Option.some(current));
                 }
             }
@@ -136,11 +136,7 @@ public interface ScheduledTaskRegistry {
             }
 
             private void notifyListener(ScheduledTaskKey key, Option<ScheduledTask> task) {
-                var listener = changeListener.get();
-
-                if (listener != null) {
-                    listener.accept(key, task);
-                }
+                Option.option(changeListener.get()).onPresent(listener -> listener.accept(key, task));
             }
         }
 

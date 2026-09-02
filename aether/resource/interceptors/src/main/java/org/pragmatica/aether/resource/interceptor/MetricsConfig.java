@@ -9,35 +9,37 @@ import java.util.List;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
 
-import io.micrometer.core.instrument.MeterRegistry;
-
-import static org.pragmatica.lang.Result.all;
 import static org.pragmatica.lang.Verify.ensure;
 
 
-public record MetricsConfig(String name,
-                            MeterRegistry registry,
-                            boolean recordTiming,
-                            boolean recordCounts,
-                            List<String> tags) {
-    public static Result<MetricsConfig> metricsConfig(String name, MeterRegistry registry) {
-        var validName = ensure(name, Verify.Is::notBlank);
-        var validRegistry = ensure(registry, Verify.Is::notNull);
-
-        return all(validName, validRegistry).map((n, r) -> new MetricsConfig(n, r, true, true, List.of()));
+// #278: no MeterRegistry field. A registry is a runtime singleton, not TOML data — a record field
+// for it was unbindable from config and forced every call site to fabricate its own disconnected
+// registry (never wired to the Management API's real one). The interceptor factory now resolves
+// the node's actual MeterRegistry from ProvisioningContext (mirrors CacheInterceptorFactory's
+// DHTClient/Serializer/Deserializer extensions) and hands it to MetricsMethodInterceptor directly.
+// tags: each entry is a "key=value" pair (e.g. "region=eu", not a bare "region") -
+// MetricsMethodInterceptor#tags() splits on '=' and hands the result to Micrometer's
+// MeterRegistry#timer(String, Tags), which requires named dimensions, not bare labels.
+public record MetricsConfig(String name, boolean recordTiming, boolean recordCounts, List<String> tags) {
+    public static Result<MetricsConfig> metricsConfig(String name) {
+        return ensure(name, Verify.Is::notBlank).map(n -> new MetricsConfig(n, true, true, List.of()));
     }
 
-    public static Result<MetricsConfig> metricsConfig(String name,
-                                                      MeterRegistry registry,
-                                                      boolean recordTiming,
-                                                      boolean recordCounts) {
-        var validName = ensure(name, Verify.Is::notBlank);
-        var validRegistry = ensure(registry, Verify.Is::notNull);
+    public static Result<MetricsConfig> metricsConfig(String name, boolean recordTiming, boolean recordCounts) {
+        return ensure(name, Verify.Is::notBlank).map(n -> new MetricsConfig(n, recordTiming, recordCounts, List.of()));
+    }
 
-        return all(validName, validRegistry).map((n, r) -> new MetricsConfig(n, r, recordTiming, recordCounts, List.of()));
+    // Exact record-component-shaped factory: the reflective TOML binder (ProviderBasedConfigService)
+    // only invokes a factory method whose parameter types match the record components verbatim,
+    // so this is what actually runs when [section] carries record_timing/record_counts/tags.
+    public static Result<MetricsConfig> metricsConfig(String name,
+                                                      boolean recordTiming,
+                                                      boolean recordCounts,
+                                                      List<String> tags) {
+        return ensure(name, Verify.Is::notBlank).map(n -> new MetricsConfig(n, recordTiming, recordCounts, tags));
     }
 
     public MetricsConfig withTags(String... tags) {
-        return new MetricsConfig(name, registry, recordTiming, recordCounts, List.of(tags));
+        return new MetricsConfig(name, recordTiming, recordCounts, List.of(tags));
     }
 }

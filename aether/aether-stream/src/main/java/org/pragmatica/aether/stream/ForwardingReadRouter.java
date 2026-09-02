@@ -319,12 +319,7 @@ public final class ForwardingReadRouter<E> {
                                            int partition,
                                            long fromOffset,
                                            int maxEvents) {
-        var caughtUpRemotes = reg.replicasFor(streamName, partition)
-                                 .stream()
-                                 .filter(ForwardingReadRouter::isCaughtUp)
-                                 .filter(r -> !r.nodeId()
-                                                .equals(selfNodeId))
-                                 .toList();
+        var caughtUpRemotes = reg.freshPeersFor(streamName, partition, selfNodeId);
 
         if (!caughtUpRemotes.isEmpty()) {
             return forwardClient.map(client -> attemptPrimary(client,
@@ -343,6 +338,12 @@ public final class ForwardingReadRouter<E> {
         return forwardToOwner(streamName, partition, fromOffset, maxEvents);
     }
 
+    /// SELF coverage, and deliberately NOT lag-guarded — unlike the peer selection above, which goes
+    /// through [ReplicaRegistry#freshPeersFor]. A node never acks itself, so its own descriptor keeps the
+    /// `SYNCING` / `-1` seed for the partition's lifetime (#593) and reaches `CAUGHT_UP` through backfill
+    /// completion rather than the ack path. Its `confirmedOffset` therefore does not track the local head,
+    /// and measuring it against a peer watermark would report lag on a perfectly healthy owner. Reading
+    /// the raw state is correct HERE and wrong one method up; that asymmetry is the point.
     private boolean selfCoversPartition(ReplicaRegistry reg, String streamName, int partition) {
         return reg.replicasFor(streamName, partition)
                   .stream()

@@ -6,16 +6,7 @@ package org.pragmatica.aether.metrics;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.pragmatica.aether.slice.generation.ConnectivityReport;
-import org.pragmatica.aether.slice.generation.Epoch;
-import org.pragmatica.aether.slice.generation.HealthHint;
-import org.pragmatica.aether.slice.generation.HealthSignal;
-import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPong;
-import org.pragmatica.cluster.metrics.ConnectivityState;
-import org.pragmatica.cluster.metrics.HealthHintWire;
-import org.pragmatica.cluster.metrics.PeerConnectivityObservation;
-import org.pragmatica.cluster.metrics.PeerHealthObservation;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.lang.Option;
@@ -33,105 +24,29 @@ class ClusterSyncPongSignalFanTest {
     private static final NodeId PEER_A = NodeId.nodeId("peer-a").unwrap();
     private static final NodeId PEER_B = NodeId.nodeId("peer-b").unwrap();
 
-    private final List<HealthSignal> emitted = new ArrayList<>();
-    private final HealthSignalSink recordingSink = emitted::add;
-
-    private ClusterSyncPong pongWithObservations() {
-        return new ClusterSyncPong(OBSERVER,
-                                   java.util.Map.of(),
-                                   3L,
-                                   3L,
-                                   17L,
-                                   "READY",
-                                   List.of(),
-                                   List.of(new PeerHealthObservation(PEER_A, HealthHintWire.FAULTY, 3L, 17L, 0L),
-                                           new PeerHealthObservation(PEER_B, HealthHintWire.SUSPECTED, 3L, 18L, 0L)),
-                                   List.of(new PeerConnectivityObservation(PEER_A,
-                                                                           ConnectivityState.DISCONNECTED,
-                                                                           3L,
-                                                                           17L,
-                                                                           0L)));
+    private static ClusterSyncPong readyPong(NodeId sender) {
+        return new ClusterSyncPong(sender, java.util.Map.of(), 0L, 0L, 0L, "READY",
+                                   List.of(), List.of(), List.of(), Option.none(), 1L);
     }
 
     @Nested
     class FollowerGate {
         @Test
-        void fan_whenNotLeader_doesNothing() {
-            var leaderManager = new TestLeaderManager(false);
-            var fan = ClusterSyncPongSignalFan.clusterSyncPongSignalFan(recordingSink, leaderManager);
-
-            fan.fan(pongWithObservations());
-
-            assertThat(emitted).isEmpty();
-        }
-
-        @Test
         void fan_leaderTransition_reflectedWithoutDispatchingState() {
+            // Leadership is re-read on every `fan()` call, not captured at construction: a demotion
+            // between calls stops the readiness view from accreting further peers. PEER_B must be a
+            // SECOND peer — the PEER_A entry recorded while leader is not cleared on demotion, so
+            // reusing PEER_A would assert nothing about when leadership was read.
             var leaderManager = new TestLeaderManager(true);
-            var fan = ClusterSyncPongSignalFan.clusterSyncPongSignalFan(recordingSink, leaderManager);
+            var fan = ClusterSyncPongSignalFan.clusterSyncPongSignalFan(leaderManager);
 
-            fan.fan(pongWithObservations());
-            assertThat(emitted).isNotEmpty();
-            emitted.clear();
+            fan.fan(readyPong(PEER_A));
+            assertThat(fan.readinessSnapshot()).containsKey(PEER_A);
 
-            // Flip SSOT — fan must reflect the change immediately on next call.
             leaderManager.setLeader(false);
-            fan.fan(pongWithObservations());
-            assertThat(emitted).isEmpty();
-        }
-    }
+            fan.fan(readyPong(PEER_B));
 
-    @Nested
-    class LeaderFanOut {
-        @Test
-        void fan_whenLeader_emitsRemoteSwimHintPerObservation() {
-            var leaderManager = new TestLeaderManager(true);
-            var fan = ClusterSyncPongSignalFan.clusterSyncPongSignalFan(recordingSink, leaderManager);
-
-            fan.fan(pongWithObservations());
-
-            assertThat(emitted).filteredOn(HealthSignal.RemoteSwimHint.class::isInstance)
-                             .extracting(HealthSignal.RemoteSwimHint.class::cast)
-                             .extracting(HealthSignal.RemoteSwimHint::observer,
-                                         HealthSignal.RemoteSwimHint::peer,
-                                         HealthSignal.RemoteSwimHint::hint,
-                                         HealthSignal.RemoteSwimHint::observedAtEpoch)
-                             .containsExactly(org.assertj.core.groups.Tuple.tuple(OBSERVER, PEER_A, HealthHint.FAULTY, Epoch.epoch(3L, 17L)),
-                                              org.assertj.core.groups.Tuple.tuple(OBSERVER, PEER_B, HealthHint.SUSPECTED, Epoch.epoch(3L, 18L)));
-        }
-
-        @Test
-        void fan_whenLeader_emitsRemoteConnectivityPerObservation() {
-            var leaderManager = new TestLeaderManager(true);
-            var fan = ClusterSyncPongSignalFan.clusterSyncPongSignalFan(recordingSink, leaderManager);
-
-            fan.fan(pongWithObservations());
-
-            assertThat(emitted).filteredOn(HealthSignal.RemoteConnectivity.class::isInstance)
-                             .extracting(HealthSignal.RemoteConnectivity.class::cast)
-                             .extracting(HealthSignal.RemoteConnectivity::observer,
-                                         HealthSignal.RemoteConnectivity::peer,
-                                         HealthSignal.RemoteConnectivity::state,
-                                         HealthSignal.RemoteConnectivity::observedAtEpoch)
-                             .containsExactly(org.assertj.core.groups.Tuple.tuple(OBSERVER,
-                                                                                  PEER_A,
-                                                                                  ConnectivityReport.DISCONNECTED,
-                                                                                  Epoch.epoch(3L, 17L)));
-        }
-
-        @Test
-        void fan_emptyPong_emitsOnlySenderHealthyHint() {
-            var leaderManager = new TestLeaderManager(true);
-            var fan = ClusterSyncPongSignalFan.clusterSyncPongSignalFan(recordingSink, leaderManager);
-
-            fan.fan(new ClusterSyncPong(OBSERVER, java.util.Map.of(), 0L, 0L, 0L, "READY", List.of(), List.of(), List.of()));
-
-            assertThat(emitted).filteredOn(HealthSignal.SwimHint.class::isInstance)
-                               .extracting(HealthSignal.SwimHint.class::cast)
-                               .extracting(HealthSignal.SwimHint::nodeId, HealthSignal.SwimHint::state)
-                               .containsExactly(org.assertj.core.groups.Tuple.tuple(OBSERVER, HealthHint.HEALTHY));
-            assertThat(emitted).filteredOn(HealthSignal.RemoteSwimHint.class::isInstance).isEmpty();
-            assertThat(emitted).filteredOn(HealthSignal.RemoteConnectivity.class::isInstance).isEmpty();
+            assertThat(fan.readinessSnapshot()).doesNotContainKey(PEER_B);
         }
     }
 
@@ -143,7 +58,7 @@ class ClusterSyncPongSignalFanTest {
             var recorded = new java.util.ArrayList<java.util.Map.Entry<NodeId, NodeId>>();
             ClusterSyncPongSignalFan.ReadyCandidateSink sink =
                 (sender, candidate) -> recorded.add(java.util.Map.entry(sender, candidate));
-            var fan = ClusterSyncPongSignalFan.clusterSyncPongSignalFan(recordingSink, leaderManager, sink);
+            var fan = ClusterSyncPongSignalFan.clusterSyncPongSignalFan(leaderManager, sink);
 
             var pong = new ClusterSyncPong(OBSERVER, java.util.Map.of(), 0L, 0L, 0L, "JOINING",
                                             List.of(), List.of(), List.of(), Option.some(PEER_A));
@@ -159,7 +74,7 @@ class ClusterSyncPongSignalFanTest {
             var recorded = new java.util.ArrayList<java.util.Map.Entry<NodeId, NodeId>>();
             ClusterSyncPongSignalFan.ReadyCandidateSink sink =
                 (sender, candidate) -> recorded.add(java.util.Map.entry(sender, candidate));
-            var fan = ClusterSyncPongSignalFan.clusterSyncPongSignalFan(recordingSink, leaderManager, sink);
+            var fan = ClusterSyncPongSignalFan.clusterSyncPongSignalFan(leaderManager, sink);
 
             var pong = new ClusterSyncPong(OBSERVER, java.util.Map.of(), 0L, 0L, 0L, "READY",
                                             List.of(), List.of(), List.of(), Option.none());
@@ -175,7 +90,7 @@ class ClusterSyncPongSignalFanTest {
             var recorded = new java.util.ArrayList<java.util.Map.Entry<NodeId, NodeId>>();
             ClusterSyncPongSignalFan.ReadyCandidateSink sink =
                 (sender, candidate) -> recorded.add(java.util.Map.entry(sender, candidate));
-            var fan = ClusterSyncPongSignalFan.clusterSyncPongSignalFan(recordingSink, leaderManager, sink);
+            var fan = ClusterSyncPongSignalFan.clusterSyncPongSignalFan(leaderManager, sink);
 
             var pong = new ClusterSyncPong(OBSERVER, java.util.Map.of(), 0L, 0L, 0L, "JOINING",
                                             List.of(), List.of(), List.of(), Option.some(PEER_A));
@@ -187,10 +102,10 @@ class ClusterSyncPongSignalFanTest {
 
         @Test
         void fan_legacyFactoryWithoutSink_doesNotThrowOnCandidatePresent() {
-            // Backward-compat: factory(sink, leaderManager) without ReadyCandidateSink defaults
+            // Backward-compat: factory(leaderManager) without ReadyCandidateSink defaults
             // to NOOP. A candidate-present pong must not NPE or raise — it is silently dropped.
             var leaderManager = new TestLeaderManager(true);
-            var fan = ClusterSyncPongSignalFan.clusterSyncPongSignalFan(recordingSink, leaderManager);
+            var fan = ClusterSyncPongSignalFan.clusterSyncPongSignalFan(leaderManager);
 
             var pong = new ClusterSyncPong(OBSERVER, java.util.Map.of(), 0L, 0L, 0L, "JOINING",
                                             List.of(), List.of(), List.of(), Option.some(PEER_A));
@@ -207,8 +122,7 @@ class ClusterSyncPongSignalFanTest {
         }
 
         private ClusterSyncPongSignalFan fan(LeaderManager leaderManager, AtomicLong clock) {
-            return ClusterSyncPongSignalFan.clusterSyncPongSignalFan(recordingSink,
-                                                                     leaderManager,
+            return ClusterSyncPongSignalFan.clusterSyncPongSignalFan(leaderManager,
                                                                      ClusterSyncPongSignalFan.ReadyCandidateSink.NOOP,
                                                                      clock::get);
         }

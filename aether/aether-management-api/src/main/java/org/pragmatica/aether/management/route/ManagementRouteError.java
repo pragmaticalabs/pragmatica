@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.management.route;
 
+import java.util.List;
+
 import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.http.HttpMethod;
 import org.pragmatica.lang.Cause;
@@ -12,6 +14,10 @@ import org.pragmatica.lang.Cause;
 public sealed interface ManagementRouteError extends Cause {
     static NoMatch noMatch(HttpMethod method, String path) {
         return new NoMatch(method, path);
+    }
+
+    static BlankSpacerText blankSpacerText(List<PathToken> suffixTokens) {
+        return new BlankSpacerText(suffixTokens);
     }
 
     static WrongParamCount wrongParamCount(String routeName, int expected, int actual) {
@@ -35,7 +41,7 @@ public sealed interface ManagementRouteError extends Cause {
     }
 
     static NoLeaderElected noLeaderElected() {
-        return new NoLeaderElected();
+        return NoLeaderElected.INSTANCE;
     }
 
     static LeaderDisconnected leaderDisconnected(String leaderNodeId) {
@@ -43,7 +49,7 @@ public sealed interface ManagementRouteError extends Cause {
     }
 
     static NotLeader notLeader() {
-        return new NotLeader();
+        return NotLeader.INSTANCE;
     }
 
     static NotLocalTarget notLocalTarget(String nodeId) {
@@ -58,6 +64,13 @@ public sealed interface ManagementRouteError extends Cause {
         @Override
         public String message() {
             return "No management route matches " + method + " " + path;
+        }
+    }
+
+    record BlankSpacerText(List<PathToken> suffixTokens) implements ManagementRouteError {
+        @Override
+        public String message() {
+            return "Blank Spacer text in interleaved route suffix: " + suffixTokens;
         }
     }
 
@@ -96,7 +109,8 @@ public sealed interface ManagementRouteError extends Cause {
         }
     }
 
-    record NoLeaderElected() implements ManagementRouteError {
+    enum NoLeaderElected implements ManagementRouteError {
+        INSTANCE;
         @Override
         public String message() {
             return "No leader elected for leader-bound management route";
@@ -110,7 +124,8 @@ public sealed interface ManagementRouteError extends Cause {
         }
     }
 
-    record NotLeader() implements ManagementRouteError {
+    enum NotLeader implements ManagementRouteError {
+        INSTANCE;
         @Override
         public String message() {
             return "Target handler requires the cluster leader";

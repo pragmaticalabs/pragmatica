@@ -6,13 +6,9 @@ package org.pragmatica.aether.stream;
 
 import org.pragmatica.aether.stream.ForwardingReadRouter.OwnerResolver;
 import org.pragmatica.aether.stream.forward.StreamForwardClient;
-import org.pragmatica.aether.stream.forward.StreamForwardError;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.io.TimeSpan;
-import org.pragmatica.lang.utils.SharedScheduler;
 
 
 /// Raw-payload WRITE router — the publish-side mirror of {@link StreamReadRouter}. Holds the
@@ -27,11 +23,6 @@ import org.pragmatica.lang.utils.SharedScheduler;
 /// {@link StreamError.General#PARTITION_NOT_LOCAL} on {@code publishLocal}.
 public final class StreamWriteRouter {
     private static final NodeId NO_SELF = new NodeId("__no_self__");
-    /// Bounded forward-publish retry budget (write-forward race fix): 1 initial attempt + up to 2 retries.
-    private static final int MAX_FORWARD_ATTEMPTS = 3;
-    /// Fixed short backoff between forward-publish retries — long enough for the owner's KV apply of the
-    /// just-committed config to land, short enough to stay well within the publish path's forward budget.
-    private static final TimeSpan FORWARD_RETRY_BACKOFF = TimeSpan.timeSpan(150).millis();
 
     private final StreamPartitionManager partitionManager;
     private final Option<StreamForwardClient> forwardClient;
@@ -97,81 +88,27 @@ public final class StreamWriteRouter {
                                                                                          streamName,
                                                                                          partition,
                                                                                          payload,
-                                                                                         timestamp,
-                                                                                         1)))
+                                                                                         timestamp)))
                             .or(() -> partitionManager.publishLocal(streamName, partition, payload, timestamp)
                                                       .async());
     }
 
-    /// One owner-forward attempt with the bounded-retry decision folded in (write-forward race fix): it
-    /// RESOLVES on success and on any PERMANENT failure, and re-attempts ONLY when the owner reported the
-    /// failure as retryable (`RemotePublishRetryable`) and attempts remain — the owner's committed-config
-    /// view had not yet caught up to the config this sender just committed and forwarded. Bounded at
-    /// {@link #MAX_FORWARD_ATTEMPTS}, so no unbounded loop; no other failure cause is ever retried.
+    /// Owner-forward with the shared bounded retry folded in (write-forward race fix): re-attempts ONLY
+    /// when the owner reported the failure as retryable (`RemotePublishRetryable`) and attempts remain —
+    /// the owner's committed-config view had not yet caught up to the config this sender just committed
+    /// and forwarded — bounded so no unbounded loop; no other failure cause is ever retried. The retry
+    /// policy lives once in {@link StreamForwardRetry} (shared with {@link DefaultStreamPublisher} and
+    /// {@link PartitionedStreamAccess}).
     private Promise<Long> attemptForward(StreamForwardClient client,
                                          NodeId owner,
                                          String streamName,
                                          int partition,
                                          byte[] payload,
-                                         long timestamp,
-                                         int attempt) {
-        return client.publishRemote(owner, streamName, partition, payload, timestamp)
-                     .fold(result -> result.fold(cause -> retryOrPropagate(client,
-                                                                           owner,
-                                                                           streamName,
-                                                                           partition,
-                                                                           payload,
-                                                                           timestamp,
-                                                                           attempt,
-                                                                           cause),
-                                                 Promise::success));
-    }
-
-    private Promise<Long> retryOrPropagate(StreamForwardClient client,
-                                           NodeId owner,
-                                           String streamName,
-                                           int partition,
-                                           byte[] payload,
-                                           long timestamp,
-                                           int attempt,
-                                           Cause cause) {
-        return StreamForwardError.isRetryablePublish(cause) && attempt < MAX_FORWARD_ATTEMPTS
-               ? scheduleForwardRetry(client, owner, streamName, partition, payload, timestamp, attempt + 1)
-               : cause.promise();
-    }
-
-    /// Schedule the next attempt after a short fixed backoff through the shared scheduler (no
-    /// `Thread.sleep`), bridging its resolution into the pending promise returned to the caller.
-    private Promise<Long> scheduleForwardRetry(StreamForwardClient client,
-                                               NodeId owner,
-                                               String streamName,
-                                               int partition,
-                                               byte[] payload,
-                                               long timestamp,
-                                               int nextAttempt) {
-        var pending = Promise.<Long> promise();
-
-        SharedScheduler.schedule(() -> sendScheduledForward(pending,
-                                                            client,
-                                                            owner,
-                                                            streamName,
-                                                            partition,
-                                                            payload,
-                                                            timestamp,
-                                                            nextAttempt),
-                                 FORWARD_RETRY_BACKOFF);
-
-        return pending;
-    }
-
-    private void sendScheduledForward(Promise<Long> pending,
-                                      StreamForwardClient client,
-                                      NodeId owner,
-                                      String streamName,
-                                      int partition,
-                                      byte[] payload,
-                                      long timestamp,
-                                      int nextAttempt) {
-        attemptForward(client, owner, streamName, partition, payload, timestamp, nextAttempt).onResult(pending::resolve);
+                                         long timestamp) {
+        return StreamForwardRetry.withBoundedRetry(() -> client.publishRemote(owner,
+                                                                              streamName,
+                                                                              partition,
+                                                                              payload,
+                                                                              timestamp));
     }
 }
