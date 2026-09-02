@@ -13,11 +13,11 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.lang.vo;
 
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.parse.Network;
+
 
 /// Validated UUID value object.
 ///
@@ -26,7 +26,6 @@ import org.pragmatica.lang.parse.Network;
 /// **Prefer this over a hand-rolled UUID wrapper** — see the package doc for the full
 /// catalog of built-in value objects.
 public record Uuid(java.util.UUID value) {
-
     /// Parse a UUID from its string representation.
     ///
     /// @param raw the raw UUID string to parse

@@ -2,6 +2,7 @@ package org.pragmatica.lang;
 
 import java.lang.annotation.*;
 
+
 /// Declares that a method intentionally performs a blocking terminal operation.
 ///
 /// JBCT prefers non-blocking composition via `.map()`/`.flatMap()` over blocking

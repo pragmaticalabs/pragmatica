@@ -1,10 +1,11 @@
 package org.pragmatica.lang.concurrent;
 
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
+
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 
-import java.lang.invoke.MethodHandles;
-import java.lang.invoke.VarHandle;
 
 final class AtomicHolderImpl<T> implements AtomicHolder<T> {
     private static final VarHandle VALUE = lookupValueHandle();
@@ -12,8 +13,7 @@ final class AtomicHolderImpl<T> implements AtomicHolder<T> {
     @Contract
     private static VarHandle lookupValueHandle() {
         try {
-            return MethodHandles.lookup()
-                                .findVarHandle(AtomicHolderImpl.class, "value", Object.class);
+            return MethodHandles.lookup().findVarHandle(AtomicHolderImpl.class, "value", Object.class);
         } catch (ReflectiveOperationException e) {
             throw new ExceptionInInitializerError(e);
         }

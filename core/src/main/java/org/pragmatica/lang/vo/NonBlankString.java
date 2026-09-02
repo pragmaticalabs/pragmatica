@@ -13,7 +13,6 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.lang.vo;
 
 import org.pragmatica.lang.Cause;
@@ -21,6 +20,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
 
 import static org.pragmatica.lang.utils.Causes.cause;
+
 
 /// Trimmed, guaranteed non-empty string value.
 ///

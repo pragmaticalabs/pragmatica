@@ -2,6 +2,7 @@ package org.pragmatica.lang;
 
 import java.lang.annotation.*;
 
+
 /// Declares that a method intentionally returns `null` as part of its contract.
 ///
 /// JBCT requires methods to use `Option<T>` for absent values rather than `null`.

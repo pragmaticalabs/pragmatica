@@ -13,16 +13,16 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.lang;
-
-import org.pragmatica.lang.Functions.Fn1;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+
+import org.pragmatica.lang.Functions.Fn1;
+
 
 /// Pure synchronous memoization cache.
 ///
@@ -80,6 +80,7 @@ public interface Memo<K, V> {
     /// @return A new Memo instance
     static <K, V> Memo<K, V> memo(Fn1<V, K> computation) {
         Objects.requireNonNull(computation, "computation must not be null");
+
         return new UnboundedMemo<>(computation);
     }
 
@@ -96,6 +97,7 @@ public interface Memo<K, V> {
         if (maxSize <= 0) {
             return INVALID_MAX_SIZE.result();
         }
+
         return Result.success(new LruMemo<>(computation, maxSize));
     }
 
@@ -121,31 +123,40 @@ public interface Memo<K, V> {
         public V get(K key) {
             Objects.requireNonNull(key, "key must not be null");
             var cached = cache.get(key);
+
             if (cached != null) {
                 hits.incrementAndGet();
+
                 return cached.value();
             }
+
             var entry = cache.compute(key,
                                       (k, existing) -> {
                                           if (existing != null) {
-                                              hits.incrementAndGet();
-                                              return existing;
-                                          }
+                                          hits.incrementAndGet();
+
+                                          return existing;
+                                      }
+
                                           misses.incrementAndGet();
+
                                           return CacheEntry.cacheEntry(computation.apply(k));
                                       });
+
             return entry.value();
         }
 
         @Override
         public Unit invalidate(K key) {
             cache.remove(key);
+
             return Unit.unit();
         }
 
         @Override
         public Unit invalidateAll() {
             cache.clear();
+
             return Unit.unit();
         }
 
@@ -189,13 +200,18 @@ public interface Memo<K, V> {
             Objects.requireNonNull(key, "key must not be null");
             synchronized (cache) {
                 var cached = cache.get(key);
+
                 if (cached != null) {
                     hits.incrementAndGet();
+
                     return cached.value();
                 }
+
                 misses.incrementAndGet();
                 var value = computation.apply(key);
+
                 cache.put(key, CacheEntry.cacheEntry(value));
+
                 return value;
             }
         }
@@ -205,6 +221,7 @@ public interface Memo<K, V> {
             synchronized (cache) {
                 cache.remove(key);
             }
+
             return Unit.unit();
         }
 
@@ -213,6 +230,7 @@ public interface Memo<K, V> {
             synchronized (cache) {
                 cache.clear();
             }
+
             return Unit.unit();
         }
 

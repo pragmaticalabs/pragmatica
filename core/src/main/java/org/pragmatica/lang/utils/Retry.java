@@ -14,19 +14,19 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.lang.utils;
+
+import java.util.function.Supplier;
 
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 
-import java.util.function.Supplier;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
+
 
 /// A utility class implementing the Retry pattern using Promise for handling asynchronous operations.
 /// This implementation uses a staged fluent builder pattern where all parameters are mandatory.
@@ -58,8 +58,8 @@ public interface Retry {
             }
 
             private <T> Promise<T> executeWithLoop(Supplier<Promise<T>> operation, int attempt, Promise<T> output) {
-                operation.get()
-                         .fold(result -> handle(operation, attempt, output, result));
+                operation.get().fold(result -> handle(operation, attempt, output, result));
+
                 return output;
             }
 
@@ -69,15 +69,22 @@ public interface Retry {
                                           Result<T> result) {
                 return switch (result) {
                     case Result.Success<T> success -> output.succeed(success.value());
-                    case Result.Failure<T> failure when (attempt >= maxAttempts) -> output.fail(failure.cause());
+                    case Result.Failure<T> failure when failure.cause().isTerminal() -> {
+                        log.warn("Operation failed with a TERMINAL cause (attempt {}/{}), not retrying: {}",
+                                 attempt,
+                                 maxAttempts,
+                                 failure.cause().message());
+                        yield output.fail(failure.cause());
+                    }
+                    case Result.Failure<T> failure when(attempt >= maxAttempts) -> output.fail(failure.cause());
                     case Result.Failure<T> failure -> {
                         var delay = backoffStrategy.nextTimeout(attempt);
+
                         log.warn("Operation failed (attempt {}/{}), retrying after {}: {}",
                                  attempt,
                                  maxAttempts,
                                  delay,
-                                 failure.cause()
-                                        .message());
+                                 failure.cause().message());
                         SharedScheduler.schedule(() -> executeWithLoop(operation, attempt + 1, output), delay);
                         yield output;
                     }
@@ -86,6 +93,7 @@ public interface Retry {
 
             private static final Logger log = LoggerFactory.getLogger(Retry.class);
         }
+
         return maxAttempts -> backoffStrategy -> new retry(maxAttempts, backoffStrategy);
     }
 
@@ -118,6 +126,7 @@ public interface Retry {
                     return interval;
                 }
             }
+
             return fixedBackoffStrategy::new;
         }
 
@@ -134,14 +143,18 @@ public interface Retry {
                 @Override
                 public TimeSpan nextTimeout(int attempt) {
                     var multiplier = Math.pow(factor, attempt - 1);
+
                     if (withJitter) {
                         // Add jitter between 0.9 and 1.1
                         multiplier *= 0.9 + Math.random() * 0.2;
                     }
+
                     long delay = (long)(initialDelay.nanos() * multiplier);
+
                     return timeSpan(Math.min(delay, maxDelay.nanos())).nanos();
                 }
             }
+
             return initialDelay -> maxDelay -> factor -> withJitter -> new exponentialBackoffStrategy(initialDelay,
                                                                                                       maxDelay,
                                                                                                       factor,
@@ -178,9 +191,11 @@ public interface Retry {
                 @Override
                 public TimeSpan nextTimeout(int attempt) {
                     long delay = initialDelay.nanos() + (increment.nanos() * (attempt - 1));
+
                     return timeSpan(Math.min(delay, maxDelay.nanos())).nanos();
                 }
             }
+
             return initialDelay -> increment -> maxDelay -> new linearBackoffStrategy(initialDelay, increment, maxDelay);
         }
 

@@ -1,12 +1,13 @@
 package org.pragmatica.lang;
 
+import java.util.function.Predicate;
+import java.util.regex.Pattern;
+
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Functions.Fn3;
 import org.pragmatica.lang.utils.Causes;
 
-import java.util.function.Predicate;
-import java.util.regex.Pattern;
 
 /// Validation entry point for Result-returning factories: ensures values meet criteria, returning
 /// `Result` success with the original value or a failure with a `Cause`.
@@ -118,10 +119,11 @@ public sealed interface Verify {
     ///
     /// @return a success result containing the value if the predicate is satisfied,
     ///         or a failure result with the generated cause if not
-    static <T> Result<T> ensure(T value, Predicate<T> predicate, Fn1<Cause, T> causeProvider) {
+    static <T> Result<T> ensure(T value, Predicate<T> predicate, Fn1<? extends Cause, ? super T> causeProvider) {
         if (predicate.test(value)) {
             return Result.success(value);
         }
+
         return causeProvider.apply(value)
                             .result();
     }
@@ -174,7 +176,7 @@ public sealed interface Verify {
     ///
     /// @return a success result containing the value if the predicate is satisfied,
     ///         or a failure result with the generated cause if not
-    static <T, P1> Result<T> ensure(T value, Fn2<Boolean, T, P1> predicate, P1 param1, Fn1<Cause, T> causeProvider) {
+    static <T, P1> Result<T> ensure(T value, Fn2<Boolean, T, P1> predicate, P1 param1, Fn1<? extends Cause, ? super T> causeProvider) {
         return ensure(value, v -> predicate.apply(v, param1), causeProvider);
     }
 
@@ -236,7 +238,7 @@ public sealed interface Verify {
                                         Fn3<Boolean, T, P1, P2> predicate,
                                         P1 param1,
                                         P2 param2,
-                                        Fn1<Cause, T> causeProvider) {
+                                        Fn1<? extends Cause, ? super T> causeProvider) {
         return ensure(value, v -> predicate.apply(v, param1, param2), causeProvider);
     }
 
@@ -258,11 +260,14 @@ public sealed interface Verify {
         return value -> {
             for (var check : checks) {
                 var result = check.apply(value);
+
                 if (result.isSuccess()) {
                     continue;
                 }
+
                 return result;
             }
+
             return Result.success(value);
         };
     }
@@ -306,7 +311,7 @@ public sealed interface Verify {
     ///
     /// @return success with Option.none() if empty, success with Option.some(value) if present and valid,
     ///         or failure with the generated cause if present and invalid
-    static <T> Result<Option<T>> ensureOption(Option<T> value, Predicate<T> predicate, Fn1<Cause, T> causeProvider) {
+    static <T> Result<Option<T>> ensureOption(Option<T> value, Predicate<T> predicate, Fn1<? extends Cause, ? super T> causeProvider) {
         return value.fold(() -> Result.success(Option.none()),
                           v -> ensure(v, predicate, causeProvider).map(Option::some));
     }
@@ -359,7 +364,7 @@ public sealed interface Verify {
     static <T, P1> Result<Option<T>> ensureOption(Option<T> value,
                                                   Fn2<Boolean, T, P1> predicate,
                                                   P1 param1,
-                                                  Fn1<Cause, T> causeProvider) {
+                                                  Fn1<? extends Cause, ? super T> causeProvider) {
         return value.fold(() -> Result.success(Option.none()),
                           v -> ensure(v, predicate, param1, causeProvider).map(Option::some));
     }
@@ -423,7 +428,7 @@ public sealed interface Verify {
                                                       Fn3<Boolean, T, P1, P2> predicate,
                                                       P1 param1,
                                                       P2 param2,
-                                                      Fn1<Cause, T> causeProvider) {
+                                                      Fn1<? extends Cause, ? super T> causeProvider) {
         return value.fold(() -> Result.success(Option.none()),
                           v -> ensure(v, predicate, param1, param2, causeProvider).map(Option::some));
     }
@@ -600,9 +605,8 @@ public sealed interface Verify {
         /// @param value the char sequence to check
         /// @return true if the char sequence is blank, false otherwise
         static <T extends CharSequence> boolean blank(T value) {
-            return value == null || value.isEmpty() ||
-                   value.chars()
-                        .allMatch(Character::isWhitespace);
+            return value == null || value.isEmpty() || value.chars()
+                                                            .allMatch(Character::isWhitespace);
         }
 
         /// Checks if a char sequence is not blank (contains at least one non-whitespace character).
@@ -611,7 +615,7 @@ public sealed interface Verify {
         /// @param value the char sequence to check
         /// @return true if the char sequence is not blank, false otherwise
         static <T extends CharSequence> boolean notBlank(T value) {
-            return !blank(value);
+            return ! blank(value);
         }
 
         /// Checks if a char sequence is present, i.e. is not null, not empty and not blank.

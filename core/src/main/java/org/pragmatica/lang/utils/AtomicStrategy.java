@@ -14,12 +14,12 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.lang.utils;
+
+import java.util.Objects;
 
 import org.pragmatica.lang.Contract;
 
-import java.util.Objects;
 
 /// A cell holding one hot-swappable strategy lambda behind a single `volatile` field.
 ///

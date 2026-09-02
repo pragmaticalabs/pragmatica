@@ -14,13 +14,13 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.lang.utils;
-
-import org.pragmatica.lang.Contract;
 
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
+
+import org.pragmatica.lang.Contract;
+
 
 /// Helper class used to track the number of events along with results and trigger action once the threshold is reached. The action is triggered only once
 /// when number of events exactly matches configured threshold. All collected results are passed to action.
@@ -36,6 +36,7 @@ public record ResultCollector(Object[] results, AtomicInteger counter, Consumer<
     /// @return Created instance
     public static ResultCollector resultCollector(int count, Consumer<Object[]> action) {
         assert count >= 0;
+
         return new ResultCollector(new Object[count], new AtomicInteger(count), action);
     }
 
@@ -46,6 +47,7 @@ public record ResultCollector(Object[] results, AtomicInteger counter, Consumer<
     /// @return Current instance
     public ResultCollector apply(Consumer<ResultCollector> setup) {
         setup.accept(this);
+
         return this;
     }
 
@@ -56,6 +58,7 @@ public record ResultCollector(Object[] results, AtomicInteger counter, Consumer<
         if (counter.get() <= 0) {
             return;
         }
+
         assert results[index] == null;
         results[index] = value;
         if (counter.decrementAndGet() == 0) {
