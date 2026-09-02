@@ -4,7 +4,7 @@ All notable changes to Pragmatica will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [1.0.0-rc3] - Unreleased
+## [1.0.0-rc3] - 2026-09-02
 
 ### Fixed (2026-08-31 — the ticketing example could never complete a purchase: seven defects, each found by running the product and reading what it said about itself)
 - **A scalar `@Query` ignored its own `RETURNING` clause.** `FactoryGenerator.inferScalarColumnName`
@@ -1141,7 +1141,6 @@ measurably elapse (5,000 → 5,004-5,005ms).
 - Full #317 (Status-header convention across all `specs/*.md` and `architecture/*.md`) still
   pending a scope ruling; see MAILBOX.md.
 
-### Fixed (2026-08-27 — #642: ghost QuorumLossDetector self-fenced a node's next incarnation)
 ### Fixed (2026-08-27 — #660: Rabia sync adoption counted self twice over, deadlocking a bare-majority cold start)
 - **Sync adoption now requires `clusterSize / 2` PEER responses, with self completing the majority.**
   The gate compared `clusterSize / 2 + 1` against a response count, but responses only ever arrive from
@@ -3125,7 +3124,7 @@ preemption makes the guarantee *achievable* (the replica can now reach in-sync i
 - **Versioned slice routes carry version as metadata; mounted path composed at registration time (#198 §6.4)** — the `/v{N}/` segment is no longer baked into route paths during code generation. A generated versioned route now keeps its un-versioned path and carries `Route.version() = N`; the generated `routes()` composes the mounted path `{apiPrefix}/v{N}/{path}` at route-registration time via `Route.mountInPathMode(...)`, defaulting to **path mode** so the wire behavior is byte-for-byte identical to the previous baked form (proven by the in-JVM `SliceVersioningTest`, still 3/3). This lets the SAME compiled slice be exposed in either path mode or header mode as a deploy-time setting (header-mode dispatch is a separate next step). The generated `{Slice}Routes` gains a `versionRegistry()` override (`SliceVersionRegistry`: `apiPrefix`, declared version set, `defaultIfMissing` version, `requireVersionHeader`, per-version `deprecated`/`sunset`); the manifest gains per-route `route.N.version`. `RouteConfig` carries the per-handler version and leaves `prefix` empty for versioned slices (`apiPrefix` carries the base). Unversioned slices are unchanged. Generator output structure changed → slice-envelope format version bumped 1002 → 1003 (runtime accepts `{1000, 1001, 1002, 1003}`).
 - **Stream replication: two-knob durability model (`replicas` + `min-sync-replicas`, Kafka `min.insync.replicas` semantics) — #262.** `replicas` sets the replication factor; `min-sync-replicas` (counts the owner) makes a publish await `min-sync − 1` peer acks. Fixes a prior off-by-one that made synchronous app-stream replication unusable, wires `/api/streams/publish` to honour it, and adds a catch-up-before-serve owner-promotion gate. #262 stream failover convergence complete: reconcile-on-stream-config edge; promoted-owner watermark reseat + backfill ack; fresh-HRW-owner catch-up via peer-watermark probe; recovery appends adopt committed owner epoch (was Epoch.ZERO, fenced). Suite 02 fully green on real infra (replica-failover 9P/0F, lossless failover, RF restored).
 
-## [1.0.0-rc1] - Unreleased
+## [1.0.0-rc1] - 2026-06-13
 
 ### Added
 - **Cloud bootstrap zone fallback (multi-zone provisioning)** — a cloud `[source.X]` may now declare an ordered `zones = ["fsn1", "nbg1", "hel1"]` list; when a zone runs out of capacity (Hetzner `412 resource_unavailable` "error during placement"), the bootstrap PROVISION phase rotates to the next zone and retries that node instead of aborting the whole cluster. A per-role-group cursor means once a working zone is found, subsequent nodes start there and skip known-full zones (a cluster may legitimately span zones — desirable for resilience). Capacity failures are now a distinct `EnvironmentError.CapacityUnavailable` (mapped from the Hetzner `resource_unavailable` code), so the retry is scoped to genuine capacity exhaustion — auth/quota/other provision errors still fail fast without wasting attempts across zones. Backward-compatible: a single `zone = "..."` (no `zones`) behaves exactly as before (one attempt), and a source with neither uses the provider's default region. Auto-heal replacement provisioning (`provisionReplacement`) now zone-rotates too — see the #334 entry below.
