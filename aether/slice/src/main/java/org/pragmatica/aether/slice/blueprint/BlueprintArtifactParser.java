@@ -132,7 +132,7 @@ public interface BlueprintArtifactParser {
     }
 
     private static int parseCount(String raw) {
-        if (raw == null || raw.isEmpty()) {
+        if (Option.option(raw).map(String::isEmpty).or(true)) {
             return 0;
         }
 

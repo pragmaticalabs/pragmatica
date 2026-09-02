@@ -33,9 +33,15 @@ class StreamConfigTest {
             assertThat(config.retention().maxCount()).isEqualTo(100_000);
         }
 
+        /// Flipped from `"latest"` deliberately (#677), not to chase a changed default. The prior pin
+        /// asserted that this factory hands out `"latest"` — a value `StreamResourceValidator` rejects
+        /// outright, because a never-committed consumer always starts at offset 0 permanently by the
+        /// **#478 ruling**. So the old pin protected a value with no valid use: any config carrying it
+        /// fails deployment. `StreamConfigParser` already defaulted to `"earliest"`; this makes the
+        /// record's own factories agree with both the parser and the validator.
         @Test
-        void autoOffsetReset_defaultsToLatest() {
-            assertThat(streamConfig("orders").autoOffsetReset()).isEqualTo("latest");
+        void autoOffsetReset_defaultsToEarliest() {
+            assertThat(streamConfig("orders").autoOffsetReset()).isEqualTo("earliest");
         }
 
         @Test

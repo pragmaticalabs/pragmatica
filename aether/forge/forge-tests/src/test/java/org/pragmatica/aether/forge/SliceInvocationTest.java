@@ -10,6 +10,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
@@ -41,6 +42,10 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 /// Note: Full invocation testing requires slices with defined methods.
 /// The echo-slice has an echo method. Tests focus on infrastructure and error handling
 /// rather than successful invocations.
+/// #556 forge SMOKE set (deployment + invocation leg): one of three classes `./forge.sh` runs by default, so a
+/// developer gets a real multi-node cluster signal before pushing instead of discovering a
+/// cluster-level regression in CI. Keep this set small — its value is that people actually run it.
+@Tag("Smoke")
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class SliceInvocationTest {
@@ -65,11 +70,13 @@ class SliceInvocationTest {
                    throw new AssertionError("Cluster start failed: " + cause.message());
                });
 
-        await().atMost(WAIT_TIMEOUT)
+        await().alias("cluster leader elected (3 nodes, ports " + BASE_PORT + "+)")
+               .atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
                .until(() -> cluster.currentLeader().isPresent());
 
-        await().atMost(WAIT_TIMEOUT)
+        await().alias("all 3 nodes report healthy after leader election")
+               .atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
                .until(this::allNodesHealthy);
     }
@@ -78,7 +85,7 @@ class SliceInvocationTest {
     void cleanUp() {
         // Undeploy any slices left by previous tests
         var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
-        httpRequestDelete(leaderPort, "/api/blueprints/" + BLUEPRINT_ID);
+        httpRequestDelete(leaderPort, "/api/v1/blueprints/" + BLUEPRINT_ID);
     }
 
     @AfterAll
@@ -243,20 +250,20 @@ class SliceInvocationTest {
     }
 
     private String getRoutes() {
-        return httpRequest("GET", anyMgmtPort(), "/api/routes", null);
+        return httpRequest("GET", anyMgmtPort(), "/api/v1/routes", null);
     }
 
     private String getSlices() {
-        // Use /api/slices/status for cluster-wide view (reads from KVStore)
-        return httpRequest("GET", anyMgmtPort(), "/api/slices/status", null);
+        // Use /api/v1/slices/status for cluster-wide view (reads from KVStore)
+        return httpRequest("GET", anyMgmtPort(), "/api/v1/slices/status", null);
     }
 
     private String getHealth(int port) {
-        return httpRequest("GET", port, "/api/health", null);
+        return httpRequest("GET", port, "/api/v1/health", null);
     }
 
     private String getStatus(int port) {
-        return httpRequest("GET", port, "/api/nodes/status", null);
+        return httpRequest("GET", port, "/api/v1/nodes/status", null);
     }
 
     private String deploy(String artifact, int instances) {
@@ -292,7 +299,7 @@ class SliceInvocationTest {
 
     private String httpRequestBlueprint(int port, String body) {
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + "/api/blueprints"))
+                                 .uri(URI.create("http://localhost:" + port + "/api/v1/blueprints"))
                                  .header("Content-Type", "application/toml")
                                  .POST(HttpRequest.BodyPublishers.ofString(body))
                                  .timeout(Duration.ofSeconds(10))
@@ -323,7 +330,7 @@ class SliceInvocationTest {
 
     private void undeploy(String artifact) {
         var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
-        httpRequestDelete(leaderPort, "/api/blueprints/" + BLUEPRINT_ID);
+        httpRequestDelete(leaderPort, "/api/v1/blueprints/" + BLUEPRINT_ID);
     }
 
     private String httpRequestDelete(int port, String path) {
@@ -364,7 +371,7 @@ class SliceInvocationTest {
 
     private boolean checkNodeHealth(int port) {
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + "/api/health"))
+                                 .uri(URI.create("http://localhost:" + port + "/api/v1/health"))
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();

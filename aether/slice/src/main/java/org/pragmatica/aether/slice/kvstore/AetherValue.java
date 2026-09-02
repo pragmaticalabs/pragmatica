@@ -5,6 +5,7 @@
 package org.pragmatica.aether.slice.kvstore;
 
 import java.util.HashSet;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 
@@ -22,6 +23,7 @@ import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.cluster.state.kvstore.EpochBearing;
+import org.pragmatica.cluster.state.kvstore.VersionFenced;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -951,23 +953,33 @@ public sealed interface AetherValue {
         }
     }
 
+    /// Datasource names are cluster-global (`BlueprintArtifactParser` derives them from the
+    /// migration script path, so two blueprints using the default layout both claim `"database"`),
+    /// therefore the record must name the blueprint that owns the migration set. Ownership is
+    /// REQUIRED, not optional: the deploy-time gate in `BlueprintService` refuses to write a record
+    /// for a datasource another blueprint already migrates, and the activation gate in
+    /// `ClusterDeploymentState.areSchemasReady` matches records to slices by this owner so one
+    /// blueprint's failed migration cannot hold an unrelated blueprint's slices.
     record SchemaVersionValue(String datasourceName,
                               int currentVersion,
                               String lastMigration,
                               SchemaStatus status,
                               String artifactCoords,
+                              BlueprintId owningBlueprint,
                               int attemptCount,
                               long updatedAt) implements AetherValue {
         public static SchemaVersionValue schemaVersionValue(String datasourceName,
                                                             int currentVersion,
                                                             String lastMigration,
                                                             SchemaStatus status,
-                                                            String artifactCoords) {
+                                                            String artifactCoords,
+                                                            BlueprintId owningBlueprint) {
             return new SchemaVersionValue(datasourceName,
                                           currentVersion,
                                           lastMigration,
                                           status,
                                           artifactCoords,
+                                          owningBlueprint,
                                           0,
                                           System.currentTimeMillis());
         }
@@ -977,26 +989,15 @@ public sealed interface AetherValue {
                                                             String lastMigration,
                                                             SchemaStatus status,
                                                             String artifactCoords,
+                                                            BlueprintId owningBlueprint,
                                                             int attemptCount) {
             return new SchemaVersionValue(datasourceName,
                                           currentVersion,
                                           lastMigration,
                                           status,
                                           artifactCoords,
+                                          owningBlueprint,
                                           attemptCount,
-                                          System.currentTimeMillis());
-        }
-
-        public static SchemaVersionValue schemaVersionValue(String datasourceName,
-                                                            int currentVersion,
-                                                            String lastMigration,
-                                                            SchemaStatus status) {
-            return new SchemaVersionValue(datasourceName,
-                                          currentVersion,
-                                          lastMigration,
-                                          status,
-                                          "",
-                                          0,
                                           System.currentTimeMillis());
         }
     }
@@ -1111,6 +1112,19 @@ public sealed interface AetherValue {
         }
     }
 
+    /// Payload of an [AetherKey.EntityKeyspaceRegistrationKey] — the fact the leader-only ownership
+    /// writer cannot derive for itself: how many `(entity:<keyspace>, partition)` arcs the keyspace
+    /// spreads over, so it can mint an ownership record for each. Taken from the keyspace's
+    /// `DurableEntityConfig.partitionCount` at provisioning time, which is the first moment it is known
+    /// (the manifest carries only the config SECTION name, not the section's contents). The OTHER fact
+    /// the writer needs — which nodes host the keyspace — lives in the per-node KEY, not here: the set
+    /// of committed registration keys IS the hosting set.
+    record EntityKeyspaceRegistrationValue(int partitionCount) implements AetherValue {
+        public static EntityKeyspaceRegistrationValue entityKeyspaceRegistrationValue(int partitionCount) {
+            return new EntityKeyspaceRegistrationValue(partitionCount);
+        }
+    }
+
     record StreamRegistrationValue(NodeId nodeId, String consumerGroup, boolean batchMode, String eventType) implements AetherValue {
         public static StreamRegistrationValue streamRegistrationValue(NodeId nodeId,
                                                                       String consumerGroup,
@@ -1177,6 +1191,9 @@ public sealed interface AetherValue {
         }
     }
 
+    /// `walBytes` (#634-3): live stream-WAL bytes on the reporting node — non-zero only for the
+    /// `streams` instance, whose disk footprint was otherwise under-reported by the entire WAL (the
+    /// WAL is a sibling directory of the segment store, not a tier).
     record StorageStatusValue(String instanceName,
                               List<TierStatus> tiers,
                               String readinessState,
@@ -1184,6 +1201,7 @@ public sealed interface AetherValue {
                               boolean isWriteReady,
                               long lastSnapshotEpoch,
                               long lastSnapshotTimestamp,
+                              long walBytes,
                               long updatedAt) implements AetherValue {
         public record TierStatus(String level, long usedBytes, long maxBytes) {
             public static TierStatus tierStatus(String level, long usedBytes, long maxBytes) {
@@ -1197,7 +1215,8 @@ public sealed interface AetherValue {
                                                             boolean isReadReady,
                                                             boolean isWriteReady,
                                                             long lastSnapshotEpoch,
-                                                            long lastSnapshotTimestamp) {
+                                                            long lastSnapshotTimestamp,
+                                                            long walBytes) {
             return new StorageStatusValue(instanceName,
                                           List.copyOf(tiers),
                                           readinessState,
@@ -1205,23 +1224,141 @@ public sealed interface AetherValue {
                                           isWriteReady,
                                           lastSnapshotEpoch,
                                           lastSnapshotTimestamp,
+                                          walBytes,
                                           System.currentTimeMillis());
+        }
+    }
+
+    /// Desired cluster shape, per source and per role (RFC-0017 C1).
+    ///
+    /// `desiredTopology` REPLACES the former stored `coreCount`. That field was a core-only scalar
+    /// that scale operations rewrote while leaving `tomlContent` untouched, so after any scale the
+    /// two representations of desired size disagreed — and it could not express
+    /// "3 cores in hetzner-eu + 5 workers in aws-us" at all, which is what cores need in order to
+    /// provision workers themselves.
+    ///
+    /// [#coreCount] is now DERIVED from this map rather than stored alongside it, so the two can
+    /// never drift: there is one authoritative representation and one way to read it.
+    ///
+    /// The role is carried as a `String` because `aether/slice` deliberately does not depend on
+    /// `aether-config` (where `NodeRole` lives); the deployment layer converts at its boundary.
+    record TopologyEntry(String sourceName, String role, int count) {
+        public static final String CORE_ROLE = "core";
+
+        public static TopologyEntry topologyEntry(String sourceName, String role, int count) {
+            return new TopologyEntry(sourceName, role, count);
+        }
+
+        public boolean isCore() {
+            return CORE_ROLE.equalsIgnoreCase(role);
         }
     }
 
     record ClusterConfigValue(String tomlContent,
                               String clusterName,
                               String version,
-                              int coreCount,
+                              List<TopologyEntry> desiredTopology,
                               int coreMin,
                               int coreMax,
                               String deploymentType,
                               long configVersion,
-                              long updatedAt) implements AetherValue {
+                              long updatedAt) implements AetherValue, VersionFenced {
+        public ClusterConfigValue {
+            desiredTopology = List.copyOf(desiredTopology);
+        }
+
+        /// Lost-update fence version (RFC-0018, #570): the applier rejects a `Put` of this value
+        /// unless its `configVersion` is the immediate successor of the committed one. Every write
+        /// site therefore derives from the CURRENT committed value and bumps by exactly one — which
+        /// all six existing sites already did ([#withDesiredCount] and friends bump; the two
+        /// bootstrap seeds write against an absent key, which the fence does not guard). A rejected
+        /// write is invisible in the apply result (batch merging), so writers confirm by re-reading
+        /// committed state and checking their change landed.
+        @Override
+        public long fenceVersion() {
+            return configVersion;
+        }
+
+        /// Derived — never stored. Total CORE nodes across every source.
+        public int coreCount() {
+            return desiredTopology.stream()
+                                  .filter(TopologyEntry::isCore)
+                                  .mapToInt(TopologyEntry::count)
+                                  .sum();
+        }
+
+        /// Desired count for one (source, role), or 0 when the pair is not in the topology.
+        public int desiredCountFor(String sourceName, String role) {
+            return desiredTopology.stream()
+                                  .filter(entry -> entry.sourceName()
+                                                        .equals(sourceName) && entry.role()
+                                                                                    .equalsIgnoreCase(role))
+                                  .mapToInt(TopologyEntry::count)
+                                  .findFirst()
+                                  .orElse(0);
+        }
+
+        /// Sources declaring an entry for `role`, in topology order, without duplicates.
+        ///
+        /// This is what makes "scale cores to N" answerable without guessing: exactly one source
+        /// means the request is unambiguous, several means it genuinely does not say which source
+        /// absorbs the change. The former core-only scalar hid that distinction by overwriting a
+        /// single number regardless.
+        public List<String> sourcesWithRole(String role) {
+            return desiredTopology.stream()
+                                  .filter(entry -> entry.role()
+                                                        .equalsIgnoreCase(role))
+                                  .map(TopologyEntry::sourceName)
+                                  .distinct()
+                                  .toList();
+        }
+
+        /// True when the topology already declares this (source, role).
+        ///
+        /// [#withDesiredCount] APPENDS an absent pair, which is right for composing a topology and
+        /// wrong for a scale request: a mistyped source name would silently become a new entry that
+        /// provisioning then tries to satisfy. Scale callers gate on this first.
+        public boolean declares(String sourceName, String role) {
+            return desiredTopology.stream()
+                                  .anyMatch(entry -> entry.sourceName()
+                                                          .equals(sourceName) && entry.role()
+                                                                                      .equalsIgnoreCase(role));
+        }
+
+        /// Replace the desired count for one (source, role), preserving every other entry, and bump
+        /// the config version. Adds the pair when absent.
+        public ClusterConfigValue withDesiredCount(String sourceName, String role, int count) {
+            var updated = new ArrayList<TopologyEntry>();
+            var replaced = false;
+
+            for (var entry : desiredTopology) {
+                if (entry.sourceName().equals(sourceName) && entry.role().equalsIgnoreCase(role)) {
+                    updated.add(new TopologyEntry(sourceName, role, count));
+                    replaced = true;
+                } else {
+                    updated.add(entry);
+                }
+            }
+
+            if (!replaced) {
+                updated.add(new TopologyEntry(sourceName, role, count));
+            }
+
+            return new ClusterConfigValue(tomlContent,
+                                          clusterName,
+                                          version,
+                                          List.copyOf(updated),
+                                          coreMin,
+                                          coreMax,
+                                          deploymentType,
+                                          configVersion + 1,
+                                          System.currentTimeMillis());
+        }
+
         public static ClusterConfigValue clusterConfigValue(String tomlContent,
                                                             String clusterName,
                                                             String version,
-                                                            int coreCount,
+                                                            List<TopologyEntry> desiredTopology,
                                                             int coreMin,
                                                             int coreMax,
                                                             String deploymentType,
@@ -1229,7 +1366,7 @@ public sealed interface AetherValue {
             return new ClusterConfigValue(tomlContent,
                                           clusterName,
                                           version,
-                                          coreCount,
+                                          desiredTopology,
                                           coreMin,
                                           coreMax,
                                           deploymentType,
@@ -1240,7 +1377,7 @@ public sealed interface AetherValue {
         public static ClusterConfigValue clusterConfigValue(String tomlContent,
                                                             String clusterName,
                                                             String version,
-                                                            int coreCount,
+                                                            List<TopologyEntry> desiredTopology,
                                                             int coreMin,
                                                             int coreMax,
                                                             String deploymentType,
@@ -1249,7 +1386,7 @@ public sealed interface AetherValue {
             return new ClusterConfigValue(tomlContent,
                                           clusterName,
                                           version,
-                                          coreCount,
+                                          desiredTopology,
                                           coreMin,
                                           coreMax,
                                           deploymentType,
@@ -1261,7 +1398,7 @@ public sealed interface AetherValue {
             return new ClusterConfigValue(tomlContent,
                                           clusterName,
                                           version,
-                                          coreCount,
+                                          desiredTopology,
                                           coreMin,
                                           coreMax,
                                           deploymentType,
@@ -1718,6 +1855,51 @@ public sealed interface AetherValue {
             public static NamedAddress namedAddress(String alias, ResourceAddress address) {
                 return new NamedAddress(alias, address);
             }
+        }
+    }
+
+    /// Payload of an [AetherKey.EntityCheckpointKey] — where a partition's folded state lives and how far
+    /// forward it accounts for (#345 I3).
+    ///
+    /// `blockIdHex` names a block in the node's stream storage, whose tier chain ends in a DHT tier, so
+    /// any node can fetch it. `throughOffset` is the LAST log offset folded into that block: a recovering
+    /// owner loads the block and then replays from `throughOffset + 1`.
+    ///
+    /// The offset is what makes this safe to act on. A recovering node compares `throughOffset + 1`
+    /// against the earliest offset it can still read, and refuses when the two do not meet — see
+    /// `EntityLogSubstrate#earliestRetainedOffset`. Storing the block id without the offset would leave a
+    /// reader unable to tell a complete recovery from one silently missing every mutation in the gap.
+    ///
+    /// ## Why the name says "Fold" — historical, and now load-bearing for a different reason
+    /// This type was named to dodge a tag collision. Codec tags were derived purely by hashing the
+    /// fully-qualified type name into a 16256-slot space, and the obvious name, `EntityCheckpointValue`,
+    /// hashed to 7612 — already claimed by `org.pragmatica.cluster.metrics.HealthHintWire`. Registering
+    /// both threw at `NodeCodecs` static init and poisoned every test that touched it.
+    ///
+    /// That derivation is gone. System types now carry hand-assigned tags in
+    /// `org.pragmatica.serialization.SystemTags`, so this type's tag no longer depends on its name and
+    /// the collision cannot recur. The name still matters, but the reason inverted: the SystemTags key
+    /// IS the fully-qualified name, so a rename leaves the entry unmatched, drops the type into the
+    /// hashed user range, and fails the build at `SliceCodec#systemCodec`. Renaming is therefore a
+    /// deliberate two-step — rename, then re-key — and a tag, once assigned, is never renumbered.
+    ///
+    /// @param throughOffset last log offset folded into the snapshot
+    /// @param blockIdHex    content id of the snapshot block in stream storage
+    /// @param timestamp     wall-clock ms the checkpoint was written, for operator diagnosis only —
+    ///                      never for ordering, which is `throughOffset`'s job
+    /// [org.pragmatica.cluster.state.kvstore.MonotonicFenced]: the checkpoint claim is a running
+    /// max — the retention floor reclaims log segments below it, so the applier refuses a Put that
+    /// would LOWER the committed `throughOffset` (#700; a lower honest claim landing after a higher
+    /// one would leave the records between them on no reachable node). Equal offsets are accepted:
+    /// a fresh snapshot at unchanged coverage replaces the block pointer harmlessly.
+    record EntityFoldCheckpointValue(long throughOffset, String blockIdHex, long timestamp) implements AetherValue, org.pragmatica.cluster.state.kvstore.MonotonicFenced {
+        @Override
+        public long fenceWatermark() {
+            return throughOffset;
+        }
+
+        public static EntityFoldCheckpointValue entityFoldCheckpointValue(long throughOffset, String blockIdHex) {
+            return new EntityFoldCheckpointValue(throughOffset, blockIdHex, System.currentTimeMillis());
         }
     }
 }

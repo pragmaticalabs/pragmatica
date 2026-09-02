@@ -28,6 +28,17 @@ even with large per-method offsets (e.g., ManagementApiTest has offsets up to 38
 | SliceVersionLifecycleTest     | 12500     | 12600          | 0          | 3 nodes (shared cluster, app-http 12700; #198 §8.2/§11.3) |
 | StreamFanoutConsumerTest      | 13000     | 13100          | 0          | 5 nodes (shared cluster, app-http 13200; #265 STEP 0 streaming baseline) |
 | StreamCrashDurabilityTest     | 13500     | 13600          | 0          | 5 nodes (shared cluster, app-http 13700; streaming-persistence A6 WAL crash-durability) |
+| StreamOwnerFailoverTest       | 14000     | 14100          | 0          | 5 nodes (shared cluster, app-http 14200; #457 RF=2 owner-kill failover, default membership) |
+| StreamOwnerFailoverPinnedTest | 15000     | 15100          | 0          | 5 nodes (shared cluster, app-http 15200; #491 RF=2 owner-kill failover, pinned membership) |
+| MultiPartitionStreamTest      | 16000     | 16100          | 0          | 5 nodes (shared cluster, app-http 16200; #429 multi-partition e2e — distribution/order/read-paths) |
+| StreamPublishReshuffleTest    | 17000     | 17100          | 0          | 5 nodes (shared cluster, app-http 17200; #430 publish-under-owner-kill-reshuffle chaos) |
+| MultiPartitionCrashDurabilityTest | 17500 | 17600          | 0          | 5 nodes (shared cluster, app-http 17700; #431 multi-partition WAL crash-durability, per-partition replay) |
+| DeclarativeStreamConsumerTest | 18000     | 18100          | 0          | 5 nodes (shared cluster, app-http 18200; #488 declarative consumer delivery + #526 app-typed round trip) |
+| DeclarativeConsumerPlacementTest | 18500  | 18600          | 0          | 5 nodes (shared cluster, app-http 18700; #535 delivery when the partition owner does not host the slice) |
+| CoordinationSlopeInstrumentTest | 20000  | 20100          | 0          | 3 nodes (shared cluster, app-http 20200; #591 validates the coordination-load sampler against live endpoints) |
+| MembershipChaosCycleTest      | 20500     | 20600          | 0          | 5 nodes (shared cluster, app-http 20700; #232 kill -> detect -> decommission -> heal, Heavy) |
+| CoreAbsenceFenceOrderingTest  | 21000     | 21100          | 0          | 6 nodes (shared cluster, app-http 21200; #590 fence ordering, Heavy) |
+| EmberAddNodeRoleLabelTest     | 21500     | 21600          | 0          | 3+2 nodes (shared cluster, app-http 21700; #590 addWorkerNode role-label guard, Heavy) |
 
 ## Per-Method Offset Pattern
 
@@ -72,4 +83,14 @@ When adding a new test class:
 - 12500+ / 12600+: Allocated to SliceVersionLifecycleTest (app-http 12700)
 - 13000+ / 13100+: Allocated to StreamFanoutConsumerTest (app-http 13200)
 - 13500+ / 13600+: Allocated to StreamCrashDurabilityTest (app-http 13700)
-- 14000+ / 14100+: Reserved for future tests
+- 14000+ / 14100+: Allocated to StreamOwnerFailoverTest (app-http 14200)
+- 15000+ / 15100+: Allocated to StreamOwnerFailoverPinnedTest (app-http 15200)
+- 16000+ / 16100+: Allocated to MultiPartitionStreamTest (app-http 16200)
+- 17000+ / 17100+: Allocated to StreamPublishReshuffleTest (app-http 17200)
+- 17500+ / 17600+: Allocated to MultiPartitionCrashDurabilityTest (app-http 17700)
+- 18000+ / 18100+: Allocated to DeclarativeStreamConsumerTest (app-http 18200) — moved off 14000, which it
+  silently shared with StreamOwnerFailoverTest while absent from this table (#535)
+- 18500+ / 18600+: Allocated to DeclarativeConsumerPlacementTest (app-http 18700)
+- 19000+ / 19100+: Allocated to DurableTopicDeliveryForgeTest (app-http 19200) — the #386 composed
+  durable pub/sub path
+- 19500+: Reserved for future tests

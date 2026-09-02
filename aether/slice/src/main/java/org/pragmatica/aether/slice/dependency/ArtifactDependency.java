@@ -12,6 +12,10 @@ import org.pragmatica.lang.utils.Causes;
 
 @SuppressWarnings("JBCT-UTIL-02")
 public record ArtifactDependency(String groupId, String artifactId, VersionPattern versionPattern) {
+    static final Cause EMPTY_LINE = Causes.cause("Dependency line is empty");
+    static final Cause COMMENT_LINE = Causes.cause("Dependency line is a comment");
+    static final Cause SECTION_HEADER = Causes.cause("Line is a section header");
+
     public static Result<ArtifactDependency> artifactDependency(String line) {
         var trimmed = line.trim();
 
@@ -66,10 +70,6 @@ public record ArtifactDependency(String groupId, String artifactId, VersionPatte
     public String artifactKey() {
         return groupId + ":" + artifactId;
     }
-
-    static final Cause EMPTY_LINE = Causes.cause("Dependency line is empty");
-    static final Cause COMMENT_LINE = Causes.cause("Dependency line is a comment");
-    static final Cause SECTION_HEADER = Causes.cause("Line is a section header");
 
     private static final Fn1<Cause, String> INVALID_FORMAT = Causes.forOneValue("Invalid artifact dependency format: %s. Expected groupId:artifactId:versionPattern");
 

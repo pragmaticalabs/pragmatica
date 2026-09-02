@@ -15,6 +15,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.Codec;
@@ -304,7 +305,7 @@ public sealed interface AetherKey extends StructuredKey {
         }
 
         private static String normalizePrefix(String path) {
-            if (path == null || path.isBlank()) {
+            if (!Verify.Is.present(path)) {
                 return "/";
             }
 
@@ -1177,6 +1178,10 @@ public sealed interface AetherKey extends StructuredKey {
 
     Fn1<Cause, String> STORAGE_BLOCK_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid storage-block key format: %s");
 
+    Fn1<Cause, String> ENTITY_KEYSPACE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid entity-keyspace key format: %s");
+
+    Fn1<Cause, String> ENTITY_CHECKPOINT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid entity-checkpoint key format: %s");
+
     Fn1<Cause, String> STORAGE_REF_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid storage-ref key format: %s");
 
     Fn1<Cause, String> STORAGE_STATUS_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid storage-status key format: %s");
@@ -1356,6 +1361,66 @@ public sealed interface AetherKey extends StructuredKey {
                                                                               configSection,
                                                                               artifact,
                                                                               method));
+        }
+    }
+
+    /// PER-NODE declaration that a durable-entity keyspace is live ON `node` (#345 I1, narrow C). It
+    /// exists for two reasons: the per-`(keyspace, partition)` ownership records that fence entity writes
+    /// are minted by a LEADER-ONLY reconcile pass, and the leader has no other way to learn that a
+    /// keyspace exists — `DurableEntityConfig` is per-slice and node-local; and the leader must mint
+    /// owners ONLY over the nodes that actually host the keyspace's declaring slice, which it can only
+    /// know from the set of committed per-node records. A keyspace-wide record (the original shape of this
+    /// key) could not carry the hosting set: with `instances` below the cluster size the leader minted
+    /// owners over ALL nodes, and every partition owned by a non-hosting node refused every write.
+    ///
+    /// Each hosting node writes ITS OWN `(keyspace, node)` record, so the put stays idempotent with no
+    /// read-modify-write race, and the node's level-triggered reconcile can make "my committed records"
+    /// equal "my locally-provisioned keyspaces" in both directions — asserting on provision, pruning on
+    /// unload or on a restart that no longer hosts the slice.
+    ///
+    /// `keyspace` is the RAW name from `resources.toml`; the `entity:` ownership-arc prefix is applied by
+    /// `EntityPartitionArc`, not stored here, so this key stays a statement about the DECLARATION and the
+    /// arc naming has exactly one owner. `keyspace` never contains `/` — ENFORCED at the one entry point
+    /// every keyspace passes through, `DurableEntityConfig.durableEntityConfig` (a `/` is refused at bind
+    /// time with `InvalidKeyspace`) — and [#fromIdentity] relies on that to split the identity at the
+    /// FIRST separator.
+    ///
+    /// The REGISTRATION is deliberately not a stream record, even though the keyspace's LOG has been a
+    /// real stream (`entity:<keyspace>`, created by `StreamEntityLogSubstrate.ensureLog`) since #345 I3:
+    /// a keyspace must be declared and owned before — and independently of — its log's replica
+    /// lifecycle, and deriving the hosting set from stream records would couple the declaration to
+    /// whichever nodes happen to hold log replicas rather than to where the SLICE is provisioned.
+    record EntityKeyspaceRegistrationKey(String keyspace, NodeId node) implements AetherKey {
+        private static final String PREFIX = "entity-keyspace/";
+        private static final String SEPARATOR = "/";
+
+        @Override
+        public String asString() {
+            return PREFIX + keyspace + SEPARATOR + node.id();
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static EntityKeyspaceRegistrationKey entityKeyspaceRegistrationKey(String keyspace, NodeId node) {
+            return new EntityKeyspaceRegistrationKey(keyspace, node);
+        }
+
+        /// Rebuild from the snapshot IDENTITY (the part after the section prefix):
+        /// `<keyspace>/<nodeId>`. The split is at the FIRST `/` — legal because a keyspace never
+        /// contains one (see the type comment) while nothing constrains the node-id tail.
+        public static Result<EntityKeyspaceRegistrationKey> fromIdentity(String identity) {
+            var separator = identity.indexOf(SEPARATOR);
+
+            if (separator <= 0 || separator == identity.length() - 1) {
+                return ENTITY_KEYSPACE_KEY_FORMAT_ERROR.apply(PREFIX + identity).result();
+            }
+
+            return NodeId.nodeId(identity.substring(separator + 1)).map(node -> new EntityKeyspaceRegistrationKey(identity.substring(0,
+                                                                                                                                     separator),
+                                                                                                                  node));
         }
     }
 
@@ -1944,6 +2009,61 @@ public sealed interface AetherKey extends StructuredKey {
             var idPart = key.substring(PREFIX.length());
 
             return BlueprintId.blueprintId(idPart).map(BlueprintStreamBindingsKey::new);
+        }
+    }
+
+    /// Locates the newest fold checkpoint of one entity `(keyspace, partition)` (#345 I3).
+    ///
+    /// ## Why the pointer lives in consensus KV and the snapshot itself does not
+    /// The checkpoint's BYTES go into stream storage, whose tier chain ends in a DHT tier, so the block
+    /// is retrievable from any node by its content id. What is NOT cluster-visible is the NAME: stream
+    /// storage's `MetadataStore` is in-memory and snapshotted to that node's own disk, and `SegmentIndex`
+    /// is rebuilt at boot from that same local snapshot. A checkpoint recorded as a storage ref would
+    /// therefore be findable only on the node that wrote it — useless in the one case a checkpoint
+    /// exists for, which is a DIFFERENT node taking the partition over.
+    ///
+    /// So the small pointer goes where consensus makes it visible to everyone, and the large payload
+    /// stays out of consensus. Splitting them this way keeps the consensus write to a few dozen bytes per
+    /// checkpoint rather than the whole folded state.
+    ///
+    /// `keyspace` is the RAW name from `resources.toml`, matching [EntityKeyspaceRegistrationKey]; the
+    /// `entity:` arc prefix belongs to `EntityPartitionArc` and is not stored here.
+    record EntityCheckpointKey(String keyspace, int partition) implements AetherKey {
+        private static final String PREFIX = "entity-checkpoint/";
+        private static final String SEP = "/";
+
+        @Override
+        public String asString() {
+            return PREFIX + keyspace + SEP + partition;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static EntityCheckpointKey entityCheckpointKey(String keyspace, int partition) {
+            return new EntityCheckpointKey(keyspace, partition);
+        }
+
+        /// Rebuild from the snapshot IDENTITY (the part after the section prefix), which is
+        /// `<keyspace>/<partition>`.
+        ///
+        /// Split on the LAST separator, not the first: a keyspace name is author-supplied and this key
+        /// stores it raw, so splitting on the first separator would mis-parse any keyspace containing
+        /// one. The partition is always the final component.
+        public static Result<EntityCheckpointKey> fromIdentity(String identity) {
+            var lastSep = identity.lastIndexOf(SEP);
+
+            if (lastSep <= 0 || lastSep == identity.length() - 1) {
+                return ENTITY_CHECKPOINT_KEY_FORMAT_ERROR.apply(PREFIX + identity).result();
+            }
+
+            var keyspace = identity.substring(0, lastSep);
+
+            return Number.parseInt(identity.substring(lastSep + 1))
+                         .mapError(_ -> ENTITY_CHECKPOINT_KEY_FORMAT_ERROR.apply(PREFIX + identity))
+                         .map(partition -> new EntityCheckpointKey(keyspace, partition));
         }
     }
 }

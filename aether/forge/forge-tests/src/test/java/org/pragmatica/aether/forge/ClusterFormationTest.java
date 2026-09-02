@@ -8,6 +8,7 @@ package org.pragmatica.aether.forge;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
@@ -36,6 +37,10 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 ///   - Status consistency
 ///   - Metrics availability
 ///
+/// #556 forge SMOKE set (formation leg): one of three classes `./forge.sh` runs by default, so a
+/// developer gets a real multi-node cluster signal before pushing instead of discovering a
+/// cluster-level regression in CI. Keep this set small — its value is that people actually run it.
+@Tag("Smoke")
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class ClusterFormationTest {
@@ -93,7 +98,7 @@ class ClusterFormationTest {
 
     @Test
     void cluster_nodesVisibleToAllMembers() {
-        // Each node should report 2 connected peers via /api/health endpoint
+        // Each node should report 2 connected peers via /api/v1/health endpoint
         for (var node : cluster.status().nodes()) {
             var health = getHealth(node.mgmtPort());
             assertThat(health).contains("\"connectedPeers\":2");
@@ -106,7 +111,7 @@ class ClusterFormationTest {
         // Collect status from all nodes
         var leaderNode = cluster.currentLeader().unwrap();
 
-        // All nodes should report the same leader via /api/nodes/status endpoint
+        // All nodes should report the same leader via /api/v1/nodes/status endpoint
         for (var node : cluster.status().nodes()) {
             var status = getStatus(node.mgmtPort());
             assertThat(status).contains(leaderNode);
@@ -122,6 +127,37 @@ class ClusterFormationTest {
         assertThat(metrics).doesNotContain("\"error\"");
     }
 
+    /// #674 end-to-end pin: the comprehensive response's consensus block carries LIVE non-zero
+    /// consensus activity on a formed cluster — formation itself runs Rabia rounds, so a formed
+    /// cluster with zero recorded decisions would mean the counters are disconnected again (the
+    /// pre-#674 state: the DTO dropped the block, and the vote recorders were empty bodies).
+    @Test
+    void cluster_comprehensiveMetrics_carryLiveConsensusBlock() {
+        var anyNodePort = cluster.status().nodes().getFirst().mgmtPort();
+        var comprehensive = httpGet(anyNodePort, "/api/v1/metrics/comprehensive");
+
+        assertThat(comprehensive).doesNotContain("\"error\"");
+        assertThat(comprehensive).as("the consensus block must be on the wire")
+                                 .contains("\"consensus\"")
+                                 .contains("\"decisionsCount\"")
+                                 .contains("\"voteRound1Count\"");
+        assertThat(consensusLong(comprehensive, "decisionsCount"))
+            .as("a formed cluster has committed Rabia decisions — zero means the counter chain is disconnected")
+            .isPositive();
+    }
+
+    private static long consensusLong(String json, String field) {
+        var matcher = java.util.regex.Pattern.compile("\"" + field + "\"\\s*:\\s*(\\d+)")
+                                             .matcher(json);
+
+        if (!matcher.find()) {
+            throw new AssertionError("field " + field + " not found in: "
+                                     + json.substring(0, Math.min(json.length(), 400)));
+        }
+
+        return Long.parseLong(matcher.group(1));
+    }
+
     private boolean allNodesHealthy() {
         var status = cluster.status();
         return status.nodes().stream()
@@ -130,7 +166,7 @@ class ClusterFormationTest {
 
     private boolean checkNodeHealth(int port) {
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + "/api/health"))
+                                 .uri(URI.create("http://localhost:" + port + "/api/v1/health"))
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();
@@ -141,15 +177,15 @@ class ClusterFormationTest {
     }
 
     private String getHealth(int port) {
-        return httpGet(port, "/api/health");
+        return httpGet(port, "/api/v1/health");
     }
 
     private String getStatus(int port) {
-        return httpGet(port, "/api/nodes/status");
+        return httpGet(port, "/api/v1/nodes/status");
     }
 
     private String getMetrics(int port) {
-        return httpGet(port, "/api/metrics");
+        return httpGet(port, "/api/v1/metrics");
     }
 
     private String httpGet(int port, String path) {

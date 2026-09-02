@@ -31,9 +31,16 @@ import org.slf4j.LoggerFactory;
 /// values (piece 1a); this table is its data-plane mirror.
 ///
 /// The table advances by OBSERVING committed `EpochBearing` [ValuePut] notifications and is seeded
-/// from committed KV on construction/restore. The query API ([#highWater]/[#isStale]) is what the
-/// data-plane write paths (1c DHT `putVersioned` / 1d stream append — NOT YET WIRED) will consult to
-/// reject a deposed writer: a presented epoch STRICTLY older than the domain's high-water is stale.
+/// from committed KV on construction/restore. The query API ([#highWater]/[#isStale]) is consulted
+/// by the data-plane write paths to reject a deposed writer. Item 1c (DHT `putVersioned`) is WIRED —
+/// the DHT storage engine's `HighWaterOwnerEpochGate` is backed by this table (see the `AetherNode`
+/// bootstrap, where `MemoryStorageEngine` is built over the gate). Item 1d (stream append) is WIRED
+/// too: `StreamPartitionManager.rejectIfStale` (fed from `AetherNode`'s fence-enabled
+/// `streamPartitionManager(..., ownershipEpochHighWater, ...)` factory) fences both local-publish and
+/// replica-receive appends against this table (`OwnershipDomain.streamPartition` → `StaleEpochAppend`),
+/// and `LinearizableOwnerServe`'s post-round read fence (`StaleEpochRead`) consults it identically —
+/// one mechanism, three call sites. A presented epoch STRICTLY older than the domain's high-water is
+/// stale.
 ///
 /// **Determinism.** Per-node, in-memory, derived PURELY from the committed KV — the same committed
 /// state yields an identical table on every node. It is NOT itself replicated state; it is

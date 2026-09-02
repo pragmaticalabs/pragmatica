@@ -14,6 +14,7 @@ import java.util.stream.Stream;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.resource.ResourceVersion;
 import org.pragmatica.aether.slice.topology.SliceTopology;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
 import static org.pragmatica.lang.Result.success;
@@ -56,7 +57,7 @@ public sealed interface PubSubValidator {
     }
 
     private static Result<ResourceAddress> validateTopicConfig(String config) {
-        if (config != null && config.contains(":")) {
+        if (Option.option(config).map(value -> value.contains(":")).or(false)) {
             return ResourceAddress.resourceAddress(config).flatMap(address -> ResourceAddress.validateAppNamespace(address.namespace()
                                                                                                                           .value()).map(_ -> address));
         }

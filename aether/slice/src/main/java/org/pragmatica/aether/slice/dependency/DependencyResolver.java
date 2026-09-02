@@ -63,47 +63,58 @@ public interface DependencyResolver {
                                                          new HashSet<>()));
     }
 
-    static Promise<ResolvedSlice> resolveWithContext(Artifact artifact,
-                                                     Repository repository,
-                                                     SliceRegistry registry,
-                                                     SharedLibraryClassLoader sharedLibraryLoader,
-                                                     SliceInvokerFacade invokerFacade,
-                                                     ResourceProviderFacade resourceFacade) {
-        return resolveWithContext(artifact,
-                                  repository,
-                                  registry,
-                                  sharedLibraryLoader,
-                                  invokerFacade,
-                                  resourceFacade,
-                                  Option.none());
-    }
-
-    /// Variant of `resolveWithContext` that accepts an optional slice-composite builder.
+    /// Variant that additionally scopes resource serialization to the deployed slice's codec.
     ///
-    /// The builder is invoked once the slice classloader is available (in
-    /// `loadSliceClassAndResolveDepsWithContext`) and returns the slice-composite
-    /// (`slice.toml ⊕ nodeComposite`). The result is attached to the `SliceLoadingContext`
-    /// so resource factories can read per-slice configuration before falling back to the
-    /// global `ConfigService.instance()` singleton.
+    /// `nodeCodec` is the parent the slice's own codec is layered on. Supplying it arms the
+    /// late-bound slice codec that every resource provisioned by this slice receives, so a slice
+    /// can publish and consume its OWN record types (#526); omitting it keeps resources on the
+    /// node-wide codec.
+    ///
+    /// `resourceOverlayBuilder` is applied to the same classloader, at the same moment, and yields
+    /// the slice-scoped resource provider consulted ahead of the node one — the seam that makes a
+    /// user-defined resource TYPE reachable at all (#773). This module never builds that overlay; it
+    /// is handed one, exactly as it is handed `compositeBuilder`, which is what keeps the resource
+    /// SPI out of this module's dependencies.
+    ///
+    /// It is REQUIRED, deliberately. An overload that let it default to absent would hand a caller
+    /// the #773 defect for writing less code, which is the same silence the ticket is about moved
+    /// one level out. A caller that wants no overlay says so with
+    /// [SliceLoadingContext#noResourceOverlay].
     static Promise<ResolvedSlice> resolveWithContext(Artifact artifact,
                                                      Repository repository,
                                                      SliceRegistry registry,
                                                      SharedLibraryClassLoader sharedLibraryLoader,
                                                      SliceInvokerFacade invokerFacade,
                                                      ResourceProviderFacade resourceFacade,
-                                                     Option<org.pragmatica.lang.Functions.Fn1<Option<org.pragmatica.config.ConfigurationProvider>, ClassLoader>> compositeBuilder) {
-        var loadingContext = SliceLoadingContext.sliceLoadingContext(invokerFacade, resourceFacade, artifact.asString());
+                                                     Option<org.pragmatica.lang.Functions.Fn1<Option<org.pragmatica.config.ConfigurationProvider>, ClassLoader>> compositeBuilder,
+                                                     Option<SliceCodec> nodeCodec,
+                                                     org.pragmatica.lang.Functions.Fn1<Option<ResourceProviderFacade>, ClassLoader> resourceOverlayBuilder) {
+        var loadingContext = SliceLoadingContext.sliceLoadingContext(invokerFacade,
+                                                                     resourceFacade,
+                                                                     artifact.asString(),
+                                                                     nodeCodec);
 
         compositeBuilder.onPresent(loadingContext::setCompositeBuilder);
+        loadingContext.setResourceOverlayBuilder(resourceOverlayBuilder);
 
         return registry.lookup(artifact)
-                       .map(slice -> Promise.success(new ResolvedSlice(slice, loadingContext)))
+                       .map(slice -> Promise.success(resolvedSlice(slice, loadingContext)))
                        .or(() -> resolveWithSharedLoaderAndContext(artifact,
                                                                    repository,
                                                                    registry,
                                                                    sharedLibraryLoader,
                                                                    loadingContext,
                                                                    new HashSet<>()));
+    }
+
+    /// Pair a freshly created slice with its loading context, binding the slice's codec on the way
+    /// through. This is the earliest point the codec CAN be bound — `Slice.codec(parent)` needs the
+    /// instance — and it is still well before `start()` and before the slice is invocable, so every
+    /// resource that captured the late-bound codec during construction is ready by first use (#526).
+    private static ResolvedSlice resolvedSlice(Slice slice, SliceLoadingContext loadingContext) {
+        loadingContext.bindSliceCodec(slice);
+
+        return new ResolvedSlice(slice, loadingContext);
     }
 
     static Promise<ResolvedSlice> resolveWithContext(Artifact artifact,
@@ -116,7 +127,10 @@ public interface DependencyResolver {
                                   registry,
                                   sharedLibraryLoader,
                                   invokerFacade,
-                                  noOpResourceProvider());
+                                  noOpResourceProvider(),
+                                  Option.none(),
+                                  Option.none(),
+                                  SliceLoadingContext.noResourceOverlay());
     }
 
     private static ResourceProviderFacade noOpResourceProvider() {
@@ -322,7 +336,7 @@ public interface DependencyResolver {
                                         loadingContext,
                                         List.of(),
                                         List.of()).flatMap(slice -> registerSlice(artifact, slice, registry))
-                                       .map(slice -> new ResolvedSlice(slice, loadingContext));
+                                       .map(slice -> resolvedSlice(slice, loadingContext));
         }
 
         return resolveArtifactDependenciesWithContextSequentially(sliceDeps,
@@ -353,7 +367,7 @@ public interface DependencyResolver {
         return createSliceFromClass(sliceClass, loadingContext, resolvedSlices, sliceDeps).flatMap(slice -> registerSlice(artifact,
                                                                                                                           slice,
                                                                                                                           registry))
-                                   .map(slice -> new ResolvedSlice(slice, loadingContext));
+                                   .map(slice -> resolvedSlice(slice, loadingContext));
     }
 
     static Promise<SliceBridge> resolveBridge(Artifact artifact,

@@ -16,6 +16,7 @@ import org.pragmatica.http.JdkHttpOperations;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 
 import static org.pragmatica.http.routing.PathParameter.aString;
@@ -50,7 +51,7 @@ public sealed interface ObservabilityProxyRoutes {
         return Route.<TraceListResponse> get("")
                     .to(ctx -> proxyGetWithQuery(cluster,
                                                  http,
-                                                 "/api/traces",
+                                                 "/api/v1/traces",
                                                  ctx.queryParams().asMap()))
                     .asJson();
     }
@@ -105,7 +106,7 @@ public sealed interface ObservabilityProxyRoutes {
     private static Promise<TraceStatsResponse> proxyGetStats(EmberCluster cluster, JdkHttpOperations http) {
         return cluster.getLeaderManagementPort()
                       .async(LeaderNotAvailable.INSTANCE)
-                      .flatMap(port -> sendGet(http, port, "/api/traces/stats"))
+                      .flatMap(port -> sendGet(http, port, "/api/v1/traces/stats"))
                       .map(TraceStatsResponse::new);
     }
 
@@ -114,21 +115,21 @@ public sealed interface ObservabilityProxyRoutes {
                                                                 String requestId) {
         return cluster.getLeaderManagementPort()
                       .async(LeaderNotAvailable.INSTANCE)
-                      .flatMap(port -> sendGet(http, port, "/api/traces/" + requestId))
+                      .flatMap(port -> sendGet(http, port, "/api/v1/traces/" + requestId))
                       .map(TraceListResponse::new);
     }
 
     private static Promise<DepthListResponse> proxyGetDepth(EmberCluster cluster, JdkHttpOperations http) {
         return cluster.getLeaderManagementPort()
                       .async(LeaderNotAvailable.INSTANCE)
-                      .flatMap(port -> sendGet(http, port, "/api/observability/depth"))
+                      .flatMap(port -> sendGet(http, port, "/api/v1/observability/depth"))
                       .map(DepthListResponse::new);
     }
 
     private static Promise<DepthSetResponse> proxyPostDepth(EmberCluster cluster, JdkHttpOperations http, String body) {
         return cluster.getLeaderManagementPort()
                       .async(LeaderNotAvailable.INSTANCE)
-                      .flatMap(port -> sendPostWithBody(http, port, "/api/observability/depth", body))
+                      .flatMap(port -> sendPostWithBody(http, port, "/api/v1/observability/depth", body))
                       .map(resp -> new DepthSetResponse(true, resp));
     }
 
@@ -137,7 +138,7 @@ public sealed interface ObservabilityProxyRoutes {
                                                                  String key) {
         return cluster.getLeaderManagementPort()
                       .async(LeaderNotAvailable.INSTANCE)
-                      .flatMap(port -> sendDelete(http, port, "/api/observability/depth/" + key))
+                      .flatMap(port -> sendDelete(http, port, "/api/v1/observability/depth/" + key))
                       .map(resp -> new DepthDeleteResponse(true, resp));
     }
 
@@ -169,9 +170,7 @@ public sealed interface ObservabilityProxyRoutes {
         var request = HttpRequest.newBuilder()
                                  .uri(URI.create("http://localhost:" + port + path))
                                  .header("Content-Type", "application/json")
-                                 .POST(HttpRequest.BodyPublishers.ofString(body != null
-                                                                           ? body
-                                                                           : ""))
+                                 .POST(HttpRequest.BodyPublishers.ofString(Option.option(body).or("")))
                                  .timeout(HTTP_TIMEOUT)
                                  .build();
 

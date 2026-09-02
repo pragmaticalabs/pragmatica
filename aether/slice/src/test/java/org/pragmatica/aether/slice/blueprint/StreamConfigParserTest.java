@@ -54,6 +54,22 @@ class StreamConfigParserTest {
         }
 
         @Test
+        void autoOffsetResetDefaultsToEarliest() {
+            // #576: the parsed default used to be "latest", but the runtime always starts a
+            // never-committed consumer at offset 0 (earliest) per the #478 ruling — this default
+            // must match what actually happens, since nothing reads the field on the hot path.
+            var toml = """
+                    [streams.orders]
+                    version = "1.0.0"
+                    """;
+
+            var result = parseResources(toml).unwrap();
+
+            var owned = (StreamResource.Owned) result.get("orders");
+            assertThat(owned.config().autoOffsetReset()).isEqualTo("earliest");
+        }
+
+        @Test
         void ownedWithLatestVersion() {
             var toml = """
                     [streams.inventory]

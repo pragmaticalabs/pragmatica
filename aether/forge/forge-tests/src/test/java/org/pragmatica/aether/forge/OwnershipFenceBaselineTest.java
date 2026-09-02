@@ -7,6 +7,7 @@ package org.pragmatica.aether.forge;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.parallel.Execution;
@@ -76,6 +77,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// floor-stamped appends are never fenced — the fence is inert within a stable epoch.
 ///
 /// See `ownership-fence-spec.md` and `issue-345-implementation-plan.md`.
+@Tag("Heavy")
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class OwnershipFenceBaselineTest {

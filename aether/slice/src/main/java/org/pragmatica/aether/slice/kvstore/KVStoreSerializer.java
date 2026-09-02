@@ -28,6 +28,7 @@ import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey.*;
 import org.pragmatica.aether.slice.kvstore.AetherValue.*;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue.NamedAddress;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionAssignmentValue.PartitionAssignment;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
 import org.pragmatica.consensus.NodeId;
@@ -35,6 +36,7 @@ import org.pragmatica.consensus.rabia.Phase;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.utils.Causes;
 
 import static org.pragmatica.lang.Result.success;
@@ -46,6 +48,14 @@ public final class KVStoreSerializer {
 
     private static final String PIPE = "|";
     private static final String META_SECTION = "[meta]";
+    /// Sections deliberately left WITHOUT a [#parseKeyValue] case because their value is not
+    /// faithfully representable in this TOML form: `app-blueprint` serializes its
+    /// `ExpandedBlueprint` to the empty string (see [#serializeValue]), so a parse case could only
+    /// reconstruct a blueprint with no content. Failing loudly with
+    /// [SerializationError.UnknownKeyType] is the safer of the two wrong answers — silently
+    /// restoring an empty blueprint is worse than refusing to restore one. An entry may only leave
+    /// this set together with a lossless serialize form for its value.
+    static final Set<String> LOSSY_SECTIONS = Set.of("app-blueprint");
 
     public static Result<String> toToml(Map<AetherKey, AetherValue> entries, Phase phase, Instant timestamp) {
         var sb = new StringBuilder();
@@ -139,7 +149,11 @@ public final class KVStoreSerializer {
           .append("\"\n");
     }
 
-    private static String sectionForKey(AetherKey key) {
+    /// Assigns the snapshot section tag for each [AetherKey] variant. Exhaustive over the sealed
+    /// hierarchy by compiler check (no `default` arm). Its inverse is [#parseKeyValue], which is a
+    /// separate switch keyed by the same tags — see that method for the symmetry invariant.
+    /// Package-visible so the symmetry guard can derive the tag set without hand-written samples.
+    static String sectionForKey(AetherKey key) {
         return switch (key) {
             case SliceTargetKey _ -> "slice-target";
             case AppBlueprintKey _ -> "app-blueprint";
@@ -174,6 +188,8 @@ public final class KVStoreSerializer {
             case StreamPartitionAssignmentKey _ -> "stream-assign";
             case StreamCursorCheckpointKey _ -> "stream-cursor";
             case StreamRegistrationKey _ -> "stream-reg";
+            case EntityKeyspaceRegistrationKey _ -> "entity-keyspace";
+            case EntityCheckpointKey _ -> "entity-checkpoint";
             case ClusterConfigKey _ -> "cluster-config";
             case StorageStatusKey _ -> "storage-status";
             case StorageBlockKey _ -> "storage-block";
@@ -246,6 +262,8 @@ public final class KVStoreSerializer {
             case StreamPartitionAssignmentValue v -> serializeStreamPartitionAssignment(v);
             case StreamCursorCheckpointValue v -> serializeStreamCursorCheckpoint(v);
             case StreamRegistrationValue v -> serializeStreamRegistration(v);
+            case EntityKeyspaceRegistrationValue v -> serializeEntityKeyspaceRegistration(v);
+            case EntityFoldCheckpointValue v -> serializeEntityCheckpoint(v);
             case ClusterConfigValue v -> serializeClusterConfig(v);
             case StorageStatusValue v -> serializeStorageStatus(v);
             case StorageBlockValue v -> serializeStorageBlock(v);
@@ -457,16 +475,26 @@ public final class KVStoreSerializer {
         return v.role() + PIPE + v.communityId() + PIPE + v.governorHint();
     }
 
-    private static String serializeClusterConfig(ClusterConfigValue v) {
-        return v.clusterName() + PIPE + v.version() + PIPE + v.coreCount() + PIPE + v.coreMin() + PIPE + v.coreMax() + PIPE + v.deploymentType() + PIPE + v.configVersion() + PIPE + v.updatedAt() + PIPE + v.tomlContent()
-                                                                                                                                                                                                             .replace("|",
-                                                                                                                                                                                                                      "\\|");
+    private static String serializeDesiredTopology(List<AetherValue.TopologyEntry> topology) {
+        return topology.stream()
+                       .map(entry -> entry.sourceName() + ":" + entry.role() + "=" + entry.count())
+                       .collect(java.util.stream.Collectors.joining(";"));
     }
 
-    private static String serializeStorageStatus(StorageStatusValue v) {
+    private static String serializeClusterConfig(ClusterConfigValue v) {
+        return v.clusterName() + PIPE + v.version() + PIPE + serializeDesiredTopology(v.desiredTopology()) + PIPE + v.coreMin() + PIPE + v.coreMax() + PIPE + v.deploymentType() + PIPE + v.configVersion() + PIPE + v.updatedAt() + PIPE + v.tomlContent()
+                                                                                                                                                                                                                                             .replace("|",
+                                                                                                                                                                                                                                                      "\\|");
+    }
+
+    /// Package-visible for direct round-trip testing (the `storage-status` section is EPHEMERAL, so
+    /// it never flows through `toToml` — the arms exist for switch exhaustiveness and symmetry, and
+    /// without a direct test a field added to the value would change them blind, which is how
+    /// `walBytes` arrived to zero coverage).
+    static String serializeStorageStatus(StorageStatusValue v) {
         var tiersStr = v.tiers().stream().map(KVStoreSerializer::serializeTierStatus).collect(Collectors.joining(";"));
 
-        return v.instanceName() + PIPE + tiersStr + PIPE + v.readinessState() + PIPE + v.isReadReady() + PIPE + v.isWriteReady() + PIPE + v.lastSnapshotEpoch() + PIPE + v.lastSnapshotTimestamp() + PIPE + v.updatedAt();
+        return v.instanceName() + PIPE + tiersStr + PIPE + v.readinessState() + PIPE + v.isReadReady() + PIPE + v.isWriteReady() + PIPE + v.lastSnapshotEpoch() + PIPE + v.lastSnapshotTimestamp() + PIPE + v.walBytes() + PIPE + v.updatedAt();
     }
 
     private static String serializeTierStatus(StorageStatusValue.TierStatus t) {
@@ -494,9 +522,17 @@ public final class KVStoreSerializer {
         return parseKeyValue(section, rawKey, rawValue);
     }
 
-    private static Result<Map.Entry<AetherKey, AetherValue>> parseKeyValue(String section,
-                                                                           String identity,
-                                                                           String rawValue) {
+    /// Inverse of [#sectionForKey]. Both switches are hand-maintained and independent, so they can
+    /// drift: a tag that [#toToml] emits but this switch does not accept makes every snapshot
+    /// containing that key unreadable ([SerializationError.UnknownKeyType]). The invariant —
+    /// **every tag [#sectionForKey] can produce has a case here** — is enforced executably by
+    /// `KVStoreSerializerTest.ParseSerializeSymmetry`, which enumerates the sealed [AetherKey]
+    /// hierarchy reflectively rather than from a list someone has to remember to update.
+    ///
+    /// Two exemptions are permitted, both named by production constants rather than by the test:
+    /// [EphemeralKeys#EPHEMERAL_SECTIONS] (dropped by [#groupBySection] before serialization, so
+    /// they never reach TOML) and [#LOSSY_SECTIONS].
+    static Result<Map.Entry<AetherKey, AetherValue>> parseKeyValue(String section, String identity, String rawValue) {
         return switch (section) {
             case "slice-target" -> parseSliceTargetEntry(identity, rawValue);
             case "slices" -> parseSliceNodeEntry(identity, rawValue);
@@ -529,6 +565,12 @@ public final class KVStoreSerializer {
             case "storage-block" -> parseStorageBlockEntry(identity, rawValue);
             case "storage-ref" -> parseStorageRefEntry(identity, rawValue);
             case "stream-config" -> parseStreamConfigEntry(identity, rawValue);
+            case "stream-meta" -> parseStreamMetadataEntry(identity, rawValue);
+            case "stream-assign" -> parseStreamPartitionAssignmentEntry(identity, rawValue);
+            case "stream-cursor" -> parseStreamCursorCheckpointEntry(identity, rawValue);
+            case "stream-reg" -> parseStreamRegistrationEntry(identity, rawValue);
+            case "entity-keyspace" -> parseEntityKeyspaceRegistrationEntry(identity, rawValue);
+            case "entity-checkpoint" -> parseEntityCheckpointEntry(identity, rawValue);
             case "stream-registry" -> parseStreamRegistryEntry(identity, rawValue);
             case "blueprint-stream-bindings" -> parseBlueprintStreamBindingsEntry(identity, rawValue);
             case "cloud-credentials" -> parseCloudCredentialsEntry(identity, rawValue);
@@ -1037,7 +1079,8 @@ public final class KVStoreSerializer {
 
     private static String serializeSchemaVersion(SchemaVersionValue v) {
         return v.datasourceName() + PIPE + v.currentVersion() + PIPE + v.lastMigration() + PIPE + v.status()
-                                                                                                   .name() + PIPE + v.artifactCoords() + PIPE + v.attemptCount() + PIPE + v.updatedAt();
+                                                                                                   .name() + PIPE + v.artifactCoords() + PIPE + v.owningBlueprint()
+                                                                                                                                                 .asString() + PIPE + v.attemptCount() + PIPE + v.updatedAt();
     }
 
     private static String serializeSchemaMigrationLock(SchemaMigrationLockValue v) {
@@ -1045,32 +1088,25 @@ public final class KVStoreSerializer {
                                             .id() + PIPE + v.acquiredAt() + PIPE + v.expiresAt();
     }
 
+    /// `datasourceName|currentVersion|lastMigration|status|artifactCoords|owningBlueprint|attemptCount|updatedAt`.
+    /// The owning blueprint is a required field — a record without one cannot be attributed to a
+    /// blueprint by the activation gate, so there is no pre-ownership form to fall back to.
     private static Result<Map.Entry<AetherKey, AetherValue>> parseSchemaVersionEntry(String identity, String raw) {
         var parts = raw.split("\\|", -1);
 
-        if (parts.length == 6) {
-            return SchemaVersionKey.schemaVersionKey("schema-version/" + identity, true).map(key -> entry(key,
-                                                                                                          new SchemaVersionValue(parts[0],
-                                                                                                                                 Integer.parseInt(parts[1]),
-                                                                                                                                 parts[2],
-                                                                                                                                 SchemaStatus.valueOf(parts[3]),
-                                                                                                                                 parts[4],
-                                                                                                                                 0,
-                                                                                                                                 Long.parseLong(parts[5]))));
+        if (parts.length != 8) {
+            return parseFailure("schema-version value requires 8 fields, got " + parts.length);
         }
 
-        if (parts.length != 7) {
-            return parseFailure("schema-version value requires 6 or 7 fields, got " + parts.length);
-        }
-
-        return SchemaVersionKey.schemaVersionKey("schema-version/" + identity, true).map(key -> entry(key,
-                                                                                                      new SchemaVersionValue(parts[0],
-                                                                                                                             Integer.parseInt(parts[1]),
-                                                                                                                             parts[2],
-                                                                                                                             SchemaStatus.valueOf(parts[3]),
-                                                                                                                             parts[4],
-                                                                                                                             Integer.parseInt(parts[5]),
-                                                                                                                             Long.parseLong(parts[6]))));
+        return SchemaVersionKey.schemaVersionKey("schema-version/" + identity, true).flatMap(key -> BlueprintId.blueprintId(parts[5]).map(owner -> entry(key,
+                                                                                                                                                         new SchemaVersionValue(parts[0],
+                                                                                                                                                                                Integer.parseInt(parts[1]),
+                                                                                                                                                                                parts[2],
+                                                                                                                                                                                SchemaStatus.valueOf(parts[3]),
+                                                                                                                                                                                parts[4],
+                                                                                                                                                                                owner,
+                                                                                                                                                                                Integer.parseInt(parts[6]),
+                                                                                                                                                                                Long.parseLong(parts[7])))));
     }
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseSchemaMigrationLockEntry(String identity,
@@ -1201,6 +1237,54 @@ public final class KVStoreSerializer {
                 .id() + PIPE + v.consumerGroup() + PIPE + v.batchMode() + PIPE + v.eventType();
     }
 
+    private static String serializeEntityKeyspaceRegistration(EntityKeyspaceRegistrationValue v) {
+        return Integer.toString(v.partitionCount());
+    }
+
+    private static String serializeEntityCheckpoint(EntityFoldCheckpointValue v) {
+        return v.throughOffset() + PIPE + v.blockIdHex() + PIPE + v.timestamp();
+    }
+
+    /// Mirror of [#serializeEntityCheckpoint]. Carries the same NOT-load-bearing caveat as
+    /// [#parseEntityKeyspaceRegistrationEntry] below: `toToml`/`fromToml` have zero production callers
+    /// (#538), so a running node never reaches this arm — the live path for an entity checkpoint pointer
+    /// is `KVStore.makeSnapshot`/`restoreSnapshot` through the generated node codec. The two
+    /// serialize-side arms ARE required to compile, because their switches are exhaustive over the sealed
+    /// types with no `default`. This parse arm is added for symmetry, so the type is not one that
+    /// serializes to a tag which reads back as `UnknownKeyType`.
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseEntityCheckpointEntry(String identity, String raw) {
+        var parts = raw.split("(?<!\\\\)\\|", -1);
+
+        if (parts.length != 3) {
+            return parseFailure("entity-checkpoint value requires 3 fields, got " + parts.length);
+        }
+
+        return Number.parseLong(parts[0])
+                     .flatMap(throughOffset -> Number.parseLong(parts[2]).map(timestamp -> new EntityFoldCheckpointValue(throughOffset,
+                                                                                                                         parts[1],
+                                                                                                                         timestamp)))
+                     .mapError(_ -> new SerializationError.ParseFailure("entity-checkpoint value requires numeric offset and timestamp, got " + raw))
+                     .flatMap(value -> EntityCheckpointKey.fromIdentity(identity).map(key -> entry(key, value)));
+    }
+
+    /// Single-field value, so no `PIPE` split: the whole raw form is the partition count.
+    ///
+    /// **This arm is NOT load-bearing, and it is NOT required to compile.** `toToml`/`fromToml` have zero
+    /// production callers (#538) — only tests — so nothing in a running node reaches it; KV snapshots go
+    /// through `KVStore.makeSnapshot`/`restoreSnapshot` and the node codec instead, which is what actually
+    /// carries an entity-keyspace registration across a restart. The two serialize-side arms for this type
+    /// ARE required: their switches are exhaustive over the sealed `AetherKey`/`AetherValue` with no
+    /// `default`, so omitting them breaks the build. This parse arm is added anyway, deliberately, so the
+    /// type is not the one asymmetric member of the surface — serializing to a tag that parses back as
+    /// `UnknownKeyType` is a trap for whoever revives or deletes it.
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseEntityKeyspaceRegistrationEntry(String identity,
+                                                                                                  String raw) {
+        return Number.parseInt(raw.trim())
+                     .mapError(_ -> new SerializationError.ParseFailure("entity-keyspace value requires an integer partition count, got " + raw))
+                     .flatMap(partitionCount -> EntityKeyspaceRegistrationKey.fromIdentity(identity).map(key -> entry(key,
+                                                                                                                      new EntityKeyspaceRegistrationValue(partitionCount))));
+    }
+
     private static Result<Map.Entry<AetherKey, AetherValue>> parseClusterConfigEntry(String identity, String raw) {
         var parts = raw.split("(?<!\\\\)\\|", -1);
 
@@ -1213,7 +1297,7 @@ public final class KVStoreSerializer {
                                                                                                                                         "|"),
                                                                                                                        parts[0],
                                                                                                                        parts[1],
-                                                                                                                       Integer.parseInt(parts[2]),
+                                                                                                                       parseDesiredTopology(parts[2]),
                                                                                                                        Integer.parseInt(parts[3]),
                                                                                                                        Integer.parseInt(parts[4]),
                                                                                                                        parts[5],
@@ -1221,11 +1305,43 @@ public final class KVStoreSerializer {
                                                                                                                        Long.parseLong(parts[7]))));
     }
 
-    private static Result<Map.Entry<AetherKey, AetherValue>> parseStorageStatusEntry(String identity, String raw) {
+    /// Desired topology encodes as `source:role=count` triples separated by `;`. Field 2 previously
+    /// held the core-only `coreCount` scalar (RFC-0017 C1 replaced it); a bare integer there is
+    /// therefore read as a single unnamed-source core entry so an already-persisted cluster state
+    /// still loads.
+    private static List<AetherValue.TopologyEntry> parseDesiredTopology(String raw) {
+        if (raw.isEmpty()) {
+            return List.of();
+        }
+
+        if (raw.chars().allMatch(Character::isDigit)) {
+            return List.of(new AetherValue.TopologyEntry("", AetherValue.TopologyEntry.CORE_ROLE, Integer.parseInt(raw)));
+        }
+
+        var entries = new ArrayList<AetherValue.TopologyEntry>();
+
+        for (var triple : raw.split(";")) {
+            var atCount = triple.lastIndexOf('=');
+            var atRole = triple.lastIndexOf(':', atCount);
+
+            if (atCount < 0 || atRole < 0) {
+                continue;
+            }
+
+            entries.add(new AetherValue.TopologyEntry(triple.substring(0, atRole),
+                                                      triple.substring(atRole + 1, atCount),
+                                                      Integer.parseInt(triple.substring(atCount + 1))));
+        }
+
+        return List.copyOf(entries);
+    }
+
+    /// Package-visible for direct round-trip testing (the `storage-status` section is ephemeral).
+    static Result<Map.Entry<AetherKey, AetherValue>> parseStorageStatusEntry(String identity, String raw) {
         var parts = raw.split("(?<!\\\\)\\|", -1);
 
-        if (parts.length != 8) {
-            return parseFailure("storage-status value requires 8 fields, got " + parts.length);
+        if (parts.length != 9) {
+            return parseFailure("storage-status value requires 9 fields, got " + parts.length);
         }
 
         return StorageStatusKey.storageStatusKey("storage-status/" + identity).map(key -> entry(key,
@@ -1236,7 +1352,8 @@ public final class KVStoreSerializer {
                                                                                                                        Boolean.parseBoolean(parts[4]),
                                                                                                                        Long.parseLong(parts[5]),
                                                                                                                        Long.parseLong(parts[6]),
-                                                                                                                       Long.parseLong(parts[7]))));
+                                                                                                                       Long.parseLong(parts[7]),
+                                                                                                                       Long.parseLong(parts[8]))));
     }
 
     private static List<StorageStatusValue.TierStatus> parseTierStatuses(String raw) {
@@ -1341,8 +1458,113 @@ public final class KVStoreSerializer {
         return new StreamConfigValue(config, createdAt);
     }
 
-    /// Inverse of [#serializeStreamRegistry]. Wire form (8 fields, pipe-delimited):
-    /// `address|refCount|registeredAtEpochMillis|registeredBy|maxCount|maxBytes|maxAgeMs|retentionMode`.
+    /// Mirror of [#serializeStreamMetadata]. Wire form (8 fields, pipe-delimited):
+    /// `streamName|partitionCount|retention|retentionValue|maxEventSize|backpressure|owningBlueprint|createdAt`.
+    /// The stream name is carried twice — once in the key identity, once in the value — and the
+    /// value copy is authoritative, matching [#parseStreamConfigEntry]'s treatment of the same
+    /// duplication.
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseStreamMetadataEntry(String identity, String raw) {
+        var parts = raw.split("\\|", -1);
+
+        if (parts.length != 8) {
+            return parseFailure("stream-meta value requires 8 fields, got " + parts.length);
+        }
+
+        return StreamMetadataKey.streamMetadataKey("stream-meta/" + identity, true).map(key -> entry(key,
+                                                                                                     buildStreamMetadataValue(parts)));
+    }
+
+    private static AetherValue buildStreamMetadataValue(String[] parts) {
+        return new StreamMetadataValue(parts[0],
+                                       Integer.parseInt(parts[1]),
+                                       parts[2],
+                                       parts[3],
+                                       parts[4],
+                                       parts[5],
+                                       parts[6],
+                                       Long.parseLong(parts[7]));
+    }
+
+    /// Mirror of [#serializeStreamPartitionAssignment]. Wire form (2 fields, pipe-delimited):
+    /// `assignments|updatedAt`, where `assignments` is a semicolon-joined list of
+    /// `partition:consumerNodeId` pairs and renders as the empty string when no partition is
+    /// assigned — reconstructed as an empty list, mirroring [#parseNamedAddresses].
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseStreamPartitionAssignmentEntry(String identity,
+                                                                                                 String raw) {
+        var parts = raw.split("\\|", -1);
+
+        if (parts.length != 2) {
+            return parseFailure("stream-assign value requires 2 fields, got " + parts.length);
+        }
+
+        return StreamPartitionAssignmentKey.streamPartitionAssignmentKey("stream-assign/" + identity).flatMap(key -> buildStreamPartitionAssignmentValue(parts).map(value -> entry(key,
+                                                                                                                                                                                   value)));
+    }
+
+    private static Result<AetherValue> buildStreamPartitionAssignmentValue(String[] parts) {
+        return parsePartitionAssignments(parts[0]).map(assignments -> new StreamPartitionAssignmentValue(assignments,
+                                                                                                         Long.parseLong(parts[1])));
+    }
+
+    private static Result<List<PartitionAssignment>> parsePartitionAssignments(String raw) {
+        if (raw.isEmpty()) {
+            return success(List.of());
+        }
+
+        var results = Arrays.stream(raw.split(";")).map(KVStoreSerializer::parsePartitionAssignment).toList();
+
+        return Result.allOf(results);
+    }
+
+    private static Result<PartitionAssignment> parsePartitionAssignment(String token) {
+        var colon = token.indexOf(':');
+
+        if (colon <= 0 || colon == token.length() - 1) {
+            return parseFailure("stream-assign entry requires partition:nodeId, got: " + token);
+        }
+
+        return Result.all(Number.parseInt(token.substring(0, colon)),
+                          NodeId.nodeId(token.substring(colon + 1)))
+                     .map(PartitionAssignment::new);
+    }
+
+    /// Mirror of [#serializeStreamCursorCheckpoint]. Wire form (2 fields, pipe-delimited):
+    /// `committedOffset|commitTimestamp`. Consensus-visible consumer checkpoints (#488):
+    /// a declarative consumer resumes from the cluster cursor when a partition's owner changes, so
+    /// the entry MUST survive a snapshot round-trip.
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseStreamCursorCheckpointEntry(String identity,
+                                                                                              String raw) {
+        var parts = raw.split("\\|", -1);
+
+        if (parts.length != 2) {
+            return parseFailure("stream-cursor value requires 2 fields, got " + parts.length);
+        }
+
+        return StreamCursorCheckpointKey.streamCursorCheckpointKey("stream-cursor/" + identity).map(key -> entry(key,
+                                                                                                                 new StreamCursorCheckpointValue(Long.parseLong(parts[0]),
+                                                                                                                                                 Long.parseLong(parts[1]))));
+    }
+
+    /// Mirror of [#serializeStreamRegistration]. Declarative stream-consumer registrations have been
+    /// WRITTEN on every deployment since the declarative surface landed, but had no parse case — so a
+    /// snapshot containing them failed with `UnknownKeyType`. Added with #488, which makes the
+    /// registration load-bearing (it is what drives the delivery loop).
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseStreamRegistrationEntry(String identity, String raw) {
+        var parts = raw.split("\\|", -1);
+
+        if (parts.length != 4) {
+            return parseFailure("stream-reg value requires 4 fields, got " + parts.length);
+        }
+
+        return StreamRegistrationKey.streamRegistrationKey("stream-reg/" + identity).flatMap(key -> NodeId.nodeId(parts[0])
+                                                                                                          .map(nodeId -> new StreamRegistrationValue(nodeId,
+                                                                                                                                                     parts[1],
+                                                                                                                                                     Boolean.parseBoolean(parts[2]),
+                                                                                                                                                     parts[3]))
+                                                                                                          .map(val -> entry(key,
+                                                                                                                            val)));
+    }
+
     /// `tierAwareRetention` is reconstructed as `none()` (not persisted in the snapshot form), matching
     /// the stream-config convention.
     private static Result<Map.Entry<AetherKey, AetherValue>> parseStreamRegistryEntry(String identity, String raw) {

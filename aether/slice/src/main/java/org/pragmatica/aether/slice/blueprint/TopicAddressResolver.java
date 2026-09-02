@@ -7,6 +7,7 @@ package org.pragmatica.aether.slice.blueprint;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.resource.ResourceVersion;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
 
@@ -37,6 +38,8 @@ public final class TopicAddressResolver {
     }
 
     private static boolean isNamespaced(String declared) {
-        return declared != null && declared.contains(":");
+        return Option.option(declared)
+                     .map(value -> value.contains(":"))
+                     .or(false);
     }
 }

@@ -7,7 +7,7 @@
     <parent>
         <groupId>org.pragmatica-lite.aether</groupId>
         <artifactId>forge</artifactId>
-        <version>1.0.0-rc2</version>
+        <version>1.0.0-rc3</version>
     </parent>
 
     <artifactId>forge-tests</artifactId>
@@ -42,6 +42,39 @@
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>http-client</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Scaffold generator (jbct init) — the getting-started gate builds the very slice a
+             cold user gets and deploys it by coordinates (issues #511 / #513 / #515). -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>jbct-init</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <!--
+            #345 I0 — the DurableEntity resource provider, TEST-scoped, for DurableEntityForgeTest.
+
+            This is NOT how a production node gets a resource provider, and the difference is the
+            finding. Every other provider (resource-http, resource-notification, resource-db-*) is a
+            COMPILE-scoped dependency of `aether/node`, so it lands in the shaded runtime image and
+            `SpiResourceProvider`'s ServiceLoader finds it on a real node. `resource-durable-entity`
+            is a dependency of nothing but its own parent, so on a real node the ServiceLoader never
+            sees `DurableEntityFactory` and the SliceClassLoader's parent chain cannot even resolve
+            `DurableEntity` — a deployed entity slice fails at activation.
+
+            Forge is single-JVM and `AetherNode.class.getClassLoader()` is the app classloader there,
+            so a test-scoped dependency puts the factory on the in-JVM node's classpath and lets I0
+            prove the ENTITY behaves as claimed. It does not, and is not meant to, prove the
+            deployment path works. Wiring it into `aether/node/pom.xml` belongs to I1; when that
+            lands, this block becomes redundant and should be deleted.
+        -->
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>resource-durable-entity</artifactId>
+            <version>${project.version}</version>
             <scope>test</scope>
         </dependency>
     </dependencies>

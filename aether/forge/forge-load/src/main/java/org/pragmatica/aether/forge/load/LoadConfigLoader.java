@@ -191,7 +191,7 @@ public sealed interface LoadConfigLoader {
         sb.append("\": ");
     }
 
-    @SuppressWarnings("unchecked")
+    @SuppressWarnings({"unchecked", "JBCT-RET-06"})  // hand-rolled JSON serializer: a null value renders as the JSON `null` literal
     private static void appendJsonValue(StringBuilder sb, Object value) {
         if (value == null) {
             sb.append("null");

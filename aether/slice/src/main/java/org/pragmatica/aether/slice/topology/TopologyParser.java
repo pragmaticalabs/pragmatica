@@ -17,6 +17,7 @@ import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.resource.ResourceVersion;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
 
 import org.slf4j.Logger;
@@ -243,7 +244,7 @@ public final class TopologyParser {
     /// (e.g. malformed manifest), the raw `config` string is returned unchanged so the topology
     /// stays renderable rather than dropping the node.
     private static String resolveTopicAddress(String config, String artifact) {
-        if (config == null || config.isBlank()) {
+        if (!Verify.Is.present(config)) {
             return config;
         }
 
