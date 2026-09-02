@@ -7,7 +7,7 @@
     <parent>
         <groupId>org.pragmatica-lite.aether</groupId>
         <artifactId>aether</artifactId>
-        <version>1.0.0-rc2</version>
+        <version>1.0.0-rc3</version>
     </parent>
 
     <artifactId>aether-pg-tools</artifactId>
@@ -26,8 +26,9 @@
     </modules>
 
     <properties>
-        <peglib.version>0.6.0</peglib.version>
-        <peglib.maven.plugin.version>0.6.0</peglib.maven.plugin.version>
+        <!-- One version governs both the runtime dependency and the generator plugin: they are
+             released together, and a generated parser must run against its own runtime. -->
+        <peglib.version>0.7.3</peglib.version>
     </properties>
 
     <dependencyManagement>
@@ -55,7 +56,7 @@
 
             <dependency>
                 <groupId>org.pragmatica-lite</groupId>
-                <artifactId>peglib</artifactId>
+                <artifactId>peglib-runtime</artifactId>
                 <version>${peglib.version}</version>
             </dependency>
         </dependencies>

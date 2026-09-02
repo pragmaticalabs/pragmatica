@@ -9,6 +9,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ClusterIdentityEnv;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentError;
@@ -16,9 +17,11 @@ import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
-import org.pragmatica.aether.environment.PlacementHint;
+import org.pragmatica.aether.environment.ProviderDefaults;
 import org.pragmatica.aether.environment.ProvisionContext;
+import org.pragmatica.aether.environment.ProvisionRequest;
 import org.pragmatica.aether.environment.ProvisionSpec;
+import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.aether.environment.ReadinessPolicy;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -44,53 +47,62 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
 
     @Override
     public Promise<InstanceInfo> provision(InstanceType instanceType) {
-        var ctx = ProvisionContext.provisionContext("default",
+        var ctx = ProvisionContext.provisionContext(ClusterName.maybeClusterName("default"),
                                                     "core",
-                                                    "default",
+                                                    SourceName.DEFAULT,
                                                     ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
 
         return provision(ProvisionSpec.provisionSpec(instanceType, "docker", "default", ctx).unwrap());
     }
 
     @Override
-    public Promise<InstanceInfo> provision(ProvisionSpec spec) {
-        var preflight = preflightCheck(spec);
+    public ProviderDefaults providerDefaults() {
+        return ProviderDefaults.providerDefaults("docker", "", "", "", Option.empty(), false);
+    }
+
+    /// Docker is a single-image, unsized provider: it ignores the resolved instanceSize/image/zone
+    /// (there is no sizing or image-selection knob on `docker run` beyond the configured image) and
+    /// builds the container from the request context alone. A SPOT request is rejected loud —
+    /// Docker has no spot/preemptible concept and must never silently downgrade.
+    @Override
+    public Promise<InstanceInfo> createFrom(ProvisionRequest request) {
+        if (request.market() instanceof InstanceType.Spot) {
+            return SPOT_UNSUPPORTED.promise();
+        }
+
+        var preflight = preflightCheck(request);
 
         if (preflight.isPresent()) {
             return preflight.unwrap();
         }
-        // Identity: honor a caller-supplied ctx.nodeId() (bootstrap path), otherwise
-        // self-mint a fresh ULID-suffixed id via the canonical IdGenerator path —
-        // exactly as the cloud providers do. The single value is used for BOTH the
-        // container name AND the NodeId, so `NodeId == container_name` holds and
-        // `docker kill <nodeId>` Just Works in the test harness. ULID is k-sortable
-        // and unique, eliminating the slot-number reuse the old max(existing)+1 scheme
-        // suffered when dead containers were swept and the observed max dropped.
-        var identity = resolveIdentity(spec);
 
-        return provisionWithIdentity(spec, identity).mapError(DockerComputeProvider::toProvisionError);
+        var identity = resolveIdentity(request);
+
+        return provisionWithIdentity(request, identity).mapError(DockerComputeProvider::toProvisionError);
     }
+
+    private static final Cause SPOT_UNSUPPORTED = EnvironmentError.provisionFailed(new RuntimeException("Docker has no spot/preemptible product; a SPOT request must not silently downgrade to on-demand"));
 
     /// Resolve the node identity used as both container name and NodeId. Honors a
     /// caller-supplied `ctx.nodeId()` when present (bootstrap supplies it), otherwise
     /// mints `aether-<cluster>-node-<ulid>` via [IdGenerator]. The cluster segment is
-    /// sourced from [#clusterOrDefault] (ProvisionContext.clusterName with an
+    /// sourced from [#resolveClusterName] (ProvisionContext.clusterName with an
     /// AETHER_CLUSTER_NAME env fallback) so CTM replacements carry the same
     /// `aether-<cluster>-` prefix as their compose-fixed siblings — the orphan sweeper
     /// and `docker kill` prefix-matching keep working.
-    private String resolveIdentity(ProvisionSpec spec) {
-        var cluster = clusterOrDefault(spec.context());
+    private String resolveIdentity(ProvisionRequest request) {
+        var cluster = resolveClusterName(request.context());
 
-        return spec.context()
-                   .nodeId()
-                   .or(() -> IdGenerator.generate(ProvisionContext.coreNodeNamePrefix(cluster)));
+        return request.context()
+                      .nodeId()
+                      .or(() -> IdGenerator.generate(ProvisionContext.coreNodeNamePrefix(cluster)));
     }
 
-    private Promise<InstanceInfo> provisionWithIdentity(ProvisionSpec spec, String containerName) {
-        var command = buildRunCommand(spec, containerName);
+    private Promise<InstanceInfo> provisionWithIdentity(ProvisionRequest request, String containerName) {
+        var command = buildRunCommand(request, containerName);
 
         return runner.execute(command)
-                     .map(containerId -> toProvisionedInfo(containerId, containerName, spec))
+                     .map(containerId -> toProvisionedInfo(containerId, containerName, request))
                      .flatMap(info -> confirmRunning(info,
                                                      ReadinessPolicy.dockerDefault()))
                      .onFailure(cause -> rollbackOnProvisionFailure(containerName, cause));
@@ -107,8 +119,8 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
     /// — the first node legitimately has no peers and is responsible for forming the
     /// cluster. Future enhancement: also fail when `bootstrap` is observed after
     /// cluster formation (would require a "formed" signal threaded through here).
-    private Option<Promise<InstanceInfo>> preflightCheck(ProvisionSpec spec) {
-        var ctx = spec.context();
+    private Option<Promise<InstanceInfo>> preflightCheck(ProvisionRequest request) {
+        var ctx = request.context();
 
         if (!ProvisionContext.PROVISIONED_BY_CTM.equals(ctx.provisionedBy())) {
             return Option.empty();
@@ -148,29 +160,34 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
     }
 
     @Override
-    public void resetProvisionerState(String clusterName) {
-        if (!clusterName.isEmpty()) {
-            runner.execute(buildCtmPruneCommand(clusterName))
-                  .onFailure(cause -> log.warn("CTM sweep failed for cluster {}: {}",
-                                               clusterName,
-                                               cause.message()))
-                  .onSuccess(out -> {
-                                 if (!out.isBlank()) {
-                                 log.info("CTM sweep for cluster {}: {}",
-                                          clusterName,
-                                          out.strip());
-                             }
-                             });
+    public void resetProvisionerState(Option<ClusterName> clusterName) {
+        clusterName.onPresent(this::pruneCtmContainers);
+    }
+
+    /// Absent cluster ⇒ no sweep, exactly as the historical blank-string guard did. A prune filtered
+    /// on `label=aether.cluster=` with no value matches every CTM container in the daemon regardless
+    /// of cluster, so there is no safe unscoped form of this command.
+    private void pruneCtmContainers(ClusterName clusterName) {
+        runner.execute(buildCtmPruneCommand(clusterName))
+              .onFailure(cause -> log.warn("CTM sweep failed for cluster {}: {}",
+                                           clusterName,
+                                           cause.message()))
+              .onSuccess(out -> logSweepOutput(clusterName, out));
+    }
+
+    private static void logSweepOutput(ClusterName clusterName, String out) {
+        if (!out.isBlank()) {
+            log.info("CTM sweep for cluster {}: {}", clusterName, out.strip());
         }
     }
 
-    private static List<String> buildCtmPruneCommand(String clusterName) {
+    private static List<String> buildCtmPruneCommand(ClusterName clusterName) {
         return List.of("docker",
                        "container",
                        "prune",
                        "--force",
                        "--filter",
-                       "label=aether.cluster=" + clusterName,
+                       "label=aether.cluster=" + clusterName.value(),
                        "--filter",
                        "label=aether.provisioned-by=ctm");
     }
@@ -231,10 +248,10 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
         return EnvironmentError.operationNotSupported("applyTags (Docker labels are immutable after creation)").promise();
     }
 
-    private List<String> buildRunCommand(ProvisionSpec spec, String containerName) {
-        var ctx = spec.context();
+    private List<String> buildRunCommand(ProvisionRequest request, String containerName) {
+        var ctx = request.context();
         var role = roleOrDefault(ctx);
-        var cluster = clusterOrDefault(ctx);
+        var cluster = clusterLabelValue(ctx);
         // NodeId == container name (the resolved identity: caller-supplied ctx.nodeId()
         // or a freshly-minted ULID id). Keeping them equal means `docker kill <nodeId>`
         // resolves to this exact container — no nodeId→container map needed.
@@ -276,7 +293,7 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
                                               "-e",
 
         // Authoritative cluster name: emitted from the SAME source as the
-        // `aether.cluster` label above (clusterOrDefault(ctx) →
+        // `aether.cluster` label above (clusterLabelValue(ctx) →
         // ProvisionContext.clusterName, the KV-bootstrapped name) — NOT
         // forwarded verbatim from the leader's process env. The leader's
         // AETHER_CLUSTER_NAME can legitimately differ from the bootstrapped
@@ -315,7 +332,7 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
         // has no compose env, so without this its identity goes dark one generation deep
         // (--group-add sees an unresolved ${env:DOCKER_GID}; the next replacement it mints
         // loses identity vars). Dedupe (alreadyEmitted) against vars already emitted above:
-        // AETHER_CLUSTER_NAME (from clusterOrDefault(ctx) — authoritative, equals the label),
+        // AETHER_CLUSTER_NAME (from clusterLabelValue(ctx) — authoritative, equals the label),
         // AETHER_PROVISIONED_BY (from ctx.provisionedBy()), AETHER_API_KEY (from config.apiKey()).
         // AETHER_CLUSTER_SECRET still rides the loop verbatim (a cluster-wide constant with no
         // per-provision authoritative source, unlike the name).
@@ -350,7 +367,7 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
         }
 
         addSpecLabels(command, ctx.extraTags());
-        addPlacementLabels(command, spec.placement());
+        addPlacementLabels(command, request.zone());
         command.add(config.imageName());
 
         return List.copyOf(command);
@@ -396,16 +413,9 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
         command.add(entry.getKey() + "=" + entry.getValue());
     }
 
-    private static void addPlacementLabels(ArrayList<String> command, Option<PlacementHint> placement) {
-        placement.onPresent(hint -> applyPlacementHint(command, hint));
-    }
-
-    private static void applyPlacementHint(ArrayList<String> command, PlacementHint hint) {
-        switch (hint) {
-            case PlacementHint.ZoneHint zone -> addPlacementLabel(command, "zone", zone.zoneName());
-            case PlacementHint.HostGroupHint group -> addPlacementLabel(command, "host-group", group.groupId());
-            case PlacementHint.AffinityHint ignored -> log.debug("Docker provider ignoring AffinityHint — not supported");
-            case PlacementHint.AntiAffinityHint ignored -> log.debug("Docker provider ignoring AntiAffinityHint — not supported");
+    private static void addPlacementLabels(ArrayList<String> command, String zone) {
+        if (!zone.isBlank()) {
+            addPlacementLabel(command, "zone", zone);
         }
     }
 
@@ -459,28 +469,28 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
         return List.of("docker", "restart", id.value());
     }
 
-    private InstanceInfo toProvisionedInfo(String containerId, String containerName, ProvisionSpec spec) {
+    private InstanceInfo toProvisionedInfo(String containerId, String containerName, ProvisionRequest request) {
         // Provider-minted replacements are reached on the Docker overlay network at
         // the container's own ports (mgmt 8080, app 8070), addressed by container name
         // == NodeId. Host-mapped per-slot ports were a seed-only convenience; ULID
         // replacements carry no slot, so report the overlay-reachable form.
         var addresses = List.of(containerName + ":8080", containerName + ":8070");
-        var tags = buildInstanceTags(spec, containerName);
+        var tags = buildInstanceTags(request, containerName);
         // Created, not yet confirmed live: report PROVISIONING. confirmRunning() polls
         // `docker inspect` and re-stamps this to RUNNING only after the container actually
         // reaches `running`, or FAILS the provision if it never does (no phantom success).
         return new InstanceInfo(new InstanceId(containerId),
                                 InstanceStatus.PROVISIONING,
                                 addresses,
-                                spec.instanceType(),
+                                request.market(),
                                 tags,
                                 Option.some(containerName));
     }
 
-    private static Map<String, String> buildInstanceTags(ProvisionSpec spec, String containerName) {
-        var ctx = spec.context();
+    private static Map<String, String> buildInstanceTags(ProvisionRequest request, String containerName) {
+        var ctx = request.context();
         var role = roleOrDefault(ctx);
-        var cluster = clusterOrDefault(ctx);
+        var cluster = clusterLabelValue(ctx);
         // NodeId == container name (see buildRunCommand). Tags expose this to the
         // CTM bookkeeping layer so observed/desired reconciliation aligns with the
         // identity the container actually boots with.
@@ -494,25 +504,24 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
                : ctx.role();
     }
 
-    private static String clusterOrDefault(ProvisionContext ctx) {
-        if (!ctx.clusterName().isEmpty()) {
-            return ctx.clusterName();
-        }
-        // Fallback: when ClusterConfigValue isn't yet seeded in KV-Store (e.g., compose-only
-        // deployments that never ran `aether cluster bootstrap`), source the cluster name
-        // from the AETHER_CLUSTER_NAME env var so CTM-provisioned replacements still get a
-        // matching `aether.cluster=<name>` label. The integration test compose YAMLs set
-        // this env to `a` / `b` so cluster A/B's CTM replacements carry the same label as
-        // their compose-fixed siblings — closes the spec's caveat-c gap.
-        var fromEnv = System.getenv("AETHER_CLUSTER_NAME");
+    /// Resolution chain: the provisioning context, then AETHER_CLUSTER_NAME — the fallback covers
+    /// compose-only deployments that never ran `aether cluster bootstrap`, so a CTM-provisioned
+    /// replacement still gets a matching `aether.cluster=<name>` label (the integration-test compose
+    /// files set the env to `a` / `b` so cluster A/B replacements carry their siblings' label).
+    /// Ends [Option#empty] with no cluster anywhere, mirroring the cloud providers rather than
+    /// silently mislabeling the node `default`.
+    private static Option<ClusterName> resolveClusterName(ProvisionContext ctx) {
+        return ctx.clusterName()
+                  .orElse(() -> ClusterName.maybeClusterName(System.getenv("AETHER_CLUSTER_NAME")));
+    }
 
-        if (fromEnv != null && !fromEnv.isEmpty()) {
-            return fromEnv;
-        }
-        // No cluster name anywhere: mirror the cloud providers' empty fall-through rather
-        // than silently mislabeling the node "default". An empty name now reaches the
-        // node-side boot gate (Main.verifyClusterNamePresent), which fails loud.
-        return "";
+    /// The label/env rendering of [#resolveClusterName]. An unresolved cluster renders as the EMPTY
+    /// string — byte-identical to the historical fall-through, so `aether.cluster=` and
+    /// `AETHER_CLUSTER_NAME=` are emitted empty and the node-side boot gate
+    /// (`Main.verifyClusterNamePresent`) still fails loud on them.
+    private static String clusterLabelValue(ProvisionContext ctx) {
+        return resolveClusterName(ctx).map(ClusterName::value)
+                                 .or("");
     }
 
     static List<InstanceInfo> parseContainerList(String output) {

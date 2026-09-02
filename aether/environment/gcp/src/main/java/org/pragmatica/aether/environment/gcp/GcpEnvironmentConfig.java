@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.environment.gcp;
 
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.cloud.gcp.GcpConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -19,7 +20,7 @@ public record GcpEnvironmentConfig(GcpConfig gcpConfig,
                                    String subnetwork,
                                    String userData,
                                    Option<GcpNegConfig> networkEndpointGroup,
-                                   Option<String> clusterName,
+                                   Option<ClusterName> clusterName,
                                    Option<String> selfInstanceName,
                                    long discoveryPollIntervalMs,
                                    Option<String> certificateSecretPrefix) {
@@ -70,7 +71,7 @@ public record GcpEnvironmentConfig(GcpConfig gcpConfig,
                                                 Option.empty()));
     }
 
-    public GcpEnvironmentConfig withDiscovery(String clusterLabel) {
+    public GcpEnvironmentConfig withDiscovery(ClusterName clusterLabel) {
         return new GcpEnvironmentConfig(gcpConfig,
                                         machineType,
                                         sourceImage,

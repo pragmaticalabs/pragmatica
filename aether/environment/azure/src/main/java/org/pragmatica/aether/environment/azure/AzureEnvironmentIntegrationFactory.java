@@ -7,6 +7,7 @@ package org.pragmatica.aether.environment.azure;
 import java.util.ArrayList;
 import java.util.Map;
 
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.CloudConfig;
 import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
@@ -14,6 +15,7 @@ import org.pragmatica.aether.environment.EnvironmentIntegrationFactory;
 import org.pragmatica.cloud.azure.AzureConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
 
 import static org.pragmatica.aether.environment.azure.AzureEnvironmentConfig.AzureLbConfig.azureLbConfig;
 import static org.pragmatica.aether.environment.azure.AzureEnvironmentConfig.azureEnvironmentConfig;
@@ -70,7 +72,7 @@ public record AzureEnvironmentIntegrationFactory() implements EnvironmentIntegra
     }
 
     private static boolean blank(String value) {
-        return value == null || value.isBlank();
+        return ! Verify.Is.present(value);
     }
 
     private static Result<AzureEnvironmentConfig> buildFromValidated(Map<String, String> creds, CloudConfig config) {
@@ -112,11 +114,9 @@ public record AzureEnvironmentIntegrationFactory() implements EnvironmentIntegra
 
     private static AzureEnvironmentConfig applyDiscovery(AzureEnvironmentConfig envConfig,
                                                          Map<String, String> discoveryMap) {
-        var clusterName = discoveryMap.getOrDefault("cluster_name", "");
+        var clusterName = ClusterName.maybeClusterName(discoveryMap.get("cluster_name"));
         var pollInterval = discoveryMap.getOrDefault("poll_interval_ms", "");
-        var result = clusterName.isEmpty()
-                     ? envConfig
-                     : envConfig.withDiscovery(clusterName);
+        var result = clusterName.map(envConfig::withDiscovery).or(envConfig);
 
         return pollInterval.isEmpty()
                ? result

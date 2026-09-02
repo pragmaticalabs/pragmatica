@@ -20,6 +20,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSlotValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
@@ -46,9 +47,10 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 import static org.pragmatica.consensus.NodeId.nodeId;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
-import static org.assertj.core.api.Assertions.assertThat;
 
 
 /// Membership v2 / E2: the CTM is now a pure ACTUATOR driven by the `LeaderReconciler`
@@ -57,6 +59,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// pin the surviving actuator surface plus the `setDesiredSize` config-atom write and the
 /// auto-heal toggle, replacing the deleted slot-era `SnapshotDrivenDeficitTest`.
 class ClusterTopologyManagerActuatorTest {
+    /// RFC-0017 C1 — desired topology replaced the core-only scalar; tests that only care about a
+    /// core count build a single-source entry.
+    private static java.util.List<org.pragmatica.aether.slice.kvstore.AetherValue.TopologyEntry> coreTopology(int count) {
+        return java.util.List.of(new org.pragmatica.aether.slice.kvstore.AetherValue.TopologyEntry("primary", "core", count));
+    }
+
     private static final NodeId SELF = nodeId("node-self").unwrap();
     private static final NodeId PEER_A = nodeId("node-a").unwrap();
     private static final NodeId PEER_B = nodeId("node-b").unwrap();
@@ -124,6 +132,31 @@ class ClusterTopologyManagerActuatorTest {
                     .as("each PEERS entry is a 3-part id:host:port tuple")
                     .hasSize(3);
         }
+    }
+
+    /// #678 — the cold-path fallback (`clusterMembers` empty) must not seed a discovered-but-dead
+    /// peer into PEERS. PEER_A and PEER_B are both discovered (SWIM gossip added them to the dial
+    /// set), but the latched snapshot's `coreMemberIds` — the observed-reachability projection
+    /// (`MembershipFsm.coreObservedMembers` in production) — only carries SELF and PEER_A. PEER_B
+    /// models a just-killed host that stays "discovered" forever but never completed a QUIC
+    /// handshake / SWIM ALIVE: before the fix, `isDiscoveredPeer` alone would have let it into the
+    /// replacement's PEERS list regardless.
+    @Test
+    void provisionReplacement_coldPath_excludesDiscoveredButUnreachablePeer() {
+        ctm.activate();
+        observer.handleDiscoveredNodes(new NetworkMessage.DiscoveredNodes(SELF, List.of(INFO_A, INFO_B)));
+        snapshotSource.setCoreMembers(Set.of(SELF, PEER_A));
+
+        var result = ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), Set.of(), NodeRole.CORE).await();
+
+        assertThat(result.isSuccess()).isTrue();
+        var peers = lifecycleManager.lastSpec().context().peers().or("");
+        assertThat(peers)
+                .as("cold-path PEERS includes self and the reachable peer")
+                .contains(SELF.id(), PEER_A.id());
+        assertThat(peers)
+                .as("cold-path PEERS excludes a discovered peer with no observed reachability")
+                .doesNotContain(PEER_B.id());
     }
 
     /// Wave 2 / W4 (cluster-topology-overhaul spec): the intended role passed to
@@ -401,7 +434,7 @@ class ClusterTopologyManagerActuatorTest {
     void setDesiredSize_writesClusterConfigValueAtom_withIncrementedVersion() {
         ctm.activate();
         var before = clusterStore.currentVersion();
-        var result = ctm.setDesiredSize(7).await();
+        var result = ctm.setDesiredCount(sourceNameOrDefault("primary"), NodeRole.CORE, 7).await();
         assertThat(result.isSuccess()).isTrue();
         var after = clusterStore.current().unwrap();
         assertThat(after.coreCount()).isEqualTo(7);
@@ -412,7 +445,7 @@ class ClusterTopologyManagerActuatorTest {
     void setDesiredSize_belowQuorum_rejectedWithoutAtomWrite() {
         ctm.activate();
         var before = clusterStore.currentVersion();
-        var result = ctm.setDesiredSize(2).await();
+        var result = ctm.setDesiredCount(sourceNameOrDefault("primary"), NodeRole.CORE, 2).await();
         assertThat(result.isFailure()).isTrue();
         assertThat(clusterStore.currentVersion()).isEqualTo(before);
     }
@@ -443,6 +476,27 @@ class ClusterTopologyManagerActuatorTest {
         @Override public long observedRabiaTerm() {
             return term.get();
         }
+
+        /// #678 test hook — latches a snapshot whose `coreMemberIds()` is exactly the given set,
+        /// simulating the production `PresenceGenerationSnapshotSource` wiring where that set is
+        /// `MembershipFsm.coreObservedMembers` (discovered peers narrowed to observed reachability).
+        void setCoreMembers(Set<NodeId> coreMemberIds) {
+            view.set(Option.some(new FixedMembershipView(coreMemberIds)));
+        }
+    }
+
+    private record FixedMembershipView(Set<NodeId> coreMemberIds) implements MembershipView {
+        @Override public Set<NodeId> onDutyMemberIds() {
+            return coreMemberIds;
+        }
+
+        @Override public int healthyOnDutyCount() {
+            return coreMemberIds.size();
+        }
+
+        @Override public int desiredCoreSize() {
+            return coreMemberIds.size();
+        }
     }
 
     private static final class RecordingClusterStore {
@@ -450,7 +504,7 @@ class ClusterTopologyManagerActuatorTest {
         private final ConcurrentHashMap<ProvisioningSlotKey, ProvisioningSlotValue> slotKv = new ConcurrentHashMap<>();
 
         void seed(int coreCount) {
-            current.set(Option.some(new ClusterConfigValue("", "", "1.0.0", coreCount, 3, 9, "test",
+            current.set(Option.some(new ClusterConfigValue("", "", "1.0.0", coreTopology(coreCount), 3, 9, "test",
                                                            current.get().map(ClusterConfigValue::configVersion).or(0L) + 1L,
                                                            System.currentTimeMillis())));
         }

@@ -56,7 +56,10 @@ import java.util.regex.Pattern;
 /// - Auto-generated CRUD SQL from method names
 /// - Row mapper code using `Result.all()` composition
 ///
-/// Triggered by the presence of `@Query` annotations on interface methods.
+/// Activation is TYPE-driven, not method-driven: the processor claims all annotations
+/// (`@SupportedAnnotationTypes("*")`) and, per root interface, {@link #shouldProcess} triggers on the
+/// interface-level `@PgSql` qualifier (or any annotation meta-annotated with
+/// `@ResourceQualifier(type = PgSqlConnector.class)`) — independent of whether any method carries `@Query`.
 @Contract
 @SupportedAnnotationTypes("*")
 @SupportedOptions({"pg.lint.severity", "pg.lint.disabled"})

@@ -12,7 +12,6 @@ import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.Deploym
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Activate;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.SliceState;
-import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -87,7 +86,6 @@ class ClusterDeploymentStateRebalanceOnScaleUpTest {
                                                                 router,
                                                                 stubTopologyManager(SELF),
                                                                 stubSchemaOrchestrator(),
-                                                                HealthSignalSink.noop(),
                                                                 countedMembersRef::get,
                                                                 () -> readyNodes,
                                                                 Set::of,
@@ -117,7 +115,10 @@ class ClusterDeploymentStateRebalanceOnScaleUpTest {
     }
 
     private void seedBlueprint(Artifact artifact, int instances) {
-        activeState().blueprints().put(artifact, Blueprint.blueprint(artifact, instances, 1));
+        // #699: unowned blueprint, so schemaRequired stays at the historical default (true) —
+        // this test class exercises rebalancing, not schema gating, and the value is orthogonal
+        // to every assertion below.
+        activeState().blueprints().put(artifact, Blueprint.blueprint(artifact, instances, 1, Option.empty(), true));
     }
 
     private void seedSliceActive(Artifact artifact, NodeId node) {

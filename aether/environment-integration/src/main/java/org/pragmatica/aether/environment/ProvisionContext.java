@@ -23,10 +23,11 @@ import org.pragmatica.utility.IdGenerator;
 /// inside its own implementation.
 ///
 /// Field semantics:
-///  - [#clusterName] — caller is expected to pass an already-validated cluster
-///    name (e.g. `ClusterIdentity.name()`). The type-side is a `String` to keep
-///    the `environment-integration` module a leaf without an `aether-config`
-///    dependency.
+///  - [#clusterName] — the cluster this node belongs to, as a parsed [ClusterName].
+///    [Option#empty] means NO cluster was supplied, which is a distinct state from
+///    "supplied something odd": the seed context ([ComputeProvider#provision(InstanceType)])
+///    and a tag map with no `aether-cluster` entry are the two sources of emptiness, and
+///    every cloud provider refuses to create a VM from an empty one (RFC-0017 C2).
 ///  - [#role] — node role: `core`, `worker`, `spot`, `lb`, ...
 ///  - [#sourceName] — source profile name (e.g. `eu-1`, `hetzner-eu`, or
 ///    `default` for runtime auto-heal). Used by reapers to scope cleanup to
@@ -44,15 +45,19 @@ import org.pragmatica.utility.IdGenerator;
 ///  - [#extraTags] — escape hatch for caller-supplied native-format tags that
 ///    the typed fields don't yet cover. Defensively copied. Providers MAY
 ///    filter values that don't match their key/value regex.
-public record ProvisionContext(String clusterName,
+public record ProvisionContext(Option<ClusterName> clusterName,
                                String role,
-                               String sourceName,
+                               SourceName sourceName,
                                Option<String> nodeId,
                                Option<String> peers,
                                int coreMax,
                                String provisionedBy,
                                Map<String, String> extraTags) {
     public static final int DEFAULT_CORE_MAX = 3;
+    /// Delegates to [SourceName#DEFAULT] — the one definition of the fallback source name. Retained as
+    /// a [ProvisionContext] constant because the provisioning-side callers and error messages that name
+    /// the fallback read at this layer.
+    public static final SourceName DEFAULT_SOURCE_NAME = SourceName.DEFAULT;
     public static final String PROVISIONED_BY_BOOTSTRAP = "bootstrap";
     public static final String PROVISIONED_BY_CTM = "ctm";
 
@@ -71,20 +76,18 @@ public record ProvisionContext(String clusterName,
     /// Canonical core-node name prefix for a cluster: `aether-<cluster>-node`. Compose
     /// seeds are `<prefix>-<ordinal>` and auto-heal/bootstrap ids are `<prefix>-<ulid>`,
     /// so every core container of a cluster shares the `aether-<cluster>-` substring and
-    /// a replacement is shape-identical to a seed. Blank-defensive: a null/blank cluster
-    /// name collapses to the canonical `aether-node` (single dash, no empty cluster
-    /// segment) instead of the malformed `aether--node`.
-    public static String coreNodeNamePrefix(String clusterName) {
-        return Option.option(clusterName)
-                     .map(String::trim)
-                     .filter(name -> !name.isEmpty())
-                     .map(name -> "aether-" + name + "-node")
-                     .or("aether-node");
+    /// a replacement is shape-identical to a seed. An absent cluster collapses to the
+    /// canonical `aether-node` (single dash, no empty cluster segment) instead of the
+    /// malformed `aether--node` — the same outcome the historical null/blank guard produced,
+    /// now reached by [Option#empty] rather than by string inspection.
+    public static String coreNodeNamePrefix(Option<ClusterName> clusterName) {
+        return clusterName.map(name -> "aether-" + name.value() + "-node")
+                          .or("aether-node");
     }
 
-    public static ProvisionContext provisionContext(String clusterName,
+    public static ProvisionContext provisionContext(Option<ClusterName> clusterName,
                                                     String role,
-                                                    String sourceName,
+                                                    SourceName sourceName,
                                                     Option<String> nodeId,
                                                     Option<String> peers,
                                                     int coreMax,
@@ -93,9 +96,9 @@ public record ProvisionContext(String clusterName,
         return new ProvisionContext(clusterName, role, sourceName, nodeId, peers, coreMax, provisionedBy, extraTags);
     }
 
-    public static ProvisionContext provisionContext(String clusterName,
+    public static ProvisionContext provisionContext(Option<ClusterName> clusterName,
                                                     String role,
-                                                    String sourceName,
+                                                    SourceName sourceName,
                                                     String provisionedBy) {
         return new ProvisionContext(clusterName,
                                     role,
@@ -112,8 +115,11 @@ public record ProvisionContext(String clusterName,
     /// source profile name and the pre-allocated node id; [#provisionedBy] is fixed to
     /// [#PROVISIONED_BY_BOOTSTRAP]. Shared with the CTM auto-heal path
     /// ([#forReplacement]) so both intents are minted through one preparation path.
-    public static ProvisionContext forBootstrap(String clusterName, String role, String sourceName, String nodeId) {
-        return new ProvisionContext(clusterName,
+    public static ProvisionContext forBootstrap(ClusterName clusterName,
+                                                String role,
+                                                SourceName sourceName,
+                                                String nodeId) {
+        return new ProvisionContext(Option.some(clusterName),
                                     role,
                                     sourceName,
                                     Option.some(nodeId),
@@ -125,24 +131,43 @@ public record ProvisionContext(String clusterName,
 
     /// Auto-heal (CTM) replacement provisioning context. The cluster has formed, so the
     /// caller threads the live-member-derived [#peers] list and the snapshot-desired
-    /// [#coreMax]. The caller supplies the INTENDED role explicitly (Wave 2 / W4 of the
-    /// cluster-topology-overhaul spec — the provisioned node's role is stamped end-to-end,
-    /// never hardcoded here nor inherited from the provisioning host's environment); source is
-    /// fixed to `default` and [#provisionedBy] to [#PROVISIONED_BY_CTM]. Shared with the
+    /// [#coreMax]. The caller supplies the INTENDED role and the SOURCE PROFILE NAME explicitly
+    /// (Wave 2 / W4 of the cluster-topology-overhaul spec — the provisioned node's role is
+    /// stamped end-to-end, never hardcoded here nor inherited from the provisioning host's
+    /// environment); [#provisionedBy] is fixed to [#PROVISIONED_BY_CTM]. Shared with the
     /// bootstrap path ([#forBootstrap]) so both intents are minted through one preparation path.
-    public static ProvisionContext forReplacement(String clusterName,
+    ///
+    /// `sourceName` MUST be the topology entry's / cluster config's real source name: the
+    /// provider stamps it as the `aether-source` label, and the CTM's worker reconcile pass
+    /// lists ACTUAL inventory with a `{aether-cluster, aether-source, aether-role}` selector.
+    /// A minted VM whose label does not round-trip with that selector is invisible to its own
+    /// reconciler, which then reads `actual=0` forever, re-provisions every pass, and can never
+    /// see a scale-down victim.
+    public static ProvisionContext forReplacement(Option<ClusterName> clusterName,
                                                   String role,
+                                                  SourceName sourceName,
                                                   String nodeId,
                                                   String peers,
                                                   int coreMax) {
         return new ProvisionContext(clusterName,
                                     role,
-                                    "default",
+                                    sourceName,
                                     Option.some(nodeId),
                                     Option.some(peers),
                                     coreMax,
                                     PROVISIONED_BY_CTM,
                                     Map.of());
+    }
+
+    /// Source-less replacement context: [#sourceName] degrades to [#DEFAULT_SOURCE_NAME]. Retained
+    /// for callers with no resolvable source profile (non-cloud providers, tests). Production
+    /// callers use the overload above — see its note on the label/selector round-trip.
+    public static ProvisionContext forReplacement(Option<ClusterName> clusterName,
+                                                  String role,
+                                                  String nodeId,
+                                                  String peers,
+                                                  int coreMax) {
+        return forReplacement(clusterName, role, DEFAULT_SOURCE_NAME, nodeId, peers, coreMax);
     }
 
     public ProvisionContext withNodeId(String value) {

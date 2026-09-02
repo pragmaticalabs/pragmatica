@@ -13,6 +13,9 @@ import java.util.Map;
 import java.util.Set;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.slice.ConsumerConfig;
+import org.pragmatica.aether.slice.StreamCompression;
+import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.blueprint.BlueprintNamespace;
 import org.pragmatica.aether.slice.blueprint.StreamConfigParser;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
@@ -46,6 +49,8 @@ public sealed interface StreamResourceValidator {
     String RULE_RESOURCES_PARSE = "resources-toml-parse";
     String RULE_BLUEPRINT_NAMESPACE = "blueprint-namespace-invalid";
     String RULE_VERSION_PIN_RECOMMENDED = "version-pin-recommended";
+    String RULE_INERT_STREAM_CONFIG = "inert-stream-config-key";
+    String RULE_INERT_CONSUMER_CONFIG = "inert-consumer-config-key";
 
     /// Run the full validation pass for a deploy attempt.
     ///
@@ -61,6 +66,10 @@ public sealed interface StreamResourceValidator {
 
         guardBlueprintNamespace(blueprintArtifact, failures);
         var resources = parseResourcesOrCollect(resourcesConfig, roleHints, failures);
+
+        if (failures.isEmpty()) {
+            guardInertConfig(resources, resourcesConfig, failures);
+        }
 
         if (failures.isEmpty()) {
             collectMultiVersionWarnings(resources, resourcesConfig, roleHints, warnings);
@@ -113,6 +122,121 @@ public sealed interface StreamResourceValidator {
         var message = cause.message();
 
         return StreamValidationFailure.streamValidationFailure(extractField(message), inferRule(message), message);
+    }
+
+    /// #576: a blueprint's `[streams.X]`/`[streams.X.consumers.Y]` config parses and diffs cleanly,
+    /// then most of it never reaches the runtime — a stream's segments always go through one
+    /// unencrypted, uncompressed sink, and a declarative consumer always runs with the hardcoded
+    /// [ConsumerConfig#consumerConfig(String)] defaults, because [StreamConfigParser#parseConsumers]
+    /// has no production caller. Rather than accept a key that silently does nothing, reject it here
+    /// — mirroring [org.pragmatica.aether.config.cluster.ClusterBootstrapConfigValidator]'s `PF-25`
+    /// (#575) treatment of `[operations.auto_heal] enabled`. Only non-default values are rejected: a
+    /// key that happens to equal the hardcoded default does not assert anything false, even though it
+    /// is equally inert.
+    private static void guardInertConfig(Map<String, StreamResource> resources,
+                                         Option<String> resourcesConfig,
+                                         List<StreamValidationFailure> failures) {
+        resources.forEach((alias, resource) -> {
+            if (resource instanceof StreamResource.Owned owned) {
+                guardStreamConfig(alias, owned.config(), failures);
+                resourcesConfig.onPresent(toml -> guardConsumerConfigs(alias, toml, failures));
+            }
+        });
+    }
+
+    private static void guardStreamConfig(String alias, StreamConfig config, List<StreamValidationFailure> failures) {
+        var field = "[streams." + alias + "]";
+
+        config.encryptionKeyId()
+              .onPresent(keyId -> failures.add(StreamValidationFailure.streamValidationFailure(field,
+                                                                                               RULE_INERT_STREAM_CONFIG,
+                                                                                               "encryption-key-id '" + keyId
+                                                                                              + "' has no runtime effect — every stream is written through a single, shared "
+                                                                                              + "segment sink with no encryptor wired to it (tracked as #253: BlockEncryptor has "
+                                                                                              + "no production key source). Remove the key; it does not protect this stream's "
+                                                                                              + "data at rest.")));
+        if (config.compression() != StreamCompression.NONE) {
+            failures.add(StreamValidationFailure.streamValidationFailure(field,
+                                                                         RULE_INERT_STREAM_CONFIG,
+                                                                         "compression '" + config.compression()
+                                                                        + "' has no runtime effect — segments are always written uncompressed "
+                                                                        + "regardless of this setting. Remove the key or set it to 'none'."));
+        }
+
+        if (!"earliest".equalsIgnoreCase(config.autoOffsetReset())) {
+            failures.add(StreamValidationFailure.streamValidationFailure(field,
+                                                                         RULE_INERT_STREAM_CONFIG,
+                                                                         "auto-offset-reset '" + config.autoOffsetReset()
+                                                                        + "' has no runtime effect — a never-committed consumer always starts at offset 0 "
+                                                                        + "(earliest) per the #478 ruling, permanently, not as a gap to be closed later. "
+                                                                        + "Remove the key or set it to 'earliest', its only honest value."));
+        }
+    }
+
+    private static void guardConsumerConfigs(String alias, String toml, List<StreamValidationFailure> failures) {
+        StreamConfigParser.parseConsumers(toml, alias).onSuccess(consumers -> consumers.forEach((group, config) -> guardConsumerConfig(alias,
+                                                                                                                                       group,
+                                                                                                                                       config,
+                                                                                                                                       failures)));
+    }
+
+    private static void guardConsumerConfig(String alias,
+                                            String group,
+                                            ConsumerConfig config,
+                                            List<StreamValidationFailure> failures) {
+        var defaults = ConsumerConfig.consumerConfig(config.groupId());
+        var field = "[streams." + alias + ".consumers." + group + "]";
+
+        if (config.maxBatchSize() != defaults.maxBatchSize()) {
+            failures.add(inertConsumerFailure(field,
+                                              "batch-size",
+                                              String.valueOf(config.maxBatchSize())));
+        }
+
+        if (config.processingMode() != defaults.processingMode()) {
+            failures.add(inertConsumerFailure(field,
+                                              "processing",
+                                              config.processingMode().toString().toLowerCase()));
+        }
+
+        if (config.errorStrategy() != defaults.errorStrategy()) {
+            failures.add(inertConsumerFailure(field,
+                                              "on-failure",
+                                              config.errorStrategy().toString().toLowerCase()));
+        }
+
+        if (!config.checkpointInterval().equals(defaults.checkpointInterval())) {
+            failures.add(inertConsumerFailure(field,
+                                              "checkpoint-interval",
+                                              config.checkpointInterval().toString()));
+        }
+
+        if (config.maxRetries() != defaults.maxRetries()) {
+            failures.add(inertConsumerFailure(field,
+                                              "max-retries",
+                                              String.valueOf(config.maxRetries())));
+        }
+
+        if (!config.deadLetterStream().equals(defaults.deadLetterStream())) {
+            failures.add(inertConsumerFailure(field, "dead-letter", config.deadLetterStream()));
+        }
+
+        if (config.readPreference() != defaults.readPreference()) {
+            failures.add(inertConsumerFailure(field,
+                                              "read-preference",
+                                              config.readPreference().toString().toLowerCase()));
+        }
+    }
+
+    private static StreamValidationFailure inertConsumerFailure(String field, String key, String value) {
+        return StreamValidationFailure.streamValidationFailure(field,
+                                                               RULE_INERT_CONSUMER_CONFIG,
+                                                               key
+                                                              + " = '" + value
+                                                              + "' has no runtime effect — per-consumer TOML config (`[streams.X.consumers.Y]`) is "
+                                                              + "parsed but never reaches the runtime consumer (StreamConfigParser#parseConsumers has "
+                                                              + "no production caller, per #576); every declarative consumer runs with hardcoded "
+                                                              + "defaults regardless of this key. Remove it until #576's runtime wiring lands.");
     }
 
     private static String extractField(String message) {

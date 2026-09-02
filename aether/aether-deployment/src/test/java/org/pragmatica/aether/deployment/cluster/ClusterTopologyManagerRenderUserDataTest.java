@@ -40,6 +40,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import static org.pragmatica.aether.environment.ClusterName.clusterName;
 import static org.pragmatica.consensus.NodeId.nodeId;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -52,6 +53,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// joins, cluster stuck 5→4→3" defect). The user-data is produced by the SAME
 /// [NodeUserDataRenderer] the CLI bootstrap path uses, so the two scripts cannot drift.
 class ClusterTopologyManagerRenderUserDataTest {
+    /// RFC-0017 C1 — desired topology replaced the core-only scalar; tests that only care about a
+    /// core count build a single-source entry.
+    private static java.util.List<org.pragmatica.aether.slice.kvstore.AetherValue.TopologyEntry> coreTopology(int count) {
+        return java.util.List.of(new org.pragmatica.aether.slice.kvstore.AetherValue.TopologyEntry("primary", "core", count));
+    }
+
     private static final NodeId SELF = nodeId("node-self").unwrap();
     private static final NodeId PEER_A = nodeId("node-a").unwrap();
     private static final NodeId PEER_B = nodeId("node-b").unwrap();
@@ -264,7 +271,7 @@ class ClusterTopologyManagerRenderUserDataTest {
                                                    "node-r3",
                                                    0,
                                                    secret.or(""),
-                                                   "prod-cluster",
+                                                   clusterName("prod-cluster").unwrap(),
                                                    composed,
                                                    List.of(),
                                                    List.of(peers.split(",")));
@@ -366,7 +373,7 @@ class ClusterTopologyManagerRenderUserDataTest {
         private final AtomicReference<Option<ClusterConfigValue>> current = new AtomicReference<>(Option.none());
 
         void seedToml(String toml) {
-            current.set(Option.some(new ClusterConfigValue(toml, "prod-cluster", "1.0.0", 5, 3, 9, "cloud", 1L, System.currentTimeMillis())));
+            current.set(Option.some(new ClusterConfigValue(toml, "prod-cluster", "1.0.0", coreTopology(5), 3, 9, "cloud", 1L, System.currentTimeMillis())));
         }
 
         Option<ClusterConfigValue> current() {

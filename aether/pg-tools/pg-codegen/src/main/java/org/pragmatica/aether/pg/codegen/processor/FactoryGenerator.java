@@ -269,6 +269,12 @@ public final class FactoryGenerator {
     }
 
     private static String inferScalarColumnName(String sql, MethodAnalyzer.ReturnKind kind) {
+        var returning = returningColumn(sql);
+
+        if (returning.isPresent()) {
+            return returning.unwrap();
+        }
+
         var outer = outerSelectClause(sql);
         var upper = outer.toUpperCase();
         var asIdx = upper.indexOf(" AS ");
@@ -300,6 +306,34 @@ public final class FactoryGenerator {
         return kind == MethodAnalyzer.ReturnKind.BOOLEAN
                ? "exists"
                : "count";
+    }
+
+    /// A `RETURNING` clause names the statement's own output columns, so it decides the scalar
+    /// column whenever it is present. The SELECT list cannot: in
+    /// `INSERT ... SELECT :a, :b ... RETURNING version` the first SELECT item is a bind
+    /// placeholder, which after rewriting is `$1` -- a column no relation has.
+    private static Option<String> returningColumn(String sql) {
+        var idx = sql.toUpperCase().lastIndexOf("RETURNING");
+
+        if (idx < 0) {
+            return Option.none();
+        }
+
+        var rest = sql.substring(idx + "RETURNING".length()).trim();
+
+        if (rest.startsWith("*")) {
+            return Option.none();
+        }
+
+        var asIdx = rest.toUpperCase().indexOf(" AS ");
+        var item = asIdx >= 0
+                   ? rest.substring(asIdx + 4).trim()
+                   : rest;
+        var cleaned = cleanIdentifier(item);
+
+        return cleaned.isEmpty()
+               ? Option.none()
+               : Option.some(cleaned);
     }
 
     private static String outerSelectClause(String sql) {

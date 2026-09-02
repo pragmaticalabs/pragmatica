@@ -36,11 +36,27 @@ public record MemberDescriptor(Option<NodeAddress> address, String role, String 
     /// Whether this member is part of the connectable core: a role that is NOT the explicit literal
     /// `worker`. An unknown / blank role is included (an all-core cluster carries no role labels).
     ///
-    /// `role` is a SELF-ASSERTED SWIM label — a node can claim its own role. It is trusted here
-    /// because cluster admission is already gated by `AETHER_CLUSTER_SECRET`, so an unauthorized
-    /// node never reaches this classification. The structured [`NodeInfo.NodeRole`] is a SEPARATE
-    /// axis (transport active/passive); classification deliberately uses the self-asserted label.
-    /// Role-based isolation hardening (cryptographic role attestation) is tracked under #241.
+    /// `role` is a SELF-ASSERTED SWIM label — a node can claim its own role, and **nothing
+    /// authenticates that claim**. This classification therefore trusts an unauthenticated input.
+    ///
+    /// This docstring previously justified that trust by asserting cluster admission is gated by
+    /// `AETHER_CLUSTER_SECRET`. **That justification was false** (#715): the secret derives a
+    /// deterministic CA and the CLIENT side verifies servers against it, but the QUIC server never
+    /// calls `clientAuth(REQUIRE)` (Netty defaults to `ClientAuth.NONE`), and `handleHello` performs
+    /// no cluster-identity check. Inbound admission is reachability-only, so an unauthorized node
+    /// DOES reach this classification. The false premise is recorded rather than deleted because it
+    /// is the kind of statement that talks a reader out of adding a check.
+    ///
+    /// Until #715 closes, treat the role label as untrusted input: it decides core-vs-worker
+    /// membership, and a node that claims `worker` is excluded from the core set while one that
+    /// claims nothing is included. The structured [`NodeInfo.NodeRole`] is a SEPARATE axis
+    /// (transport active/passive); classification deliberately uses the self-asserted label.
+    ///
+    /// This docstring also claimed cryptographic role attestation was "tracked under #241". It is
+    /// not: #241 is community topology lifecycle (seeding, growth policy, per-community FSM) and
+    /// says nothing about attestation. The hardening that pointer implied was on the roadmap was
+    /// not on it; **#747** is now its actual home. Note that #715 does NOT close it — a certificate
+    /// proves cluster MEMBERSHIP, not role, so an admitted node can still assert any role it likes.
     public boolean isCore() {
         return isCoreRole(role);
     }

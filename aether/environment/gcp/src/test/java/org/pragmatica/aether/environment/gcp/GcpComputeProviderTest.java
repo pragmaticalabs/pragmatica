@@ -13,6 +13,9 @@ import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
+import org.pragmatica.aether.environment.MarketOptions;
+import org.pragmatica.aether.environment.ProvisionContext;
+import org.pragmatica.aether.environment.ProvisionRequest;
 import org.pragmatica.cloud.gcp.GcpError;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -22,7 +25,9 @@ import org.pragmatica.lang.Unit;
 import java.util.List;
 import java.util.Map;
 
+import static org.pragmatica.aether.environment.ClusterName.clusterName;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 import static org.pragmatica.cloud.gcp.GcpConfig.gcpConfig;
 
 class GcpComputeProviderTest {
@@ -63,6 +68,58 @@ class GcpComputeProviderTest {
                     .await()
                     .onSuccess(info -> assertThat(info).isNull())
                     .onFailure(GcpComputeProviderTest::assertProvisionFailedError);
+        }
+    }
+
+    @Nested
+    class CreateFromTests {
+
+        @Test
+        void createFrom_carriesResolvedInstanceSizeAndImage_toInsertRequest() {
+            // The resolved ProvisionRequest is total: createFrom consumes instanceSize (machine type)
+            // and image (boot-disk source image) verbatim — both were previously dropped for the
+            // config defaults. This is the #442/#459 fix: GCP now honors the resolved fields.
+            testClient.insertInstanceResponse = Promise.success(runningInstance("aether-test"));
+            var context = ProvisionContext.forBootstrap(clusterName("c").unwrap(), "core", sourceNameOrDefault("s"), "n0");
+            var request = new ProvisionRequest(InstanceType.ON_DEMAND,
+                                               "n2-standard-8",
+                                               "projects/x/global/images/aether-img",
+                                               "",
+                                               Option.empty(),
+                                               MarketOptions.ON_DEMAND,
+                                               context);
+
+            provider.createFrom(request)
+                    .await()
+                    .onFailure(cause -> assertThat(cause).isNull());
+
+            var sent = testClient.lastInsertRequest;
+            assertThat(sent.machineType()).contains("n2-standard-8");
+            assertThat(sent.disks().get(0).initializeParams().sourceImage())
+                .isEqualTo("projects/x/global/images/aether-img");
+        }
+
+        @Test
+        void createFrom_spotRequest_rejectedLoud() {
+            // GCP's InsertInstanceRequest has no provisioningModel/SPOT field, so a SPOT request must
+            // fail loud rather than silently downgrade to on-demand — no insertInstance call issued.
+            var context = ProvisionContext.forBootstrap(clusterName("c").unwrap(), "spot", sourceNameOrDefault("s"), "n0");
+            var request = new ProvisionRequest(InstanceType.SPOT,
+                                               "n2-standard-8",
+                                               "img",
+                                               "",
+                                               Option.empty(),
+                                               MarketOptions.spot(),
+                                               context);
+
+            provider.createFrom(request)
+                    .await()
+                    .onSuccess(info -> assertThat(info).isNull())
+                    .onFailure(GcpComputeProviderTest::assertProvisionFailedError);
+
+            assertThat(testClient.lastInsertRequest)
+                    .as("spot request must fail before insertInstance")
+                    .isNull();
         }
     }
 
@@ -291,7 +348,7 @@ class GcpComputeProviderTest {
 
         @Test
         void discovery_presentWhenClusterNameSet() {
-            var configWithDiscovery = CONFIG.withDiscovery("my-cluster");
+            var configWithDiscovery = CONFIG.withDiscovery(clusterName("my-cluster").unwrap());
             var integration = GcpEnvironmentIntegration.gcpEnvironmentIntegration(testClient, configWithDiscovery).unwrap();
 
             assertThat(integration.discovery().isPresent()).isTrue();

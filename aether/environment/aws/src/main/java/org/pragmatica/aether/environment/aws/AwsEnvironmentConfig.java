@@ -6,6 +6,7 @@ package org.pragmatica.aether.environment.aws;
 
 import java.util.List;
 
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.cloud.aws.AwsConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -22,7 +23,7 @@ public record AwsEnvironmentConfig(AwsConfig awsConfig,
                                    String subnetId,
                                    String userData,
                                    Option<AwsLbConfig> loadBalancer,
-                                   Option<String> clusterName,
+                                   Option<ClusterName> clusterName,
                                    long discoveryPollIntervalMs,
                                    Option<String> certificateSecretPrefix) {
     private static final long DEFAULT_POLL_INTERVAL_MS = 30_000L;
@@ -74,7 +75,7 @@ public record AwsEnvironmentConfig(AwsConfig awsConfig,
                                                 Option.empty()));
     }
 
-    public AwsEnvironmentConfig withDiscovery(String clusterLabel) {
+    public AwsEnvironmentConfig withDiscovery(ClusterName clusterLabel) {
         return new AwsEnvironmentConfig(awsConfig,
                                         amiId,
                                         instanceType,

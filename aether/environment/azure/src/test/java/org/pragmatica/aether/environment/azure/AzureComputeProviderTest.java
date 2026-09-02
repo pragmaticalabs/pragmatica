@@ -12,7 +12,9 @@ import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
+import org.pragmatica.aether.environment.MarketOptions;
 import org.pragmatica.aether.environment.ProvisionContext;
+import org.pragmatica.aether.environment.ProvisionRequest;
 import org.pragmatica.aether.environment.ProvisionSpec;
 import org.pragmatica.cloud.azure.AzureError;
 import org.pragmatica.cloud.azure.api.CreateVmRequest.ImageReference;
@@ -30,7 +32,10 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 
+import static org.pragmatica.aether.environment.ClusterName.clusterName;
+import static org.pragmatica.aether.environment.ClusterName.maybeClusterName;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 import static org.pragmatica.cloud.azure.AzureConfig.azureConfig;
 
 class AzureComputeProviderTest {
@@ -90,7 +95,7 @@ class AzureComputeProviderTest {
         @Test
         void provision_specUserDataOverridesConfig_customDataIsBase64OfSpec() {
             testClient.createVmResponse = Promise.success(runningVm("aether-test"));
-            var ctx = ProvisionContext.provisionContext("c1", "core", "default",
+            var ctx = ProvisionContext.provisionContext(maybeClusterName("c1"), "core", sourceNameOrDefault("default"),
                                                          ProvisionContext.PROVISIONED_BY_CTM);
             var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "azure", "default", ctx)
                                     .unwrap()
@@ -103,6 +108,49 @@ class AzureComputeProviderTest {
             var expected = Base64.getEncoder()
                                  .encodeToString("#cloud-config\nruncmd: [echo, hi]".getBytes(StandardCharsets.UTF_8));
             assertThat(testClient.lastCreateRequest.properties().osProfile().customData()).isEqualTo(expected);
+        }
+    }
+
+    @Nested
+    class CreateFromTests {
+
+        @Test
+        void createFrom_carriesResolvedVmSizeAndImage_toCreateRequest() {
+            testClient.createVmResponse = Promise.success(runningVm("aether-test"));
+            var request = new ProvisionRequest(InstanceType.ON_DEMAND,
+                                               "Standard_D8s_v5",
+                                               "Canonical:0001-com-ubuntu-server-jammy:22_04-lts:latest",
+                                               "",
+                                               Option.empty(),
+                                               MarketOptions.ON_DEMAND,
+                                               ProvisionContext.forBootstrap(clusterName("c").unwrap(), "core", sourceNameOrDefault("s"), "n0"));
+
+            provider.createFrom(request)
+                    .await()
+                    .onFailure(cause -> assertThat(cause).isNull());
+
+            var properties = testClient.lastCreateRequest.properties();
+            assertThat(properties.hardwareProfile().vmSize()).isEqualTo("Standard_D8s_v5");
+            assertThat(properties.storageProfile().imageReference())
+                .isEqualTo(new ImageReference("Canonical", "0001-com-ubuntu-server-jammy", "22_04-lts", "latest"));
+        }
+
+        @Test
+        void createFrom_spotRequest_rejectedLoud() {
+            var request = new ProvisionRequest(InstanceType.SPOT,
+                                               "Standard_D8s_v5",
+                                               "Canonical:0001-com-ubuntu-server-jammy:22_04-lts:latest",
+                                               "",
+                                               Option.empty(),
+                                               MarketOptions.spot(),
+                                               ProvisionContext.forBootstrap(clusterName("c").unwrap(), "core", sourceNameOrDefault("s"), "n0"));
+
+            provider.createFrom(request)
+                    .await()
+                    .onSuccess(info -> assertThat(info).isNull())
+                    .onFailure(AzureComputeProviderTest::assertProvisionFailedError);
+
+            assertThat(testClient.lastCreateRequest).isNull();
         }
     }
 
@@ -330,7 +378,7 @@ class AzureComputeProviderTest {
 
         @Test
         void discovery_presentWhenClusterNameSet() {
-            var configWithDiscovery = CONFIG.withDiscovery("my-cluster");
+            var configWithDiscovery = CONFIG.withDiscovery(clusterName("my-cluster").unwrap());
             var integration = AzureEnvironmentIntegration.azureEnvironmentIntegration(testClient, configWithDiscovery).unwrap();
             assertThat(integration.discovery().isPresent()).isTrue();
         }

@@ -96,7 +96,8 @@ public record GcpLoadBalancerProvider(GcpClient client, String negName, int dest
                      .mapToUnit();
     }
 
-    @SuppressWarnings("JBCT-RET-03")
+    // JBCT-RET-08: provider request DTO — null = optional GCP field
+    @SuppressWarnings({"JBCT-RET-03", "JBCT-RET-08"})
     private NetworkEndpoint toEndpoint(String ip) {
         return new NetworkEndpoint(ip, destinationPort, null);
     }

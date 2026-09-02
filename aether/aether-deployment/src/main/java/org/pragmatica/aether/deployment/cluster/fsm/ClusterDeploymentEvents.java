@@ -16,6 +16,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.VersionRoutingValue;
+import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
@@ -41,6 +42,11 @@ public interface ClusterDeploymentEvents extends ClusterFsmEvent {
     record VersionRoutingRemoveReceived(ValueRemove<VersionRoutingKey, VersionRoutingValue> valueRemove) implements ClusterDeploymentEvents {}
 
     record MembershipDecisionReceived(MembershipDecision decision) implements ClusterDeploymentEvents {}
+
+    /// The non-core join channel (#728) — a worker reached FSM Member and needs a role assignment.
+    /// Separate from [`MembershipDecisionReceived`] because `MembershipDecision` is the core
+    /// topology stream and a worker must never travel on it.
+    record WorkerJoinReceived(WorkerJoinDecision decision) implements ClusterDeploymentEvents {}
 
     record SelfShutdownReceived(TransportObservation.SelfShutdown selfShutdown) implements ClusterDeploymentEvents {}
 

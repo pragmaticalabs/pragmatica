@@ -12,6 +12,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.DiscoveryProvider;
 import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.PeerInfo;
@@ -60,7 +61,7 @@ public final class HetznerDiscoveryProvider implements DiscoveryProvider {
     public static HetznerDiscoveryProvider hetznerDiscoveryProvider(HetznerClient client,
                                                                     HetznerEnvironmentConfig config) {
         return new HetznerDiscoveryProvider(client,
-                                            config.clusterName().or("default"),
+                                            config.clusterName().map(ClusterName::value).or("default"),
                                             config.selfServerId(),
                                             config.discoveryPollIntervalMs());
     }
@@ -153,13 +154,11 @@ public final class HetznerDiscoveryProvider implements DiscoveryProvider {
     }
 
     private static Option<String> firstPrivateIp(Server server) {
-        return option(server.privateNet()).filter(nets -> !nets.isEmpty())
-                     .map(HetznerDiscoveryProvider::firstIp);
+        return option(server.privateNet()).flatMap(HetznerDiscoveryProvider::firstIp);
     }
 
-    private static String firstIp(List<Server.PrivateNet> nets) {
-        return nets.getFirst()
-                   .ip();
+    private static Option<String> firstIp(List<Server.PrivateNet> nets) {
+        return Option.from(nets.stream().findFirst()).map(Server.PrivateNet::ip);
     }
 
     private static Option<String> publicIpv4(Server server) {

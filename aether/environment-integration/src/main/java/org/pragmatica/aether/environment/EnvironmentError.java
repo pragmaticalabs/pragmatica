@@ -139,6 +139,34 @@ public sealed interface EnvironmentError extends Cause {
         }
     }
 
+    /// #298 — the operator-set fleet cap refused a provision. Raised at the single provisioning
+    /// chokepoint ([NodeLifecycleManager#provisionNode]) BEFORE any provider call, so a runaway
+    /// reconciler or a bad config cannot mint an unbounded fleet.
+    ///
+    /// Bound honesty: the check is check-then-act against a live provider count, so N provisions
+    /// racing the same cap can each observe `observed < cap` and all proceed. The guarantee is
+    /// therefore "fleet is bounded by `cap` plus whatever was concurrently in flight", NOT "the
+    /// fleet never exceeds `cap`". It bounds the runaway case (which is sequential reconciler
+    /// passes), not a deliberate parallel burst.
+    ///
+    /// Operator recovery: raise `max_nodes` for the source, or terminate instances until the
+    /// cluster is back under the cap. Provisioning resumes on the next reconcile pass with no
+    /// further action.
+    record NodeCapExceeded(ClusterName clusterName, int cap, int observed) implements EnvironmentError {
+        public static Result<NodeCapExceeded> nodeCapExceeded(ClusterName clusterName, int cap, int observed) {
+            return success(new NodeCapExceeded(clusterName, cap, observed));
+        }
+
+        @Override
+        public String message() {
+            return "Provisioning refused for cluster '" + clusterName.value()
+                 + "': node cap " + cap
+                 + " reached (" + observed
+                 + " already provisioned). Raise max_nodes for the source "
+                 + "or terminate instances to go below the cap.";
+        }
+    }
+
     record unused() implements EnvironmentError {
         public static Result<unused > unused() {
             return success(new unused());
@@ -186,5 +214,9 @@ public sealed interface EnvironmentError extends Cause {
 
     static EnvironmentError operationNotSupported(String operation) {
         return OperationNotSupported.operationNotSupported(operation).unwrap();
+    }
+
+    static EnvironmentError nodeCapExceeded(ClusterName clusterName, int cap, int observed) {
+        return NodeCapExceeded.nodeCapExceeded(clusterName, cap, observed).unwrap();
     }
 }

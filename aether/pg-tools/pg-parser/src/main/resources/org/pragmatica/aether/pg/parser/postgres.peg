@@ -3,9 +3,8 @@
 # ============================================================
 
 # === Top Level ===
-Input           <- Statement (';' Statement)* ';'?
-Statement       <- DdlStatement / DmlStatement / PassthroughStatement / EmptyStatement
-EmptyStatement  <- &';' / !.
+Input           <- ';'* (Statement (';'+ Statement)*)? ';'*
+Statement       <- DdlStatement / DmlStatement / PassthroughStatement
 
 # === DDL Dispatch ===
 DdlStatement    <- CreateStatement / AlterStatement / DropStatement / CommentStatement / GrantStatement / RevokeStatement
@@ -288,8 +287,7 @@ HavingClause    <- HavingKW ^ Expr
 WindowClause    <- WindowKW ^ WindowDefList
 WindowDefList   <- WindowDef (',' WindowDef)*
 WindowDef       <- ColId AsKW '(' WindowSpec ')'
-WindowSpec      <- WindowName? PartitionClause? OrderByClause? FrameClause?
-WindowName      <- !PartitionKW !OrderKW !RowsKW !RangeKW !GroupsKW ColId
+WindowSpec      <- (!PartitionKW !OrderKW !RowsKW !RangeKW !GroupsKW ColId)? PartitionClause? OrderByClause? FrameClause?
 PartitionClause <- PartitionKW ByKW ^ ExprList
 FrameClause     <- FrameType FrameExtent FrameExclusion?
 FrameType       <- RowsKW / RangeKW / GroupsKW
@@ -358,7 +356,7 @@ ExplainStmt     <- ExplainKW RestOfStatement
 CopyStmt        <- CopyKW RestOfStatement
 RefreshMatViewStmt <- RefreshKW MaterializedKW ViewKW RestOfStatement
 
-RestOfStatement <- (!';' .)*
+RestOfStatement <- (DollarString / BasicString / EscapeString / !';' .)*
 
 # ============================================================
 # Expressions
@@ -369,10 +367,14 @@ AndExpr         <- NotExpr (AndKW NotExpr)*
 NotExpr         <- NotKW NotExpr / CompareExpr
 CompareExpr     <- IsExpr (CompareOp IsExpr / NotKW? InExpr / NotKW? BetweenExpr / NotKW? LikeExpr / NotKW? SimilarToExpr / IsDistinctFrom)?
 
-CompareOp       <- '<=' / '>=' / '<>' / '!=' / !'<<' '<' / !'>>' '>' / '='
+CompareOp       <- '<=' / '>=' / '<>' / '!=' / '<' / '>' / '='
 
 IsExpr          <- AddExpr IsClause?
-IsClause        <- IsKW NotKW? (NullKW / TrueKW / FalseKW / UnknownKW / DistinctKW FromKW AddExpr) / IsnullKW / NotnullKW / NotKW NullKW
+# NOTE: no bare `NotKW NullKW` alternative. PostgreSQL spells this `IS NOT NULL`, `ISNULL` or
+# `NOTNULL`; there is no postfix `expr NOT NULL`. With it present, `DEFAULT true NOT NULL`
+# parsed as `DEFAULT (true NOT NULL)` -- the Expr swallowed the column's NOT NULL constraint,
+# so the column silently stayed nullable. Order-dependent: `NOT NULL DEFAULT true` was fine.
+IsClause        <- IsKW NotKW? (NullKW / TrueKW / FalseKW / UnknownKW / DistinctKW FromKW AddExpr) / IsnullKW / NotnullKW
 
 InExpr          <- InKW '(' (SelectStmt / ExprList) ')'
 BetweenExpr     <- BetweenKW (SymmetricKW / AsymmetricKW)? AddExpr AndKW AddExpr
@@ -393,7 +395,7 @@ PostfixOp       <- '.' '*' / '.' ColLabel / JsonOp PrimaryExpr / ArrayOverlapOp 
 JsonOp          <- '->>' / '->' / '#>>' / '#>'
 ArrayOverlapOp  <- '@>' / '<@' / '&&'
 
-PrimaryExpr     <- ExistsExpr / ArrayExprConstructor / RowExpr / CastExpr / CaseExpr / CoalesceExpr / NullIfExpr / GreatestLeastExpr / ExtractExpr / PositionExpr / SubstringExpr / TrimExpr / OverlayExpr / AnyAllExpr / SubqueryExpr / TypedLiteral / FuncCall / Literal / ParamRef / '(' Expr ')' / ColRef
+PrimaryExpr     <- ExistsExpr / ArrayExprConstructor / RowExpr / CastExpr / CaseExpr / CoalesceExpr / NullIfExpr / GreatestLeastExpr / ExtractExpr / PositionExpr / SubstringExpr / TrimExpr / OverlayExpr / AnyAllExpr / SubqueryExpr / TypedLiteral / SpecialFuncExpr / FuncCall / Literal / ParamRef / '(' Expr ')' / ColRef
 
 ColRef          <- QualifiedName
 ParamRef        <- '$' < [0-9]+ >
@@ -420,6 +422,12 @@ OverlayExpr     <- OverlayKW '(' Expr PlacingKW Expr FromKW Expr (ForKW Expr)? '
 TypedLiteral    <- DataType StringLiteral
 
 # Function call with aggregate features
+# SQL reserved words that are legal as nullary expressions (SQL:2011 <datetime value function>
+# and friends). They are in ReservedKeyword, so ColId rejects them and no other production
+# accepted them; at peglib 0.6.0 the !ReservedKeyword guard never fired, so they slipped
+# through as plain identifiers and this gap stayed hidden.
+SpecialFuncExpr <- ('CURRENT_TIMESTAMP'i / 'CURRENT_TIME'i / 'LOCALTIMESTAMP'i / 'LOCALTIME'i) ![a-zA-Z0-9_$] ('(' NumericLiteral ')')?
+                 / ('CURRENT_CATALOG'i / 'CURRENT_DATE'i / 'CURRENT_ROLE'i / 'CURRENT_SCHEMA'i / 'CURRENT_USER'i / 'SESSION_USER'i / 'USER'i) ![a-zA-Z0-9_$]
 FuncCall        <- FuncName '(' FuncCallArgs ')' FilterClause? OverClause? WithinGroupClause? / FuncName '(' '*' ')' FilterClause? OverClause? / FuncName '(' ')' FilterClause? OverClause?
 FuncCallArgs    <- (AllKW / DistinctKW)? ExprList OrderByClause?
 FuncName        <- QualifiedName
@@ -467,10 +475,15 @@ QualifiedTypeName <- QualifiedName
 # Identifiers
 # ============================================================
 ColId           <- !ReservedKeyword (QuotedIdentifier / UnicodeIdentifier / UnquotedIdentifier)
-ColLabel        <- QuotedIdentifier / UnicodeIdentifier / UnquotedIdentifier
+ColLabel        <- ColId / ReservedKeyword
 QualifiedName   <- ColId ('.' (ColId / '*'))*
 
-UnquotedIdentifier  <- < [a-zA-Z_] [a-zA-Z0-9_$]* >
+# NOTE: '$' is deliberately EXCLUDED from the continuation class, which narrows the language --
+# PostgreSQL permits it after the first character. With '$' allowed, `world$$` in `$$hello world$$`
+# lexes as one 7-char identifier by maximal munch, swallowing the closing delimiter, and dollar
+# quoting cannot work at all. Dollar quoting is ubiquitous in real SQL; `$` in identifiers is rare
+# and occurs 0 times in this repo's SQL. Do not re-add '$' without restoring that breakage.
+UnquotedIdentifier  <- < [a-zA-Z_] [a-zA-Z0-9_]* >
 QuotedIdentifier    <- '"' < ('""' / [^"])+ > '"'
 UnicodeIdentifier   <- 'U&"'i < ([^"] / '""')+ > '"'
 
@@ -491,7 +504,7 @@ SignedNumericLiteral <- [+\-]? NumericLiteral
 StringLiteral   <- EscapeString / DollarString / BasicString
 BasicString     <- '\'' < ('\'' '\'' / [^'])* > '\''
 EscapeString    <- [eE] '\'' < ('\\' . / [^'])* > '\''
-DollarString    <- '$$' < (!'$$' .)* > '$$'
+DollarString    <- '$$' < (!'$$' .)* > '$$' / '$' $tag<ColId> '$' < (!('$' $tag '$') .)* > '$' $tag '$'
 
 # ============================================================
 # Clause Keywords (not reserved but should not be consumed as aliases)
@@ -748,6 +761,26 @@ BothKW    <- < 'BOTH'i ![a-zA-Z0-9_$] >
 # ============================================================
 # Whitespace (auto-skipped, includes comments)
 # ============================================================
-%whitespace <- ([ \t\r\n]+ / LineComment / BlockComment)*
+# Block comments NEST, per the SQL standard, and `%nest` (peglib 0.7.3) is what expresses that: it
+# lexes the pair with a depth-counting scanner instead of a DFA path. There is no grammar-only
+# alternative -- nested comments are not a regular language so no DFA can match them, and the
+# recursive spelling is refused by peglib's analyzer as `grammar.whitespace-cycle` because a
+# BlockComment rule would be reachable from %whitespace and reference itself.
+#
+# The scanner runs INSTEAD OF the DFA at a token start when the block balances, and an unterminated
+# block falls through to the DFA. There is deliberately NO BlockComment alternative in %whitespace:
+# `%nest` fully subsumes it. That was measured, not assumed -- keeping the alternative and dropping
+# it produce identical results on a single-level comment, a nested comment, a nested comment with a
+# statement-splitting `;` inside it, and an unterminated block (byte-identical error text). Two lex
+# paths for one construct could only drift.
+#
+# History: before 0.7.3 this was `BlockComment <- '/*' (!'*/' .)* '*/'`, which closed at the FIRST
+# '*/' and leaked the remainder in as live SQL -- not reliably an error, since a leak that composed
+# into valid SQL was accepted silently as a DIFFERENT statement. See #619, upstream
+# siy/java-peglib#45.
+%nest '/*' '*/'
+
+%whitespace <- ([ \t\r\n]+ / LineComment)*
 LineComment <- '--' [^\n]*
-BlockComment <- '/*' (!'*/' .)* '*/'
+
+%parser ColLabel

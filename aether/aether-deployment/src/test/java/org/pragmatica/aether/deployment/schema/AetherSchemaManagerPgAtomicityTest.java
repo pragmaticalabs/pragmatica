@@ -14,6 +14,7 @@ import org.pragmatica.aether.resource.db.PoolConfig;
 import org.pragmatica.aether.resource.db.RowMapper;
 import org.pragmatica.aether.resource.db.RowMapper.RowAccessor;
 import org.pragmatica.aether.resource.db.SqlConnector;
+import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -53,6 +54,9 @@ import static org.pragmatica.lang.Option.some;
 class AetherSchemaManagerPgAtomicityTest {
     private static final SchemaPolicy POLICY = SchemaPolicy.schemaPolicy();
     private static final String NODE_ID = "node-1";
+    /// Both tests share the container's single database, so they must claim it under the SAME owner
+    /// base — a second base would be refused by the #566 single-migrator claim.
+    private static final BlueprintId OWNER = BlueprintId.blueprintId("org.example:orders-app:1.0.0").unwrap();
 
     private static PostgreSQLContainer<?> postgres;
 
@@ -85,7 +89,7 @@ class AetherSchemaManagerPgAtomicityTest {
                       INSERT INTO atomic_rollback (no_such_column) VALUES (1);
                       """;
 
-            schemaManager().migrate("ds", List.of(migrationEntry("V1__rollback.sql", sql, 1L)), connector, NODE_ID)
+            schemaManager().migrate("ds", List.of(migrationEntry("V1__rollback.sql", sql, 1L)), connector, NODE_ID, OWNER)
                            .await()
                            .onSuccess(_ -> fail("Expected migration to fail on the invalid last statement"));
 
@@ -106,7 +110,7 @@ class AetherSchemaManagerPgAtomicityTest {
                       CREATE TABLE atomic_commit (id INT);
                       """;
 
-            schemaManager().migrate("ds", List.of(migrationEntry("V2__commit.sql", sql, 2L)), connector, NODE_ID)
+            schemaManager().migrate("ds", List.of(migrationEntry("V2__commit.sql", sql, 2L)), connector, NODE_ID, OWNER)
                            .await()
                            .onFailure(cause -> fail("Migration failed: " + cause.message()));
 

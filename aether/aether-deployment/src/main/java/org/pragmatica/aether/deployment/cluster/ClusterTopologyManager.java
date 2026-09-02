@@ -13,6 +13,7 @@ import java.util.function.Supplier;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.environment.AutoHealConfig;
+import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
@@ -32,13 +33,26 @@ import org.pragmatica.lang.Unit;
 @SuppressWarnings("JBCT-RET-01")
 public interface ClusterTopologyManager extends TopologyManager {
     NodeReconcilerState reconcilerState();
-    Promise<Unit> setDesiredSize(int size);
+    /// Set the desired node count for one (source, role) — RFC-0017 C1.
+    ///
+    /// Replaces `setDesiredSize(int)`, which took a bare cluster-wide core count and so could not
+    /// say which source a change applied to. The caller always knows both (`DiffAction.ScaleUp`
+    /// carries `sourceName` and `role`), so the information existed and was being discarded.
+    Promise<Unit> setDesiredCount(SourceName sourceName, NodeRole role, int count);
     int desiredSize();
     int configuredSize();
     void onNodeReady(NodeId nodeId);
     void onMembershipDecision(MembershipDecision decision);
     void onSelfShutdown(TransportObservation.SelfShutdown selfShutdown);
     void onClusterConfigChanged();
+
+    /// RFC-0017 stage 5 — reconcile ACTUAL worker/spot cloud inventory toward the desired
+    /// per-(source, role) topology in cluster state. Leader-gated and serialized by the
+    /// implementation; a no-op everywhere else. Poked on every `ClusterConfigKey` commit and on
+    /// leader activation. Default no-op so test fakes and non-provisioning implementations are
+    /// untouched.
+    default void reconcileWorkerTopology() {}
+
     void onClusterPhaseChanged(ClusterPhase newPhase);
     void activate();
     void deactivate();
@@ -89,8 +103,8 @@ public interface ClusterTopologyManager extends TopologyManager {
     /// node is MEANT to carry, stamped explicitly end-to-end (ProvisionContext role → provider
     /// `AETHER_ROLE` env + `aether.role` label → the node's self-asserted SWIM role label →
     /// `MemberDescriptor.role`), never inherited from the provisioning host's environment or
-    /// hardcoded provider-side. Auto-heal replacements pass `NodeRole.CORE`; worker-pool
-    /// provisioning (#241) will pass `WORKER` when it lands.
+    /// hardcoded provider-side. Auto-heal replacements pass `NodeRole.CORE`; the
+    /// worker-topology reconcile pass (RFC-0017 stage 5) passes `WORKER`/`SPOT`.
     Promise<ProvisionDisposition> provisionReplacement(NodeId newNodeId,
                                                        Option<NodeId> failedPeer,
                                                        Set<NodeId> clusterMembers,

@@ -59,7 +59,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
 import org.pragmatica.aether.resource.ScheduleConfig;
-import org.pragmatica.aether.resource.StreamNameConfig;
+import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.resource.TopicConfig;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
@@ -364,7 +364,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                 case LOADING -> {}
                 case LOADED -> handleLoaded(sliceKey);
                 case ACTIVATE -> handleActivating(sliceKey);
-                case ACTIVATING -> {}
+                case ACTIVATING -> scheduleActivationRemediation(sliceKey);
                 case ROUTING -> {}
                 case ACTIVE -> handleActive(sliceKey);
                 case DEACTIVATE -> handleDeactivating(sliceKey);
@@ -482,6 +482,65 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                     + "force-transitioning ROUTING → ACTIVE (routes are published and serving locally)",
                      sliceKey.artifact());
             routingEpochAckTracker.clear(sliceKey);
+            transitionTo(sliceKey, SliceState.ACTIVE);
+        }
+
+        /// #601 — ACTIVATING had no node-local remediation at all, only a `case ACTIVATING -> {}` no-op
+        /// observer: structurally the same gap #325 closed for ROUTING. A node whose activation stalled
+        /// had nothing local to recover or report it, leaving only the leader-side stuck-remediator —
+        /// which judges by a projection and, until `d9b37e180`, force-UNLOADed a slice that had been
+        /// serving traffic 35 seconds earlier.
+        ///
+        /// Mirrors [#scheduleRoutingRemediation], with ONE deliberate difference: forcing ACTIVE is gated
+        /// on positive local proof that the slice can actually serve.
+        @Contract
+        private void scheduleActivationRemediation(SliceNodeKey sliceKey) {
+            SliceState.ACTIVATING.timeout().onPresent(timeout -> SharedScheduler.schedule(() -> remediateStuckActivating(sliceKey),
+                                                                                          timeout));
+        }
+
+        /// ACTIVATING-timeout fire. No-op when the slice has already left ACTIVATING.
+        ///
+        /// THE PROOF MATTERS MORE THAN THE TRANSITION. `findLoadedSlice` is NOT sufficient evidence — the
+        /// activation chain loads the slice at `activateSliceWithTimeout` and only registers it for
+        /// invocation one step later, so a chain stalled in between leaves the slice LOADED but unable to
+        /// serve. Forcing ACTIVE on that would manufacture a phantom-ACTIVE slice and the cluster would
+        /// route traffic to something that cannot answer — strictly worse than leaving it stuck. The gate
+        /// is therefore `invocationHandler().localSlice(...)`, which is present exactly when the bridge is
+        /// registered and calls can be served. That was true in the observed incident: the chain had run
+        /// past registration and published endpoints, and the node was serving `publish` calls.
+        ///
+        /// When the slice is NOT serving this deliberately does nothing beyond a loud warning. The
+        /// activation chain carries its own longer `activationChainTimeout`, so failing the slice here
+        /// would preempt a chain that may still legitimately complete; the chain's own timeout and the
+        /// (now KV-confirming) cluster remediator remain the backstops.
+        @Contract
+        void remediateStuckActivating(SliceNodeKey sliceKey) {
+            var stillActivating = Option.option(deployments.get(sliceKey))
+                                        .map(SliceDeployment::state)
+                                        .map(state -> state == SliceState.ACTIVATING)
+                                        .or(false);
+
+            if (!stillActivating) {
+                return;
+            }
+
+            ctx.invocationHandler()
+               .localSlice(sliceKey.artifact())
+               .onPresent(_ -> forceActivatingToActive(sliceKey))
+               .onEmpty(() -> log.warn("Slice {} still ACTIVATING after the activation timeout and is NOT registered for "
+                                      + "invocation — NOT forcing ACTIVE, because a slice the cluster routes to but which "
+                                      + "cannot serve is worse than one stuck activating. Leaving it to the activation "
+                                      + "chain's own timeout and the cluster-side remediator.",
+                                       sliceKey.artifact()));
+        }
+
+        @Contract
+        private void forceActivatingToActive(SliceNodeKey sliceKey) {
+            log.warn("Slice {} still ACTIVATING after the activation timeout but IS registered for invocation and serving "
+                    + "locally — force-transitioning ACTIVATING → ACTIVE. The remaining chain steps are publication and "
+                    + "confirmation, not local-serving correctness gates.",
+                     sliceKey.artifact());
             transitionTo(sliceKey, SliceState.ACTIVE);
         }
 
@@ -1307,6 +1366,11 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                                                                                                                                                     method,
                                                                                                                                                                     batchMode,
                                                                                                                                                                     eventType)))
+                                     .onFailure(cause -> log.error("Declarative stream consumer {}.{} on section [{}] could NOT be registered — it will receive nothing: {}",
+                                                                   artifact,
+                                                                   entry.method(),
+                                                                   entry.config(),
+                                                                   cause.message()))
                                      .option()
                                      .onPresent(result::add);
                 }
@@ -1315,11 +1379,21 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             return result;
         }
 
+        /// Resolve the stream a `[streams.X]` consumer subscribes to.
+        ///
+        /// Binds [StreamConfig] — the SAME type the stream resource itself is provisioned with — and takes
+        /// its `name`, so a consumer always resolves to exactly the stream its publisher writes to.
+        ///
+        /// This previously bound a dedicated `StreamNameConfig(String streamName)`, which required a
+        /// `stream-name` key that no `resources.toml` carries (the stream's name comes from the config
+        /// section, e.g. `[streams.orders]` → `orders`). Resolution therefore always failed and every
+        /// declarative registration was silently dropped by the `.option()` below — a consumer that
+        /// declared correctly still received nothing, with no diagnostic anywhere. Part of #488.
         private Result<String> resolveStreamName(Artifact artifact, String configSection) {
             return sliceConfigService(artifact).orElse(ConfigService::instance)
                                      .toResult(Causes.cause("ConfigService not available for stream name resolution"))
-                                     .flatMap(svc -> svc.config(configSection, StreamNameConfig.class))
-                                     .map(StreamNameConfig::streamName);
+                                     .flatMap(svc -> svc.config(configSection, StreamConfig.class))
+                                     .map(StreamConfig::name);
         }
 
         private void handleFailed(SliceNodeKey sliceKey) {
@@ -1551,7 +1625,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         }
 
         private static int parseManifestCount(String raw) {
-            if (raw == null || raw.isEmpty()) {
+            if (Option.option(raw).map(String::isEmpty).or(true)) {
                 return 0;
             }
 

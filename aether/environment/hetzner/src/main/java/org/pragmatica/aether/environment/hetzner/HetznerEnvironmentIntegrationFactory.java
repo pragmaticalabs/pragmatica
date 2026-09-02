@@ -9,6 +9,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.CloudConfig;
 import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
@@ -16,6 +17,7 @@ import org.pragmatica.aether.environment.EnvironmentIntegrationFactory;
 import org.pragmatica.cloud.hetzner.HetznerConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
 
 import static org.pragmatica.aether.environment.hetzner.HetznerEnvironmentConfig.HetznerLbConfig.hetznerLbConfig;
 import static org.pragmatica.aether.environment.hetzner.HetznerEnvironmentConfig.hetznerEnvironmentConfig;
@@ -35,8 +37,8 @@ public record HetznerEnvironmentIntegrationFactory() implements EnvironmentInteg
 
     // #442: no hardcoded instance-type default. An absent server_type stays empty ("unset") and is
     // resolved from the ProvisionSpec's per-role instance type — or fails loud — at provision time.
-    private static final String DEFAULT_IMAGE = "ubuntu-22.04";
-
+    // #459: image is symmetric — an absent image stays empty here and the provider resolves the loud
+    // hardcoded default (with a WARN) at provision time, so the fallback is operator-visible.
     private static Result<HetznerEnvironmentConfig> buildEnvironmentConfig(CloudConfig config) {
         return validateCredentials(config.credentials()).flatMap(creds -> buildFromValidated(creds, config));
     }
@@ -56,7 +58,7 @@ public record HetznerEnvironmentIntegrationFactory() implements EnvironmentInteg
     }
 
     private static boolean blank(String value) {
-        return value == null || value.isBlank();
+        return ! Verify.Is.present(value);
     }
 
     private static Result<HetznerEnvironmentConfig> buildFromValidated(Map<String, String> creds, CloudConfig config) {
@@ -67,7 +69,7 @@ public record HetznerEnvironmentIntegrationFactory() implements EnvironmentInteg
                                         nonBlank(compute.get("server_type"),
                                                  ""),
                                         nonBlank(compute.get("image"),
-                                                 DEFAULT_IMAGE),
+                                                 ""),
                                         compute.getOrDefault("region", ""),
                                         parseLongList(compute.getOrDefault("ssh_key_ids", "")),
                                         parseLongList(compute.getOrDefault("network_ids", "")),
@@ -94,11 +96,9 @@ public record HetznerEnvironmentIntegrationFactory() implements EnvironmentInteg
 
     private static HetznerEnvironmentConfig applyDiscovery(HetznerEnvironmentConfig envConfig,
                                                            Map<String, String> discoveryMap) {
-        var clusterName = discoveryMap.getOrDefault("cluster_name", "");
+        var clusterName = ClusterName.maybeClusterName(discoveryMap.get("cluster_name"));
         var pollInterval = discoveryMap.getOrDefault("poll_interval_ms", "");
-        var result = clusterName.isEmpty()
-                     ? envConfig
-                     : envConfig.withDiscovery(clusterName);
+        var result = clusterName.map(envConfig::withDiscovery).or(envConfig);
 
         return pollInterval.isEmpty()
                ? result
@@ -134,8 +134,8 @@ public record HetznerEnvironmentIntegrationFactory() implements EnvironmentInteg
     }
 
     private static String nonBlank(String value, String fallback) {
-        return value == null || value.isBlank()
-               ? fallback
-               : value;
+        return Verify.Is.present(value)
+               ? value
+               : fallback;
     }
 }
