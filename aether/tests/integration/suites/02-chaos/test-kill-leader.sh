@@ -48,7 +48,7 @@ test_kill_leader_and_reelect() {
     # v2 removal barrier: a killed node simply leaves the SWIM-fed membership —
     # there is NO NODE_LEFT/NODE_FAILED domain event in v2 (the aggregator's
     # onMembershipDecision is a no-op). The authoritative signal is membership
-    # absence: /api/nodes/lifecycle/<id> 404 OR drop-out of /api/nodes/status
+    # absence: /api/v1/nodes/lifecycle/<id> 404 OR drop-out of /api/v1/nodes/status
     # cluster.nodes[]. Fails fast if removal regresses past the budget.
     if ! wait_for_node_removed "$old_leader" 90; then
         log_fail "Old leader ${old_leader} still present in membership after 90s"
@@ -107,8 +107,10 @@ test_auto_heal() {
 # This replaces the old fixed-fixture `restart_all_nodes` flow which forced
 # the original 5 compose containers back and fought CTM auto-heal.
 cleanup() {
-    restore_cluster_baseline || \
-        log_warn "cleanup: restore_cluster_baseline reported non-zero; subsequent suites may inherit cluster churn"
+    # #628: failure is FLAGGED to run_suite (marker), which captures evidence and
+    # quarantines the remaining test files — the old warn-and-continue let a broken
+    # cluster fail every downstream scenario on its own subject.
+    restore_cluster_baseline_or_flag
 }
 
 # Run cleanup on ANY exit path — including a `return 1` from inside a test

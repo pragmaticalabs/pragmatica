@@ -74,7 +74,7 @@ enabled = true
 security_mode = "API_KEY"
 
 # Rich-syntax key entry — ADMIN role required because formation POSTs hit
-# /api/cluster/config and /api/cluster/keys, both gated on ADMIN.
+# /api/v1/cluster/config and /api/v1/cluster/keys, both gated on ADMIN.
 # Simple `api_keys = [...]` defaults to VIEWER (per ApiKeyEntry.defaultEntry)
 # and would yield HTTP 403 during bootstrap.
 [source.hetzner-eu.node_config.app-http.api-keys.aether-integration-test-key]
@@ -108,5 +108,5 @@ async_url = "postgresql://${env:PG_HOST}:5432/${env:PG_DB}"
 type = "jvm"
 # Cluster version is 1.0.0 (strict semver); the JVM-mode URL deriver would
 # produce v1.0.0/aether-node.jar, but the rc2 candidate JAR is published under
-# v1.0.0-rc2-candidate. Pin the candidate JAR explicitly.
-jar_url = "https://github.com/pragmaticalabs/pragmatica/releases/download/v1.0.0-rc2-candidate/aether-node.jar"
+# v1.0.0-rc3-candidate. Pin the candidate JAR explicitly.
+jar_url = "https://github.com/pragmaticalabs/pragmatica/releases/download/v1.0.0-rc3-candidate/aether-node.jar"

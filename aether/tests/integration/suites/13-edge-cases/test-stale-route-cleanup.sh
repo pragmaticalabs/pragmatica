@@ -47,7 +47,7 @@ test_app_routes_reachable() {
     # through the route table. app_route_wired (positive readiness)
     # distinguishes route-missing 404 from a real handler response. NO
     # management-API fallback: this test exists to prove the APP route is
-    # wired; falling back to /api/nodes/status would swap subjects (mgmt port
+    # wired; falling back to /api/v1/nodes/status would swap subjects (mgmt port
     # healthy != app route reachable) and pass falsely.
     #
     # Retarget APP_ENDPOINT to a node that currently hosts an ACTIVE echo slice
@@ -81,7 +81,7 @@ pick_route_kill_victim() {
     # not CTM-provisioned replacement VMs, so it cannot enumerate the killable cores. On
     # cloud, source candidates from the SAME mechanism the other cloud destructive suites
     # use (02-chaos / 12-network via pick_non_leader): cloud_running_cores reads READY
-    # cores off the mgmt API (/api/nodes/lifecycle), which is reachable for every node
+    # cores off the mgmt API (/api/v1/nodes/lifecycle), which is reachable for every node
     # regardless of SSH key. Any running non-leader READY core is a valid stale-route
     # victim. Prints the chosen NodeId (empty when none).
     if [ "${CLOUD_MODE:-false}" = "true" ]; then

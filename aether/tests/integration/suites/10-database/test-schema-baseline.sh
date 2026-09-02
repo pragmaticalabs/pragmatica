@@ -15,15 +15,18 @@ BLUEPRINT="org.pragmatica.aether.test:test-persistence:1.0.0"
 DATASOURCE=""
 
 # Discover the registered schema-tracked datasource name from the cluster's
-# /api/schema/status list endpoint. Returns the first datasource name, or empty
+# /api/v1/schema/status list endpoint. Returns the first datasource name, or empty
 # if none are registered. Used by the per-datasource tests below to address the
 # actual registered name rather than guessing.
 discover_tracked_datasource() {
     local body
-    body=$(api_get "/api/schema/status" 2>/dev/null) || return 1
+    body=$(api_get "/api/v1/schema/status" 2>/dev/null) || return 1
+    # #598: the status list is CLUSTER-GLOBAL and url-shortener's datasource is tracked
+    # too when cluster-A suites run in parallel — select THIS blueprint's row, never
+    # the first row (head -1 grabbed whichever blueprint published first).
     printf '%s' "$body" | grep -oE '"datasource"[[:space:]]*:[[:space:]]*"[^"]+"' \
-                       | head -1 \
-                       | sed 's/.*"datasource"[[:space:]]*:[[:space:]]*"\([^"]*\)"/\1/'
+                       | sed 's/.*"datasource"[[:space:]]*:[[:space:]]*"\([^"]*\)"/\1/' \
+                       | grep -m1 'testpersistence'
 }
 
 test_cluster_ready() {
@@ -52,8 +55,8 @@ test_schema_baseline_endpoint() {
         return 1
     fi
     local result
-    if ! result=$(api_post "/api/schema/baseline/${DATASOURCE}" "{}"); then
-        log_fail "POST /api/schema/baseline/${DATASOURCE} failed (api_post returned non-zero)"
+    if ! result=$(api_post "/api/v1/schema/baseline/${DATASOURCE}" "{}"); then
+        log_fail "POST /api/v1/schema/baseline/${DATASOURCE} failed (api_post returned non-zero)"
         return 1
     fi
     assert_ne "$result" "" "Schema baseline endpoint returns non-empty body for ${DATASOURCE}"
@@ -93,8 +96,8 @@ test_baseline_idempotent() {
         return 1
     fi
     local result
-    if ! result=$(api_post "/api/schema/baseline/${DATASOURCE}" "{}"); then
-        log_fail "Second POST /api/schema/baseline/${DATASOURCE} failed (not idempotent)"
+    if ! result=$(api_post "/api/v1/schema/baseline/${DATASOURCE}" "{}"); then
+        log_fail "Second POST /api/v1/schema/baseline/${DATASOURCE} failed (not idempotent)"
         return 1
     fi
     assert_ne "$result" "" "Schema baseline idempotent: second call returns non-empty body"

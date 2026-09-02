@@ -12,6 +12,7 @@ import java.util.Set;
 import org.pragmatica.aether.slice.annotation.Slice;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
@@ -30,7 +31,7 @@ public interface EchoService {
         private static final int MAX_LENGTH = 10000;
 
         public static Result<EchoRequest> echoRequest(String message) {
-            if (message == null || Verify.Is.blank(message)) {
+            if (!Verify.Is.present(message)) {
                 return MESSAGE_REQUIRED.apply(message).result();
             }
 
@@ -68,7 +69,7 @@ public interface EchoService {
 
         @SuppressWarnings("JBCT-UTIL-02")
         private static Result<String> parseOperation(String operation) {
-            if (operation == null || !VALID_OPERATIONS.contains(operation.toLowerCase())) {
+            if (Option.option(operation).map(String::toLowerCase).filter(VALID_OPERATIONS::contains).isEmpty()) {
                 return INVALID_OPERATION.apply(operation).result();
             }
 
@@ -76,7 +77,7 @@ public interface EchoService {
         }
 
         private static Result<String> parseValue(String value) {
-            if (value == null || Verify.Is.empty(value)) {
+            if (Option.option(value).map(String::isEmpty).or(true)) {
                 return VALUE_REQUIRED.apply(value).result();
             }
 

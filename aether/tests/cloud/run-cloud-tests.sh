@@ -32,10 +32,24 @@ MAX_CLOUD_HOURS="${MAX_CLOUD_HOURS:-6}"
 NOW=$(date +%s)
 ELAPSED_S=$((NOW - DEPLOY_START))
 ELAPSED_H=$((ELAPSED_S / 3600))
-if [ "$ELAPSED_H" -ge "$MAX_CLOUD_HOURS" ] 2>/dev/null; then
-    echo "WARNING: Cluster has been running for ${ELAPSED_H} hours (limit: ${MAX_CLOUD_HOURS}h)"
-    echo "Consider running teardown-cloud.sh to avoid unnecessary costs."
-    echo "Set MAX_CLOUD_HOURS to override."
+# A guard that only prints is not a guard. This previously logged a WARNING and fell
+# through into the test run, so a cluster past its budget kept accruing cost AND kept
+# being used — the limit had no effect whatsoever. It now ABORTS.
+#
+# Honest scope: aborting stops this run from extending the spend; it does NOT reap the
+# cluster, which keeps costing until torn down. That is why the message leads with the
+# teardown command rather than merely suggesting one. Auto-teardown is deliberately NOT
+# done here — a cluster over budget may be one someone is actively debugging, and
+# destroying it from a guard would be worse than the overspend it prevents.
+#
+# MAX_CLOUD_HOURS=0 is the explicit opt-out (unlimited), so disabling the guard is a
+# deliberate act that reads as one in the command line.
+if [ "$MAX_CLOUD_HOURS" -gt 0 ] 2>/dev/null && [ "$ELAPSED_H" -ge "$MAX_CLOUD_HOURS" ] 2>/dev/null; then
+    echo "ERROR: cost guard tripped — cluster has been up ${ELAPSED_H}h (limit ${MAX_CLOUD_HOURS}h)."
+    echo "       The cluster is STILL RUNNING and STILL COSTING until you tear it down:"
+    echo "           ${SCRIPT_DIR}/teardown-cloud.sh"
+    echo "       Raise the budget with MAX_CLOUD_HOURS=<hours>, or disable with MAX_CLOUD_HOURS=0."
+    exit 1
 fi
 
 # --- export environment for test scripts ---

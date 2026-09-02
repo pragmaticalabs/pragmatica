@@ -63,19 +63,21 @@ public record CloudNode(String nodeId, String publicIp, long serverId, Path priv
         return RemoteCommandRunner.ssh(publicIp, command, privateKeyPath).mapToUnit();
     }
 
-    /// Queries the health endpoint of this node.
+    /// Queries the readiness endpoint of this specific node. Uses the raw, LOCAL-scoped
+    /// /health/ready probe, not the versioned LEADER-only cluster health route — callers check
+    /// per-node readiness in a loop, which only a LOCAL route can correctly answer for followers.
     public Result<String> getHealth() {
-        return httpGet("/api/health");
+        return httpGet("/health/ready");
     }
 
     /// Queries the status endpoint of this node.
     public Result<String> getStatus() {
-        return httpGet("/api/nodes/status");
+        return httpGet("/api/v1/nodes/status");
     }
 
     /// Queries the nodes endpoint of this node.
     public Result<String> getNodes() {
-        return httpGet("/api/nodes");
+        return httpGet("/api/v1/nodes");
     }
 
     /// Performs an HTTP POST to the management API.
@@ -119,7 +121,7 @@ public record CloudNode(String nodeId, String publicIp, long serverId, Path priv
             instances = %d
             """.formatted(blueprintId, artifact, instances);
 
-        return httpPost("/api/blueprints", blueprint, "application/toml");
+        return httpPost("/api/v1/blueprints", blueprint, "application/toml");
     }
 
     /// Uploads an artifact JAR to the DHT repository via management API.
@@ -132,12 +134,12 @@ public record CloudNode(String nodeId, String publicIp, long serverId, Path priv
 
     /// Fetches slice status from the management API.
     public Result<String> getSlicesStatus() {
-        return httpGet("/api/slices/status");
+        return httpGet("/api/v1/slices/status");
     }
 
     /// Fetches registered routes from the management API.
     public Result<String> getRoutes() {
-        return httpGet("/api/routes");
+        return httpGet("/api/v1/routes");
     }
 
     /// Invokes a slice endpoint via HTTP GET on the APP port (same as management for now).
@@ -147,14 +149,14 @@ public record CloudNode(String nodeId, String publicIp, long serverId, Path priv
 
     /// Undeploys a blueprint by ID.
     public Result<String> undeploy(String blueprintId) {
-        return httpDelete("/api/blueprints/" + blueprintId);
+        return httpDelete("/api/v1/blueprints/" + blueprintId);
     }
 
     /// Scales a deployed slice.
     public Result<String> scale(String artifact, int instances) {
         var body = "{\"artifact\":\"" + artifact + "\",\"instances\":" + instances + "}";
 
-        return httpPost("/api/scale", body, "application/json");
+        return httpPost("/api/v1/scale", body, "application/json");
     }
 
     // --- Leaf: perform HTTP GET to management API ---

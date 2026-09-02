@@ -11,10 +11,10 @@ test_cluster_ready() {
     log_pass "Cluster ready"
 }
 
-# GET /api/storage — returns instance list
+# GET /api/v1/storage — returns instance list
 test_storage_list() {
     local result
-    result=$(api_get "/api/storage")
+    result=$(api_get "/api/v1/storage")
     if [ -z "$result" ]; then
         skip_test "Storage list" "Storage API not available (feature may not be enabled)"
         return 0
@@ -36,20 +36,20 @@ test_storage_list() {
 # must surface, not paper over.
 test_storage_list_contains_artifacts() {
     local result
-    result=$(api_get "/api/storage")
+    result=$(api_get "/api/v1/storage")
     if [ -z "$result" ]; then
-        log_fail "/api/storage returned empty body — storage management endpoint unreachable"
+        log_fail "/api/v1/storage returned empty body — storage management endpoint unreachable"
         return 1
     fi
     # Match the JSON field as emitted by StorageInstanceSummary (`"name":"artifacts"`).
     if ! echo "$result" | grep -qE '"name"[[:space:]]*:[[:space:]]*"artifacts"'; then
-        log_fail "/api/storage missing mandatory 'artifacts' instance — artifact-repo service would be broken. Body: $(printf '%s' "$result" | head -c 300)"
+        log_fail "/api/v1/storage missing mandatory 'artifacts' instance — artifact-repo service would be broken. Body: $(printf '%s' "$result" | head -c 300)"
         return 1
     fi
-    log_pass "/api/storage lists mandatory 'artifacts' instance"
+    log_pass "/api/v1/storage lists mandatory 'artifacts' instance"
 }
 
-# GET /api/storage/{name} — returns detail with tiers and readiness.
+# GET /api/v1/storage/{name} — returns detail with tiers and readiness.
 #
 # Target the mandatory "artifacts" instance directly (per audit 2026-05-21 §1.16: discovery
 # via REST + skip-on-empty was a green-sticker). Drop the tautological `assert_ne $detail ""`
@@ -57,25 +57,25 @@ test_storage_list_contains_artifacts() {
 # check.
 test_storage_instance_detail() {
     local detail
-    detail=$(api_get "/api/storage/artifacts")
+    detail=$(api_get "/api/v1/storage/artifacts")
     if [ -z "$detail" ]; then
-        log_fail "/api/storage/artifacts returned empty body"
+        log_fail "/api/v1/storage/artifacts returned empty body"
         return 1
     fi
     assert_contains "$detail" "tiers" "Detail includes tiers"
     assert_contains "$detail" "readiness" "Detail includes readiness"
 }
 
-# POST /api/storage/snapshot/{name} — triggers snapshot.
+# POST /api/v1/storage/snapshot/{name} — triggers snapshot.
 #
 # Audit 2026-05-21 §2.2 #26: previous form demoted an empty response body to log_warn +
 # return 0. An empty body is "endpoint not wired" — a real product regression, not a
 # benign skip. Target the mandatory "artifacts" instance directly and hard-fail on empty.
 test_storage_snapshot() {
     local snapshot
-    snapshot=$(api_post "/api/storage/snapshot/artifacts" "{}")
+    snapshot=$(api_post "/api/v1/storage/snapshot/artifacts" "{}")
     if [ -z "$snapshot" ]; then
-        log_fail "POST /api/storage/snapshot/artifacts returned empty body — endpoint not wired or instance missing"
+        log_fail "POST /api/v1/storage/snapshot/artifacts returned empty body — endpoint not wired or instance missing"
         return 1
     fi
     # SnapshotResponse carries name + epoch + timestampMs. Assert epoch is present.
@@ -83,10 +83,10 @@ test_storage_snapshot() {
     log_pass "Snapshot of 'artifacts' instance returned: $(printf '%s' "$snapshot" | head -c 200)"
 }
 
-# GET /api/cluster/storage — returns cluster-wide storage view
+# GET /api/v1/cluster/storage — returns cluster-wide storage view
 test_cluster_storage_view() {
     local result
-    result=$(api_get "/api/cluster/storage")
+    result=$(api_get "/api/v1/cluster/storage")
     if [ -z "$result" ]; then
         skip_test "Cluster storage view" "Cluster storage API not available"
         return 0
@@ -94,10 +94,10 @@ test_cluster_storage_view() {
     assert_contains "$result" "instances" "Cluster storage view returns instances"
 }
 
-# GET /api/cluster/storage/{name} — returns cluster-wide detail for specific instance
+# GET /api/v1/cluster/storage/{name} — returns cluster-wide detail for specific instance
 test_cluster_storage_detail() {
     local list_result
-    list_result=$(api_get "/api/storage")
+    list_result=$(api_get "/api/v1/storage")
     if [ -z "$list_result" ]; then
         skip_test "Cluster storage detail" "Storage API not available"
         return 0
@@ -112,7 +112,7 @@ test_cluster_storage_detail() {
     fi
 
     local detail
-    detail=$(api_get "/api/cluster/storage/${first_name}")
+    detail=$(api_get "/api/v1/cluster/storage/${first_name}")
     if [ -z "$detail" ]; then
         skip_test "Cluster storage detail" "Cluster storage detail API not available"
         return 0

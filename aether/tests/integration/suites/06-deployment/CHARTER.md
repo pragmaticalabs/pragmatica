@@ -15,7 +15,7 @@
 | C3 | Canary deploy: v1 deployed, canary v2 published with traffic-split; `promote` succeeds; `complete` produces `COMPLETED`. | `unified-deploy-spec.md §4` (Canary) |
 | C4 | Blue-green deploy: blue v1 + green v2 deployed, `promote` switches active version; **`rollback` switches back to the prior version**; `complete` produces `COMPLETED`. | `unified-deploy-spec.md §5` (Blue-green) |
 | C5 | `aether deploy …` CLI subcommands route correctly through `/api/deployments` and return structured output suitable for `deployment list`. | `aether/docs/reference/cli.md` (deploy); management-api.md |
-| C6 | Per-datasource schema status is queryable; a schema migration converges (`currentVersion ≥ 900` for V900 fixture) under the documented retry contract; failed-state migrations honour the "not in FAILED state" 5xx body. | `aether/docs/specs/schema-spec.md` (or `[CONTRACT-GAP]` if no canonical spec); slice-lifecycle.md |
+| C6 | Per-datasource schema status is queryable; a schema migration converges (`currentVersion ≥ 900` for V900 fixture) under the documented retry contract; failed-state migrations honour the "not in FAILED state" `409 Conflict` body. | `aether/docs/specs/schema-spec.md` (or `[CONTRACT-GAP]` if no canonical spec); slice-lifecycle.md |
 | C7 | Cluster remains healthy with all 5 nodes after every deploy strategy and after schema migrations. | `test-readiness-contract.md §1.1` |
 
 ---
@@ -46,7 +46,7 @@
 | TC-06-DEPLOYMENT-020 | `test_schema_status` | `test-schema-migration.sh:34` | C6 | regression-net | Per-datasource `schema_status` non-empty. Audit §1.8 TAUTOLOGY (RC2). |
 | TC-06-DEPLOYMENT-021 | `test_schema_status_all` | `test-schema-migration.sh:49` | C6 | regression-net | Asserts JSON-shape leading char only. Audit §1.8 NARROW (RC2). |
 | TC-06-DEPLOYMENT-022 | `test_trigger_migration` | `test-schema-migration.sh:79` | C6 | core | `wait_for` polls `currentVersion ≥ 900` within 60s; strict log_fail with final-version diagnostic. |
-| TC-06-DEPLOYMENT-023 | `test_schema_retry` | `test-schema-migration.sh:96` | C6 | core | Accepts 2xx OR 500 with documented body `'not in FAILED state'`. Contract-aware. |
+| TC-06-DEPLOYMENT-023 | `test_schema_retry` | `test-schema-migration.sh:96` | C6 | core | Accepts 2xx OR non-2xx with documented body `'not in FAILED state'` (409 Conflict). Contract-aware. |
 | TC-06-DEPLOYMENT-024 | `test_cluster_healthy_after_migration` | `test-schema-migration.sh:128` | C7 | core | `assert_cluster_healthy`. |
 
 **Total tests:** 24.

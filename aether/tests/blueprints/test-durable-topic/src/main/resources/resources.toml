@@ -1,0 +1,48 @@
+# Application-level (blueprint) resources for test-durable-topic (#386).
+#
+# The FIRST fixture in the repository to declare `durability = "durable"`. Every other blueprint
+# declares `[streams.X]` sections; this one declares TOPIC sections, which is a different resource
+# and a different key convention.
+#
+# KEY CONVENTION TRAP, stated because it silently degrades the whole fixture: topic sections use
+# UNDERSCORES (`topic_name`, `min_sync_replicas`) while `[streams.X]` sections use DASHES
+# (`min-sync-replicas`). A dashed key here parses as ABSENT, and an absent `durability` defaults to
+# "ephemeral" — so a typo would not fail, it would quietly hand the test an ephemeral topic and make
+# every durable assertion vacuously green. DurableTopicDeliveryForgeTest therefore asserts the
+# topic came up durable rather than trusting this file.
+#
+# Both topics are `partitions = 1, replicas = 2, min_sync_replicas = 2`, and each number is load
+# bearing:
+#
+#   - `replicas = 2` + `min_sync_replicas = 2` is the durable tier's only proven scoping
+#     (durable-pubsub-spec §3: a durable declaration outside `min-sync == replicas >= 2` is rejected
+#     at parse). It is also what makes the owner-kill arm mean anything: at RF=1 the ack never
+#     depended on a second copy, so surviving a kill would prove nothing.
+#   - `partitions = 1` makes two separate assertions sharp. Delivery: with the slice deployed on
+#     every node and exactly one partition, a correctly gated consumer delivers each event ONCE
+#     cluster-wide while an ungated one delivers it once per node — the count discriminates.
+#     Ordering: one partition means the dispatch order IS the offset order, so the serial
+#     per-(group x partition) claim is directly observable. With >1 partition neither assertion
+#     could be made without controlling placement.
+
+# The healthy path: delivery, ordering, and survival of an owner SIGKILL.
+[order-events]
+topic_name = "order-events"
+durability = "durable"
+partitions = 1
+replicas = 2
+min_sync_replicas = 2
+retention = "7d"
+
+# The dead-letter path. TWO subscriber methods bind to this ONE topic, which makes them two distinct
+# consumer groups (`groupId:artifactId#method`) over the same event sequence — the arrangement the
+# group-attribution claim needs. One handler always fails and drives the event to the DLQ after the
+# bounded retries; the other always succeeds and must be entirely unaffected, which is what "no
+# cross-group duplication by construction, not by dedup" (§9) actually means.
+[poison-events]
+topic_name = "poison-events"
+durability = "durable"
+partitions = 1
+replicas = 2
+min_sync_replicas = 2
+retention = "7d"

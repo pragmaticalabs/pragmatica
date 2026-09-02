@@ -29,11 +29,32 @@ test_stream_exists_or_created() {
     fi
 }
 
+# Bounded transient-only retry for a single publish (#460 gap 3). Under parallel
+# deployment churn ~1 of 25 publishes fails at the TRANSPORT level (a transient
+# 503 / NotLeader / connection blip surfaced by stream_publish -> api_post's
+# curl-error rc), not a stream-logic error. Retry the transport call a few times
+# with a short backoff. This CANNOT mask an assertion failure: assertions live in
+# the callers (assert_eq on the success count below), never inside stream_publish,
+# so a publish that genuinely never lands still exhausts its attempts and fails the
+# count. Tunable via PUBLISH_RETRY_ATTEMPTS / PUBLISH_RETRY_BACKOFF.
+_publish_with_retry() {
+    local name="$1" payload="$2"
+    local attempts="${PUBLISH_RETRY_ATTEMPTS:-3}" backoff="${PUBLISH_RETRY_BACKOFF:-1}" i=1
+    while [ "$i" -le "$attempts" ]; do
+        if stream_publish "$name" "$payload" > /dev/null 2>&1; then
+            return 0
+        fi
+        i=$((i + 1))
+        [ "$i" -le "$attempts" ] && sleep "$backoff"
+    done
+    return 1
+}
+
 test_publish_events() {
     local success=0 failure=0
     for i in $(seq 1 "$EVENT_COUNT"); do
         local payload="{\"key\":\"pubsub-${i}\",\"data\":\"event-${i}-$(now_epoch)\",\"timestamp\":$(now_epoch)}"
-        if stream_publish "$STREAM_NAME" "$payload" > /dev/null 2>&1; then
+        if _publish_with_retry "$STREAM_NAME" "$payload"; then
             success=$((success + 1))
         else
             failure=$((failure + 1))
@@ -52,13 +73,13 @@ test_stream_info_after_publish() {
 test_subscriber_receives_events() {
     # Publish N events through partition 0 and verify them via streams read.
     # Drives the canonical CLI surface (streams read) rather than re-asserting
-    # /api/streams/<name> info — the audit (RC1-blocker #15) flagged the prior
+    # /api/v1/streams/<name> info — the audit (RC1-blocker #15) flagged the prior
     # version for never attaching a consumer.
     local publish_count=10
     local success=0
     for i in $(seq 1 $publish_count); do
         local payload="{\"key\":\"sub-${i}\",\"data\":\"sub-event-${i}\",\"timestamp\":$(now_epoch)}"
-        if stream_publish "$STREAM_NAME" "$payload" > /dev/null; then
+        if _publish_with_retry "$STREAM_NAME" "$payload"; then
             success=$((success + 1))
         fi
     done
@@ -67,7 +88,7 @@ test_subscriber_receives_events() {
     # Allow replication / partition routing to settle.
     sleep 2
 
-    # Read events back via the streams read CLI (STREAM_READ → /api/streams/read/<name>/<partition>).
+    # Read events back via the streams read CLI (STREAM_READ → /api/v1/streams/read/<name>/<partition>).
     local result event_count
     result=$(aether_json streams read "$STREAM_NAME" 0) || {
         log_fail "streams read failed for ${STREAM_NAME} partition 0"
@@ -96,14 +117,13 @@ test_competing_consumers_multi_instance() {
         local success=0
         for i in $(seq 1 10); do
             local payload="{\"key\":\"compete-${i}\",\"data\":\"compete-${i}\",\"timestamp\":$(now_epoch)}"
-            if stream_publish "$STREAM_NAME" "$payload" > /dev/null 2>&1; then
+            if _publish_with_retry "$STREAM_NAME" "$payload"; then
                 success=$((success + 1))
             fi
         done
         assert_eq "$success" "10" "All 10 competing-consumer events published without error"
     else
-        log_warn "Only ${total_instances} instance(s) — competing consumer test requires >= 2"
-        log_pass "Single-instance pub/sub works"
+        skip_test "Competing consumers" "only ${total_instances} instance(s) — requires >= 2"
     fi
 }
 

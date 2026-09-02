@@ -1,0 +1,24 @@
+prefix = "/api/durable-topic"
+
+[security]
+# Test fixture: public routes so the forge proof can drive publish/status without auth setup.
+default = "public"
+override_policy = "strengthen_only"
+
+# onOrderPlaced, onPoisonHealthy and onPoisonFailing are deliberately absent — they are durable
+# topic subscribers, reachable only through the runtime's dispatch path, never over HTTP. If they
+# were routable the delivery proof would be vacuous: the test could drive them itself and would be
+# asserting on its own calls rather than on the runtime's.
+[routes]
+publishOrder = "POST /publish-order"
+orderStatus = "POST /order-status"
+publishPoison = "POST /publish-poison"
+poisonStatus = "POST /poison-status"
+
+[errors]
+default = 500
+# PoisonRefused is the failing subscriber's refusal. It never travels an HTTP path — the method that
+# produces it is deliberately unroutable — so this mapping is unreachable by construction. It is
+# declared anyway because the processor otherwise warns that the cause would fall through to 500,
+# and an explicit 500 records that the fall-through is the intended answer rather than an oversight.
+HTTP_500 = ["PoisonRefused"]

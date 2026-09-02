@@ -53,7 +53,7 @@
 #   details.reason=<sustained-below-quorum|quorum-disappeared|rabia-paused>,
 #   details.graceMs=<n>). The event is NOT leader-gated — the draining
 #   node itself is the only authoritative source for "I'm self-draining".
-#   We consume it from /api/events via `wait_for_self_drain_event`
+#   We consume it from /api/v1/events via `wait_for_self_drain_event`
 #   (lib/topology.sh) filtering by type AND nodeId.
 #
 #   Caveat: the publish goes through Rabia. In S19 quorum is gone on the
@@ -104,7 +104,7 @@ RECOVERY_BUDGET_S=60
 VICTIMS_FILE="/tmp/s19-victims.$$"
 SURVIVORS_FILE="/tmp/s19-survivors.$$"
 # #441 run 9 (Defect 1): survivor public IPs resolved ONCE, pre-kill, while the
-# cluster is still healthy and /api/nodes/endpoint is reliable — every later
+# cluster is still healthy and /api/v1/nodes/endpoint is reliable — every later
 # corroboration call site reads this cache instead of re-resolving via
 # cloud_public_ip mid-quorum-loss, when a CTM-replacement survivor's endpoint
 # lookup depends on the very cluster that's down. Format: "<node_id> <ip>"
@@ -112,9 +112,9 @@ SURVIVORS_FILE="/tmp/s19-survivors.$$"
 SURVIVOR_IPS_FILE="/tmp/s19-survivor-ips.$$"
 KILL_TS_FILE="/tmp/s19-kill-ts.$$"
 # Event-baseline timestamp captured immediately BEFORE the kill so the
-# subsequent /api/events poll for SELF_DRAIN_INITIATED only sees events
+# subsequent /api/v1/events poll for SELF_DRAIN_INITIATED only sees events
 # emitted by survivors AFTER the kill landed. Format: ISO-8601 UTC,
-# accepted by /api/events?since= and produced by `topology_now`.
+# accepted by /api/v1/events?since= and produced by `topology_now`.
 EVENT_BASELINE_FILE="/tmp/s19-event-baseline.$$"
 # #441 run 8 (Defect A): pre-kill roster + verdict files ferrying state from
 # test_pick_victims_and_kill_three_simultaneously through the new
@@ -159,7 +159,7 @@ running_core_containers() {
     # Cloud: there is no single Docker host to `docker ps` against — each node is its
     # own VM and CTM replacements never carry the operator SSH key. Liveness comes from
     # the cluster's own membership instead: cloud_running_cores prints every READY core's
-    # runtime node-id (one per line) via the mgmt API /api/nodes/lifecycle. Sort to keep
+    # runtime node-id (one per line) via the mgmt API /api/v1/nodes/lifecycle. Sort to keep
     # the deterministic victim/survivor split the docker path relies on.
     if [ "${CLOUD_MODE:-false}" = "true" ]; then
         cloud_running_cores | grep -v '^$' | sort
@@ -167,8 +167,17 @@ running_core_containers() {
     fi
     local prefix
     prefix="aether-${CLUSTER_ID:-b}-node-"
-    local out names line
-    out=$(remote_exec "docker ps --filter name=${prefix} --filter status=running --format '{{.Names}}'" 2>&1)
+    local out rc names line
+    # #628 (shape B): the unbounded, rc-unchecked form let an SSH/daemon failure be
+    # filtered away and read as "0 running containers" — an emptiness verdict rendered
+    # over a dead transport, verbatim the reported `got 0 ()`. Bounded (a hung docker
+    # ps on a contended daemon is the case ConnectTimeout cannot guard) and rc-checked:
+    # unreachable prints a non-name marker and returns 1 so no caller can count it.
+    out=$(remote_exec_bounded 20 "docker ps --filter name=${prefix} --filter status=running --format '{{.Names}}'" 2>&1) && rc=0 || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        echo "UNREACHABLE(rc=${rc})"
+        return 1
+    fi
     names=$(printf '%s' "$out" | tr -d '\r')
     printf '%s\n' "$names" | while IFS= read -r line; do
         [ -z "$line" ] && continue
@@ -245,7 +254,7 @@ wait_for_container_exit() {
 # initiateDrain(String)`. This event is intentionally NOT leader-gated (the
 # draining node itself is the only authoritative source for "I'm self-
 # draining" — a partition victim cannot rely on the leader to publish on
-# its behalf). We poll the unioned-multi-node /api/events stream via
+# its behalf). We poll the unioned-multi-node /api/v1/events stream via
 # `wait_for_self_drain_event` (lib/topology.sh) filtering by
 # `type=SELF_DRAIN_INITIATED` AND `details.nodeId=<ordinal-mapped-id>`.
 #
@@ -335,12 +344,31 @@ test_pick_victims_and_kill_three_simultaneously() {
     local running running_count settle_deadline
     settle_deadline=$((SECONDS + 120))
     while :; do
-        running=$(running_core_containers)
-        running_count=$(printf '%s\n' "$running" | grep -c '.' || true)
+        # #628: distinguish transport failure from a genuinely empty cluster — the
+        # old form counted an SSH failure's residue as a container tally.
+        if running=$(running_core_containers); then
+            running_count=$(printf '%s\n' "$running" | grep -c '.' || true)
+        else
+            running_count=-1
+        fi
         [ "$running_count" -eq 5 ] && break
         [ "$SECONDS" -ge "$settle_deadline" ] && break
         sleep 3
     done
+    if [ "$running_count" -eq -1 ]; then
+        log_fail "Pre-kill precondition: docker host UNREACHABLE (${running}) — this is a transport failure, NOT an empty cluster"
+        return 1
+    fi
+    if [ "$running_count" -eq 0 ]; then
+        # #628 fix 4: zero containers here means an earlier scenario's restore never
+        # brought the cluster back. run_suite now gates that, but standalone runs
+        # (single-file invocation) have no runner — one explicit restore attempt
+        # before failing, using the same semantic restore the cleanups use.
+        log_warn "Pre-kill precondition found 0 running cores — attempting one baseline restore before failing"
+        restore_cluster_baseline || true
+        running=$(running_core_containers) || running=""
+        running_count=$(printf '%s\n' "$running" | grep -c '.' || true)
+    fi
     if [ "$running_count" -ne 5 ]; then
         log_fail "Pre-kill precondition: expected 5 running core containers after 120s settle wait, got ${running_count} ($(printf '%s' "$running" | tr '\n' ' '))"
         return 1
@@ -371,7 +399,7 @@ test_pick_victims_and_kill_three_simultaneously() {
     # cluster is still healthy — every later S19 corroboration tier reads this
     # cache (_s19_resolve_survivor_ip) instead of re-resolving via
     # cloud_public_ip mid-quorum-loss, when a CTM-replacement survivor's
-    # /api/nodes/endpoint lookup depends on the very cluster that just lost
+    # /api/v1/nodes/endpoint lookup depends on the very cluster that just lost
     # quorum. Run-9 false negative: both substantive drain assertions
     # passed, but a corroboration-tier IP lookup failed during the
     # quorum-loss window and its diagnostic text leaked into the log
@@ -398,7 +426,7 @@ test_pick_victims_and_kill_three_simultaneously() {
     local victim_list
     victim_list=$(printf '%s\n' "$victims" | tr '\n' ' ' | sed 's/ *$//')
     log_info "Killing core containers [${victim_list}] simultaneously"
-    # T3.1: capture the /api/events baseline timestamp BEFORE issuing the
+    # T3.1: capture the /api/v1/events baseline timestamp BEFORE issuing the
     # kill so the SELF_DRAIN_INITIATED poll later sees only events emitted
     # AFTER the kill landed. The since-filter is exclusive on the server
     # side; a couple of seconds of pre-baseline drift is irrelevant
@@ -503,8 +531,8 @@ _s19_resolve_survivor_ip() {
 # previous one is unavailable/times out:
 #
 #   1. PRIMARY (wait_for_node_departure, lib/topology.sh): membership state
-#      "Dead" on a surviving node's /api/cluster/membership, corroborated by
-#      NODE_LEFT/NODE_FAILED on /api/events. Requires a LIVE node to query.
+#      "Dead" on a surviving node's /api/v1/cluster/membership, corroborated by
+#      NODE_LEFT/NODE_FAILED on /api/v1/events. Requires a LIVE node to query.
 #
 #   2. #441 S19: when BOTH last survivors self-drain within the same ~38s
 #      window, tier 1 structurally cannot observe it — by the time either
@@ -624,7 +652,7 @@ _confirm_survivor_departure() {
     #
     # #441 run 9 (Defect 1): resolve via the pre-kill IP cache first
     # (_s19_resolve_survivor_ip), not a live cloud_public_ip call — a
-    # CTM-replacement survivor's live /api/nodes/endpoint lookup depends on
+    # CTM-replacement survivor's live /api/v1/nodes/endpoint lookup depends on
     # the very cluster that just lost quorum, which is exactly when this
     # tier runs. The wrapper already degrades to a clean log_warn (never a
     # latching log_fail, never leaks cloud_public_ip's own [FAIL]-tagged
@@ -650,7 +678,7 @@ _confirm_survivor_departure() {
         log_info "Survivor ${survivor} VM no longer resolves — already departed (event lost to publish-vs-halt race or pre-baseline); treating as satisfied departure"
         return 0
     fi
-    log_fail "S19 violation (cloud): survivor ${survivor} did not DEPART membership within ${SURVIVOR_EXIT_BUDGET_S}s — no NODE_LEFT/NODE_FAILED on /api/events, SSH docker-inspect proof unavailable (rc=${ssh_rc}) with mgmt endpoint unresolvable, and its VM still resolves (still running)"
+    log_fail "S19 violation (cloud): survivor ${survivor} did not DEPART membership within ${SURVIVOR_EXIT_BUDGET_S}s — no NODE_LEFT/NODE_FAILED on /api/v1/events, SSH docker-inspect proof unavailable (rc=${ssh_rc}) with mgmt endpoint unresolvable, and its VM still resolves (still running)"
     return 1
 }
 
@@ -667,7 +695,7 @@ _s19_survivor_membership_direct() {
     local ip
     ip=$(_s19_resolve_survivor_ip "$survivor") || return 1
     [ -z "$ip" ] && return 1
-    curl -sfk -m 3 -H "X-API-Key: ${API_KEY}" "${MGMT_SCHEME:-http}://${ip}:${CLOUD_MGMT_PORT:-8080}/api/cluster/membership" 2>/dev/null
+    curl -sfk -m 3 -H "X-API-Key: ${API_KEY}" "${MGMT_SCHEME:-http}://${ip}:${CLOUD_MGMT_PORT:-8080}/api/v1/cluster/membership" 2>/dev/null
 }
 
 # #441 run 8 (Defect A): CLOUD-ONLY arbitration for the auto-heal race. The
@@ -793,7 +821,7 @@ test_survivors_self_drain_and_exit() {
     # so `docker inspect .State.ExitCode == 2` is unverifiable on cloud (no docker access).
     # The drain OUTCOME contract on cloud is therefore observed through membership instead
     # of the halt-reason: each survivor must DEPART membership (NODE_LEFT/NODE_FAILED on
-    # /api/events) once it self-drains and halts. The exit-code-2 *reason* assertion is
+    # /api/v1/events) once it self-drains and halts. The exit-code-2 *reason* assertion is
     # kept only for docker/local (test_survivor_exit_codes_are_two). Best-effort
     # SELF_DRAIN_INITIATED corroboration is asserted in test_drain_trigger_log_signature_present.
     if [ "${CLOUD_MODE:-false}" = "true" ]; then
@@ -818,7 +846,7 @@ test_survivors_self_drain_and_exit() {
             return 0
         fi
 
-        log_info "GAP-A (cloud): asserting drain OUTCOME = survivors (${s1}, ${s2}) DEPART membership within ${SURVIVOR_EXIT_BUDGET_S}s (NODE_LEFT/NODE_FAILED on /api/events); exit-code-2 halt-reason is unverifiable without docker"
+        log_info "GAP-A (cloud): asserting drain OUTCOME = survivors (${s1}, ${s2}) DEPART membership within ${SURVIVOR_EXIT_BUDGET_S}s (NODE_LEFT/NODE_FAILED on /api/v1/events); exit-code-2 halt-reason is unverifiable without docker"
         if ! _confirm_survivor_departure "$s1" "$baseline"; then
             return 1
         fi
@@ -904,7 +932,7 @@ test_survivor_exit_codes_are_two() {
 test_drain_trigger_log_signature_present() {
     # Smoking gun (T3.1): each survivor MUST emit `SELF_DRAIN_INITIATED`
     # at the SelfDrainCoordinator ACTIVE→DRAINING CAS. We consume it from
-    # /api/events via `wait_for_self_drain_event` (lib/topology.sh) using
+    # /api/v1/events via `wait_for_self_drain_event` (lib/topology.sh) using
     # the baseline captured immediately pre-kill. The event is NOT
     # leader-gated (a partition victim is the only authoritative source
     # for "I'm self-draining"), so the publish originates on the survivor
@@ -923,17 +951,17 @@ test_drain_trigger_log_signature_present() {
     s2=$(sed -n '2p' "$SURVIVORS_FILE")
     baseline=$(cat "$EVENT_BASELINE_FILE" 2>/dev/null || echo "")
     if [ -z "$baseline" ]; then
-        log_warn "Missing /api/events baseline (s19-event-baseline file empty) — SELF_DRAIN_INITIATED poll will scan from epoch=0"
+        log_warn "Missing /api/v1/events baseline (s19-event-baseline file empty) — SELF_DRAIN_INITIATED poll will scan from epoch=0"
     fi
     if wait_for_self_drain_event "$s1" "$baseline" "$SELF_DRAIN_EVENT_TIMEOUT_S"; then
-        log_pass "SELF_DRAIN_INITIATED observed via /api/events for ${s1}"
+        log_pass "SELF_DRAIN_INITIATED observed via /api/v1/events for ${s1}"
     else
-        log_warn "No SELF_DRAIN_INITIATED event observed on /api/events for ${s1} within ${SELF_DRAIN_EVENT_TIMEOUT_S}s — Rabia publish may have lost the race against Runtime.halt(2); exit-code-2 assertion above remains the hard contract"
+        log_warn "No SELF_DRAIN_INITIATED event observed on /api/v1/events for ${s1} after ${SELF_DRAIN_WAIT_ELAPSED:-?}s (budget ${SELF_DRAIN_EVENT_TIMEOUT_S}s x TIMEOUT_SCALE) — Rabia publish may have lost the race against Runtime.halt(2); exit-code-2 assertion above remains the hard contract"
     fi
     if wait_for_self_drain_event "$s2" "$baseline" "$SELF_DRAIN_EVENT_TIMEOUT_S"; then
-        log_pass "SELF_DRAIN_INITIATED observed via /api/events for ${s2}"
+        log_pass "SELF_DRAIN_INITIATED observed via /api/v1/events for ${s2}"
     else
-        log_warn "No SELF_DRAIN_INITIATED event observed on /api/events for ${s2} within ${SELF_DRAIN_EVENT_TIMEOUT_S}s — Rabia publish may have lost the race against Runtime.halt(2); exit-code-2 assertion above remains the hard contract"
+        log_warn "No SELF_DRAIN_INITIATED event observed on /api/v1/events for ${s2} after ${SELF_DRAIN_WAIT_ELAPSED:-?}s (budget ${SELF_DRAIN_EVENT_TIMEOUT_S}s x TIMEOUT_SCALE) — Rabia publish may have lost the race against Runtime.halt(2); exit-code-2 assertion above remains the hard contract"
     fi
 }
 
@@ -1017,8 +1045,10 @@ cleanup() {
     # handles both: if the cluster is already healthy it's effectively a
     # no-op; if it's degraded it'll attempt restart + scale-back.
     # Idempotent.
-    restore_cluster_baseline || \
-        log_warn "cleanup: restore_cluster_baseline reported non-zero; subsequent suites may inherit cluster churn"
+    # #628: failure is FLAGGED to run_suite (marker), which captures evidence and
+    # quarantines the remaining test files — the old warn-and-continue let a broken
+    # cluster fail every downstream scenario on its own subject.
+    restore_cluster_baseline_or_flag
 }
 
 # Run cleanup on ANY exit path — including a `return 1` from inside a

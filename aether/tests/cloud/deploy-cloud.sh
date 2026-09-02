@@ -7,12 +7,16 @@
 #   - HCLOUD_TOKEN set in environment (NEVER echoed)
 #   - hcloud CLI installed
 #   - aether CLI installed
-#   - Docker image pushed to GHCR (ghcr.io/pragmaticalabs/aether-node:1.0.0-rc1)
+#   - Node image pushed to GHCR (see AETHER_IMAGE below; published by the release workflow
+#     from the pushed git tag, e.g. v1.0.0-rc3-candidate -> :1.0.0-rc3-candidate)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../../" && pwd)"
 CLOUD_ENV="${SCRIPT_DIR}/.cloud-env"
+
+# Provider driver (RFC-0016 §5): all hcloud usage lives behind driver_<op>.
+source "${SCRIPT_DIR}/lib/cloud-driver.sh"
 
 CLUSTER_NAME="cloud-test"
 LABEL="aether-cluster=${CLUSTER_NAME}"
@@ -23,8 +27,10 @@ NETWORK_NAME="${CLUSTER_NAME}-net"
 NETWORK_RANGE="10.0.1.0/24"
 SSH_KEY_NAME="${CLUSTER_NAME}-key"
 LB_NAME="${CLUSTER_NAME}-lb-public"
-AETHER_IMAGE="ghcr.io/pragmaticalabs/aether-node:1.0.0-rc1"
-AETHER_LB_IMAGE="ghcr.io/pragmaticalabs/aether-lb:1.0.0-rc1"
+# Keep in step with aether-cloud.toml's [deployment.runtime].image — the candidate tag
+# v1.0.0-rc3-candidate publishes :1.0.0-rc3-candidate (release.yml derives the image tag
+# from the pushed git tag).
+AETHER_IMAGE="ghcr.io/pragmaticalabs/aether-node:1.0.0-rc3-candidate"
 
 DO_BUILD=false
 SKIP_BUILD=false
@@ -76,7 +82,7 @@ if [ -z "${HCLOUD_TOKEN:-}" ]; then
 fi
 log_pass "HCLOUD_TOKEN available"
 
-command -v hcloud >/dev/null 2>&1 || { log_fail "hcloud CLI not installed"; exit 1; }
+driver_require_cli || { log_fail "hcloud CLI not installed"; exit 1; }
 log_pass "hcloud CLI installed"
 
 command -v aether >/dev/null 2>&1 || { log_fail "aether CLI not installed"; exit 1; }
@@ -96,8 +102,8 @@ if [ ! -f "${SSH_KEY_FILE}" ]; then
     log_pass "Generated SSH key pair: ${SSH_KEY_FILE}"
 fi
 
-if ! hcloud ssh-key describe "${SSH_KEY_NAME}" >/dev/null 2>&1; then
-    hcloud ssh-key create --name "${SSH_KEY_NAME}" --public-key-from-file "${SSH_KEY_FILE}.pub" >/dev/null
+if ! driver_sshkey_exists "${SSH_KEY_NAME}"; then
+    driver_create_sshkey "${SSH_KEY_NAME}" "${SSH_KEY_FILE}.pub"
     log_pass "Registered SSH key with Hetzner"
 else
     log_info "SSH key already exists in Hetzner"
@@ -108,17 +114,14 @@ fi
 # =========================================================================
 log_step "Phase 3: Private network"
 
-if ! hcloud network describe "${NETWORK_NAME}" >/dev/null 2>&1; then
-    hcloud network create --name "${NETWORK_NAME}" --ip-range "${NETWORK_RANGE}" \
-        --label "${LABEL}" >/dev/null
-    hcloud network add-subnet "${NETWORK_NAME}" --type cloud \
-        --network-zone eu-central --ip-range "${NETWORK_RANGE}" >/dev/null
+if ! driver_network_exists "${NETWORK_NAME}"; then
+    driver_init_network "${NETWORK_NAME}" "${NETWORK_RANGE}" "${LABEL}"
     log_pass "Created private network ${NETWORK_NAME} (${NETWORK_RANGE})"
 else
     log_info "Network ${NETWORK_NAME} already exists"
 fi
 
-NETWORK_ID=$(hcloud network describe "${NETWORK_NAME}" -o json | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
+NETWORK_ID=$(driver_network_id "${NETWORK_NAME}")
 export CLOUD_NETWORK_ID="${NETWORK_ID}"
 log_info "Network ID: ${NETWORK_ID}"
 
@@ -134,25 +137,39 @@ if [ "$DO_BUILD" = true ]; then
 fi
 
 # Check if nodes already exist
-EXISTING=$(hcloud server list --selector "${LABEL},aether-role=core" -o noheader 2>/dev/null | wc -l | tr -d ' ')
+EXISTING=$(driver_core_node_count "${LABEL}")
 if [ "$EXISTING" -ge 5 ] 2>/dev/null; then
     log_info "5 core nodes already exist — skipping bootstrap"
 else
     log_info "Bootstrapping 5 core nodes via Aether CLI..."
-    aether cluster bootstrap "${SCRIPT_DIR}/aether-cloud.toml" --yes --wait --timeout 600
+    aether cluster bootstrap "$(driver_provider_toml "${SCRIPT_DIR}")" --yes --wait --timeout 600
     log_pass "Bootstrap complete"
 fi
 
 # Collect core node IPs
 log_info "Collecting node information..."
+CORE_NODE_IP=""
 for i in $(seq 1 5); do
     NODE_NAME="${CLUSTER_NAME}-${i}"
-    if hcloud server describe "${NODE_NAME}" >/dev/null 2>&1; then
-        NODE_IP=$(hcloud server describe "${NODE_NAME}" -o json | python3 -c 'import sys,json;d=json.load(sys.stdin);print(d["public_net"]["ipv4"]["ip"])')
+    if driver_node_exists "${NODE_NAME}"; then
+        NODE_IP=$(driver_node_public_ip "${NODE_NAME}")
         PRIVATE_IP="10.0.1.1${i}"
+        [ -z "$CORE_NODE_IP" ] && CORE_NODE_IP="${NODE_IP}"
         log_info "  ${NODE_NAME}: public=${NODE_IP} private=${PRIVATE_IP}"
     fi
 done
+
+if [ -z "$CORE_NODE_IP" ]; then
+    log_fail "No core node has a public IP — cannot address the management API"
+    exit 1
+fi
+
+# Management entry point. 8080 is [deployment.ports].management from aether-cloud.toml —
+# the node's own port. (The retired aether-lb served management on 8081; that is not a
+# node port and nothing listens there now.) Any core node is a valid entry point because
+# a node forwards management requests it does not own to the leader / task-group owner.
+CORE_MGMT="${CORE_NODE_IP}:8080"
+log_info "Management entry point: http://${CORE_MGMT}"
 
 # =========================================================================
 # Phase 5: Provision Aether LB VM
@@ -160,22 +177,15 @@ done
 log_step "Phase 5: Aether LB VM"
 
 LB_VM_NAME="${CLUSTER_NAME}-lb"
-if ! hcloud server describe "${LB_VM_NAME}" >/dev/null 2>&1; then
-    hcloud server create \
-        --name "${LB_VM_NAME}" \
-        --type "${SERVER_TYPE}" \
-        --image "${IMAGE}" \
-        --location "${LOCATION}" \
-        --ssh-key "${SSH_KEY_NAME}" \
-        --network "${NETWORK_NAME}" \
-        --label "${LABEL}" \
-        --label "aether-role=lb" >/dev/null
+if ! driver_node_exists "${LB_VM_NAME}"; then
+    driver_create_support_vm "${LB_VM_NAME}" "${SERVER_TYPE}" "${IMAGE}" "${LOCATION}" \
+        "${SSH_KEY_NAME}" "${NETWORK_NAME}" "${LABEL}" "aether-role=lb"
     log_pass "Created LB VM: ${LB_VM_NAME}"
 else
     log_info "LB VM already exists"
 fi
 
-BASTION_IP=$(hcloud server describe "${LB_VM_NAME}" -o json | python3 -c 'import sys,json;d=json.load(sys.stdin);print(d["public_net"]["ipv4"]["ip"])')
+BASTION_IP=$(driver_node_public_ip "${LB_VM_NAME}")
 log_info "Bastion/LB public IP: ${BASTION_IP}"
 
 # Set private IP for LB
@@ -186,32 +196,26 @@ log_info "Waiting for SSH on LB VM..."
 wait_for_ssh "${BASTION_IP}" 120
 log_pass "SSH available on LB VM"
 
-# Install Docker and start Aether LB
-PEERS=""
-for i in $(seq 1 5); do
-    [ -n "$PEERS" ] && PEERS="${PEERS},"
-    PEERS="${PEERS}node-${i}:10.0.1.1${i}:6000"
-done
-
-ssh_bastion "bash -s" <<'SETUP_LB'
+# Install Docker on the bastion. The suites reach it as TARGET_HOST and run containers
+# there, so Docker stays even though the in-house LB is gone.
+#
+# The aether-lb container that used to run here was removed: `aether/lb` is not a module
+# in this repository any more, nothing in .github/workflows builds an aether-lb image, and
+# ghcr.io/pragmaticalabs/aether-lb does not exist — so this step could never have started.
+# Management traffic now goes straight to a core node's management port (see CORE_MGMT
+# above), matching what the integration suite did when it removed its nginx sidecar.
+# Application traffic already goes through the managed Hetzner LB (HLB_IP). An in-house LB
+# is a latency optimisation at most: nodes forward requests they do not own, so any node is
+# a valid entry point.
+ssh_bastion "bash -s" <<'SETUP_BASTION'
 set -euo pipefail
 if ! command -v docker >/dev/null 2>&1; then
     apt-get update -qq && apt-get install -y -qq docker.io >/dev/null 2>&1
     systemctl enable docker && systemctl start docker
 fi
-SETUP_LB
+SETUP_BASTION
 
-ssh_bastion "docker pull ${AETHER_LB_IMAGE} 2>/dev/null || true"
-ssh_bastion "docker rm -f aether-lb 2>/dev/null || true"
-ssh_bastion "docker run -d --name aether-lb --network host \
-    -e LB_HTTP_PORT=8080 \
-    -e LB_MANAGEMENT_PORT=8081 \
-    -e LB_MANAGEMENT_MAX_CONTENT_LENGTH=16777216 \
-    -e LB_CLUSTER_PORT=7000 \
-    -e 'PEERS=${PEERS}' \
-    ${AETHER_LB_IMAGE}"
-
-log_pass "Aether LB started on ${BASTION_IP}:8081"
+log_pass "Bastion ready at ${BASTION_IP} (no in-house LB; management goes direct to a core node)"
 
 # =========================================================================
 # Phase 6: Provision Postgres VM
@@ -221,22 +225,15 @@ log_step "Phase 6: Postgres VM"
 PG_VM_NAME="${CLUSTER_NAME}-postgres"
 PG_PRIVATE_IP="10.0.1.30"
 
-if ! hcloud server describe "${PG_VM_NAME}" >/dev/null 2>&1; then
-    hcloud server create \
-        --name "${PG_VM_NAME}" \
-        --type "${SERVER_TYPE}" \
-        --image "${IMAGE}" \
-        --location "${LOCATION}" \
-        --ssh-key "${SSH_KEY_NAME}" \
-        --network "${NETWORK_NAME}" \
-        --label "${LABEL}" \
-        --label "aether-role=db" >/dev/null
+if ! driver_node_exists "${PG_VM_NAME}"; then
+    driver_create_support_vm "${PG_VM_NAME}" "${SERVER_TYPE}" "${IMAGE}" "${LOCATION}" \
+        "${SSH_KEY_NAME}" "${NETWORK_NAME}" "${LABEL}" "aether-role=db"
     log_pass "Created Postgres VM: ${PG_VM_NAME}"
 else
     log_info "Postgres VM already exists"
 fi
 
-PG_PUBLIC_IP=$(hcloud server describe "${PG_VM_NAME}" -o json | python3 -c 'import sys,json;d=json.load(sys.stdin);print(d["public_net"]["ipv4"]["ip"])')
+PG_PUBLIC_IP=$(driver_node_public_ip "${PG_VM_NAME}")
 
 log_info "Waiting for SSH on Postgres VM..."
 wait_for_ssh "${PG_PUBLIC_IP}" 120
@@ -272,40 +269,25 @@ log_pass "PostgreSQL ready on ${PG_PRIVATE_IP}:5432"
 # =========================================================================
 log_step "Phase 7: Hetzner managed load balancer"
 
-if ! hcloud load-balancer describe "${LB_NAME}" >/dev/null 2>&1; then
-    hcloud load-balancer create \
-        --name "${LB_NAME}" \
-        --type lb11 \
-        --location "${LOCATION}" \
-        --label "${LABEL}" >/dev/null
+if ! driver_lb_exists "${LB_NAME}"; then
+    driver_lb_create "${LB_NAME}" lb11 "${LOCATION}" "${LABEL}"
     log_pass "Created Hetzner LB: ${LB_NAME}"
 
     # Attach to private network
-    hcloud load-balancer attach-to-network "${LB_NAME}" --network "${NETWORK_NAME}" >/dev/null
+    driver_lb_attach_network "${LB_NAME}" "${NETWORK_NAME}"
     log_pass "Attached LB to private network"
 
     # Add app HTTP service (TCP passthrough, port 80 → 8070)
-    hcloud load-balancer add-service "${LB_NAME}" \
-        --protocol tcp \
-        --listen-port 80 \
-        --destination-port 8070 >/dev/null
+    driver_lb_add_service "${LB_NAME}" tcp 80 8070
     log_pass "Added app HTTP service (port 80 → 8070)"
 
     # Add health check
-    hcloud load-balancer update-health-check "${LB_NAME}" \
-        --protocol http \
-        --port 8080 \
-        --http-path /health/live \
-        --interval 10 \
-        --timeout 5 \
-        --retries 3 >/dev/null 2>&1 || log_info "Health check configured via default"
+    driver_lb_health_check "${LB_NAME}" 8080 /health/live 10 5 3 || log_info "Health check configured via default"
 
     # Add core nodes as targets
     for i in $(seq 1 5); do
         NODE_NAME="${CLUSTER_NAME}-${i}"
-        hcloud load-balancer add-target "${LB_NAME}" \
-            --server "${NODE_NAME}" \
-            --use-private-ip >/dev/null 2>&1 || true
+        driver_lb_add_target "${LB_NAME}" "${NODE_NAME}" || true
         log_info "  Added target: ${NODE_NAME}"
     done
     log_pass "All core nodes added as LB targets"
@@ -313,7 +295,7 @@ else
     log_info "Hetzner LB already exists"
 fi
 
-HLB_IP=$(hcloud load-balancer describe "${LB_NAME}" -o json | python3 -c 'import sys,json;d=json.load(sys.stdin);print(d["public_net"]["ipv4"]["ip"])')
+HLB_IP=$(driver_lb_public_ip "${LB_NAME}")
 log_info "Hetzner LB public IP: ${HLB_IP}"
 
 # =========================================================================
@@ -329,7 +311,7 @@ fi
 
 log_info "Waiting for cluster health via Aether LB..."
 for i in $(seq 1 60); do
-    HEALTH=$(curl -sf -H "X-API-Key: ${API_KEY}" "http://${BASTION_IP}:8081/api/health" 2>/dev/null || echo "")
+    HEALTH=$(curl -sf -H "X-API-Key: ${API_KEY}" "http://${CORE_MGMT}/api/health" 2>/dev/null || echo "")
     if echo "$HEALTH" | grep -q '"ready":true'; then
         log_pass "Cluster healthy"
         break
@@ -344,14 +326,14 @@ if ! echo "$HEALTH" | grep -q '"ready":true'; then
 fi
 
 # Verify node count
-NODE_COUNT=$(curl -sf -H "X-API-Key: ${API_KEY}" "http://${BASTION_IP}:8081/api/cluster/topology" 2>/dev/null \
+NODE_COUNT=$(curl -sf -H "X-API-Key: ${API_KEY}" "http://${CORE_MGMT}/api/cluster/topology" 2>/dev/null \
     | python3 -c 'import sys,json;print(json.load(sys.stdin).get("coreCount",0))' 2>/dev/null || echo "0")
 log_info "Core nodes visible: ${NODE_COUNT}"
 
 # Wait for task groups
 log_info "Waiting for task group assignments..."
 for i in $(seq 1 60); do
-    TASKS=$(curl -sf -H "X-API-Key: ${API_KEY}" "http://${BASTION_IP}:8081/api/cluster/tasks" 2>/dev/null || echo "{}")
+    TASKS=$(curl -sf -H "X-API-Key: ${API_KEY}" "http://${CORE_MGMT}/api/cluster/tasks" 2>/dev/null || echo "{}")
     ACTIVE=$(echo "$TASKS" | python3 -c "
 import sys,json
 try:
@@ -371,7 +353,7 @@ done
 # =========================================================================
 log_step "Phase 9: Push test artifacts"
 
-AETHER_CONN="${BASTION_IP}:8081"
+AETHER_CONN="${CORE_MGMT}"
 
 aether -c "${AETHER_CONN}" --api-key "${API_KEY}" artifact push \
     org.pragmatica.aether.example:url-shortener:1.0.0 2>/dev/null && \
@@ -389,14 +371,19 @@ log_step "Phase 10: Environment file"
 cat > "${CLOUD_ENV}" <<ENVFILE
 # Generated by deploy-cloud.sh — source this before running tests
 DEPLOY_START=$(date +%s)
-CLUSTER_ENDPOINT=http://${BASTION_IP}:8081
+CLUSTER_ENDPOINT=http://${CORE_MGMT}
 APP_ENDPOINT=http://${HLB_IP}:80
 TARGET_HOST=${BASTION_IP}
 BASTION_IP=${BASTION_IP}
+CORE_MGMT=${CORE_MGMT}
 HLB_IP=${HLB_IP}
-MGMT_PORT=8081
-LB_PORT=8081
-LB_MGMT_PORT=8081
+# Node management port ([deployment.ports].management in aether-cloud.toml). Was 8081 while
+# the retired aether-lb fronted management; that port has no listener now.
+MGMT_PORT=8080
+# Kept because run-cloud-tests.sh exports it unconditionally under `set -u`. It now names
+# the same node management port rather than the retired LB's.
+LB_MGMT_PORT=8080
+# Managed Hetzner LB, application traffic only.
 LB_PORT=80
 NODE_COUNT=5
 API_KEY=${API_KEY}
@@ -413,7 +400,7 @@ echo "========================================"
 echo "  Cloud cluster deployed"
 echo "  Cluster:    ${CLUSTER_NAME}"
 echo "  Nodes:      5 core + LB + postgres"
-echo "  Mgmt API:   http://${BASTION_IP}:8081"
+echo "  Mgmt API:   http://${CORE_MGMT}"
 echo "  App HTTP:   http://${HLB_IP}:80"
 echo "  Bastion:    ssh -i ${SSH_KEY_FILE} root@${BASTION_IP}"
 echo "  API Key:    ${API_KEY}"
