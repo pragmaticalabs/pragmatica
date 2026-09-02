@@ -14,7 +14,6 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.cloud.azure;
 
 import org.pragmatica.lang.Cause;
@@ -23,6 +22,7 @@ import org.pragmatica.lang.utils.Causes;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+
 
 /// Typed error causes for Azure Cloud API operations.
 public sealed interface AzureError extends Cause {
@@ -38,8 +38,8 @@ public sealed interface AzureError extends Cause {
     record AuthError(String details, Option<Throwable> cause) implements AzureError {
         @Override
         public String message() {
-            return "Azure authentication error: " + details
-                   + cause.map(t -> " - " + Causes.fromThrowable(t).message()).or("");
+            return "Azure authentication error: " + details + cause.map(t -> " - " + Causes.fromThrowable(t).message())
+                                                                   .or("");
         }
     }
 
@@ -47,8 +47,8 @@ public sealed interface AzureError extends Cause {
     record ParseError(String context, Option<Throwable> cause) implements AzureError {
         @Override
         public String message() {
-            return "Failed to parse Azure response: " + context
-                   + cause.map(t -> " - " + Causes.fromThrowable(t).message()).or("");
+            return "Failed to parse Azure response: " + context + cause.map(t -> " - " + Causes.fromThrowable(t).message())
+                                                                       .or("");
         }
     }
 
@@ -69,11 +69,7 @@ public sealed interface AzureError extends Cause {
 
     private static AzureError extractApiError(int statusCode, ErrorResponse resp) {
         return new ApiError(statusCode,
-                            Option.option(resp.error())
-                                  .map(ErrorResponse.ErrorBody::code)
-                                  .or("unknown"),
-                            Option.option(resp.error())
-                                  .map(ErrorResponse.ErrorBody::message)
-                                  .or("No details"));
+                            Option.option(resp.error()).map(ErrorResponse.ErrorBody::code).or("unknown"),
+                            Option.option(resp.error()).map(ErrorResponse.ErrorBody::message).or("No details"));
     }
 }

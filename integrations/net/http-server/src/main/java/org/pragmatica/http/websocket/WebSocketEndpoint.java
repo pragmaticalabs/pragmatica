@@ -13,10 +13,10 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.http.websocket;
 
 import java.util.function.Supplier;
+
 
 /// WebSocket endpoint configuration.
 ///

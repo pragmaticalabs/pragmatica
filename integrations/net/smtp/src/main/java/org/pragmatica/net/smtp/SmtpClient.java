@@ -13,17 +13,16 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.net.smtp;
+
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.AsyncCloseable;
-
-import java.net.InetSocketAddress;
-import java.nio.charset.StandardCharsets;
 
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.ChannelFuture;
@@ -46,13 +45,13 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Unit.unit;
 
+
 /// Asynchronous SMTP client using Netty TCP pipeline.
 ///
 /// Each [#send(SmtpMessage)] call creates a new TCP connection, runs the full SMTP session
 /// (EHLO, optional STARTTLS, optional AUTH, MAIL FROM, RCPT TO, DATA, QUIT), and closes.
 public interface SmtpClient extends AsyncCloseable {
     Logger log = LoggerFactory.getLogger(SmtpClient.class);
-
     /// Send an email message, returning a promise that completes with the server response on success.
     Promise<String> send(SmtpMessage message);
 
@@ -60,6 +59,7 @@ public interface SmtpClient extends AsyncCloseable {
     /// The event loop will be shut down when the client is closed.
     static SmtpClient smtpClient(SmtpConfig config) {
         var eventLoop = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
+
         return new SmtpClientImpl(config, eventLoop, true);
     }
 
@@ -70,9 +70,7 @@ public interface SmtpClient extends AsyncCloseable {
     }
 }
 
-record SmtpClientImpl(SmtpConfig config,
-                      EventLoopGroup eventLoopGroup,
-                      boolean ownsEventLoop) implements SmtpClient {
+record SmtpClientImpl(SmtpConfig config, EventLoopGroup eventLoopGroup, boolean ownsEventLoop) implements SmtpClient {
     private static final int MAX_LINE_LENGTH = 512;
 
     @Override
@@ -85,6 +83,7 @@ record SmtpClientImpl(SmtpConfig config,
         if (!ownsEventLoop) {
             return Promise.success(unit());
         }
+
         return Promise.promise(promise -> eventLoopGroup.shutdownGracefully()
                                                         .addListener(_ -> promise.succeed(unit())));
     }
@@ -92,7 +91,6 @@ record SmtpClientImpl(SmtpConfig config,
     private void initiateSend(SmtpMessage message, Promise<String> promise) {
         var sslContext = buildSslContext();
         var session = new SmtpSession(config, message, promise, sslContext);
-
         var bootstrap = new Bootstrap().group(eventLoopGroup)
                                        .channel(NioSocketChannel.class)
                                        .handler(SmtpChannelInitializer.forSession(session, config, sslContext));
@@ -102,19 +100,22 @@ record SmtpClientImpl(SmtpConfig config,
 
     private void connectWithTimeout(Bootstrap bootstrap, SmtpSession session, Promise<String> promise) {
         var address = new InetSocketAddress(config.host(), config.port());
-        bootstrap.connect(address)
-                 .addListener((ChannelFuture future) -> handleConnect(future, session));
 
+        bootstrap.connect(address).addListener((ChannelFuture future) -> handleConnect(future, session));
         promise.async(config.commandTimeout(),
-                      pending -> pending.fail(new SmtpError.Timeout("SMTP session timed out after " + config.commandTimeout().millis() + "ms")));
+                      pending -> pending.fail(new SmtpError.Timeout("SMTP session timed out after " + config.commandTimeout()
+                                                                                                            .millis()
+                                                                   + "ms")));
     }
 
     private static void handleConnect(ChannelFuture future, SmtpSession session) {
         if (future.isSuccess()) {
             session.setChannel(future.channel());
             log.debug("Connected to SMTP server");
+
             return;
         }
+
         session.onException(future.cause());
     }
 
@@ -122,6 +123,7 @@ record SmtpClientImpl(SmtpConfig config,
         if (config.tlsMode() == SmtpTlsMode.NONE) {
             return none();
         }
+
         return buildInsecureSslContext();
     }
 
@@ -130,7 +132,8 @@ record SmtpClientImpl(SmtpConfig config,
                            () -> SslContextBuilder.forClient()
                                                   .trustManager(InsecureTrustManagerFactory.INSTANCE)
                                                   .build())
-                     .onFailure(cause -> log.warn("Failed to build SSL context: {}", cause.message()))
+                     .onFailure(cause -> log.warn("Failed to build SSL context: {}",
+                                                  cause.message()))
                      .option();
     }
 }
@@ -155,15 +158,19 @@ class SmtpChannelInitializer extends ChannelInitializer<SocketChannel> {
     @Override
     protected void initChannel(SocketChannel ch) {
         var pipeline = ch.pipeline();
-
         // For IMPLICIT TLS, add SSL handler first
         if (config.tlsMode() == SmtpTlsMode.IMPLICIT) {
-            sslContext.onPresent(ctx -> pipeline.addLast("ssl", ctx.newHandler(ch.alloc(), config.host(), config.port())));
+            sslContext.onPresent(ctx -> pipeline.addLast("ssl",
+                                                         ctx.newHandler(ch.alloc(), config.host(), config.port())));
         }
 
-        pipeline.addLast("framer", new LineBasedFrameDecoder(MAX_LINE_LENGTH))
-                .addLast("decoder", new StringDecoder(StandardCharsets.US_ASCII))
-                .addLast("encoder", new StringEncoder(StandardCharsets.US_ASCII))
-                .addLast("handler", new SmtpResponseHandler(session));
+        pipeline.addLast("framer",
+                         new LineBasedFrameDecoder(MAX_LINE_LENGTH))
+                .addLast("decoder",
+                         new StringDecoder(StandardCharsets.US_ASCII))
+                .addLast("encoder",
+                         new StringEncoder(StandardCharsets.US_ASCII))
+                .addLast("handler",
+                         new SmtpResponseHandler(session));
     }
 }

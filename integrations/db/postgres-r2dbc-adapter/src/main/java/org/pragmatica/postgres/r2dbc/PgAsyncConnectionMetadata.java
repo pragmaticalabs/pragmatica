@@ -14,20 +14,18 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.postgres.r2dbc;
 
 import io.r2dbc.spi.ConnectionMetadata;
 
+
 /// Metadata describing the PostgreSQL database product.
 enum PgAsyncConnectionMetadata implements ConnectionMetadata {
     INSTANCE;
-
     @Override
     public String getDatabaseProductName() {
         return "PostgreSQL";
     }
-
     @Override
     public String getDatabaseVersion() {
         return "unknown";

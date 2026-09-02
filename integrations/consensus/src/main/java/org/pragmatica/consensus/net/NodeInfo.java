@@ -13,15 +13,15 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.net;
+
+import java.util.Map;
+import java.util.Objects;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.serialization.Codec;
 
-import java.util.Map;
-import java.util.Objects;
 
 /// Node information: ID, address, and metadata labels.
 ///
@@ -43,23 +43,17 @@ import java.util.Objects;
 /// that must not split a peer into two distinct identities when only its observed IP
 /// differs from its advertised host.
 @Codec
-public record NodeInfo(NodeId id, NodeAddress address, Map<String, String> labels,
-                       NodeAddress resolvedAddress) {
+public record NodeInfo(NodeId id, NodeAddress address, Map<String, String> labels, NodeAddress resolvedAddress) {
     /// Standard label key for the node's hostname.
     public static final String LABEL_HOSTNAME = "hostname";
-
     /// Standard label key for the availability zone.
     public static final String LABEL_ZONE = "zone";
-
     /// Standard label key for the compute instance type.
     public static final String LABEL_INSTANCE_TYPE = "instance-type";
-
     /// Standard label key for the node pool name.
     public static final String LABEL_POOL = "pool";
-
     /// Standard label key for the node's provisioning source (e.g. seed, replacement).
     public static final String LABEL_SOURCE = "source";
-
     /// Standard label key for the node's self-described role label.
     public static final String LABEL_ROLE = "role";
 
@@ -79,8 +73,10 @@ public record NodeInfo(NodeId id, NodeAddress address, Map<String, String> label
     }
 
     /// Factory method for creating NodeInfo with an explicit resolved (dial-preferred) address.
-    public static NodeInfo nodeInfo(NodeId id, NodeAddress address,
-                                    Map<String, String> labels, NodeAddress resolvedAddress) {
+    public static NodeInfo nodeInfo(NodeId id,
+                                    NodeAddress address,
+                                    Map<String, String> labels,
+                                    NodeAddress resolvedAddress) {
         return new NodeInfo(id, address, labels, resolvedAddress);
     }
 

@@ -1,15 +1,16 @@
 package org.pragmatica.config.internal;
 
-import org.pragmatica.config.ConfigSource;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Verify;
-
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.IntStream;
 
+import org.pragmatica.config.ConfigSource;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
+
 import static org.pragmatica.lang.Result.success;
+
 
 /// Utility for deep-merging configuration maps.
 ///
@@ -27,9 +28,9 @@ public sealed interface DeepMerger {
     static Map<String, String> mergeSources(List<ConfigSource> sources) {
         var result = new LinkedHashMap<String, String>();
         var reversed = sources.reversed();
-        reversed.stream()
-                .map(ConfigSource::asMap)
-                .forEach(result::putAll);
+
+        reversed.stream().map(ConfigSource::asMap).forEach(result::putAll);
+
         return Map.copyOf(result);
     }
 
@@ -42,7 +43,9 @@ public sealed interface DeepMerger {
     /// @return Merged map
     static Map<String, String> merge(Map<String, String> base, Map<String, String> override) {
         var result = new LinkedHashMap<>(base);
+
         result.putAll(override);
+
         return Map.copyOf(result);
     }
 
@@ -56,7 +59,9 @@ public sealed interface DeepMerger {
     /// @return Deep-merged map
     static Map<String, Object> deepMerge(Map<String, Object> base, Map<String, Object> override) {
         var result = new LinkedHashMap<>(base);
+
         override.forEach((key, overrideValue) -> result.merge(key, overrideValue, DeepMerger::mergeValues));
+
         return result;
     }
 
@@ -69,7 +74,9 @@ public sealed interface DeepMerger {
     /// @return Hierarchical nested map
     static Map<String, Object> toHierarchical(Map<String, String> flat) {
         var result = new LinkedHashMap<String, Object>();
+
         flat.forEach((key, value) -> insertHierarchical(result, key.split("\\."), value));
+
         return result;
     }
 
@@ -82,7 +89,9 @@ public sealed interface DeepMerger {
     /// @return Flat map with dot-notation keys
     static Map<String, String> toFlat(Map<String, Object> hierarchical) {
         var result = new LinkedHashMap<String, String>();
+
         flattenRecursive("", hierarchical, result);
+
         return Map.copyOf(result);
     }
 
@@ -93,6 +102,7 @@ public sealed interface DeepMerger {
     @SuppressWarnings("unchecked")
     private static void flattenEntry(String prefix, String entryKey, Object value, Map<String, String> result) {
         var key = buildKey(prefix, entryKey);
+
         if (isNestedMap(value)) {
             flattenRecursive(key, (Map<String, Object>) value, result);
         } else {
@@ -104,6 +114,7 @@ public sealed interface DeepMerger {
         if (Verify.Is.empty(prefix)) {
             return entryKey;
         }
+
         return prefix + "." + entryKey;
     }
 
@@ -112,22 +123,24 @@ public sealed interface DeepMerger {
         if (isNestedMap(baseValue) && isNestedMap(overrideValue)) {
             return deepMerge((Map<String, Object>) baseValue, (Map<String, Object>) overrideValue);
         }
+
         return overrideValue;
     }
 
     private static void insertHierarchical(Map<String, Object> result, String[] keyPath, String value) {
         var parentDepth = keyPath.length - 1;
         var current = navigateToParent(result, keyPath, parentDepth);
+
         current.put(keyPath[parentDepth], value);
     }
 
     @SuppressWarnings("unchecked")
     private static Map<String, Object> navigateToParent(Map<String, Object> root, String[] keyPath, int depth) {
         var container = new Object[]{root};
-        IntStream.range(0, depth)
-                 .forEach(i -> container[0] = ((Map<String, Object>) container[0])
-        .computeIfAbsent(keyPath[i],
-                         _ -> new LinkedHashMap<String, Object>()));
+
+        IntStream.range(0, depth).forEach(i -> container[0] = ((Map<String, Object>) container[0]).computeIfAbsent(keyPath[i],
+                                                                                                                   _ -> new LinkedHashMap<String, Object>()));
+
         return (Map<String, Object>) container[0];
     }
 
@@ -137,7 +150,7 @@ public sealed interface DeepMerger {
 
     /// Marker record to satisfy sealed interface requirement.
     record unused() implements DeepMerger {
-        static Result<unused> unused() {
+        static Result<unused > unused() {
             return success(new unused());
         }
     }

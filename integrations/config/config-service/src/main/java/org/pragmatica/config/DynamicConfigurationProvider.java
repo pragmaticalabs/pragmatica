@@ -1,9 +1,5 @@
 package org.pragmatica.config;
 
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
-
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -12,8 +8,13 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.unitResult;
+
 
 /// Wraps a base ConfigurationProvider with a mutable overlay.
 ///
@@ -40,14 +41,18 @@ public final class DynamicConfigurationProvider implements ConfigurationProvider
     @Override
     public Set<String> keys() {
         var allKeys = new LinkedHashSet<>(base.keys());
+
         allKeys.addAll(overlay.keySet());
+
         return Collections.unmodifiableSet(allKeys);
     }
 
     @Override
     public Map<String, String> asMap() {
         var merged = new LinkedHashMap<>(base.asMap());
+
         merged.putAll(overlay);
+
         return Collections.unmodifiableMap(merged);
     }
 
@@ -69,11 +74,13 @@ public final class DynamicConfigurationProvider implements ConfigurationProvider
 
     public Result<Unit> put(String key, String value) {
         overlay.put(key, value);
+
         return unitResult();
     }
 
     public Result<Unit> remove(String key) {
         overlay.remove(key);
+
         return unitResult();
     }
 

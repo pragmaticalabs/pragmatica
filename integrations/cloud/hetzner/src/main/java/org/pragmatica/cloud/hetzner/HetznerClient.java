@@ -14,12 +14,23 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.cloud.hetzner;
+
+import java.net.URI;
+import java.net.URLEncoder;
+import java.net.http.HttpRequest;
+import java.net.http.HttpRequest.BodyPublishers;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.Map;
 
 import org.pragmatica.cloud.hetzner.api.Firewall;
 import org.pragmatica.cloud.hetzner.api.Firewall.ApplyToResourcesRequest;
+import org.pragmatica.cloud.hetzner.api.Firewall.CreateFirewallRequest;
 import org.pragmatica.cloud.hetzner.api.Firewall.FirewallListResponse;
+import org.pragmatica.cloud.hetzner.api.Firewall.FirewallResponse;
+import org.pragmatica.cloud.hetzner.api.Firewall.RemoveFromResourcesRequest;
+import org.pragmatica.cloud.hetzner.api.Firewall.SetRulesRequest;
 import org.pragmatica.cloud.hetzner.api.FloatingIp;
 import org.pragmatica.cloud.hetzner.api.FloatingIp.AssignRequest;
 import org.pragmatica.cloud.hetzner.api.FloatingIp.FloatingIpListResponse;
@@ -48,88 +59,68 @@ import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
-import java.net.URI;
-import java.net.URLEncoder;
-import java.net.http.HttpRequest;
-import java.net.http.HttpRequest.BodyPublishers;
-import java.nio.charset.StandardCharsets;
-import java.util.List;
-import java.util.Map;
 
 /// Hetzner Cloud REST API client with Promise-based async operations.
 public interface HetznerClient {
     /// Creates a new server.
     Promise<Server> createServer(CreateServerRequest request);
-
     /// Deletes a server by ID.
     Promise<Unit> deleteServer(long serverId);
-
     /// Gets a server by ID.
     Promise<Server> getServer(long serverId);
-
     /// Lists all servers.
     Promise<List<Server>> listServers();
-
     /// Lists servers matching a label selector (e.g., "aether-cluster=my-cluster").
     Promise<List<Server>> listServers(String labelSelector);
-
     /// Updates labels on a server.
     Promise<Unit> updateServerLabels(long serverId, Map<String, String> labels);
-
     /// Reboots a server.
     Promise<Unit> rebootServer(long serverId);
-
     /// Creates a new SSH key.
     Promise<SshKey> createSshKey(SshKey.CreateSshKeyRequest request);
-
     /// Deletes an SSH key by ID.
     Promise<Unit> deleteSshKey(long sshKeyId);
-
     /// Lists all SSH keys.
     Promise<List<SshKey>> listSshKeys();
-
     /// Lists all networks.
     Promise<List<Network>> listNetworks();
-
     /// Gets a network by ID.
     Promise<Network> getNetwork(long networkId);
-
     /// Lists all firewalls.
     Promise<List<Firewall>> listFirewalls();
-
+    /// Lists firewalls matching a label selector (e.g., "aether-cluster=my-cluster").
+    Promise<List<Firewall>> listFirewalls(String labelSelector);
+    /// Creates a standalone firewall.
+    Promise<Firewall> createFirewall(CreateFirewallRequest request);
+    /// Replaces a firewall's entire rule set. Hetzner has no add-one-rule action.
+    Promise<Unit> setFirewallRules(long firewallId, List<Firewall.Rule> rules);
+    /// Deletes a firewall by ID. Fails while the firewall is still applied to any resource —
+    /// detach with [#removeFirewallFromResources] first.
+    Promise<Unit> deleteFirewall(long firewallId);
+    /// Detaches a firewall from a server.
+    Promise<Unit> removeFirewallFromResources(long firewallId, long serverId);
     /// Applies a firewall to a server.
     Promise<Unit> applyFirewall(long firewallId, long serverId);
-
     /// Creates a new load balancer.
     Promise<LoadBalancer> createLoadBalancer(CreateLoadBalancerRequest request);
-
     /// Deletes a load balancer by ID.
     Promise<Unit> deleteLoadBalancer(long loadBalancerId);
-
     /// Lists all load balancers.
     Promise<List<LoadBalancer>> listLoadBalancers();
-
     /// Adds a server target to a load balancer.
     Promise<Unit> addTarget(long loadBalancerId, long serverId);
-
     /// Removes a server target from a load balancer.
     Promise<Unit> removeTarget(long loadBalancerId, long serverId);
-
     /// Adds an IP target to a load balancer.
     Promise<Unit> addIpTarget(long loadBalancerId, String ip);
-
     /// Removes an IP target from a load balancer.
     Promise<Unit> removeIpTarget(long loadBalancerId, String ip);
-
     /// Gets a load balancer by ID.
     Promise<LoadBalancer> getLoadBalancer(long loadBalancerId);
-
     /// Lists all floating IPs.
     Promise<List<FloatingIp>> listFloatingIps();
-
     /// Gets a floating IP by ID.
     Promise<FloatingIp> getFloatingIp(long floatingIpId);
-
     /// Assigns a floating IP to a server.
     Promise<Unit> assignFloatingIp(long floatingIpId, long serverId);
 
@@ -173,8 +164,7 @@ record HetznerClientRecord(HetznerConfig config, HttpOperations http, JsonMapper
 
     @Override
     public Promise<List<Server>> listServers(String labelSelector) {
-        return getJson("/servers?label_selector=" + encodeQueryParam(labelSelector), ServerListResponse.class)
-            .map(ServerListResponse::servers);
+        return getJson("/servers?label_selector=" + encodeQueryParam(labelSelector), ServerListResponse.class).map(ServerListResponse::servers);
     }
 
     @Override
@@ -215,6 +205,34 @@ record HetznerClientRecord(HetznerConfig config, HttpOperations http, JsonMapper
     @Override
     public Promise<List<Firewall>> listFirewalls() {
         return getJson("/firewalls", FirewallListResponse.class).map(FirewallListResponse::firewalls);
+    }
+
+    @Override
+    public Promise<List<Firewall>> listFirewalls(String labelSelector) {
+        return getJson("/firewalls?label_selector=" + encodeQueryParam(labelSelector),
+                       FirewallListResponse.class).map(FirewallListResponse::firewalls);
+    }
+
+    @Override
+    public Promise<Firewall> createFirewall(CreateFirewallRequest request) {
+        return postJson("/firewalls", request, FirewallResponse.class).map(FirewallResponse::firewall);
+    }
+
+    @Override
+    public Promise<Unit> setFirewallRules(long firewallId, List<Firewall.Rule> rules) {
+        return postJsonDiscarding("/firewalls/" + firewallId + "/actions/set_rules",
+                                  SetRulesRequest.setRulesRequest(rules));
+    }
+
+    @Override
+    public Promise<Unit> deleteFirewall(long firewallId) {
+        return delete("/firewalls/" + firewallId);
+    }
+
+    @Override
+    public Promise<Unit> removeFirewallFromResources(long firewallId, long serverId) {
+        return postJsonDiscarding("/firewalls/" + firewallId + "/actions/remove_from_resources",
+                                  RemoveFromResourcesRequest.removeFromServer(serverId));
     }
 
     @Override
@@ -264,8 +282,7 @@ record HetznerClientRecord(HetznerConfig config, HttpOperations http, JsonMapper
 
     @Override
     public Promise<LoadBalancer> getLoadBalancer(long loadBalancerId) {
-        return getJson("/load_balancers/" + loadBalancerId, LoadBalancerResponse.class)
-        .map(LoadBalancerResponse::loadBalancer);
+        return getJson("/load_balancers/" + loadBalancerId, LoadBalancerResponse.class).map(LoadBalancerResponse::loadBalancer);
     }
 
     @Override
@@ -321,6 +338,7 @@ record HetznerClientRecord(HetznerConfig config, HttpOperations http, JsonMapper
                                      responseType)
                          .async();
         }
+
         return HetznerError.fromResponse(result.statusCode(),
                                          result.body(),
                                          mapper)
@@ -331,6 +349,7 @@ record HetznerClientRecord(HetznerConfig config, HttpOperations http, JsonMapper
         if (result.isSuccess()) {
             return Promise.success(Unit.unit());
         }
+
         return HetznerError.fromResponse(result.statusCode(),
                                          result.body(),
                                          mapper)

@@ -13,7 +13,6 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.swim;
 
 import java.net.InetSocketAddress;
@@ -24,10 +23,10 @@ import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.serialization.Codec;
 import org.pragmatica.swim.SwimMember.MemberState;
 
+
 /// Messages exchanged by the SWIM protocol.
 @Codec
 public sealed interface SwimMessage {
-
     /// Direct ping probe carrying piggybacked membership updates.
     record Ping(NodeId from, long sequence, List<MembershipUpdate> piggyback) implements SwimMessage {
         public static Ping ping(NodeId from, long sequence, List<MembershipUpdate> piggyback) {
@@ -78,7 +77,10 @@ public sealed interface SwimMessage {
     /// A single membership update disseminated via piggyback.
     @Codec
     record MembershipUpdate(NodeId nodeId, MemberState state, long incarnation, InetSocketAddress address) {
-        public static MembershipUpdate membershipUpdate(NodeId nodeId, MemberState state, long incarnation, InetSocketAddress address) {
+        public static MembershipUpdate membershipUpdate(NodeId nodeId,
+                                                        MemberState state,
+                                                        long incarnation,
+                                                        InetSocketAddress address) {
             return new MembershipUpdate(nodeId, state, incarnation, address);
         }
     }

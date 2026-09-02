@@ -13,16 +13,16 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.dht;
+
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
-import java.util.HashSet;
-import java.util.List;
-import java.util.Set;
 
 /// Local partition map implementation using consistent hashing.
 /// Suitable for single-process clusters or testing.
@@ -36,11 +36,11 @@ public final class LocalPartitionMap<N extends Comparable<N>> implements Partiti
     }
 
     public static <N extends Comparable<N>> LocalPartitionMap<N> localPartitionMap() {
-        return new LocalPartitionMap<>(ConsistentHashRing.<N>consistentHashRing());
+        return new LocalPartitionMap<>(ConsistentHashRing.<N> consistentHashRing());
     }
 
     public static <N extends Comparable<N>> LocalPartitionMap<N> localPartitionMap(int virtualNodesPerPhysical) {
-        return new LocalPartitionMap<>(ConsistentHashRing.<N>consistentHashRing(virtualNodesPerPhysical));
+        return new LocalPartitionMap<>(ConsistentHashRing.<N> consistentHashRing(virtualNodesPerPhysical));
     }
 
     @Override
@@ -48,36 +48,42 @@ public final class LocalPartitionMap<N extends Comparable<N>> implements Partiti
         // Use partition value as key for consistent node selection
         String partitionKey = "partition:" + partition.value();
         List<N> nodes = ring.nodesFor(partitionKey, replicaCount);
+
         return Promise.success(nodes);
     }
 
     @Override
     public Promise<Set<Partition>> partitionsFor(N node) {
         Set<Partition> partitions = new HashSet<>();
+
         for (int i = 0; i < Partition.MAX_PARTITIONS; i++) {
             Partition partition = Partition.at(i);
             String partitionKey = "partition:" + i;
-            ring.primaryFor(partitionKey)
-                .onPresent(primary -> {
-                    if (primary.equals(node)) {
-                        partitions.add(partition);
-                    }
-                });
+
+            ring.primaryFor(partitionKey).onPresent(primary -> {
+                if (primary.equals(node)) {
+                    partitions.add(partition);
+                }
+            });
         }
+
         return Promise.success(partitions);
     }
 
     @Override
     public Promise<Set<Partition>> allPartitionsFor(N node, int replicaCount) {
         Set<Partition> partitions = new HashSet<>();
+
         for (int i = 0; i < Partition.MAX_PARTITIONS; i++) {
             Partition partition = Partition.at(i);
             String partitionKey = "partition:" + i;
             List<N> nodes = ring.nodesFor(partitionKey, replicaCount);
+
             if (nodes.contains(node)) {
                 partitions.add(partition);
             }
         }
+
         return Promise.success(partitions);
     }
 
@@ -86,6 +92,7 @@ public final class LocalPartitionMap<N extends Comparable<N>> implements Partiti
         synchronized (ring) {
             // Remove nodes no longer in topology
             Set<N> currentNodes = new HashSet<>(ring.nodes());
+
             for (N node : currentNodes) {
                 if (!nodes.contains(node)) {
                     ring.removeNode(node);
@@ -96,6 +103,7 @@ public final class LocalPartitionMap<N extends Comparable<N>> implements Partiti
                 ring.addNode(node);
             }
         }
+
         return Promise.unitPromise();
     }
 

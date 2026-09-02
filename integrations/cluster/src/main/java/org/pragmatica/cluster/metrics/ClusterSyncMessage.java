@@ -4,15 +4,16 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.cluster.metrics;
 
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.StreamType;
 import org.pragmatica.serialization.Codec;
 
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
 
 /// Tier 1 cluster-sync wire protocol — the ping/pong chain carrying lifecycle,
 /// metrics, and peer observations between the Rabia leader and core members.
@@ -77,17 +78,17 @@ public sealed interface ClusterSyncMessage extends ProtocolMessage {
                            Set<NodeId> dispatchedNodes) implements ClusterSyncMessage {
         public ClusterSyncPing {
             evictionHints = evictionHints == null
-                           ? Set.of()
-                           : Set.copyOf(evictionHints);
+                            ? Set.of()
+                            : Set.copyOf(evictionHints);
             drainNodes = drainNodes == null
-                        ? Set.of()
-                        : Set.copyOf(drainNodes);
+                         ? Set.of()
+                         : Set.copyOf(drainNodes);
             readinessView = readinessView == null
-                           ? Map.of()
-                           : Map.copyOf(readinessView);
+                            ? Map.of()
+                            : Map.copyOf(readinessView);
             dispatchedNodes = dispatchedNodes == null
-                             ? Set.of()
-                             : Set.copyOf(dispatchedNodes);
+                              ? Set.of()
+                              : Set.copyOf(dispatchedNodes);
         }
 
         /// Backward-compatible constructor for call sites that pre-date the `dispatchedNodes`
@@ -100,7 +101,15 @@ public sealed interface ClusterSyncMessage extends ProtocolMessage {
                                Set<NodeId> evictionHints,
                                Set<NodeId> drainNodes,
                                Map<NodeId, String> readinessView) {
-            this(sender, allMetrics, rabiaTerm, epochTerm, epochCounter, evictionHints, drainNodes, readinessView, Set.of());
+            this(sender,
+                 allMetrics,
+                 rabiaTerm,
+                 epochTerm,
+                 epochCounter,
+                 evictionHints,
+                 drainNodes,
+                 readinessView,
+                 Set.of());
         }
 
         /// Backward-compatible constructor for call sites that pre-date the `readinessView`
@@ -162,19 +171,22 @@ public sealed interface ClusterSyncMessage extends ProtocolMessage {
                            Option<NodeId> readyCandidate,
                            long incarnation) implements ClusterSyncMessage {
         public ClusterSyncPong {
-            if (lifecycleState == null) {lifecycleState = "";}
+            if (lifecycleState == null) {
+                lifecycleState = "";
+            }
+
             communityReports = communityReports == null
-                              ? List.of()
-                              : List.copyOf(communityReports);
+                               ? List.of()
+                               : List.copyOf(communityReports);
             peerHealth = peerHealth == null
-                        ? List.of()
-                        : List.copyOf(peerHealth);
+                         ? List.of()
+                         : List.copyOf(peerHealth);
             peerConnectivity = peerConnectivity == null
-                              ? List.of()
-                              : List.copyOf(peerConnectivity);
+                               ? List.of()
+                               : List.copyOf(peerConnectivity);
             readyCandidate = readyCandidate == null
-                            ? Option.none()
-                            : readyCandidate;
+                             ? Option.none()
+                             : readyCandidate;
         }
 
         /// Backward-compatible 9-arg constructor for call sites that pre-date the
@@ -189,8 +201,17 @@ public sealed interface ClusterSyncMessage extends ProtocolMessage {
                                List<CommunityReport> communityReports,
                                List<PeerHealthObservation> peerHealth,
                                List<PeerConnectivityObservation> peerConnectivity) {
-            this(sender, metrics, observedRabiaTerm, observedEpochTerm, observedEpochCounter,
-                 lifecycleState, communityReports, peerHealth, peerConnectivity, Option.none(), 0L);
+            this(sender,
+                 metrics,
+                 observedRabiaTerm,
+                 observedEpochTerm,
+                 observedEpochCounter,
+                 lifecycleState,
+                 communityReports,
+                 peerHealth,
+                 peerConnectivity,
+                 Option.none(),
+                 0L);
         }
 
         /// Backward-compatible 10-arg constructor for call sites that pre-date the
@@ -206,14 +227,33 @@ public sealed interface ClusterSyncMessage extends ProtocolMessage {
                                List<PeerHealthObservation> peerHealth,
                                List<PeerConnectivityObservation> peerConnectivity,
                                Option<NodeId> readyCandidate) {
-            this(sender, metrics, observedRabiaTerm, observedEpochTerm, observedEpochCounter,
-                 lifecycleState, communityReports, peerHealth, peerConnectivity, readyCandidate, 0L);
+            this(sender,
+                 metrics,
+                 observedRabiaTerm,
+                 observedEpochTerm,
+                 observedEpochCounter,
+                 lifecycleState,
+                 communityReports,
+                 peerHealth,
+                 peerConnectivity,
+                 readyCandidate,
+                 0L);
         }
 
         /// Backward-compatible factory for legacy call sites. Emits zero epoch,
         /// empty lifecycle, no community reports, no peer observations, zero incarnation.
         public static ClusterSyncPong clusterSyncPong(NodeId sender, Map<String, Double> metrics) {
-            return new ClusterSyncPong(sender, metrics, 0L, 0L, 0L, "", List.of(), List.of(), List.of(), Option.none(), 0L);
+            return new ClusterSyncPong(sender,
+                                       metrics,
+                                       0L,
+                                       0L,
+                                       0L,
+                                       "",
+                                       List.of(),
+                                       List.of(),
+                                       List.of(),
+                                       Option.none(),
+                                       0L);
         }
     }
 }

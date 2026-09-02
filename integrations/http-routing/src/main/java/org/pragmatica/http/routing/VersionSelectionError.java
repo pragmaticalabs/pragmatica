@@ -2,6 +2,7 @@ package org.pragmatica.http.routing;
 
 import org.pragmatica.lang.Cause;
 
+
 /// Failure outcomes of header-mode API version selection (#198 §7).
 ///
 /// Distinguishes the two client-error cases the dispatcher maps to distinct HTTP statuses:

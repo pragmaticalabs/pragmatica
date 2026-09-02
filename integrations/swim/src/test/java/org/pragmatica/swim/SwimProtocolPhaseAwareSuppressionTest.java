@@ -297,8 +297,8 @@ class SwimProtocolPhaseAwareSuppressionTest {
         @Test
         void normal_neverHealthyPeer_suspectThenFaulty_emitsFaultyObserved() {
             // NORMAL phase: cold-boot suppression is bypassed. A peer killed before
-            // its first successful Ping still produces a `FaultyObserved` so
-            // HealthReconciler aggregates and writes DECOMMISSIONED, restoring the
+            // its first successful Ping still produces a `FaultyObserved` so the
+            // membership FSM ingests the FAULTY edge, restoring the
             // NODE_LEFT / NODE_FAILED downstream event path.
             var transport = new RecordingTransport();
             var listener = new RecordingListener();
@@ -338,7 +338,7 @@ class SwimProtocolPhaseAwareSuppressionTest {
         @Test
         void normal_phaseSwitchesMidLife_subsequentFaultyEmits() {
             // Simulate the production wiring: phase starts COLD_BOOT, flips NORMAL once
-            // HealthReconciler projects the cluster as steady. Verify the SAME protocol
+            // the cluster's phase view projects it as steady. Verify the SAME protocol
             // instance honors both phases on subsequent FAULTY edges.
             var phase = new AtomicBoolean(true); // COLD_BOOT
             var transport = new RecordingTransport();

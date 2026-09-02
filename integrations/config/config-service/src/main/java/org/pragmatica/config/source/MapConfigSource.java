@@ -1,15 +1,16 @@
 package org.pragmatica.config.source;
 
-import org.pragmatica.config.ConfigSource;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
-
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 
+import org.pragmatica.config.ConfigSource;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
+
 
 /// In-memory configuration source backed by a Map.
 ///

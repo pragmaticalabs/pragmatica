@@ -30,6 +30,8 @@ import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.*;
+// SyncRequest is Asynchronous, not Synchronous — the wildcard above does not cover it.
+import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.SyncRequest;
 import org.pragmatica.consensus.topology.NodeState;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.TopologyManager;
@@ -47,7 +49,9 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BooleanSupplier;
 
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.NodeId.nodeId;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -214,6 +218,90 @@ class RabiaEngineTest {
         }
     }
 
+    /// A sync ADOPTS another node's consensus state wholesale, so the gate on it must be a majority of
+    /// the CLUSTER — never a majority of whoever this node currently reaches. `syncQuorumSize()` used to
+    /// compute `min(connectedNodeCount(), clusterSize) / 2 + 1`, and this test network reports
+    /// `connectedNodeCount() == 0`, so the gate collapsed to **1**: a single response could restore
+    /// state, precisely when a node is least likely to be on the majority side of a partition.
+    ///
+    /// #660 then corrected the OTHER direction. Responses arrive only from PEERS, so a threshold of
+    /// `clusterSize / 2 + 1` RESPONSES silently demanded `quorum + 1` live nodes and this 3-node cluster
+    /// deadlocked whenever one node was down. Self is a member of its own cluster and is counted exactly
+    /// once, so one response plus self is a genuine majority of three. The minority case moved to
+    /// [RabiaSyncAdoptionQuorumTest], where a 5-node cluster makes one response an actual minority and
+    /// the discrimination is meaningful — at `clusterSize == 3` there is no "too few but non-zero".
+    @Nested
+    class SyncQuorum {
+
+        /// The default `testConfig()` retries the sync round every ~100ms (randomized), and
+        /// [RabiaEngine#doSynchronize] CLEARS `syncResponses` whenever a retry finds fewer than a
+        /// quorum. This test necessarily delivers its two responses in separate steps — it has to
+        /// observe the one-response state in between — so with a 100ms retry a round almost always
+        /// intervened and discarded the first response. The second then arrived as response 1 of a
+        /// FRESH round, the node never reached a quorum, and the majority assertion failed: measured
+        /// at 8 failures in 10 local runs, and twice on CI (including on a docs-only commit, which is
+        /// what proved it was never a code regression).
+        ///
+        /// A longer retry interval fixes it PROPERLY rather than by widening a sleep: it keeps exactly
+        /// one sync round in flight for the whole test, so the two responses provably land in the same
+        /// round. Waiting longer could never have worked — the discarded response is gone and the test
+        /// sends no more.
+        @BeforeEach
+        void singleSyncRoundForTheWholeTest() {
+            engine.stop().await();
+            engine = new RabiaEngine<>(topologyManager,
+                                        network,
+                                        stateMachine,
+                                        ProtocolConfig.consensusConfig(timeSpan(60).seconds(),
+                                                                        timeSpan(60).seconds()));
+        }
+
+        @Test
+        void onePeerResponse_completesAMajorityWithSelf_andActivates() {
+            engine.clusterState(ClusterStateNotification.active());
+            awaitSyncRequestBroadcast();
+
+            engine.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty()));
+
+            assertThat(awaitActive())
+                .as("1 response + self = 2 of %d = a majority; demanding a 2nd response demanded the whole cluster",
+                    CLUSTER_SIZE)
+                .isTrue();
+        }
+
+        /// Activation is asynchronous (`safeExecute` hands the work to the engine's executor), so this
+        /// polls for the state rather than assuming a fixed delay is enough.
+        private boolean awaitActive() {
+            return awaitCondition(engine::isActive);
+        }
+
+        private void awaitSyncRequestBroadcast() {
+            // `doClusterConnected` CLEARS syncResponses before broadcasting, so a response delivered
+            // before that broadcast would be silently dropped. Wait for the request the engine actually
+            // sent rather than guessing at a delay.
+            assertThat(awaitCondition(() -> network.messages.stream().anyMatch(SyncRequest.class::isInstance)))
+                .as("engine must have started its sync round before responses are delivered")
+                .isTrue();
+        }
+    }
+
+    private static final long CONDITION_TIMEOUT_MILLIS = 5_000;
+
+    /// Bounded poll for an asynchronously-established condition. Returns false on timeout so the caller
+    /// asserts on the outcome and reports its own message, rather than dying with a bare timeout.
+    private static boolean awaitCondition(BooleanSupplier condition) {
+        var deadline = System.nanoTime() + MILLISECONDS.toNanos(CONDITION_TIMEOUT_MILLIS);
+
+        while (System.nanoTime() < deadline) {
+            if (condition.getAsBoolean()) {
+                return true;
+            }
+            Thread.onSpinWait();
+        }
+
+        return condition.getAsBoolean();
+    }
+
     @Nested
     class PendingCatchUp {
 
@@ -305,8 +393,15 @@ class RabiaEngineTest {
                                             timeSpan(50).millis());
             stallEngine.clusterState(ClusterStateNotification.active());
             Thread.sleep(150);
+            // These tests are about the stall detector, so the engine just needs to be ACTIVE; it should
+            // get there the legitimate way rather than through the hole that was closed when
+            // `syncQuorumSize()` derived its threshold from `connectedNodeCount()` (reported as 0 by this
+            // test network, which collapsed the gate to 1 and let a minority activate the engine).
+            // Two responses plus self is already the majority of five that #660 settled on; the third is
+            // harmless surplus, ignored once the engine is active.
             stallEngine.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty()));
             stallEngine.processSyncResponse(new SyncResponse<>(NODE_3, RabiaPersistence.SavedState.empty()));
+            stallEngine.processSyncResponse(new SyncResponse<>(NODE_4, RabiaPersistence.SavedState.empty()));
             Thread.sleep(50);
         }
 

@@ -14,7 +14,6 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.json;
 
 import org.pragmatica.lang.Option;
@@ -29,6 +28,7 @@ import tools.jackson.databind.ValueDeserializer;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
+
 
 /// Jackson deserializer for Option<T> types.
 /// Deserializes null as None, any other value as Some<T>
@@ -50,6 +50,7 @@ public class OptionDeserializer extends ValueDeserializer<Option<?>> {
         if (p.currentToken() == JsonToken.VALUE_NULL) {
             return none();
         }
+
         return option(valueDeserializer).map(deser -> deser.deserialize(p, ctxt))
                      .orElse(() -> option(valueType).map(type -> ctxt.readValue(p, type)))
                      .orElse(() -> option(p.readValueAs(Object.class)));
@@ -57,17 +58,44 @@ public class OptionDeserializer extends ValueDeserializer<Option<?>> {
 
     @Override
     public ValueDeserializer<?> createContextual(DeserializationContext ctxt, BeanProperty property) {
-        return option(property).filter(prop -> prop.getType()
-                                                   .hasContentType())
-                     .<ValueDeserializer<?>> map(prop -> createContextualDeserializer(ctxt, prop))
+        return option(property).map(BeanProperty::getType)
+                     .filter(type -> type.getRawClass() == Option.class)
+                     .flatMap(OptionDeserializer::elementType)
+                     .<ValueDeserializer<?>> map(type -> createContextualDeserializer(ctxt, property, type))
                      .or(this);
     }
 
-    private OptionDeserializer createContextualDeserializer(DeserializationContext ctxt, BeanProperty prop) {
-        var contentType = prop.getType()
-                              .getContentType();
-        var deser = ctxt.findContextualValueDeserializer(contentType, prop);
-        return new OptionDeserializer(contentType, deser);
+    /// Option is registered on the plain class, so a declared `Option<T>` arrives as a SimpleType:
+    /// `hasContentType()` is false and `T` lives in the generic binding instead (#696). Without this
+    /// resolution the element deserializes as raw Object (Integer for Option<Long>, LinkedHashMap
+    /// for record elements) and the declared type is violated at first use.
+    ///
+    /// The raw-class filter above is a recursion guard, not decoration: `createContextual` sees only
+    /// the PROPERTY's type, so when this deserializer is resolved for the element of another wrapper
+    /// (`Result<Option<X>>`), deriving from the property would re-derive the outer wrapper forever.
+    private static Option<JavaType> elementType(JavaType type) {
+        return type.hasContentType()
+               ? option(type.getContentType())
+               : type.containedTypeCount() == 1
+                 ? option(type.containedType(0))
+                 : none();
+    }
+
+    private OptionDeserializer createContextualDeserializer(DeserializationContext ctxt,
+                                                            BeanProperty property,
+                                                            JavaType elementType) {
+        // Two element shapes must NOT get a property-contextualized delegate, or contextualization
+        // re-enters with the same property and recurses: a same-wrapper element (Option<Option<X>> —
+        // forbidden in JBCT, but a crash is never the contract), and a container element
+        // (Option<List<Option<X>>> — Collection/Map deserializers propagate the property into
+        // content contextualization, so a same-wrapper element beyond the container re-derives it).
+        // The type-directed path (valueType only) stays fully typed for containers: readValue
+        // contextualizes against the element's own JavaType with no property.
+        var deser = elementType.getRawClass() == Option.class || elementType.isContainerType()
+                    ? null
+                    : ctxt.findContextualValueDeserializer(elementType, property);
+
+        return new OptionDeserializer(elementType, deser);
     }
 
     @Override

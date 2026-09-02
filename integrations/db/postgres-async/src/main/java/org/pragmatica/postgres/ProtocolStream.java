@@ -11,8 +11,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.pragmatica.postgres;
+
+import java.util.function.Consumer;
 
 import org.pragmatica.postgres.message.Message;
 import org.pragmatica.postgres.message.backend.Authentication;
@@ -27,7 +28,6 @@ import org.pragmatica.postgres.net.NotificationHandler;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
-import java.util.function.Consumer;
 
 /**
  * Stream of messages from/to backend server.
@@ -35,25 +35,23 @@ import java.util.function.Consumer;
  * @author Antti Laisi
  */
 public interface ProtocolStream {
-
     Promise<Message> connect(StartupMessage startup);
-
     Promise<Message> authenticate(String userName, String password, Authentication authRequired);
-
     Promise<Message> send(Message message);
 
-    Promise<Unit> send(Query query, Consumer<RowDescription.ColumnDescription[]> onColumns, Consumer<DataRow> onRow, Consumer<CommandComplete> onAffected);
+    Promise<Unit> send(Query query,
+                       Consumer<RowDescription.ColumnDescription[]> onColumns,
+                       Consumer<DataRow> onRow,
+                       Consumer<CommandComplete> onAffected);
 
-    Promise<Integer> send(Bind bind, Describe describe, Consumer<RowDescription.ColumnDescription[]> onColumns, Consumer<DataRow> onRow);
+    Promise<Integer> send(Bind bind,
+                          Describe describe,
+                          Consumer<RowDescription.ColumnDescription[]> onColumns,
+                          Consumer<DataRow> onRow);
 
     Promise<Integer> send(Bind bind, Consumer<DataRow> onRow);
-
     Runnable subscribe(String channel, Consumer<String> onNotification);
-
     Runnable subscribeWithDetails(String channel, NotificationHandler onNotification);
-
     boolean isConnected();
-
     Promise<Unit> close();
-
 }

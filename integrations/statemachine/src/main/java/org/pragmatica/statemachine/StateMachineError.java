@@ -6,6 +6,7 @@ import org.pragmatica.lang.Option;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 
+
 /// Error types for state machine operations.
 public sealed interface StateMachineError extends Cause {
     /// Invalid state transition attempted.
@@ -52,7 +53,8 @@ public sealed interface StateMachineError extends Cause {
     record ActionFailed(String action, Option<Throwable> cause) implements StateMachineError {
         @Override
         public String message() {
-            return "Action failed: " + action + cause.fold(() -> "", c -> " - " + c.getMessage());
+            return "Action failed: " + action + cause.fold(() -> "",
+                                                           c -> " - " + c.getMessage());
         }
     }
 

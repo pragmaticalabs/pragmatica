@@ -13,11 +13,11 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.rabia;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.utils.Causes;
+
 
 /// Error types for git-backed persistence operations.
 public sealed interface PersistenceError extends Cause {

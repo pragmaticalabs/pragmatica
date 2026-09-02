@@ -4,10 +4,10 @@
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  */
-
 package org.pragmatica.statemachine;
 
 import org.pragmatica.lang.Contract;
+
 
 /// Per-dispatch transition-request handle passed to [`FsmState#handle`]. Captures the FSM, the
 /// `from` state reference (the state the dispatcher observed when it called `handle`), and the

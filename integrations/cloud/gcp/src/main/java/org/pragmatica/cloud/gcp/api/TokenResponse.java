@@ -14,10 +14,10 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.cloud.gcp.api;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+
 
 /// OAuth2 token response from GCP token endpoint.
 @JsonIgnoreProperties(ignoreUnknown = true)

@@ -11,14 +11,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.pragmatica.postgres;
-
-import org.pragmatica.postgres.net.ConnectibleBuilder;
-import org.pragmatica.postgres.net.Connection;
-import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Unit;
 
 import java.util.ArrayDeque;
 import java.util.Queue;
@@ -28,7 +21,14 @@ import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
+import org.pragmatica.postgres.net.ConnectibleBuilder;
+import org.pragmatica.postgres.net.Connection;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
+
 import static org.pragmatica.lang.Unit.unit;
+
 
 /**
  * Resource pool for backend connections.
@@ -38,7 +38,6 @@ import static org.pragmatica.lang.Unit.unit;
 public class PgConnectionPool extends PgConnectible {
     private final int maxConnections;
     private final int maxStatements;
-
     private final Lock guard = new ReentrantLock();
     private int size;
     private final Queue<Promise<Connection>> pending = new ArrayDeque<>();
@@ -65,6 +64,7 @@ public class PgConnectionPool extends PgConnectible {
         if (connection == null) {
             throw new IllegalArgumentException("'connection' should be not null");
         }
+
         Runnable lucky = locked(() -> {
             var nextUser = pending.poll();
 
@@ -72,9 +72,11 @@ public class PgConnectionPool extends PgConnectible {
                 return () -> nextUser.succeed(connection);
             } else {
                 connections.add(connection);
+
                 return checkClosed();
             }
         });
+
         Promise.async(lucky);
     }
 
@@ -101,7 +103,8 @@ public class PgConnectionPool extends PgConnectible {
                 return new PoolResult.Available(conn);
             }
 
-            var deferred = Promise.<Connection>promise();
+            var deferred = Promise.<Connection> promise();
+
             pending.add(deferred);
             boolean makeNew = size < maxConnections;
 
@@ -117,22 +120,22 @@ public class PgConnectionPool extends PgConnectible {
             case PoolResult.Available available -> Promise.success(available.connection());
             case PoolResult.Pending pendingResult -> {
                 if (pendingResult.makeNew()) {
-                    obtainStream.get()
-                                .flatMap(stream -> {
-                                    var conn = new PgConnection(stream, dataConverter, maxStatements);
-                                    conn.onRelease(() -> release(conn));
-                                    return conn.connect(username, password, database);
-                                })
-                                .flatMap(this::validateConnection)
-                                .withResult(result -> result.fold(
-                                    cause -> {
-                                        propagateFailure(cause);
-                                        return null;
-                                    },
-                                    connected -> {
-                                        release((PgConnection) connected);
-                                        return null;
-                                    }));
+                    obtainStream.get().flatMap(stream -> {
+                        var conn = new PgConnection(stream, dataConverter, maxStatements);
+
+                        conn.onRelease(() -> release(conn));
+
+                        return conn.connect(username, password, database);
+                    }).flatMap(this::validateConnection).withResult(result -> result.fold(cause -> {
+                                                                                              propagateFailure(cause);
+
+                                                                                              return null;
+                                                                                          },
+                                                                                          connected -> {
+                                                                                              release((PgConnection) connected);
+
+                                                                                              return null;
+                                                                                          }));
                 }
 
                 yield pendingResult.deferred();
@@ -143,14 +146,15 @@ public class PgConnectionPool extends PgConnectible {
     private void propagateFailure(Cause cause) {
         var actions = locked(() -> {
             size--;
-            var unlucky = Stream.concat(
-                                    pending.stream()
-                                           .map(item -> (Runnable) () -> item.fail(cause)),
-                                    Stream.of(checkClosed()))
+            var unlucky = Stream.concat(pending.stream().map(item -> (Runnable)() -> item.fail(cause)),
+                                        Stream.of(checkClosed()))
                                 .toList();
+
             pending.clear();
+
             return unlucky;
         });
+
         actions.forEach(Promise::async);
     }
 
@@ -164,20 +168,17 @@ public class PgConnectionPool extends PgConnectible {
 
     private Promise<Connection> runValidationQuery(Connection connection) {
         return connection.completeScript(validationQuery)
-                         .fold(result ->
-                                   result.fold(
-                                       cause -> ((PgConnection) connection).shutdown()
-                                           .flatMap(_ -> Promise.failure(cause)),
-                                       _ -> Promise.success(connection)
-                                   ));
+                         .fold(result -> result.fold(cause -> ((PgConnection) connection).shutdown()
+                                                                                         .flatMap(_ -> Promise.failure(cause)),
+                                                     _ -> Promise.success(connection)));
     }
 
     @Override
     public Promise<Unit> close() {
         return locked(() -> {
             if (closing == null) {
-                closing = allOf(connections.stream()
-                                           .map(PgConnection::shutdown));
+                closing = allOf(connections.stream().map(PgConnection::shutdown));
+
                 return closing;
             } else {
                 return Promise.failure(SqlError.fromThrowable(new IllegalStateException("PG pool is already shutting down")));
@@ -190,6 +191,7 @@ public class PgConnectionPool extends PgConnectible {
     private Runnable checkClosed() {
         if (closing != null && size <= connections.size()) {
             assert pending.isEmpty();
+
             return () -> closing.succeed(unit());
         } else {
             return NO_OP;
@@ -203,30 +205,35 @@ public class PgConnectionPool extends PgConnectible {
             size--;
             connection = connections.poll();
         }
+
         return connection;
     }
 
     private static Promise<Unit> allOf(Stream<? extends Promise<?>> promises) {
         var list = promises.toList();
+
         if (list.isEmpty()) {
             return Promise.success(unit());
         }
-        var result = Promise.<Unit>promise();
+
+        var result = Promise.<Unit> promise();
         var remaining = new AtomicInteger(list.size());
+
         for (var p : list) {
-            p.onResult(r -> r.fold(
-                cause -> {
-                    result.fail(cause);
-                    return null;
-                },
-                _ -> {
-                    if (remaining.decrementAndGet() == 0) {
-                        result.succeed(unit());
-                    }
-                    return null;
-                }
-            ));
+            p.onResult(r -> r.fold(cause -> {
+                                       result.fail(cause);
+
+                                       return null;
+                                   },
+                                   _ -> {
+                                       if (remaining.decrementAndGet() == 0) {
+                                       result.succeed(unit());
+                                   }
+
+                                       return null;
+                                   }));
         }
+
         return result;
     }
 }

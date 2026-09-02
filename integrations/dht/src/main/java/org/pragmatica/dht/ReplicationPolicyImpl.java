@@ -13,12 +13,12 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.dht;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Predicate;
+
 
 /// Package-private implementation of ReplicationPolicy.
 /// Core community uses standard ring placement; non-core gets home replica first.
@@ -57,14 +57,15 @@ class ReplicationPolicyImpl<N extends Comparable<N>> implements ReplicationPolic
 
     private List<N> buildReplicaListWithHome(byte[] key, N home) {
         var result = new ArrayList<N>();
-        result.add(home);
 
+        result.add(home);
         var ringReplicas = ring.nodesFor(key, replicationFactor, excludeHomeNode(home));
 
         for (var node : ringReplicas) {
             if (result.size() >= replicationFactor) {
                 break;
             }
+
             result.add(node);
         }
 

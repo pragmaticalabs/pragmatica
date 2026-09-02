@@ -11,14 +11,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.pragmatica.postgres.net;
+
+import java.util.function.Consumer;
 
 import org.pragmatica.postgres.Oid;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
-import java.util.function.Consumer;
 
 /**
  * A single physical connection to Postgres backend.
@@ -30,7 +30,6 @@ import java.util.function.Consumer;
  * @author Marat Gainullin
  */
 public interface Connection extends QueryExecutor {
-
     Promise<? extends PreparedStatement> prepareStatement(String sql, Oid... parametersTypes);
 
     /**
@@ -59,8 +58,6 @@ public interface Connection extends QueryExecutor {
     }
 
     Promise<Transaction> begin();
-
     Promise<Unit> close();
-
     boolean isConnected();
 }

@@ -11,13 +11,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.pragmatica.postgres.net;
+
+import java.io.Serial;
 
 import org.pragmatica.postgres.SqlError.ServerError;
 import org.pragmatica.lang.Cause;
 
-import java.io.Serial;
 
 /**
  * Backend or client error. If the error is sent by backend, SQLSTATE error code
@@ -26,7 +26,6 @@ import java.io.Serial;
  * @author Antti Laisi
  */
 public class SqlException extends RuntimeException {
-
     @Serial
     private static final long serialVersionUID = 1L;
 
@@ -44,7 +43,9 @@ public class SqlException extends RuntimeException {
 
     public SqlException(Cause cause) {
         super(cause.message());
-        this.serverError = cause instanceof ServerError se ? se : null;
+        this.serverError = cause instanceof ServerError se
+                           ? se
+                           : null;
     }
 
     public ServerError error() {

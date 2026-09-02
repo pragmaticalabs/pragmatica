@@ -13,12 +13,12 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.utility;
 
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.TerminalOperation;
 import org.pragmatica.lang.io.TimeSpan;
+
 
 /// Simple sleep utility that handles interrupts gracefully.
 public sealed interface Sleep {
@@ -27,11 +27,10 @@ public sealed interface Sleep {
     @TerminalOperation
     @Contract
     static void sleep(TimeSpan span) {
-        try{
+        try {
             Thread.sleep(span.millis());
         } catch (InterruptedException e) {
-            Thread.currentThread()
-                  .interrupt();
+            Thread.currentThread().interrupt();
         }
     }
 

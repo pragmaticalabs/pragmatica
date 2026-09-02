@@ -13,8 +13,11 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.topology;
+
+import java.net.SocketAddress;
+import java.util.List;
+import java.util.Set;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -24,19 +27,14 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.TlsConfig;
 
-import java.net.SocketAddress;
-import java.util.List;
-import java.util.Set;
 
 /// Representation of our knowledge about the cluster structure: known nodes and cluster/quorum size.
 /// Note that this is not a representation of the actual cluster topology.
 public interface TopologyManager {
     /// This node information.
     NodeInfo self();
-
     /// Retrieve information about the node.
     Option<NodeInfo> get(NodeId id);
-
     /// Returns the configured fixed cluster size used for quorum calculations.
     /// This value is set at startup and can be dynamically updated via SetClusterSize message.
     /// Using a fixed cluster size prevents split-brain resurrection scenarios.
@@ -65,13 +63,9 @@ public interface TopologyManager {
 
     /// Mapping from IP address (host and port) to node ID.
     Option<NodeId> reverseLookup(SocketAddress socketAddress);
-
     Promise<Unit> start();
-
     Promise<Unit> stop();
-
     TimeSpan pingInterval();
-
     /// Timeout for Hello handshake on new connections.
     TimeSpan helloTimeout();
 
@@ -82,7 +76,6 @@ public interface TopologyManager {
 
     /// Retrieve the state of a node by ID.
     Option<NodeState> getState(NodeId id);
-
     /// Returns the list of all node IDs in the topology.
     List<NodeId> topology();
 
@@ -100,19 +93,46 @@ public interface TopologyManager {
     /// Passive nodes (load balancers, observers) are excluded from the count.
     default int activeNodeCount() {
         return (int) topology().stream()
-                               .filter(id -> !isPassive(id))
-                               .count();
+                             .filter(id -> !isPassive(id))
+                             .count();
     }
 
-    /// Returns the count of currently-healthy active (non-passive) nodes.
-    /// Used by reconciliation decisions that must distinguish "reachable right now" from
-    /// "present in topology but possibly unreachable" — e.g. CTM deficit/surplus checks must
-    /// not count a killed-but-not-yet-evicted peer as live.
-    default int healthyActiveNodeCount() {
+    /// Active (non-passive) nodes the current authority reports, for reconciliation decisions that
+    /// must distinguish "contributing right now" from "present in topology but possibly unreachable"
+    /// — e.g. CTM deficit/surplus checks must not count a killed-but-not-yet-evicted peer as live.
+    ///
+    /// **Renamed from `healthyActiveNodeCount` (#558).** Nothing ever drove a node out of
+    /// `NodeHealth.HEALTHY`, so the health filter this name advertised was constant-true and the name
+    /// asserted a check that did not happen — the defect class that had already minted a false
+    /// docstring elsewhere (#678). No deprecation alias: Aether is not published (#668) and the two
+    /// production callers are the entire consumer set.
+    ///
+    /// **The name deliberately asserts NO filter property, because this method is genuinely two
+    /// different things.** `TopologyObserver` overrides it: in NORMAL it returns the membership view's
+    /// on-duty count, which post-#557 requires OBSERVED reachability (completed QUIC handshake or SWIM
+    /// ALIVE); in BOOTING it falls back to a DISCOVERY count, deliberately, to break the cold-start
+    /// catch-22 where the snapshot only exists after consensus commits.
+    ///
+    /// Two better-reading candidates were rejected for being false in one mode each, which is the whole
+    /// defect #558 removed:
+    /// - `observedActiveNodeCount` overclaims — there is no observation during BOOTING.
+    /// - `discoveredActiveNodeCount` names a SUPERSET of what NORMAL returns. For a COUNT that is the
+    ///   more dangerous error: a caller comparing it against a configured size would silently
+    ///   over-expect, since the observed subset is smaller than the discovered set.
+    ///
+    /// "Reported" is what is true in both modes: this is the number the current membership authority
+    /// reports. Which authority, and what it filters, is the docstring's job — not the name's. Per the
+    /// repo's claim discipline: between two candidate phrasings, choose the weaker one.
+    ///
+    /// This default is the discovery-only shape for implementations without a membership view.
+    default int reportedActiveNodeCount() {
+        // The `health == HEALTHY` filter removed here was constant-true, so this is behaviour-
+        // preserving. `topology()` is derived from the same map `getState` reads, so the presence
+        // check is total — kept only to make the discovery semantics explicit at the call site.
         return (int) topology().stream()
-                               .filter(id -> !isPassive(id))
-                               .filter(id -> getState(id).map(state -> state.health() == NodeHealth.HEALTHY).or(false))
-                               .count();
+                             .filter(id -> !isPassive(id))
+                             .filter(id -> getState(id).isPresent())
+                             .count();
     }
 
     /// Returns the set of core (non-passive) node IDs in the topology.

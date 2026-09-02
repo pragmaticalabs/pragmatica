@@ -13,22 +13,19 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.swim;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 
+
 /// Listener for SWIM membership change events.
 @Contract
 public interface SwimMembershipListener {
-
     /// Called when a new member joins or a previously faulty member recovers.
     void onMemberJoined(SwimMember member);
-
     /// Called when a member is suspected of being unreachable.
     void onMemberSuspect(SwimMember member);
-
     /// Called when a suspected member is confirmed faulty.
     ///
     /// `firstHand` distinguishes verdict provenance (P1 death-path co-confirmation):
@@ -40,7 +37,6 @@ public interface SwimMembershipListener {
     ///           (transport-observed peer-down); an uncorroborated second-hand FAULTY is
     ///           downgraded to SUSPECT inside the protocol and never surfaces here.
     void onMemberFaulty(SwimMember member, boolean firstHand);
-
     /// Called when a member is removed from the membership list.
     void onMemberLeft(NodeId nodeId);
 }

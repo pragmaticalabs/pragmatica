@@ -11,7 +11,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.pragmatica.postgres.message.backend;
 
 public record NoticeResponse(String level, String code, String message) implements LogResponse {}

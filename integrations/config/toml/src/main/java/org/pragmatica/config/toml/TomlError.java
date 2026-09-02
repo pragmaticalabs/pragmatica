@@ -13,11 +13,11 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.config.toml;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
+
 
 /// Typed errors for TOML parsing operations.
 public sealed interface TomlError extends Cause {
@@ -156,8 +156,10 @@ public sealed interface TomlError extends Cause {
     record DottedKeyConflict(int line, String key, String existingPath) implements TomlError {
         @Override
         public String message() {
-            return "Cannot define '" + key + "' at line " + line + ": '" + existingPath
-                   + "' is already defined as a value";
+            return "Cannot define '" + key
+                 + "' at line " + line
+                 + ": '" + existingPath
+                 + "' is already defined as a value";
         }
     }
 

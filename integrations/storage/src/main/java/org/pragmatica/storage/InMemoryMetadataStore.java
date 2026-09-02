@@ -11,6 +11,7 @@ import org.pragmatica.lang.Option;
 
 import static org.pragmatica.lang.Option.option;
 
+
 /// In-memory implementation of MetadataStore backed by ConcurrentHashMaps.
 /// Suitable for testing and single-node deployments.
 final class InMemoryMetadataStore implements MetadataStore {
@@ -64,7 +65,9 @@ final class InMemoryMetadataStore implements MetadataStore {
     @Override
     public Option<BlockLifecycle> computeLifecycle(BlockId blockId, UnaryOperator<BlockLifecycle> updater) {
         var result = option(lifecycle.computeIfPresent(blockId, (_, lc) -> updater.apply(lc)));
+
         result.onPresent(_ -> epoch.incrementAndGet());
+
         return result;
     }
 
@@ -90,7 +93,9 @@ final class InMemoryMetadataStore implements MetadataStore {
     @Override
     public Option<BlockId> removeRef(String refName) {
         var result = option(refs.remove(refName));
+
         result.onPresent(_ -> epoch.incrementAndGet());
+
         return result;
     }
 
@@ -106,8 +111,10 @@ final class InMemoryMetadataStore implements MetadataStore {
 
     @Override
     public List<BlockLifecycle> listBlocksByTier(TierLevel tier) {
-        return lifecycle.values().stream()
-                        .filter(lc -> lc.presentIn().contains(tier))
+        return lifecycle.values()
+                        .stream()
+                        .filter(lc -> lc.presentIn()
+                                        .contains(tier))
                         .toList();
     }
 

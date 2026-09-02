@@ -3,6 +3,7 @@ package org.pragmatica.storage;
 import java.util.EnumSet;
 import java.util.Set;
 
+
 /// Tracks which tiers hold a block and its lifecycle state.
 ///
 /// @param blockId content-addressed block identifier
@@ -17,7 +18,6 @@ public record BlockLifecycle(BlockId blockId,
                              long lastAccessedAt,
                              long createdAt,
                              int accessCount) {
-
     /// Defensive copy — ensure immutability of the tier set.
     public BlockLifecycle {
         presentIn = presentIn.isEmpty()
@@ -27,25 +27,33 @@ public record BlockLifecycle(BlockId blockId,
 
     public static BlockLifecycle blockLifecycle(BlockId blockId, TierLevel initialTier) {
         var now = System.currentTimeMillis();
+
         return new BlockLifecycle(blockId, EnumSet.of(initialTier), 1, now, now, 0);
     }
 
     /// Reconstruction factory for deserialization from KV-Store.
-    public static BlockLifecycle blockLifecycle(BlockId blockId, Set<TierLevel> presentIn,
-                                                int refCount, long lastAccessedAt,
-                                                long createdAt, int accessCount) {
+    public static BlockLifecycle blockLifecycle(BlockId blockId,
+                                                Set<TierLevel> presentIn,
+                                                int refCount,
+                                                long lastAccessedAt,
+                                                long createdAt,
+                                                int accessCount) {
         return new BlockLifecycle(blockId, presentIn, refCount, lastAccessedAt, createdAt, accessCount);
     }
 
     public BlockLifecycle withTierAdded(TierLevel tier) {
         var tiers = EnumSet.copyOf(presentIn);
+
         tiers.add(tier);
+
         return new BlockLifecycle(blockId, tiers, refCount, lastAccessedAt, createdAt, accessCount);
     }
 
     public BlockLifecycle withTierRemoved(TierLevel tier) {
         var tiers = EnumSet.copyOf(presentIn);
+
         tiers.remove(tier);
+
         return new BlockLifecycle(blockId, tiers, refCount, lastAccessedAt, createdAt, accessCount);
     }
 

@@ -1,10 +1,11 @@
 package org.pragmatica.postgres.io.backend;
 
+import java.nio.ByteBuffer;
+import java.nio.charset.Charset;
+
 import org.pragmatica.postgres.io.Decoder;
 import org.pragmatica.postgres.message.backend.BackendKeyData;
 
-import java.nio.ByteBuffer;
-import java.nio.charset.Charset;
 
 /**
  * BackendKeyData (B)

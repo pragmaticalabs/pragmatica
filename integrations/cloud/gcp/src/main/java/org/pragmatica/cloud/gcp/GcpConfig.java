@@ -14,11 +14,14 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.cloud.gcp;
 
 /// Configuration for the GCP Cloud API client.
-public record GcpConfig(String projectId, String zone, String serviceAccountEmail, String privateKeyPem, String baseUrl) {
+public record GcpConfig(String projectId,
+                        String zone,
+                        String serviceAccountEmail,
+                        String privateKeyPem,
+                        String baseUrl) {
     private static final String DEFAULT_BASE_URL = "https://compute.googleapis.com/compute/v1";
 
     /// Creates configuration with default GCP Compute API base URL.
@@ -27,16 +30,21 @@ public record GcpConfig(String projectId, String zone, String serviceAccountEmai
     }
 
     /// Creates configuration with custom base URL.
-    public static GcpConfig gcpConfig(String projectId, String zone, String serviceAccountEmail, String privateKeyPem, String baseUrl) {
+    public static GcpConfig gcpConfig(String projectId,
+                                      String zone,
+                                      String serviceAccountEmail,
+                                      String privateKeyPem,
+                                      String baseUrl) {
         return new GcpConfig(projectId, zone, serviceAccountEmail, privateKeyPem, baseUrl);
     }
 
     @Override
     public String toString() {
         return "GcpConfig[projectId=" + projectId
-               + ", zone=" + zone
-               + ", serviceAccountEmail=" + serviceAccountEmail
-               + ", privateKeyPem=REDACTED"
-               + ", baseUrl=" + baseUrl + "]";
+             + ", zone=" + zone
+             + ", serviceAccountEmail=" + serviceAccountEmail
+             + ", privateKeyPem=REDACTED"
+             + ", baseUrl=" + baseUrl
+             + "]";
     }
 }

@@ -13,16 +13,17 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.http.server;
 
-import io.netty.channel.EventLoopGroup;
-import io.netty.handler.codec.quic.QuicSslContext;
+import java.util.function.BiConsumer;
+
 import org.pragmatica.http.HttpRequest;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
-import java.util.function.BiConsumer;
+import io.netty.channel.EventLoopGroup;
+import io.netty.handler.codec.quic.QuicSslContext;
+
 
 /// HTTP server abstraction.
 public interface HttpServer {
@@ -64,8 +65,7 @@ public interface HttpServer {
     static Promise<HttpServer> http3Server(HttpServerConfig config,
                                            QuicSslContext quicSslContext,
                                            BiConsumer<HttpRequest, ResponseWriter> handler) {
-        return Http3Server.create(config, quicSslContext, handler)
-                          .map(Http3ServerAdapter::new);
+        return Http3Server.create(config, quicSslContext, handler).map(Http3ServerAdapter::new);
     }
 
     /// Create and start an HTTP/3 server using an externally managed event loop group.
@@ -79,7 +79,6 @@ public interface HttpServer {
                                            QuicSslContext quicSslContext,
                                            BiConsumer<HttpRequest, ResponseWriter> handler,
                                            EventLoopGroup workerGroup) {
-        return Http3Server.createShared(config, quicSslContext, handler, workerGroup)
-                          .map(Http3ServerAdapter::new);
+        return Http3Server.createShared(config, quicSslContext, handler, workerGroup).map(Http3ServerAdapter::new);
     }
 }

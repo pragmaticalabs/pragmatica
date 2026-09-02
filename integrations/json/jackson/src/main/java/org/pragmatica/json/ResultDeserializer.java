@@ -14,7 +14,6 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.json;
 
 import org.pragmatica.lang.Option;
@@ -30,6 +29,7 @@ import tools.jackson.databind.ValueDeserializer;
 
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
+
 
 /// Jackson deserializer for Result<T> types.
 /// Expects JSON in format: {"success": true, "value": <T>} or {"success": false, "error": {"message": "...", "type": "..."}}
@@ -51,16 +51,16 @@ public class ResultDeserializer extends ValueDeserializer<Result<?>> {
         if (p.currentToken() != tools.jackson.core.JsonToken.START_OBJECT) {
             throw new JacksonException("Expected START_OBJECT token") {};
         }
+
         var parsed = parseResultFields(p, ctxt);
         var cause = Causes.cause("Missing 'success' field in Result JSON");
+
         return parsed.isSuccess()
                      .toResult(cause)
                      .flatMap(successFlag -> successFlag
-                                             ? success(parsed.value()
-                                                             .or((Object) null))
+                                             ? success(parsed.value().or((Object) null))
                                              : DeserializedCause.deserializedCause(parsed.errorMessage()
-                                                                                         .or("Unknown error"))
-                                                                .result());
+                                                                                         .or("Unknown error")).result());
     }
 
     private record ParsedResult(Option<Boolean> isSuccess, Option<Object> value, Option<String> errorMessage) {}
@@ -69,8 +69,10 @@ public class ResultDeserializer extends ValueDeserializer<Result<?>> {
         Option<Boolean> isSuccess = Option.none();
         Option<Object> value = Option.none();
         Option<String> errorMessage = Option.none();
+
         while (p.nextToken() != tools.jackson.core.JsonToken.END_OBJECT) {
             String fieldName = p.currentName();
+
             p.nextToken();
             switch (fieldName) {
                 case "success" -> isSuccess = Option.some(p.getBooleanValue());
@@ -78,18 +80,22 @@ public class ResultDeserializer extends ValueDeserializer<Result<?>> {
                 case "error" -> errorMessage = parseErrorMessage(p);
             }
         }
+
         return new ParsedResult(isSuccess, value, errorMessage);
     }
 
     private Option<String> parseErrorMessage(JsonParser p) throws JacksonException {
         Option<String> errorMessage = Option.none();
+
         while (p.nextToken() != tools.jackson.core.JsonToken.END_OBJECT) {
             String errorField = p.currentName();
+
             p.nextToken();
             if ("message".equals(errorField)) {
                 errorMessage = Option.some(p.getString());
             }
         }
+
         return errorMessage;
     }
 
@@ -114,16 +120,36 @@ public class ResultDeserializer extends ValueDeserializer<Result<?>> {
     @Override
     public ValueDeserializer<?> createContextual(DeserializationContext ctxt, BeanProperty property) {
         return option(property).map(BeanProperty::getType)
-                     .filter(JavaType::hasContentType)
+                     .filter(type -> type.getRawClass() == Result.class)
+                     .flatMap(ResultDeserializer::elementType)
                      .map(type -> createContextualDeserializer(ctxt, property, type))
                      .or(this);
     }
 
+    /// Result is registered on the plain class, so a declared `Result<T>` arrives as a SimpleType:
+    /// `hasContentType()` is false and `T` lives in the generic binding instead — same defect family
+    /// as OptionDeserializer's (#696). The raw-class filter above is a recursion guard, not
+    /// decoration: `createContextual` sees only the PROPERTY's type, so when this deserializer is
+    /// resolved for the element of another wrapper (`Option<Result<X>>`), deriving from the property
+    /// would re-derive the outer wrapper forever.
+    private static Option<JavaType> elementType(JavaType type) {
+        return type.hasContentType()
+               ? option(type.getContentType())
+               : type.containedTypeCount() == 1
+                 ? option(type.containedType(0))
+                 : Option.none();
+    }
+
     private ResultDeserializer createContextualDeserializer(DeserializationContext ctxt,
                                                             BeanProperty property,
-                                                            JavaType type) {
-        var contentType = type.getContentType();
-        var deser = ctxt.findContextualValueDeserializer(contentType, property);
-        return new ResultDeserializer(option(contentType), option(deser));
+                                                            JavaType elementType) {
+        // Same-wrapper and container elements skip the property-contextualized delegate — see
+        // OptionDeserializer: both shapes re-enter contextualization with the same property and
+        // recurse; the type-directed path stays typed and property-free.
+        var deser = elementType.getRawClass() == Result.class || elementType.isContainerType()
+                    ? Option.<ValueDeserializer<Object>> none()
+                    : option(ctxt.findContextualValueDeserializer(elementType, property));
+
+        return new ResultDeserializer(option(elementType), deser);
     }
 }

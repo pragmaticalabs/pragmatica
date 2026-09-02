@@ -14,7 +14,6 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.json;
 
 import org.pragmatica.lang.Option;
@@ -26,6 +25,7 @@ import tools.jackson.databind.JavaType;
 import tools.jackson.databind.SerializationContext;
 import tools.jackson.databind.ValueSerializer;
 import tools.jackson.databind.jsontype.TypeSerializer;
+
 
 /// Jackson serializer for Option<T> types.
 /// Serializes Option as null-like: null for None, or the wrapped value for Some<T>
@@ -45,10 +45,7 @@ public class OptionSerializer extends ValueSerializer<Option<?>> {
     @Override
     public void serialize(Option<?> value, JsonGenerator gen, SerializationContext provider) throws JacksonException {
         switch (value) {
-            case Option.Some<?> some -> valueSerializer.onPresent(ser -> ser.serialize(some.value(),
-                                                                                       gen,
-                                                                                       provider))
-                                                       .onEmpty(() -> gen.writePOJO(some.value()));
+            case Option.Some<?> some -> valueSerializer.onPresent(ser -> ser.serialize(some.value(), gen, provider)).onEmpty(() -> gen.writePOJO(some.value()));
             case Option.None<?> ignored -> gen.writeNull();
         }
     }
@@ -65,6 +62,7 @@ public class OptionSerializer extends ValueSerializer<Option<?>> {
     private OptionSerializer createContextualSerializer(SerializationContext prov, JavaType type) {
         var contentType = type.getContentType();
         var ser = prov.findValueSerializer(contentType);
+
         return new OptionSerializer(Option.option(contentType), Option.option(ser));
     }
 

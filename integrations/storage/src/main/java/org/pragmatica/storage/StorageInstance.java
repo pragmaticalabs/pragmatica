@@ -6,6 +6,7 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -13,37 +14,28 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Unit.unit;
 
+
 /// Hierarchical storage instance with write-through and tier-waterfall reads.
 /// Each instance has its own name, tier configuration, and metadata tracking.
 public interface StorageInstance {
-
     /// Store content -- computes SHA-256, deduplicates, writes through tiers.
     Promise<BlockId> put(byte[] content);
-
     /// Store content with explicit metadata.
     Promise<BlockId> put(byte[] content, BlockMetadata metadata);
-
     /// Read content by block ID -- waterfall through tiers by latency.
     Promise<Option<byte[]>> get(BlockId id);
-
     /// Check if a block exists in any tier.
     Promise<Boolean> exists(BlockId id);
-
     /// Create a named reference to a block.
     Promise<Unit> createRef(String name, BlockId id);
-
     /// Resolve a named reference to its block ID.
     Option<BlockId> resolveRef(String name);
-
     /// Delete a named reference.
     Promise<Unit> deleteRef(String name);
-
     /// Delete a block from all tiers and remove its lifecycle metadata. Used by GC.
     Promise<Unit> delete(BlockId id);
-
     /// Instance name.
     String name();
-
     /// Tier utilization info.
     List<TierInfo> tierInfo();
 
@@ -73,8 +65,10 @@ public interface StorageInstance {
     }
 
     /// Create a storage instance with a custom metadata store and write policy.
-    static StorageInstance storageInstance(String name, List<StorageTier> tiers, MetadataStore metadataStore,
-                                          WritePolicy writePolicy) {
+    static StorageInstance storageInstance(String name,
+                                           List<StorageTier> tiers,
+                                           MetadataStore metadataStore,
+                                           WritePolicy writePolicy) {
         return new DefaultStorageInstance(name, tiers, metadataStore, writePolicy);
     }
 }
@@ -115,7 +109,8 @@ final class DefaultStorageInstance implements StorageInstance {
 
     @Override
     public Promise<Option<byte[]>> get(BlockId id) {
-        return readCache.deduplicate(id, () -> waterfallRead(id))
+        return readCache.deduplicate(id,
+                                     () -> waterfallRead(id))
                         .onSuccess(opt -> opt.onPresent(_ -> recordAccess(id)));
     }
 
@@ -130,6 +125,7 @@ final class DefaultStorageInstance implements StorageInstance {
     public Promise<Unit> createRef(String refName, BlockId id) {
         metadataStore.putRef(refName, id);
         metadataStore.computeLifecycle(id, BlockLifecycle::withRefCountIncremented);
+
         return Promise.success(unit());
     }
 
@@ -142,13 +138,13 @@ final class DefaultStorageInstance implements StorageInstance {
     public Promise<Unit> deleteRef(String refName) {
         metadataStore.removeRef(refName)
                      .onPresent(id -> metadataStore.computeLifecycle(id, BlockLifecycle::withRefCountDecremented));
+
         return Promise.success(unit());
     }
 
     @Override
     public Promise<Unit> delete(BlockId id) {
-        return deleteFromAllTiers(id, 0)
-            .onSuccess(_ -> removeLifecycleMetadata(id));
+        return deleteFromAllTiers(id, 0).onSuccess(_ -> removeLifecycleMetadata(id));
     }
 
     @Override
@@ -171,7 +167,6 @@ final class DefaultStorageInstance implements StorageInstance {
     }
 
     // --- Write flow ---
-
     private Promise<BlockId> handlePut(BlockId id, byte[] content) {
         var sentinel = sentinelFor(id);
 
@@ -181,12 +176,14 @@ final class DefaultStorageInstance implements StorageInstance {
     }
 
     private BlockLifecycle sentinelFor(BlockId id) {
-        return BlockLifecycle.blockLifecycle(id, tiers.getLast().level());
+        return BlockLifecycle.blockLifecycle(id,
+                                             tiers.getLast().level());
     }
 
     private Promise<BlockId> deduplicateBlock(BlockId id) {
         metadataStore.computeLifecycle(id, BlockLifecycle::withRefCountIncremented);
         log.debug("Block {} already stored, incremented refCount", id);
+
         return Promise.success(id);
     }
 
@@ -201,7 +198,8 @@ final class DefaultStorageInstance implements StorageInstance {
 
         return durableTier.put(id, content)
                           .flatMap(_ -> promoteToCacheTiers(id, content, durableTier))
-                          .map(_ -> trackNewBlock(id, durableTier.level()));
+                          .map(_ -> trackNewBlock(id,
+                                                  durableTier.level()));
     }
 
     private Promise<BlockId> writeBehindToTiers(BlockId id, byte[] content) {
@@ -209,34 +207,34 @@ final class DefaultStorageInstance implements StorageInstance {
 
         return fastTier.put(id, content)
                        .flatMap(_ -> enqueueRemainingTiers(id, content, fastTier))
-                       .map(_ -> trackNewBlock(id, fastTier.level()));
+                       .map(_ -> trackNewBlock(id,
+                                               fastTier.level()));
     }
 
     private Promise<Unit> enqueueRemainingTiers(BlockId id, byte[] content, StorageTier fastTier) {
-        var remaining = tiers.stream()
-                             .filter(t -> t != fastTier)
-                             .toList();
+        var remaining = tiers.stream().filter(t -> t != fastTier).toList();
 
-        return writeBehindQueue.fold(
-            () -> Promise.success(unit()),
-            queue -> enqueueNextTier(queue, id, content, remaining, 0)
-        );
+        return writeBehindQueue.fold(() -> Promise.success(unit()),
+                                     queue -> enqueueNextTier(queue, id, content, remaining, 0));
     }
 
-    private Promise<Unit> enqueueNextTier(WriteBehindQueue queue, BlockId id, byte[] content,
-                                          List<StorageTier> remaining, int index) {
+    private Promise<Unit> enqueueNextTier(WriteBehindQueue queue,
+                                          BlockId id,
+                                          byte[] content,
+                                          List<StorageTier> remaining,
+                                          int index) {
         if (index >= remaining.size()) {
             return Promise.success(unit());
         }
 
-        return queue.enqueue(id, content, remaining.get(index))
+        return queue.enqueue(id,
+                             content,
+                             remaining.get(index))
                     .flatMap(_ -> enqueueNextTier(queue, id, content, remaining, index + 1));
     }
 
     private Promise<Unit> promoteToCacheTiers(BlockId id, byte[] content, StorageTier durableTier) {
-        var cacheTiers = tiers.stream()
-                              .filter(t -> t != durableTier)
-                              .toList();
+        var cacheTiers = tiers.stream().filter(t -> t != durableTier).toList();
 
         if (cacheTiers.isEmpty()) {
             return Promise.success(unit());
@@ -253,19 +251,23 @@ final class DefaultStorageInstance implements StorageInstance {
         var tier = cacheTiers.get(index);
 
         return tier.put(id, content)
-                   .onSuccess(_ -> recordTierPresence(id, tier.level()))
-                   .onFailure(cause -> log.debug("Cache promotion to {} skipped for {}: {}", tier.level(), id, cause.message()))
+                   .onSuccess(_ -> recordTierPresence(id,
+                                                      tier.level()))
+                   .onFailure(cause -> log.debug("Cache promotion to {} skipped for {}: {}",
+                                                 tier.level(),
+                                                 id,
+                                                 cause.message()))
                    .flatMap(_ -> promoteToNextCacheTier(id, content, cacheTiers, index + 1));
     }
 
     private BlockId trackNewBlock(BlockId id, TierLevel initialTier) {
         metadataStore.createLifecycle(BlockLifecycle.blockLifecycle(id, initialTier));
         log.debug("Block {} stored in tier {}", id, initialTier);
+
         return id;
     }
 
     // --- Read flow ---
-
     private Promise<Option<byte[]>> waterfallRead(BlockId id) {
         return waterfallReadFromTier(id, 0);
     }
@@ -281,7 +283,10 @@ final class DefaultStorageInstance implements StorageInstance {
                    .flatMap(opt -> handleTierReadResult(opt, id, tierIndex, tier));
     }
 
-    private Promise<Option<byte[]>> handleTierReadResult(Option<byte[]> opt, BlockId id, int tierIndex, StorageTier tier) {
+    private Promise<Option<byte[]>> handleTierReadResult(Option<byte[]> opt,
+                                                         BlockId id,
+                                                         int tierIndex,
+                                                         StorageTier tier) {
         return opt.fold(() -> waterfallReadFromTier(id, tierIndex + 1),
                         content -> verifyAndReturn(id, content, tier));
     }
@@ -292,18 +297,22 @@ final class DefaultStorageInstance implements StorageInstance {
                       .flatMap(computedId -> completeVerification(computedId, id, content, tier));
     }
 
-    private Promise<Option<byte[]>> completeVerification(BlockId computedId, BlockId expectedId, byte[] content, StorageTier tier) {
+    private Promise<Option<byte[]>> completeVerification(BlockId computedId,
+                                                         BlockId expectedId,
+                                                         byte[] content,
+                                                         StorageTier tier) {
         if (!computedId.equals(expectedId)) {
             log.warn("Integrity check failed in tier {} for block {}", tier.level(), expectedId);
+
             return StorageError.IntegrityError.integrityError(expectedId, computedId).promise();
         }
 
         recordTierPresence(expectedId, tier.level());
+
         return Promise.success(some(content));
     }
 
     // --- Existence check ---
-
     private Promise<Boolean> checkTiersForExistence(BlockId id, int tierIndex) {
         if (tierIndex >= tiers.size()) {
             return Promise.success(false);
@@ -311,11 +320,12 @@ final class DefaultStorageInstance implements StorageInstance {
 
         return tiers.get(tierIndex)
                     .exists(id)
-                    .flatMap(found -> found ? Promise.success(true) : checkTiersForExistence(id, tierIndex + 1));
+                    .flatMap(found -> found
+                                      ? Promise.success(true)
+                                      : checkTiersForExistence(id, tierIndex + 1));
     }
 
     // --- Lifecycle helpers ---
-
     private void recordAccess(BlockId id) {
         metadataStore.computeLifecycle(id, BlockLifecycle::withAccessTimestamp);
     }
@@ -329,7 +339,6 @@ final class DefaultStorageInstance implements StorageInstance {
     }
 
     // --- Delete flow ---
-
     private Promise<Unit> deleteFromAllTiers(BlockId id, int tierIndex) {
         if (tierIndex >= tiers.size()) {
             return Promise.success(unit());

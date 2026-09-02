@@ -3,6 +3,7 @@ package org.pragmatica.postgres.conversion;
 import org.pragmatica.postgres.Oid;
 import org.pragmatica.postgres.net.SqlException;
 
+
 public final class Common {
     private Common() {}
 

@@ -13,13 +13,13 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.topology;
+
+import java.util.List;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.messaging.Message;
 
-import java.util.List;
 
 /// Observations made by THIS NODE about the local transport-layer state of cluster peers.
 ///
@@ -50,11 +50,9 @@ import java.util.List;
 public sealed interface TransportObservation extends Message.Local {
     /// The peer that was observed.
     NodeId nodeId();
-
     /// Local view of the connected peer set after this observation, as known to THIS node.
     /// Note: a local snapshot, not a cluster-canonical membership view.
     List<NodeId> topology();
-
     /// Where the observation came from. Useful for diagnostics and for subscribers that need
     /// source-aware behaviour (rare; typically subscribers should be source-agnostic).
     ObservationSource source();

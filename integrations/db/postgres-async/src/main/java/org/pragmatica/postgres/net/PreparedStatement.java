@@ -1,5 +1,9 @@
 package org.pragmatica.postgres.net;
 
+import java.util.Map;
+import java.util.function.BiConsumer;
+import java.util.function.Consumer;
+
 import org.pragmatica.postgres.PgColumn;
 import org.pragmatica.postgres.PgResultSet;
 import org.pragmatica.postgres.PgRow;
@@ -7,9 +11,6 @@ import org.pragmatica.postgres.message.backend.DataRow;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
-import java.util.Map;
-import java.util.function.BiConsumer;
-import java.util.function.Consumer;
 
 /**
  * Prepared statement in terms of Postgres. It lives during database session. It should be reused multiple times and it should be closed after using.
@@ -20,7 +21,6 @@ import java.util.function.Consumer;
  *     used in context of single {@link Promise} completion at a time.
  */
 public interface PreparedStatement {
-
     /**
      * Fetches the whole row set and returns a {@link Promise} completed with an instance of {@link ResultSet}. This promise may be
      * completed with an error. Use this method if you are sure, that all data, returned by the query can be placed into memory.
@@ -43,7 +43,9 @@ public interface PreparedStatement {
      * @return Promise that completes when the whole process ends or when an error occurs. Promise's value will indicate the number of rows affected
      *     by the query.
      */
-    Promise<Integer> fetch(BiConsumer<Map<String, PgColumn>, PgColumn[]> onColumns, Consumer<PgRow> processor, Object... params);
+    Promise<Integer> fetch(BiConsumer<Map<String, PgColumn>, PgColumn[]> onColumns,
+                           Consumer<PgRow> processor,
+                           Object... params);
 
     /**
      * Closes this {@link PreparedStatement} and possibly frees resources. In case of pool statement it may be returned to a pool for future reuse.

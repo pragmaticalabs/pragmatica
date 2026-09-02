@@ -6,7 +6,6 @@ package org.pragmatica.storage;
 /// @param maxHintsPerGossip maximum number of hints to piggyback per gossip round
 /// @param cooldownMs minimum interval (ms) between prefetch attempts for the same block
 public record PrefetchConfig(int accessThreshold, int maxHintsPerGossip, long cooldownMs) {
-
     /// Clamp parameters to valid ranges.
     public PrefetchConfig {
         accessThreshold = Math.max(accessThreshold, 1);

@@ -2,11 +2,13 @@ package org.pragmatica.storage;
 
 import org.pragmatica.lang.Cause;
 
+
 /// Storage error hierarchy.
 public sealed interface StorageError extends Cause {
-
     record BlockNotFound(BlockId blockId) implements StorageError {
-        static BlockNotFound blockNotFound(BlockId blockId) { return new BlockNotFound(blockId); }
+        static BlockNotFound blockNotFound(BlockId blockId) {
+            return new BlockNotFound(blockId);
+        }
 
         @Override
         public String message() {
@@ -15,7 +17,9 @@ public sealed interface StorageError extends Cause {
     }
 
     record IntegrityError(BlockId expected, BlockId actual) implements StorageError {
-        static IntegrityError integrityError(BlockId expected, BlockId actual) { return new IntegrityError(expected, actual); }
+        static IntegrityError integrityError(BlockId expected, BlockId actual) {
+            return new IntegrityError(expected, actual);
+        }
 
         @Override
         public String message() {
@@ -24,7 +28,9 @@ public sealed interface StorageError extends Cause {
     }
 
     record TierFull(TierLevel tier, long usedBytes, long maxBytes) implements StorageError {
-        static TierFull tierFull(TierLevel tier, long usedBytes, long maxBytes) { return new TierFull(tier, usedBytes, maxBytes); }
+        static TierFull tierFull(TierLevel tier, long usedBytes, long maxBytes) {
+            return new TierFull(tier, usedBytes, maxBytes);
+        }
 
         @Override
         public String message() {
@@ -33,7 +39,9 @@ public sealed interface StorageError extends Cause {
     }
 
     record WriteError(String detail) implements StorageError {
-        static WriteError writeError(String detail) { return new WriteError(detail); }
+        static WriteError writeError(String detail) {
+            return new WriteError(detail);
+        }
 
         @Override
         public String message() {
@@ -42,7 +50,9 @@ public sealed interface StorageError extends Cause {
     }
 
     record ReadError(String detail) implements StorageError {
-        static ReadError readError(String detail) { return new ReadError(detail); }
+        static ReadError readError(String detail) {
+            return new ReadError(detail);
+        }
 
         @Override
         public String message() {

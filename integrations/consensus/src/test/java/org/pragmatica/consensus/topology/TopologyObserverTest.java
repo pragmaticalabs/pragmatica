@@ -34,8 +34,9 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// Verifies R5 semantics on `TopologyObserver`: the mutation API surface
 /// (`registerPeer`, `unregisterPeer`, `markReady`, `markDeparted`,
 /// `handleConnectionFailed`, `handleConnectionEstablished`) is **deleted**.
-/// HealthReconciler is the sole writer of `NodeLifecycleKey`; the observer's
-/// authoritative readers project `MembershipView` from KV via
+/// Membership is presence-derived in v2 (Aether's `MembershipFsm`; the
+/// `NodeLifecycleKey` atom itself is deleted); the observer's authoritative
+/// readers project the membership view from committed state via
 /// `GenerationSnapshotSource`. Compile-time absence of the legacy methods is
 /// the strongest possible enforcement of spec §4.4 (Layer 3 is read-only).
 class TopologyObserverTest {

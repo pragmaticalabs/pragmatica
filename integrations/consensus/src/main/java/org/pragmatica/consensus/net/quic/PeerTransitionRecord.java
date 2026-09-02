@@ -13,10 +13,10 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.net.quic;
 
 import org.pragmatica.consensus.NodeId;
+
 
 /// One [PeerState] phase-transition observation (cluster-topology-overhaul spec, Wave 1
 /// Enrichment A). Emitted by [PeerState] at every phase mutation — and by

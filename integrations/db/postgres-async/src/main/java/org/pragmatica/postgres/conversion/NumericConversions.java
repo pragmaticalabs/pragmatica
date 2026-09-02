@@ -1,11 +1,12 @@
 package org.pragmatica.postgres.conversion;
 
-import org.pragmatica.postgres.Oid;
-
 import java.math.BigDecimal;
 import java.math.BigInteger;
 
+import org.pragmatica.postgres.Oid;
+
 import static org.pragmatica.postgres.conversion.Common.returnError;
+
 
 /**
  * @author Antti Laisi

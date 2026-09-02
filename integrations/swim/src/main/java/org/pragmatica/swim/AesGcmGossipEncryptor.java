@@ -5,13 +5,13 @@ import java.security.SecureRandom;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-
 import javax.crypto.Cipher;
 import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+
 
 /// AES-256-GCM gossip encryptor with multi-key accept support for rotation and day-boundary
 /// overlap.
@@ -35,7 +35,9 @@ public final class AesGcmGossipEncryptor implements GossipEncryptor {
     private final Map<Integer, SecretKeySpec> acceptedKeys;
     private final SecureRandom secureRandom;
 
-    private AesGcmGossipEncryptor(SecretKeySpec currentKey, int currentKeyId, Map<Integer, SecretKeySpec> acceptedKeys) {
+    private AesGcmGossipEncryptor(SecretKeySpec currentKey,
+                                  int currentKeyId,
+                                  Map<Integer, SecretKeySpec> acceptedKeys) {
         this.currentKey = currentKey;
         this.currentKeyId = currentKeyId;
         this.acceptedKeys = acceptedKeys;
@@ -48,8 +50,10 @@ public final class AesGcmGossipEncryptor implements GossipEncryptor {
     }
 
     /// Factory creating an encryptor with current and previous keys for rotation.
-    public static Result<GossipEncryptor> aesGcmGossipEncryptor(byte[] currentKey, int currentKeyId,
-                                                                 byte[] previousKey, int previousKeyId) {
+    public static Result<GossipEncryptor> aesGcmGossipEncryptor(byte[] currentKey,
+                                                                int currentKeyId,
+                                                                byte[] previousKey,
+                                                                int previousKeyId) {
         return aesGcmGossipEncryptor(currentKey, currentKeyId, List.of(new AcceptedKey(previousKeyId, previousKey)));
     }
 
@@ -61,8 +65,9 @@ public final class AesGcmGossipEncryptor implements GossipEncryptor {
     public static Result<GossipEncryptor> aesGcmGossipEncryptor(byte[] currentKey,
                                                                 int currentKeyId,
                                                                 List<AcceptedKey> additionalKeys) {
-        return validateKey(currentKey).flatMap(cur -> buildAcceptedKeys(cur, currentKeyId, additionalKeys)
-            .map(accepted -> new AesGcmGossipEncryptor(cur, currentKeyId, accepted)));
+        return validateKey(currentKey).flatMap(cur -> buildAcceptedKeys(cur, currentKeyId, additionalKeys).map(accepted -> new AesGcmGossipEncryptor(cur,
+                                                                                                                                                     currentKeyId,
+                                                                                                                                                     accepted)));
     }
 
     /// An additional key accepted for decryption, identified by its wire keyId.
@@ -71,16 +76,19 @@ public final class AesGcmGossipEncryptor implements GossipEncryptor {
     private static Result<Map<Integer, SecretKeySpec>> buildAcceptedKeys(SecretKeySpec current,
                                                                          int currentKeyId,
                                                                          List<AcceptedKey> additionalKeys) {
-        return Result.allOf(additionalKeys.stream().map(AesGcmGossipEncryptor::validateAccepted).toList())
-                     .map(validated -> collectAcceptedKeys(current, currentKeyId, validated));
+        return Result.allOf(additionalKeys.stream().map(AesGcmGossipEncryptor::validateAccepted).toList()).map(validated -> collectAcceptedKeys(current,
+                                                                                                                                                currentKeyId,
+                                                                                                                                                validated));
     }
 
     private static Map<Integer, SecretKeySpec> collectAcceptedKeys(SecretKeySpec current,
                                                                    int currentKeyId,
                                                                    List<AcceptedSpec> additionalKeys) {
         var map = new LinkedHashMap<Integer, SecretKeySpec>();
+
         map.put(currentKeyId, current);
         additionalKeys.forEach(spec -> map.putIfAbsent(spec.keyId(), spec.key()));
+
         return Map.copyOf(map);
     }
 
@@ -97,18 +105,18 @@ public final class AesGcmGossipEncryptor implements GossipEncryptor {
 
     @Override
     public Result<byte[]> decrypt(byte[] ciphertext) {
-        return parseHeader(ciphertext)
-            .flatMap(header -> resolveKey(header.keyId()).flatMap(key -> decryptPayload(key, header)));
+        return parseHeader(ciphertext).flatMap(header -> resolveKey(header.keyId()).flatMap(key -> decryptPayload(key,
+                                                                                                                  header)));
     }
 
-    @SuppressWarnings("JBCT-EX-01") // Adapter boundary: JCE Cipher throwing supplier for Result.lift
+    @SuppressWarnings("JBCT-EX-01")  // Adapter boundary: JCE Cipher throwing supplier for Result.lift
     private byte[] doEncrypt(byte[] plaintext) throws Exception {
         var nonce = new byte[NONCE_SIZE];
+
         secureRandom.nextBytes(nonce);
-
         var cipher = Cipher.getInstance(ALGORITHM);
-        cipher.init(Cipher.ENCRYPT_MODE, currentKey, new GCMParameterSpec(GCM_TAG_BITS, nonce));
 
+        cipher.init(Cipher.ENCRYPT_MODE, currentKey, new GCMParameterSpec(GCM_TAG_BITS, nonce));
         var encrypted = cipher.doFinal(plaintext);
 
         return ByteBuffer.allocate(HEADER_SIZE + encrypted.length)
@@ -126,8 +134,10 @@ public final class AesGcmGossipEncryptor implements GossipEncryptor {
         var buffer = ByteBuffer.wrap(ciphertext);
         var keyId = buffer.getInt();
         var nonce = new byte[NONCE_SIZE];
+
         buffer.get(nonce);
         var encrypted = new byte[buffer.remaining()];
+
         buffer.get(encrypted);
 
         return new ParsedHeader(keyId, nonce, encrypted);
@@ -137,17 +147,17 @@ public final class AesGcmGossipEncryptor implements GossipEncryptor {
         return Result.lift(GossipEncryptionError.DecryptionFailed::new, () -> doDecryptPayload(key, header));
     }
 
-    @SuppressWarnings("JBCT-EX-01") // Adapter boundary: JCE Cipher throwing supplier for Result.lift
+    @SuppressWarnings("JBCT-EX-01")  // Adapter boundary: JCE Cipher throwing supplier for Result.lift
     private static byte[] doDecryptPayload(SecretKeySpec key, ParsedHeader header) throws Exception {
         var cipher = Cipher.getInstance(ALGORITHM);
+
         cipher.init(Cipher.DECRYPT_MODE, key, new GCMParameterSpec(GCM_TAG_BITS, header.nonce()));
 
         return cipher.doFinal(header.encrypted());
     }
 
     private Result<SecretKeySpec> resolveKey(int keyId) {
-        return Option.option(acceptedKeys.get(keyId))
-                     .toResult(new GossipEncryptionError.UnknownKeyId(keyId));
+        return Option.option(acceptedKeys.get(keyId)).toResult(new GossipEncryptionError.UnknownKeyId(keyId));
     }
 
     private static Result<SecretKeySpec> validateKey(byte[] key) {

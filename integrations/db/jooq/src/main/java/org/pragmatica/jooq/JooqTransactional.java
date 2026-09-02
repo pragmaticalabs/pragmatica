@@ -14,17 +14,16 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.jooq;
-
-import org.pragmatica.lang.Functions.Fn1;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Promise;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.List;
+
+import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 
 import org.jooq.DSLContext;
 import org.jooq.Query;
@@ -34,6 +33,7 @@ import org.jooq.SQLDialect;
 import org.jooq.impl.DSL;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 
 /// Transaction aspect for JOOQ operations.
 /// Provides automatic transaction management with commit on success and rollback on failure.
@@ -83,68 +83,71 @@ final class DataSourceJooqTransactional implements JooqTransactional {
         return Promise.lift(JooqError::fromException,
                             () -> {
                                 Connection conn = null;
-                                try{
-                                    conn = dataSource.getConnection();
-                                    conn.setAutoCommit(false);
-                                    var ops = new ConnectionJooqOperations(conn, dialect);
-                                    var result = operation.apply(ops)
-                                                          .await();
-                                    var connection = conn;
-                                    return result.fold(cause -> {
-                                                           rollback(connection);
-                                                           throw new TransactionFailedException(cause);
-                                                       },
-                                                       value -> {
-                                                           commit(connection);
-                                                           return value;
-                                                       });
-                                } catch (TransactionFailedException e) {
-                                    throw e;
-                                } catch (Exception e) {
-                                    rollback(conn);
-                                    throw e;
-                                } finally{
-                                    close(conn);
-                                }
+
+                                try {
+                                conn = dataSource.getConnection();
+                                conn.setAutoCommit(false);
+                                var ops = new ConnectionJooqOperations(conn, dialect);
+                                var result = operation.apply(ops)
+                                                      .await();
+                                var connection = conn;
+
+                                return result.fold(cause -> {
+                                                       rollback(connection);
+
+                                                       throw new TransactionFailedException(cause);
+                                                   },
+                                                   value -> {
+                                                       commit(connection);
+
+                                                       return value;
+                                                   });
+                            } catch (TransactionFailedException e) {
+                                throw e;
+                            } catch (Exception e) {
+                                rollback(conn);
+
+                                throw e;
+                            } finally {
+                                close(conn);
+                            }
                             });
     }
 
     private void commit(Connection conn) {
-        Option.option(conn)
-              .onPresent(c -> {
-                             try{
-                                 c.commit();
-                             } catch (SQLException e) {
-                                 throw new RuntimeException("Failed to commit transaction", e);
-                             }
-                         });
+        Option.option(conn).onPresent(c -> {
+            try {
+                c.commit();
+            } catch (SQLException e) {
+                throw new RuntimeException("Failed to commit transaction", e);
+            }
+        });
     }
 
     private void rollback(Connection conn) {
-        Option.option(conn)
-              .onPresent(c -> {
-                             try{
-                                 c.rollback();
-                             } catch (SQLException e) {
-                                 log.error("Failed to rollback transaction", e);
-                             }
-                         });
+        Option.option(conn).onPresent(c -> {
+            try {
+                c.rollback();
+            } catch (SQLException e) {
+                log.error("Failed to rollback transaction", e);
+            }
+        });
     }
 
     private void close(Connection conn) {
-        Option.option(conn)
-              .onPresent(c -> {
-                             try{
-                                 c.setAutoCommit(true);
-                             } catch (SQLException e) {
-                                 log.warn("Failed to restore autoCommit", e);
-                             }
-                             try{
-                                 c.close();
-                             } catch (SQLException e) {
-                                 log.error("Failed to close connection", e);
-                             }
-                         });
+        Option.option(conn).onPresent(c -> {
+            try {
+                c.setAutoCommit(true);
+            } catch (SQLException e) {
+                log.warn("Failed to restore autoCommit", e);
+            }
+
+            try {
+                c.close();
+            } catch (SQLException e) {
+                log.error("Failed to close connection", e);
+            }
+        });
     }
 }
 
@@ -165,14 +168,16 @@ final class ConnectionJooqOperations implements JooqOperations {
         return Promise.lift(e -> JooqError.fromException(e, query.getSQL()),
                             () -> {
                                 var result = dsl.fetch(query);
+
                                 if (result.isEmpty()) {
-                                    throw new JooqNoResultException("Query returned no results");
-                                }
+                                throw new JooqNoResultException("Query returned no results");
+                            }
+
                                 if (result.size() > 1) {
-                                    throw new JooqMultipleResultsException("Query returned " + result.size()
-                                                                           + " results",
-                                                                           result.size());
-                                }
+                                throw new JooqMultipleResultsException("Query returned " + result.size() + " results",
+                                                                       result.size());
+                            }
+
                                 return result.get(0);
                             });
     }
@@ -182,6 +187,7 @@ final class ConnectionJooqOperations implements JooqOperations {
         return Promise.lift(e -> JooqError.fromException(e, query.getSQL()),
                             () -> {
                                 var result = dsl.fetch(query);
+
                                 return result.isEmpty()
                                        ? Option.none()
                                        : Option.option(result.get(0));

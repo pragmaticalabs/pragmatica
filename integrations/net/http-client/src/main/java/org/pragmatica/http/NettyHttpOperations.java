@@ -14,7 +14,6 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.http;
 
 import java.net.InetSocketAddress;
@@ -27,6 +26,11 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.AsyncCloseable;
 
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
@@ -59,16 +63,13 @@ import io.netty.handler.codec.quic.QuicChannel;
 import io.netty.handler.codec.quic.QuicSslContext;
 import io.netty.handler.codec.quic.QuicStreamChannel;
 import io.netty.util.ReferenceCountUtil;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Unit;
-import org.pragmatica.lang.io.AsyncCloseable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Unit.unit;
+
 
 /// Netty-based HTTP client supporting HTTP/1.1 (TCP) and HTTP/3 (QUIC).
 ///
@@ -135,6 +136,7 @@ public final class NettyHttpOperations implements HttpOperations, AsyncCloseable
         if ("https".equalsIgnoreCase(scheme) && quicSslContext.isPresent()) {
             return sendHttp3(request, handler, uri);
         }
+
         return sendHttp1(request, handler, uri);
     }
 
@@ -143,17 +145,17 @@ public final class NettyHttpOperations implements HttpOperations, AsyncCloseable
         if (!ownsEventLoop) {
             return Promise.success(unit());
         }
+
         return Promise.promise(promise -> eventLoopGroup.shutdownGracefully()
                                                         .addListener(_ -> promise.succeed(unit())));
     }
 
     // --- HTTP/1.1 ---
-
     private <T> Promise<HttpResult<T>> sendHttp1(HttpRequest request, BodyHandler<T> handler, URI uri) {
         return Promise.promise(promise -> initiateHttp1Request(request, handler, uri, promise));
     }
 
-    @SuppressWarnings("JBCT-PAT-01") // Netty bootstrap + channel future callback
+    @SuppressWarnings("JBCT-PAT-01")  // Netty bootstrap + channel future callback
     private <T> void initiateHttp1Request(HttpRequest request,
                                           BodyHandler<T> handler,
                                           URI uri,
@@ -161,7 +163,6 @@ public final class NettyHttpOperations implements HttpOperations, AsyncCloseable
         var host = uri.getHost();
         var port = resolvePort(uri, DEFAULT_HTTP_PORT);
         var path = resolvePath(uri);
-
         var bootstrap = new Bootstrap().group(eventLoopGroup)
                                        .channel(NioSocketChannel.class)
                                        .handler(new Http1ChannelInitializer<>(promise, handler));
@@ -170,7 +171,7 @@ public final class NettyHttpOperations implements HttpOperations, AsyncCloseable
                  .addListener(future -> handleHttp1Connect(future, request, host, path, promise));
     }
 
-    @SuppressWarnings("JBCT-PAT-01") // Netty future callback
+    @SuppressWarnings("JBCT-PAT-01")  // Netty future callback
     private static <T> void handleHttp1Connect(io.netty.util.concurrent.Future<? super Void> future,
                                                HttpRequest request,
                                                String host,
@@ -178,9 +179,12 @@ public final class NettyHttpOperations implements HttpOperations, AsyncCloseable
                                                Promise<HttpResult<T>> promise) {
         if (!future.isSuccess()) {
             promise.fail(HttpClientError.fromException(future.cause()));
+
             return;
         }
+
         var channel = ((io.netty.channel.ChannelFuture) future).channel();
+
         writeHttp1Request(channel, request, host, path);
     }
 
@@ -189,19 +193,19 @@ public final class NettyHttpOperations implements HttpOperations, AsyncCloseable
         var nettyRequest = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, method, path, requestBody(request));
 
         nettyRequest.headers().set("Host", host);
-        request.headers().map().forEach((name, values) -> values.forEach(v -> nettyRequest.headers().add(name, v)));
-        nettyRequest.headers().set("Content-Length", nettyRequest.content().readableBytes());
-
+        request.headers().map().forEach((name, values) -> values.forEach(v -> nettyRequest.headers()
+                                                                                          .add(name, v)));
+        nettyRequest.headers().set("Content-Length",
+                                   nettyRequest.content().readableBytes());
         channel.writeAndFlush(nettyRequest);
     }
 
     // --- HTTP/3 ---
-
     private <T> Promise<HttpResult<T>> sendHttp3(HttpRequest request, BodyHandler<T> handler, URI uri) {
         return Promise.promise(promise -> initiateHttp3Request(request, handler, uri, promise));
     }
 
-    @SuppressWarnings("JBCT-PAT-01") // Netty QUIC bootstrap
+    @SuppressWarnings("JBCT-PAT-01")  // Netty QUIC bootstrap
     private <T> void initiateHttp3Request(HttpRequest request,
                                           BodyHandler<T> handler,
                                           URI uri,
@@ -210,7 +214,7 @@ public final class NettyHttpOperations implements HttpOperations, AsyncCloseable
                       .onEmpty(() -> promise.fail(HttpClientError.ConnectionFailed.connectionFailed("No QUIC SSL context for HTTP/3")));
     }
 
-    @SuppressWarnings("JBCT-PAT-01") // Netty QUIC bootstrap chain
+    @SuppressWarnings("JBCT-PAT-01")  // Netty QUIC bootstrap chain
     private <T> void connectQuic(HttpRequest request,
                                  BodyHandler<T> handler,
                                  URI uri,
@@ -218,7 +222,6 @@ public final class NettyHttpOperations implements HttpOperations, AsyncCloseable
                                  Promise<HttpResult<T>> promise) {
         var host = uri.getHost();
         var port = resolvePort(uri, DEFAULT_HTTPS_PORT);
-
         var codec = Http3.newQuicClientCodecBuilder()
                          .sslContext(ssl)
                          .maxIdleTimeout(5000, TimeUnit.MILLISECONDS)
@@ -227,16 +230,12 @@ public final class NettyHttpOperations implements HttpOperations, AsyncCloseable
                          .initialMaxStreamDataBidirectionalRemote(1_000_000)
                          .initialMaxStreamsBidirectional(100)
                          .build();
+        var bootstrap = new Bootstrap().group(eventLoopGroup).channel(NioDatagramChannel.class).handler(codec);
 
-        var bootstrap = new Bootstrap().group(eventLoopGroup)
-                                       .channel(NioDatagramChannel.class)
-                                       .handler(codec);
-
-        bootstrap.bind(0)
-                 .addListener(future -> handleQuicBind(future, request, handler, host, port, promise));
+        bootstrap.bind(0).addListener(future -> handleQuicBind(future, request, handler, host, port, promise));
     }
 
-    @SuppressWarnings("JBCT-PAT-01") // Netty future callback chain
+    @SuppressWarnings("JBCT-PAT-01")  // Netty future callback chain
     private static <T> void handleQuicBind(io.netty.util.concurrent.Future<? super Void> future,
                                            HttpRequest request,
                                            BodyHandler<T> handler,
@@ -245,13 +244,16 @@ public final class NettyHttpOperations implements HttpOperations, AsyncCloseable
                                            Promise<HttpResult<T>> promise) {
         if (!future.isSuccess()) {
             promise.fail(HttpClientError.fromException(future.cause()));
+
             return;
         }
+
         var datagramChannel = ((io.netty.channel.ChannelFuture) future).channel();
+
         connectQuicChannel(datagramChannel, request, handler, host, port, promise);
     }
 
-    @SuppressWarnings("JBCT-PAT-01") // Netty QUIC channel bootstrap
+    @SuppressWarnings("JBCT-PAT-01")  // Netty QUIC channel bootstrap
     private static <T> void connectQuicChannel(Channel datagramChannel,
                                                HttpRequest request,
                                                BodyHandler<T> handler,
@@ -265,36 +267,41 @@ public final class NettyHttpOperations implements HttpOperations, AsyncCloseable
                    .addListener(future -> handleQuicConnect(future, request, handler, promise));
     }
 
-    @SuppressWarnings({"JBCT-PAT-01", "unchecked"}) // Netty future callback
+    @SuppressWarnings({"JBCT-PAT-01", "unchecked"})  // Netty future callback
     private static <T> void handleQuicConnect(io.netty.util.concurrent.Future<?> future,
                                               HttpRequest request,
                                               BodyHandler<T> handler,
                                               Promise<HttpResult<T>> promise) {
         if (!future.isSuccess()) {
             promise.fail(HttpClientError.fromException(future.cause()));
+
             return;
         }
+
         var quicChannel = (QuicChannel) future.getNow();
+
         openHttp3Stream(quicChannel, request, handler, promise);
     }
 
-    @SuppressWarnings("JBCT-PAT-01") // Netty HTTP/3 stream creation
+    @SuppressWarnings("JBCT-PAT-01")  // Netty HTTP/3 stream creation
     private static <T> void openHttp3Stream(QuicChannel quicChannel,
                                             HttpRequest request,
                                             BodyHandler<T> handler,
                                             Promise<HttpResult<T>> promise) {
-        Http3.newRequestStream(quicChannel, new Http3ResponseHandler<>(promise, handler))
-             .addListener(future -> handleStreamCreated(future, request));
+        Http3.newRequestStream(quicChannel, new Http3ResponseHandler<>(promise, handler)).addListener(future -> handleStreamCreated(future,
+                                                                                                                                    request));
     }
 
-    @SuppressWarnings({"JBCT-PAT-01", "unchecked"}) // Netty future callback
-    private static <T> void handleStreamCreated(io.netty.util.concurrent.Future<?> future,
-                                                HttpRequest request) {
+    @SuppressWarnings({"JBCT-PAT-01", "unchecked"})  // Netty future callback
+    private static <T> void handleStreamCreated(io.netty.util.concurrent.Future<?> future, HttpRequest request) {
         if (!future.isSuccess()) {
             log.error("Failed to create HTTP/3 request stream", future.cause());
+
             return;
         }
+
         var streamChannel = (QuicStreamChannel) future.getNow();
+
         writeHttp3Request(streamChannel, request);
     }
 
@@ -306,35 +313,36 @@ public final class NettyHttpOperations implements HttpOperations, AsyncCloseable
         headers.path(resolvePath(uri));
         headers.authority(uri.getHost());
         headers.scheme(option(uri.getScheme()).or("https"));
-
         request.headers().map().forEach((name, values) -> values.forEach(v -> headers.set(name, v)));
-
         streamChannel.write(new DefaultHttp3HeadersFrame(headers));
-
         var body = requestBody(request);
+
         if (body.isReadable()) {
             streamChannel.write(new DefaultHttp3DataFrame(body));
         } else {
             body.release();
         }
-        streamChannel.writeAndFlush(Unpooled.EMPTY_BUFFER)
-                     .addListener(QuicStreamChannel.SHUTDOWN_OUTPUT);
+
+        streamChannel.writeAndFlush(Unpooled.EMPTY_BUFFER).addListener(QuicStreamChannel.SHUTDOWN_OUTPUT);
     }
 
     // --- Shared Helpers ---
-
     private static EventLoopGroup defaultEventLoop() {
         return new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
     }
 
     private static int resolvePort(URI uri, int defaultPort) {
-        return uri.getPort() > 0 ? uri.getPort() : defaultPort;
+        return uri.getPort() > 0
+               ? uri.getPort()
+               : defaultPort;
     }
 
     private static String resolvePath(URI uri) {
         var path = option(uri.getRawPath()).or("/");
         var query = option(uri.getRawQuery());
-        return query.map(q -> path + "?" + q).or(path);
+
+        return query.map(q -> path + "?" + q)
+                    .or(path);
     }
 
     private static ByteBuf requestBody(HttpRequest request) {
@@ -346,16 +354,24 @@ public final class NettyHttpOperations implements HttpOperations, AsyncCloseable
 
     private static byte[] extractBodyBytes(HttpRequest.BodyPublisher publisher) {
         var subscriber = java.net.http.HttpResponse.BodySubscribers.ofByteArray();
+
         publisher.subscribe(new BodyPublisherToSubscriber(subscriber));
-        return subscriber.getBody().toCompletableFuture().join();
+
+        return subscriber.getBody()
+                         .toCompletableFuture()
+                         .join();
     }
 
     @SuppressWarnings("unchecked")
     static <T> T convertResponseBody(byte[] bytes, BodyHandler<T> handler, int statusCode, HttpHeaders headers) {
         var responseInfo = new ResponseInfoAdapter(statusCode, headers);
         var subscriber = handler.apply(responseInfo);
+
         subscriber.onSubscribe(new ImmediateSubscription<>(subscriber, bytes));
-        return subscriber.getBody().toCompletableFuture().join();
+
+        return subscriber.getBody()
+                         .toCompletableFuture()
+                         .join();
     }
 
     static HttpHeaders buildHttpHeaders(Map<String, List<String>> headerMap) {
@@ -363,7 +379,6 @@ public final class NettyHttpOperations implements HttpOperations, AsyncCloseable
     }
 
     // --- Channel Handlers ---
-
     /// HTTP/1.1 channel initializer adding codec and aggregator.
     private static class Http1ChannelInitializer<T> extends ChannelInitializer<SocketChannel> {
         private final Promise<HttpResult<T>> promise;
@@ -399,6 +414,7 @@ public final class NettyHttpOperations implements HttpOperations, AsyncCloseable
             var statusCode = response.status().code();
             var headers = buildHttpHeaders(extractResponseHeaders(response));
             var body = convertResponseBody(bytes, handler, statusCode, headers);
+
             promise.succeed(new HttpResult<>(statusCode, headers, body));
             ctx.close();
         }
@@ -411,7 +427,9 @@ public final class NettyHttpOperations implements HttpOperations, AsyncCloseable
 
         private static byte[] extractBytes(ByteBuf content) {
             var bytes = new byte[content.readableBytes()];
+
             content.readBytes(bytes);
+
             return bytes;
         }
 
@@ -419,9 +437,10 @@ public final class NettyHttpOperations implements HttpOperations, AsyncCloseable
             var headerMap = new HashMap<String, List<String>>();
 
             for (var entry : response.headers()) {
-                headerMap.computeIfAbsent(entry.getKey().toLowerCase(), _ -> new ArrayList<>())
-                         .add(entry.getValue());
+                headerMap.computeIfAbsent(entry.getKey().toLowerCase(),
+                                          _ -> new ArrayList<>()).add(entry.getValue());
             }
+
             return headerMap;
         }
     }
@@ -453,8 +472,10 @@ public final class NettyHttpOperations implements HttpOperations, AsyncCloseable
         protected void channelInputClosed(ChannelHandlerContext ctx) {
             if (headersFrame == null) {
                 promise.fail(HttpClientError.InvalidResponse.invalidResponse("No headers received"));
+
                 return;
             }
+
             completeResponse(ctx);
         }
 
@@ -470,12 +491,14 @@ public final class NettyHttpOperations implements HttpOperations, AsyncCloseable
             var headers = buildHttpHeaders(extractHttp3Headers(h3Headers));
             var bytes = extractBody();
             var body = convertResponseBody(bytes, handler, statusCode, headers);
+
             promise.succeed(new HttpResult<>(statusCode, headers, body));
             ctx.close();
         }
 
         private static int parseStatusCode(io.netty.handler.codec.http3.Http3Headers headers) {
             var status = option(headers.status()).map(CharSequence::toString).or("200");
+
             return Integer.parseInt(status);
         }
 
@@ -484,11 +507,12 @@ public final class NettyHttpOperations implements HttpOperations, AsyncCloseable
 
             for (var entry : h3Headers) {
                 var key = entry.getKey().toString().toLowerCase();
+
                 if (!key.startsWith(":")) {
-                    headerMap.computeIfAbsent(key, _ -> new ArrayList<>())
-                             .add(entry.getValue().toString());
+                    headerMap.computeIfAbsent(key, _ -> new ArrayList<>()).add(entry.getValue().toString());
                 }
             }
+
             return headerMap;
         }
 
@@ -496,6 +520,7 @@ public final class NettyHttpOperations implements HttpOperations, AsyncCloseable
             if (bodyData == null) {
                 bodyData = Unpooled.buffer(content.readableBytes());
             }
+
             bodyData.writeBytes(content);
         }
 
@@ -503,17 +528,18 @@ public final class NettyHttpOperations implements HttpOperations, AsyncCloseable
             if (bodyData == null || !bodyData.isReadable()) {
                 return new byte[0];
             }
+
             var bytes = new byte[bodyData.readableBytes()];
+
             bodyData.readBytes(bytes);
             bodyData.release();
+
             return bytes;
         }
     }
 
     /// Minimal ResponseInfo adapter for BodyHandler.apply().
-    private record ResponseInfoAdapter(int statusCode, HttpHeaders headers)
-        implements java.net.http.HttpResponse.ResponseInfo {
-
+    private record ResponseInfoAdapter(int statusCode, HttpHeaders headers) implements java.net.http.HttpResponse.ResponseInfo {
         @Override
         public java.net.http.HttpClient.Version version() {
             return java.net.http.HttpClient.Version.HTTP_1_1;
@@ -538,7 +564,7 @@ public final class NettyHttpOperations implements HttpOperations, AsyncCloseable
 
         @Override
         public void cancel() {
-            // No-op
+        // No-op
         }
     }
 

@@ -13,10 +13,10 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.net.smtp;
 
 import org.pragmatica.lang.Cause;
+
 
 /// SMTP client errors.
 public sealed interface SmtpError extends Cause {

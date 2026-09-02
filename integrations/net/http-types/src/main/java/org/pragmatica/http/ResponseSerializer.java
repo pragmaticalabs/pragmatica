@@ -13,15 +13,15 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.http;
+
+import java.nio.charset.StandardCharsets;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
-import java.nio.charset.StandardCharsets;
 
 /// Unified, category-driven response body serializer.
 ///
@@ -36,10 +36,9 @@ import java.nio.charset.StandardCharsets;
 /// HTTP-level concerns (`null`→204, status selection, error→`ProblemDetail`) stay in the
 /// adapters; this function only turns a value into bytes.
 public sealed interface ResponseSerializer {
-    Fn1<Cause, ContentCategory> NON_SERIALIZABLE_CATEGORY =
-        Causes.forOneValue("Content category %s is an input-only type and cannot be serialized as a response body");
-    Fn1<Cause, String> BINARY_TYPE_MISMATCH =
-        Causes.forOneValue("Binary content requires byte[] or String, got: %s");
+    Fn1<Cause, ContentCategory> NON_SERIALIZABLE_CATEGORY = Causes.forOneValue("Content category %s is an input-only type and cannot be serialized as a response body");
+
+    Fn1<Cause, String> BINARY_TYPE_MISMATCH = Causes.forOneValue("Binary content requires byte[] or String, got: %s");
 
     static Result<byte[]> serialize(Object value, ContentType ct, JsonCodec json) {
         return switch (ct.category()) {
@@ -51,7 +50,9 @@ public sealed interface ResponseSerializer {
     }
 
     private static byte[] textBytes(Object value) {
-        return (value instanceof String s ? s : value.toString()).getBytes(StandardCharsets.UTF_8);
+        return (value instanceof String s
+                ? s
+                : value.toString()).getBytes(StandardCharsets.UTF_8);
     }
 
     private static Result<byte[]> binaryBytes(Object value) {

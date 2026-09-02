@@ -9,6 +9,7 @@ import org.pragmatica.lang.io.TimeSpan;
 
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
+
 /// Deduplicates concurrent reads to the same block.
 /// If a read is already in progress for a given BlockId,
 /// subsequent readers share the same Promise instead of issuing duplicate fetches.
@@ -29,6 +30,7 @@ public final class SingleFlightCache {
     private static final TimeSpan DEFAULT_IN_FLIGHT_BOUND = timeSpan(150).seconds();
 
     private final ConcurrentHashMap<BlockId, Promise<Option<byte[]>>> inFlight = new ConcurrentHashMap<>();
+
     private final TimeSpan inFlightBound;
 
     private SingleFlightCache(TimeSpan inFlightBound) {
@@ -64,6 +66,7 @@ public final class SingleFlightCache {
     private Promise<Option<byte[]>> boundedLoad(Supplier<Promise<Option<byte[]>>> loader, boolean[] created) {
         created[0] = true;
 
-        return loader.get().timeout(inFlightBound);
+        return loader.get()
+                     .timeout(inFlightBound);
     }
 }

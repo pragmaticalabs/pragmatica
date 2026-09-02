@@ -11,7 +11,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.pragmatica.postgres.message;
 
 /**
@@ -19,5 +18,4 @@ package org.pragmatica.postgres.message;
  *
  * @author Antti Laisi
  */
-public sealed interface Message permits FrontendMessage, BackendMessage {
-}
+public sealed interface Message permits FrontendMessage, BackendMessage {}

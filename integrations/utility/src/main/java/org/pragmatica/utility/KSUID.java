@@ -15,16 +15,17 @@
  */
 package org.pragmatica.utility;
 
+import java.security.SecureRandom;
+import java.util.Arrays;
+
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
-import java.security.SecureRandom;
-import java.util.Arrays;
-
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
+
 
 /// K-Sortable Unique Identifier (KSUID) implementation.
 ///
@@ -48,16 +49,12 @@ import static org.pragmatica.lang.Option.some;
 public final class KSUID implements Comparable<KSUID> {
     /// KSUID epoch: May 13, 2014 18:53:20 UTC (Unix timestamp 1400000000)
     public static final long EPOCH = 1_400_000_000L;
-
     /// Binary length in bytes
     public static final int BYTE_LENGTH = 20;
-
     /// Timestamp length in bytes
     public static final int TIMESTAMP_LENGTH = 4;
-
     /// Payload length in bytes
     public static final int PAYLOAD_LENGTH = 16;
-
     /// String-encoded length
     public static final int STRING_LENGTH = 27;
 
@@ -75,10 +72,8 @@ public final class KSUID implements Comparable<KSUID> {
     }
 
     private static final SecureRandom RANDOM = new SecureRandom();
-
     /// Nil KSUID (all zeros) - represents invalid/empty state
     public static final KSUID NIL = new KSUID(new byte[BYTE_LENGTH]);
-
     /// Maximum possible KSUID (all 0xFF bytes)
     public static final KSUID MAX = new KSUID(maxBytes());
 
@@ -93,14 +88,16 @@ public final class KSUID implements Comparable<KSUID> {
         var data = new byte[BYTE_LENGTH];
         var timestamp = (int)(System.currentTimeMillis() / 1000 - EPOCH);
         // Timestamp: big-endian 32-bit unsigned
-        data[0] = (byte)(timestamp>>> 24);
-        data[1] = (byte)(timestamp>>> 16);
-        data[2] = (byte)(timestamp>>> 8);
+        data[0] = (byte)(timestamp >>> 24);
+        data[1] = (byte)(timestamp >>> 16);
+        data[2] = (byte)(timestamp >>> 8);
         data[3] = (byte) timestamp;
         // Payload: 128-bit random
         var payload = new byte[PAYLOAD_LENGTH];
+
         RANDOM.nextBytes(payload);
         System.arraycopy(payload, 0, data, TIMESTAMP_LENGTH, PAYLOAD_LENGTH);
+
         return new KSUID(data);
     }
 
@@ -119,7 +116,9 @@ public final class KSUID implements Comparable<KSUID> {
                      .filter(KSUIDError::invalidByteLength, b -> b.length == BYTE_LENGTH)
                      .map(b -> {
                               var copy = new byte[BYTE_LENGTH];
+
                               System.arraycopy(b, 0, copy, 0, BYTE_LENGTH);
+
                               return new KSUID(copy);
                           });
     }
@@ -132,13 +131,16 @@ public final class KSUID implements Comparable<KSUID> {
     /// Get the raw 20-byte binary representation (defensive copy).
     public byte[] toBytes() {
         var copy = new byte[BYTE_LENGTH];
+
         System.arraycopy(data, 0, copy, 0, BYTE_LENGTH);
+
         return copy;
     }
 
     /// Get the Unix timestamp (seconds since Unix epoch, not KSUID epoch).
     public long timestamp() {
-        long ts = ((data[0] & 0xFFL)<< 24) | ((data[1] & 0xFFL)<< 16) | ((data[2] & 0xFFL)<< 8) | (data[3] & 0xFFL);
+        long ts = ((data[0] & 0xFFL) << 24) | ((data[1] & 0xFFL) << 16) | ((data[2] & 0xFFL) << 8) | (data[3] & 0xFFL);
+
         return ts + EPOCH;
     }
 
@@ -149,6 +151,7 @@ public final class KSUID implements Comparable<KSUID> {
                 return false;
             }
         }
+
         return true;
     }
 
@@ -177,31 +180,39 @@ public final class KSUID implements Comparable<KSUID> {
     /// Uses an optimized algorithm processing 32-bit words.
     private static String encodeBase62(byte[] src) {
         var dst = new char[STRING_LENGTH];
+
         Arrays.fill(dst, '0');
         // Convert bytes to 5 x 32-bit words (big-endian)
         var parts = new long[5];
+
         for (int i = 0; i < 5; i++) {
             int offset = i * 4;
-            parts[i] = ((src[offset] & 0xFFL)<< 24) | ((src[offset + 1] & 0xFFL)<< 16) | ((src[offset + 2] & 0xFFL)<< 8) | (src[offset + 3] & 0xFFL);
+
+            parts[i] = ((src[offset] & 0xFFL) << 24) | ((src[offset + 1] & 0xFFL) << 16) | ((src[offset + 2] & 0xFFL) << 8) | (src[offset + 3] & 0xFFL);
         }
         // Convert to base62, right-to-left
         int pos = STRING_LENGTH - 1;
+
         while (pos >= 0) {
             long carry = 0;
             boolean allZero = true;
+
             for (int i = 0; i < 5; i++) {
-                long value = parts[i] + (carry<< 32);
+                long value = parts[i] + (carry << 32);
+
                 parts[i] = value / 62;
                 carry = value % 62;
                 if (parts[i] != 0) {
                     allZero = false;
                 }
             }
+
             dst[pos--] = ALPHABET[(int) carry];
             if (allZero) {
                 break;
             }
         }
+
         return new String(dst);
     }
 
@@ -212,37 +223,47 @@ public final class KSUID implements Comparable<KSUID> {
         // Convert from base62
         for (int i = 0; i < STRING_LENGTH; i++) {
             char c = src.charAt(i);
+
             if (c >= 128) {
                 return none();
             }
+
             int value = DECODE[c];
+
             if (value < 0) {
                 return none();
             }
             // Multiply by 62 and add digit
             long carry = value;
+
             for (int j = 4; j >= 0; j--) {
                 long product = parts[j] * 62 + carry;
+
                 parts[j] = product & 0xFFFFFFFFL;
-                carry = product>>> 32;
+                carry = product >>> 32;
             }
         }
         // Convert words to bytes
         var dst = new byte[BYTE_LENGTH];
+
         for (int i = 0; i < 5; i++) {
             int offset = i * 4;
             long value = parts[i];
-            dst[offset] = (byte)(value>>> 24);
-            dst[offset + 1] = (byte)(value>>> 16);
-            dst[offset + 2] = (byte)(value>>> 8);
+
+            dst[offset] = (byte)(value >>> 24);
+            dst[offset + 1] = (byte)(value >>> 16);
+            dst[offset + 2] = (byte)(value >>> 8);
             dst[offset + 3] = (byte) value;
         }
+
         return some(dst);
     }
 
     private static byte[] maxBytes() {
         var bytes = new byte[BYTE_LENGTH];
+
         Arrays.fill(bytes, (byte) 0xFF);
+
         return bytes;
     }
 

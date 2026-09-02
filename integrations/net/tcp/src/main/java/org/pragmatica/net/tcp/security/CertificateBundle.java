@@ -13,10 +13,10 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.net.tcp.security;
 
 import java.time.Instant;
+
 
 /// Certificate bundle containing PEM-encoded certificate, private key, and CA certificate.
 ///
@@ -28,7 +28,6 @@ public record CertificateBundle(byte[] certificatePem,
                                 byte[] privateKeyPem,
                                 byte[] caCertificatePem,
                                 Instant notAfter) {
-
     /// Create a certificate bundle from PEM-encoded components.
     public static CertificateBundle certificateBundle(byte[] certificatePem,
                                                       byte[] privateKeyPem,

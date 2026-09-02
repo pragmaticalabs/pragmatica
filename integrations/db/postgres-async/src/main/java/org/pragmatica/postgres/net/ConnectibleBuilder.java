@@ -11,15 +11,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.pragmatica.postgres.net;
-
-import org.pragmatica.postgres.conversion.DataConverter;
 
 import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+
+import org.pragmatica.postgres.conversion.DataConverter;
+
 
 /**
  * Builder for creating {@link Connectible} instances.
@@ -28,7 +28,6 @@ import java.util.List;
  * @author Marat Gainullin
  */
 public abstract class ConnectibleBuilder {
-
     protected final ConnectibleConfiguration properties = new ConnectibleConfiguration();
 
     /**
@@ -43,71 +42,85 @@ public abstract class ConnectibleBuilder {
 
     public ConnectibleBuilder hostname(String hostname) {
         properties.hostname = hostname;
+
         return this;
     }
 
     public ConnectibleBuilder port(int port) {
         properties.port = port;
+
         return this;
     }
 
     public ConnectibleBuilder username(String username) {
         properties.username = username;
+
         return this;
     }
 
     public ConnectibleBuilder password(String password) {
         properties.password = password;
+
         return this;
     }
 
     public ConnectibleBuilder database(String database) {
         properties.database = database;
+
         return this;
     }
 
     public ConnectibleBuilder maxConnections(int maxConnections) {
         properties.maxConnections = maxConnections;
+
         return this;
     }
 
     public ConnectibleBuilder maxStatements(int maxStatements) {
         properties.maxStatements = maxStatements;
+
         return this;
     }
 
     public ConnectibleBuilder converters(Converter<?>... converters) {
         Collections.addAll(properties.converters, converters);
+
         return this;
     }
 
     public ConnectibleBuilder dataConverter(DataConverter dataConverter) {
         properties.dataConverter = dataConverter;
+
         return this;
     }
 
     public ConnectibleBuilder ssl(SslConfig sslConfig) {
         properties.sslConfig = sslConfig;
+
         return this;
     }
 
     public ConnectibleBuilder validationQuery(String validationQuery) {
         properties.validationQuery = validationQuery;
+
         return this;
     }
 
     public ConnectibleBuilder encoding(String value) {
         properties.encoding = value;
+
         return this;
     }
 
     public ConnectibleBuilder ioThreads(int ioThreads) {
         properties.ioThreads = ioThreads;
+
         return this;
     }
 
     public ConnectibleBuilder poolMode(PoolMode poolMode) {
         properties.poolMode = poolMode;
+
         return this;
     }
 
@@ -127,7 +140,8 @@ public abstract class ConnectibleBuilder {
         private SslConfig sslConfig = SslConfig.disabled();
         private String encoding = System.getProperty("pg.async.encoding", "utf-8");
         private String validationQuery;
-        private int ioThreads = Math.max(Runtime.getRuntime().availableProcessors(), 8);
+        private int ioThreads = Math.max(Runtime.getRuntime().availableProcessors(),
+                                         8);
         private PoolMode poolMode = PoolMode.SESSION;
 
         public String hostname() {
@@ -167,7 +181,9 @@ public abstract class ConnectibleBuilder {
         }
 
         public DataConverter dataConverter() {
-            return dataConverter != null ? dataConverter : new DataConverter(converters, Charset.forName(encoding));
+            return dataConverter != null
+                   ? dataConverter
+                   : new DataConverter(converters, Charset.forName(encoding));
         }
 
         public String validationQuery() {

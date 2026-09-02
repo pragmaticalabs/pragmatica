@@ -11,12 +11,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.pragmatica.postgres.message.backend;
+
+import java.util.Arrays;
 
 import org.pragmatica.postgres.message.BackendMessage;
 
-import java.util.Arrays;
 
 public final class DataRow implements BackendMessage {
     private final byte[] data;
@@ -43,9 +43,11 @@ public final class DataRow implements BackendMessage {
 
     public byte[] getValue(int i) {
         int len = lengths[i];
+
         if (len == -1) {
             return null;
         }
+
         return Arrays.copyOfRange(data, offsets[i], offsets[i] + len);
     }
 }

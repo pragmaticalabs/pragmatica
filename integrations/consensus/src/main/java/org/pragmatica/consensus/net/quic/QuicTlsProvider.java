@@ -13,13 +13,14 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.net.quic;
 
-import io.netty.handler.codec.quic.QuicSslContext;
 import org.pragmatica.lang.Result;
+import org.pragmatica.net.tcp.ClientAuthPolicy;
 import org.pragmatica.net.tcp.QuicSslContextFactory;
 import org.pragmatica.net.tcp.TlsConfig;
+
+import io.netty.handler.codec.quic.QuicSslContext;
 
 
 /// Provides QUIC TLS context for cluster transport.
@@ -36,7 +37,7 @@ public sealed interface QuicTlsProvider {
 
     /// Obtain a QUIC server SSL context for cluster transport.
     static Result<QuicSslContext> serverContext(TlsConfig tlsConfig) {
-        return QuicSslContextFactory.createServer(tlsConfig, CLUSTER_PROTOCOL);
+        return QuicSslContextFactory.createServer(tlsConfig, ClientAuthPolicy.REQUIRED, CLUSTER_PROTOCOL);
     }
 
     /// Obtain a QUIC client SSL context for cluster transport.

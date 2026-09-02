@@ -13,16 +13,16 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.http.server;
+
+import java.util.ArrayList;
+import java.util.List;
 
 import org.pragmatica.http.websocket.WebSocketEndpoint;
 import org.pragmatica.lang.Option;
 import org.pragmatica.net.tcp.SocketOptions;
 import org.pragmatica.net.tcp.TlsConfig;
 
-import java.util.ArrayList;
-import java.util.List;
 
 /// Configuration for HTTP server.
 ///
@@ -78,7 +78,9 @@ public record HttpServerConfig(String name,
 
     public HttpServerConfig withWebSocket(WebSocketEndpoint endpoint) {
         var endpoints = new ArrayList<>(webSocketEndpoints);
+
         endpoints.add(endpoint);
+
         return new HttpServerConfig(name,
                                     port,
                                     tls,
@@ -91,5 +93,4 @@ public record HttpServerConfig(String name,
     public HttpServerConfig withChunkedWrite() {
         return new HttpServerConfig(name, port, tls, maxContentLength, webSocketEndpoints, true, socketOptions);
     }
-
 }

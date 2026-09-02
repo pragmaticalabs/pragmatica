@@ -2,6 +2,7 @@ package org.pragmatica.email.http;
 
 import org.pragmatica.lang.Cause;
 
+
 /// Error causes for HTTP email operations.
 public sealed interface HttpEmailError extends Cause {
     /// No vendor mapping found for the configured provider hint.

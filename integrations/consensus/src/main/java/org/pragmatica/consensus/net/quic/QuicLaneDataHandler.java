@@ -13,18 +13,19 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.net.quic;
 
-import io.netty.buffer.ByteBuf;
-import io.netty.channel.ChannelHandlerContext;
-import io.netty.channel.SimpleChannelInboundHandler;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.quic.QuicClusterServer.MessageReceiver;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.messaging.StreamType;
 import org.pragmatica.serialization.Deserializer;
+
+import io.netty.buffer.ByteBuf;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.SimpleChannelInboundHandler;
 import org.slf4j.Logger;
+
 
 /// Handles ongoing data messages on a single lane stream after the stream-open preamble
 /// (and, on the CONTROL lane, the Hello handshake) completes.
@@ -48,7 +49,12 @@ final class QuicLaneDataHandler extends SimpleChannelInboundHandler<ByteBuf> {
                         Deserializer deserializer,
                         MessageReceiver messageReceiver,
                         Logger log) {
-        this(peerId, lane, deserializer, messageReceiver, log, () -> {});
+        this(peerId,
+             lane,
+             deserializer,
+             messageReceiver,
+             log,
+             () -> {});
     }
 
     QuicLaneDataHandler(NodeId peerId,
@@ -67,13 +73,14 @@ final class QuicLaneDataHandler extends SimpleChannelInboundHandler<ByteBuf> {
 
     @Override
     @Contract
-    @SuppressWarnings("JBCT-PAT-01") // Adapter boundary: catch deserialization errors from external input
+    @SuppressWarnings("JBCT-PAT-01")  // Adapter boundary: catch deserialization errors from external input
     protected void channelRead0(ChannelHandlerContext ctx, ByteBuf buf) {
         var bytes = new byte[buf.readableBytes()];
-        buf.readBytes(bytes);
 
+        buf.readBytes(bytes);
         try {
             var message = deserializer.decode(bytes);
+
             messageReceiver.onMessage(peerId, message);
         } catch (Exception e) {
             log.error("Failed to deserialize message from peer {} on lane {}", peerId, lane, e);
@@ -86,6 +93,7 @@ final class QuicLaneDataHandler extends SimpleChannelInboundHandler<ByteBuf> {
         if (ctx.channel().isWritable()) {
             onWritable.run();
         }
+
         super.channelWritabilityChanged(ctx);
     }
 

@@ -13,28 +13,24 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.swim;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.utils.Causes;
 
+
 /// Error types for the SWIM protocol module.
 public sealed interface SwimError extends Cause {
-
     /// Fixed-message errors.
     enum General implements SwimError {
         TRANSPORT_NOT_STARTED("Transport has not been started"),
         PROTOCOL_ALREADY_RUNNING("Protocol is already running"),
         PROTOCOL_NOT_RUNNING("Protocol is not running"),
         NO_MEMBERS_AVAILABLE("No members available for probing");
-
         private final String message;
-
         General(String message) {
             this.message = message;
         }
-
         @Override
         public String message() {
             return message;

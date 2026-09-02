@@ -13,15 +13,15 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.dht;
+
+import java.util.List;
+import java.util.Set;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
-import java.util.List;
-import java.util.Set;
 
 /// Maps partitions to nodes.
 /// Implementations may use local computation or distributed consensus.

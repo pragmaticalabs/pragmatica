@@ -13,7 +13,6 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.net.dns;
 
 import org.pragmatica.lang.Cause;
@@ -21,12 +20,12 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
 
+
 /// Domain name to resolve.
 public record DomainName(String name) {
     private static final Cause BLANK_DOMAIN_NAME = Causes.cause("Domain name must not be blank");
 
     public static Result<DomainName> domainName(String domainName) {
-        return Verify.ensure(domainName, Verify.Is::notBlank, BLANK_DOMAIN_NAME)
-                     .map(DomainName::new);
+        return Verify.ensure(domainName, Verify.Is::notBlank, BLANK_DOMAIN_NAME).map(DomainName::new);
     }
 }

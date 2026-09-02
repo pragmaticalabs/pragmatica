@@ -14,7 +14,6 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.jooq.r2dbc;
 
 import org.pragmatica.lang.Functions.Fn1;
@@ -29,6 +28,7 @@ import io.r2dbc.spi.ConnectionFactory;
 import org.jooq.DSLContext;
 import org.jooq.SQLDialect;
 import org.jooq.impl.DSL;
+
 
 /// Transaction aspect for JOOQ R2DBC operations.
 /// Provides transactional boundaries with automatic commit/rollback.
@@ -62,8 +62,10 @@ public interface JooqR2dbcTransactional {
                                           SQLDialect dialect,
                                           Fn1<R2dbcError, Throwable> errorMapper,
                                           Fn2<Promise<R>, DSLContext, Connection> operation) {
-        return acquireConnection(connectionFactory, errorMapper)
-        .flatMap(conn -> executeWithConnection(conn, dialect, errorMapper, operation));
+        return acquireConnection(connectionFactory, errorMapper).flatMap(conn -> executeWithConnection(conn,
+                                                                                                       dialect,
+                                                                                                       errorMapper,
+                                                                                                       operation));
     }
 
     private static Promise<Connection> acquireConnection(ConnectionFactory factory,
@@ -85,12 +87,11 @@ public interface JooqR2dbcTransactional {
                                                    SQLDialect dialect,
                                                    Fn2<Promise<R>, DSLContext, Connection> operation) {
         var dsl = DSL.using(conn, dialect);
+
         return operation.apply(dsl, conn);
     }
 
-    private static <R> Promise<R> commitAndReturn(Connection conn,
-                                                  Fn1<R2dbcError, Throwable> errorMapper,
-                                                  R result) {
+    private static <R> Promise<R> commitAndReturn(Connection conn, Fn1<R2dbcError, Throwable> errorMapper, R result) {
         return commitTransaction(conn, errorMapper).map(_ -> result);
     }
 
@@ -103,12 +104,10 @@ public interface JooqR2dbcTransactional {
     }
 
     private static void rollbackTransaction(Connection conn) {
-        ReactiveOperations.fromVoidPublisher(conn.rollbackTransaction())
-                          .await();
+        ReactiveOperations.fromVoidPublisher(conn.rollbackTransaction()).await();
     }
 
     private static void closeConnection(Connection conn) {
-        ReactiveOperations.fromVoidPublisher(conn.close())
-                          .await();
+        ReactiveOperations.fromVoidPublisher(conn.close()).await();
     }
 }

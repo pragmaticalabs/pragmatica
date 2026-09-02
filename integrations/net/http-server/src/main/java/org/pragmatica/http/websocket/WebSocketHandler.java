@@ -13,8 +13,8 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.http.websocket;
+
 /// Handler for WebSocket messages.
 ///
 /// All message types (Open, Text, Binary, Close) are delivered through the single

@@ -1,16 +1,16 @@
 package org.pragmatica.postgres.io.frontend;
 
+import java.nio.ByteBuffer;
+import java.nio.charset.Charset;
+
 import org.pragmatica.postgres.io.Encoder;
 import org.pragmatica.postgres.message.frontend.SSLRequest;
 
-import java.nio.ByteBuffer;
-import java.nio.charset.Charset;
 
 /**
  * @author Marat Gainullin
  */
 public class SSLRequestEncoder implements Encoder<SSLRequest> {
-
     @Override
     public Class<SSLRequest> getMessageType() {
         return SSLRequest.class;

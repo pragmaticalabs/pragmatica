@@ -8,7 +8,6 @@ package org.pragmatica.postgres.net;
  * @author Antti Laisi.
  */
 public interface Converter<T> {
-
     /**
      * @return Class to convert
      */

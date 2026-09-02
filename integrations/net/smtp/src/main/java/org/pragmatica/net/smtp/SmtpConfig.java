@@ -13,7 +13,6 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.net.smtp;
 
 import org.pragmatica.lang.Option;
@@ -23,6 +22,7 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
+
 /// SMTP client configuration.
 public record SmtpConfig(String host,
                          int port,
@@ -30,7 +30,6 @@ public record SmtpConfig(String host,
                          Option<SmtpAuth> auth,
                          TimeSpan connectTimeout,
                          TimeSpan commandTimeout) {
-
     static final int DEFAULT_PORT = 587;
     static final SmtpTlsMode DEFAULT_TLS_MODE = SmtpTlsMode.STARTTLS;
     static final TimeSpan DEFAULT_CONNECT_TIMEOUT = timeSpan(10).seconds();
@@ -38,7 +37,12 @@ public record SmtpConfig(String host,
 
     /// Create SMTP configuration with defaults: port=587, STARTTLS, no auth.
     public static SmtpConfig smtpConfig(String host) {
-        return new SmtpConfig(host, DEFAULT_PORT, DEFAULT_TLS_MODE, none(), DEFAULT_CONNECT_TIMEOUT, DEFAULT_COMMAND_TIMEOUT);
+        return new SmtpConfig(host,
+                              DEFAULT_PORT,
+                              DEFAULT_TLS_MODE,
+                              none(),
+                              DEFAULT_CONNECT_TIMEOUT,
+                              DEFAULT_COMMAND_TIMEOUT);
     }
 
     /// Create SMTP configuration with host and port, using defaults for the rest.

@@ -13,11 +13,11 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.swim;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
+
 
 /// Edge-triggered per-peer health observation emitted by SWIM (Layer 1).
 ///
@@ -46,7 +46,6 @@ public sealed interface SwimObservation {
     /// Current schema version stamped onto every newly-constructed observation.
     /// Bump on any structural change to the variant payload.
     byte CURRENT_VERSION = 1;
-
     NodeId peer();
     long incarnation();
     byte version();
@@ -93,9 +92,7 @@ public sealed interface SwimObservation {
     /// A new peer has announced itself via the ANNOUNCE datagram and the gossip layer
     /// has propagated the event. Carries the full `NodeInfo` (id, address, role, labels)
     /// so receivers can immediately register the peer without a separate lookup.
-    record JoinAnnounced(NodeInfo nodeInfo, String clusterName, long incarnation, byte version)
-        implements SwimObservation {
-
+    record JoinAnnounced(NodeInfo nodeInfo, String clusterName, long incarnation, byte version) implements SwimObservation {
         public JoinAnnounced(NodeInfo nodeInfo, String clusterName, long incarnation) {
             this(nodeInfo, clusterName, incarnation, CURRENT_VERSION);
         }

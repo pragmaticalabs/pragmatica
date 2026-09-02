@@ -13,19 +13,16 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.dht;
 
 /// Unfenced-floor [OwnerEpochSource] (`Epoch.ZERO` → `0:0`) for non-cluster DHT paths and tests
 /// (#345 piece 1c). A stateless singleton — see [OwnerEpochSource#zero].
 enum ZeroOwnerEpochSource implements OwnerEpochSource {
     INSTANCE;
-
     @Override
     public long currentEpochTerm() {
         return 0L;
     }
-
     @Override
     public long currentEpochCounter() {
         return 0L;

@@ -13,12 +13,12 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.net.tcp;
+
+import java.nio.file.Path;
 
 import org.pragmatica.lang.Cause;
 
-import java.nio.file.Path;
 
 /// Error types for TLS operations.
 public sealed interface TlsError extends Cause {

@@ -16,6 +16,7 @@
 
 package org.pragmatica.consensus.net.quic;
 
+import org.pragmatica.net.tcp.TlsConfig;
 import io.netty.handler.codec.quic.QuicSslContext;
 import io.netty.handler.codec.quic.QuicChannel;
 import org.junit.jupiter.api.AfterEach;
@@ -39,7 +40,6 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
-import org.pragmatica.net.tcp.TlsConfig;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
 
@@ -58,8 +58,11 @@ import static org.mockito.Mockito.when;
 
 /// Verifies that `QuicClusterNetwork` invokes the injected `QuicDisconnectListener`
 /// on every peer-removal view-change, alongside the existing
-/// `TransportObservation.PeerDisconnected` emission. Higher layers adapt the
-/// callback into `HealthSignal.QuicDisconnect` for the leader's HealthReconciler.
+/// `TransportObservation.PeerDisconnected` emission.
+///
+/// The contract is pinned here with a listener this test injects itself. No production caller
+/// installs one — `setDisconnectListener` has no call sites — so what this class guards is the
+/// transport's side of the contract, kept honest for whoever wires a consumer next.
 @Timeout(10)
 class QuicClusterNetworkHintEmissionTest {
     private static final TimeSpan AWAIT_TIMEOUT = TimeSpan.timeSpan(5).seconds();
@@ -74,9 +77,9 @@ class QuicClusterNetworkHintEmissionTest {
     @BeforeEach
     void setUp() {
         codec = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(), combinedCodecs());
-        serverSsl = QuicTlsProvider.serverContext(TlsConfig.selfSignedServer())
+        serverSsl = QuicTlsProvider.serverContext(ClusterTestTls.clusterTls("test-server"))
                                     .fold(_ -> fail("Server SSL failed"), ssl -> ssl);
-        clientSsl = QuicTlsProvider.clientContext(TlsConfig.insecureClient())
+        clientSsl = QuicTlsProvider.clientContext(ClusterTestTls.clusterTls("test-client"))
                                     .fold(_ -> fail("Client SSL failed"), ssl -> ssl);
     }
 
@@ -92,7 +95,7 @@ class QuicClusterNetworkHintEmissionTest {
     void disconnect_unknownPeer_propagatesListenerForTopologyRemoval() {
         // SWIM-driven DisconnectNode is the authoritative "this peer is gone" signal —
         // even if we never had a live QUIC link, the REMOVE view-change must fire so
-        // topology and HealthReconciler see the departure. Otherwise peers whose
+        // topology and the membership layer see the departure. Otherwise peers whose
         // connection tore down before lifecycle promotion stay in coreNodes forever.
         var captured = new CopyOnWriteArrayList<NodeId>();
         QuicDisconnectListener listener = captured::add;
@@ -107,8 +110,8 @@ class QuicClusterNetworkHintEmissionTest {
     @Test
     void disconnect_followerPath_buffersConnectivityObservation_skipsDisconnectListener() {
         // Commit 2 (ClusterSync refactor): on a follower node, REMOVE view-changes
-        // must NOT invoke the disconnect listener (which would feed the local
-        // HealthReconciler). Instead, a PeerConnectivityObservation is pushed to the
+        // must NOT invoke the disconnect listener (a v1 surface with no live
+        // consumer). Instead, a PeerConnectivityObservation is pushed to the
         // upstream buffer via the PeerConnectivityReporter so the leader folds it.
         var listenerInvocations = new CopyOnWriteArrayList<NodeId>();
         QuicDisconnectListener listener = listenerInvocations::add;
@@ -140,9 +143,9 @@ class QuicClusterNetworkHintEmissionTest {
     @Test
     void disconnect_leaderPath_invokesBothDisconnectListenerAndReporter() {
         // Topology-observation refactor Step 4: leader MUST also fire the connectivity
-        // reporter on QUIC drops so the AetherNode-level adapter can ingest the
-        // observation synchronously into ReachabilityAggregator. The disconnect listener
-        // (HealthReconciler fast path) still fires too — these consumers are
+        // reporter on QUIC drops so the AetherNode-level adapter can buffer the
+        // observation for the cluster-sync fold. The disconnect listener (a v1 fast
+        // path, today consumer-less) still fires too — these surfaces are
         // complementary, not exclusive.
         var listenerInvocations = new CopyOnWriteArrayList<NodeId>();
         QuicDisconnectListener listener = listenerInvocations::add;

@@ -14,20 +14,20 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.jdbc;
-
-import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Option;
 
 import java.sql.SQLException;
 import java.sql.SQLIntegrityConstraintViolationException;
 import java.sql.SQLTimeoutException;
 import java.sql.SQLTransactionRollbackException;
 
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
+
 import static org.pragmatica.jdbc.JdbcError.ConnectionFailed.connectionFailed;
 import static org.pragmatica.jdbc.JdbcError.ConstraintViolation.constraintViolation;
 import static org.pragmatica.jdbc.JdbcError.DatabaseFailure.databaseFailure;
+
 
 /// Typed error causes for JDBC operations.
 /// Maps common SQL exceptions to domain-friendly error types.
@@ -101,9 +101,8 @@ public sealed interface JdbcError extends Cause {
 
         @Override
         public String message() {
-            return "Database operation failed: " + Option.option(cause.getMessage())
-                                                         .or(() -> cause.getClass()
-                                                                        .getName());
+            return "Database operation failed: " + Option.option(cause.getMessage()).or(() -> cause.getClass()
+                                                                                                   .getName());
         }
     }
 
@@ -117,11 +116,8 @@ public sealed interface JdbcError extends Cause {
             case SQLTimeoutException e -> new Timeout(e.getMessage());
             case SQLIntegrityConstraintViolationException e -> constraintViolation(e.getMessage());
             case SQLTransactionRollbackException e -> new TransactionRollback(e.getMessage());
-            case SQLException e -> Option.option(e.getSQLState())
-                                         .filter(s -> s.startsWith("08"))
-                                         .map(_ -> (JdbcError) connectionFailed(e.getMessage(),
-                                                                                e))
-                                         .or(() -> databaseFailure(e));
+            case SQLException e -> Option.option(e.getSQLState()).filter(s -> s.startsWith("08")).map(_ -> (JdbcError) connectionFailed(e.getMessage(),
+                                                                                                                                        e)).or(() -> databaseFailure(e));
             default -> databaseFailure(throwable);
         };
     }
@@ -137,12 +133,9 @@ public sealed interface JdbcError extends Cause {
             case SQLTimeoutException e -> new Timeout(e.getMessage());
             case SQLIntegrityConstraintViolationException e -> constraintViolation(e.getMessage());
             case SQLTransactionRollbackException e -> new TransactionRollback(e.getMessage());
-            case SQLException e -> Option.option(e.getSQLState())
-                                         .filter(s -> s.startsWith("08"))
-                                         .map(_ -> (JdbcError) connectionFailed(e.getMessage(),
-                                                                                e))
-                                         .or(() -> new QueryFailed(sql,
-                                                                   e.getMessage()));
+            case SQLException e -> Option.option(e.getSQLState()).filter(s -> s.startsWith("08")).map(_ -> (JdbcError) connectionFailed(e.getMessage(),
+                                                                                                                                        e)).or(() -> new QueryFailed(sql,
+                                                                                                                                                                     e.getMessage()));
             default -> databaseFailure(throwable);
         };
     }

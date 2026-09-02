@@ -14,13 +14,13 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.cloud.aws;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
+
 
 /// Typed error causes for AWS Cloud API operations.
 public sealed interface AwsError extends Cause {
@@ -44,8 +44,8 @@ public sealed interface AwsError extends Cause {
     record ParseError(String context, Option<Throwable> cause) implements AwsError {
         @Override
         public String message() {
-            return "Failed to parse AWS response: " + context
-                   + cause.map(t -> " - " + Causes.fromThrowable(t).message()).or("");
+            return "Failed to parse AWS response: " + context + cause.map(t -> " - " + Causes.fromThrowable(t).message())
+                                                                     .or("");
         }
     }
 
@@ -61,14 +61,14 @@ public sealed interface AwsError extends Cause {
     private static AwsError extractXmlError(int statusCode, String body) {
         var code = extractXmlElement(body, "Code").or("UnknownError");
         var errorMessage = extractXmlElement(body, "Message").or("No details");
+
         return new ApiError(statusCode, code, errorMessage);
     }
 
     private static AwsError extractJsonError(int statusCode, String body) {
-        var code = extractJsonField(body, "__type")
-                       .or(extractJsonField(body, "code").or("UnknownError"));
-        var errorMessage = extractJsonField(body, "message")
-                               .or(extractJsonField(body, "Message").or(body));
+        var code = extractJsonField(body, "__type").or(extractJsonField(body, "code").or("UnknownError"));
+        var errorMessage = extractJsonField(body, "message").or(extractJsonField(body, "Message").or(body));
+
         return new ApiError(statusCode, code, errorMessage);
     }
 
@@ -76,6 +76,7 @@ public sealed interface AwsError extends Cause {
         var openTag = "<" + elementName + ">";
         var closeTag = "</" + elementName + ">";
         var startIdx = xml.indexOf(openTag);
+
         return Option.option(startIdx)
                      .filter(idx -> idx >= 0)
                      .map(idx -> idx + openTag.length())
@@ -84,6 +85,7 @@ public sealed interface AwsError extends Cause {
 
     private static Option<String> extractUntilClose(String xml, int start, String closeTag) {
         var endIdx = xml.indexOf(closeTag, start);
+
         return Option.option(endIdx)
                      .filter(idx -> idx > start)
                      .map(idx -> xml.substring(start, idx));
@@ -92,15 +94,18 @@ public sealed interface AwsError extends Cause {
     private static Option<String> extractJsonField(String body, String fieldName) {
         var pattern = "\"" + fieldName + "\"";
         var keyIdx = body.indexOf(pattern);
+
         return Option.option(keyIdx)
                      .filter(idx -> idx >= 0)
-                     .map(idx -> body.indexOf(':', idx + pattern.length()))
+                     .map(idx -> body.indexOf(':',
+                                              idx + pattern.length()))
                      .filter(colonIdx -> colonIdx >= 0)
                      .flatMap(colonIdx -> extractJsonStringValue(body, colonIdx + 1));
     }
 
     private static Option<String> extractJsonStringValue(String body, int startIdx) {
         var trimmed = body.substring(startIdx).trim();
+
         return Option.option(trimmed)
                      .filter(s -> s.startsWith("\""))
                      .map(s -> s.substring(1))
@@ -109,6 +114,7 @@ public sealed interface AwsError extends Cause {
 
     private static Option<String> extractUntilQuote(String value) {
         var endIdx = value.indexOf('"');
+
         return Option.option(endIdx)
                      .filter(idx -> idx >= 0)
                      .map(idx -> value.substring(0, idx));
@@ -116,7 +122,7 @@ public sealed interface AwsError extends Cause {
 
     /// Extracts SecretString field from a Secrets Manager JSON response.
     static Result<String> extractSecretStringField(String body) {
-        return extractJsonField(body, "SecretString")
-            .toResult(new ParseError("Missing SecretString in response", Option.none()));
+        return extractJsonField(body, "SecretString").toResult(new ParseError("Missing SecretString in response",
+                                                                              Option.none()));
     }
 }

@@ -1,14 +1,15 @@
 package org.pragmatica.config.source;
 
-import org.pragmatica.config.ConfigSource;
-import org.pragmatica.lang.Option;
-
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import org.pragmatica.config.ConfigSource;
+import org.pragmatica.lang.Option;
+
 import static org.pragmatica.lang.Option.option;
+
 
 /// Configuration source backed by environment variables.
 ///
@@ -48,6 +49,7 @@ public final class EnvironmentConfigSource implements ConfigSource {
     /// @return New EnvironmentConfigSource
     public static EnvironmentConfigSource environmentConfigSource(String prefix, int priority) {
         var values = fetchFromEnvironment(prefix);
+
         return new EnvironmentConfigSource(prefix, priority, values);
     }
 
@@ -80,7 +82,9 @@ public final class EnvironmentConfigSource implements ConfigSource {
         var env = System.getenv();
         var result = new LinkedHashMap<String, String>();
         var filteredKeys = filterKeysByPrefix(env, prefix);
+
         filteredKeys.forEach(key -> insertNormalized(result, key, prefix, env));
+
         return result;
     }
 

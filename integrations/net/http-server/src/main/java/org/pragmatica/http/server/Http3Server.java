@@ -13,7 +13,6 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.http.server;
 
 import java.net.InetSocketAddress;
@@ -24,6 +23,17 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiConsumer;
+
+import org.pragmatica.http.ContentType;
+import org.pragmatica.http.Headers;
+import org.pragmatica.http.HttpMethod;
+import org.pragmatica.http.HttpRequest;
+import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.QueryParams;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.utility.IdGenerator;
 
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
@@ -48,20 +58,11 @@ import io.netty.handler.codec.quic.QuicChannel;
 import io.netty.handler.codec.quic.QuicSslContext;
 import io.netty.handler.codec.quic.QuicStreamChannel;
 import io.netty.util.ReferenceCountUtil;
-import org.pragmatica.http.ContentType;
-import org.pragmatica.http.Headers;
-import org.pragmatica.http.HttpMethod;
-import org.pragmatica.http.HttpRequest;
-import org.pragmatica.http.HttpStatus;
-import org.pragmatica.http.QueryParams;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Unit;
-import org.pragmatica.utility.IdGenerator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Unit.unit;
+
 
 /// HTTP/3 server implementation using Netty QUIC transport.
 ///
@@ -97,15 +98,17 @@ final class Http3Server {
     private void initiateShutdown(Promise<Unit> promise) {
         log.info("Stopping HTTP/3 server on port {}", port);
         serverChannel.onPresent(channel -> channel.close()
-                                                   .addListener(_ -> cleanupAndComplete(promise)))
+                                                  .addListener(_ -> cleanupAndComplete(promise)))
                      .onEmpty(() -> cleanupAndComplete(promise));
     }
 
     private void cleanupAndComplete(Promise<Unit> promise) {
         if (!ownsGroup) {
             promise.succeed(unit());
+
             return;
         }
+
         workerGroup.map(EventLoopGroup::shutdownGracefully)
                    .onPresent(f -> f.addListener(_ -> promise.succeed(unit())))
                    .onEmpty(() -> promise.succeed(unit()));
@@ -116,6 +119,7 @@ final class Http3Server {
                                        QuicSslContext quicSslContext,
                                        BiConsumer<HttpRequest, ResponseWriter> handler) {
         var group = new MultiThreadIoEventLoopGroup(NioIoHandler.newFactory());
+
         return bind(config, quicSslContext, handler, group, true);
     }
 
@@ -144,10 +148,8 @@ final class Http3Server {
                          .tokenHandler(InsecureQuicTokenHandler.INSTANCE)
                          .handler(new QuicConnectionInitializer(handler, maxContentLength))
                          .build();
-        var bootstrap = new Bootstrap()
-            .group(group)
-            .channel(NioDatagramChannel.class)
-            .handler(codec);
+        var bootstrap = new Bootstrap().group(group).channel(NioDatagramChannel.class).handler(codec);
+
         return Promise.promise(promise -> bootstrap.bind(new InetSocketAddress(config.port()))
                                                    .addListener(future -> onBind(config,
                                                                                  promise,
@@ -156,7 +158,7 @@ final class Http3Server {
                                                                                  ownsGroup)));
     }
 
-    @SuppressWarnings("JBCT-PAT-01") // Netty future callback
+    @SuppressWarnings("JBCT-PAT-01")  // Netty future callback
     private static void onBind(HttpServerConfig config,
                                Promise<Http3Server> promise,
                                io.netty.util.concurrent.Future<? super Void> future,
@@ -164,15 +166,14 @@ final class Http3Server {
                                boolean ownsGroup) {
         if (future.isSuccess()) {
             var channel = ((io.netty.channel.ChannelFuture) future).channel();
+
             log.info("HTTP/3 QUIC server '{}' started on port {}", config.name(), config.port());
-            promise.succeed(new Http3Server(config.port(),
-                                            Option.option(group),
-                                            Option.option(channel),
-                                            ownsGroup));
+            promise.succeed(new Http3Server(config.port(), Option.option(group), Option.option(channel), ownsGroup));
         } else {
             if (ownsGroup) {
                 group.shutdownGracefully();
             }
+
             promise.fail(new HttpServerError.BindFailed(config.port(), future.cause()));
         }
     }
@@ -183,16 +184,15 @@ final class Http3Server {
         private final BiConsumer<HttpRequest, ResponseWriter> handler;
         private final int maxContentLength;
 
-        QuicConnectionInitializer(BiConsumer<HttpRequest, ResponseWriter> handler,
-                                  int maxContentLength) {
+        QuicConnectionInitializer(BiConsumer<HttpRequest, ResponseWriter> handler, int maxContentLength) {
             this.handler = handler;
             this.maxContentLength = maxContentLength;
         }
 
         @Override
         protected void initChannel(QuicChannel ch) {
-            ch.pipeline().addLast(new Http3ServerConnectionHandler(
-                new Http3StreamInitializer(handler, maxContentLength)));
+            ch.pipeline()
+              .addLast(new Http3ServerConnectionHandler(new Http3StreamInitializer(handler, maxContentLength)));
         }
     }
 
@@ -202,8 +202,7 @@ final class Http3Server {
         private final BiConsumer<HttpRequest, ResponseWriter> handler;
         private final int maxContentLength;
 
-        Http3StreamInitializer(BiConsumer<HttpRequest, ResponseWriter> handler,
-                               int maxContentLength) {
+        Http3StreamInitializer(BiConsumer<HttpRequest, ResponseWriter> handler, int maxContentLength) {
             this.handler = handler;
             this.maxContentLength = maxContentLength;
         }
@@ -227,8 +226,7 @@ final class Http3Server {
         private Http3HeadersFrame headersFrame;
         private ByteBuf bodyData;
 
-        Http3RequestHandler(BiConsumer<HttpRequest, ResponseWriter> handler,
-                            int maxContentLength) {
+        Http3RequestHandler(BiConsumer<HttpRequest, ResponseWriter> handler, int maxContentLength) {
             this.handler = handler;
             this.maxContentLength = maxContentLength;
         }
@@ -249,14 +247,16 @@ final class Http3Server {
             if (headersFrame == null) {
                 return;
             }
+
             dispatch(ctx);
         }
 
-        @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"}) // Netty handler boundary: must catch exceptions to send error response
+        @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"})  // Netty handler boundary: must catch exceptions to send error response
         private void dispatch(ChannelHandlerContext ctx) {
             var requestId = IdGenerator.generate("req");
             var requestContext = buildRequestContext(requestId);
             var responseWriter = new Http3ResponseWriter(ctx, requestId);
+
             try {
                 handler.accept(requestContext, responseWriter);
             } catch (Exception e) {
@@ -269,7 +269,9 @@ final class Http3Server {
             if (bodyData == null) {
                 bodyData = Unpooled.buffer(Math.min(content.readableBytes(), maxContentLength));
             }
+
             var bytesToRead = Math.min(content.readableBytes(), maxContentLength - bodyData.readableBytes());
+
             if (bytesToRead > 0) {
                 bodyData.writeBytes(content, bytesToRead);
             }
@@ -282,9 +284,12 @@ final class Http3Server {
             var method = HttpMethod.httpMethod(methodStr).or(HttpMethod.GET);
             var pathAndQuery = pathStr.split("\\?", 2);
             var path = pathAndQuery[0];
-            var queryParams = parseQueryParams(pathAndQuery.length > 1 ? pathAndQuery[1] : "");
+            var queryParams = parseQueryParams(pathAndQuery.length > 1
+                                               ? pathAndQuery[1]
+                                               : "");
             var headerMap = extractHeaders(h3Headers);
             var body = extractBody();
+
             return new Http3RequestContext(requestId, method, path, Headers.headers(headerMap), queryParams, body);
         }
 
@@ -292,19 +297,24 @@ final class Http3Server {
             if (bodyData == null || !bodyData.isReadable()) {
                 return new byte[0];
             }
+
             var bytes = new byte[bodyData.readableBytes()];
+
             bodyData.readBytes(bytes);
             bodyData.release();
+
             return bytes;
         }
 
         private static Map<String, List<String>> extractHeaders(Http3Headers h3Headers) {
             var headerMap = new HashMap<String, List<String>>();
+
             for (var entry : h3Headers) {
                 headerMap.computeIfAbsent(entry.getKey().toString().toLowerCase(),
                                           _ -> new ArrayList<>())
                          .add(entry.getValue().toString());
             }
+
             return headerMap;
         }
 
@@ -312,15 +322,19 @@ final class Http3Server {
             if (queryString.isEmpty()) {
                 return QueryParams.empty();
             }
+
             var params = new HashMap<String, List<String>>();
+
             for (var param : queryString.split("&")) {
                 var kv = param.split("=", 2);
+
                 if (kv.length == 2) {
                     params.computeIfAbsent(kv[0], _ -> new ArrayList<>()).add(kv[1]);
                 } else if (kv.length == 1) {
                     params.computeIfAbsent(kv[0], _ -> new ArrayList<>()).add("");
                 }
             }
+
             return QueryParams.queryParams(params);
         }
 
@@ -354,6 +368,7 @@ final class Http3Server {
         @Override
         public ResponseWriter header(String name, String value) {
             pendingHeaders.put(name, value);
+
             return this;
         }
 
@@ -362,7 +377,9 @@ final class Http3Server {
             if (!written.compareAndSet(false, true)) {
                 return;
             }
+
             var responseHeaders = new io.netty.handler.codec.http3.DefaultHttp3Headers();
+
             responseHeaders.status(String.valueOf(status.code()));
             responseHeaders.set("content-type", contentType.headerText());
             responseHeaders.setInt("content-length", body.length);
@@ -373,8 +390,7 @@ final class Http3Server {
                 ctx.writeAndFlush(new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(body)))
                    .addListener(QuicStreamChannel.SHUTDOWN_OUTPUT);
             } else {
-                ctx.writeAndFlush(Unpooled.EMPTY_BUFFER)
-                   .addListener(QuicStreamChannel.SHUTDOWN_OUTPUT);
+                ctx.writeAndFlush(Unpooled.EMPTY_BUFFER).addListener(QuicStreamChannel.SHUTDOWN_OUTPUT);
             }
         }
     }

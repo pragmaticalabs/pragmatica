@@ -5,7 +5,6 @@ public enum Compression {
     NONE,
     LZ4,
     ZSTD;
-
     /// Returns the codec implementation for this compression algorithm.
     public CompressionCodec codec() {
         return switch (this) {

@@ -13,17 +13,17 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.dht;
-
-import org.pragmatica.lang.Option;
 
 import java.util.List;
 import java.util.Set;
 import java.util.function.Function;
 
+import org.pragmatica.lang.Option;
+
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
+
 
 /// Package-private implementation of HomeReplicaResolver.
 /// Deterministically selects a home node from community members using FNV-1a hashing.

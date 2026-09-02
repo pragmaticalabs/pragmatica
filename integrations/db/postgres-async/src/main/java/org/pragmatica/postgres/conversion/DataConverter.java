@@ -1,12 +1,5 @@
 package org.pragmatica.postgres.conversion;
 
-import org.pragmatica.postgres.Oid;
-import org.pragmatica.postgres.PgColumn;
-import org.pragmatica.postgres.net.Converter;
-import org.pragmatica.postgres.net.PgValue;
-import org.pragmatica.postgres.net.PgWriter;
-import org.pragmatica.lang.Functions.Fn2;
-
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
@@ -21,8 +14,16 @@ import java.util.function.BiFunction;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
+import org.pragmatica.postgres.Oid;
+import org.pragmatica.postgres.PgColumn;
+import org.pragmatica.postgres.net.Converter;
+import org.pragmatica.postgres.net.PgValue;
+import org.pragmatica.postgres.net.PgWriter;
+import org.pragmatica.lang.Functions.Fn2;
+
 import static org.pragmatica.postgres.conversion.TemporalConversions.*;
 import static org.pragmatica.postgres.util.HexConverter.parseHexBinary;
+
 
 /**
  * @author Antti Laisi
@@ -32,87 +33,120 @@ public class DataConverter {
     private final Charset encoding;
 
     public DataConverter(List<Converter<?>> converters, Charset encoding) {
-        this.typeToConverter = converters.stream()
-                                         .collect(Collectors.toMap(Converter::type, Function.identity()));
+        this.typeToConverter = converters.stream().collect(Collectors.toMap(Converter::type, Function.identity()));
         this.encoding = encoding;
     }
 
     public String toString(Oid oid, byte[] value) {
-        return value == null ? null : StringConversions.asString(oid, new String(value, encoding));
+        return value == null
+               ? null
+               : StringConversions.asString(oid, new String(value, encoding));
     }
 
     public Character toChar(Oid oid, byte[] value) {
-        return value == null ? null : StringConversions.toChar(oid, new String(value, encoding));
+        return value == null
+               ? null
+               : StringConversions.toChar(oid, new String(value, encoding));
     }
 
     public Long toLong(Oid oid, byte[] value) {
-        return value == null ? null : NumericConversions.toLong(oid, new String(value, encoding));
+        return value == null
+               ? null
+               : NumericConversions.toLong(oid, new String(value, encoding));
     }
 
     public Integer toInteger(Oid oid, byte[] value) {
-        return value == null ? null : NumericConversions.toInteger(oid, new String(value, encoding));
+        return value == null
+               ? null
+               : NumericConversions.toInteger(oid, new String(value, encoding));
     }
 
     public Short toShort(Oid oid, byte[] value) {
-        return value == null ? null : NumericConversions.toShort(oid, new String(value, encoding));
+        return value == null
+               ? null
+               : NumericConversions.toShort(oid, new String(value, encoding));
     }
 
     public Byte toByte(Oid oid, byte[] value) {
-        return value == null ? null : NumericConversions.toByte(oid, new String(value, encoding));
+        return value == null
+               ? null
+               : NumericConversions.toByte(oid, new String(value, encoding));
     }
 
     public BigInteger toBigInteger(Oid oid, byte[] value) {
-        return value == null ? null : NumericConversions.toBigInteger(oid, new String(value, encoding));
+        return value == null
+               ? null
+               : NumericConversions.toBigInteger(oid, new String(value, encoding));
     }
 
     public BigDecimal toBigDecimal(Oid oid, byte[] value) {
-        return value == null ? null : NumericConversions.toBigDecimal(oid, new String(value, encoding));
+        return value == null
+               ? null
+               : NumericConversions.toBigDecimal(oid, new String(value, encoding));
     }
 
     public Double toDouble(Oid oid, byte[] value) {
-        return value == null ? null : NumericConversions.toDouble(oid, new String(value, encoding));
+        return value == null
+               ? null
+               : NumericConversions.toDouble(oid, new String(value, encoding));
     }
 
     public LocalDate toLocalDate(Oid oid, byte[] value) {
-        return value == null ? null : TemporalConversions.toLocalDate(oid, new String(value, encoding));
+        return value == null
+               ? null
+               : TemporalConversions.toLocalDate(oid, new String(value, encoding));
     }
 
     public LocalDateTime toLocalDateTime(Oid oid, byte[] value) {
-        return value == null ? null : TemporalConversions.toLocalDateTime(oid, new String(value, encoding));
+        return value == null
+               ? null
+               : TemporalConversions.toLocalDateTime(oid, new String(value, encoding));
     }
 
     public LocalTime toLocalTime(Oid oid, byte[] value) {
-        return value == null ? null : TemporalConversions.toLocalTime(oid, new String(value, encoding));
+        return value == null
+               ? null
+               : TemporalConversions.toLocalTime(oid, new String(value, encoding));
     }
 
     public Instant toInstant(Oid oid, byte[] value) {
-        return value == null ? null : TemporalConversions.toInstant(oid, new String(value, encoding));
+        return value == null
+               ? null
+               : TemporalConversions.toInstant(oid, new String(value, encoding));
     }
 
     public byte[] toBytes(Oid oid, byte[] value) {
-        return value == null ? null : BlobConversions.toBytes(oid, new String(value, 2, value.length - 2, encoding));
+        return value == null
+               ? null
+               : BlobConversions.toBytes(oid, new String(value, 2, value.length - 2, encoding));
     }
 
     public Boolean toBoolean(Oid oid, byte[] value) {
-        return value == null ? null : BooleanConversions.toBoolean(oid, new String(value, encoding));
+        return value == null
+               ? null
+               : BooleanConversions.toBoolean(oid, new String(value, encoding));
     }
 
     // Binary-aware overloads
-
     public String toString(Oid oid, byte[] value, boolean binary) {
         if (value == null) return null;
+
         if (binary) return new String(value, encoding);
+
         return StringConversions.asString(oid, new String(value, encoding));
     }
 
     public Character toChar(Oid oid, byte[] value, boolean binary) {
         if (value == null) return null;
+
         if (binary) return (char) value[0];
+
         return StringConversions.toChar(oid, new String(value, encoding));
     }
 
     public Long toLong(Oid oid, byte[] value, boolean binary) {
         if (value == null) return null;
+
         if (binary) {
             return switch (oid) {
                 case INT2 -> (long) ByteBuffer.wrap(value).getShort();
@@ -123,11 +157,13 @@ public class DataConverter {
                 default -> NumericConversions.toLong(oid, new String(value, encoding));
             };
         }
+
         return NumericConversions.toLong(oid, new String(value, encoding));
     }
 
     public Integer toInteger(Oid oid, byte[] value, boolean binary) {
         if (value == null) return null;
+
         if (binary) {
             return switch (oid) {
                 case INT2 -> (int) ByteBuffer.wrap(value).getShort();
@@ -138,11 +174,13 @@ public class DataConverter {
                 default -> NumericConversions.toInteger(oid, new String(value, encoding));
             };
         }
+
         return NumericConversions.toInteger(oid, new String(value, encoding));
     }
 
     public Short toShort(Oid oid, byte[] value, boolean binary) {
         if (value == null) return null;
+
         if (binary) {
             return switch (oid) {
                 case INT2 -> ByteBuffer.wrap(value).getShort();
@@ -153,11 +191,13 @@ public class DataConverter {
                 default -> NumericConversions.toShort(oid, new String(value, encoding));
             };
         }
+
         return NumericConversions.toShort(oid, new String(value, encoding));
     }
 
     public Byte toByte(Oid oid, byte[] value, boolean binary) {
         if (value == null) return null;
+
         if (binary) {
             return switch (oid) {
                 case BOOL -> value[0];
@@ -169,11 +209,13 @@ public class DataConverter {
                 default -> value[0];
             };
         }
+
         return NumericConversions.toByte(oid, new String(value, encoding));
     }
 
     public BigInteger toBigInteger(Oid oid, byte[] value, boolean binary) {
         if (value == null) return null;
+
         if (binary) {
             return switch (oid) {
                 case INT2 -> BigInteger.valueOf(ByteBuffer.wrap(value).getShort());
@@ -184,11 +226,13 @@ public class DataConverter {
                 default -> NumericConversions.toBigInteger(oid, new String(value, encoding));
             };
         }
+
         return NumericConversions.toBigInteger(oid, new String(value, encoding));
     }
 
     public BigDecimal toBigDecimal(Oid oid, byte[] value, boolean binary) {
         if (value == null) return null;
+
         if (binary) {
             return switch (oid) {
                 case INT2 -> BigDecimal.valueOf(ByteBuffer.wrap(value).getShort());
@@ -199,11 +243,13 @@ public class DataConverter {
                 default -> new BigDecimal(new String(value, encoding));
             };
         }
+
         return NumericConversions.toBigDecimal(oid, new String(value, encoding));
     }
 
     public Double toDouble(Oid oid, byte[] value, boolean binary) {
         if (value == null) return null;
+
         if (binary) {
             return switch (oid) {
                 case INT2 -> (double) ByteBuffer.wrap(value).getShort();
@@ -214,125 +260,151 @@ public class DataConverter {
                 default -> NumericConversions.toDouble(oid, new String(value, encoding));
             };
         }
+
         return NumericConversions.toDouble(oid, new String(value, encoding));
     }
 
     public LocalDate toLocalDate(Oid oid, byte[] value, boolean binary) {
         if (value == null) return null;
+
         if (binary) {
             return switch (oid) {
                 case DATE -> {
                     int days = ByteBuffer.wrap(value).getInt();
+
                     yield LocalDate.of(2000, 1, 1).plusDays(days);
                 }
                 case TIMESTAMP, TIMESTAMPTZ -> {
                     long pgMicros = ByteBuffer.wrap(value).getLong();
                     long epochMicros = pgMicros + BinaryCodec.PG_EPOCH_MICROS_OFFSET;
                     long epochSecs = Math.floorDiv(epochMicros, 1_000_000);
-                    int nanoAdj = (int) (Math.floorMod(epochMicros, 1_000_000) * 1000);
+                    int nanoAdj = (int)(Math.floorMod(epochMicros, 1_000_000) * 1000);
+
                     yield LocalDateTime.ofInstant(Instant.ofEpochSecond(epochSecs, nanoAdj), ZoneOffset.UTC).toLocalDate();
                 }
                 default -> TemporalConversions.toLocalDate(oid, new String(value, encoding));
             };
         }
+
         return TemporalConversions.toLocalDate(oid, new String(value, encoding));
     }
 
     public LocalDateTime toLocalDateTime(Oid oid, byte[] value, boolean binary) {
         if (value == null) return null;
+
         if (binary) {
             return switch (oid) {
                 case TIMESTAMP, TIMESTAMPTZ -> {
                     long pgMicros = ByteBuffer.wrap(value).getLong();
                     long epochMicros = pgMicros + BinaryCodec.PG_EPOCH_MICROS_OFFSET;
                     long epochSecs = Math.floorDiv(epochMicros, 1_000_000);
-                    int nanoAdj = (int) (Math.floorMod(epochMicros, 1_000_000) * 1000);
+                    int nanoAdj = (int)(Math.floorMod(epochMicros, 1_000_000) * 1000);
+
                     yield LocalDateTime.ofInstant(Instant.ofEpochSecond(epochSecs, nanoAdj), ZoneOffset.UTC);
                 }
                 case DATE -> {
                     int days = ByteBuffer.wrap(value).getInt();
+
                     yield LocalDate.of(2000, 1, 1).plusDays(days).atStartOfDay();
                 }
                 default -> TemporalConversions.toLocalDateTime(oid, new String(value, encoding));
             };
         }
+
         return TemporalConversions.toLocalDateTime(oid, new String(value, encoding));
     }
 
     public LocalTime toLocalTime(Oid oid, byte[] value, boolean binary) {
         if (value == null) return null;
+
         if (binary) {
             return switch (oid) {
                 case TIME -> {
                     long micros = ByteBuffer.wrap(value).getLong();
+
                     yield LocalTime.ofNanoOfDay(micros * 1000);
                 }
                 case TIMETZ -> {
                     long micros = ByteBuffer.wrap(value).getLong();
+
                     yield LocalTime.ofNanoOfDay(micros * 1000);
                 }
                 case TIMESTAMP, TIMESTAMPTZ -> {
                     long pgMicros = ByteBuffer.wrap(value).getLong();
                     long epochMicros = pgMicros + BinaryCodec.PG_EPOCH_MICROS_OFFSET;
                     long epochSecs = Math.floorDiv(epochMicros, 1_000_000);
-                    int nanoAdj = (int) (Math.floorMod(epochMicros, 1_000_000) * 1000);
+                    int nanoAdj = (int)(Math.floorMod(epochMicros, 1_000_000) * 1000);
+
                     yield LocalDateTime.ofInstant(Instant.ofEpochSecond(epochSecs, nanoAdj), ZoneOffset.UTC).toLocalTime();
                 }
                 default -> TemporalConversions.toLocalTime(oid, new String(value, encoding));
             };
         }
+
         return TemporalConversions.toLocalTime(oid, new String(value, encoding));
     }
 
     public Instant toInstant(Oid oid, byte[] value, boolean binary) {
         if (value == null) return null;
+
         if (binary) {
             return switch (oid) {
                 case TIMESTAMP, TIMESTAMPTZ -> {
                     long pgMicros = ByteBuffer.wrap(value).getLong();
                     long epochMicros = pgMicros + BinaryCodec.PG_EPOCH_MICROS_OFFSET;
                     long epochSecs = Math.floorDiv(epochMicros, 1_000_000);
-                    int nanoAdj = (int) (Math.floorMod(epochMicros, 1_000_000) * 1000);
+                    int nanoAdj = (int)(Math.floorMod(epochMicros, 1_000_000) * 1000);
+
                     yield Instant.ofEpochSecond(epochSecs, nanoAdj);
                 }
                 case DATE -> {
                     int days = ByteBuffer.wrap(value).getInt();
+
                     yield LocalDate.of(2000, 1, 1).plusDays(days).atStartOfDay().toInstant(ZoneOffset.UTC);
                 }
                 default -> TemporalConversions.toInstant(oid, new String(value, encoding));
             };
         }
+
         return TemporalConversions.toInstant(oid, new String(value, encoding));
     }
 
     public byte[] toBytes(Oid oid, byte[] value, boolean binary) {
         if (value == null) return null;
+
         if (binary) return value;
+
         return BlobConversions.toBytes(oid, new String(value, 2, value.length - 2, encoding));
     }
 
     public Boolean toBoolean(Oid oid, byte[] value, boolean binary) {
         if (value == null) return null;
+
         if (binary) return value[0] != 0;
+
         return BooleanConversions.toBoolean(oid, new String(value, encoding));
     }
 
     // Binary-aware overloads with offset/length (zero-copy from DataRow buffer)
-
     public String toString(Oid oid, byte[] data, int offset, int length, boolean binary) {
         if (length == -1) return null;
+
         if (binary) return new String(data, offset, length, encoding);
+
         return StringConversions.asString(oid, new String(data, offset, length, encoding));
     }
 
     public Character toChar(Oid oid, byte[] data, int offset, int length, boolean binary) {
         if (length == -1) return null;
+
         if (binary) return (char) data[offset];
+
         return StringConversions.toChar(oid, new String(data, offset, length, encoding));
     }
 
     public Long toLong(Oid oid, byte[] data, int offset, int length, boolean binary) {
         if (length == -1) return null;
+
         if (binary) {
             return switch (oid) {
                 case INT2 -> (long) ByteBuffer.wrap(data, offset, 2).getShort();
@@ -343,11 +415,13 @@ public class DataConverter {
                 default -> NumericConversions.toLong(oid, new String(data, offset, length, encoding));
             };
         }
+
         return NumericConversions.toLong(oid, new String(data, offset, length, encoding));
     }
 
     public Integer toInteger(Oid oid, byte[] data, int offset, int length, boolean binary) {
         if (length == -1) return null;
+
         if (binary) {
             return switch (oid) {
                 case INT2 -> (int) ByteBuffer.wrap(data, offset, 2).getShort();
@@ -358,11 +432,13 @@ public class DataConverter {
                 default -> NumericConversions.toInteger(oid, new String(data, offset, length, encoding));
             };
         }
+
         return NumericConversions.toInteger(oid, new String(data, offset, length, encoding));
     }
 
     public Short toShort(Oid oid, byte[] data, int offset, int length, boolean binary) {
         if (length == -1) return null;
+
         if (binary) {
             return switch (oid) {
                 case INT2 -> ByteBuffer.wrap(data, offset, 2).getShort();
@@ -373,11 +449,13 @@ public class DataConverter {
                 default -> NumericConversions.toShort(oid, new String(data, offset, length, encoding));
             };
         }
+
         return NumericConversions.toShort(oid, new String(data, offset, length, encoding));
     }
 
     public Byte toByte(Oid oid, byte[] data, int offset, int length, boolean binary) {
         if (length == -1) return null;
+
         if (binary) {
             return switch (oid) {
                 case BOOL -> data[offset];
@@ -389,11 +467,13 @@ public class DataConverter {
                 default -> data[offset];
             };
         }
+
         return NumericConversions.toByte(oid, new String(data, offset, length, encoding));
     }
 
     public BigInteger toBigInteger(Oid oid, byte[] data, int offset, int length, boolean binary) {
         if (length == -1) return null;
+
         if (binary) {
             return switch (oid) {
                 case INT2 -> BigInteger.valueOf(ByteBuffer.wrap(data, offset, 2).getShort());
@@ -404,11 +484,13 @@ public class DataConverter {
                 default -> NumericConversions.toBigInteger(oid, new String(data, offset, length, encoding));
             };
         }
+
         return NumericConversions.toBigInteger(oid, new String(data, offset, length, encoding));
     }
 
     public BigDecimal toBigDecimal(Oid oid, byte[] data, int offset, int length, boolean binary) {
         if (length == -1) return null;
+
         if (binary) {
             return switch (oid) {
                 case INT2 -> BigDecimal.valueOf(ByteBuffer.wrap(data, offset, 2).getShort());
@@ -419,11 +501,13 @@ public class DataConverter {
                 default -> new BigDecimal(new String(data, offset, length, encoding));
             };
         }
+
         return NumericConversions.toBigDecimal(oid, new String(data, offset, length, encoding));
     }
 
     public Double toDouble(Oid oid, byte[] data, int offset, int length, boolean binary) {
         if (length == -1) return null;
+
         if (binary) {
             return switch (oid) {
                 case INT2 -> (double) ByteBuffer.wrap(data, offset, 2).getShort();
@@ -434,114 +518,140 @@ public class DataConverter {
                 default -> NumericConversions.toDouble(oid, new String(data, offset, length, encoding));
             };
         }
+
         return NumericConversions.toDouble(oid, new String(data, offset, length, encoding));
     }
 
     public LocalDate toLocalDate(Oid oid, byte[] data, int offset, int length, boolean binary) {
         if (length == -1) return null;
+
         if (binary) {
             return switch (oid) {
                 case DATE -> {
                     int days = ByteBuffer.wrap(data, offset, 4).getInt();
+
                     yield LocalDate.of(2000, 1, 1).plusDays(days);
                 }
                 case TIMESTAMP, TIMESTAMPTZ -> {
                     long pgMicros = ByteBuffer.wrap(data, offset, 8).getLong();
                     long epochMicros = pgMicros + BinaryCodec.PG_EPOCH_MICROS_OFFSET;
                     long epochSecs = Math.floorDiv(epochMicros, 1_000_000);
-                    int nanoAdj = (int) (Math.floorMod(epochMicros, 1_000_000) * 1000);
+                    int nanoAdj = (int)(Math.floorMod(epochMicros, 1_000_000) * 1000);
+
                     yield LocalDateTime.ofInstant(Instant.ofEpochSecond(epochSecs, nanoAdj), ZoneOffset.UTC).toLocalDate();
                 }
                 default -> TemporalConversions.toLocalDate(oid, new String(data, offset, length, encoding));
             };
         }
+
         return TemporalConversions.toLocalDate(oid, new String(data, offset, length, encoding));
     }
 
     public LocalDateTime toLocalDateTime(Oid oid, byte[] data, int offset, int length, boolean binary) {
         if (length == -1) return null;
+
         if (binary) {
             return switch (oid) {
                 case TIMESTAMP, TIMESTAMPTZ -> {
                     long pgMicros = ByteBuffer.wrap(data, offset, 8).getLong();
                     long epochMicros = pgMicros + BinaryCodec.PG_EPOCH_MICROS_OFFSET;
                     long epochSecs = Math.floorDiv(epochMicros, 1_000_000);
-                    int nanoAdj = (int) (Math.floorMod(epochMicros, 1_000_000) * 1000);
+                    int nanoAdj = (int)(Math.floorMod(epochMicros, 1_000_000) * 1000);
+
                     yield LocalDateTime.ofInstant(Instant.ofEpochSecond(epochSecs, nanoAdj), ZoneOffset.UTC);
                 }
                 case DATE -> {
                     int days = ByteBuffer.wrap(data, offset, 4).getInt();
+
                     yield LocalDate.of(2000, 1, 1).plusDays(days).atStartOfDay();
                 }
                 default -> TemporalConversions.toLocalDateTime(oid, new String(data, offset, length, encoding));
             };
         }
+
         return TemporalConversions.toLocalDateTime(oid, new String(data, offset, length, encoding));
     }
 
     public LocalTime toLocalTime(Oid oid, byte[] data, int offset, int length, boolean binary) {
         if (length == -1) return null;
+
         if (binary) {
             return switch (oid) {
                 case TIME -> {
                     long micros = ByteBuffer.wrap(data, offset, 8).getLong();
+
                     yield LocalTime.ofNanoOfDay(micros * 1000);
                 }
                 case TIMETZ -> {
                     long micros = ByteBuffer.wrap(data, offset, 8).getLong();
+
                     yield LocalTime.ofNanoOfDay(micros * 1000);
                 }
                 case TIMESTAMP, TIMESTAMPTZ -> {
                     long pgMicros = ByteBuffer.wrap(data, offset, 8).getLong();
                     long epochMicros = pgMicros + BinaryCodec.PG_EPOCH_MICROS_OFFSET;
                     long epochSecs = Math.floorDiv(epochMicros, 1_000_000);
-                    int nanoAdj = (int) (Math.floorMod(epochMicros, 1_000_000) * 1000);
+                    int nanoAdj = (int)(Math.floorMod(epochMicros, 1_000_000) * 1000);
+
                     yield LocalDateTime.ofInstant(Instant.ofEpochSecond(epochSecs, nanoAdj), ZoneOffset.UTC).toLocalTime();
                 }
                 default -> TemporalConversions.toLocalTime(oid, new String(data, offset, length, encoding));
             };
         }
+
         return TemporalConversions.toLocalTime(oid, new String(data, offset, length, encoding));
     }
 
     public Instant toInstant(Oid oid, byte[] data, int offset, int length, boolean binary) {
         if (length == -1) return null;
+
         if (binary) {
             return switch (oid) {
                 case TIMESTAMP, TIMESTAMPTZ -> {
                     long pgMicros = ByteBuffer.wrap(data, offset, 8).getLong();
                     long epochMicros = pgMicros + BinaryCodec.PG_EPOCH_MICROS_OFFSET;
                     long epochSecs = Math.floorDiv(epochMicros, 1_000_000);
-                    int nanoAdj = (int) (Math.floorMod(epochMicros, 1_000_000) * 1000);
+                    int nanoAdj = (int)(Math.floorMod(epochMicros, 1_000_000) * 1000);
+
                     yield Instant.ofEpochSecond(epochSecs, nanoAdj);
                 }
                 case DATE -> {
                     int days = ByteBuffer.wrap(data, offset, 4).getInt();
+
                     yield LocalDate.of(2000, 1, 1).plusDays(days).atStartOfDay().toInstant(ZoneOffset.UTC);
                 }
                 default -> TemporalConversions.toInstant(oid, new String(data, offset, length, encoding));
             };
         }
+
         return TemporalConversions.toInstant(oid, new String(data, offset, length, encoding));
     }
 
     public byte[] toBytes(Oid oid, byte[] data, int offset, int length, boolean binary) {
         if (length == -1) return null;
+
         if (binary) return Arrays.copyOfRange(data, offset, offset + length);
+
         return BlobConversions.toBytes(oid, new String(data, offset + 2, length - 2, encoding));
     }
 
     public Boolean toBoolean(Oid oid, byte[] data, int offset, int length, boolean binary) {
         if (length == -1) return null;
+
         if (binary) return data[offset] != 0;
+
         return BooleanConversions.toBoolean(oid, new String(data, offset, length, encoding));
     }
 
     public static short[] resultFormatCodes(PgColumn[] columns) {
         var codes = new short[columns.length];
+
         for (int i = 0; i < columns.length; i++) {
-            codes[i] = (short) (columns[i].type().supportsBinary() ? 1 : 0);
+            codes[i] = (short)(columns[i].type().supportsBinary()
+                               ? 1
+                               : 0);
         }
+
         return codes;
     }
 
@@ -549,6 +659,7 @@ public class DataConverter {
         if (value == null) {
             return null;
         }
+
         return ArrayConversions.toArray(arrayType, new PgValue.Text(oid, value, encoding), lookupParser(oid));
     }
 
@@ -556,7 +667,11 @@ public class DataConverter {
         if (value == null) {
             return null;
         }
-        var pgValue = binary ? new PgValue.Binary(oid, value) : new PgValue.Text(oid, value, encoding);
+
+        var pgValue = binary
+                      ? new PgValue.Binary(oid, value)
+                      : new PgValue.Text(oid, value, encoding);
+
         return ArrayConversions.toArray(arrayType, pgValue, lookupParser(oid));
     }
 
@@ -573,6 +688,7 @@ public class DataConverter {
             case BOOL_ARRAY -> BooleanConversions::toBoolean;
             case BYTEA_ARRAY -> (oide, svaluee) -> {
                 byte[] first = BlobConversions.toBytes(oide, svaluee.substring(2));
+
                 return parseHexBinary(new String(first, 1, first.length - 1, encoding));
             };
             default -> throw new IllegalStateException("Unsupported array type: " + oid);
@@ -606,7 +722,6 @@ public class DataConverter {
             case byte[] bytes -> BlobConversions.fromBytes(bytes);
             case Boolean bool -> BooleanConversions.fromBoolean(bool);
             case String _, Number _, Character _, UUID _ -> o.toString();
-
             default -> {
                 if (o.getClass().isArray()) {
                     yield ArrayConversions.fromArray(o, this::fromObjectAsText);
@@ -621,12 +736,13 @@ public class DataConverter {
     private String convertibleAsText(Object value) {
         var converter = (Converter<Object>) getConverter((Class) value.getClass());
         var writer = new CapturingPgWriter(encoding);
+
         converter.from(value, writer);
         if (writer.isBinary()) {
-            throw new IllegalArgumentException(
-                "Custom converter for " + value.getClass()
-                + " produced binary output, which cannot be embedded inside a text-format array literal");
+            throw new IllegalArgumentException("Custom converter for " + value.getClass()
+                                              + " produced binary output, which cannot be embedded inside a text-format array literal");
         }
+
         return new String(writer.bytes(), encoding);
     }
 
@@ -637,18 +753,21 @@ public class DataConverter {
         if (o == null) {
             throw new IllegalArgumentException("writeObject must not be called with null");
         }
+
         if (o.getClass().isArray() || isBuiltInWriteType(o)) {
             writer.writeText(fromObjectAsText(o));
+
             return;
         }
+
         var converter = (Converter<Object>) getConverter((Class) o.getClass());
+
         converter.from(o, writer);
     }
 
     private static boolean isBuiltInWriteType(Object o) {
         return switch (o) {
-            case LocalDate _, LocalTime _, LocalDateTime _, ZonedDateTime _, OffsetDateTime _, Instant _,
-                 byte[] _, Boolean _, String _, Number _, Character _, UUID _ -> true;
+            case LocalDate _, LocalTime _, LocalDateTime _, ZonedDateTime _, OffsetDateTime _, Instant _, byte[] _, Boolean _, String _, Number _, Character _, UUID _ -> true;
             default -> false;
         };
     }
@@ -661,19 +780,23 @@ public class DataConverter {
     public byte[][] fromParameters(Object[] parameters) {
         byte[][] params = new byte[parameters.length][];
         var writer = new CapturingPgWriter(encoding);
+
         for (int i = 0; i < parameters.length; i++) {
             if (parameters[i] == null) {
                 params[i] = null;
                 continue;
             }
+
             writer.reset();
             writeObject(parameters[i], writer);
             if (writer.isBinary()) {
-                throw new IllegalArgumentException(
-                    "Binary-format parameters are not supported in text-mode binding (parameter index " + i + ")");
+                throw new IllegalArgumentException("Binary-format parameters are not supported in text-mode binding (parameter index " + i
+                                                  + ")");
             }
+
             params[i] = writer.bytes();
         }
+
         return params;
     }
 
@@ -693,8 +816,10 @@ public class DataConverter {
             }
 
             var codec = (BinaryCodec<Object>) BinaryCodecs.forOid(types[i]);
+
             if (codec != null && isBinaryEncodable(parameters[i], types[i])) {
                 var buf = ByteBuffer.allocate(codec.estimateSize(parameters[i]));
+
                 codec.encode(parameters[i], buf);
                 buf.flip();
                 values[i] = new byte[buf.remaining()];
@@ -704,9 +829,12 @@ public class DataConverter {
                 writer.reset();
                 writeObject(parameters[i], writer);
                 values[i] = writer.bytes();
-                formatCodes[i] = (short) (writer.isBinary() ? 1 : 0);
+                formatCodes[i] = (short)(writer.isBinary()
+                                         ? 1
+                                         : 0);
             }
         }
+
         return new EncodedParams(values, formatCodes);
     }
 
@@ -752,7 +880,8 @@ public class DataConverter {
         KNOWN_TYPES.put(Boolean.class, BooleanConversions::toBoolean);
         KNOWN_TYPES.put(UUID.class, (oid, value) -> UUID.fromString(value));
         // BYTEA in text format ("\x..."): strip the leading "\x" prefix before parsing hex.
-        KNOWN_TYPES.put(byte[].class, (oid, value) -> BlobConversions.toBytes(oid, value.substring(2)));
+        KNOWN_TYPES.put(byte[].class,
+                        (oid, value) -> BlobConversions.toBytes(oid, value.substring(2)));
         KNOWN_TYPES.put(LocalDate.class, TemporalConversions::toLocalDate);
         KNOWN_TYPES.put(LocalTime.class, TemporalConversions::toLocalTime);
         KNOWN_TYPES.put(LocalDateTime.class, TemporalConversions::toLocalDateTime);
@@ -763,6 +892,25 @@ public class DataConverter {
 
     public <T> T toObject(Oid oid, byte[] value, Class<T> type) {
         return toObject(oid, value, type, false);
+    }
+
+    /// Decode a UUID from either wire format. PostgreSQL sends `uuid` as the canonical
+    /// 36-character text in text format and as 16 raw bytes in binary format; an `UPDATE ...
+    /// RETURNING id` comes back binary, and decoding those bytes as text produced
+    /// "Invalid UUID string" AFTER the statement had already committed -- a write that applied
+    /// while its caller was told the store was unavailable.
+    private UUID toUuid(byte[] value, boolean binary) {
+        if (!binary) {
+            return UUID.fromString(new String(value, encoding));
+        }
+
+        if (value.length != 16) {
+            throw new IllegalArgumentException("Binary uuid must be 16 bytes, got " + value.length);
+        }
+
+        var buffer = java.nio.ByteBuffer.wrap(value);
+
+        return new UUID(buffer.getLong(), buffer.getLong());
     }
 
     @SuppressWarnings("unchecked")
@@ -776,10 +924,18 @@ public class DataConverter {
             var converter = (Converter<T>) typeToConverter.get(type);
 
             if (converter != null) {
-                PgValue pgValue = binary ? new PgValue.Binary(oid, value) : new PgValue.Text(oid, value, encoding);
+                PgValue pgValue = binary
+                                  ? new PgValue.Binary(oid, value)
+                                  : new PgValue.Text(oid, value, encoding);
+
                 return converter.to(pgValue);
             }
-
+            // A UUID arrives as 16 raw bytes in binary format; stringifying those bytes yields
+            // mojibake and UUID.fromString then fails. The KNOWN_TYPES converters take a String and
+            // so cannot see the wire format, which is why this case is decided before the lookup.
+            if (type == UUID.class) {
+                return (T) toUuid(value, binary);
+            }
             // Try known converter
             var knownConverter = KNOWN_TYPES.get(type);
 
@@ -789,7 +945,6 @@ public class DataConverter {
 
             throw new IllegalArgumentException("Unknown conversion target: " + type);
         }
-
         // Convert by oid
         return (T) switch (oid) {
             case null -> null;
@@ -802,12 +957,12 @@ public class DataConverter {
             case DATE -> toLocalDate(oid, value);
             case TIMETZ, TIME -> toLocalTime(oid, value);
             case TIMESTAMP, TIMESTAMPTZ -> toInstant(oid, value);
-            case UUID -> UUID.fromString(toString(oid, value));
+            case UUID -> toUuid(value, binary);
             case BOOL -> toBoolean(oid, value);
-            case INT2_ARRAY, INT4_ARRAY, INT8_ARRAY, NUMERIC_ARRAY, FLOAT4_ARRAY, FLOAT8_ARRAY,
-                TEXT_ARRAY, CHAR_ARRAY, BPCHAR_ARRAY, VARCHAR_ARRAY,
-                TIMESTAMP_ARRAY, TIMESTAMPTZ_ARRAY, TIMETZ_ARRAY, TIME_ARRAY, BOOL_ARRAY,
-                BYTEA_ARRAY, UUID_ARRAY, DATE_ARRAY -> toArray(Object[].class, oid, value, binary);
+            case INT2_ARRAY, INT4_ARRAY, INT8_ARRAY, NUMERIC_ARRAY, FLOAT4_ARRAY, FLOAT8_ARRAY, TEXT_ARRAY, CHAR_ARRAY, BPCHAR_ARRAY, VARCHAR_ARRAY, TIMESTAMP_ARRAY, TIMESTAMPTZ_ARRAY, TIMETZ_ARRAY, TIME_ARRAY, BOOL_ARRAY, BYTEA_ARRAY, UUID_ARRAY, DATE_ARRAY -> toArray(Object[].class,
+                                                                                                                                                                                                                                                                              oid,
+                                                                                                                                                                                                                                                                              value,
+                                                                                                                                                                                                                                                                              binary);
             default -> throw new IllegalArgumentException("Unknown conversion target: " + oid);
         };
     }
@@ -843,6 +998,7 @@ public class DataConverter {
                 case null, default -> types[i] = Oid.UNSPECIFIED;
             }
         }
+
         return types;
     }
 }

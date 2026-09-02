@@ -11,16 +11,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.pragmatica.postgres.io.backend;
-
-import org.pragmatica.postgres.io.Decoder;
-import org.pragmatica.postgres.message.backend.CommandComplete;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
 
+import org.pragmatica.postgres.io.Decoder;
+import org.pragmatica.postgres.message.backend.CommandComplete;
+
 import static org.pragmatica.postgres.io.IO.getCString;
+
 
 /**
  * See <a href="https://www.postgresql.org/docs/11/protocol-message-formats.html">Postgres message formats</a>
@@ -60,6 +60,7 @@ public class CommandCompleteDecoder implements Decoder<CommandComplete> {
     private static int calculateAffectedRows(String tag) {
         if (tag.contains("INSERT") || tag.contains("UPDATE") || tag.contains("DELETE")) {
             var parts = tag.split(" ");
+
             return Integer.parseInt(parts[parts.length - 1]);
         }
 

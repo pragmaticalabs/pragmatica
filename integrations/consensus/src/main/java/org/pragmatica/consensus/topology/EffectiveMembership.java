@@ -13,12 +13,12 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.topology;
+
+import java.util.Set;
 
 import org.pragmatica.consensus.NodeId;
 
-import java.util.Set;
 
 /// Which source `TopologyObserver` actually consulted on the last read — the authoritative
 /// leader-projected snapshot, or the local in-memory state built from SWIM/QUIC events.

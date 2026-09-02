@@ -1,5 +1,5 @@
 /*
- *  Copyright (c) 2020-2025 Sergiy Yevtushenko.
+ *  Copyright (c) 2025 Sergiy Yevtushenko.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -12,13 +12,17 @@
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
+ *
  */
+package org.pragmatica.cloud.aws.api;
 
-package org.pragmatica.consensus.topology;
-/// Health status of a node in the topology.
-public enum NodeHealth {
-    /// Node is healthy and participating in the cluster.
-    HEALTHY,
-    /// Connection attempts in progress with backoff.
-    SUSPECTED
-}
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+
+import tools.jackson.dataformat.xml.annotation.JacksonXmlProperty;
+import tools.jackson.dataformat.xml.annotation.JacksonXmlRootElement;
+
+
+/// EC2 CreateSecurityGroup XML response wrapper.
+@JacksonXmlRootElement(localName = "CreateSecurityGroupResponse")
+@JsonIgnoreProperties(ignoreUnknown = true)
+public record CreateSecurityGroupResponse(@JacksonXmlProperty(localName = "groupId") String groupId) {}

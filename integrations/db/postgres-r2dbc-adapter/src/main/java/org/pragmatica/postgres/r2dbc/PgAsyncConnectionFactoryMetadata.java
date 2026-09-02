@@ -14,15 +14,14 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.postgres.r2dbc;
 
 import io.r2dbc.spi.ConnectionFactoryMetadata;
 
+
 /// Metadata for the postgres-async backed R2DBC connection factory.
 enum PgAsyncConnectionFactoryMetadata implements ConnectionFactoryMetadata {
     INSTANCE;
-
     @Override
     public String getName() {
         return "PostgreSQL (postgres-async)";

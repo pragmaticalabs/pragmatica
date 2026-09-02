@@ -21,18 +21,25 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.cloud.aws.api.DescribeInstancesResponse;
+import org.pragmatica.cloud.aws.api.SecurityGroup;
 import org.pragmatica.cloud.aws.api.TargetHealth;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
 import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse.BodyHandler;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Flow;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -40,14 +47,16 @@ import static org.pragmatica.cloud.aws.AwsConfig.awsConfig;
 
 class AwsClientTest {
     private static final AwsConfig CONFIG = awsConfig("AKIDTEST", "secretkey123", "us-east-1");
+    private static final String GROUP_ID = "sg-0123456789abcdef0";
     private final AtomicReference<HttpRequest> capturedRequest = new AtomicReference<>();
+    private final AtomicReference<String> capturedBody = new AtomicReference<>();
 
     private AwsClient client;
     private TestHttpOperations testHttp;
 
     @BeforeEach
     void setUp() {
-        testHttp = new TestHttpOperations(capturedRequest);
+        testHttp = new TestHttpOperations(capturedRequest, capturedBody);
         client = AwsClient.awsClient(CONFIG, testHttp);
     }
 
@@ -77,6 +86,19 @@ class AwsClientTest {
                   .onSuccess(AwsClientTest::assertDescribeInstancesResponse);
 
             assertThat(capturedRequest.get().method()).isEqualTo("POST");
+        }
+
+        @Test
+        void describeInstancesById_success_parsesXmlResponse() {
+            testHttp.respondWith(200, DESCRIBE_INSTANCES_RESPONSE);
+
+            client.describeInstancesById("i-12345")
+                  .await()
+                  .onFailure(cause -> assertThat(cause).isNull())
+                  .onSuccess(AwsClientTest::assertDescribeInstancesResponse);
+
+            assertThat(capturedRequest.get().method()).isEqualTo("POST");
+            assertThat(capturedRequest.get().uri().toString()).isEqualTo("https://ec2.us-east-1.amazonaws.com");
         }
 
         @Test
@@ -116,8 +138,8 @@ class AwsClientTest {
     class Elbv2Operations {
 
         @Test
-        void registerTargets_success_returnsUnit() {
-            testHttp.respondWith(200, "{}");
+        void registerTargets_success_speaksQueryProtocol() {
+            testHttp.respondWith(200, REGISTER_TARGETS_RESPONSE);
 
             client.registerTargets("arn:aws:elasticloadbalancing:us-east-1:123456:targetgroup/tg/abc",
                                    List.of("i-12345"))
@@ -126,12 +148,12 @@ class AwsClientTest {
                   .onSuccess(unit -> assertThat(unit).isNotNull());
 
             assertThat(capturedRequest.get().method()).isEqualTo("POST");
-            assertXAmzTargetHeader("ElasticLoadBalancingv2.RegisterTargets");
+            assertQueryProtocol();
         }
 
         @Test
-        void deregisterTargets_success_returnsUnit() {
-            testHttp.respondWith(200, "{}");
+        void deregisterTargets_success_speaksQueryProtocol() {
+            testHttp.respondWith(200, DEREGISTER_TARGETS_RESPONSE);
 
             client.deregisterTargets("arn:aws:elasticloadbalancing:us-east-1:123456:targetgroup/tg/abc",
                                      List.of("i-12345"))
@@ -139,11 +161,11 @@ class AwsClientTest {
                   .onFailure(cause -> assertThat(cause).isNull())
                   .onSuccess(unit -> assertThat(unit).isNotNull());
 
-            assertXAmzTargetHeader("ElasticLoadBalancingv2.DeregisterTargets");
+            assertQueryProtocol();
         }
 
         @Test
-        void describeTargetHealth_success_parsesResponse() {
+        void describeTargetHealth_success_parsesXmlResponse() {
             testHttp.respondWith(200, DESCRIBE_TARGET_HEALTH_RESPONSE);
 
             client.describeTargetHealth("arn:aws:elasticloadbalancing:us-east-1:123456:targetgroup/tg/abc")
@@ -151,7 +173,7 @@ class AwsClientTest {
                   .onFailure(cause -> assertThat(cause).isNull())
                   .onSuccess(AwsClientTest::assertTargetHealthList);
 
-            assertXAmzTargetHeader("ElasticLoadBalancingv2.DescribeTargetHealth");
+            assertQueryProtocol();
         }
     }
 
@@ -168,6 +190,227 @@ class AwsClientTest {
                   .onSuccess(secret -> assertThat(secret).isEqualTo("super-secret-value"));
 
             assertThat(capturedRequest.get().method()).isEqualTo("POST");
+        }
+    }
+
+    @Nested
+    class SecurityGroupOperations {
+
+        @Test
+        void createSecurityGroup_success_returnsGroupIdAndSendsVpcId() {
+            testHttp.respondWith(200, CREATE_SECURITY_GROUP_RESPONSE);
+
+            client.createSecurityGroup("aether-prod-node", "Aether node firewall", Option.some("vpc-0abc"))
+                  .await()
+                  .onFailure(cause -> assertThat(cause).isNull())
+                  .onSuccess(groupId -> assertThat(groupId).isEqualTo(GROUP_ID));
+
+            assertThat(capturedBody.get())
+                .isEqualTo("Action=CreateSecurityGroup&Version=2016-11-15"
+                         + "&GroupName=aether-prod-node"
+                         + "&GroupDescription=Aether%20node%20firewall"
+                         + "&VpcId=vpc-0abc");
+            assertQueryProtocol();
+        }
+
+        @Test
+        void createSecurityGroup_withoutVpc_omitsVpcIdParam() {
+            testHttp.respondWith(200, CREATE_SECURITY_GROUP_RESPONSE);
+
+            client.createSecurityGroup("aether-prod-node", "Aether node firewall", Option.none())
+                  .await()
+                  .onFailure(cause -> assertThat(cause).isNull())
+                  .onSuccess(groupId -> assertThat(groupId).isEqualTo(GROUP_ID));
+
+            assertThat(capturedBody.get())
+                .isEqualTo("Action=CreateSecurityGroup&Version=2016-11-15"
+                         + "&GroupName=aether-prod-node"
+                         + "&GroupDescription=Aether%20node%20firewall");
+        }
+
+        @Test
+        void createSecurityGroup_fails_whenResponseCarriesNoGroupId() {
+            testHttp.respondWith(200, CREATE_SECURITY_GROUP_WITHOUT_ID_RESPONSE);
+
+            client.createSecurityGroup("aether-prod-node", "Aether node firewall", Option.none())
+                  .await()
+                  .onSuccess(groupId -> assertThat(groupId).isNull())
+                  .onFailure(cause -> assertThat(cause).isInstanceOf(AwsError.ParseError.class));
+        }
+
+        @Test
+        void describeSecurityGroups_success_numbersEveryTagFilterFromOne() {
+            testHttp.respondWith(200, DESCRIBE_SECURITY_GROUPS_RESPONSE);
+
+            client.describeSecurityGroups(tagFilters())
+                  .await()
+                  .onFailure(cause -> assertThat(cause).isNull())
+                  .onSuccess(AwsClientTest::assertDescribedSecurityGroup);
+
+            assertThat(capturedBody.get())
+                .isEqualTo("Action=DescribeSecurityGroups&Version=2016-11-15"
+                         + "&Filter.1.Name=tag:aether-cluster&Filter.1.Value.1=prod"
+                         + "&Filter.2.Name=tag:aether-source&Filter.2.Value.1=provisioner");
+            assertQueryProtocol();
+        }
+
+        @Test
+        void describeSecurityGroups_success_returnsEmptyListForEmptyGroupSet() {
+            testHttp.respondWith(200, DESCRIBE_SECURITY_GROUPS_EMPTY_RESPONSE);
+
+            client.describeSecurityGroups(tagFilters())
+                  .await()
+                  .onFailure(cause -> assertThat(cause).isNull())
+                  .onSuccess(groups -> assertThat(groups).isEmpty());
+        }
+
+        @Test
+        void authorizeSecurityGroupIngress_success_sendsIpPermissionsForm() {
+            testHttp.respondWith(200, AUTHORIZE_INGRESS_RESPONSE);
+
+            client.authorizeSecurityGroupIngress(GROUP_ID, "tcp", 8081, "10.0.0.0/8", "aether mgmt api")
+                  .await()
+                  .onFailure(cause -> assertThat(cause).isNull())
+                  .onSuccess(unit -> assertThat(unit).isEqualTo(Unit.unit()));
+
+            assertThat(capturedBody.get()).isEqualTo(EXPECTED_AUTHORIZE_FORM);
+            assertQueryProtocol();
+        }
+
+        @Test
+        void revokeSecurityGroupIngress_success_sendsStoredDescriptionSoTheRuleMatches() {
+            testHttp.respondWith(200, REVOKE_INGRESS_RESPONSE);
+
+            client.revokeSecurityGroupIngress(GROUP_ID, "tcp", 8081, "10.0.0.0/8", "aether ingress")
+                  .await()
+                  .onFailure(cause -> assertThat(cause).isNull())
+                  .onSuccess(unit -> assertThat(unit).isEqualTo(Unit.unit()));
+
+            assertThat(capturedBody.get())
+                .isEqualTo("Action=RevokeSecurityGroupIngress&Version=2016-11-15"
+                         + "&GroupId=" + GROUP_ID
+                         + "&IpPermissions.1.IpProtocol=tcp"
+                         + "&IpPermissions.1.FromPort=8081"
+                         + "&IpPermissions.1.ToPort=8081"
+                         + "&IpPermissions.1.IpRanges.1.CidrIp=10.0.0.0%2F8"
+                         + "&IpPermissions.1.IpRanges.1.Description=aether%20ingress");
+        }
+
+        /// A rule stored without a description must be revoked without one — emitting an empty
+        /// Description is itself a mismatch.
+        @Test
+        void revokeSecurityGroupIngress_blankDescription_omitsTheParameter() {
+            testHttp.respondWith(200, REVOKE_INGRESS_RESPONSE);
+
+            client.revokeSecurityGroupIngress(GROUP_ID, "tcp", 8081, "10.0.0.0/8", "")
+                  .await()
+                  .onFailure(cause -> assertThat(cause).isNull())
+                  .onSuccess(unit -> assertThat(unit).isEqualTo(Unit.unit()));
+
+            assertThat(capturedBody.get()).doesNotContain("Description");
+        }
+
+        @Test
+        void deleteSecurityGroup_success_sendsGroupIdForm() {
+            testHttp.respondWith(200, DELETE_SECURITY_GROUP_RESPONSE);
+
+            client.deleteSecurityGroup(GROUP_ID)
+                  .await()
+                  .onFailure(cause -> assertThat(cause).isNull())
+                  .onSuccess(unit -> assertThat(unit).isEqualTo(Unit.unit()));
+
+            assertThat(capturedBody.get())
+                .isEqualTo("Action=DeleteSecurityGroup&Version=2016-11-15&GroupId=" + GROUP_ID);
+            assertQueryProtocol();
+        }
+    }
+
+    /// Pins the codes that mean "the requested end-state already holds" to success, and pins the
+    /// tolerance as narrow: any other AWS error code still fails the Promise.
+    @Nested
+    class SecurityGroupIdempotency {
+
+        @Test
+        void authorizeSecurityGroupIngress_succeeds_whenRuleAlreadyExists() {
+            testHttp.respondWith(400, ec2Error("InvalidPermission.Duplicate", "the specified rule already exists"));
+
+            client.authorizeSecurityGroupIngress(GROUP_ID, "tcp", 8081, "10.0.0.0/8", "aether mgmt api")
+                  .await()
+                  .onFailure(cause -> assertThat(cause).isNull())
+                  .onSuccess(unit -> assertThat(unit).isEqualTo(Unit.unit()));
+        }
+
+        @Test
+        /// The caller establishes absence by READING the group, so a `NotFound` here means the revoke
+        /// did not match a rule that was observed to exist — a mismatch, not an idempotent no-op.
+        /// Tolerating it is what let `closeIngress` report success while the rule survived.
+        void revokeSecurityGroupIngress_fails_whenRuleDoesNotMatch() {
+            testHttp.respondWith(400, ec2Error("InvalidPermission.NotFound", "the specified rule does not exist"));
+
+            var outcome = client.revokeSecurityGroupIngress(GROUP_ID, "tcp", 8081, "10.0.0.0/8", "aether ingress")
+                                .await();
+
+            assertThat(outcome.isFailure()).isTrue();
+        }
+
+        @Test
+        void revokeSecurityGroupIngress_succeeds_whenGroupAlreadyDeleted() {
+            testHttp.respondWith(400, ec2Error("InvalidGroup.NotFound", "The security group does not exist"));
+
+            client.revokeSecurityGroupIngress(GROUP_ID, "tcp", 8081, "10.0.0.0/8", "aether ingress")
+                  .await()
+                  .onFailure(cause -> assertThat(cause).isNull())
+                  .onSuccess(unit -> assertThat(unit).isEqualTo(Unit.unit()));
+        }
+
+        @Test
+        void deleteSecurityGroup_succeeds_whenGroupAbsent() {
+            testHttp.respondWith(400, ec2Error("InvalidGroup.NotFound", "The security group does not exist"));
+
+            client.deleteSecurityGroup(GROUP_ID)
+                  .await()
+                  .onFailure(cause -> assertThat(cause).isNull())
+                  .onSuccess(unit -> assertThat(unit).isEqualTo(Unit.unit()));
+        }
+
+        @Test
+        void describeSecurityGroups_succeeds_whenGroupAbsent() {
+            testHttp.respondWith(400, ec2Error("InvalidGroup.NotFound", "The security group does not exist"));
+
+            client.describeSecurityGroups(tagFilters())
+                  .await()
+                  .onFailure(cause -> assertThat(cause).isNull())
+                  .onSuccess(groups -> assertThat(groups).isEmpty());
+        }
+
+        @Test
+        void authorizeSecurityGroupIngress_fails_forUnrelatedErrorCode() {
+            testHttp.respondWith(400, ec2Error("RulesPerSecurityGroupLimitExceeded", "quota exceeded"));
+
+            client.authorizeSecurityGroupIngress(GROUP_ID, "tcp", 8081, "10.0.0.0/8", "aether mgmt api")
+                  .await()
+                  .onSuccess(unit -> assertThat(unit).isNull())
+                  .onFailure(cause -> assertApiErrorCode(cause, "RulesPerSecurityGroupLimitExceeded"));
+        }
+
+        @Test
+        void deleteSecurityGroup_fails_forUnrelatedErrorCode() {
+            testHttp.respondWith(400, ec2Error("DependencyViolation", "resource is in use"));
+
+            client.deleteSecurityGroup(GROUP_ID)
+                  .await()
+                  .onSuccess(unit -> assertThat(unit).isNull())
+                  .onFailure(cause -> assertApiErrorCode(cause, "DependencyViolation"));
+        }
+
+        @Test
+        void describeSecurityGroups_fails_forUnrelatedErrorCode() {
+            testHttp.respondWith(400, ec2Error("InvalidParameterValue", "bad filter"));
+
+            client.describeSecurityGroups(tagFilters())
+                  .await()
+                  .onSuccess(groups -> assertThat(groups).isNull())
+                  .onFailure(cause -> assertApiErrorCode(cause, "InvalidParameterValue"));
         }
     }
 
@@ -209,6 +452,48 @@ class AwsClientTest {
         assertThat(targets.getFirst().state()).isEqualTo("healthy");
     }
 
+    private static void assertDescribedSecurityGroup(List<SecurityGroup> groups) {
+        assertThat(groups).hasSize(1);
+        assertThat(groups.getFirst().groupId()).isEqualTo(GROUP_ID);
+        assertThat(groups.getFirst().groupName()).isEqualTo("aether-prod-node");
+        assertThat(groups.getFirst().tags()).containsExactlyInAnyOrderEntriesOf(Map.of("aether-cluster",
+                                                                                       "prod",
+                                                                                       "aether-source",
+                                                                                       "provisioner"));
+    }
+
+    private static void assertApiErrorCode(Cause cause, String expectedCode) {
+        assertThat(cause).isInstanceOf(AwsError.ApiError.class);
+        assertThat(((AwsError.ApiError) cause).code()).isEqualTo(expectedCode);
+    }
+
+    /// Ordered so the emitted `Filter.N` numbering is reproducible - EC2 ANDs the filters and does
+    /// not care about their order.
+    private static Map<String, String> tagFilters() {
+        var filters = new LinkedHashMap<String, String>();
+
+        filters.put("aether-cluster", "prod");
+        filters.put("aether-source", "provisioner");
+
+        return filters;
+    }
+
+    /// EC2 Query-protocol error envelope - `AwsError.fromResponse` reads the code out of `<Error>`.
+    private static String ec2Error(String code, String message) {
+        return """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <Response>
+                <Errors>
+                    <Error>
+                        <Code>%s</Code>
+                        <Message>%s</Message>
+                    </Error>
+                </Errors>
+                <RequestID>req-sg-err</RequestID>
+            </Response>
+            """.formatted(code, message);
+    }
+
     private static void assertEc2ApiError(Cause cause) {
         assertThat(cause).isInstanceOf(AwsError.ApiError.class);
         var apiError = (AwsError.ApiError) cause;
@@ -223,19 +508,23 @@ class AwsClientTest {
         assertThat(apiError.code()).isEqualTo("ResourceNotFoundException");
     }
 
-    private void assertXAmzTargetHeader(String expectedTarget) {
-        var targetHeader = capturedRequest.get().headers().firstValue("X-Amz-Target");
-        assertThat(targetHeader).isPresent().hasValue(expectedTarget);
+    private void assertQueryProtocol() {
+        var headers = capturedRequest.get().headers();
+
+        assertThat(headers.firstValue("X-Amz-Target")).isEmpty();
+        assertThat(headers.firstValue("Content-Type")).hasValue("application/x-www-form-urlencoded");
     }
 
     /// Test HTTP operations that captures requests and returns canned responses.
     static final class TestHttpOperations implements HttpOperations {
         private final AtomicReference<HttpRequest> capturedRequest;
+        private final AtomicReference<String> capturedBody;
         private int responseStatus;
         private String responseBody;
 
-        TestHttpOperations(AtomicReference<HttpRequest> capturedRequest) {
+        TestHttpOperations(AtomicReference<HttpRequest> capturedRequest, AtomicReference<String> capturedBody) {
             this.capturedRequest = capturedRequest;
+            this.capturedBody = capturedBody;
         }
 
         void respondWith(int status, String body) {
@@ -246,11 +535,51 @@ class AwsClientTest {
         @Override
         public <T> Promise<HttpResult<T>> send(HttpRequest request, BodyHandler<T> handler) {
             capturedRequest.set(request);
+            capturedBody.set(readBody(request));
             @SuppressWarnings("unchecked")
             var result = new HttpResult<>(responseStatus,
                                           HttpHeaders.of(Map.of(), (a, b) -> true),
                                           (T) responseBody);
             return Promise.success(result);
+        }
+
+        /// Drains the request's body publisher into a string. `BodyPublishers.ofString` is backed by
+        /// a pull publisher that delivers synchronously inside `Subscription.request(...)`, so the
+        /// buffer is complete once `subscribe` returns. Were that ever to change, the captured body
+        /// would come back short and every form assertion would go red — the failure mode is loud,
+        /// not a silent pass.
+        private static String readBody(HttpRequest request) {
+            var collected = new StringBuilder();
+
+            request.bodyPublisher()
+                   .ifPresent(publisher -> publisher.subscribe(new BodyCollector(collected)));
+
+            return collected.toString();
+        }
+    }
+
+    /// Flow subscriber appending every published chunk to a buffer. Every member is dictated by the
+    /// JDK [Flow.Subscriber] contract, hence the type-level [Contract].
+    @Contract
+    record BodyCollector(StringBuilder buffer) implements Flow.Subscriber<ByteBuffer> {
+        @Override
+        public void onSubscribe(Flow.Subscription subscription) {
+            subscription.request(Long.MAX_VALUE);
+        }
+
+        @Override
+        public void onNext(ByteBuffer item) {
+            buffer.append(StandardCharsets.UTF_8.decode(item));
+        }
+
+        @Override
+        public void onError(Throwable throwable) {
+            // Leaves the buffer short, which surfaces as a failed body assertion.
+        }
+
+        @Override
+        public void onComplete() {
+            // Nothing to finalize - the buffer is the result.
         }
     }
 
@@ -304,20 +633,42 @@ class AwsClientTest {
         """;
 
     private static final String DESCRIBE_TARGET_HEALTH_RESPONSE = """
-        {
-            "TargetHealthDescriptions": [
-                {
-                    "Target": {
-                        "Id": "i-12345",
-                        "Port": 8080
-                    },
-                    "TargetHealth": {
-                        "State": "healthy",
-                        "Description": "Target is healthy"
-                    }
-                }
-            ]
-        }
+        <?xml version="1.0" encoding="UTF-8"?>
+        <DescribeTargetHealthResponse xmlns="http://elasticloadbalancing.amazonaws.com/doc/2015-12-01/">
+            <DescribeTargetHealthResult>
+                <TargetHealthDescriptions>
+                    <member>
+                        <Target>
+                            <Id>i-12345</Id>
+                            <Port>8080</Port>
+                        </Target>
+                        <TargetHealth>
+                            <State>healthy</State>
+                            <Description>Target is healthy</Description>
+                        </TargetHealth>
+                    </member>
+                </TargetHealthDescriptions>
+            </DescribeTargetHealthResult>
+            <ResponseMetadata>
+                <RequestId>req-health-1</RequestId>
+            </ResponseMetadata>
+        </DescribeTargetHealthResponse>
+        """;
+
+    private static final String REGISTER_TARGETS_RESPONSE = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <RegisterTargetsResponse xmlns="http://elasticloadbalancing.amazonaws.com/doc/2015-12-01/">
+            <RegisterTargetsResult/>
+            <ResponseMetadata><RequestId>req-reg-1</RequestId></ResponseMetadata>
+        </RegisterTargetsResponse>
+        """;
+
+    private static final String DEREGISTER_TARGETS_RESPONSE = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <DeregisterTargetsResponse xmlns="http://elasticloadbalancing.amazonaws.com/doc/2015-12-01/">
+            <DeregisterTargetsResult/>
+            <ResponseMetadata><RequestId>req-dereg-1</RequestId></ResponseMetadata>
+        </DeregisterTargetsResponse>
         """;
 
     private static final String GET_SECRET_VALUE_RESPONSE = """
@@ -347,5 +698,90 @@ class AwsClientTest {
             "__type": "ResourceNotFoundException",
             "message": "Secret not found"
         }
+        """;
+
+    /// The exact EC2 Query form for a single inbound rule, asserted verbatim.
+    private static final String EXPECTED_AUTHORIZE_FORM =
+        "Action=AuthorizeSecurityGroupIngress&Version=2016-11-15"
+      + "&GroupId=sg-0123456789abcdef0"
+      + "&IpPermissions.1.IpProtocol=tcp"
+      + "&IpPermissions.1.FromPort=8081"
+      + "&IpPermissions.1.ToPort=8081"
+      + "&IpPermissions.1.IpRanges.1.CidrIp=10.0.0.0%2F8"
+      + "&IpPermissions.1.IpRanges.1.Description=aether%20mgmt%20api";
+
+    private static final String CREATE_SECURITY_GROUP_RESPONSE = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <CreateSecurityGroupResponse xmlns="http://ec2.amazonaws.com/doc/2016-11-15/">
+            <requestId>req-sg-create</requestId>
+            <return>true</return>
+            <groupId>sg-0123456789abcdef0</groupId>
+        </CreateSecurityGroupResponse>
+        """;
+
+    private static final String CREATE_SECURITY_GROUP_WITHOUT_ID_RESPONSE = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <CreateSecurityGroupResponse xmlns="http://ec2.amazonaws.com/doc/2016-11-15/">
+            <requestId>req-sg-create</requestId>
+            <return>true</return>
+        </CreateSecurityGroupResponse>
+        """;
+
+    private static final String DESCRIBE_SECURITY_GROUPS_RESPONSE = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <DescribeSecurityGroupsResponse xmlns="http://ec2.amazonaws.com/doc/2016-11-15/">
+            <requestId>req-sg-describe</requestId>
+            <securityGroupInfo>
+                <item>
+                    <ownerId>123456789012</ownerId>
+                    <groupId>sg-0123456789abcdef0</groupId>
+                    <groupName>aether-prod-node</groupName>
+                    <groupDescription>Aether node firewall</groupDescription>
+                    <vpcId>vpc-0abc</vpcId>
+                    <tagSet>
+                        <item>
+                            <key>aether-cluster</key>
+                            <value>prod</value>
+                        </item>
+                        <item>
+                            <key>aether-source</key>
+                            <value>provisioner</value>
+                        </item>
+                    </tagSet>
+                </item>
+            </securityGroupInfo>
+        </DescribeSecurityGroupsResponse>
+        """;
+
+    private static final String DESCRIBE_SECURITY_GROUPS_EMPTY_RESPONSE = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <DescribeSecurityGroupsResponse xmlns="http://ec2.amazonaws.com/doc/2016-11-15/">
+            <requestId>req-sg-describe-empty</requestId>
+            <securityGroupInfo/>
+        </DescribeSecurityGroupsResponse>
+        """;
+
+    private static final String AUTHORIZE_INGRESS_RESPONSE = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <AuthorizeSecurityGroupIngressResponse xmlns="http://ec2.amazonaws.com/doc/2016-11-15/">
+            <requestId>req-sg-auth</requestId>
+            <return>true</return>
+        </AuthorizeSecurityGroupIngressResponse>
+        """;
+
+    private static final String REVOKE_INGRESS_RESPONSE = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <RevokeSecurityGroupIngressResponse xmlns="http://ec2.amazonaws.com/doc/2016-11-15/">
+            <requestId>req-sg-revoke</requestId>
+            <return>true</return>
+        </RevokeSecurityGroupIngressResponse>
+        """;
+
+    private static final String DELETE_SECURITY_GROUP_RESPONSE = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <DeleteSecurityGroupResponse xmlns="http://ec2.amazonaws.com/doc/2016-11-15/">
+            <requestId>req-sg-delete</requestId>
+            <return>true</return>
+        </DeleteSecurityGroupResponse>
         """;
 }

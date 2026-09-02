@@ -11,11 +11,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.pragmatica.postgres;
 
 import java.util.HashMap;
 import java.util.Map;
+
 
 /**
  * Object identifiers, copied from org.postgresql.core.Oid.
@@ -23,7 +23,6 @@ import java.util.Map;
  * @author Antti Laisi
  */
 public enum Oid {
-
     UNSPECIFIED(0),
     INT2(21),
     INT2_ARRAY(1005),
@@ -81,46 +80,37 @@ public enum Oid {
     // Added
     JSON(114),
     JSONB(3802),
-    HSTORE(33670)
-    ;
-
+    HSTORE(33670);
     private static final Map<Integer, Oid> BY_ID;
-
     static {
         var map = new HashMap<Integer, Oid>();
+
         for (var oid : values()) {
             map.put(oid.id, oid);
         }
+
         BY_ID = Map.copyOf(map);
     }
-
     final int id;
-
     Oid(int id) {
         this.id = id;
     }
-
     public int getId() {
         return id;
     }
-
     public static Oid valueOfId(int id) {
         return BY_ID.getOrDefault(id, UNSPECIFIED);
     }
-
     public boolean supportsBinary() {
         return switch (this) {
             case INT2, INT4, INT8, FLOAT4, FLOAT8, BOOL, BYTEA, UUID, DATE, TIME, TIMETZ, TIMESTAMP, TIMESTAMPTZ -> true;
             // Arrays whose element type has a registered BinaryCodec — see BinaryCodecs.
             // Text-typed arrays (TEXT_ARRAY, VARCHAR_ARRAY, etc.) and NUMERIC_ARRAY stay
             // text-only because their element decoders are not implemented binary-side.
-            case INT2_ARRAY, INT4_ARRAY, INT8_ARRAY, FLOAT4_ARRAY, FLOAT8_ARRAY,
-                 BOOL_ARRAY, BYTEA_ARRAY, UUID_ARRAY,
-                 DATE_ARRAY, TIME_ARRAY, TIMETZ_ARRAY, TIMESTAMP_ARRAY, TIMESTAMPTZ_ARRAY -> true;
+            case INT2_ARRAY, INT4_ARRAY, INT8_ARRAY, FLOAT4_ARRAY, FLOAT8_ARRAY, BOOL_ARRAY, BYTEA_ARRAY, UUID_ARRAY, DATE_ARRAY, TIME_ARRAY, TIMETZ_ARRAY, TIMESTAMP_ARRAY, TIMESTAMPTZ_ARRAY -> true;
             default -> false;
         };
     }
-
     public int binarySize() {
         return switch (this) {
             case BOOL -> 1;
@@ -129,7 +119,7 @@ public enum Oid {
             case INT8, FLOAT8, TIME, TIMESTAMP, TIMESTAMPTZ -> 8;
             case TIMETZ -> 12;
             case UUID -> 16;
-            default -> -1;
+            default -> - 1;
         };
     }
 }

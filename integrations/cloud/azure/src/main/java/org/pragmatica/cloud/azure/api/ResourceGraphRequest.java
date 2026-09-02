@@ -14,10 +14,10 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.cloud.azure.api;
 
 import java.util.List;
+
 
 /// Request body for Azure Resource Graph query.
 public record ResourceGraphRequest(List<String> subscriptions, String query) {

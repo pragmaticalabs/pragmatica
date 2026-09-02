@@ -13,12 +13,12 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.leader;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.Message;
+
 
 public sealed interface LeaderNotification extends Message.Local {
     record LeaderChange(Option<NodeId> leaderId, boolean localNodeIsLeader) implements LeaderNotification {}

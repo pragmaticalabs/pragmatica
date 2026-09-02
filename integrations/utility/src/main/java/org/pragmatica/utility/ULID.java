@@ -15,16 +15,17 @@
  */
 package org.pragmatica.utility;
 
+import java.security.SecureRandom;
+import java.util.Arrays;
+
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
-import java.security.SecureRandom;
-import java.util.Arrays;
-
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
+
 
 /// Universally Unique Lexicographically Sortable Identifier (ULID) implementation.
 ///
@@ -47,19 +48,14 @@ import static org.pragmatica.lang.Option.some;
 public final class ULID implements Comparable<ULID> {
     /// Binary length in bytes
     public static final int BYTE_LENGTH = 16;
-
     /// Timestamp length in bytes
     public static final int TIMESTAMP_LENGTH = 6;
-
     /// Payload length in bytes
     public static final int PAYLOAD_LENGTH = 10;
-
     /// String-encoded length
     public static final int STRING_LENGTH = 26;
-
     /// Crockford base32 encoding alphabet (lowercase, lexicographically ordered)
     private static final char[] ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz".toCharArray();
-
     /// Reverse lookup table for base32 decoding (ASCII -> value, -1 for invalid)
     private static final byte[] DECODE = new byte[128];
 
@@ -76,13 +72,10 @@ public final class ULID implements Comparable<ULID> {
     }
 
     private static final SecureRandom RANDOM = new SecureRandom();
-
     /// Nil ULID (all zeros) - represents invalid/empty state
     public static final ULID NIL = new ULID(new byte[BYTE_LENGTH]);
-
     /// Maximum possible ULID (all 0xFF bytes)
     public static final ULID MAX = new ULID(maxBytes());
-
     /// Monotonic generator state, guarded by MONOTONIC_LOCK.
     private static final Object MONOTONIC_LOCK = new Object();
     private static long lastTimestamp = -1L;
@@ -97,7 +90,9 @@ public final class ULID implements Comparable<ULID> {
     /// Generate a new random ULID using the current timestamp.
     public static ULID ulid() {
         var payload = new byte[PAYLOAD_LENGTH];
+
         RANDOM.nextBytes(payload);
+
         return new ULID(compose(System.currentTimeMillis(), payload));
     }
 
@@ -111,6 +106,7 @@ public final class ULID implements Comparable<ULID> {
     public static ULID monotonicUlid() {
         synchronized (MONOTONIC_LOCK) {
             var now = System.currentTimeMillis();
+
             if (now > lastTimestamp) {
                 lastTimestamp = now;
                 RANDOM.nextBytes(lastRandom);
@@ -118,6 +114,7 @@ public final class ULID implements Comparable<ULID> {
                 lastTimestamp++;
                 RANDOM.nextBytes(lastRandom);
             }
+
             return new ULID(compose(lastTimestamp, lastRandom));
         }
     }
@@ -137,7 +134,9 @@ public final class ULID implements Comparable<ULID> {
                      .filter(ULIDError::invalidByteLength, b -> b.length == BYTE_LENGTH)
                      .map(b -> {
                               var copy = new byte[BYTE_LENGTH];
+
                               System.arraycopy(b, 0, copy, 0, BYTE_LENGTH);
+
                               return new ULID(copy);
                           });
     }
@@ -150,18 +149,15 @@ public final class ULID implements Comparable<ULID> {
     /// Get the raw 16-byte binary representation (defensive copy).
     public byte[] toBytes() {
         var copy = new byte[BYTE_LENGTH];
+
         System.arraycopy(data, 0, copy, 0, BYTE_LENGTH);
+
         return copy;
     }
 
     /// Get the Unix timestamp in milliseconds (48-bit big-endian prefix).
     public long timestamp() {
-        return ((data[0] & 0xFFL)<< 40)
-               | ((data[1] & 0xFFL)<< 32)
-               | ((data[2] & 0xFFL)<< 24)
-               | ((data[3] & 0xFFL)<< 16)
-               | ((data[4] & 0xFFL)<< 8)
-               | (data[5] & 0xFFL);
+        return ((data[0] & 0xFFL) << 40) | ((data[1] & 0xFFL) << 32) | ((data[2] & 0xFFL) << 24) | ((data[3] & 0xFFL) << 16) | ((data[4] & 0xFFL) << 8) | (data[5] & 0xFFL);
     }
 
     /// Check if this is the nil (all-zero) ULID.
@@ -171,6 +167,7 @@ public final class ULID implements Comparable<ULID> {
                 return false;
             }
         }
+
         return true;
     }
 
@@ -195,17 +192,18 @@ public final class ULID implements Comparable<ULID> {
     }
 
     // ==================== Internal helpers ====================
-
     /// Assemble 16 bytes from a 48-bit timestamp and a 10-byte payload.
     private static byte[] compose(long timestamp, byte[] payload) {
         var data = new byte[BYTE_LENGTH];
-        data[0] = (byte)(timestamp>>> 40);
-        data[1] = (byte)(timestamp>>> 32);
-        data[2] = (byte)(timestamp>>> 24);
-        data[3] = (byte)(timestamp>>> 16);
-        data[4] = (byte)(timestamp>>> 8);
+
+        data[0] = (byte)(timestamp >>> 40);
+        data[1] = (byte)(timestamp >>> 32);
+        data[2] = (byte)(timestamp >>> 24);
+        data[3] = (byte)(timestamp >>> 16);
+        data[4] = (byte)(timestamp >>> 8);
         data[5] = (byte) timestamp;
         System.arraycopy(payload, 0, data, TIMESTAMP_LENGTH, PAYLOAD_LENGTH);
+
         return data;
     }
 
@@ -217,31 +215,38 @@ public final class ULID implements Comparable<ULID> {
                 payload[i] = 0;
             } else {
                 payload[i]++;
+
                 return true;
             }
         }
+
         return false;
     }
 
     // ==================== Crockford Base32 Encoding ====================
-
     /// Encode 16 bytes to a 26-character base32 string.
     /// The 128 bits are treated as 130 bits with two leading zero pad bits, then split
     /// into 26 groups of 5 bits, most-significant first.
     private static String encodeBase32(byte[] src) {
         var dst = new char[STRING_LENGTH];
+
         for (int i = 0; i < STRING_LENGTH; i++) {
             int index = 0;
+
             for (int b = 0; b < 5; b++) {
-                int bitPosition = i * 5 + b - 2;       // subtract the two leading pad bits
+                int bitPosition = i * 5 + b - 2;  // subtract the two leading pad bits
                 int bit = 0;
+
                 if (bitPosition >= 0) {
-                    bit = (src[bitPosition>>> 3]>>> (7 - (bitPosition & 7))) & 1;
+                    bit = (src[bitPosition >>> 3]>>>(7 - (bitPosition & 7))) & 1;
                 }
-                index = (index<< 1) | bit;
+
+                index = (index << 1) | bit;
             }
+
             dst[i] = ALPHABET[index];
         }
+
         return new String(dst);
     }
 
@@ -250,32 +255,43 @@ public final class ULID implements Comparable<ULID> {
     /// `O`->`0` and `I`/`L`->`1` aliases. The two leading pad bits are ignored.
     private static Option<byte[]> decodeBase32(String src) {
         var dst = new byte[BYTE_LENGTH];
+
         for (int i = 0; i < STRING_LENGTH; i++) {
             char c = src.charAt(i);
+
             if (c >= 128) {
                 return none();
             }
+
             int value = DECODE[c];
+
             if (value < 0) {
                 return none();
             }
+
             for (int b = 0; b < 5; b++) {
                 int bitPosition = i * 5 + b - 2;
+
                 if (bitPosition < 0) {
                     continue;
                 }
-                int bit = (value>>> (4 - b)) & 1;
+
+                int bit = (value >>>(4 - b)) & 1;
+
                 if (bit != 0) {
-                    dst[bitPosition>>> 3] |= (byte)(1<< (7 - (bitPosition & 7)));
+                    dst[bitPosition >>> 3] |= (byte)(1 << (7 - (bitPosition & 7)));
                 }
             }
         }
+
         return some(dst);
     }
 
     private static byte[] maxBytes() {
         var bytes = new byte[BYTE_LENGTH];
+
         Arrays.fill(bytes, (byte) 0xFF);
+
         return bytes;
     }
 

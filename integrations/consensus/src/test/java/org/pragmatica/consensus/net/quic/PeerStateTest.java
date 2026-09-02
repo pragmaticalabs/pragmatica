@@ -522,6 +522,78 @@ class PeerStateTest {
             .isEqualTo(AttachResult.ACCEPTED);
     }
 
+    // --- #491: hasEverConnected() — the grace-scope discriminator ---
+    // previouslyConnectedNowEvicted in QuicClusterNetwork keys the missing-peer reconciler's
+    // grace bypass off this flag: an EVICTED peer that EVER reached CONNECTED is a lost link to a
+    // known-live member (force-dial now), whereas a hung CONNECTING → EVICTED cold-boot dial that
+    // NEVER connected must still wait the full higher-id grace. These tests pin both arms.
+
+    @Test
+    void hasEverConnected_isFalse_beforeAnyCONNECTED() {
+        var s = state();
+        assertThat(s.hasEverConnected())
+            .as("a fresh INIT peer has never connected")
+            .isFalse();
+        s.beginConnecting(T0 + 1);
+        assertThat(s.hasEverConnected())
+            .as("a peer still dialing (CONNECTING) has not yet completed a Hello handshake")
+            .isFalse();
+    }
+
+    @Test
+    void hasEverConnected_isTrue_afterAttachReachesCONNECTED() {
+        var s = state();
+        s.beginConnecting(T0 + 1);
+        s.attach(liveConnection(), T0 + 2);
+        assertThat(s.phase()).isEqualTo(Phase.CONNECTED);
+        assertThat(s.hasEverConnected())
+            .as("a completed Hello handshake (CONNECTED) marks the peer as ever-connected")
+            .isTrue();
+    }
+
+    @Test
+    void hasEverConnected_staysTrue_afterEvictFromCONNECTED() {
+        // The #491 positive arm: a member that CONNECTED then lost its link (CONNECTED → EVICTED)
+        // stays ever-connected, so previouslyConnectedNowEvicted force-dials it within grace.
+        var s = state();
+        s.beginConnecting(T0 + 1);
+        s.attach(liveConnection(), T0 + 2);
+        s.evict(T0 + 3);
+        assertThat(s.phase()).isEqualTo(Phase.EVICTED);
+        assertThat(s.hasEverConnected())
+            .as("eviction of a previously-CONNECTED link preserves ever-connected provenance")
+            .isTrue();
+    }
+
+    @Test
+    void hasEverConnected_isFalse_afterEvictStaleConnectingNeverConnected() {
+        // The #491 negative arm: a hung cold-boot dial (CONNECTING → EVICTED) that NEVER reached
+        // CONNECTED must NOT be treated as a lost live link — it stays under the full higher-id
+        // grace, so hasEverConnected must remain false.
+        var s = state();
+        s.beginConnecting(T0 + 1);
+        s.evictStaleConnecting(T0 + 2);
+        assertThat(s.phase()).isEqualTo(Phase.EVICTED);
+        assertThat(s.hasEverConnected())
+            .as("a never-connected hung dial evicted from CONNECTING is not ever-connected")
+            .isFalse();
+    }
+
+    @Test
+    void hasEverConnected_resetsToFalse_afterReadmit() {
+        // readmit clears upstream provenance (REMOVED → INIT): a re-admitted peer starts fresh and
+        // must wait the cold-boot grace again, so ever-connected resets to false.
+        var s = state();
+        s.beginConnecting(T0 + 1);
+        s.attach(liveConnection(), T0 + 2);
+        s.authoritativeRemove(T0 + 3);
+        s.readmit(T0 + 4);
+        assertThat(s.phase()).isEqualTo(Phase.INIT);
+        assertThat(s.hasEverConnected())
+            .as("readmit resets provenance — a re-admitted peer is treated as never-connected")
+            .isFalse();
+    }
+
     // --- Wave 5: single emission source — exactly one transition record per phase mutation ---
 
     @Test

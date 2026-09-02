@@ -13,13 +13,13 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.messaging;
 
 import org.pragmatica.lang.Option;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
+
 
 /// Logical transport lane for a [Message.Wired].
 ///
@@ -44,25 +44,19 @@ public enum StreamType {
     /// consensus round traffic. Request (outbound) and response (inbound) use independent QUIC
     /// stream directions, so they do not block each other on this lane.
     SYNC(7);
-
     private static final StreamType[] BY_INDEX = new StreamType[values().length];
-
     static {
         for (var type : values()) {
             BY_INDEX[type.streamIndex] = type;
         }
     }
-
     private final int streamIndex;
-
     StreamType(int streamIndex) {
         this.streamIndex = streamIndex;
     }
-
     public int streamIndex() {
         return streamIndex;
     }
-
     /// Resolve a lane from its stream index. Returns empty for out-of-range indices.
     public static Option<StreamType> fromIndex(int index) {
         return (index >= 0 && index < BY_INDEX.length)

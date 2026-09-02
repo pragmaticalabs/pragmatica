@@ -1,12 +1,13 @@
 package org.pragmatica.consensus.topology;
 
+import java.util.List;
+
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.TlsConfig;
 
-import java.util.List;
 
 /// Configuration for cluster topology management.
 /// Note: The constructor validation throw is intentional - cluster size < 1
@@ -32,18 +33,15 @@ public record TopologyConfig(NodeId self,
                              BackoffConfig backoff,
                              int coreMax,
                              int coreMin) {
-    @SuppressWarnings("JBCT-EX-01") // TODO(RC2): clusterSize < 1 is a constructor invariant
-    // (programming error, not business validation). Converting to a Result factory removes the
-    // throwing constructor and ripples into ~20 `new TopologyConfig(...)` call sites across aether.
-    public TopologyConfig {
+    @SuppressWarnings("JBCT-EX-01") public TopologyConfig {
         if (clusterSize < 1) {
             throw new IllegalArgumentException("Cluster size must be at least 1");
         }
+
         coreNodes = List.copyOf(coreNodes);
     }
 
-    public static final TimeSpan DEFAULT_HELLO_TIMEOUT = TimeSpan.timeSpan(5)
-                                                                .seconds();
+    public static final TimeSpan DEFAULT_HELLO_TIMEOUT = TimeSpan.timeSpan(5).seconds();
 
     /// Create TopologyConfig without TLS and default hello timeout.
     public TopologyConfig(NodeId self,
@@ -107,6 +105,7 @@ public record TopologyConfig(NodeId self,
     /// Check whether this node is a seed node (present in coreNodes).
     public boolean isSeedNode() {
         return coreNodes.stream()
-                        .anyMatch(node -> node.id().equals(self));
+                        .anyMatch(node -> node.id()
+                                              .equals(self));
     }
 }

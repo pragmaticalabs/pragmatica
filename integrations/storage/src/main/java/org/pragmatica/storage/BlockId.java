@@ -1,10 +1,11 @@
 package org.pragmatica.storage;
 
-import org.pragmatica.lang.Result;
-
 import java.security.MessageDigest;
 import java.util.Arrays;
 import java.util.HexFormat;
+
+import org.pragmatica.lang.Result;
+
 
 /// Content-addressed block identifier. The ID is the SHA-256 hash of the block content.
 /// Immutable and suitable as a map key.
@@ -25,8 +26,7 @@ public record BlockId(byte[] hash) {
 
     /// Create a BlockId from a pre-computed hex string.
     public static Result<BlockId> fromHex(String hex) {
-        return Result.lift(() -> HEX.parseHex(hex))
-                     .map(BlockId::new);
+        return Result.lift(() -> HEX.parseHex(hex)).map(BlockId::new);
     }
 
     /// Defensive copy — prevent external mutation of the internal hash.
@@ -43,6 +43,7 @@ public record BlockId(byte[] hash) {
     /// First 4 hex chars for two-level directory sharding.
     public String shardPrefix() {
         var hex = hexString();
+
         return hex.substring(0, 2) + "/" + hex.substring(2, 4);
     }
 

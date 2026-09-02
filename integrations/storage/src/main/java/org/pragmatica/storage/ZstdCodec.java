@@ -1,13 +1,14 @@
 package org.pragmatica.storage;
 
-import com.github.luben.zstd.Zstd;
 import org.pragmatica.lang.Result;
+
+import com.github.luben.zstd.Zstd;
 
 import static org.pragmatica.lang.Result.lift;
 
+
 /// Zstandard compression codec for high compression ratios.
 final class ZstdCodec implements CompressionCodec {
-
     static final ZstdCodec INSTANCE = new ZstdCodec();
 
     private ZstdCodec() {}

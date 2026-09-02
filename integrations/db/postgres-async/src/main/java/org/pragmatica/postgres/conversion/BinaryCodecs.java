@@ -1,8 +1,9 @@
 package org.pragmatica.postgres.conversion;
 
+import java.util.EnumMap;
+
 import org.pragmatica.postgres.Oid;
 
-import java.util.EnumMap;
 
 public final class BinaryCodecs {
     private BinaryCodecs() {}
@@ -35,9 +36,13 @@ public final class BinaryCodecs {
 
     public static short[] resultFormatCodes(Oid[] columnTypes) {
         var codes = new short[columnTypes.length];
+
         for (int i = 0; i < columnTypes.length; i++) {
-            codes[i] = (short) (columnTypes[i].supportsBinary() ? 1 : 0);
+            codes[i] = (short)(columnTypes[i].supportsBinary()
+                               ? 1
+                               : 0);
         }
+
         return codes;
     }
 }

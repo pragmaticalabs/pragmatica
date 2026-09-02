@@ -11,17 +11,18 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.pragmatica.postgres.net;
-
-import io.netty.handler.ssl.SslContextBuilder;
-import org.pragmatica.lang.Option;
 
 import java.nio.file.Path;
 import java.util.function.Consumer;
 
+import org.pragmatica.lang.Option;
+
+import io.netty.handler.ssl.SslContextBuilder;
+
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
+
 
 /// Transport-layer security configuration for a Postgres connection.
 ///
@@ -45,18 +46,16 @@ public record SslConfig(SslMode mode,
                         ChannelBinding channelBinding,
                         Option<Consumer<SslContextBuilder>> sslContextCustomizer,
                         boolean allowAllCertificates) {
-
     public SslConfig {
-        if ((mode == SslMode.VERIFY_CA || mode == SslMode.VERIFY_FULL)
-            && rootCertPem.isEmpty()
-            && sslContextCustomizer.isEmpty()) {
-            throw new IllegalArgumentException(
-                mode + " requires either a root certificate (rootCertPem) or a custom SslContext (sslContextCustomizer)");
+        if ((mode == SslMode.VERIFY_CA || mode == SslMode.VERIFY_FULL) && rootCertPem.isEmpty() && sslContextCustomizer.isEmpty()) {
+            throw new IllegalArgumentException(mode
+                                              + " requires either a root certificate (rootCertPem) or a custom SslContext (sslContextCustomizer)");
         }
+
         if (allowAllCertificates && mode != SslMode.REQUIRE) {
-            throw new IllegalArgumentException(
-                "allowAllCertificates() is only valid in REQUIRE mode (got " + mode + "). "
-                + "Use VERIFY_CA / VERIFY_FULL for properly validated TLS.");
+            throw new IllegalArgumentException("allowAllCertificates() is only valid in REQUIRE mode (got " + mode
+                                              + "). "
+                                              + "Use VERIFY_CA / VERIFY_FULL for properly validated TLS.");
         }
     }
 
@@ -97,8 +96,12 @@ public record SslConfig(SslMode mode,
     /// Add an mTLS client certificate. The key file is a PEM-encoded PKCS#8 key;
     /// pass `Option.none()` for an unencrypted key.
     public SslConfig withClientCertificate(Path cert, Path key, Option<String> password) {
-        return new SslConfig(mode, rootCertPem, some(new ClientCertificate(cert, key, password)),
-                              channelBinding, sslContextCustomizer, allowAllCertificates);
+        return new SslConfig(mode,
+                             rootCertPem,
+                             some(new ClientCertificate(cert, key, password)),
+                             channelBinding,
+                             sslContextCustomizer,
+                             allowAllCertificates);
     }
 
     /// Override the channel-binding policy. Default is `PREFER` (use channel binding
@@ -106,14 +109,24 @@ public record SslConfig(SslMode mode,
     /// channel binding cannot be established (no TLS, or server doesn't advertise
     /// SCRAM-SHA-256-PLUS).
     public SslConfig withChannelBinding(ChannelBinding channelBinding) {
-        return new SslConfig(mode, rootCertPem, clientCertificate, channelBinding, sslContextCustomizer, allowAllCertificates);
+        return new SslConfig(mode,
+                             rootCertPem,
+                             clientCertificate,
+                             channelBinding,
+                             sslContextCustomizer,
+                             allowAllCertificates);
     }
 
     /// Escape hatch for full Netty `SslContextBuilder` access — apply provider, cipher
     /// suites, custom trust managers, etc. Runs after the framework's defaults so it
     /// can override anything.
     public SslConfig withSslContextCustomizer(Consumer<SslContextBuilder> customizer) {
-        return new SslConfig(mode, rootCertPem, clientCertificate, channelBinding, some(customizer), allowAllCertificates);
+        return new SslConfig(mode,
+                             rootCertPem,
+                             clientCertificate,
+                             channelBinding,
+                             some(customizer),
+                             allowAllCertificates);
     }
 
     /// **DANGEROUS.** Disable certificate validation entirely. Only valid in `REQUIRE`

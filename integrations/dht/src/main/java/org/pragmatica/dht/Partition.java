@@ -13,13 +13,13 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.dht;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.Codec;
+
 
 /// A partition identifier in the DHT consistent hash ring.
 /// Partitions are numbered 0 to MAX_PARTITIONS-1 (default 1024 partitions).
@@ -42,6 +42,7 @@ public record Partition(int value) implements Comparable<Partition> {
         if (value < 0 || value >= MAX_PARTITIONS) {
             return INVALID_PARTITION.result();
         }
+
         return Result.success(PARTITIONS[value]);
     }
 

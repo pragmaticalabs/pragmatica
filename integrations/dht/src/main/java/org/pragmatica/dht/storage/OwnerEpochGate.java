@@ -13,7 +13,6 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.dht.storage;
 
 /// Dependency-inverted owner-epoch fence for the DHT data-plane write path (#345 piece 1c).
@@ -43,7 +42,6 @@ public interface OwnerEpochGate {
     /// `true` iff the presented owner epoch is STRICTLY older than the high-water for the ownership
     /// arc the `key` belongs to — a deposed owner's write that must be rejected with no mutation.
     boolean isStale(byte[] key, long epochTerm, long epochCounter);
-
     /// Advance the ownership arc's high-water on an accepted write. Monotonic: older is ignored,
     /// equal is a no-op, newer advances.
     void advance(byte[] key, long epochTerm, long epochCounter);

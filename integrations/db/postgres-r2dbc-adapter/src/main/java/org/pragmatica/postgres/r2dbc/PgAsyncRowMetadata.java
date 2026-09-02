@@ -14,16 +14,16 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.postgres.r2dbc;
+
+import java.util.Collection;
+import java.util.List;
+
+import org.pragmatica.postgres.PgColumn;
 
 import io.r2dbc.spi.ColumnMetadata;
 import io.r2dbc.spi.RowMetadata;
 
-import org.pragmatica.postgres.PgColumn;
-
-import java.util.Collection;
-import java.util.List;
 
 /// R2DBC [RowMetadata] backed by a list of postgres-async [PgColumn] descriptors.
 ///
@@ -41,9 +41,8 @@ public final class PgAsyncRowMetadata implements RowMetadata {
     ///
     /// @return a new [PgAsyncRowMetadata]
     static PgAsyncRowMetadata pgAsyncRowMetadata(List<PgColumn> pgColumns) {
-        var cols = pgColumns.stream()
-                            .map(PgAsyncColumnMetadata::pgAsyncColumnMetadata)
-                            .toList();
+        var cols = pgColumns.stream().map(PgAsyncColumnMetadata::pgAsyncColumnMetadata).toList();
+
         return new PgAsyncRowMetadata(cols);
     }
 
@@ -59,6 +58,7 @@ public final class PgAsyncRowMetadata implements RowMetadata {
                 return col;
             }
         }
+
         throw new IllegalArgumentException("Unknown column: " + name);
     }
 
@@ -74,6 +74,7 @@ public final class PgAsyncRowMetadata implements RowMetadata {
                 return true;
             }
         }
+
         return false;
     }
 

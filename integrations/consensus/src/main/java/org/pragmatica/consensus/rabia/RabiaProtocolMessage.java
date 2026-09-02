@@ -13,7 +13,6 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.rabia;
 
 import org.pragmatica.consensus.Command;
@@ -23,6 +22,7 @@ import org.pragmatica.consensus.StateMachine.Batch;
 import org.pragmatica.consensus.rabia.RabiaPersistence.SavedState;
 import org.pragmatica.messaging.StreamType;
 import org.pragmatica.serialization.Codec;
+
 
 /// Message types for the Rabia consensus protocol.
 @Codec
@@ -35,23 +35,16 @@ public sealed interface RabiaProtocolMessage extends ProtocolMessage {
     /// Synchronous protocol messages (part of the consensus rounds).
     sealed interface Synchronous extends RabiaProtocolMessage {
         /// Initial proposal from a node.
-        record Propose<C extends Command>(NodeId sender, Phase phase, Batch<C> value)
-        implements Synchronous {}
+        record Propose<C extends Command>(NodeId sender, Phase phase, Batch<C> value) implements Synchronous {}
 
         /// Round 1 vote message.
-        record VoteRound1(NodeId sender, Phase phase, StateValue stateValue)
-        implements Synchronous {}
+        record VoteRound1(NodeId sender, Phase phase, StateValue stateValue) implements Synchronous {}
 
         /// Round 2 vote message.
-        record VoteRound2(NodeId sender, Phase phase, StateValue stateValue)
-        implements Synchronous {}
+        record VoteRound2(NodeId sender, Phase phase, StateValue stateValue) implements Synchronous {}
 
         /// Decision broadcast message.
-        record Decision<C extends Command>(NodeId sender,
-                                           Phase phase,
-                                           StateValue stateValue,
-                                           Batch<C> value)
-        implements Synchronous {}
+        record Decision<C extends Command>(NodeId sender, Phase phase, StateValue stateValue, Batch<C> value) implements Synchronous {}
 
         /// State synchronization response. Travels on the dedicated SYNC lane (not CONSENSUS) so
         /// it is not head-of-line-blocked by consensus round traffic during a joiner's catch-up.

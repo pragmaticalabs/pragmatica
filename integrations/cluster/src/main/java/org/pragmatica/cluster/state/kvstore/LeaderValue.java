@@ -3,6 +3,7 @@ package org.pragmatica.cluster.state.kvstore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.serialization.Codec;
 
+
 /// Leader election value: the elected leader plus the election `viewSequence` that fences the
 /// write (H4, cluster-topology-overhaul §Wave 8.2).
 ///

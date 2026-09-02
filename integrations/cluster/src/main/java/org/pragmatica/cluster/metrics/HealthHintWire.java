@@ -13,4 +13,9 @@ import org.pragmatica.serialization.Codec;
 ///
 /// Top-level by design — keeping it nested in `ClusterSyncMessage` produces a
 /// deterministic codec tag that collides with `AetherKey.GovernorAnnouncementKey`.
-@Codec public enum HealthHintWire {HEALTHY, SUSPECTED, FAULTY}
+@Codec
+public enum HealthHintWire {
+    HEALTHY,
+    SUSPECTED,
+    FAULTY
+}

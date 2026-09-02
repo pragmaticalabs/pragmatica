@@ -5,7 +5,6 @@ package org.pragmatica.storage;
 /// @param gracePeriodMs minimum time (ms) a block must remain orphaned before collection
 /// @param batchSize maximum number of blocks to collect per GC cycle
 public record GarbageCollectorConfig(long gracePeriodMs, int batchSize) {
-
     /// Clamp configuration parameters to valid ranges on construction.
     public GarbageCollectorConfig {
         gracePeriodMs = Math.max(gracePeriodMs, 1);

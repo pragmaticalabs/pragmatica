@@ -14,17 +14,17 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.jdbc;
+
+import javax.sql.DataSource;
+import java.sql.Connection;
+import java.sql.SQLException;
 
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 
-import javax.sql.DataSource;
-import java.sql.Connection;
-import java.sql.SQLException;
 
 /// Transaction aspect for JDBC operations.
 /// Provides transactional boundaries with automatic commit/rollback.
@@ -37,8 +37,7 @@ public interface JdbcTransactional {
     /// @param <R> Result type
     ///
     /// @return Promise with operation result
-    static <R> Promise<R> withTransaction(DataSource dataSource,
-                                          Fn1<Promise<R>, Connection> operation) {
+    static <R> Promise<R> withTransaction(DataSource dataSource, Fn1<Promise<R>, Connection> operation) {
         return withTransaction(dataSource, JdbcError::fromException, operation);
     }
 
@@ -54,34 +53,36 @@ public interface JdbcTransactional {
     static <R> Promise<R> withTransaction(DataSource dataSource,
                                           Fn1<JdbcError, Throwable> errorMapper,
                                           Fn1<Promise<R>, Connection> operation) {
-        return acquireConnection(dataSource, errorMapper)
-        .flatMap(conn -> operation.apply(conn)
-                                  .flatMap(result -> commit(conn, errorMapper, result))
-                                  .onFailure(_ -> rollback(conn))
-                                  .onResult(_ -> close(conn)));
+        return acquireConnection(dataSource, errorMapper).flatMap(conn -> operation.apply(conn)
+                                                                                   .flatMap(result -> commit(conn,
+                                                                                                             errorMapper,
+                                                                                                             result))
+                                                                                   .onFailure(_ -> rollback(conn))
+                                                                                   .onResult(_ -> close(conn)));
     }
 
-    private static Promise<Connection> acquireConnection(DataSource dataSource,
-                                                         Fn1<JdbcError, Throwable> errorMapper) {
+    private static Promise<Connection> acquireConnection(DataSource dataSource, Fn1<JdbcError, Throwable> errorMapper) {
         return Promise.lift(errorMapper,
                             () -> {
                                 var conn = dataSource.getConnection();
-                                try{
-                                    conn.setAutoCommit(false);
-                                } catch (Exception e) {
-                                    close(conn);
-                                    throw e;
-                                }
+
+                                try {
+                                conn.setAutoCommit(false);
+                            } catch (Exception e) {
+                                close(conn);
+
+                                throw e;
+                            }
+
                                 return conn;
                             });
     }
 
-    private static <R> Promise<R> commit(Connection conn,
-                                         Fn1<JdbcError, Throwable> errorMapper,
-                                         R result) {
+    private static <R> Promise<R> commit(Connection conn, Fn1<JdbcError, Throwable> errorMapper, R result) {
         return Promise.lift(errorMapper,
                             () -> {
                                 conn.commit();
+
                                 return result;
                             });
     }
@@ -98,24 +99,22 @@ public interface JdbcTransactional {
     }
 
     private static void rollback(Connection conn) {
-        Option.option(conn)
-              .onPresent(c -> {
-                  try{
-                      c.rollback();
-                  } catch (SQLException _) {}
-              });
+        Option.option(conn).onPresent(c -> {
+            try {
+                c.rollback();
+            } catch (SQLException _) {}
+        });
     }
 
     private static void close(Connection conn) {
-        Option.option(conn)
-              .onPresent(c -> {
-                             try{
-                                 c.setAutoCommit(true);
-                             } catch (SQLException _) {} finally{
-                                 try{
-                                     c.close();
-                                 } catch (SQLException _) {}
-                             }
-                         });
+        Option.option(conn).onPresent(c -> {
+            try {
+                c.setAutoCommit(true);
+            } catch (SQLException _) {} finally {
+                try {
+                    c.close();
+                } catch (SQLException _) {}
+            }
+        });
     }
 }

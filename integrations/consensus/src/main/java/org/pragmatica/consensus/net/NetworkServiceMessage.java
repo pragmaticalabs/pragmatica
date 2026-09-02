@@ -13,18 +13,18 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.net;
+
+import java.util.List;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.Message;
 
-import java.util.List;
-
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
+
 
 public sealed interface NetworkServiceMessage extends Message.Local {
     record ConnectNode(NodeId node) implements NetworkServiceMessage {}

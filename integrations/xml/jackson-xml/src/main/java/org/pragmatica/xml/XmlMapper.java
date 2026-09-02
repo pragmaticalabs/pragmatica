@@ -14,14 +14,14 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.xml;
-
-import org.pragmatica.lang.Result;
 
 import java.util.function.Consumer;
 
+import org.pragmatica.lang.Result;
+
 import tools.jackson.dataformat.xml.XmlMapper.Builder;
+
 
 /// Functional wrapper around Jackson's XmlMapper providing Result-based API.
 /// All operations return Result<T> instead of throwing exceptions, enabling
@@ -131,13 +131,16 @@ public interface XmlMapper {
             @Override
             public XmlMapperBuilder configure(Consumer<Builder> configurator) {
                 configurators.add(configurator);
+
                 return this;
             }
 
             @Override
             public XmlMapper build() {
                 var builder = tools.jackson.dataformat.xml.XmlMapper.builder();
+
                 configurators.forEach(c -> c.accept(builder));
+
                 return new XmlMapperImpl(builder.build());
             }
         }

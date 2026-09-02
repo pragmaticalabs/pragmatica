@@ -13,8 +13,13 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.dht.storage;
+
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.pragmatica.dht.ConsistentHashRing;
 import org.pragmatica.dht.DHTError;
@@ -24,11 +29,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
-import java.util.Arrays;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 /// In-memory storage engine backed by ConcurrentHashMap.
 /// Thread-safe and suitable for development and testing.
@@ -57,13 +57,14 @@ public final class MemoryStorageEngine implements StorageEngine {
 
     @Override
     public Promise<Option<byte[]>> get(byte[] key) {
-        return Promise.success(Option.option(data.get(new ByteArrayKey(key)))
-                                     .map(entry -> entry.value().clone()));
+        return Promise.success(Option.option(data.get(new ByteArrayKey(key))).map(entry -> entry.value()
+                                                                                                .clone()));
     }
 
     @Override
     public Promise<Unit> put(byte[] key, byte[] value) {
         data.put(new ByteArrayKey(key), new VersionedEntry(value.clone(), 0L, 0L, 0L));
+
         return Promise.success(Unit.unit());
     }
 
@@ -72,13 +73,23 @@ public final class MemoryStorageEngine implements StorageEngine {
         if (epochGate.isStale(key, epochTerm, epochCounter)) {
             return DHTError.staleEpochWrite(epochTerm, epochCounter).promise();
         }
+
         var bkey = new ByteArrayKey(key);
         var clonedValue = value.clone();
         var written = new AtomicBoolean(true);
-        data.compute(bkey, (_, existing) -> computeVersionedEntry(existing, clonedValue, version, epochTerm, epochCounter, written, epochGate.epochOrderingEnabled()));
+
+        data.compute(bkey,
+                     (_, existing) -> computeVersionedEntry(existing,
+                                                            clonedValue,
+                                                            version,
+                                                            epochTerm,
+                                                            epochCounter,
+                                                            written,
+                                                            epochGate.epochOrderingEnabled()));
         if (written.get()) {
             epochGate.advance(key, epochTerm, epochCounter);
         }
+
         return Promise.success(written.get());
     }
 
@@ -104,20 +115,27 @@ public final class MemoryStorageEngine implements StorageEngine {
         if (existing == null) {
             return new VersionedEntry(clonedValue, version, epochTerm, epochCounter);
         }
+
         if (epochOrdering) {
             var epochOrder = compareEpoch(epochTerm, epochCounter, existing.epochTerm(), existing.epochCounter());
+
             if (epochOrder > 0) {
                 return new VersionedEntry(clonedValue, version, epochTerm, epochCounter);
             }
+
             if (epochOrder < 0) {
                 written.set(false);
+
                 return existing;
             }
         }
+
         if (existing.version() >= version) {
             written.set(false);
+
             return existing;
         }
+
         return new VersionedEntry(clonedValue, version, epochTerm, epochCounter);
     }
 
@@ -125,7 +143,10 @@ public final class MemoryStorageEngine implements StorageEngine {
     /// mints these primitives in the BSL-1.1 module this engine must not depend on.
     private static int compareEpoch(long term1, long counter1, long term2, long counter2) {
         var byTerm = Long.compare(term1, term2);
-        return byTerm != 0 ? byTerm : Long.compare(counter1, counter2);
+
+        return byTerm != 0
+               ? byTerm
+               : Long.compare(counter1, counter2);
     }
 
     @Override
@@ -146,38 +167,32 @@ public final class MemoryStorageEngine implements StorageEngine {
     @Override
     public Promise<Unit> clear() {
         data.clear();
+
         return Promise.success(Unit.unit());
     }
 
     @Override
     public Promise<Unit> shutdown() {
         data.clear();
+
         return Promise.success(Unit.unit());
     }
 
     @Override
     public Promise<List<byte[]>> keys() {
-        return Promise.success(data.keySet()
-                                   .stream()
-                                   .map(ByteArrayKey::data)
-                                   .map(byte[]::clone)
-                                   .toList());
+        return Promise.success(data.keySet().stream().map(ByteArrayKey::data).map(byte[]::clone).toList());
     }
 
     @Override
     public Promise<List<DHTMessage.KeyValue>> entries() {
-        return Promise.success(data.entrySet()
-                                   .stream()
-                                   .map(MemoryStorageEngine::toKeyValue)
-                                   .toList());
+        return Promise.success(data.entrySet().stream().map(MemoryStorageEngine::toKeyValue).toList());
     }
 
     @Override
     public Promise<List<DHTMessage.KeyValue>> entriesForPartition(ConsistentHashRing<?> ring, Partition partition) {
         return Promise.success(data.entrySet()
                                    .stream()
-                                   .filter(e -> ring.partitionFor(e.getKey()
-                                                                   .data())
+                                   .filter(e -> ring.partitionFor(e.getKey().data())
                                                     .equals(partition))
                                    .map(MemoryStorageEngine::toKeyValue)
                                    .toList());
@@ -201,7 +216,9 @@ public final class MemoryStorageEngine implements StorageEngine {
         @Override
         public boolean equals(Object o) {
             if (this == o) return true;
+
             if (! (o instanceof ByteArrayKey that)) return false;
+
             return Arrays.equals(data, that.data);
         }
 

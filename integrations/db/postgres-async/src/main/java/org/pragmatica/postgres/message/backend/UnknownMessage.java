@@ -2,8 +2,8 @@ package org.pragmatica.postgres.message.backend;
 
 import org.pragmatica.postgres.message.BackendMessage;
 
-public final class UnknownMessage implements BackendMessage {
 
+public final class UnknownMessage implements BackendMessage {
     private final byte id;
 
     public UnknownMessage(byte id) {
@@ -16,7 +16,6 @@ public final class UnknownMessage implements BackendMessage {
 
     @Override
     public String toString() {
-        return "UnknownMessage(" +
-                "id='" + (char) id + "')";
+        return "UnknownMessage(" + "id='" + (char) id + "')";
     }
 }

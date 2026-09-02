@@ -13,7 +13,6 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.utility;
 
 import java.util.Collection;
@@ -24,23 +23,30 @@ import java.util.TreeSet;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.stream.Stream;
 
+
 /// Utility for scanning class hierarchies, particularly useful for sealed interfaces.
 public sealed interface HierarchyScanner {
     /// Find all concrete subtypes of a sealed interface or class.
     @SuppressWarnings("unchecked")
     static <T> Set<Class<? extends T>> concreteSubtypes(Class<T> type) {
         var result = new TreeSet<Class<? extends T>>(Comparator.comparing(Class::getName));
+
         if (!type.isInterface()) {
             result.add(type);
+
             return result;
         }
+
         var queue = new LinkedBlockingQueue<Class<?>>();
+
         queue.offer(type);
         while (!queue.isEmpty()) {
             var currentInterface = queue.poll();
+
             if (!currentInterface.isSealed()) {
                 continue;
             }
+
             for (var clazz : currentInterface.getPermittedSubclasses()) {
                 if (clazz.isInterface()) {
                     queue.offer(clazz);
@@ -49,6 +55,7 @@ public sealed interface HierarchyScanner {
                 }
             }
         }
+
         return result;
     }
 
@@ -56,9 +63,11 @@ public sealed interface HierarchyScanner {
     static <T> Set<Class<? extends T>> walkUpTheTree(Collection<Class<? extends T>> classes) {
         var interfaces = new HashSet<Class<?>>();
         var collected = new HashSet<Class<? extends T>>();
+
         for (var clazz : classes) {
             scanSingle(clazz, collected, interfaces);
         }
+
         return collected;
     }
 
@@ -67,30 +76,29 @@ public sealed interface HierarchyScanner {
                                        Set<Class<? extends T>> result,
                                        Set<Class<?>> interfaces) {
         var queue = new LinkedBlockingQueue<Class<?>>();
+
         if (clazz.isInterface()) {
             if (interfaces.add(clazz)) {
                 queue.offer(clazz);
             }
         } else {
             result.add(clazz);
-            Stream.of(clazz.getInterfaces())
-                  .forEach(e -> {
-                      if (interfaces.add(e)) {
-                          queue.offer(e);
-                      }
-                  });
+            Stream.of(clazz.getInterfaces()).forEach(e -> {
+                if (interfaces.add(e)) {
+                    queue.offer(e);
+                }
+            });
         }
+
         while (!queue.isEmpty()) {
             Class<?> type = queue.poll();
-            Stream.of(type.getInterfaces())
-                  .forEach(e -> {
-                      if (interfaces.add(e)) {
-                          queue.offer(e);
-                      }
-                  });
-            concreteSubtypes(type).stream()
-                            .map(cls -> (Class<? extends T>) cls)
-                            .forEach(result::add);
+
+            Stream.of(type.getInterfaces()).forEach(e -> {
+                if (interfaces.add(e)) {
+                    queue.offer(e);
+                }
+            });
+            concreteSubtypes(type).stream().map(cls -> (Class<? extends T>) cls).forEach(result::add);
         }
     }
 

@@ -2,6 +2,7 @@ package org.pragmatica.statemachine;
 
 import java.time.Instant;
 
+
 /// Context provided to transition actions and guards.
 ///
 /// @param <S> State type

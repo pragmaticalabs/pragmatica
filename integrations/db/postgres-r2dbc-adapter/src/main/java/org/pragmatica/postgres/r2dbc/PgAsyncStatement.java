@@ -14,19 +14,18 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.postgres.r2dbc;
+
+import java.util.ArrayList;
+import java.util.List;
 
 import io.r2dbc.spi.Result;
 import io.r2dbc.spi.Statement;
-
 import org.reactivestreams.Publisher;
 
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
-import java.util.ArrayList;
-import java.util.List;
 
 /// R2DBC [Statement] backed by a postgres-async extended query protocol.
 ///
@@ -50,6 +49,7 @@ public final class PgAsyncStatement implements Statement {
     public Statement add() {
         bindings.add(currentBinding.toArray());
         currentBinding = new ArrayList<>();
+
         return this;
     }
 
@@ -57,6 +57,7 @@ public final class PgAsyncStatement implements Statement {
     public Statement bind(int index, Object value) {
         ensureCapacity(index);
         currentBinding.set(index, value);
+
         return this;
     }
 
@@ -69,6 +70,7 @@ public final class PgAsyncStatement implements Statement {
     public Statement bindNull(int index, Class<?> type) {
         ensureCapacity(index);
         currentBinding.set(index, null);
+
         return this;
     }
 
@@ -80,7 +82,6 @@ public final class PgAsyncStatement implements Statement {
     @Override
     public Publisher<? extends Result> execute() {
         flushCurrentBinding();
-
         if (bindings.isEmpty()) {
             return executeSimpleQuery();
         }
@@ -100,36 +101,36 @@ public final class PgAsyncStatement implements Statement {
     }
 
     private Mono<Result> executeSimpleQuery() {
-        return Mono.create(sink ->
-            connection.pgConnection()
-                      .completeQuery(sql)
-                      .onSuccess(rs -> sink.success(new PgAsyncResult(rs)))
-                      .onFailure(cause -> sink.error(new R2dbcAdapterException(cause.message()))));
+        return Mono.create(sink -> connection.pgConnection()
+                                             .completeQuery(sql)
+                                             .onSuccess(rs -> sink.success(new PgAsyncResult(rs)))
+                                             .onFailure(cause -> sink.error(new R2dbcAdapterException(cause.message()))));
     }
 
     private Mono<Result> executeSingleBinding() {
         var params = bindings.getFirst();
+
         bindings.clear();
-        return Mono.create(sink ->
-            connection.pgConnection()
-                      .completeQuery(sql, params)
-                      .onSuccess(rs -> sink.success(new PgAsyncResult(rs)))
-                      .onFailure(cause -> sink.error(new R2dbcAdapterException(cause.message()))));
+
+        return Mono.create(sink -> connection.pgConnection()
+                                             .completeQuery(sql, params)
+                                             .onSuccess(rs -> sink.success(new PgAsyncResult(rs)))
+                                             .onFailure(cause -> sink.error(new R2dbcAdapterException(cause.message()))));
     }
 
     private Flux<Result> executeMultipleBindings() {
         var allParams = new ArrayList<>(bindings);
+
         bindings.clear();
-        return Flux.fromIterable(allParams)
-                   .concatMap(this::executeWithParams);
+
+        return Flux.fromIterable(allParams).concatMap(this::executeWithParams);
     }
 
     private Mono<Result> executeWithParams(Object[] params) {
-        return Mono.create(sink ->
-            connection.pgConnection()
-                      .completeQuery(sql, params)
-                      .onSuccess(rs -> sink.success(new PgAsyncResult(rs)))
-                      .onFailure(cause -> sink.error(new R2dbcAdapterException(cause.message()))));
+        return Mono.create(sink -> connection.pgConnection()
+                                             .completeQuery(sql, params)
+                                             .onSuccess(rs -> sink.success(new PgAsyncResult(rs)))
+                                             .onFailure(cause -> sink.error(new R2dbcAdapterException(cause.message()))));
     }
 
     private void ensureCapacity(int index) {
@@ -144,6 +145,7 @@ public final class PgAsyncStatement implements Statement {
         if (!sql.contains("$")) {
             return sql;
         }
+
         return sql.replaceAll(PLACEHOLDER_PATTERN, "?");
     }
 }

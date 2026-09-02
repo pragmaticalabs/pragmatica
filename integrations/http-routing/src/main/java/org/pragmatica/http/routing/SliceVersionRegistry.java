@@ -1,8 +1,9 @@
 package org.pragmatica.http.routing;
 
+import java.util.List;
+
 import org.pragmatica.lang.Option;
 
-import java.util.List;
 
 /// Per-slice API version registry (#198 §6.4).
 ///
@@ -27,8 +28,7 @@ public record SliceVersionRegistry(String apiPrefix,
     }
 
     /// The registry exposed by an unversioned slice: no API prefix, no header requirement, no versions.
-    public static final SliceVersionRegistry UNVERSIONED =
-        new SliceVersionRegistry("", false, Option.none(), List.of());
+    public static final SliceVersionRegistry UNVERSIONED = new SliceVersionRegistry("", false, Option.none(), List.of());
 
     /// Factory for a versioned slice's registry.
     ///
@@ -46,7 +46,7 @@ public record SliceVersionRegistry(String apiPrefix,
 
     /// Whether this slice declares API versions.
     public boolean isVersioned() {
-        return !versions.isEmpty();
+        return ! versions.isEmpty();
     }
 
     /// Per-version metadata (#198 §6.4).

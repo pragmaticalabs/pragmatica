@@ -13,26 +13,7 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.net.tcp.security;
-
-import org.bouncycastle.asn1.x500.X500Name;
-import org.bouncycastle.asn1.x509.BasicConstraints;
-import org.bouncycastle.asn1.x509.Extension;
-import org.bouncycastle.asn1.x509.GeneralName;
-import org.bouncycastle.asn1.x509.GeneralNames;
-import org.bouncycastle.asn1.x509.KeyUsage;
-import org.bouncycastle.cert.X509CertificateHolder;
-import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
-import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder;
-import org.bouncycastle.jce.ECNamedCurveTable;
-import org.bouncycastle.jce.provider.BouncyCastleProvider;
-import org.bouncycastle.jce.spec.ECPrivateKeySpec;
-import org.bouncycastle.jce.spec.ECPublicKeySpec;
-import org.bouncycastle.openssl.jcajce.JcaPEMWriter;
-import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
@@ -50,7 +31,27 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.util.Date;
 
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+
+import org.bouncycastle.asn1.x500.X500Name;
+import org.bouncycastle.asn1.x509.BasicConstraints;
+import org.bouncycastle.asn1.x509.Extension;
+import org.bouncycastle.asn1.x509.GeneralName;
+import org.bouncycastle.asn1.x509.GeneralNames;
+import org.bouncycastle.asn1.x509.KeyUsage;
+import org.bouncycastle.cert.X509CertificateHolder;
+import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
+import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder;
+import org.bouncycastle.jce.ECNamedCurveTable;
+import org.bouncycastle.jce.provider.BouncyCastleProvider;
+import org.bouncycastle.jce.spec.ECPrivateKeySpec;
+import org.bouncycastle.jce.spec.ECPublicKeySpec;
+import org.bouncycastle.openssl.jcajce.JcaPEMWriter;
+import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
+
 import static org.pragmatica.lang.Option.some;
+
 
 /// Self-signed certificate provider using BouncyCastle.
 ///
@@ -104,15 +105,16 @@ public final class SelfSignedCertificateProvider implements CertificateProvider 
 
     @Override
     public Result<CertificateBundle> issueCertificate(String nodeId, String hostname) {
-        return Result.lift(
-            e -> new CertificateProviderError.CertificateIssueFailed(nodeId, e),
-            () -> issueNodeCertificate(nodeId, hostname)
-        );
+        return Result.lift(e -> new CertificateProviderError.CertificateIssueFailed(nodeId, e),
+                           () -> issueNodeCertificate(nodeId, hostname));
     }
 
     @Override
     public Result<CertificateBundle> caCertificate() {
-        return Result.success(CertificateBundle.certificateBundle(caCertPem, new byte[0], caCertPem, extractNotAfter(caCert)));
+        return Result.success(CertificateBundle.certificateBundle(caCertPem,
+                                                                  new byte[0],
+                                                                  caCertPem,
+                                                                  extractNotAfter(caCert)));
     }
 
     @Override
@@ -141,10 +143,8 @@ public final class SelfSignedCertificateProvider implements CertificateProvider 
     }
 
     // ===== Provider Initialization =====
-
     private static SelfSignedCertificateProvider createProvider(byte[] clusterSecret) throws Exception {
         ensureBouncyCastle();
-
         var caKeyPair = deriveKeyPair(clusterSecret);
         var caCert = generateCaCertificate(caKeyPair);
         var caCertPem = toPem(caCert);
@@ -156,30 +156,32 @@ public final class SelfSignedCertificateProvider implements CertificateProvider 
         // is decryptable by this day-N node. Closes the asymmetric midnight-rollover lockout.
         var nextKey = deriveGossipKeyWithLabel(clusterSecret, GOSSIP_KEY_PREFIX + (today + 1));
 
-        return new SelfSignedCertificateProvider(caKeyPair, caCert, caCertPem, currentKey, previousKey, nextKey, clusterSecret);
+        return new SelfSignedCertificateProvider(caKeyPair,
+                                                 caCert,
+                                                 caCertPem,
+                                                 currentKey,
+                                                 previousKey,
+                                                 nextKey,
+                                                 clusterSecret);
     }
 
     // ===== Certificate Generation =====
-
     private CertificateBundle issueNodeCertificate(String nodeId, String hostname) throws Exception {
         var nodeKeyPair = generateRandomKeyPair();
         var now = Instant.now();
         var notAfter = now.plus(NODE_CERT_VALIDITY);
-
         var issuer = new X500Name("CN=Aether Cluster CA");
         var subject = new X500Name("CN=" + nodeId);
         var serial = new BigInteger(128, new SecureRandom());
-
-        var certBuilder = new JcaX509v3CertificateBuilder(
-            issuer, serial, Date.from(now), Date.from(notAfter), subject, nodeKeyPair.getPublic()
-        );
+        var certBuilder = new JcaX509v3CertificateBuilder(issuer,
+                                                          serial,
+                                                          Date.from(now),
+                                                          Date.from(notAfter),
+                                                          subject,
+                                                          nodeKeyPair.getPublic());
 
         addSubjectAlternativeNames(certBuilder, hostname);
-
-        var signer = new JcaContentSignerBuilder(SIGNATURE_ALGORITHM)
-            .setProvider("BC")
-            .build(caKeyPair.getPrivate());
-
+        var signer = new JcaContentSignerBuilder(SIGNATURE_ALGORITHM).setProvider("BC").build(caKeyPair.getPrivate());
         var certHolder = certBuilder.build(signer);
         var nodeCert = toX509Certificate(certHolder);
 
@@ -191,32 +193,33 @@ public final class SelfSignedCertificateProvider implements CertificateProvider 
         var notAfter = now.plus(Duration.ofDays(365));
         var subject = new X500Name("CN=Aether Cluster CA");
         var serial = BigInteger.ONE;
-
-        var certBuilder = new JcaX509v3CertificateBuilder(
-            subject, serial, Date.from(now), Date.from(notAfter), subject, caKeyPair.getPublic()
-        );
+        var certBuilder = new JcaX509v3CertificateBuilder(subject,
+                                                          serial,
+                                                          Date.from(now),
+                                                          Date.from(notAfter),
+                                                          subject,
+                                                          caKeyPair.getPublic());
 
         certBuilder.addExtension(Extension.basicConstraints, true, new BasicConstraints(true));
         certBuilder.addExtension(Extension.keyUsage, true, new KeyUsage(KeyUsage.keyCertSign | KeyUsage.cRLSign));
-
-        var signer = new JcaContentSignerBuilder(SIGNATURE_ALGORITHM)
-            .setProvider("BC")
-            .build(caKeyPair.getPrivate());
+        var signer = new JcaContentSignerBuilder(SIGNATURE_ALGORITHM).setProvider("BC").build(caKeyPair.getPrivate());
 
         return toX509Certificate(certBuilder.build(signer));
     }
 
-    private static void addSubjectAlternativeNames(JcaX509v3CertificateBuilder builder,
-                                                    String hostname) throws Exception {
-        var sanType = isIpAddress(hostname) ? GeneralName.iPAddress : GeneralName.dNSName;
+    private static void addSubjectAlternativeNames(JcaX509v3CertificateBuilder builder, String hostname) throws Exception {
+        var sanType = isIpAddress(hostname)
+                      ? GeneralName.iPAddress
+                      : GeneralName.dNSName;
         var san = new GeneralNames(new GeneralName(sanType, hostname));
+
         builder.addExtension(Extension.subjectAlternativeName, false, san);
     }
 
     // ===== HKDF Key Derivation =====
-
     private static KeyPair deriveKeyPair(byte[] clusterSecret) throws Exception {
         var seed = hkdfDerive(clusterSecret, HKDF_SALT, CA_KEY_INFO, 32);
+
         return keyPairFromSeed(seed);
     }
 
@@ -225,18 +228,22 @@ public final class SelfSignedCertificateProvider implements CertificateProvider 
         var prk = hmacSha256(salt, ikm);
         // HKDF-Expand (single block, length <= 32)
         var expandInput = new byte[info.length + 1];
+
         System.arraycopy(info, 0, expandInput, 0, info.length);
         expandInput[info.length] = 0x01;
-
         var okm = hmacSha256(prk, expandInput);
         var result = new byte[length];
+
         System.arraycopy(okm, 0, result, 0, length);
+
         return result;
     }
 
     private static byte[] hmacSha256(byte[] key, byte[] data) throws Exception {
         var mac = Mac.getInstance("HmacSHA256");
+
         mac.init(new SecretKeySpec(key, "HmacSHA256"));
+
         return mac.doFinal(data);
     }
 
@@ -244,9 +251,7 @@ public final class SelfSignedCertificateProvider implements CertificateProvider 
         var ecSpec = ECNamedCurveTable.getParameterSpec(EC_CURVE);
         var privateKeyScalar = new BigInteger(1, seed).mod(ecSpec.getN().subtract(BigInteger.ONE)).add(BigInteger.ONE);
         var publicKeyPoint = ecSpec.getG().multiply(privateKeyScalar).normalize();
-
         var keyFactory = KeyFactory.getInstance("EC", "BC");
-
         var privateKey = keyFactory.generatePrivate(new ECPrivateKeySpec(privateKeyScalar, ecSpec));
         var publicKey = keyFactory.generatePublic(new ECPublicKeySpec(publicKeyPoint, ecSpec));
 
@@ -254,29 +259,27 @@ public final class SelfSignedCertificateProvider implements CertificateProvider 
     }
 
     // ===== Gossip Key Derivation =====
-
     private static GossipKey deriveGossipKeyWithLabel(byte[] clusterSecret, String label) throws Exception {
         var info = label.getBytes(StandardCharsets.UTF_8);
         var key = hkdfDerive(clusterSecret, HKDF_SALT, info, 32);
         var keyIdBytes = hmacSha256(key, KEY_ID_LABEL);
-        var keyId = ((keyIdBytes[0] & 0xFF) << 24)
-                    | ((keyIdBytes[1] & 0xFF) << 16)
-                    | ((keyIdBytes[2] & 0xFF) << 8)
-                    | (keyIdBytes[3] & 0xFF);
+        var keyId = ((keyIdBytes[0] & 0xFF) << 24) | ((keyIdBytes[1] & 0xFF) << 16) | ((keyIdBytes[2] & 0xFF) << 8) | (keyIdBytes[3] & 0xFF);
 
         return GossipKey.gossipKey(key, keyId, Instant.now());
     }
 
     // ===== Utility Methods =====
-
     private static KeyPair generateRandomKeyPair() throws Exception {
         var generator = KeyPairGenerator.getInstance("EC", "BC");
+
         generator.initialize(ECNamedCurveTable.getParameterSpec(EC_CURVE), new SecureRandom());
+
         return generator.generateKeyPair();
     }
 
     private static X509Certificate toX509Certificate(X509CertificateHolder holder) throws Exception {
-        return new JcaX509CertificateConverter().setProvider("BC").getCertificate(holder);
+        return new JcaX509CertificateConverter().setProvider("BC")
+                                                .getCertificate(holder);
     }
 
     private static byte[] toPem(Object obj) throws Exception {
@@ -286,11 +289,13 @@ public final class SelfSignedCertificateProvider implements CertificateProvider 
             pemWriter.writeObject(obj);
         }
 
-        return writer.toString().getBytes(StandardCharsets.UTF_8);
+        return writer.toString()
+                     .getBytes(StandardCharsets.UTF_8);
     }
 
     private static Instant extractNotAfter(X509Certificate cert) {
-        return cert.getNotAfter().toInstant();
+        return cert.getNotAfter()
+                   .toInstant();
     }
 
     private static boolean isIpAddress(String hostname) {

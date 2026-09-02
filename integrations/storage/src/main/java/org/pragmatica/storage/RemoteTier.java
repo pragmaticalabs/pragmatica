@@ -7,6 +7,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
+
 /// S3-backed storage tier for cold/archive data.
 /// Uses sharded S3 keys: {prefix}/{hex[0:2]}/{hex[2:4]}/{fullHex}
 public final class RemoteTier implements StorageTier {
@@ -25,7 +26,9 @@ public final class RemoteTier implements StorageTier {
 
     /// Creates a RemoteTier from configuration, using default S3 client.
     public static RemoteTier remoteTier(RemoteTierConfig config) {
-        return new RemoteTier(S3Client.s3Client(config.s3Config()), config.prefix(), config.maxBytes());
+        return new RemoteTier(S3Client.s3Client(config.s3Config()),
+                              config.prefix(),
+                              config.maxBytes());
     }
 
     /// Creates a RemoteTier with an externally provided S3 client (for testing).
@@ -41,7 +44,10 @@ public final class RemoteTier implements StorageTier {
     @Override
     public Promise<Unit> put(BlockId id, byte[] content) {
         if (!reserveCapacity(content.length)) {
-            return StorageError.TierFull.tierFull(TierLevel.REMOTE, usedBytes.get(), maxBytes).promise();
+            return StorageError.TierFull.tierFull(TierLevel.REMOTE,
+                                                  usedBytes.get(),
+                                                  maxBytes)
+                                        .promise();
         }
 
         return s3Client.putObject(s3Key(id), content, CONTENT_TYPE);
@@ -80,7 +86,6 @@ public final class RemoteTier implements StorageTier {
         do {
             current = usedBytes.get();
             updated = current + contentLength;
-
             if (updated > maxBytes) {
                 return false;
             }

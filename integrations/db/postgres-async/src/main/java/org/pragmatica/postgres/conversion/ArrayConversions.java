@@ -1,14 +1,15 @@
 package org.pragmatica.postgres.conversion;
 
-import org.pragmatica.postgres.Oid;
-import org.pragmatica.postgres.net.PgValue;
-
 import java.lang.reflect.Array;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.BiFunction;
 import java.util.function.Function;
+
+import org.pragmatica.postgres.Oid;
+import org.pragmatica.postgres.net.PgValue;
+
 
 @SuppressWarnings({"unchecked", "rawtypes"})
 final class ArrayConversions {
@@ -23,20 +24,24 @@ final class ArrayConversions {
             case PgValue.Binary binary -> toBinaryArray(arrayType, binary.type(), binary.raw());
         };
     }
+
     static String fromArray(final Object elements, final Function<Object, String> printFn) {
         return appendArray(new StringBuilder(), elements, printFn).toString();
     }
 
-    private static StringBuilder appendArray(StringBuilder sb, final Object elements, final Function<Object, String> printFn) {
+    private static StringBuilder appendArray(StringBuilder sb,
+                                             final Object elements,
+                                             final Function<Object, String> printFn) {
         sb.append('{');
-
         int nElements = Array.getLength(elements);
+
         for (int i = 0; i < nElements; i++) {
             if (i > 0) {
                 sb.append(',');
             }
 
             var o = Array.get(elements, i);
+
             if (o == null) {
                 sb.append("NULL");
             } else if (o instanceof byte[] bytes) {
@@ -53,15 +58,16 @@ final class ArrayConversions {
 
     private static StringBuilder appendEscaped(final StringBuilder b, final String s) {
         b.append('"');
-
         for (int j = 0; j < s.length(); j++) {
             char c = s.charAt(j);
+
             if (c == '"' || c == '\\') {
                 b.append('\\');
             }
 
             b.append(c);
         }
+
         return b.append('"');
     }
 
@@ -94,7 +100,8 @@ final class ArrayConversions {
         if (text[0] != '[') {
             return 0;
         }
-        for (int end = 1; ; ) {
+
+        for (int end = 1;;) {
             if (text[end++] == '=') {
                 return end;
             }
@@ -104,11 +111,12 @@ final class ArrayConversions {
     private static int readArray(final char[] text, final int start, List<Object> result) {
         var values = new ArrayList<>();
 
-        for (int i = start + 1; ; ) {
+        for (int i = start + 1;;) {
             final char c = text[i];
 
             if (c == '}') {
                 result.add(values);
+
                 return i + 1;
             } else if (c == ',' || Character.isWhitespace(c)) {
                 i++;
@@ -125,7 +133,8 @@ final class ArrayConversions {
     }
 
     private static boolean isEncodedNull(char[] text, int i) {
-        return text[i] == 'N' && text.length > i + 4
+        return text[i] == 'N'
+               && text.length > i + 4
                && text[i + 1] == 'U'
                && text[i + 2] == 'L'
                && text[i + 3] == 'L'
@@ -135,47 +144,57 @@ final class ArrayConversions {
     private static int readValue(final char[] text, final int start, List<Object> result) {
         var str = new StringBuilder();
 
-        for (int i = start; ; i++) {
+        for (int i = start;; i++) {
             char c = text[i];
+
             if (c == ',' || c == '}' || Character.isWhitespace(c)) {
                 result.add(str.toString());
+
                 return i;
             }
+
             str.append(c);
         }
     }
 
     private static int readNull(final int i, final List<Object> result) {
         result.add(null);
+
         return i + 4;
     }
 
     private static int readString(final char[] text, final int start, final List<Object> result) {
         var str = new StringBuilder();
 
-        for (int i = start + 1; ; ) {
+        for (int i = start + 1;;) {
             char c = text[i++];
+
             if (c == '"') {
                 result.add(str.toString());
+
                 return i;
             }
+
             if (c == '\\') {
                 c = text[i++];
             }
+
             str.append(c);
         }
     }
 
     private static Oid getElementOid(final Oid oid) {
         try {
-            return Oid.valueOf(oid.name()
-                                  .replaceFirst("_ARRAY", ""));
+            return Oid.valueOf(oid.name().replaceFirst("_ARRAY", ""));
         } catch (IllegalArgumentException e) {
             return Oid.UNSPECIFIED;
         }
     }
 
-    private static <T> T[] toNestedArrays(List<Object> result, Class<?> leafElementType, Oid oid, BiFunction<Oid, String, Object> parse) {
+    private static <T> T[] toNestedArrays(List<Object> result,
+                                          Class<?> leafElementType,
+                                          Oid oid,
+                                          BiFunction<Oid, String, Object> parse) {
         var arr = (Object[]) Array.newInstance(leafElementType, getNestedDimensions(result, oid));
 
         for (int i = 0; i < result.size(); i++) {
@@ -189,6 +208,7 @@ final class ArrayConversions {
                 arr[i] = toNestedArrays((List<Object>) elem, leafElementType, oid, parse);
             }
         }
+
         return (T[]) arr;
     }
 
@@ -196,18 +216,21 @@ final class ArrayConversions {
         if (result.isEmpty()) {
             return new int[]{0};
         }
-        if (!(result.getFirst() instanceof List)) {
+
+        if (! (result.getFirst() instanceof List)) {
             return new int[]{result.size()};
         }
 
         var dimensions = new ArrayList<Integer>();
-        dimensions.add(result.size());
 
+        dimensions.add(result.size());
         var value = result.getFirst();
 
         while (value instanceof List nested) {
             dimensions.add(nested.size());
-            value = nested.isEmpty() ? null : nested.getFirst();
+            value = nested.isEmpty()
+                    ? null
+                    : nested.getFirst();
         }
 
         return toIntArray(dimensions);
@@ -219,6 +242,7 @@ final class ArrayConversions {
         for (int i = 0; i < arr.length; i++) {
             arr[i] = list.get(i);
         }
+
         return arr;
     }
 
@@ -229,13 +253,15 @@ final class ArrayConversions {
         }
 
         Class elementType = resolveLeafType(arrayType);
+
         if (elementType.isPrimitive()) {
             throw new IllegalArgumentException("Primitive arrays are not supported due to possible NULL values");
         }
 
         var buf = ByteBuffer.wrap(value);
         int ndim = buf.getInt();
-        buf.getInt(); // has_null flag (we handle NULL via length == -1)
+
+        buf.getInt();  // has_null flag (we handle NULL via length == -1)
         int elemTypeOid = buf.getInt();
 
         if (ndim == 0) {
@@ -243,9 +269,10 @@ final class ArrayConversions {
         }
 
         int[] dims = new int[ndim];
+
         for (int d = 0; d < ndim; d++) {
             dims[d] = buf.getInt();
-            buf.getInt(); // lower_bound
+            buf.getInt();  // lower_bound
         }
 
         var elementOid = Oid.valueOfId(elemTypeOid);
@@ -253,9 +280,11 @@ final class ArrayConversions {
 
         if (ndim == 1) {
             var arr = (Object[]) Array.newInstance(elementType, dims[0]);
+
             for (int i = 0; i < dims[0]; i++) {
                 arr[i] = canonicalize(oid, readBinaryElement(buf, elementCodec));
             }
+
             return (T) arr;
         }
 
@@ -270,6 +299,7 @@ final class ArrayConversions {
         if (value == null) {
             return null;
         }
+
         return switch (arrayOid) {
             case FLOAT4_ARRAY, FLOAT8_ARRAY -> {
                 if (value instanceof Number n) {
@@ -277,15 +307,19 @@ final class ArrayConversions {
                     // but PG sends "0" — without stripping, `BigDecimal("0.0")` and
                     // `BigDecimal("0")` compare unequal under scale-sensitive `.equals`.
                     var s = n.toString();
+
                     if (s.endsWith(".0")) {
                         s = s.substring(0, s.length() - 2);
                     }
+
                     yield new java.math.BigDecimal(s);
                 }
+
                 yield value;
             }
-            case TIMESTAMP_ARRAY, TIMESTAMPTZ_ARRAY ->
-                value instanceof java.time.LocalDateTime ldt ? ldt.toInstant(java.time.ZoneOffset.UTC) : value;
+            case TIMESTAMP_ARRAY, TIMESTAMPTZ_ARRAY -> value instanceof java.time.LocalDateTime ldt
+                                                       ? ldt.toInstant(java.time.ZoneOffset.UTC)
+                                                       : value;
             default -> value;
         };
     }
@@ -312,29 +346,40 @@ final class ArrayConversions {
         }
 
         var bytes = new byte[len];
+
         buf.get(bytes);
+
         return bytes;
     }
 
-    private static Object[] readMultiDimArray(ByteBuffer buf, int[] dims, int dimIndex,
-                                               Class<?> elementType, BinaryCodec<?> codec, Oid arrayOid) {
+    private static Object[] readMultiDimArray(ByteBuffer buf,
+                                              int[] dims,
+                                              int dimIndex,
+                                              Class<?> elementType,
+                                              BinaryCodec<?> codec,
+                                              Oid arrayOid) {
         int size = dims[dimIndex];
 
         if (dimIndex == dims.length - 1) {
             var arr = (Object[]) Array.newInstance(elementType, size);
+
             for (int i = 0; i < size; i++) {
                 arr[i] = canonicalize(arrayOid, readBinaryElement(buf, codec));
             }
+
             return arr;
         }
 
         int[] subDims = new int[dims.length - dimIndex - 1];
+
         System.arraycopy(dims, dimIndex + 1, subDims, 0, subDims.length);
         var subArrayType = Array.newInstance(elementType, subDims).getClass();
         var arr = (Object[]) Array.newInstance(subArrayType, size);
+
         for (int i = 0; i < size; i++) {
             arr[i] = readMultiDimArray(buf, dims, dimIndex + 1, elementType, codec, arrayOid);
         }
+
         return arr;
     }
 }

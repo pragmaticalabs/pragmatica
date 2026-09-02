@@ -13,10 +13,10 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.rabia;
 
 import org.pragmatica.serialization.Codec;
+
 
 /// Represents the state values defined in the Rabia protocol (v0, v1, v?).
 @Codec

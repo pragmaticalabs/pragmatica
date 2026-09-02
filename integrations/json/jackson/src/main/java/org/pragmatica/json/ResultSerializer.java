@@ -14,7 +14,6 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.json;
 
 import org.pragmatica.lang.Option;
@@ -27,6 +26,7 @@ import tools.jackson.databind.JavaType;
 import tools.jackson.databind.SerializationContext;
 import tools.jackson.databind.ValueSerializer;
 import tools.jackson.databind.jsontype.TypeSerializer;
+
 
 /// Jackson serializer for Result<T> types.
 /// Serializes Result as: {"success": true, "value": <T>} or {"success": false, "error": {"message": "...", "type": "..."}}
@@ -50,25 +50,20 @@ public class ResultSerializer extends ValueSerializer<Result<?>> {
             case Result.Success<?> success -> {
                 gen.writeBooleanProperty("success", true);
                 gen.writeName("value");
-                valueSerializer.onPresent(ser -> ser.serialize(success.value(),
-                                                               gen,
-                                                               provider))
-                               .onEmpty(() -> gen.writePOJO(success.value()));
+                valueSerializer.onPresent(ser -> ser.serialize(success.value(), gen, provider)).onEmpty(() -> gen.writePOJO(success.value()));
             }
             case Result.Failure<?> failure -> {
                 gen.writeBooleanProperty("success", false);
                 gen.writeName("error");
                 gen.writeStartObject();
                 gen.writeStringProperty("message",
-                                        failure.cause()
-                                               .message());
+                                        failure.cause().message());
                 gen.writeStringProperty("type",
-                                        failure.cause()
-                                               .getClass()
-                                               .getSimpleName());
+                                        failure.cause().getClass().getSimpleName());
                 gen.writeEndObject();
             }
         }
+
         gen.writeEndObject();
     }
 
@@ -84,6 +79,7 @@ public class ResultSerializer extends ValueSerializer<Result<?>> {
     private ResultSerializer createContextualSerializer(SerializationContext prov, JavaType type) {
         var contentType = type.getContentType();
         var ser = prov.findValueSerializer(contentType);
+
         return new ResultSerializer(Option.option(contentType), Option.option(ser));
     }
 

@@ -1,14 +1,15 @@
 package org.pragmatica.email.http.vendor;
 
+import java.util.Map;
+
 import org.pragmatica.email.http.EmailBody;
 import org.pragmatica.email.http.EmailMessage;
 import org.pragmatica.email.http.HttpEmailConfig;
 import org.pragmatica.email.http.VendorMapping;
 import org.pragmatica.email.http.VendorRequest;
 
-import java.util.Map;
-
 import static org.pragmatica.email.http.vendor.JsonBuilder.jsonBuilder;
+
 
 /// Resend email API vendor mapping.
 public final class ResendMapping implements VendorMapping {
@@ -33,13 +34,14 @@ public final class ResendMapping implements VendorMapping {
     }
 
     private static String buildBody(EmailMessage message) {
-        var builder = jsonBuilder()
-            .field("from", message.from())
-            .arrayField("to", message.to())
-            .field("subject", message.subject());
+        var builder = jsonBuilder().field("from",
+                                          message.from())
+                                 .arrayField("to",
+                                             message.to())
+                                 .field("subject",
+                                        message.subject());
 
         addBodyFields(builder, message.body());
-
         if (!message.cc().isEmpty()) {
             builder.arrayField("cc", message.cc());
         }

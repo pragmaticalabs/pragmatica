@@ -5,6 +5,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
 
+
 /// Delegating gossip encryptor that supports hot-swap for key rotation.
 ///
 /// Wraps an inner [GossipEncryptor] in an [AtomicReference], allowing the
@@ -33,11 +34,13 @@ public final class RotatingGossipEncryptor implements GossipEncryptor {
 
     @Override
     public Result<byte[]> encrypt(byte[] plaintext) {
-        return delegate.get().encrypt(plaintext);
+        return delegate.get()
+                       .encrypt(plaintext);
     }
 
     @Override
     public Result<byte[]> decrypt(byte[] ciphertext) {
-        return delegate.get().decrypt(ciphertext);
+        return delegate.get()
+                       .decrypt(ciphertext);
     }
 }

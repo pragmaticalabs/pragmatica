@@ -13,11 +13,11 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.dht;
 
 import java.util.List;
 import java.util.function.Predicate;
+
 
 /// Community-aware replication policy: 1 home replica + ring replicas = RF total.
 ///
@@ -29,7 +29,6 @@ import java.util.function.Predicate;
 ///
 /// @param <N> Node identifier type
 public interface ReplicationPolicy<N extends Comparable<N>> {
-
     /// Compute replica set for a key owned by a specific community.
     ///
     /// @param key            the DHT key bytes
@@ -43,11 +42,10 @@ public interface ReplicationPolicy<N extends Comparable<N>> {
     /// @param replicationFactor   target RF (e.g. 3)
     /// @param homeReplicaResolver resolver for home replica selection
     /// @param spotNodeFilter      predicate returning true for non-spot nodes (nodes eligible for replication)
-    static <N extends Comparable<N>> ReplicationPolicy<N> replicationPolicy(
-            ConsistentHashRing<N> ring,
-            int replicationFactor,
-            HomeReplicaResolver<N> homeReplicaResolver,
-            Predicate<N> spotNodeFilter) {
+    static <N extends Comparable<N>> ReplicationPolicy<N> replicationPolicy(ConsistentHashRing<N> ring,
+                                                                            int replicationFactor,
+                                                                            HomeReplicaResolver<N> homeReplicaResolver,
+                                                                            Predicate<N> spotNodeFilter) {
         return new ReplicationPolicyImpl<>(ring, replicationFactor, homeReplicaResolver, spotNodeFilter);
     }
 }

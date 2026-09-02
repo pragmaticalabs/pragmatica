@@ -4,6 +4,7 @@ import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.JdkHttpOperations;
 import org.pragmatica.lang.Promise;
 
+
 /// HTTP-based email sender with pluggable vendor mappings.
 public interface HttpEmailSender {
     /// Sends an email message and returns the response body (typically a message ID).

@@ -13,15 +13,15 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.utility;
-
-import org.pragmatica.lang.Contract;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Predicate;
+
+import org.pragmatica.lang.Contract;
+
 
 /// Thread-safe ring buffer with fixed capacity.
 ///
@@ -34,7 +34,6 @@ public final class RingBuffer<T> {
     private final int capacity;
     private final ReentrantLock lock = new ReentrantLock();
     private int head;
-
     // Next write position
     private int size;
 
@@ -46,6 +45,7 @@ public final class RingBuffer<T> {
         if (capacity <= 0) {
             throw new IllegalArgumentException("Capacity must be positive");
         }
+
         this.capacity = capacity;
         this.buffer = new Object[capacity];
         this.head = 0;
@@ -61,13 +61,13 @@ public final class RingBuffer<T> {
     @Contract
     public void add(T element) {
         lock.lock();
-        try{
+        try {
             buffer[head] = element;
             head = (head + 1) % capacity;
             if (size < capacity) {
                 size++;
             }
-        } finally{
+        } finally {
             lock.unlock();
         }
     }
@@ -75,8 +75,9 @@ public final class RingBuffer<T> {
     /// Get all elements in order from oldest to newest.
     public List<T> toList() {
         lock.lock();
-        try{
+        try {
             var result = new ArrayList<T>(size);
+
             if (size == 0) {
                 return result;
             }
@@ -84,14 +85,17 @@ public final class RingBuffer<T> {
             int start = (size < capacity)
                         ? 0
                         : head;
+
             for (int i = 0; i < size; i++) {
                 int idx = (start + i) % capacity;
                 @SuppressWarnings("unchecked")
                 T element = (T) buffer[idx];
+
                 result.add(element);
             }
+
             return result;
-        } finally{
+        } finally {
             lock.unlock();
         }
     }
@@ -99,8 +103,9 @@ public final class RingBuffer<T> {
     /// Get all elements that match the predicate, in order from oldest to newest.
     public List<T> filter(Predicate<T> predicate) {
         lock.lock();
-        try{
+        try {
             var result = new ArrayList<T>();
+
             if (size == 0) {
                 return result;
             }
@@ -108,16 +113,19 @@ public final class RingBuffer<T> {
             int start = (size < capacity)
                         ? 0
                         : head;
+
             for (int i = 0; i < size; i++) {
                 int idx = (start + i) % capacity;
                 @SuppressWarnings("unchecked")
                 T element = (T) buffer[idx];
+
                 if (predicate.test(element)) {
                     result.add(element);
                 }
             }
+
             return result;
-        } finally{
+        } finally {
             lock.unlock();
         }
     }
@@ -125,9 +133,9 @@ public final class RingBuffer<T> {
     /// Get the current number of elements.
     public int size() {
         lock.lock();
-        try{
+        try {
             return size;
-        } finally{
+        } finally {
             lock.unlock();
         }
     }
@@ -146,13 +154,14 @@ public final class RingBuffer<T> {
     @Contract
     public void clear() {
         lock.lock();
-        try{
+        try {
             for (int i = 0; i < capacity; i++) {
                 buffer[i] = null;
             }
+
             head = 0;
             size = 0;
-        } finally{
+        } finally {
             lock.unlock();
         }
     }

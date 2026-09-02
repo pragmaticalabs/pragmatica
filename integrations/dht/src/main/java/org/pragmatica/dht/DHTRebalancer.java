@@ -13,16 +13,7 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.dht;
-
-import org.pragmatica.consensus.NodeId;
-import org.pragmatica.lang.Contract;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Unit;
-import org.pragmatica.lang.io.TimeSpan;
-import org.pragmatica.utility.IdGenerator;
 
 import java.nio.charset.StandardCharsets;
 import java.util.HashSet;
@@ -33,10 +24,19 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.utility.IdGenerator;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
+
 
 /// Re-replicates data when a node departs to maintain replication factor.
 ///
@@ -50,13 +50,11 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///     from (survivor-side rebalance pushes from its OWN storage — empty for a key it never held).
 public final class DHTRebalancer {
     private static final Logger log = LoggerFactory.getLogger(DHTRebalancer.class);
-
     /// Bounded best-effort budget for the graceful-departure push (issue #427, D4). Sits inside the
     /// drain grace window: acks are milliseconds, so the departing node normally settles far under
     /// this; on overrun the at-risk keys are reported via the [DeparturePushObserver] and the node
     /// halts anyway (never a hard gate on halt).
     public static final TimeSpan DEFAULT_DEPARTURE_PUSH_BUDGET = timeSpan(10).seconds();
-
     /// Bound on the at-risk key sample carried in a [DeparturePushObserver] report — keeps the
     /// operator-visible payload small on a large-inventory overrun (issue #427, D4).
     private static final int SAMPLE_LIMIT = 16;
@@ -65,7 +63,6 @@ public final class DHTRebalancer {
     private final DHTNode node;
     private final DHTNetwork network;
     private final DHTConfig config;
-
     /// Pending graceful-departure pushes awaiting a [DHTMessage.MigrationDataAck], keyed by the
     /// push's correlation id. Populated by [#sendAckedPush], drained by [#onMigrationDataAck];
     /// whatever remains when the budget expires is the at-risk set reported to the observer.
@@ -98,7 +95,6 @@ public final class DHTRebalancer {
         }
 
         log.info("Rebalancing after node {} departed", removedNode.id());
-
         var replicationFactor = config.effectiveReplicationFactor(node.ring().nodeCount());
 
         for (int p = 0; p < Partition.MAX_PARTITIONS; p++) {
@@ -134,11 +130,13 @@ public final class DHTRebalancer {
     /// A late ack that arrives after the budget expired simply finds no pending entry — harmless.
     @Contract
     public void onMigrationDataAck(DHTMessage.MigrationDataAck ack) {
-        Option.option(pendingPushes.remove(ack.requestId()))
-              .onPresent(pending -> pending.ackPromise().succeed(Unit.unit()));
+        Option.option(pendingPushes.remove(ack.requestId())).onPresent(pending -> pending.ackPromise()
+                                                                                         .succeed(Unit.unit()));
     }
 
-    private Promise<Unit> dispatchDeparturePush(List<DHTMessage.KeyValue> entries, TimeSpan budget, DeparturePushObserver observer) {
+    private Promise<Unit> dispatchDeparturePush(List<DHTMessage.KeyValue> entries,
+                                                TimeSpan budget,
+                                                DeparturePushObserver observer) {
         var batches = groupByTarget(entries);
 
         return batches.isEmpty()
@@ -154,14 +152,16 @@ public final class DHTRebalancer {
         return entries.stream()
                       .flatMap(entry -> targetPairs(entry, replicationFactor))
                       .collect(Collectors.groupingBy(TargetEntry::target,
-                                                     Collectors.mapping(TargetEntry::entry, Collectors.toList())));
+                                                     Collectors.mapping(TargetEntry::entry,
+                                                                        Collectors.toList())));
     }
 
     private record TargetEntry(NodeId target, DHTMessage.KeyValue entry) {}
 
     private Stream<TargetEntry> targetPairs(DHTMessage.KeyValue entry, int replicationFactor) {
-        return departureTargets(entry.key(), replicationFactor).stream()
-                                                               .map(target -> new TargetEntry(target, entry));
+        return departureTargets(entry.key(),
+                                replicationFactor).stream()
+                               .map(target -> new TargetEntry(target, entry));
     }
 
     /// Post-departure delta target set for one key (issue #427, D3). `newSet` is the responsible set
@@ -184,6 +184,7 @@ public final class DHTRebalancer {
 
     private static List<NodeId> excludeExistingReplicas(List<NodeId> newSet, List<NodeId> currentSet, NodeId self) {
         var existing = new HashSet<>(currentSet);
+
         existing.remove(self);
 
         return newSet.stream()
@@ -203,7 +204,10 @@ public final class DHTRebalancer {
         Promise<Unit> ackPromise = Promise.promise();
 
         pendingPushes.put(correlationId, new PendingPush(batch.getValue(), ackPromise));
-        log.debug("Departure-pushing {} chunk(s) to {} (ack {})", batch.getValue().size(), batch.getKey().id(), correlationId);
+        log.debug("Departure-pushing {} chunk(s) to {} (ack {})",
+                  batch.getValue().size(),
+                  batch.getKey().id(),
+                  correlationId);
         network.send(batch.getKey(),
                      new DHTMessage.MigrationDataResponse(correlationId, node.nodeId(), batch.getValue(), true));
 
@@ -228,7 +232,8 @@ public final class DHTRebalancer {
     private List<byte[]> collectAtRiskKeys() {
         return pendingPushes.values()
                             .stream()
-                            .flatMap(pending -> pending.entries().stream())
+                            .flatMap(pending -> pending.entries()
+                                                       .stream())
                             .map(DHTMessage.KeyValue::key)
                             .toList();
     }
@@ -260,13 +265,16 @@ public final class DHTRebalancer {
         }
 
         var partition = Partition.at(partitionIndex);
+
         node.storage()
-            .entriesForPartition(node.ring(), partition)
+            .entriesForPartition(node.ring(),
+                                 partition)
             .onSuccess(entries -> pushToReplicas(partitionIndex, replicaNodes, entries));
     }
 
     private boolean isPrimary(List<NodeId> replicaNodes) {
-        return !replicaNodes.isEmpty() && replicaNodes.getFirst().equals(node.nodeId());
+        return ! replicaNodes.isEmpty() && replicaNodes.getFirst()
+                                                       .equals(node.nodeId());
     }
 
     private void pushToReplicas(int partitionIndex, List<NodeId> replicaNodes, List<DHTMessage.KeyValue> entries) {
@@ -278,6 +286,7 @@ public final class DHTRebalancer {
             if (replica.equals(node.nodeId())) {
                 continue;
             }
+
             sendMigrationData(replica, partitionIndex, entries);
         }
     }
@@ -286,7 +295,7 @@ public final class DHTRebalancer {
         var correlationId = IdGenerator.generate();
 
         log.debug("Pushing {} entries for partition {} to {}", entries.size(), partitionIndex, target.id());
-
-        network.send(target, new DHTMessage.MigrationDataResponse(correlationId, node.nodeId(), entries, false));
+        network.send(target,
+                     new DHTMessage.MigrationDataResponse(correlationId, node.nodeId(), entries, false));
     }
 }
