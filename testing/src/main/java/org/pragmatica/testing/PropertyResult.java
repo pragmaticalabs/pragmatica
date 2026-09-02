@@ -13,10 +13,10 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.testing;
 
 import org.pragmatica.lang.Option;
+
 
 /// Result of running a property-based test.
 public sealed interface PropertyResult {
@@ -24,11 +24,7 @@ public sealed interface PropertyResult {
     record Passed(int tries) implements PropertyResult {}
 
     /// Property failed for a generated value.
-    record Failed(int tryNumber,
-                  Object originalInput,
-                  Object shrunkInput,
-                  int shrinkSteps,
-                  Option<Throwable> error) implements PropertyResult {}
+    record Failed(int tryNumber, Object originalInput, Object shrunkInput, int shrinkSteps, Option<Throwable> error) implements PropertyResult {}
 
     /// Could not generate enough valid values to test the property.
     record Exhausted(int tries, int discarded) implements PropertyResult {}

@@ -200,14 +200,21 @@ JAVA="\$SCRIPT_DIR/jre/bin/java"
 
 if [ ! -x "\$JAVA" ]; then
     echo "Error: Bundled JRE not found at \$SCRIPT_DIR/jre"
-    echo "The distribution archive may be incomplete."
+    echo "The distribution archive may be incomplete or corrupted. Re-run install.sh."
+    exit 1
+fi
+
+JAR="\$SCRIPT_DIR/lib/${jar_name}.jar"
+if [ ! -f "\$JAR" ]; then
+    echo "Error: Application jar not found at \$JAR"
+    echo "The distribution archive may be incomplete or corrupted. Re-run install.sh."
     exit 1
 fi
 
 exec "\$JAVA" \\
     ${java_opts} \\
     \${AETHER_JAVA_OPTS:-} \\
-    -jar "\$SCRIPT_DIR/lib/${jar_name}.jar" "\$@"
+    -jar "\$JAR" "\$@"
 LAUNCHER
     chmod +x "$launcher_path"
 }

@@ -13,8 +13,9 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.testing;
+
+import java.util.Objects;
 
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Functions.Fn2;
@@ -29,7 +30,6 @@ import org.pragmatica.lang.Tuple.Tuple3;
 import org.pragmatica.lang.Tuple.Tuple4;
 import org.pragmatica.lang.Tuple.Tuple5;
 
-import java.util.Objects;
 
 /// Property-based test runner with shrinking support.
 public final class PropertyTest {
@@ -38,6 +38,7 @@ public final class PropertyTest {
     /// Create a property test builder for a single arbitrary.
     public static <T> PropertyTestBuilder<T> forAll(Arbitrary<T> arbitrary) {
         Objects.requireNonNull(arbitrary, "arbitrary must not be null");
+
         return new PropertyTestBuilderImpl<>(arbitrary);
     }
 
@@ -45,6 +46,7 @@ public final class PropertyTest {
     public static <T1, T2> PropertyTestBuilder2<T1, T2> forAll(Arbitrary<T1> a1, Arbitrary<T2> a2) {
         Objects.requireNonNull(a1, "a1 must not be null");
         Objects.requireNonNull(a2, "a2 must not be null");
+
         return new PropertyTestBuilder2Impl<>(a1, a2);
     }
 
@@ -55,6 +57,7 @@ public final class PropertyTest {
         Objects.requireNonNull(a1, "a1 must not be null");
         Objects.requireNonNull(a2, "a2 must not be null");
         Objects.requireNonNull(a3, "a3 must not be null");
+
         return new PropertyTestBuilder3Impl<>(a1, a2, a3);
     }
 
@@ -67,6 +70,7 @@ public final class PropertyTest {
         Objects.requireNonNull(a2, "a2 must not be null");
         Objects.requireNonNull(a3, "a3 must not be null");
         Objects.requireNonNull(a4, "a4 must not be null");
+
         return new PropertyTestBuilder4Impl<>(a1, a2, a3, a4);
     }
 
@@ -81,6 +85,7 @@ public final class PropertyTest {
         Objects.requireNonNull(a3, "a3 must not be null");
         Objects.requireNonNull(a4, "a4 must not be null");
         Objects.requireNonNull(a5, "a5 must not be null");
+
         return new PropertyTestBuilder5Impl<>(a1, a2, a3, a4, a5);
     }
 
@@ -88,7 +93,6 @@ public final class PropertyTest {
         PropertyTestBuilder<T> tries(int count);
         PropertyTestBuilder<T> seed(long seed);
         PropertyTestBuilder<T> shrinkingDepth(int depth);
-
         Result<PropertyResult> check(Fn1<Boolean, T> property);
         Result<PropertyResult> checkResult(Fn1<Result<?>, T> property);
     }
@@ -97,7 +101,6 @@ public final class PropertyTest {
         PropertyTestBuilder2<T1, T2> tries(int count);
         PropertyTestBuilder2<T1, T2> seed(long seed);
         PropertyTestBuilder2<T1, T2> shrinkingDepth(int depth);
-
         Result<PropertyResult> check(Fn2<Boolean, T1, T2> property);
         Result<PropertyResult> checkResult(Fn2<Result<?>, T1, T2> property);
     }
@@ -106,7 +109,6 @@ public final class PropertyTest {
         PropertyTestBuilder3<T1, T2, T3> tries(int count);
         PropertyTestBuilder3<T1, T2, T3> seed(long seed);
         PropertyTestBuilder3<T1, T2, T3> shrinkingDepth(int depth);
-
         Result<PropertyResult> check(Fn3<Boolean, T1, T2, T3> property);
         Result<PropertyResult> checkResult(Fn3<Result<?>, T1, T2, T3> property);
     }
@@ -115,7 +117,6 @@ public final class PropertyTest {
         PropertyTestBuilder4<T1, T2, T3, T4> tries(int count);
         PropertyTestBuilder4<T1, T2, T3, T4> seed(long seed);
         PropertyTestBuilder4<T1, T2, T3, T4> shrinkingDepth(int depth);
-
         Result<PropertyResult> check(Fn4<Boolean, T1, T2, T3, T4> property);
         Result<PropertyResult> checkResult(Fn4<Result<?>, T1, T2, T3, T4> property);
     }
@@ -124,7 +125,6 @@ public final class PropertyTest {
         PropertyTestBuilder5<T1, T2, T3, T4, T5> tries(int count);
         PropertyTestBuilder5<T1, T2, T3, T4, T5> seed(long seed);
         PropertyTestBuilder5<T1, T2, T3, T4, T5> shrinkingDepth(int depth);
-
         Result<PropertyResult> check(Fn5<Boolean, T1, T2, T3, T4, T5> property);
         Result<PropertyResult> checkResult(Fn5<Result<?>, T1, T2, T3, T4, T5> property);
     }
@@ -143,18 +143,21 @@ final class PropertyTestBuilderImpl<T> implements PropertyTest.PropertyTestBuild
     @Override
     public PropertyTest.PropertyTestBuilder<T> tries(int count) {
         this.tries = count;
+
         return this;
     }
 
     @Override
     public PropertyTest.PropertyTestBuilder<T> seed(long seed) {
         this.seed = seed;
+
         return this;
     }
 
     @Override
     public PropertyTest.PropertyTestBuilder<T> shrinkingDepth(int depth) {
         this.shrinkingDepth = depth;
+
         return this;
     }
 
@@ -168,12 +171,15 @@ final class PropertyTestBuilderImpl<T> implements PropertyTest.PropertyTestBuild
     @Override
     public Result<PropertyResult> checkResult(Fn1<Result<?>, T> property) {
         RandomSource random = RandomSource.seeded(seed);
+
         for (int i = 0; i < tries; i++) {
             Shrinkable<T> shrinkable = arbitrary.generate(random);
             T originalValue = shrinkable.value();
             PropertyCheckResult checkResult = checkProperty(property, originalValue);
+
             if (!checkResult.passed()) {
                 ShrinkResult<T> shrinkResult = shrink(property, shrinkable);
+
                 return Result.success(new PropertyResult.Failed(i + 1,
                                                                 originalValue,
                                                                 shrinkResult.value(),
@@ -181,14 +187,15 @@ final class PropertyTestBuilderImpl<T> implements PropertyTest.PropertyTestBuild
                                                                 checkResult.error()));
             }
         }
+
         return Result.success(new PropertyResult.Passed(tries));
     }
 
     private PropertyCheckResult checkProperty(Fn1<Result<?>, T> property, T value) {
-        try{
+        try {
             return switch (property.apply(value)) {
-                case Result.Failure<?> _ -> new PropertyCheckResult(false, Option.none());
-                case Result.Success<?> _ -> new PropertyCheckResult(true, Option.none());
+                case Result.Failure<?>_ -> new PropertyCheckResult(false, Option.none());
+                case Result.Success<?>_ -> new PropertyCheckResult(true, Option.none());
             };
         } catch (Throwable t) {
             return new PropertyCheckResult(false, Option.option(t));
@@ -199,13 +206,15 @@ final class PropertyTestBuilderImpl<T> implements PropertyTest.PropertyTestBuild
         T smallest = shrinkable.value();
         int steps = 0;
         Shrinkable<T> current = shrinkable;
+
         for (int depth = 0; depth < shrinkingDepth; depth++) {
-            var shrinks = current.shrink()
-                                 .iterator();
+            var shrinks = current.shrink().iterator();
             boolean foundSmaller = false;
+
             while (shrinks.hasNext()) {
                 Shrinkable<T> candidate = shrinks.next();
                 PropertyCheckResult checkResult = checkProperty(property, candidate.value());
+
                 if (!checkResult.passed()) {
                     smallest = candidate.value();
                     current = candidate;
@@ -214,10 +223,12 @@ final class PropertyTestBuilderImpl<T> implements PropertyTest.PropertyTestBuild
                     break;
                 }
             }
+
             if (!foundSmaller) {
                 break;
             }
         }
+
         return new ShrinkResult<>(smallest, steps);
     }
 }
@@ -244,6 +255,7 @@ final class PropertyTestBuilder2Impl<T1, T2> implements PropertyTest.PropertyTes
         this.tupleArbitrary = random -> {
             Shrinkable<T1> s1 = a1.generate(random);
             Shrinkable<T2> s2 = a2.generate(random);
+
             return Shrinkable.unshrinkable(Tuple.tuple(s1.value(), s2.value()));
         };
     }
@@ -251,18 +263,21 @@ final class PropertyTestBuilder2Impl<T1, T2> implements PropertyTest.PropertyTes
     @Override
     public PropertyTest.PropertyTestBuilder2<T1, T2> tries(int count) {
         this.tries = count;
+
         return this;
     }
 
     @Override
     public PropertyTest.PropertyTestBuilder2<T1, T2> seed(long seed) {
         this.seed = seed;
+
         return this;
     }
 
     @Override
     public PropertyTest.PropertyTestBuilder2<T1, T2> shrinkingDepth(int depth) {
         this.shrinkingDepth = depth;
+
         return this;
     }
 
@@ -294,6 +309,7 @@ final class PropertyTestBuilder3Impl<T1, T2, T3> implements PropertyTest.Propert
             Shrinkable<T1> s1 = a1.generate(random);
             Shrinkable<T2> s2 = a2.generate(random);
             Shrinkable<T3> s3 = a3.generate(random);
+
             return Shrinkable.unshrinkable(Tuple.tuple(s1.value(), s2.value(), s3.value()));
         };
     }
@@ -301,18 +317,21 @@ final class PropertyTestBuilder3Impl<T1, T2, T3> implements PropertyTest.Propert
     @Override
     public PropertyTest.PropertyTestBuilder3<T1, T2, T3> tries(int count) {
         this.tries = count;
+
         return this;
     }
 
     @Override
     public PropertyTest.PropertyTestBuilder3<T1, T2, T3> seed(long seed) {
         this.seed = seed;
+
         return this;
     }
 
     @Override
     public PropertyTest.PropertyTestBuilder3<T1, T2, T3> shrinkingDepth(int depth) {
         this.shrinkingDepth = depth;
+
         return this;
     }
 
@@ -345,6 +364,7 @@ final class PropertyTestBuilder4Impl<T1, T2, T3, T4> implements PropertyTest.Pro
             Shrinkable<T2> s2 = a2.generate(random);
             Shrinkable<T3> s3 = a3.generate(random);
             Shrinkable<T4> s4 = a4.generate(random);
+
             return Shrinkable.unshrinkable(Tuple.tuple(s1.value(), s2.value(), s3.value(), s4.value()));
         };
     }
@@ -352,18 +372,21 @@ final class PropertyTestBuilder4Impl<T1, T2, T3, T4> implements PropertyTest.Pro
     @Override
     public PropertyTest.PropertyTestBuilder4<T1, T2, T3, T4> tries(int count) {
         this.tries = count;
+
         return this;
     }
 
     @Override
     public PropertyTest.PropertyTestBuilder4<T1, T2, T3, T4> seed(long seed) {
         this.seed = seed;
+
         return this;
     }
 
     @Override
     public PropertyTest.PropertyTestBuilder4<T1, T2, T3, T4> shrinkingDepth(int depth) {
         this.shrinkingDepth = depth;
+
         return this;
     }
 
@@ -397,6 +420,7 @@ final class PropertyTestBuilder5Impl<T1, T2, T3, T4, T5> implements PropertyTest
             Shrinkable<T3> s3 = a3.generate(random);
             Shrinkable<T4> s4 = a4.generate(random);
             Shrinkable<T5> s5 = a5.generate(random);
+
             return Shrinkable.unshrinkable(Tuple.tuple(s1.value(), s2.value(), s3.value(), s4.value(), s5.value()));
         };
     }
@@ -404,18 +428,21 @@ final class PropertyTestBuilder5Impl<T1, T2, T3, T4, T5> implements PropertyTest
     @Override
     public PropertyTest.PropertyTestBuilder5<T1, T2, T3, T4, T5> tries(int count) {
         this.tries = count;
+
         return this;
     }
 
     @Override
     public PropertyTest.PropertyTestBuilder5<T1, T2, T3, T4, T5> seed(long seed) {
         this.seed = seed;
+
         return this;
     }
 
     @Override
     public PropertyTest.PropertyTestBuilder5<T1, T2, T3, T4, T5> shrinkingDepth(int depth) {
         this.shrinkingDepth = depth;
+
         return this;
     }
 

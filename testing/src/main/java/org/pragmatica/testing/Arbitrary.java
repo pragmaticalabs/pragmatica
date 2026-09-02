@@ -13,8 +13,13 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.testing;
+
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Objects;
+import java.util.Set;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
@@ -22,11 +27,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Tuple.Tuple2;
 
-import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Objects;
-import java.util.Set;
 
 /// Core generator interface for property-based testing.
 ///
@@ -39,19 +39,14 @@ public interface Arbitrary<T> {
     // Error causes
     /// Error cause for filter exhaustion.
     Cause FILTER_EXHAUSTED = () -> "Could not generate value satisfying predicate";
-
     /// Error cause for factory failure.
     Cause FACTORY_FAILED = () -> "Factory failed to produce a valid value";
-
     /// Error cause for empty values list in oneOf.
     Cause EMPTY_VALUES = () -> "oneOf requires at least one value";
-
     /// Error cause for empty arbitraries list in oneOf.
     Cause EMPTY_ARBITRARIES = () -> "oneOf requires at least one arbitrary";
-
     /// Error cause for empty weighted list in frequency.
     Cause EMPTY_WEIGHTED = () -> "frequency requires at least one weighted arbitrary";
-
     // Character sets for string generation
     String ALPHANUMERIC_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 
@@ -70,8 +65,10 @@ public interface Arbitrary<T> {
     /// @return a new Arbitrary generating transformed values
     default <R> Arbitrary<R> map(Fn1<R, T> fn) {
         Objects.requireNonNull(fn, "fn must not be null");
+
         return random -> {
             Shrinkable<T> shrinkable = generate(random);
+
             return Shrinkable.shrinkable(fn.apply(shrinkable.value()),
                                          () -> shrinkable.shrink()
                                                          .map(s -> Shrinkable.unshrinkable(fn.apply(s.value()))));
@@ -85,10 +82,13 @@ public interface Arbitrary<T> {
     /// @return a new Arbitrary generating chained values
     default <R> Arbitrary<R> flatMap(Fn1<Arbitrary<R>, T> fn) {
         Objects.requireNonNull(fn, "fn must not be null");
+
         return random -> {
             Shrinkable<T> shrinkable = generate(random);
             Arbitrary<R> nextArbitrary = fn.apply(shrinkable.value());
+
             Objects.requireNonNull(nextArbitrary, "flatMap fn must not return null");
+
             return nextArbitrary.generate(random);
         };
     }
@@ -110,9 +110,11 @@ public interface Arbitrary<T> {
     /// @return a new Arbitrary generating Result containing values satisfying the predicate
     default Arbitrary<Result<T>> filter(Fn1<Boolean, T> predicate, int maxAttempts) {
         Objects.requireNonNull(predicate, "predicate must not be null");
+
         return random -> {
             for (int i = 0; i < maxAttempts; i++) {
                 Shrinkable<T> shrinkable = generate(random);
+
                 if (predicate.apply(shrinkable.value())) {
                     return Shrinkable.shrinkable(Result.success(shrinkable.value()),
                                                  () -> shrinkable.shrink()
@@ -120,6 +122,7 @@ public interface Arbitrary<T> {
                                                                  .map(s -> Shrinkable.unshrinkable(Result.success(s.value()))));
                 }
             }
+
             return Shrinkable.unshrinkable(FILTER_EXHAUSTED.result());
         };
     }
@@ -133,12 +136,14 @@ public interface Arbitrary<T> {
         Objects.requireNonNull(predicate, "predicate must not be null");
         for (int i = 0; i < maxAttempts; i++) {
             Shrinkable<T> shrinkable = generate(random);
+
             if (predicate.apply(shrinkable.value())) {
                 return Option.option(Shrinkable.shrinkable(shrinkable.value(),
                                                            () -> shrinkable.shrink()
                                                                            .filter(s -> predicate.apply(s.value()))));
             }
         }
+
         return Option.none();
     }
 
@@ -153,6 +158,7 @@ public interface Arbitrary<T> {
     static <T> Arbitrary<Result<T>> fromFactory(Arbitrary<String> inputGen, Fn1<Result<T>, String> factory) {
         Objects.requireNonNull(inputGen, "inputGen must not be null");
         Objects.requireNonNull(factory, "factory must not be null");
+
         return fromFactory(inputGen, factory, 100);
     }
 
@@ -168,15 +174,18 @@ public interface Arbitrary<T> {
                                                 int maxAttempts) {
         Objects.requireNonNull(inputGen, "inputGen must not be null");
         Objects.requireNonNull(factory, "factory must not be null");
+
         return random -> {
             for (int i = 0; i < maxAttempts; i++) {
                 String input = inputGen.generate(random)
                                        .value();
                 var result = factory.apply(input);
+
                 if (result instanceof Result.Success<T> success) {
                     return Shrinkable.unshrinkable(Result.success(success.value()));
                 }
             }
+
             return Shrinkable.unshrinkable(FACTORY_FAILED.result());
         };
     }
@@ -185,6 +194,7 @@ public interface Arbitrary<T> {
     static Arbitrary<Integer> integers() {
         return random -> {
             int value = random.nextInt();
+
             return Shrinkable.shrinkable(value, () -> Shrinkers.shrinkInteger(value));
         };
     }
@@ -193,9 +203,9 @@ public interface Arbitrary<T> {
     static Arbitrary<Integer> integers(int min, int max) {
         return random -> {
             int value = random.nextInt(min, max);
+
             return Shrinkable.shrinkable(value,
-                                         () -> Shrinkers.shrinkInteger(value)
-                                                        .filter(s -> s.value() >= min && s.value() <= max));
+                                         () -> Shrinkers.shrinkInteger(value).filter(s -> s.value() >= min && s.value() <= max));
         };
     }
 
@@ -203,6 +213,7 @@ public interface Arbitrary<T> {
     static Arbitrary<Long> longs() {
         return random -> {
             long value = random.nextLong();
+
             return Shrinkable.shrinkable(value, () -> Shrinkers.shrinkLong(value));
         };
     }
@@ -211,9 +222,9 @@ public interface Arbitrary<T> {
     static Arbitrary<Long> longs(long min, long max) {
         return random -> {
             long value = random.nextLong(min, max);
+
             return Shrinkable.shrinkable(value,
-                                         () -> Shrinkers.shrinkLong(value)
-                                                        .filter(s -> s.value() >= min && s.value() <= max));
+                                         () -> Shrinkers.shrinkLong(value).filter(s -> s.value() >= min && s.value() <= max));
         };
     }
 
@@ -240,17 +251,20 @@ public interface Arbitrary<T> {
     /// Generate random strings with specified length range and alphabet.
     static Arbitrary<String> strings(int minLen, int maxLen, String alphabet) {
         Objects.requireNonNull(alphabet, "alphabet must not be null");
+
         return random -> {
             int len = random.nextInt(minLen, maxLen);
             StringBuilder sb = new StringBuilder(len);
+
             for (int i = 0; i < len; i++) {
                 sb.append(alphabet.charAt(random.nextInt(alphabet.length())));
             }
+
             String value = sb.toString();
+
             return Shrinkable.shrinkable(value,
-                                         () -> Shrinkers.shrinkString(value)
-                                                        .filter(s -> s.value()
-                                                                      .length() >= minLen));
+                                         () -> Shrinkers.shrinkString(value).filter(s -> s.value()
+                                                                                          .length() >= minLen));
         };
     }
 
@@ -262,41 +276,47 @@ public interface Arbitrary<T> {
     /// Generate random lists of elements.
     static <T> Arbitrary<List<T>> lists(Arbitrary<T> elements) {
         Objects.requireNonNull(elements, "elements must not be null");
+
         return lists(elements, 0, 10);
     }
 
     /// Generate random lists of elements with specified size range.
     static <T> Arbitrary<List<T>> lists(Arbitrary<T> elements, int minSize, int maxSize) {
         Objects.requireNonNull(elements, "elements must not be null");
+
         return random -> {
             int size = random.nextInt(minSize, maxSize);
             List<Shrinkable<T>> shrinkables = new ArrayList<>(size);
+
             for (int i = 0; i < size; i++) {
                 shrinkables.add(elements.generate(random));
             }
+
             List<T> values = shrinkables.stream()
                                         .map(Shrinkable::value)
                                         .toList();
+
             return Shrinkable.shrinkable(values,
-                                         () -> Shrinkers.shrinkList(shrinkables)
-                                                        .filter(s -> s.value()
-                                                                      .size() >= minSize));
+                                         () -> Shrinkers.shrinkList(shrinkables).filter(s -> s.value()
+                                                                                              .size() >= minSize));
         };
     }
 
     /// Generate random sets of elements with specified size range.
     static <T> Arbitrary<Set<T>> sets(Arbitrary<T> elements, int minSize, int maxSize) {
         Objects.requireNonNull(elements, "elements must not be null");
+
         return random -> {
             int targetSize = random.nextInt(minSize, maxSize);
             Set<T> set = new HashSet<>();
             int attempts = 0;
             int maxAttempts = targetSize * 10;
+
             while (set.size() < targetSize && attempts < maxAttempts) {
-                set.add(elements.generate(random)
-                                .value());
+                set.add(elements.generate(random).value());
                 attempts++;
             }
+
             return Shrinkable.unshrinkable(set);
         };
     }
@@ -308,10 +328,12 @@ public interface Arbitrary<T> {
         if (values.length == 0) {
             return EMPTY_VALUES.result();
         }
+
         return Result.success(random -> {
-                                  int index = random.nextInt(values.length);
-                                  return Shrinkable.unshrinkable(values[index]);
-                              });
+            int index = random.nextInt(values.length);
+
+            return Shrinkable.unshrinkable(values[index]);
+        });
     }
 
     /// Generate from one of the provided arbitraries.
@@ -320,11 +342,13 @@ public interface Arbitrary<T> {
         if (arbitraries.isEmpty()) {
             return EMPTY_ARBITRARIES.result();
         }
+
         return Result.success(random -> {
-                                  int index = random.nextInt(arbitraries.size());
-                                  return arbitraries.get(index)
-                                                    .generate(random);
-                              });
+            int index = random.nextInt(arbitraries.size());
+
+            return arbitraries.get(index)
+                              .generate(random);
+        });
     }
 
     /// Generate from weighted arbitraries.
@@ -333,23 +357,25 @@ public interface Arbitrary<T> {
         if (weighted.isEmpty()) {
             return EMPTY_WEIGHTED.result();
         }
-        int totalWeight = weighted.stream()
-                                  .mapToInt(Tuple2::first)
-                                  .sum();
+
+        int totalWeight = weighted.stream().mapToInt(Tuple2::first).sum();
+
         return Result.success(random -> {
-                                  int target = random.nextInt(totalWeight);
-                                  int cumulative = 0;
-                                  for (Tuple2<Integer, Arbitrary<T>> entry : weighted) {
-                                      cumulative += entry.first();
-                                      if (target < cumulative) {
-                                          return entry.last()
-                                                      .generate(random);
-                                      }
-                                  }
-                                  return weighted.getLast()
-                                                 .last()
-                                                 .generate(random);
-                              });
+            int target = random.nextInt(totalWeight);
+            int cumulative = 0;
+
+            for (Tuple2<Integer, Arbitrary<T>> entry : weighted) {
+                cumulative += entry.first();
+                if (target < cumulative) {
+                    return entry.last()
+                                .generate(random);
+                }
+            }
+
+            return weighted.getLast()
+                           .last()
+                           .generate(random);
+        });
     }
 
     /// Generate a constant value.

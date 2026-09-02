@@ -25,7 +25,6 @@ logs/
 dependency-reduced-pom.xml
 pom.xml.versionsBackup
 
-CLAUDE.md
 .claude/
 .annotator/
 PUBLISHING.md
