@@ -4457,6 +4457,14 @@ rejoining node) would be held indefinitely on a record the operator just re-arme
 record with **zero** live ACTIVE slices is unaffected and still goes through. Recovery: `baseline`
 or `undo` first if a genuine re-migration is intended.
 
+**Also refused with `409 Conflict` (#760/#724 review round 2 item l)** when the record is already
+`PENDING`: it already has exactly one in-flight tracking slot, and re-arming to `MIGRATING` gains
+no dispatch effect of its own while stranding that slot with no automatic clearing path. Recovery:
+`POST /api/schema/retry/{datasource}` accepts `PENDING` (unlike `migrate`) and re-triggers dispatch;
+`migrate` itself does not `[mechanism: SchemaRoutes.guardReactivation switches on the observed
+status before any orchestrator effect and returns SchemaAlreadyPending for PENDING without writing
+MIGRATING]`.
+
 **Response (success):**
 ```json
 {
@@ -4470,6 +4478,14 @@ or `undo` first if a genuine re-migration is intended.
 {
   "status": 409,
   "detail": "Schema for datasource 'orders_db' is already COMPLETED and serving 3 active slice instances — re-triggering migration would hold the next slice to activate with no automatic recovery; baseline or undo first if a re-migration is genuinely intended"
+}
+```
+
+**Response (409 — already PENDING):**
+```json
+{
+  "status": 409,
+  "detail": "Schema for datasource 'orders_db' already has a migration PENDING — re-arming to MIGRATING has no dispatch effect of its own and would strand the record with no automatic clearing path; wait for the pending migration to dispatch, or use retry if it has since failed"
 }
 ```
 
@@ -4548,6 +4564,7 @@ with `400 Bad Request`.
 > | Datasource has no schema record (every route that reads one) | `404 Not Found` | ``Schema status not found for datasource '<name>'`` |
 > | `retry` against a datasource that is not `FAILED` or `PENDING` | `409 Conflict` | ``Schema for datasource '<name>' is not in FAILED state (currently <STATUS>) — retry applies to FAILED or PENDING migrations only`` |
 > | `migrate` against a COMPLETED record whose owning blueprint has ≥1 live ACTIVE slice | `409 Conflict` | ``Schema for datasource '<name>' is already COMPLETED and serving <N> active slice instance(s) — re-triggering migration would hold the next slice to activate with no automatic recovery; baseline or undo first if a re-migration is genuinely intended`` |
+> | `migrate` against a record that is already `PENDING` | `409 Conflict` | ``Schema for datasource '<name>' already has a migration PENDING — re-arming to MIGRATING has no dispatch effect of its own and would strand the record with no automatic clearing path; wait for the pending migration to dispatch, or use retry if it has since failed`` |
 > | `?version=` / `?targetVersion=` present but not an integer | `400 Bad Request` | ``Invalid '<parameter>' parameter: '<value>' is not an integer`` |
 >
 > An **absent** `version`/`targetVersion` is not an error — it takes the documented default

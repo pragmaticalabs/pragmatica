@@ -1438,7 +1438,7 @@ aether schema baseline <datasource> -v <version>
 |------------|-------------|
 | `status [datasource]` | Show schema status (all or specific) |
 | `history <datasource>` | Show migration history |
-| `migrate <datasource>` | Trigger manual migration (refused with `409` if the record is COMPLETED and already serving) |
+| `migrate <datasource>` | Trigger manual migration (refused with `409` if the record is COMPLETED and already serving, or already PENDING) |
 | `undo <datasource> -v N` | Undo to target version |
 | `retry <datasource>` | Retry a failed migration (clears the activation hold) |
 | `baseline <datasource> -v N` | Baseline at version |
@@ -1453,6 +1453,7 @@ command.
 |--------|-----------|---------|
 | `DATASOURCE` | `datasource` | Datasource name (cluster-global, not per-blueprint) |
 | `STATUS` | `status` | `PENDING`, `MIGRATING`, `COMPLETED`, `FAILED` |
+| `HELD SLICES` | `heldSlices` | Slice artifacts withheld from activation by this record (#760) — always empty for `COMPLETED` |
 | `VERSION` | `currentVersion` | Highest version recorded |
 | `LAST MIGRATION` | `lastMigration` | Filename of the last migration recorded |
 | `OWNING BLUEPRINT` | `owningBlueprint` | Blueprint that declared the migrations — **whose slices this record holds** while `status` is not `COMPLETED` |
@@ -1505,10 +1506,19 @@ automatic recovery, since only a `PENDING` record's Put actually dispatches a mi
 if a genuine re-migration is intended. A COMPLETED record with zero live ACTIVE slices still goes
 through unchanged.
 
+`migrate` also refuses (#760/#724 review round 2 item l) when the record is already `PENDING`: a
+migration accepted but not yet dispatched has exactly one in-flight tracking slot, and a second
+`migrate` call has no dispatch of its own to join — it would only orphan whatever the first call is
+already tracking. The 409 names the datasource. `aether schema retry <datasource>` is the lever for
+a `PENDING` record (it accepts `PENDING`, unlike `migrate` — see above); `migrate` itself does not
+`[mechanism: SchemaRoutes.guardReactivation switches on the observed status before any orchestrator
+effect and returns SchemaAlreadyPending for PENDING without writing MIGRATING]`.
+
 The cluster leader also writes a `SCHEMA_ACTIVATION_BLOCKED` audit entry when it observes a
 `FAILED` record, naming the datasource, the owning blueprint, and the held slices. The same held
-slices are visible on demand via `heldSlices` in `aether schema status` output (#760), without
-waiting for that audit entry.
+slices render in the `HELD SLICES` column of `aether schema status` output (#760/#724 review round
+2 item k), without waiting for that audit entry — before this fix the table stopped at `OWNING
+BLUEPRINT` and `heldSlices` was reachable only via `--format json` or `--field heldSlices`.
 
 > **Known limit — the gate scopes by migration *ownership*, not by *usage*.** A blueprint that
 > reads or writes a datasource **without declaring migrations for it** is never held when that

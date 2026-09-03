@@ -75,6 +75,58 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   outcome `Put` and the `AppBlueprintKey` `Remove` land in the same consensus batch. Mutation-probed:
   red with the write reverted, green restored.
 
+### Fixed (2026-09-03 — #760 / #724 review round 2: BEST_EFFORT failures, rollback restore, wire escaping, and a `/migrate` refusal gap left durable evidence incomplete)
+- **A `BEST_EFFORT` deployment failure now writes a durable `FAILED` outcome record.** `BEST_EFFORT`
+  artifacts never populate `inFlightBlueprints` (that tracking is `ALL_OR_NOTHING`-only), so neither
+  `rollbackBlueprintForArtifact` nor the succeeded-outcome write path ever ran for them — a partial
+  `BEST_EFFORT` failure previously left no record at all for `BlueprintService.outcome()` to return.
+  Merges into any existing `FAILED` record for the same blueprint (read-then-Put) so a second,
+  independently failing slice in one partial deployment is added to `failingSlices` instead of
+  erasing the first. A slice with no owning blueprint (a standalone deploy) is correctly a no-op.
+- **The `ALL_OR_NOTHING` restore-previous-blueprint branch now also writes a `ROLLED_BACK` outcome**
+  for the blueprint being replaced, bundled into the SAME consensus batch as the restored previous
+  blueprint's own `AppBlueprintKey` Put — a reader of `outcome()` for the failing blueprint's id
+  never observes the restore having landed without also observing the terminal record. Recorded
+  against the blueprint being replaced, never the (separate, still-healthy) blueprint being restored.
+- **The `deployment-outcome` KV wire form now escapes `cause` and each slice id** (backslash-escaping
+  `\`, `|`, and `,`) instead of joining them unescaped — an embedded `|` in a cause message previously
+  corrupted the field boundary, and an embedded `,` in a slice id previously split it into two. The
+  reverse parse is escape-aware on both the outer `|` split and the inner `,` split
+  (`KVStoreSerializer.splitOutcomeField`).
+- **A malformed `deployment-outcome` TOML record (wrong field count, unrecognized status, non-numeric
+  timestamp) now fails the section's `Result` instead of throwing** `IllegalArgumentException` /
+  `NumberFormatException` out of `valueOf`/`parseLong` uncaught — composes through `Result#allOf`
+  into a failure of the whole snapshot load, consistent with every other section in the file.
+- **`POST /api/schema/migrate/{datasource}` now refuses `409 Conflict` against an already-`PENDING`
+  record**, distinct from the existing `COMPLETED`-with-active-slices refusal: re-arming a `PENDING`
+  record to `MIGRATING` has no dispatch effect of its own (only a fresh `PENDING` Put dispatches a
+  run) and would strand the record with no automatic clearing path. Refused via the new
+  `SchemaAlreadyPending` error, naming the datasource; retry the existing pending migration or use
+  `aether schema retry` once it has failed. `POST /api/schema/retry/{datasource}` is a separate route
+  (`retryMigration` → `writeRetryStatus`) and is unaffected — it still accepts `PENDING` (#724's
+  original widening). See [`POST /api/schema/migrate`](aether/docs/reference/management-api.md#post-apischemamigratedatasource).
+- **`recordSucceededOutcome`'s write now logs `WARN` on failure** instead of silently dropping it —
+  a lost `SUCCEEDED` outcome write previously left `BlueprintService.outcome()` reporting stale or
+  absent state for a blueprint that actually finished deploying, with no operator-visible signal.
+- **`reportedSchemaHolds`'s WARN-dedup keying is now documented**: the dedup signature is per
+  datasource-plus-blocking-set, not per datasource alone, so two different holds on the same
+  datasource (e.g. `MIGRATING` then `FAILED`) each WARN once rather than the second being suppressed
+  by the first's dedup entry.
+- **`aether schema status` gained a `HELD SLICES` column** (between `STATUS` and `VERSION`) rendering
+  `heldSlices` — previously reachable only via `--format json` or `--field heldSlices`, and the
+  feature catalog and CLI/API docs described it as surfaced through the `OWNING BLUEPRINT` column,
+  which names the blocked blueprint, not the slices it is blocking. Fixed in `cli.md`,
+  `feature-catalog.md`, and `management-api.md`, and `management-api.md` gained the `/migrate`
+  `409`-on-`PENDING` scenario above. [mechanism: `SchemaRoutes.guardReactivation` switches on the
+  observed status before any orchestrator effect and returns `SchemaAlreadyPending` for `PENDING`
+  without writing `MIGRATING`]
+- **`BlueprintService.outcome()`'s javadoc now documents the four cases `Option.empty()` conflates**
+  (never deployed / in flight and progressing / orphaned by a crashed FSM host / stuck waiting on an
+  event that never arrives) — a caller cannot currently tell "will complete soon" apart from
+  "permanently stuck, needs intervention" from this method alone; doing so needs additional state
+  (e.g. how long the blueprint has sat in a non-terminal `get(id)`). Documentation only, no behavior
+  change — a real fix is out of scope for this round.
+
 ### Changed (2026-09-02 — publish-time packaging, one commit after the `v1.0.0-rc3` tag)
 - **`aether-setup` no longer publishes its 30 MB executable as the module artifact.** The shaded jar is
   now attached under the `uber` classifier (`aether-setup-<version>-uber.jar`), and the thin jar is the
