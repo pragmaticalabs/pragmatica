@@ -7,15 +7,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [1.0.0-rc4] - Unreleased
 
 ### Changed (2026-09-03 — #782: single machine is three containers; cluster size below 3 refused at startup)
-- **A node whose resolved peer count is below three now refuses to boot.** `ClusterSizeGate.enforce` (new, standalone
-  gate in `aether-config`) runs at the point `Main` resolves the peer list from `--peers=`/`CLUSTER_PEERS`/cloud
-  discovery/config — catching every path that can produce a sub-3 topology, not just the declarative
-  `[cluster] nodes` TOML field that `ConfigValidator.nodeCountErrors` already guarded but that `Main#loadConfigFile`
-  silently discarded on failure instead of aborting boot. The failure message names the rule ("a cluster is at least
-  three nodes") and points at the documented quick start.
+- **A node whose CONFIGURED cluster size is below three now refuses to boot** — gated on the
+  topology a node was told to run (the parsed `--peers=`/`CLUSTER_PEERS` list plus self, or the
+  discovery/config arm's `cluster().nodes()`), never on however many peers a boot attempt happened
+  to resolve. This matters at cloud discovery's majority-at-timeout arm specifically: a slow VM can
+  make a healthy three-node boot resolve only two peers, and gating on that resolved count would
+  have refused the exact boot the majority-timeout exists to allow. `ClusterSizeGate.enforce`
+  (standalone gate in `aether-config`) still does the check; `Main` now feeds it
+  `expectedClusterSize`. The failure message names the rule ("a cluster is at least three nodes")
+  and points at the documented quick start.
+  [mechanism: the gate reads the configured size before AetherNode construction, same abortBoot idiom as the cluster-name and WAL gates]
 - **Docs**: removed the stale "Single Node" section (and its #782 caveat) from `docker-deployment.md`; the existing
   three-container compose is retitled "Single machine (three containers)" as the one documented quick-start path for
-  a single machine, with the equivalent fix applied to `current-docker-setup.md`.
+  a single machine, with the equivalent fix applied to `current-docker-setup.md`. The total-cluster-loss recovery
+  runbook (`backup-recovery.md`) now notes that starting one node of a configured three-node cluster does not trip
+  the gate, and that the node will not reach quorum until a second one joins.
 
 ### Fixed (2026-09-03 — #769: `database.async_url` operator override was ignored by slice stores while the log claimed it was applied)
 - **`DatabaseConnectorConfig.effectiveHost()`/`effectivePort()`/`effectiveDatabase()` gave the
