@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc4] - Unreleased
 
+### Fixed (2026-09-03 — #250: storage GC/demotion was wired to a no-op)
+- **Storage tier demotion and garbage collection now actually run.** `AetherNode` previously wired
+  storage through `DelegatedStorageAdapter.noOp()` — leader-pinned activation/deactivation toggled
+  correctly, but nothing ever called `.demote()` or `.collectGarbage()`, so tiered storage never
+  shrank in production. A new `StorageMaintenanceDriver` ticks both operations on a fixed-rate timer.
+- **New `[timeouts.storage_maintenance]` config**: `interval` key, default `5m`. `AetherNode` logs
+  `Storage maintenance enabled: demotion+GC cadence=<interval>, storage setups=<names>` at startup.
+- **DHT tier is now marked cluster-shared** (`DhtStorageTier.isShared() == true`): a block orphaned
+  by this node's local refcount may still be referenced by another node's local view, so node-local
+  garbage collection must never delete it on that basis alone. Enforced in
+  `StorageInstance.deleteFromPrivateTiers` (`integrations/storage`), which skips any tier reporting
+  `isShared()` regardless of the tier list it is handed.
+- Compile-forced by the new 15th `TimeoutsConfig` field: `EmberCluster.raisedSwimTimeoutsConfig()`,
+  `ClusterTimeoutsAbsenceOrderingTest.configWith()`, and `StorageRoutesTest` (rebuilt for
+  `StorageSetup` growing from 5 to 7 components).
+
 ## [1.0.0-rc3] - 2026-09-02
 
 ### Changed (2026-09-02 — publish-time packaging, one commit after the `v1.0.0-rc3` tag)
