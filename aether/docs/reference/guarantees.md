@@ -43,7 +43,7 @@
 | 10 | Availability | `cluster.accept-writes` | — | — | — | **majority only**; minority `QuorumPaused` | LIVE |
 | 11 | Availability | `minority.self-fence` | — | — | — | minority **halts** ~15 s after quorum loss (**C-over-A**) | LIVE |
 | 12 | Availability | `leader.election` | exactly-one (viewSequence-fenced) | — | — | transient zero-leader self-heals (≈19 s worst) | LIVE |
-| 13 | Availability | `node.failure-detect` | — | — | — | ~11 s nominal (×8 ≈80 s under sustained load) | LIVE |
+| 13 | Availability | `node.failure-detect` | — | — | — | ~10.5 s nominal (×8 ≈84 s under sustained load) | LIVE |
 | 14 | Streams | `stream.append` | per-partition **total order** | **crash-durable** (WAL fsync-before-ack), **RF=1** | — | HRW owner side | LIVE |
 | 15 | Streams | `stream.append` (sync-replicated) | quorum-durable *intended* | — | — | — | ✅ RESOLVED #262 two-knob (RF = `replicas` knob; barrier awaits `min-sync-replicas − 1` distinct peer acks; supersedes the interim #378 `RF = minSyncReplicas+1` derivation) |
 | 16 | Streams | `stream.read` (GOVERNOR, default) | eventual / local | — | — | local node | LIVE |
@@ -134,7 +134,7 @@ Aether prefers **consistency over availability** and makes it explicit per node.
 - **Quorum** = simple majority of **core** members, `core/2 + 1` (`QuorumLossDetector.java:429`; workers excluded). Consensus commits only while a node sees quorum; on loss the engine pauses and **rejects writes** with `QuorumPaused` (`RabiaEngine.java:325,682`).
 - **Minority self-fence (C-over-A)** — a node that has lost quorum self-terminates via `Runtime.halt(2)` ~15 s after loss (`DrainProcedure` + `QuorumLossDetector`), **gated** so it never fires before it was ever quorate (armed-latch, `MembershipFsm.strictCoreObservedMemberCount`), during the 75 s cold-boot convergence window (`COLD_BOOT_CONVERGENCE_WINDOW_MS`, the A6 fix), or when a false-FAULTY storm is co-confirmation-refuted. Recovery of a fenced node requires external restart / CTM reprovision. The armed-latch is fed a **reachability-derived** count since #557; fed the boot-seeded count it armed on the configured core set during process construction, so "never quorate" was unreachable on a configured cluster and this gate did not hold what it says.
 - **Leader election** — exactly one leader per tenure; two committing leaders are **structurally impossible** (single-commit Rabia + viewSequence fence, `LeaderElectionState.java:498-535`). A transient zero-leader gap during re-election self-heals via the departure edge + a follower lease (≈19 s worst case).
-- **Failure detection** — SWIM detects a dead node in **~11 s nominal** (probe 0.8 s + suspect 10 s), stretchable to **~80 s** under sustained local trouble (LHM ×8); full eviction adds a 15 s co-confirmation backstop.
+- **Failure detection** — SWIM detects a dead node in **~10.5 s nominal** (probe 0.5 s + suspect 10 s), stretchable to **~84 s** under sustained local trouble (LHM ×8); full eviction adds a 15 s co-confirmation backstop.
 - **Recovery** — quorum return re-emits `ACTIVE` and auto-resumes the majority; a periodic reconcile re-evaluation bounds recovery (closes the historical permanent-paused wedge).
 
 > Note: the leaderless **consensus** has no SPOF, but **control-plane** operations (deploy, scale, auto-heal) are **leader-pinned** and briefly pause during re-election. "No single point of failure" needs that qualification.
@@ -231,6 +231,6 @@ be read only via stream reads on the `.dlq` stream.
 
 - **Scope:** cluster data-plane (Rabia KV + DHT), cluster availability, streams, pub-sub/notifications, durable-entity (planned). Not covered: `@PgSql`/`@Sql` persistence semantics, AHSE storage, HTTP routing — candidates for a follow-up pass.
 - **Confidence:** each row traces to `file:line`. Items the investigators could not run live (SWIM under-load latency, the off-by-one on a real cluster, STRONG-publish wiring, DHT staleness bound) are flagged UNVERIFIED in the backing notes and should be confirmed before being quoted as hard numbers.
-- **Lens:** [`/consistency-lens`](../../../.claude/skills/consistency-lens/SKILL.md) · Kleppmann, *"Please stop calling databases CP or AP"*.
+- **Lens:** `/consistency-lens` · Kleppmann, [*"Please stop calling databases CP or AP"*](https://martin.kleppmann.com/2015/05/11/please-stop-calling-databases-cp-or-ap.html).
 - **Durable-entity spec:** [`../specs/durable-entity-primitive-spec.md`](../specs/durable-entity-primitive-spec.md).
 - **Corrections worklist:** [`./guarantees-corrections-needed.md`](./guarantees-corrections-needed.md).

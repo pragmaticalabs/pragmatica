@@ -15,7 +15,7 @@ modify it to make it your own, and deploy it to a local Forge.
 | JBCT CLI | 0.20.0+  | `jbct --version` |
 
 > **Network requirements:** Aether uses QUIC (UDP) for inter-node cluster communication.
-> When running a multi-node cluster, ensure UDP ports 8090 (cluster transport) and 8091
+> When running a multi-node cluster, ensure UDP ports 8090 (cluster transport) and 8190
 > (SWIM failure detection) are open between nodes. For local development with Forge,
 > no special configuration is needed. See
 > [Networking Requirements](../operators/networking.md) for details.

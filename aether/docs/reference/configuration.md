@@ -206,7 +206,7 @@ DHTConfig.SINGLE_NODE;  // Single-node testing
 | `replicationFactor` | 3 | Number of replicas (0 = full replication) |
 | `writeQuorum` | 2 | Write quorum size |
 | `readQuorum` | 2 | Read quorum size |
-| `operationTimeout` | 10 seconds | Operation timeout |
+| `operationTimeout` | 30 seconds | Operation timeout |
 
 ## Environment Variables
 
@@ -219,11 +219,13 @@ For container deployment, configuration via environment variables:
 | `AETHER_INSECURE_DEV_MODE` | false | Enables dev-only inject/test endpoints. Incompatible with operator-provided TLS certificates — see TLS Configuration |
 | `CLUSTER_PORT` | 8090 | Cluster communication port |
 | `MANAGEMENT_PORT` | 8080 | HTTP API port |
-| `PEERS` | required | Cluster peer list |
-| `JAVA_OPTS` | `-Xmx512m` | JVM options |
-| `TLS_ENABLED` | false | Enable TLS |
-| `TLS_CERT_PATH` | none | TLS certificate path |
-| `TLS_KEY_PATH` | none | TLS key path |
+| `CLUSTER_PEERS` | required | Cluster peer list |
+| `JAVA_OPTS` | `-Xmx256m` | JVM options |
+| `AETHER_CLUSTER_SECRET` | none | Shared secret used to generate TLS certificates; fallback for `tls.cluster_secret` |
+
+There are no `TLS_ENABLED` / `TLS_CERT_PATH` / `TLS_KEY_PATH` environment variables — TLS is
+configured via the `[cluster] tls` and `[tls]` TOML keys (`auto_generate`, `cert_path`,
+`key_path`, `ca_path`), not environment variables.
 
 A node **fails to start** (loud error, non-zero exit) when its cluster name is missing or empty.
 The name is resolved from `AETHER_CLUSTER_NAME` or, for bootstrapped clusters, from the

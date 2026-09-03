@@ -29,6 +29,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   still emits `"...is not in FAILED state (currently <STATUS>)..."`, pinned by two integration
   scripts and a unit test, now ending `"— retry applies to FAILED or PENDING migrations only"`.
 
+### Fixed (2026-09-03 — #769: `database.async_url` operator override was ignored by slice stores while the log claimed it was applied)
+- **`DatabaseConnectorConfig.effectiveHost()`/`effectivePort()`/`effectiveDatabase()` gave the
+  discrete `host`/`port`/`database` fields unconditional precedence over a configured URL**,
+  inverting the documented contract (`resource-reference.md`: `jdbc_url`/`r2dbc_url`/`async_url`
+  "replaces host/port/database"). An operator who set only `async_url` to redirect a datastore had
+  the override silently discarded by every consumer of the effective accessors
+  (`AsyncSqlConnectorFactory`, `PgSqlConnectorFactory`, `NotificationListenerFactory`,
+  `AsyncJooqConnectorFactory`), while `effectiveAsyncUrl()` itself was already URL-first and correct.
+- The three accessors now prefer the URL-derived value (via the existing, unchanged
+  jdbc→r2dbc→async internal ordering) and fall back to the discrete field only when no URL yields
+  one. `effectiveType()`, `effectiveUsername()`, and `effectivePassword()` are unchanged — no
+  URL-derivation applies to type/credentials.
+
 ### Fixed (2026-09-03 — #760 / #724 review round: `heldSlices` reported a serving slice as held, and retry could double-dispatch)
 - **`heldSlices` was a parallel derivation that never read per-node slice state.** It matched
   ownership only, so `/migrate` re-arming a `COMPLETED` record while its slices were `ACTIVE` made
@@ -52,6 +65,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **The dedup signature for a repeated schema hold is now a sorted join**, not an unsorted join over
   a `ConcurrentHashMap` — an unchanged multi-datasource hold could otherwise re-WARN if two
   evaluations happened to iterate the blocking set in different orders.
+
+### Changed (2026-09-03 — #782: single machine is three containers; cluster size below 3 refused at startup)
+- **A node whose CONFIGURED cluster size is below three now refuses to boot** — gated on the
+  topology a node was told to run (the parsed `--peers=`/`CLUSTER_PEERS` list plus self, or the
+  discovery/config arm's `cluster().nodes()`), never on however many peers a boot attempt happened
+  to resolve. This matters at cloud discovery's majority-at-timeout arm specifically: a slow VM can
+  make a healthy three-node boot resolve only two peers, and gating on that resolved count would
+  have refused the exact boot the majority-timeout exists to allow. `ClusterSizeGate.enforce`
+  (standalone gate in `aether-config`) still does the check; `Main` now feeds it
+  `expectedClusterSize`. The failure message names the rule ("a cluster is at least three nodes")
+  and points at the documented quick start.
+  [mechanism: the gate reads the configured size before AetherNode construction, same abortBoot idiom as the cluster-name and WAL gates]
+- **Docs**: removed the stale "Single Node" section (and its #782 caveat) from `docker-deployment.md`; the existing
+  three-container compose is retitled "Single machine (three containers)" as the one documented quick-start path for
+  a single machine, with the equivalent fix applied to `current-docker-setup.md`. The total-cluster-loss recovery
+  runbook (`backup-recovery.md`) now notes that starting one node of a configured three-node cluster does not trip
+  the gate, and that the node will not reach quorum until a second one joins.
 
 ### Fixed (2026-09-03 — #759 review, BLOCKING 3: a rolled-back blueprint had no outcome to read after `unloadBlueprintSlices` removed its key)
 - **A durable per-blueprint deployment outcome record now survives ALL_OR_NOTHING rollback.**
@@ -132,6 +162,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   "permanently stuck, needs intervention" from this method alone; doing so needs additional state
   (e.g. how long the blueprint has sat in a non-terminal `get(id)`). Documentation only, no behavior
   change — a real fix is out of scope for this round.
+
+## [1.0.0-rc3] - 2026-09-02
 
 ### Changed (2026-09-02 — publish-time packaging, one commit after the `v1.0.0-rc3` tag)
 - **`aether-setup` no longer publishes its 30 MB executable as the module artifact.** The shaded jar is
@@ -3486,7 +3518,7 @@ preemption makes the guarantee *achievable* (the replica can now reach in-sync i
 - **`TopologyObserver` explicit `BOOTING` / `NORMAL` mode** — replaces the implicit cold-boot-vs-steady-state distinction left by audit Step 5's partial revert. New `TopologyMode` enum + `AtomicReference<TopologyMode> mode` field initialised to `BOOTING`. `BOOTING` reads `healthyActiveNodeCount`, `readyNodeCount`, and quorum-eval counts from the legacy `nodeStatesById` fallback; `NORMAL` reads snapshot-only and returns 0 on empty snapshot. Transition `BOOTING → NORMAL` is one-way, triggered by the first `MembershipView` observation with `coreMemberIds().size() >= clusterSize/2+1` (quorum reached in the projected snapshot). Mode is checked on every read path AND on snapshot publish, so admin / CTM reads pre-`start()` can still flip the latch as soon as a quorum-projected snapshot is available. Exposed via `TopologyObserver.topologyMode()` and surfaced in `aether status --format json` (`topology.mode`)
 - **Phase-aware SWIM cold-boot suppression (audit Step 6)** — `SwimProtocol.emitFaultyOrUnknown` no longer suppresses `FaultyObserved` based solely on the per-peer `everSeenHealthy` flag. New `BooleanSupplier isBooting` injected via `SwimHealthContext`; in `BOOTING` phase the legacy cold-boot suppression preserves today's behaviour (peer never observed healthy → emit `UnknownObserved`), but in `NORMAL` phase a `FAULTY` transition always emits `FaultyObserved` regardless of `everSeenHealthy`. Closes the cloud-only failure mode where a peer killed before its first successful Ping ack would emit `UnknownObserved` (which `HealthReconciler.aggregator` doesn't aggregate), the leader never wrote `DECOMMISSIONED`, and `NODE_LEFT` / `NODE_FAILED` events never fired. Wiring uses a generic `BooleanSupplier` so `integrations/swim` doesn't gain a dependency on `aether/slice` — `AetherNode` translates `() -> healthReconciler.phase() == ClusterPhase.BOOTING` at the boundary
 - **`ClusterIdentity` validates at construction (parse-don't-validate)** — name regex `^[a-z][a-z0-9-]{0,62}$` moved from `ClusterBootstrapCommand` (CLI override path only) into the `ClusterIdentity` factory and `withName` mutator. Both now return `Result<ClusterIdentity>` with a typed `ClusterIdentity.InvalidName` cause; downstream readers can trust the invariant. Parser (`ClusterBootstrapConfigParser.parseClusterIdentity`), CLI (`ClusterBootstrapCommand.applyClusterNameOverride`), and config-record helper (`ClusterBootstrapConfig.withClusterName`) all chain through `Result`. Closes the silent path where `parseClusterIdentity` could accept an uppercase / leading-digit / overlong name in TOML and propagate it into Hetzner labels (where it would 422), DNS labels, and operator-facing env-var names. New `ClusterIdentityTest` (14 cases) exercises the boundary conditions — single letter, max length 63, blank, uppercase, leading hyphen, leading digit, underscore, and special chars
-- **Membership state-tracker consolidation, audit Steps 1–5** — partial implementation of [`aether/docs/internal/audits/membership-state-tracker-audit-2026-05-07.md`](aether/docs/internal/audits/membership-state-tracker-audit-2026-05-07.md). Goal: collapse the 4 parallel state trackers + 6 debounce sidecars into a single canonical `MembershipView` + projections. Steps 6 (phase-aware SWIM cold-boot suppression), 7 (cross-node quorum aggregation, HIGH risk — needs `PeerObservationStore` reducer), and 8 (cleanup) deferred:
+- **Membership state-tracker consolidation, audit Steps 1–5** — partial implementation of [`aether/docs/.internal/audits/membership-state-tracker-audit-2026-05-07.md`](aether/docs/.internal/audits/membership-state-tracker-audit-2026-05-07.md). Goal: collapse the 4 parallel state trackers + 6 debounce sidecars into a single canonical `MembershipView` + projections. Steps 6 (phase-aware SWIM cold-boot suppression), 7 (cross-node quorum aggregation, HIGH risk — needs `PeerObservationStore` reducer), and 8 (cleanup) deferred:
   - **Step 1:** new `MembershipDelta` record + `TopologyObserver.publishMembershipDeltas()` diff publisher hooked into `evaluateQuorumState`. Emits one `TopologyChangeNotification.NodeAdded`/`NodeRemoved` per snapshot edge
   - **Step 2:** `QuicClusterNetwork.processViewChange` no longer emits `TopologyChangeNotification.NodeAdded`/`NodeRemoved` upward — `TopologyObserver` is the canonical emitter. SHUTDOWN's `NodeDown` retained for self-shutdown semantics. DHT routing gap closed: `DHTTopologyListener.onNodeDown` mirrors `onNodeRemoved` (was missing — pre-existing routing gap)
   - **Step 3:** AetherNode's SWIM-FAULTY-to-disconnect lambda removed. `SwimHealthContext.routeFaulty` no longer calls `routeDisconnect`. QUIC eviction now flows post-consensus via `TopologyChangeNotification.NodeRemoved` → `clusterNetwork.disconnect`. Eviction trades sub-ms local-SWIM latency for a Rabia round-trip + projection (~200-500ms cloud RTT), but eliminates the N+1 fan-out cascade across every survivor's local SWIM listener

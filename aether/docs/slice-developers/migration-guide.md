@@ -165,7 +165,7 @@ Create a new Maven module for the slice:
     <properties>
         <maven.compiler.source>25</maven.compiler.source>
         <maven.compiler.target>25</maven.compiler.target>
-        <pragmatica.version>0.20.0</pragmatica.version>
+        <pragmatica.version>1.0.0-rc3</pragmatica.version>
         <jbct.skip>false</jbct.skip>
     </properties>
 

@@ -13,7 +13,7 @@ Running more than one Aether cluster on shared infrastructure (one Docker host, 
 | `aether.cluster` | deployment — names the cluster this container/instance belongs to | deployment infra (compose / k8s / `aether` CLI) | `us-prod`, `staging`, `a` |
 | `aether.node-id` | within cluster — unique among that cluster's members | runtime / CTM / compose | `node-1`, `aether-core-node-3Do37u…` |
 
-`aether.cluster` is the same value as the cluster's `name` in its bootstrap config TOML (validated against `^[a-z][a-z0-9-]{0,62}$` by `ClusterIdentity`). It propagates from there into:
+`aether.cluster` is the same value as the cluster's `name` in its bootstrap config TOML (validated against `[a-z]([-a-z0-9]{0,61}[a-z0-9])?` — a trailing hyphen is rejected — by `ClusterIdentity`, delegated to `ClusterName`). It propagates from there into:
 
 - `ProvisionContext.clusterName()` when CTM provisions a replacement
 - `DockerComputeProvider.buildRunCommand` — `--label aether.cluster=<name>`
@@ -99,5 +99,5 @@ docker ps --filter label=aether.cluster=us-prod --filter label=aether.node-id=no
 ## See also
 
 - `docs/specs/cluster-label-scoping-spec.md` — the design spec
-- `aether/docs/operator/deployment-recovery.md` — why `restartPolicy: Always` competes with CTM auto-heal and must be disabled
+- `aether/docs/operators/deployment-recovery.md` — why `restartPolicy: Always` competes with CTM auto-heal and must be disabled
 - `aether/docs/reference/cli.md` — `aether cluster scaffold` reference
