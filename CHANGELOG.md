@@ -49,7 +49,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   a `ConcurrentHashMap` — an unchanged multi-datasource hold could otherwise re-WARN if two
   evaluations happened to iterate the blocking set in different orders.
 
-
+### Fixed (2026-09-03 — #759 review, BLOCKING 3: a rolled-back blueprint had no outcome to read after `unloadBlueprintSlices` removed its key)
+- **A durable per-blueprint deployment outcome record now survives ALL_OR_NOTHING rollback.**
+  `unloadBlueprintSlices` unconditionally removed the failed blueprint's `AppBlueprintKey`, so
+  `GET /api/blueprints/status/{id}` returned 404 after a rollback, with only the transient
+  `DeploymentFailed` event on `/api/events` as evidence. The FSM now writes an
+  `AetherKey.DeploymentOutcomeKey` / `AetherValue.DeploymentOutcomeValue` pair (`SUCCEEDED` /
+  `FAILED` / `ROLLED_BACK` status, failing slice ids, cause, timestamp) at the terminal
+  transition, bundled into the SAME consensus batch as the `AppBlueprintKey` removal — atomic
+  with, not vulnerable to, the cleanup that used to remove the only evidence. Only the
+  `SUCCEEDED` and `FAILED` write sites are wired by this fix; `ROLLED_BACK` is a defined status
+  with no write site yet — no current code path distinguishes a rollback-with-restore from a
+  plain failure, so wiring it is deliberately left out of scope here.
+- **Bounded by KV Put-overwrite-by-key**: the record is keyed by blueprint id, so a redeploy's
+  next terminal transition simply overwrites the same key — one outcome kept per blueprint id,
+  no accumulation, no separate pruning mechanism.
+- **`BlueprintService.outcome(BlueprintId id) : Option<AetherValue.DeploymentOutcomeValue>`**
+  exposes the read accessor for the node's status route (stream A wires the route to it after
+  this branch merges — `SliceRoutes.java` / `ManagementApiResponses.java` are out of scope here).
+- **`KVStoreSerializer.java` gained a TOML round-trip for the new `deployment-outcome` section**
+  (`STATUS|slice1,slice2,...|cause|timestampMs`, fully lossless, not added to `LOSSY_SECTIONS`) so
+  the new KV type participates in snapshot export/import like every other section.
+- Pinning test `ClusterDeploymentStateTransactionalTest.DeploymentOutcomeRecord` drives a FAILED
+  `NodeArtifact` Put through the real FSM dispatch path into `unloadBlueprintSlices`, asserting the
+  outcome `Put` and the `AppBlueprintKey` `Remove` land in the same consensus batch. Mutation-probed:
+  red with the write reverted, green restored.
 
 ### Changed (2026-09-02 — publish-time packaging, one commit after the `v1.0.0-rc3` tag)
 - **`aether-setup` no longer publishes its 30 MB executable as the module artifact.** The shaded jar is

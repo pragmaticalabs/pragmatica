@@ -240,6 +240,53 @@ public sealed interface AetherValue {
         }
     }
 
+    /// Durable terminal outcome of one blueprint's deployment attempt, keyed by
+    /// `AetherKey.DeploymentOutcomeKey`. Written by `ClusterDeploymentState` at the FSM's terminal
+    /// transitions (full deployment, ALL_OR_NOTHING rollback) and never removed when the blueprint's
+    /// own `AppBlueprintValue` is torn down — this is the record of what happened, not part of the
+    /// blueprint's active configuration, so it survives rollback and remains readable via
+    /// `BlueprintService.lastOutcome` after `GET /api/blueprints/status/{id}` would otherwise 404.
+    ///
+    /// `timestampMs` is passed in explicitly (no internal `System.currentTimeMillis()` default,
+    /// unlike `SchemaVersionValue`) so the FSM call site can supply `ClusterDeploymentContext.nowMs()`
+    /// — the same test-controllable clock already used for this class's `DeploymentFailed` event
+    /// timestamps, keeping both artifacts of one failure event on one clock read.
+    record DeploymentOutcomeValue(DeploymentOutcomeStatus status,
+                                  List<String> failingSlices,
+                                  String cause,
+                                  long timestampMs) implements AetherValue {
+        public static DeploymentOutcomeValue succeeded(long timestampMs) {
+            return new DeploymentOutcomeValue(DeploymentOutcomeStatus.SUCCEEDED, List.of(), "", timestampMs);
+        }
+
+        public static DeploymentOutcomeValue failed(List<String> failingSlices, String cause, long timestampMs) {
+            return new DeploymentOutcomeValue(DeploymentOutcomeStatus.FAILED,
+                                              List.copyOf(failingSlices),
+                                              cause,
+                                              timestampMs);
+        }
+
+        public static DeploymentOutcomeValue rolledBack(List<String> failingSlices, String cause, long timestampMs) {
+            return new DeploymentOutcomeValue(DeploymentOutcomeStatus.ROLLED_BACK,
+                                              List.copyOf(failingSlices),
+                                              cause,
+                                              timestampMs);
+        }
+    }
+
+    /// `FAILED` — the blueprint's own slices never reached ACTIVE and there was no previous
+    /// blueprint to fall back to (`unloadBlueprintSlices`'s path). `ROLLED_BACK` — a previous
+    /// blueprint existed and was restored in this blueprint's place (`restorePreviousBlueprint`'s
+    /// path); kept distinct from `FAILED` because a caller needs to know whether the failure left
+    /// the deployment empty or reverted it to a known-good prior version. Not yet written by the
+    /// restore path as of this change — see `ClusterDeploymentState` for the current write sites.
+    @Codec
+    enum DeploymentOutcomeStatus {
+        SUCCEEDED,
+        FAILED,
+        ROLLED_BACK
+    }
+
     record SliceNodeValue(SliceState state, Option<String> failureReason, boolean fatal, long transitionedAt) implements AetherValue {
         public static SliceNodeValue sliceNodeValue(SliceState state) {
             return new SliceNodeValue(state, none(), false, defaultTransitionedAt(state));

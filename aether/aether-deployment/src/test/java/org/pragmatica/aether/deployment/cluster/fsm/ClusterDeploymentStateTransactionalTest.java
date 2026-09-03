@@ -12,19 +12,27 @@ import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.Blueprint;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Activate;
+import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.NodeArtifactPutReceived;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
+import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentOutcomeKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeStatus;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -61,7 +69,11 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// (2) `capturePreviousBlueprint` recovers the prior ACTIVE version from KV so a failed deploy can
 ///     be rolled back to the exact pre-deployment state;
 /// (3) `restorePreviousBlueprint` re-Puts the prior value under the prior version's key, not the
-///     failed deploy's key.
+///     failed deploy's key;
+/// (4) `unloadBlueprintSlices` rollback (no previous blueprint) atomically bundles the
+///     `AppBlueprintKey` removal with a durable FAILED `DeploymentOutcomeKey` Put in the SAME
+///     consensus batch, so `GET /api/blueprints/status/{id}` has a terminal record to read even
+///     though the blueprint's own key is gone (#759).
 class ClusterDeploymentStateTransactionalTest {
     private static final NodeId SELF = new NodeId("node-self");
     private static final NodeId NODE_A = new NodeId("node-a");
@@ -209,6 +221,54 @@ class ClusterDeploymentStateTransactionalTest {
         }
     }
 
+    @Nested
+    class DeploymentOutcomeRecord {
+        // #759: a FAILED NodeArtifact Put on an ALL_OR_NOTHING blueprint with no previous version
+        // drives handleDeterministicFailure -> rollbackBlueprintForArtifact -> unloadBlueprintSlices,
+        // which must atomically bundle the AppBlueprintKey removal (the original 404 cause) with a
+        // durable FAILED DeploymentOutcomeKey Put in the SAME consensus batch, so the status route
+        // has a terminal record to read even after the blueprint's own key is gone.
+        @Test
+        void unloadBlueprintSlices_deterministicFailureNoPreviousBlueprint_recordsFailedOutcomeAtomicallyWithRemoval() {
+            var failing = blueprint("app", V1, "slice-a");
+            var failedArtifact = artifact("slice-a", V1);
+            var inflight = ClusterDeploymentState.Active.InFlightBlueprint.inFlightBlueprint(failing.id(), failing, Option.empty());
+            activeState().inFlightBlueprints().put(failing.id(), inflight);
+
+            var failValue = new NodeArtifactValue(SliceState.FAILED, Option.some("boom: disk full"), true, 0, List.of(), 0L);
+            var putCommand = new KVCommand.Put<>(NodeArtifactKey.nodeArtifactKey(NODE_A, failedArtifact), failValue);
+            var event = new NodeArtifactPutReceived(new ValuePut<>(putCommand, Option.none()));
+
+            harness.dispatch(event);
+
+            var appBlueprintKey = AppBlueprintKey.appBlueprintKey(failing.id());
+            var outcomeKey = DeploymentOutcomeKey.deploymentOutcomeKey(failing.id());
+
+            var removedAppBlueprint = cluster.commands
+                    .stream()
+                    .anyMatch(c -> c instanceof KVCommand.Remove<AetherKey> && c.key().equals(appBlueprintKey));
+            assertThat(removedAppBlueprint).isTrue();
+
+            var outcomePut = cluster.commands
+                    .stream()
+                    .filter(c -> c instanceof KVCommand.Put<AetherKey, ?> && c.key().equals(outcomeKey))
+                    .findFirst();
+            assertThat(outcomePut).isPresent();
+
+            var outcome = (DeploymentOutcomeValue) ((KVCommand.Put<?, ?>) outcomePut.get()).value();
+            assertThat(outcome.status()).isEqualTo(DeploymentOutcomeStatus.FAILED);
+            assertThat(outcome.cause()).isEqualTo("boom: disk full");
+            assertThat(outcome.failingSlices()).containsExactly(failedArtifact.asString());
+
+            var atomicBatch = cluster.batches
+                    .stream()
+                    .filter(batch -> batch.stream().anyMatch(c -> c.key().equals(appBlueprintKey))
+                                     && batch.stream().anyMatch(c -> c.key().equals(outcomeKey)))
+                    .findFirst();
+            assertThat(atomicBatch).isPresent();
+        }
+    }
+
     // --- test fixtures (mirrors ClusterDeploymentStateActiveTest) ---
 
     private static SchemaOrchestratorService stubSchemaOrchestrator() {
@@ -274,6 +334,10 @@ class ClusterDeploymentStateTransactionalTest {
     private static final class RecordingClusterNode implements ClusterNode<KVCommand<AetherKey>> {
         final NodeId self;
         final List<KVCommand<AetherKey>> commands = Collections.synchronizedList(new ArrayList<>());
+        // Tracks each apply() call's batch verbatim (unlike `commands`, which flattens them) so
+        // tests can pin that two commands landed in the SAME consensus batch, not merely both
+        // somewhere in the recorded history — see DeploymentOutcomeRecord (#759).
+        final List<List<KVCommand<AetherKey>>> batches = Collections.synchronizedList(new ArrayList<>());
 
         RecordingClusterNode(NodeId self) {this.self = self;}
 
@@ -287,6 +351,7 @@ class ClusterDeploymentStateTransactionalTest {
 
         @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> batch) {
             commands.addAll(batch);
+            batches.add(List.copyOf(batch));
             return Promise.success(Collections.emptyList());
         }
 

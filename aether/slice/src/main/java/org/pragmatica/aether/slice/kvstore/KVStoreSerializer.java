@@ -157,6 +157,7 @@ public final class KVStoreSerializer {
         return switch (key) {
             case SliceTargetKey _ -> "slice-target";
             case AppBlueprintKey _ -> "app-blueprint";
+            case DeploymentOutcomeKey _ -> "deployment-outcome";
             case SliceNodeKey _ -> "slices";
             case EndpointKey _ -> "endpoints";
             case VersionRoutingKey _ -> "version-routing";
@@ -253,6 +254,7 @@ public final class KVStoreSerializer {
             case NodeArtifactValue v -> serializeNodeArtifact(v);
             case NodeRoutesValue v -> serializeNodeRoutes(v);
             case AppBlueprintValue _ -> "";
+            case DeploymentOutcomeValue v -> serializeDeploymentOutcome(v);
             case SchemaVersionValue v -> serializeSchemaVersion(v);
             case SchemaMigrationLockValue v -> serializeSchemaMigrationLock(v);
             case AbTestValue v -> serializeAbTest(v);
@@ -296,6 +298,15 @@ public final class KVStoreSerializer {
         }
 
         return sb.toString();
+    }
+
+    /// Wire form: `STATUS|slice1,slice2,...|cause|timestampMs`. `cause` is free text with no escaping
+    /// of embedded `|`/`,` — matches this file's existing lossy free-text field convention (see e.g.
+    /// [#parseSliceNodeEntry]'s `reason` field). Fully round-trippable otherwise, so unlike
+    /// `app-blueprint` this section is NOT in [#LOSSY_SECTIONS].
+    private static String serializeDeploymentOutcome(DeploymentOutcomeValue v) {
+        return v.status()
+                .name() + PIPE + String.join(",", v.failingSlices()) + PIPE + v.cause() + PIPE + v.timestampMs();
     }
 
     private static String serializeStreamRegistry(StreamRegistryValue v) {
@@ -577,6 +588,7 @@ public final class KVStoreSerializer {
             case "consumer-group" -> parseConsumerGroupEntry(identity, rawValue);
             case "api-key" -> parseApiKeyEntry(identity, rawValue);
             case "api-key-audit" -> parseApiKeyAuditEntry(identity, rawValue);
+            case "deployment-outcome" -> parseDeploymentOutcomeEntry(identity, rawValue);
             default -> new SerializationError.UnknownKeyType(section).result();
         };
     }
@@ -647,6 +659,30 @@ public final class KVStoreSerializer {
                              : 0L;
 
         return new SliceNodeValue(state, reason, Boolean.parseBoolean(parts[2]), transitionedAt);
+    }
+
+    /// Inverse of [#serializeDeploymentOutcome]. Wire form: `STATUS|slice1,slice2,...|cause|timestampMs`.
+    /// An empty slices field yields an empty list, matching [DeploymentOutcomeValue#succeeded].
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseDeploymentOutcomeEntry(String identity, String raw) {
+        var parts = raw.split("\\|", -1);
+
+        if (parts.length != 4) {
+            return parseFailure("deployment-outcome value requires 4 fields, got " + parts.length);
+        }
+
+        return DeploymentOutcomeKey.deploymentOutcomeKey("deployment-outcome/" + identity).map(key -> entry(key,
+                                                                                                            buildDeploymentOutcomeValue(parts)));
+    }
+
+    private static DeploymentOutcomeValue buildDeploymentOutcomeValue(String[] parts) {
+        var failingSlices = parts[1].isEmpty()
+                            ? List.<String> of()
+                            : List.of(parts[1].split(","));
+
+        return new DeploymentOutcomeValue(DeploymentOutcomeStatus.valueOf(parts[0]),
+                                          failingSlices,
+                                          parts[2],
+                                          Long.parseLong(parts[3]));
     }
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseEndpointEntry(String identity, String raw) {

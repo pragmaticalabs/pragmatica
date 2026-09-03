@@ -74,6 +74,16 @@ public interface BlueprintService {
     /// the new version is immediately activated.
     Promise<ExpandedBlueprint> publishFromArtifact(String artifactCoords, boolean registerOnly);
     Option<ExpandedBlueprint> get(BlueprintId id);
+    /// Durable terminal outcome of `id`'s last deployment attempt (#759 review, BLOCKING 3) —
+    /// `Option.none()` when the blueprint has never reached a terminal transition (still in flight,
+    /// or the id has never been deployed). Bounded to exactly one record per blueprint id: the FSM
+    /// writes via `KVCommand.Put` at `AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(id)`, and a
+    /// Put at the same key overwrites the prior value, so the store holds only the latest outcome —
+    /// cardinality is the number of distinct blueprint ids ever deployed, not the number of attempts.
+    /// Survives `unloadBlueprintSlices`'s ALL_OR_NOTHING rollback, which removes only
+    /// `AppBlueprintKey`, never this key — the intended read path for the node's blueprint-status
+    /// route after a rollback leaves `get(id)` empty.
+    Option<AetherValue.DeploymentOutcomeValue> outcome(BlueprintId id);
     List<ExpandedBlueprint> list();
     Promise<Unit> delete(BlueprintId id);
     Result<Blueprint> validate(String dsl);
@@ -228,6 +238,13 @@ class BlueprintServiceInstance implements BlueprintService {
     public Option<ExpandedBlueprint> get(BlueprintId id) {
         return store.get(AetherKey.AppBlueprintKey.appBlueprintKey(id))
                     .flatMap(this::extractBlueprint);
+    }
+
+    @Override
+    public Option<AetherValue.DeploymentOutcomeValue> outcome(BlueprintId id) {
+        return store.get(AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(id))
+                    .filter(AetherValue.DeploymentOutcomeValue.class::isInstance)
+                    .map(AetherValue.DeploymentOutcomeValue.class::cast);
     }
 
     @Override

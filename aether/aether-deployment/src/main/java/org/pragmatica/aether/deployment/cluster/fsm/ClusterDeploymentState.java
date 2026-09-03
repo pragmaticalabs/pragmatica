@@ -55,6 +55,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.CommunityKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentOutcomeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
@@ -70,6 +71,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaMigrationLockValue;
@@ -1409,7 +1411,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                         failureReason,
                                                         ctx.nowMs()));
             if (ctx.atomicity() == DeploymentAtomicity.ALL_OR_NOTHING) {
-                rollbackBlueprintForArtifact(artifact);
+                rollbackBlueprintForArtifact(artifact, failureReason);
             }
         }
 
@@ -2191,6 +2193,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                  entry.getKey().asString(),
                                  inflight.activeSlices().size());
                         inFlightBlueprints.remove(entry.getKey());
+                        recordSucceededOutcome(entry.getKey());
                     }
 
                     break;
@@ -2198,7 +2201,18 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             }
         }
 
-        private void rollbackBlueprintForArtifact(Artifact failedArtifact) {
+        /// Durable SUCCEEDED counterpart to the FAILED outcome written in `unloadBlueprintSlices`
+        /// (#759 review, BLOCKING 3) — the terminal outcome record must exist for both branches of
+        /// the deployment attempt, not just the failure branch, so a caller can distinguish "no
+        /// outcome yet" from "succeeded" once the blueprint leaves `inFlightBlueprints`.
+        private void recordSucceededOutcome(BlueprintId blueprintId) {
+            var key = DeploymentOutcomeKey.deploymentOutcomeKey(blueprintId);
+            var value = DeploymentOutcomeValue.succeeded(ctx.nowMs());
+
+            submitBatch(List.of(new KVCommand.Put<>(key, value)));
+        }
+
+        private void rollbackBlueprintForArtifact(Artifact failedArtifact, String cause) {
             for (var entry : inFlightBlueprints.entrySet()) {
                 var blueprintId = entry.getKey();
                 var inflight = entry.getValue();
@@ -2220,13 +2234,13 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                          blueprintId.asString());
                 inFlightBlueprints.remove(blueprintId);
                 inflight.previousBlueprint()
-                        .apply(() -> unloadBlueprintSlices(inflight),
+                        .apply(() -> unloadBlueprintSlices(inflight, cause),
                                previous -> restorePreviousBlueprint(previous));
                 break;
             }
         }
 
-        private void unloadBlueprintSlices(InFlightBlueprint inflight) {
+        private void unloadBlueprintSlices(InFlightBlueprint inflight, String cause) {
             var allSlices = new HashSet<>(inflight.pendingSlices());
 
             allSlices.addAll(inflight.activeSlices());
@@ -2241,10 +2255,25 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             var bpKey = AppBlueprintKey.appBlueprintKey(inflight.id());
 
             consensusCommands.add(new KVCommand.Remove<>(bpKey));
+            consensusCommands.add(failedOutcomeCommand(inflight, allSlices, cause));
             log.info("ALL_OR_NOTHING: Unloading {} slices from failed blueprint {}",
                      allSlices.size(),
                      inflight.id().asString());
             submitBatch(consensusCommands);
+        }
+
+        /// FAILED outcome for the no-previous-blueprint rollback branch (#759 review, BLOCKING 3).
+        /// Bundled into `unloadBlueprintSlices`'s own consensus batch — same commit as the
+        /// `AppBlueprintKey` removal it survives — rather than a second `submitBatch` call, so the
+        /// removal and the outcome record land atomically (both or neither).
+        private KVCommand<AetherKey> failedOutcomeCommand(InFlightBlueprint inflight,
+                                                          Set<Artifact> failingSlices,
+                                                          String cause) {
+            var key = DeploymentOutcomeKey.deploymentOutcomeKey(inflight.id());
+            var slices = failingSlices.stream().map(Artifact::asString).toList();
+            var value = DeploymentOutcomeValue.failed(slices, cause, ctx.nowMs());
+
+            return new KVCommand.Put<>(key, value);
         }
 
         private void restorePreviousBlueprint(ExpandedBlueprint previous) {
