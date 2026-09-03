@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -291,22 +293,26 @@ public final class SliceRoutes implements RouteSource {
 
     private BlueprintResponse blueprintResponse(String status, ExpandedBlueprint expanded) {
         var counts = instanceCounts(expanded);
+        var id = expanded.id().asString();
 
         return new BlueprintResponse(status,
-                                     expanded.id().asString(),
+                                     id,
                                      counts.target(),
                                      counts.active(),
-                                     counts.failed());
+                                     counts.failed(),
+                                     blueprintStatusUrl(id));
     }
 
     private BlueprintResponse deployBlueprintResponse(ExpandedBlueprint expanded) {
         var counts = instanceCounts(expanded);
+        var id = expanded.id().asString();
 
         return new BlueprintResponse(deployStatus(counts),
-                                     expanded.id().asString(),
+                                     id,
                                      counts.target(),
                                      counts.active(),
-                                     counts.failed());
+                                     counts.failed(),
+                                     blueprintStatusUrl(id));
     }
 
     private static String deployStatus(InstanceCounts counts) {
@@ -317,6 +323,13 @@ public final class SliceRoutes implements RouteSource {
         return counts.target() > 0 && counts.active() >= counts.target()
                ? "deployed"
                : "pending";
+    }
+
+    /// #759 — `id` is artifact-shaped (`group:artifact:version`), so its colons must be
+    /// percent-encoded to sit in a path segment; see `GET /api/blueprints/status/{id}` in
+    /// `aether/docs/reference/management-api.md`.
+    private static String blueprintStatusUrl(String id) {
+        return "/api/blueprints/status/" + URLEncoder.encode(id, StandardCharsets.UTF_8);
     }
 
     private BlueprintListResponse buildBlueprintListResponse() {
@@ -383,13 +396,18 @@ public final class SliceRoutes implements RouteSource {
                                            sliceStatuses);
     }
 
+    /// #759 — reads `SliceState.FAILED` alongside `ACTIVE` so a slice with failed instances still
+    /// present in `deploymentMap()` (e.g. a `BEST_EFFORT` deploy, or a query landing before
+    /// `ALL_OR_NOTHING` rollback cleanup removes the entry) is reported `FAILED` instead of silently
+    /// folded into `PENDING`/`DEPLOYING`.
     private BlueprintSliceStatus computeSliceStatus(ManageableNode node, ResolvedSlice slice) {
         var artifact = slice.artifact();
         var targetInstances = slice.instances();
         var activeInstances = countActiveInstances(node, artifact);
-        var status = determineSliceDeploymentStatus(targetInstances, activeInstances);
+        var failedInstances = countInstancesInState(node, artifact, SliceState.FAILED);
+        var status = determineSliceDeploymentStatus(targetInstances, activeInstances, failedInstances);
 
-        return new BlueprintSliceStatus(artifact.asString(), targetInstances, activeInstances, status);
+        return new BlueprintSliceStatus(artifact.asString(), targetInstances, activeInstances, failedInstances, status);
     }
 
     private int countActiveInstances(ManageableNode node, Artifact artifact) {
@@ -405,8 +423,10 @@ public final class SliceRoutes implements RouteSource {
                          .count();
     }
 
-    private String determineSliceDeploymentStatus(int target, int active) {
-        if (active == 0) {
+    private String determineSliceDeploymentStatus(int target, int active, int failed) {
+        if (failed > 0) {
+            return "FAILED";
+        } else if (active == 0) {
             return "PENDING";
         } else if (active < target) {
             return "DEPLOYING";
@@ -417,13 +437,18 @@ public final class SliceRoutes implements RouteSource {
         }
     }
 
+    /// #759 — `FAILED` takes priority over every other bucket, mirroring `deployStatus`'s
+    /// failed-first precedence for the deploy response.
     private String computeOverallStatus(List<BlueprintSliceStatus> sliceStatuses) {
+        var hasFailed = sliceStatuses.stream().anyMatch(s -> "FAILED".equals(s.status()));
         var hasPending = sliceStatuses.stream().anyMatch(s -> "PENDING".equals(s.status()));
         var hasDeploying = sliceStatuses.stream().anyMatch(s -> "DEPLOYING".equals(s.status()));
         var hasScalingDown = sliceStatuses.stream().anyMatch(s -> "SCALING_DOWN".equals(s.status()));
         var allDeployed = sliceStatuses.stream().allMatch(s -> "DEPLOYED".equals(s.status()));
 
-        if (allDeployed) {
+        if (hasFailed) {
+            return "FAILED";
+        } else if (allDeployed) {
             return "DEPLOYED";
         } else if (hasPending) {
             return "PENDING";

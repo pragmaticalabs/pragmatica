@@ -147,12 +147,18 @@ public sealed interface ManagementApiResponses {
     /// #759 — `status` is earned off `deploymentMap()` at response time (see
     /// `SliceRoutes.deployStatus`), not assumed from publish success; `targetInstances` /
     /// `activeInstances` / `failedInstances` let an operator tell total outage from healthy without
-    /// a follow-up call.
+    /// a follow-up call. `statusUrl` always points at `GET /api/blueprints/status/{id}` because a
+    /// deterministic failure under the default `ALL_OR_NOTHING` atomicity can roll back and clear the
+    /// deployment-map entry before this response is built — `status` then reads `pending` for a deploy
+    /// that already failed, and `statusUrl` (plus `GET /api/events` filtered for `DEPLOYMENT_FAILED`)
+    /// is the only way to learn the outcome afterwards. See
+    /// `aether/docs/reference/management-api.md` `POST /api/blueprints/deploy`.
     record BlueprintResponse(String status,
                              String blueprint,
                              int targetInstances,
                              int activeInstances,
-                             int failedInstances) {}
+                             int failedInstances,
+                             String statusUrl) {}
 
     record BlueprintListResponse(List<BlueprintSummary> blueprints) {}
 
@@ -164,7 +170,15 @@ public sealed interface ManagementApiResponses {
 
     record BlueprintStatusResponse(String id, String overallStatus, List<BlueprintSliceStatus> slices) {}
 
-    record BlueprintSliceStatus(String artifact, int targetInstances, int activeInstances, String status) {}
+    /// #759 — `failedInstances` surfaces `SliceState.FAILED` entries still present in
+    /// `deploymentMap()` at response time (e.g. `BEST_EFFORT` deploys, or a query that lands before
+    /// `ALL_OR_NOTHING` rollback cleanup runs); `status` folds it in as `"FAILED"`, taking priority
+    /// over the target/active comparison. See `SliceRoutes.determineSliceDeploymentStatus`.
+    record BlueprintSliceStatus(String artifact,
+                                int targetInstances,
+                                int activeInstances,
+                                int failedInstances,
+                                String status) {}
 
     record BlueprintDeleteResponse(String status, String id) {}
 
