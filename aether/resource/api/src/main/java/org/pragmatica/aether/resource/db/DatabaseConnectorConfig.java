@@ -330,6 +330,14 @@ public record DatabaseConnectorConfig(Option<String> name,
                                   .map(_ -> Unit.unit());
     }
 
+    // #769 deferred: firstUrlHost/firstUrlPort/firstUrlDatabase check URL kinds in the order
+    // jdbc -> r2dbc -> async, the REVERSE of the documented transport-selection priority
+    // async > r2dbc > jdbc (AsyncSqlConnectorFactory.priority()=20, R2dbcSqlConnectorFactory.priority()=10,
+    // JDBC default=0). This is deliberate, not an oversight: no shipped aether.toml sets two
+    // different URL kinds to different hosts, so the two orderings currently never disagree in
+    // practice, and reconciling them (deriving from the URL kind the selected transport would
+    // actually use) is a separate, larger change. Unreachable by any shipped config today; tracked
+    // for a follow-up (draft: ticket-url-kind-derivation-follows-transport.md, not yet filed).
     private static Option<String> firstUrlHost(Option<String> jdbcUrl,
                                                Option<String> r2dbcUrl,
                                                Option<String> asyncUrl) {
