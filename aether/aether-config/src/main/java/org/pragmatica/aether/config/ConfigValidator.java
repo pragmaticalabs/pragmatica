@@ -32,6 +32,8 @@ public final class ConfigValidator {
         nodeErrors(config.node(), errors);
         absenceWindowErrors(config.timeouts().cluster(),
                             errors);
+        storageMaintenanceErrors(config.timeouts().storageMaintenance(),
+                                 errors);
         streamingErrors(config.streaming(), errors);
         if (config.tlsEnabled()) {
             config.tls().onPresent(tls -> tlsErrors(tls, errors));
@@ -54,6 +56,15 @@ public final class ConfigValidator {
                        + "re-places its slices, or both run at once").formatted(cluster.coreAbsence(),
                                                                                 cluster.communityAbsence()));
         }
+    }
+
+    /// #250 review: `StorageMaintenanceDriver` schedules `demote()`+`collectGarbage()` on this interval
+    /// unconditionally; a non-positive value would either fail scheduler wiring or spin the tick with
+    /// no pacing, so it is rejected here rather than discovered at startup, joining the collected report
+    /// with every other config problem.
+    private static void storageMaintenanceErrors(TimeoutsConfig.StorageMaintenanceTimeouts storageMaintenance,
+                                                 List<String> errors) {
+        positiveTimeSpanError(storageMaintenance.interval(), "Storage maintenance interval", errors);
     }
 
     /// `reshuffle_concurrency` bounds how many partitions one node materializes+backfills at once. Zero or

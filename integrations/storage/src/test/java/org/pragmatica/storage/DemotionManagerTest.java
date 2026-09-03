@@ -6,6 +6,9 @@ import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -189,6 +192,88 @@ class DemotionManagerTest {
             var demoted = dm.demote();
 
             assertThat(demoted).isZero();
+        }
+    }
+
+    @Nested
+    class SharedTierSafetyTests {
+
+        /// #250 review: mirrors the GC-side `SharedTierSafetyTests` in `StorageGarbageCollectorTest`.
+        /// `demoteAllTiers()` walks `tiers` in order and treats index 0..size-2 as demotion SOURCES on
+        /// the convention that a cluster-shared tier (e.g. DHT) is placed LAST. Placing it first pins
+        /// that `DefaultDemotionManager` does not rely on that convention: a shared tier must never be
+        /// read as a demotion source regardless of position, because its local watermark reading says
+        /// nothing about cluster-wide liveness.
+        @Test
+        void demote_sharedTierFirst_demotesNothingFromIt() {
+            storeInMemory(BLOCK_A);
+            storeInMemory(BLOCK_B);
+            storeInMemory(BLOCK_C);
+            storeInMemory(BLOCK_D);
+
+            var sharedFirst = new SharedMemoryTier(memoryTier);
+
+            // Watermarks low enough that, absent the guard, the shared tier's utilization would
+            // trigger demotion out of it and into diskTier.
+            var config = demotionConfig(DemotionStrategy.LRU, 0.01, 0.005, 100);
+            var dm = demotionManager(List.of(sharedFirst, diskTier), metadataStore, config);
+            dm.activate();
+
+            var demoted = dm.demote();
+
+            assertThat(demoted).isZero();
+            assertThat(diskTier.usedBytes()).isZero();
+        }
+    }
+
+    /// #250 review: minimal shared-tier double -- delegates storage operations to a MemoryTier
+    /// while reporting `isShared() == true`, mirroring the DHT tier's contract without pulling
+    /// the DHT module into this test's dependencies.
+    private static final class SharedMemoryTier implements StorageTier {
+        private final MemoryTier delegate;
+
+        SharedMemoryTier(MemoryTier delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public Promise<Option<byte[]>> get(BlockId id) {
+            return delegate.get(id);
+        }
+
+        @Override
+        public Promise<Unit> put(BlockId id, byte[] content) {
+            return delegate.put(id, content);
+        }
+
+        @Override
+        public Promise<Unit> delete(BlockId id) {
+            return delegate.delete(id);
+        }
+
+        @Override
+        public Promise<Boolean> exists(BlockId id) {
+            return delegate.exists(id);
+        }
+
+        @Override
+        public TierLevel level() {
+            return delegate.level();
+        }
+
+        @Override
+        public long usedBytes() {
+            return delegate.usedBytes();
+        }
+
+        @Override
+        public long maxBytes() {
+            return delegate.maxBytes();
+        }
+
+        @Override
+        public boolean isShared() {
+            return true;
         }
     }
 
