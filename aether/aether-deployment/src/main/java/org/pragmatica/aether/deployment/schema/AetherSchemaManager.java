@@ -63,6 +63,15 @@ public interface AetherSchemaManager {
         return new DefaultAetherSchemaManager(policy, SchemaHistoryRepository.schemaHistoryRepository());
     }
 
+    /// Exposes the [SchemaPolicy] this manager was built with, so a caller that must bound its OWN
+    /// operation against the same policy (#760/#724 review round 2 item c —
+    /// [SchemaOrchestratorService]'s per-attempt migration timeout) reads the single source of truth
+    /// instead of duplicating the bound. Defaults to [SchemaPolicy#schemaPolicy()] so existing test
+    /// doubles that implement this interface without a policy of their own keep compiling.
+    default SchemaPolicy policy() {
+        return SchemaPolicy.schemaPolicy();
+    }
+
     record SchemaResult(int appliedCount, int currentVersion, long totalMs) {
         public static SchemaResult schemaResult(int appliedCount, int currentVersion, long totalMs) {
             return new SchemaResult(appliedCount, currentVersion, totalMs);
@@ -77,6 +86,11 @@ final class DefaultAetherSchemaManager implements AetherSchemaManager {
     DefaultAetherSchemaManager(SchemaPolicy policy, SchemaHistoryRepository historyRepo) {
         this.policy = policy;
         this.historyRepo = historyRepo;
+    }
+
+    @Override
+    public SchemaPolicy policy() {
+        return policy;
     }
 
     /// Claim ownership of the physical database IMMEDIATELY after bootstrap and BEFORE

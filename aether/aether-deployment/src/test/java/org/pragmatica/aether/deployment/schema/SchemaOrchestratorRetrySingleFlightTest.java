@@ -13,7 +13,10 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -160,6 +163,116 @@ class SchemaOrchestratorRetrySingleFlightTest {
         assertThat(statusesWrittenToKv()).contains(SchemaStatus.COMPLETED);
     }
 
+    /// #760/#724 review round 2 item c, part 1 — pre-fix, `executeMigrationFlow` ran `finalizeAttempt`
+    /// (clearing the in-flight fence and, on failure, releasing the KV lock) for the WHOLE chain via a
+    /// single outer `replaceResult`, including a second dispatch's `acquireLock` short-circuit. A
+    /// concurrent second dispatch's fast failure therefore tore down the FIRST, genuinely in-flight
+    /// attempt's fence and lock — letting a third dispatch acquire the fence again and invoke
+    /// `migrate()` a second time while the first attempt was still running. Fixed: `finalizeAttempt` is
+    /// nested inside `acquireLock`'s own success branch, so it can only ever run for the attempt that
+    /// itself acquired the fence.
+    ///
+    /// A genuine race requires a real background thread: `migrateIfNeeded` gates dispatch on the KV
+    /// status still being PENDING, and `acquireLock`'s own KV write (the lock-key `Put`, BEFORE
+    /// `runMigration` ever writes MIGRATING) is where attempt 1 is parked here — via
+    /// `RecordingClusterNode`'s blocking-first-`apply()` hook — so attempts 2 and 3 still see PENDING
+    /// in KV and reach `acquireLock` themselves, where the IN-MEMORY fence (not KV state) must be what
+    /// turns them away.
+    @Test
+    void concurrentDispatch_failedAcquireLock_doesNotReleaseInFlightAttemptsFenceOrLock() throws Exception {
+        seedSchemaVersion(DECLARED_VERSION, LAST_MIGRATION, COORDS);
+
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var blockingCluster = new RecordingClusterNode(SELF, kvStore, entered, release);
+
+        var manager = new HangingSchemaManager(SchemaPolicy.schemaPolicy());
+        manager.pending = Promise.success(AetherSchemaManager.SchemaResult.schemaResult(1, DECLARED_VERSION, 1L));
+
+        Repository repository = _ -> NOT_IN_REPOSITORY.promise();
+        var orchestrator = SchemaOrchestratorService.schemaOrchestratorService(blockingCluster,
+                                                                               kvStore,
+                                                                               artifactStoreServing(),
+                                                                               repository,
+                                                                               manager,
+                                                                               stubConnectionProvider(),
+                                                                               SELF);
+
+        var executor = Executors.newSingleThreadExecutor();
+        try {
+            var attempt1 = executor.submit(() -> orchestrator.migrateIfNeeded(DATASOURCE).await());
+
+            assertThat(entered.await(5, TimeUnit.SECONDS)).as("attempt 1 must reach its own KV write within 5s").isTrue();
+
+            // Attempt 1 is now blocked committing its own lock Put: the fence is held in memory, but
+            // KV still reads PENDING (MIGRATING is written later, inside runMigration). Attempt 2 must
+            // therefore be turned away by the in-memory fence itself.
+            orchestrator.migrateIfNeeded(DATASOURCE)
+                        .await()
+                        .onSuccess(_ -> Assertions.fail("Expected attempt 2 to fail — the fence is held by attempt 1"))
+                        .onFailure(cause -> assertThat(cause.message()).contains("lock held"));
+
+            // Discriminating check: pre-fix, attempt 2's failure above tore down attempt 1's fence, so
+            // attempt 3 would acquire it again and invoke migrate() a SECOND time here — concurrently
+            // with attempt 1, which has not even finished acquiring its own lock yet.
+            orchestrator.migrateIfNeeded(DATASOURCE)
+                        .await()
+                        .onSuccess(_ -> Assertions.fail("Expected attempt 3 to fail too — attempt 1's fence must still be held"))
+                        .onFailure(cause -> assertThat(cause.message()).contains("lock held"));
+
+            assertThat(manager.invocations).as("migrate() must not run before attempt 1's own write completes").isEmpty();
+
+            release.countDown();
+
+            attempt1.get(5, TimeUnit.SECONDS).onFailure(SchemaOrchestratorRetrySingleFlightTest::failOnUnexpectedFailure);
+        } finally {
+            executor.shutdownNow();
+        }
+
+        assertThat(manager.invocations).hasSize(1);
+        assertThat(blockingCluster.schemaVersionPuts()).extracting(SchemaVersionValue::status).contains(SchemaStatus.COMPLETED);
+    }
+
+    /// #760/#724 review round 2 item c, part 2 — before `.timeout()` was added to
+    /// `resolveAndParseMigrations` inside `runMigration`, a migration whose low-level `migrate()` call
+    /// never resolves (a wedged connection, a runaway script) would hold the in-flight fence and the KV
+    /// migration lock forever — no external caller (manual retry, rebuild recovery) could ever get back
+    /// in. Bounded here by [SchemaPolicy#migrationTimeout], read through [AetherSchemaManager#policy].
+    @Test
+    void migrate_neverResolves_timesOutReleasesFenceAndMarksFailed() {
+        seedSchemaVersion(DECLARED_VERSION, LAST_MIGRATION, COORDS);
+
+        var shortTimeoutPolicy = SchemaPolicy.schemaPolicy(SchemaPolicy.FailureMode.LEAVE_PARTIAL,
+                                                           SchemaPolicy.FailoverMode.AUTO_RESUME,
+                                                           timeSpan(300).millis());
+        var hangingManager = new HangingSchemaManager(shortTimeoutPolicy);
+        var orchestrator = orchestratorWith(hangingManager);
+
+        orchestrator.migrateIfNeeded(DATASOURCE)
+                    .await(timeSpan(3).seconds())
+                    .onSuccess(_ -> Assertions.fail("Expected the hung migration to time out and fail"))
+                    .onFailure(cause -> assertThat(cause.message()).containsIgnoringCase("timed out"));
+
+        assertThat(statusesWrittenToKv()).as("a timed-out attempt must still reach a terminal FAILED status")
+                  .contains(SchemaStatus.FAILED);
+        assertThat(hangingManager.invocations).hasSize(1);
+
+        // The fence and KV lock must both be released by the timeout path. `migrateIfNeeded` itself
+        // only ever dispatches a PENDING record, so proving release means simulating what a retry route
+        // does after a FAILED record — reset status back to PENDING — and then confirming the second
+        // dispatch actually reaches migrate() again, rather than failing fast on a fence or lock the
+        // first, timed-out attempt never released.
+        seedSchemaVersion(DECLARED_VERSION, LAST_MIGRATION, COORDS);
+        hangingManager.pending = Promise.success(AetherSchemaManager.SchemaResult.schemaResult(1, DECLARED_VERSION, 1L));
+
+        orchestrator.migrateIfNeeded(DATASOURCE)
+                    .await()
+                    .onFailure(SchemaOrchestratorRetrySingleFlightTest::failOnUnexpectedFailure);
+
+        assertThat(hangingManager.invocations).hasSize(2);
+        assertThat(statusesWrittenToKv()).contains(SchemaStatus.COMPLETED);
+    }
+
     private static void assertTransientDatasourceFailure(Cause cause) {
         assertThat(cause).isInstanceOf(SchemaError.DatasourceUnreachable.class);
     }
@@ -169,13 +282,17 @@ class SchemaOrchestratorRetrySingleFlightTest {
     }
 
     private SchemaOrchestratorService orchestrator() {
+        return orchestratorWith(schemaManager);
+    }
+
+    private SchemaOrchestratorService orchestratorWith(AetherSchemaManager manager) {
         Repository repository = _ -> NOT_IN_REPOSITORY.promise();
 
         return SchemaOrchestratorService.schemaOrchestratorService(cluster,
                                                                    kvStore,
                                                                    artifactStoreServing(),
                                                                    repository,
-                                                                   schemaManager,
+                                                                   manager,
                                                                    stubConnectionProvider(),
                                                                    SELF);
     }
@@ -345,6 +462,55 @@ class SchemaOrchestratorRetrySingleFlightTest {
         }
     }
 
+    /// #760/#724 review round 2 item c pinning-test support — a schema manager whose `migrate()` call
+    /// never resolves on its own, standing in for a wedged connection or a runaway migration script.
+    /// `pending` is reassignable so a test can let a later dispatch succeed after proving the timeout
+    /// or fence behavior on the first.
+    private static final class HangingSchemaManager implements AetherSchemaManager {
+        final List<String> invocations = Collections.synchronizedList(new ArrayList<>());
+        final SchemaPolicy policy;
+        Promise<SchemaResult> pending = Promise.promise();
+
+        HangingSchemaManager(SchemaPolicy policy) {
+            this.policy = policy;
+        }
+
+        @Override
+        public SchemaPolicy policy() {
+            return policy;
+        }
+
+        @Override
+        public Promise<SchemaResult> migrate(String datasource,
+                                             List<MigrationEntry> scripts,
+                                             SqlConnector connector,
+                                             String nodeId,
+                                             BlueprintId owner) {
+            invocations.add(datasource);
+            return pending;
+        }
+
+        @Override
+        public Promise<SchemaResult> undo(String datasource,
+                                          int targetVersion,
+                                          List<MigrationEntry> scripts,
+                                          SqlConnector connector,
+                                          String nodeId,
+                                          BlueprintId owner) {
+            return Promise.success(SchemaResult.schemaResult(0, targetVersion, 1L));
+        }
+
+        @Override
+        public Promise<SchemaResult> baseline(String datasource,
+                                              int baselineVersion,
+                                              List<MigrationEntry> scripts,
+                                              SqlConnector connector,
+                                              String nodeId,
+                                              BlueprintId owner) {
+            return Promise.success(SchemaResult.schemaResult(0, baselineVersion, 1L));
+        }
+    }
+
     /// #760/#724 review BLOCKING 2 pinning-test fix: production `cluster.apply()` commits through
     /// consensus and the committed value becomes visible to the NEXT `kvStore.get()` — that
     /// read-your-write property is what lets `attemptCount` escalate across retries, which is what
@@ -359,10 +525,25 @@ class SchemaOrchestratorRetrySingleFlightTest {
         final NodeId self;
         final InMemoryKvStore kvStore;
         final List<KVCommand<AetherKey>> commands = Collections.synchronizedList(new ArrayList<>());
+        private final CountDownLatch blockedEntered;
+        private final CountDownLatch blockedRelease;
+        private final AtomicBoolean firstApply = new AtomicBoolean(true);
 
         RecordingClusterNode(NodeId self, InMemoryKvStore kvStore) {
+            this(self, kvStore, null, null);
+        }
+
+        /// #760/#724 review round 2 item c, part 1 pinning-test support — when both latches are
+        /// supplied, the FIRST `apply()` call counts down `blockedEntered` and then parks on
+        /// `blockedRelease` before committing. This lets a test hold one dispatch inside its own KV
+        /// write — the in-flight fence already claimed in memory by [SchemaOrchestratorService#acquireLock],
+        /// the write itself not yet landed — while it fires concurrent dispatches that must be turned
+        /// away by the fence itself, not by a KV state that has not caught up yet.
+        RecordingClusterNode(NodeId self, InMemoryKvStore kvStore, CountDownLatch blockedEntered, CountDownLatch blockedRelease) {
             this.self = self;
             this.kvStore = kvStore;
+            this.blockedEntered = blockedEntered;
+            this.blockedRelease = blockedRelease;
         }
 
         @Override public NodeId self() {return self;}
@@ -374,10 +555,26 @@ class SchemaOrchestratorRetrySingleFlightTest {
         @Override public Promise<Unit> stop() {return Promise.unitPromise();}
 
         @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> batch) {
+            if (blockedEntered != null && firstApply.compareAndSet(true, false)) {
+                blockedEntered.countDown();
+                awaitBlockedRelease();
+            }
+
             commands.addAll(batch);
             kvStore.apply(batch);
 
             return Promise.success(Collections.emptyList());
+        }
+
+        private void awaitBlockedRelease() {
+            try {
+                if (!blockedRelease.await(5, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("Test never released the blocked apply() within 5s");
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("Interrupted while waiting for test to release apply()", e);
+            }
         }
 
         List<SchemaVersionValue> schemaVersionPuts() {

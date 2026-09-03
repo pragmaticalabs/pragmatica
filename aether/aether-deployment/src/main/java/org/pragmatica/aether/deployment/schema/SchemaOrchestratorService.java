@@ -43,6 +43,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Verify;
+import org.pragmatica.lang.io.CoreError;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageRouter;
@@ -176,10 +177,18 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     // this promise's result reaches a caller). The in-flight fence must be cleared, and a failed
     // attempt's lock released, before a caller reacting to this promise's outcome (a manual
     // retry route, in particular) can observe it.
+    //
+    // #760/#724 review round 2 item c: `finalizeAttempt` is nested INSIDE `acquireLock`'s success
+    // branch, not chained after the whole flow. A second dispatch that arrives while a first
+    // attempt is genuinely in flight has its own `acquireLock` fail fast (the fence add returns
+    // `false`) — with `replaceResult` wrapping the ENTIRE chain, that failure used to still run
+    // `finalizeAttempt`, unconditionally removing the FIRST attempt's fence entry and, because the
+    // result was a failure, releasing the FIRST attempt's still-held KV lock out from under it.
+    // Nesting means `finalizeAttempt` runs only for the attempt whose OWN `acquireLock` succeeded —
+    // no owner token needed, the call-site scoping is the ownership proof.
     private Promise<Unit> executeMigrationFlow(String datasourceName, SchemaVersionValue value) {
-        return acquireLock(datasourceName).flatMap(_ -> runMigration(datasourceName, value))
-                          .flatMap(_ -> releaseLock(datasourceName))
-                          .replaceResult(result -> finalizeAttempt(datasourceName, result));
+        return acquireLock(datasourceName).flatMap(_ -> runMigration(datasourceName, value).flatMap(_ -> releaseLock(datasourceName))
+                                                                     .replaceResult(result -> finalizeAttempt(datasourceName, result)));
     }
 
     private Result<Unit> finalizeAttempt(String datasourceName, Result<Unit> result) {
@@ -198,13 +207,21 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     // observable, or a caller that reacts immediately (a manual retry) can run
     // `cancelScheduledRetry` before the put lands, orphaning an uncancelled timer that later
     // fires a redundant, uncoordinated migration attempt.
+    // #760/#724 review round 2 item c: `.timeout()` is placed directly on `resolveAndParseMigrations`'s
+    // returned promise, before any further `.flatMap` is chained onto it — per `Promise.timeout()`'s
+    // own placement warning, a forced failure only protects transformations chained AFTER the call,
+    // so it must sit as close to the low-level operation (`schemaManager.migrate`, reached inside
+    // `resolveAndParseMigrations`) as this call site allows. Without a bound, a wedged connection or a
+    // runaway script holds the migration lock and the in-flight fence indefinitely, and no external
+    // caller (manual retry, rebuild recovery) can ever get back in.
     private Promise<Unit> runMigration(String datasourceName, SchemaVersionValue value) {
         var startTime = System.currentTimeMillis();
 
         emitMigrationStarted(datasourceName, value);
 
-        return updateStatus(datasourceName, value, SchemaStatus.MIGRATING).flatMap(_ -> resolveAndParseMigrations(datasourceName,
-                                                                                                                  value))
+        return updateStatus(datasourceName, value, SchemaStatus.MIGRATING).flatMap(_ -> resolveAndParseMigrations(datasourceName, value)
+                                                                                                     .timeout(schemaManager.policy()
+                                                                                                                          .migrationTimeout()))
                            .flatMap(_ -> markCompleted(datasourceName, value, startTime))
                            .mapError(cause -> handleMigrationFailure(datasourceName, value, cause));
     }
@@ -339,6 +356,15 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
         }
 
         if (cause instanceof SchemaError.MigrationSetUnavailable) {
+            return FailureClassification.PERMANENT;
+        }
+
+        // #760/#724 review round 2 item c: a timed-out attempt (Promise.timeout() on
+        // resolveAndParseMigrations, bounded by SchemaPolicy#migrationTimeout) is classified explicitly
+        // rather than left to the UNKNOWN fallthrough below — both already skip retry and reach
+        // emitPermanentFailure/SchemaStatus.FAILED, but naming it PERMANENT here makes the timeout path
+        // directly unit-testable and self-documenting instead of relying on fallthrough behavior.
+        if (cause instanceof CoreError.Timeout) {
             return FailureClassification.PERMANENT;
         }
 
