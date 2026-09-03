@@ -6,6 +6,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc4] - Unreleased
 
+### Fixed (2026-09-03 — #760: a schema hold produced one `WARN` per re-evaluation tick, not per hold)
+- **The hold WARN is event-driven, not tick-driven, and fired on every re-observation of an
+  unchanged hold.** `tryActivateIfDependenciesReady` is reached from the slice's own LOAD, from
+  ANY schema record reaching `COMPLETED`, from a sibling dependency activating, and once per
+  blueprint at leader rebuild — a single long-running hold could log dozens of identical WARNs.
+  A per-slice `reportedSchemaHolds` map now tracks the last-reported blocking signature: `WARN` on
+  first observation or on a signature change, `DEBUG` on an unchanged repeat, and one `WARN` when
+  the hold clears.
+- **`GET /api/schema/status/{datasource}` (and the status-list route) gained `heldSlices`** —
+  the slices a blocking record currently withholds from activation. Empty whenever the record is
+  not blocking, so the operator no longer has to correlate DEBUG logs or wait for the
+  `SCHEMA_ACTIVATION_BLOCKED` audit entry. (Its derivation was corrected in the review round below —
+  see "`heldSlices` was a parallel derivation that never read per-node slice state.")
+
+### Fixed (2026-09-03 — #724: a schema migration stuck `PENDING` had no recovery lever short of a redeploy)
+- **`POST /api/schema/retry/{datasource}` now accepts `PENDING` as well as `FAILED`.** A migration
+  that never dispatched (e.g. the orchestrator crashed before running it) was refused by the same
+  409 guard as an already-`COMPLETED` record, leaving redeploy as the only lever. `MIGRATING` and
+  `COMPLETED` remain refused — a runner is already in flight, or nothing marked the record failed.
+- **The refusal message keeps its scripted-client substring.** `SchemaRouteError.SchemaNotFailed`
+  still emits `"...is not in FAILED state (currently <STATUS>)..."`, pinned by two integration
+  scripts and a unit test, now ending `"— retry applies to FAILED or PENDING migrations only"`.
+
+### Fixed (2026-09-03 — #769: `database.async_url` operator override was ignored by slice stores while the log claimed it was applied)
+- **`DatabaseConnectorConfig.effectiveHost()`/`effectivePort()`/`effectiveDatabase()` gave the
+  discrete `host`/`port`/`database` fields unconditional precedence over a configured URL**,
+  inverting the documented contract (`resource-reference.md`: `jdbc_url`/`r2dbc_url`/`async_url`
+  "replaces host/port/database"). An operator who set only `async_url` to redirect a datastore had
+  the override silently discarded by every consumer of the effective accessors
+  (`AsyncSqlConnectorFactory`, `PgSqlConnectorFactory`, `NotificationListenerFactory`,
+  `AsyncJooqConnectorFactory`), while `effectiveAsyncUrl()` itself was already URL-first and correct.
+- The three accessors now prefer the URL-derived value (via the existing, unchanged
+  jdbc→r2dbc→async internal ordering) and fall back to the discrete field only when no URL yields
+  one. `effectiveType()`, `effectiveUsername()`, and `effectivePassword()` are unchanged — no
+  URL-derivation applies to type/credentials.
+
 ### Fixed (2026-09-03 — #250: storage GC/demotion was wired to a no-op)
 - **Artifact and stream tier demotion and garbage collection now actually run.** `AetherNode`
   previously wired storage through `DelegatedStorageAdapter.noOp()` — leader-pinned
@@ -27,6 +63,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `ClusterTimeoutsAbsenceOrderingTest.configWith()`, and `StorageRoutesTest` (rebuilt for
   `StorageSetup` growing from 5 to 7 components).
 
+### Fixed (2026-09-03 — #760 / #724 review round: `heldSlices` reported a serving slice as held, and retry could double-dispatch)
+- **`heldSlices` was a parallel derivation that never read per-node slice state.** It matched
+  ownership only, so `/migrate` re-arming a `COMPLETED` record while its slices were `ACTIVE` made
+  `GET /api/schema/status/{datasource}` report an already-serving slice as held. `heldSlices` now
+  shares the exact predicate the activation gate itself evaluates
+  (`ClusterDeploymentState.blocksSliceActivation`, newly extracted and exposed as
+  `BLOCKING_SCHEMA_STATUSES`) instead of re-deriving it from ownership alone.
+- **`POST /api/schema/migrate/{datasource}` now refuses to re-arm a `COMPLETED` record with a live
+  `ACTIVE` slice.** Re-arming has no orchestrator effect by itself (only a `PENDING` record's Put
+  dispatches a run) but leaves `MIGRATING` — a blocking status with no automatic clearing path —
+  ready to hold the next slice instance that reaches `LOADED`. Refused with `409 Conflict`
+  (`SchemaAlreadyServing`, naming the datasource and active-slice count); a `COMPLETED` record with
+  zero live `ACTIVE` slices is unaffected. See [`POST /api/schema/migrate`](aether/docs/reference/management-api.md#post-apischemamigratedatasource).
+- **Retry dispatch is now single-flight per record across both the timer and the route, on a given
+  leader.** A PENDING record with a live scheduled retry could double-dispatch `migrateIfNeeded`
+  when the route and the timer's KV-lock release raced on the same leader; `acquireLock` now
+  cancels any scheduled retry for the datasource before proceeding, so exactly one dispatch wins on
+  that leader regardless of which path gets there first. Across leaders the consensus lock is the
+  arbiter (`acquireLock`'s `isLockHeld` read followed by a conditional `Put`), and that read-then-Put
+  window is not atomic — this fixes the same-leader double-dispatch, not a cross-leader race.
+- **The dedup signature for a repeated schema hold is now a sorted join**, not an unsorted join over
+  a `ConcurrentHashMap` — an unchanged multi-datasource hold could otherwise re-WARN if two
+  evaluations happened to iterate the blocking set in different orders.
+
 ### Changed (2026-09-03 — #782: single machine is three containers; cluster size below 3 refused at startup)
 - **A node whose CONFIGURED cluster size is below three now refuses to boot** — gated on the
   topology a node was told to run (the parsed `--peers=`/`CLUSTER_PEERS` list plus self, or the
@@ -44,18 +104,109 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   runbook (`backup-recovery.md`) now notes that starting one node of a configured three-node cluster does not trip
   the gate, and that the node will not reach quorum until a second one joins.
 
-### Fixed (2026-09-03 — #769: `database.async_url` operator override was ignored by slice stores while the log claimed it was applied)
-- **`DatabaseConnectorConfig.effectiveHost()`/`effectivePort()`/`effectiveDatabase()` gave the
-  discrete `host`/`port`/`database` fields unconditional precedence over a configured URL**,
-  inverting the documented contract (`resource-reference.md`: `jdbc_url`/`r2dbc_url`/`async_url`
-  "replaces host/port/database"). An operator who set only `async_url` to redirect a datastore had
-  the override silently discarded by every consumer of the effective accessors
-  (`AsyncSqlConnectorFactory`, `PgSqlConnectorFactory`, `NotificationListenerFactory`,
-  `AsyncJooqConnectorFactory`), while `effectiveAsyncUrl()` itself was already URL-first and correct.
-- The three accessors now prefer the URL-derived value (via the existing, unchanged
-  jdbc→r2dbc→async internal ordering) and fall back to the discrete field only when no URL yields
-  one. `effectiveType()`, `effectiveUsername()`, and `effectivePassword()` are unchanged — no
-  URL-derivation applies to type/credentials.
+### Fixed (2026-09-03 — #759 review, BLOCKING 3: a rolled-back blueprint had no outcome to read after `unloadBlueprintSlices` removed its key)
+- **A durable per-blueprint deployment outcome record now survives ALL_OR_NOTHING rollback.**
+  `unloadBlueprintSlices` unconditionally removed the failed blueprint's `AppBlueprintKey`, so
+  `GET /api/blueprints/status/{id}` returned 404 after a rollback, with only the transient
+  `DeploymentFailed` event on `/api/events` as evidence. The FSM now writes an
+  `AetherKey.DeploymentOutcomeKey` / `AetherValue.DeploymentOutcomeValue` pair (`SUCCEEDED` /
+  `FAILED` / `ROLLED_BACK` status, failing slice ids, cause, timestamp) at the terminal
+  transition, bundled into the SAME consensus batch as the `AppBlueprintKey` removal — atomic
+  with, not vulnerable to, the cleanup that used to remove the only evidence. Only the
+  `SUCCEEDED` and `FAILED` write sites are wired by this fix; `ROLLED_BACK` was a defined status
+  with no write site yet, deliberately left out of scope here — wired two review rounds later by
+  `restorePreviousBlueprint`'s `rolledBackOutcomeCommand`
+  (`ClusterDeploymentState.java:2412`), see the round 2 entry below ("The `ALL_OR_NOTHING`
+  restore-previous-blueprint branch now also writes a `ROLLED_BACK` outcome").
+- **Bounded by KV Put-overwrite-by-key**: the record is keyed by blueprint id, so a redeploy's
+  next terminal transition simply overwrites the same key — one outcome kept per blueprint id,
+  no accumulation, no separate pruning mechanism.
+- **`BlueprintService.outcome(BlueprintId id) : Option<AetherValue.DeploymentOutcomeValue>`**
+  exposes the read accessor for the node's status route (stream A wires the route to it after
+  this branch merges — `SliceRoutes.java` / `ManagementApiResponses.java` are out of scope here).
+- **`KVStoreSerializer.java` gained a TOML round-trip for the new `deployment-outcome` section**
+  (`STATUS|slice1,slice2,...|cause|timestampMs`, fully lossless, not added to `LOSSY_SECTIONS`) so
+  the new KV type participates in snapshot export/import like every other section.
+- Pinning test `ClusterDeploymentStateTransactionalTest.DeploymentOutcomeRecord` drives a FAILED
+  `NodeArtifact` Put through the real FSM dispatch path into `unloadBlueprintSlices`, asserting the
+  outcome `Put` and the `AppBlueprintKey` `Remove` land in the same consensus batch. Mutation-probed:
+  red with the write reverted, green restored.
+
+### Fixed (2026-09-03 — #760 / #724 review round 2: BEST_EFFORT failures, rollback restore, wire escaping, and a `/migrate` refusal gap left durable evidence incomplete)
+- **A `BEST_EFFORT` deployment failure now writes a durable `FAILED` outcome record.** `BEST_EFFORT`
+  artifacts never populate `inFlightBlueprints` (that tracking is `ALL_OR_NOTHING`-only), so neither
+  `rollbackBlueprintForArtifact` nor the succeeded-outcome write path ever ran for them — a partial
+  `BEST_EFFORT` failure previously left no record at all for `BlueprintService.outcome()` to return.
+  Merges into any existing `FAILED` record for the same blueprint (read-then-Put) so a second,
+  independently failing slice in one partial deployment is added to `failingSlices` instead of
+  erasing the first. A slice with no owning blueprint (a standalone deploy) is correctly a no-op.
+- **The `ALL_OR_NOTHING` restore-previous-blueprint branch now also writes a `ROLLED_BACK` outcome**
+  for the blueprint being replaced, bundled into the SAME consensus batch as the restored previous
+  blueprint's own `AppBlueprintKey` Put — a reader of `outcome()` for the failing blueprint's id
+  never observes the restore having landed without also observing the terminal record. Recorded
+  against the blueprint being replaced, never the (separate, still-healthy) blueprint being restored.
+- **The `deployment-outcome` KV wire form now escapes `cause` and each slice id** (backslash-escaping
+  `\`, `|`, and `,`) instead of joining them unescaped — an embedded `|` in a cause message previously
+  corrupted the field boundary, and an embedded `,` in a slice id previously split it into two. The
+  reverse parse is escape-aware on both the outer `|` split and the inner `,` split
+  (`KVStoreSerializer.splitOutcomeField`).
+- **A malformed `deployment-outcome` TOML record (wrong field count, unrecognized status, non-numeric
+  timestamp) now fails the section's `Result` instead of throwing** `IllegalArgumentException` /
+  `NumberFormatException` out of `valueOf`/`parseLong` uncaught — composes through `Result#allOf`
+  into a failure of the whole snapshot load, consistent with every other section in the file.
+- **`POST /api/schema/migrate/{datasource}` now refuses `409 Conflict` against an already-`PENDING`
+  record**, distinct from the existing `COMPLETED`-with-active-slices refusal: re-arming a `PENDING`
+  record to `MIGRATING` has no dispatch effect of its own (only a fresh `PENDING` Put dispatches a
+  run) and would strand the record with no automatic clearing path. Refused via the new
+  `SchemaAlreadyPending` error, naming the datasource; retry the existing pending migration or use
+  `aether schema retry` once it has failed. `POST /api/schema/retry/{datasource}` is a separate route
+  (`retryMigration` → `writeRetryStatus`) and is unaffected — it still accepts `PENDING` (#724's
+  original widening). See [`POST /api/schema/migrate`](aether/docs/reference/management-api.md#post-apischemamigratedatasource).
+- **`recordSucceededOutcome`'s write now logs `WARN` on failure** instead of silently dropping it —
+  a lost `SUCCEEDED` outcome write previously left `BlueprintService.outcome()` reporting stale or
+  absent state for a blueprint that actually finished deploying, with no operator-visible signal.
+- **`reportedSchemaHolds`'s WARN-dedup keying is now documented**: the dedup signature is per
+  datasource-plus-blocking-set, not per datasource alone, so two different holds on the same
+  datasource (e.g. `MIGRATING` then `FAILED`) each WARN once rather than the second being suppressed
+  by the first's dedup entry.
+- **`aether schema status` gained a `HELD SLICES` column** (between `STATUS` and `VERSION`) rendering
+  `heldSlices` — previously reachable only via `--format json` or `--field heldSlices`, and the
+  feature catalog and CLI/API docs described it as surfaced through the `OWNING BLUEPRINT` column,
+  which names the blocked blueprint, not the slices it is blocking. Fixed in `cli.md`,
+  `feature-catalog.md`, and `management-api.md`, and `management-api.md` gained the `/migrate`
+  `409`-on-`PENDING` scenario above. [mechanism: `SchemaRoutes.guardReactivation` switches on the
+  observed status before any orchestrator effect and returns `SchemaAlreadyPending` for `PENDING`
+  without writing `MIGRATING`]
+- **`BlueprintService.outcome()`'s javadoc now documents the four cases `Option.empty()` conflates**
+  (never deployed / in flight and progressing / orphaned by a crashed FSM host / stuck waiting on an
+  event that never arrives) — a caller cannot currently tell "will complete soon" apart from
+  "permanently stuck, needs intervention" from this method alone; doing so needs additional state
+  (e.g. how long the blueprint has sat in a non-terminal `get(id)`). Documentation only, no behavior
+  change — a real fix is out of scope for this round.
+
+### Fixed (2026-09-03 — #760 / #724 review round 3: fence release is per-attempt, lock write is timeout-bounded, BEST_EFFORT success now writes a durable outcome, and a stale doc path prefix)
+- **The migration fence is a per-attempt token, released only by the attempt that owns it.**
+  `SchemaOrchestratorService.acquireLock`'s `inFlightMigrations` release is a `remove(key, token)`
+  compare-and-remove, not a bare `remove(key)` — a release that runs late can never clear a later
+  attempt's fence entry, only its own. The consensus lock `Put` is now bounded by
+  `schemaManager.policy().migrationTimeout()` (the same bound as the migration itself); on timeout
+  or failure the fence is released synchronously via `mapError`, so an operator-triggered retry
+  immediately after a failed lock write observes the fence already cleared rather than racing an
+  async cleanup callback. Recovery from a wedged consensus round or partitioned leader does not
+  require a leader change — the fence still releases within the migration's own timeout.
+  [verified: aether/aether-deployment/src/test/java/org/pragmatica/aether/deployment/schema/SchemaOrchestratorRetrySingleFlightTest.java]
+- **A `BEST_EFFORT` deployment whose slices all reach `ACTIVE` now writes a `SUCCEEDED` durable
+  outcome record.** `trackInFlightBlueprint` tracks both `ALL_OR_NOTHING` and `BEST_EFFORT`
+  blueprints — previously only `ALL_OR_NOTHING` deployments populated `inFlightBlueprints`, so a
+  `BEST_EFFORT` slice reaching `ACTIVE` never reached `recordSucceededOutcome` and a
+  fully-successful `BEST_EFFORT` deployment left `BlueprintService.outcome()` with nothing to
+  return. The success path is now the same `trackBlueprintSliceActive` → `recordSucceededOutcome`
+  call both atomicities share.
+  [verified: aether/aether-deployment/src/test/java/org/pragmatica/aether/deployment/cluster/fsm/ClusterDeploymentStateTransactionalTest.java, `BestEffortSuccessOutcome`]
+- **`management-api.md` corrected five `/api/schema/...` paths (and one anchor link) to the actual
+  `/api/v1/schema/...` prefix** — every schema management-API route is composed through
+  `ManagementRoute.API_BASE` (`/api/v1`) with no carve-out, so the un-prefixed form previously
+  documented would 404 if followed literally.
 
 ## [1.0.0-rc3] - 2026-09-02
 

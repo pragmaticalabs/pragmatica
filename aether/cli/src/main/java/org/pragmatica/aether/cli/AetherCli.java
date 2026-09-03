@@ -3821,6 +3821,18 @@ public class AetherCli implements Runnable {
         /// It is the field that says whose slices a non-COMPLETED status is holding: activation is
         /// withheld from the slices of THIS blueprint only, never from an unrelated one.
         ///
+        /// `HELD SLICES` (#760/#724 review round 2 item k) names the actual artifacts a blocking
+        /// status is withholding — `OWNING BLUEPRINT` alone answers "whose deploy is stuck", not
+        /// "which of its slices". The REST response already carried `heldSlices` (`SchemaRoutes`)
+        /// with no CLI surface for it; feature-catalog.md described the value as "surfaced ... in the
+        /// OWNING BLUEPRINT column", which was never true — `heldSlices` is a distinct field the table
+        /// never rendered. This column, not a doc rewrite, is the fix: the operator-facing diagnosis
+        /// #760 exists for needs the actual slice names, not just the owner. Renders via
+        /// `OutputFormatter.navigateToField`'s non-value-node fallback (`JsonNode.toString()`), so a
+        /// held row prints as a bracketed JSON array (e.g. `["org.example:my-app-slice:1.0.0"]`)
+        /// rather than a comma-joined list — acceptable for an operator-diagnostic column, not
+        /// dressed up as more than it is.
+        ///
         /// Package-visible (like `SchemaRoutes.baselineDatasource`) so `SchemaStatusTableTest` can
         /// render the real column set over a real response body: a wrong `jsonPath` renders a blank
         /// column rather than failing, so only a test that RUNS the renderer can catch it.
@@ -3830,6 +3842,9 @@ public class AetherCli implements Runnable {
                                                                                   new OutputFormatter.Column("STATUS",
                                                                                                              "status",
                                                                                                              10),
+                                                                                  new OutputFormatter.Column("HELD SLICES",
+                                                                                                             "heldSlices",
+                                                                                                             90),
                                                                                   new OutputFormatter.Column("VERSION",
                                                                                                              "currentVersion",
                                                                                                              7),

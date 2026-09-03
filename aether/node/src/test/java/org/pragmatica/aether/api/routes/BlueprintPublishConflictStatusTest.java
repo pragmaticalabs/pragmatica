@@ -16,6 +16,7 @@ import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.blueprint.Blueprint;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.http.ContentType;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.routing.RequestContext;
@@ -172,6 +173,10 @@ class BlueprintPublishConflictStatusTest {
             }
 
             @Override public Option<ExpandedBlueprint> get(BlueprintId id) {
+                return Option.none();
+            }
+
+            @Override public Option<DeploymentOutcomeValue> outcome(BlueprintId id) {
                 return Option.none();
             }
 

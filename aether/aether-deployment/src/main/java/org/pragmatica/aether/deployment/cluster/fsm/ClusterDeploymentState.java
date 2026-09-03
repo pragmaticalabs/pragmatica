@@ -55,6 +55,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.CommunityKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentOutcomeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
@@ -70,6 +71,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaMigrationLockValue;
@@ -81,6 +83,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.StreamMetadataValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.VersionRoutingValue;
 import org.pragmatica.aether.slice.kvstore.CommunityState;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
@@ -115,6 +118,72 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymentState, ClusterFsmEvent> permits ClusterDeploymentState.Dormant, ClusterDeploymentState.Active, ClusterDeploymentState.Stopped {
     Logger LOG = LoggerFactory.getLogger(ClusterDeploymentState.class);
     ClusterDeploymentContext ctx();
+
+    /// Schema statuses that hold slice activation (#542). FAILED is a blocking status: the
+    /// physical schema sits at a version the slice was not built against until an operator
+    /// retries or redeploys.
+    ///
+    /// #760 review BLOCKING 1 / TEST GAP 5: hoisted from a `private` copy inside [Active] to a
+    /// single shared accessor also used by `SchemaRoutes.heldSlices` (`aether-node`), so the
+    /// activation gate and the management-API report cannot silently diverge on which statuses
+    /// hold a slice.
+    Set<SchemaStatus> BLOCKING_SCHEMA_STATUSES = Set.of(SchemaStatus.PENDING,
+                                                        SchemaStatus.MIGRATING,
+                                                        SchemaStatus.FAILED);
+
+    /// #760 review BLOCKING 1: the SAME predicate the activation gate uses
+    /// ([Active#collectIfBlocking]) to decide whether a schema record holds a slice, exposed so
+    /// `SchemaRoutes.heldSlices` reads live per-node state instead of re-deriving a parallel
+    /// ownership-only check that ignores [SliceState] entirely.
+    ///
+    /// A slice is held only while it sits in [SliceState#LOADED] — i.e. it has not yet passed the
+    /// gate. An [SliceState#ACTIVE] slice already passed it and has no transition path back
+    /// through this check ([SliceState#validTransitions]), so re-arming a COMPLETED record to
+    /// MIGRATING must not retroactively report a serving slice as held: `sliceState == LOADED` is
+    /// load-bearing, not incidental.
+    static boolean blocksSliceActivation(SliceState sliceState,
+                                         Option<BlueprintId> sliceOwner,
+                                         SchemaVersionValue schema,
+                                         KVStore<AetherKey, AetherValue> kvStore) {
+        return sliceState == SliceState.LOADED
+               && BLOCKING_SCHEMA_STATUSES.contains(schema.status())
+               && sliceOwner.map(owner -> owner.base()
+                                               .equals(schema.owningBlueprint().base()) && resolveSchemaRequired(kvStore,
+                                                                                                                 owner))
+                            .or(false);
+    }
+
+    /// #760 review round 2 item a: `heldSlices` (the management-API view) and the FSM gate
+    /// (`blockingSchemaRecords`) previously called schemaRequired resolution through two different
+    /// paths — the gate via the in-memory [Active#blueprints] map, the route not at all — so a
+    /// slice owned by a `schema_required = false` blueprint could be reported held even though the
+    /// gate itself never blocked it. `resolveDeclaredSchemaRequired` is a pure function of the shared
+    /// [KVStore], so both call sites now go through this one static method instead of diverging.
+    /// Returns [Option#empty()] when nothing could be resolved (missing blueprint entry,
+    /// resourcesConfig, or unparsable/incomplete resources.toml) — the caller decides how to log
+    /// that and what to default to; see [#resolveSchemaRequired(KVStore, BlueprintId)] and
+    /// [Active#resolveSchemaRequired(BlueprintId)].
+    static Option<Boolean> resolveDeclaredSchemaRequired(KVStore<AetherKey, AetherValue> kvStore,
+                                                         BlueprintId blueprintId) {
+        var blueprintKey = AppBlueprintKey.appBlueprintKey(blueprintId);
+
+        return kvStore.get(blueprintKey)
+                      .filter(AppBlueprintValue.class::isInstance)
+                      .map(AppBlueprintValue.class::cast)
+                      .flatMap(value -> value.blueprint()
+                                             .resourcesConfig())
+                      .flatMap(toml -> BlueprintParser.parse(toml).option())
+                      .flatMap(org.pragmatica.aether.slice.blueprint.Blueprint::deploymentConfig)
+                      .map(DeploymentConfig::schemaRequired);
+    }
+
+    /// Deliberately silent, unlike [Active#resolveSchemaRequired(BlueprintId)]: this is invoked once
+    /// per candidate record inside [#blocksSliceActivation] (from both `blockingSchemaRecords`'s
+    /// forEach and `heldSlices`'s forEach), so logging here would fire once per slice-node/schema
+    /// pair per gate pass or status request instead of once per blueprint change.
+    static boolean resolveSchemaRequired(KVStore<AetherKey, AetherValue> kvStore, BlueprintId blueprintId) {
+        return resolveDeclaredSchemaRequired(kvStore, blueprintId).or(true);
+    }
 
     record Dormant(ClusterDeploymentContext ctx) implements ClusterDeploymentState {
         @Contract
@@ -154,6 +223,10 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                   Set<NodeId> workerNodes,
                   Map<SliceNodeKey, Long> transitionalStateTimestamps,
                   Map<Artifact, Integer> consecutiveImbalancedTicks,
+                  // Per-SliceNodeKey WARN/DEBUG dedup for schema holds (#760 follow-up). In-memory
+                  // only, never persisted — resets on leader failover. See #reportSchemaHold's
+                  // Javadoc (#760/#724 review round 2 item l) for the accepted consequence.
+                  Map<SliceNodeKey, String> reportedSchemaHolds,
                   AtomicInteger allocationIndex,
                   AtomicBoolean deactivated,
                   CancellableTask reconcileTimer) implements ClusterDeploymentState {
@@ -167,13 +240,6 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// The fallback source label for a joining worker whose membership `source` is absent or
         /// blank (worker-membership-spec D2).
         private static final String DEFAULT_SOURCE = "default";
-
-        /// Schema statuses that hold slice activation (#542). FAILED is a blocking status: the
-        /// physical schema sits at a version the slice was not built against until an operator
-        /// retries or redeploys.
-        private static final Set<SchemaStatus> BLOCKING_SCHEMA_STATUSES = Set.of(SchemaStatus.PENDING,
-                                                                                 SchemaStatus.MIGRATING,
-                                                                                 SchemaStatus.FAILED);
 
         // --- move-only extraction seams (package-private helpers operating on this Active) ---
         StuckTransitionalRemediator stuckRemediator() {
@@ -728,6 +794,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         private void handleSliceNodeRemoval(SliceNodeKey sliceNodeKey) {
             sliceStates.remove(sliceNodeKey);
             transitionalStateTimestamps.remove(sliceNodeKey);
+            reportedSchemaHolds.remove(sliceNodeKey);
             if (permanentlyFailed.contains(sliceNodeKey.artifact())) {
                 return;
             }
@@ -1189,24 +1256,20 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                       conflict.map(BlueprintId::asString).or(""));
         }
 
+        // #760 review round 2 item a: the KVStore/TOML resolution itself is hoisted to the
+        // interface (ClusterDeploymentState#resolveDeclaredSchemaRequired) so SchemaRoutes.heldSlices
+        // can share it with the gate instead of two paths that could diverge. The DEBUG/WARN
+        // logging stays here, on Active's own logger, unchanged from before the hoist — it fires
+        // once per blueprint-change/restore event, not once per slice/schema pair.
         private boolean resolveSchemaRequired(BlueprintId blueprintId) {
-            // After the Batch 1 envelope cleanup, slice META-INF/resources.toml no longer round-trips
-            // through KV (BlueprintResourcesKey/Value were removed). The resources TOML is now
-            // embedded directly on the persisted ExpandedBlueprint, so we read it from AppBlueprint.
-            var blueprintKey = AppBlueprintKey.appBlueprintKey(blueprintId);
-
-            return ctx.kvStore()
-                      .get(blueprintKey)
-                      .filter(AppBlueprintValue.class::isInstance)
-                      .map(AppBlueprintValue.class::cast)
-                      .flatMap(value -> value.blueprint()
-                                             .resourcesConfig())
-                      .flatMap(toml -> BlueprintParser.parse(toml).option())
-                      .flatMap(org.pragmatica.aether.slice.blueprint.Blueprint::deploymentConfig)
-                      .map(DeploymentConfig::schemaRequired)
-                      .onEmpty(() -> log.debug("schemaRequired unresolved for {}, defaulting to true (missing blueprint entry, resourcesConfig, or unparsable/incomplete resources.toml)",
-                                               blueprintId))
-                      .or(true);
+            return ClusterDeploymentState.resolveDeclaredSchemaRequired(ctx.kvStore(),
+                                                                        blueprintId)
+                                         .onPresent(value -> log.debug("schemaRequired resolved to {} for {} from declared deploymentConfig",
+                                                                       value,
+                                                                       blueprintId))
+                                         .onEmpty(() -> log.warn("schemaRequired unresolved for {}, defaulting to true (missing blueprint entry, resourcesConfig, or unparsable/incomplete resources.toml) — every slice of this blueprint will hold in LOADED until a schema migration record for its datasource reaches COMPLETED",
+                                                                 blueprintId))
+                                         .or(true);
         }
 
         @Contract
@@ -1268,8 +1331,16 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                                                       .base());
         }
 
+        // #760/#724 review round 3 GAP: tracking is atomicity-agnostic — trackBlueprintSliceActive's
+        // success detection (removing the blueprint from this map once every slice reaches ACTIVE,
+        // then recordSucceededOutcome) works identically for BEST_EFFORT. Gating this on
+        // ALL_OR_NOTHING left a fully successful BEST_EFFORT deployment with no outcome record at
+        // all. The OTHER ALL_OR_NOTHING-specific consumers of this map (capturePreviousBlueprint,
+        // the rollbackBlueprintForArtifact call site) are independently gated by their own
+        // ctx.atomicity() == ALL_OR_NOTHING check, so widening this guard cannot make them observe a
+        // BEST_EFFORT entry.
         private void trackInFlightBlueprint(ExpandedBlueprint expanded, Option<ExpandedBlueprint> previousExpanded) {
-            if (ctx.atomicity() == DeploymentAtomicity.ALL_OR_NOTHING && !restoringBlueprints.contains(expanded.id())) {
+            if (!restoringBlueprints.contains(expanded.id())) {
                 inFlightBlueprints.put(expanded.id(),
                                        InFlightBlueprint.inFlightBlueprint(expanded.id(), expanded, previousExpanded));
             }
@@ -1351,6 +1422,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
             sliceStates.remove(sliceKey);
             transitionalStateTimestamps.remove(sliceKey);
+            reportedSchemaHolds.remove(sliceKey);
             issueUnloadCommand(sliceKey);
             if (sliceNodeValue.fatal()) {
                 handleDeterministicFailure(sliceKey, failureReason);
@@ -1378,8 +1450,50 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                         failureReason,
                                                         ctx.nowMs()));
             if (ctx.atomicity() == DeploymentAtomicity.ALL_OR_NOTHING) {
-                rollbackBlueprintForArtifact(artifact);
+                rollbackBlueprintForArtifact(artifact, failureReason);
+            } else {
+                recordBestEffortFailureOutcome(artifact, failureReason);
             }
+        }
+
+        /// #760/#724 review round 3 GAP fix (151b11d94): BEST_EFFORT deployments now populate
+        /// `inFlightBlueprints` too (`trackInFlightBlueprint` tracks both atomicities), so this
+        /// path is no longer the only terminal a BEST_EFFORT artifact can reach. A slice that
+        /// reaches ACTIVE is retired via `trackBlueprintSliceActive`, whose own terminal is
+        /// `recordSucceededOutcome` once every slice of the owning blueprint is active. This
+        /// method is the terminal for the other branch: `handleDeterministicFailure` marks the
+        /// artifact `permanentlyFailed` and calls here instead of retrying it. A slice with no
+        /// owning blueprint (`Blueprint::owner` empty — a standalone deploy, not part of any
+        /// blueprint) has no `DeploymentOutcomeKey` to write against and is correctly a no-op
+        /// here. Merges into any existing FAILED record for the same blueprint (read-then-Put,
+        /// not a blind overwrite) so a second independently-failing slice in one partial
+        /// deployment is added to `failingSlices` instead of erasing the first.
+        private void recordBestEffortFailureOutcome(Artifact artifact, String failureReason) {
+            Option.option(blueprints.get(artifact))
+                  .flatMap(Blueprint::owner)
+                  .onPresent(blueprintId -> submitBatch(List.of(bestEffortFailureCommand(blueprintId,
+                                                                                         artifact,
+                                                                                         failureReason))));
+        }
+
+        private KVCommand<AetherKey> bestEffortFailureCommand(BlueprintId blueprintId,
+                                                              Artifact artifact,
+                                                              String failureReason) {
+            var key = DeploymentOutcomeKey.deploymentOutcomeKey(blueprintId);
+            var existingSlices = ctx.kvStore()
+                                    .get(key)
+                                    .filter(v -> v instanceof DeploymentOutcomeValue)
+                                    .map(v -> ((DeploymentOutcomeValue) v).failingSlices())
+                                    .or(List.of());
+            var slices = new ArrayList<>(existingSlices);
+
+            if (!slices.contains(artifact.asString())) {
+                slices.add(artifact.asString());
+            }
+
+            var value = DeploymentOutcomeValue.failed(slices, failureReason, ctx.nowMs());
+
+            return new KVCommand.Put<>(key, value);
         }
 
         private void handleTransientFailure(SliceNodeKey sliceKey, String failureReason) {
@@ -1442,45 +1556,61 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// migrations, and that blueprint's own slices do carry its owner, so the safety property is
         /// held from the owning side rather than by refusing to decide here.
         boolean areSchemasReady(SliceNodeKey sliceKey) {
+            return blockingSchemaRecords(sliceKey).isEmpty();
+        }
+
+        /// Named records rather than a boolean so the hold can be reported with detail (#760) — the
+        /// prior `noBlockingSchemaRecords` collapsed the same scan into a single flag, which is all
+        /// [#areSchemasReady(SliceNodeKey)] needs but nothing an operator-facing log could name.
+        private List<SchemaVersionValue> blockingSchemaRecords(SliceNodeKey sliceKey) {
             return Option.option(blueprints.get(sliceKey.artifact()))
                          .filter(Blueprint::schemaRequired)
                          .flatMap(Blueprint::owner)
-                         .map(this::noBlockingSchemaRecords)
-                         .or(true);
+                         .map(this::collectBlockingSchemaRecords)
+                         .or(List.of());
         }
 
-        private boolean noBlockingSchemaRecords(BlueprintId owner) {
-            var schemasReady = new AtomicBoolean(true);
+        private List<SchemaVersionValue> collectBlockingSchemaRecords(BlueprintId owner) {
+            var blocking = new ArrayList<SchemaVersionValue>();
+            var kvStore = ctx.kvStore();
 
-            ctx.kvStore()
-               .forEach(SchemaVersionKey.class,
-                        SchemaVersionValue.class,
-                        (_, value) -> checkSchemaBlocking(owner, value, schemasReady));
+            kvStore.forEach(SchemaVersionKey.class,
+                            SchemaVersionValue.class,
+                            (_, value) -> collectIfBlocking(owner, value, kvStore, blocking));
 
-            return schemasReady.get();
+            return blocking;
         }
 
         /// Ownership matches on `ArtifactBase` (version stripped), so a blueprint that advanced from
         /// `my-app:1.0.0` to `my-app:1.0.1` still owns the records its earlier version wrote — the
         /// same rule `hasConflictingOwnership` and `BlueprintService`'s deploy-time gate apply.
-        private static void checkSchemaBlocking(BlueprintId owner,
-                                                SchemaVersionValue value,
-                                                AtomicBoolean schemasReady) {
-            if (BLOCKING_SCHEMA_STATUSES.contains(value.status()) && owner.base()
-                                                                          .equals(value.owningBlueprint().base())) {
-                schemasReady.set(false);
+        ///
+        /// #760 review BLOCKING 1: delegates to the shared [ClusterDeploymentState#blocksSliceActivation]
+        /// predicate instead of re-checking status/ownership inline, so this gate and
+        /// `SchemaRoutes.heldSlices` cannot drift apart. `SliceState.LOADED` is passed explicitly —
+        /// this method is reachable only from [#tryActivateIfDependenciesReady(SliceNodeKey)], itself
+        /// only invoked when a slice's state just transitioned to LOADED, so the slice is always
+        /// LOADED at this call site even though nothing here re-reads its live state.
+        private static void collectIfBlocking(BlueprintId owner,
+                                              SchemaVersionValue value,
+                                              KVStore<AetherKey, AetherValue> kvStore,
+                                              List<SchemaVersionValue> blocking) {
+            if (ClusterDeploymentState.blocksSliceActivation(SliceState.LOADED, Option.some(owner), value, kvStore)) {
+                blocking.add(value);
             }
         }
 
         private void tryActivateIfDependenciesReady(SliceNodeKey sliceKey) {
             var artifact = sliceKey.artifact();
+            var blockingRecords = blockingSchemaRecords(sliceKey);
 
-            if (!areSchemasReady(sliceKey)) {
-                log.debug("Slice {} waiting for schema migrations to complete", artifact);
+            if (!blockingRecords.isEmpty()) {
+                reportSchemaHold(sliceKey, artifact, blockingRecords);
 
                 return;
             }
 
+            reportSchemaHoldCleared(sliceKey, artifact);
             var dependencies = sliceDependencies.getOrDefault(artifact, Set.of());
 
             if (dependencies.isEmpty()) {
@@ -1497,6 +1627,70 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 log.debug("Slice {} waiting for dependencies to become ACTIVE: {}",
                           artifact,
                           dependencies.stream().filter(dep -> !isDependencyActive(dep)).toList());
+            }
+        }
+
+        /// #760 follow-up: [#tryActivateIfDependenciesReady(SliceNodeKey)] is event-driven — fired
+        /// on the slice's own LOAD, on ANY schema record reaching `COMPLETED`, on a sibling
+        /// dependency activating, and once per blueprint at leader rebuild — never on a fixed
+        /// timer ([#reconcile()] never calls it). A slice held on one datasource still gets
+        /// re-evaluated every time an unrelated datasource completes or a dependency activates
+        /// elsewhere, so a long hold can accumulate many re-observations with nothing about THIS
+        /// slice's hold having changed. WARN once per distinct hold signature (first observation,
+        /// or the set of blocking datasources/statuses actually changing) and DEBUG on a repeat
+        /// observation of the same signature, so the operator-visible signal tracks state
+        /// transitions rather than event-loop noise.
+        ///
+        /// #760/#724 review round 2 item l: `reportedSchemaHolds` is keyed per [SliceNodeKey] —
+        /// one entry per slice INSTANCE on one node, not per artifact or per datasource — so two
+        /// instances of the same slice held on the same datasource dedup independently and each
+        /// gets its own first WARN. It is plain in-memory `Active` FSM state, never written to the
+        /// KV store, so it does not survive a leader failover: the new leader rebuilds `Active`
+        /// with an empty map and will WARN once more for every hold still standing at that point,
+        /// even one that has been open and unchanged for a long time. This is accepted, not a
+        /// defect — the dedup's job is to suppress noise from an event-driven loop re-evaluating
+        /// an unchanged hold on the SAME leader, not to give the hold itself a durable identity
+        /// across the cluster's whole lifetime. An operator correlating hold WARNs across a
+        /// failover should expect exactly one extra WARN per still-open hold, not a signal that
+        /// the hold is new.
+        private void reportSchemaHold(SliceNodeKey sliceKey,
+                                      Artifact artifact,
+                                      List<SchemaVersionValue> blockingRecords) {
+            var signature = schemaHoldSignature(blockingRecords);
+            var previous = reportedSchemaHolds.put(sliceKey, signature);
+
+            if (signature.equals(previous)) {
+                log.debug("Slice {} still held in LOADED, waiting for schema migrations to complete: {}",
+                          artifact,
+                          signature);
+            } else {
+                log.warn("Slice {} held in LOADED, waiting for schema migrations to complete: {}", artifact, signature);
+            }
+        }
+
+        // #760 review TEST GAP 3: `blockingRecords` is built by `forEach` over a
+        // `ConcurrentHashMap` (blockingSchemaRecords -> collectIfBlocking), so its iteration order
+        // is unspecified and can differ between two evaluations that observe the exact same set of
+        // blocking datasources. Sorted by datasourceName() so the signature is a stable function of
+        // the blocking SET, not of map iteration order — otherwise a slice blocked on two
+        // datasources could see its signature flip between equivalent evaluations and fire a
+        // spurious second WARN for a hold that never actually changed. Extracted to a standalone,
+        // package-visible method (#760/#724 review round 2 item d) so the sort-neutralizes-order
+        // property is pinned directly, independent of whatever iteration order the KV store
+        // actually produces in a given test run.
+        static String schemaHoldSignature(List<SchemaVersionValue> blockingRecords) {
+            return blockingRecords.stream()
+                                  .sorted(Comparator.comparing(SchemaVersionValue::datasourceName))
+                                  .map(v -> v.datasourceName() + "=" + v.status())
+                                  .collect(Collectors.joining(", "));
+        }
+
+        /// Companion to [#reportSchemaHold(SliceNodeKey, Artifact, List)]: fires the single WARN
+        /// that closes the hold, and only when this slice actually had one on record — an
+        /// already-clear slice re-evaluated by an unrelated event must stay silent.
+        private void reportSchemaHoldCleared(SliceNodeKey sliceKey, Artifact artifact) {
+            if (reportedSchemaHolds.remove(sliceKey) != null) {
+                log.warn("Slice {} schema hold cleared, resuming activation", artifact);
             }
         }
 
@@ -2101,6 +2295,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                  entry.getKey().asString(),
                                  inflight.activeSlices().size());
                         inFlightBlueprints.remove(entry.getKey());
+                        recordSucceededOutcome(entry.getKey());
                     }
 
                     break;
@@ -2108,7 +2303,50 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             }
         }
 
-        private void rollbackBlueprintForArtifact(Artifact failedArtifact) {
+        /// Durable SUCCEEDED counterpart to the FAILED outcome written in `unloadBlueprintSlices`
+        /// (#759 review, BLOCKING 3) — the terminal outcome record must exist for both branches of
+        /// the deployment attempt, not just the failure branch, so a caller can distinguish "no
+        /// outcome yet" from "succeeded" once the blueprint leaves `inFlightBlueprints`.
+        ///
+        /// #760/#724 review round 2 item l: does NOT go through the shared [#submitBatch(List)] —
+        /// see [#handleSucceededOutcomeWriteFailure(BlueprintId, Cause, List)] for why this call
+        /// site's failure needs a targeted WARN instead of `submitBatch`'s generic ERROR.
+        private void recordSucceededOutcome(BlueprintId blueprintId) {
+            var key = DeploymentOutcomeKey.deploymentOutcomeKey(blueprintId);
+            var value = DeploymentOutcomeValue.succeeded(ctx.nowMs());
+            var command = List.<KVCommand<AetherKey>> of(new KVCommand.Put<>(key, value));
+
+            ctx.cluster()
+               .apply(command)
+               .onFailure(cause -> handleSucceededOutcomeWriteFailure(blueprintId, cause, command));
+        }
+
+        /// Unlike every other write funneled through [#submitBatch(List)], this one cannot be
+        /// recovered by `handleBatchFailure`'s `reconcile()` reschedule: by the time this call
+        /// happens the blueprint has already been removed from `inFlightBlueprints` (one line above
+        /// this call, in `trackBlueprintSliceActive`), and `reconcile()` only acts on in-flight and
+        /// slice state — it never revisits deployment-outcome durability. `submitBatch`'s generic
+        /// `log.error` would therefore describe a write that gets automatically retried, when in
+        /// fact this one does not: the SUCCEEDED record for a blueprint that genuinely finished
+        /// deploying is permanently lost, silently in effect even though not silently in logging.
+        /// This WARN names the blueprint and says so explicitly, then still delegates to
+        /// `handleBatchFailure` for its `deactivated`-guard and existing log volume — no retry path
+        /// is added here; recording the loss for an operator to notice is the whole fix.
+        private void handleSucceededOutcomeWriteFailure(BlueprintId blueprintId,
+                                                        Cause cause,
+                                                        List<KVCommand<AetherKey>> command) {
+            if (!deactivated.get()) {
+                log.warn("SUCCEEDED deployment-outcome record for blueprint {} was NOT persisted ({}) and will NOT be retried"
+                        + " — the blueprint already left in-flight tracking before this write, so no reconciliation pass"
+                        + " revisits it",
+                         blueprintId.asString(),
+                         cause.message());
+            }
+
+            handleBatchFailure(cause, command);
+        }
+
+        private void rollbackBlueprintForArtifact(Artifact failedArtifact, String cause) {
             for (var entry : inFlightBlueprints.entrySet()) {
                 var blueprintId = entry.getKey();
                 var inflight = entry.getValue();
@@ -2130,13 +2368,13 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                          blueprintId.asString());
                 inFlightBlueprints.remove(blueprintId);
                 inflight.previousBlueprint()
-                        .apply(() -> unloadBlueprintSlices(inflight),
-                               previous -> restorePreviousBlueprint(previous));
+                        .apply(() -> unloadBlueprintSlices(inflight, cause),
+                               previous -> restorePreviousBlueprint(inflight, previous, cause));
                 break;
             }
         }
 
-        private void unloadBlueprintSlices(InFlightBlueprint inflight) {
+        private void unloadBlueprintSlices(InFlightBlueprint inflight, String cause) {
             var allSlices = new HashSet<>(inflight.pendingSlices());
 
             allSlices.addAll(inflight.activeSlices());
@@ -2151,27 +2389,61 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             var bpKey = AppBlueprintKey.appBlueprintKey(inflight.id());
 
             consensusCommands.add(new KVCommand.Remove<>(bpKey));
+            consensusCommands.add(failedOutcomeCommand(inflight, allSlices, cause));
             log.info("ALL_OR_NOTHING: Unloading {} slices from failed blueprint {}",
                      allSlices.size(),
                      inflight.id().asString());
             submitBatch(consensusCommands);
         }
 
-        private void restorePreviousBlueprint(ExpandedBlueprint previous) {
+        /// FAILED outcome for the no-previous-blueprint rollback branch (#759 review, BLOCKING 3).
+        /// Bundled into `unloadBlueprintSlices`'s own consensus batch — same commit as the
+        /// `AppBlueprintKey` removal it survives — rather than a second `submitBatch` call, so the
+        /// removal and the outcome record land atomically (both or neither).
+        private KVCommand<AetherKey> failedOutcomeCommand(InFlightBlueprint inflight,
+                                                          Set<Artifact> failingSlices,
+                                                          String cause) {
+            var key = DeploymentOutcomeKey.deploymentOutcomeKey(inflight.id());
+            var slices = failingSlices.stream().map(Artifact::asString).toList();
+            var value = DeploymentOutcomeValue.failed(slices, cause, ctx.nowMs());
+
+            return new KVCommand.Put<>(key, value);
+        }
+
+        private void restorePreviousBlueprint(InFlightBlueprint inflight, ExpandedBlueprint previous, String cause) {
             restoringBlueprints.add(previous.id());
             log.info("ALL_OR_NOTHING: Restoring previous blueprint {} with {} slices",
                      previous.id().asString(),
                      previous.loadOrder().size());
             var bpKey = AppBlueprintKey.appBlueprintKey(previous.id());
             var bpValue = AppBlueprintValue.appBlueprintValue(previous);
-            var command = new KVCommand.Put<AetherKey, AetherValue>(bpKey, bpValue);
+            var bpCommand = new KVCommand.Put<AetherKey, AetherValue>(bpKey, bpValue);
+            var outcomeCommand = rolledBackOutcomeCommand(inflight, cause);
 
             ctx.cluster()
-               .apply(List.of(command))
+               .apply(List.of(bpCommand, outcomeCommand))
                .onSuccess(_ -> SharedScheduler.schedule(() -> restoringBlueprints.remove(previous.id()),
                                                         timeSpan(5).seconds()))
-               .onFailure(cause -> handleBlueprintRestoreFailure(previous.id(),
-                                                                 cause));
+               .onFailure(restoreFailure -> handleBlueprintRestoreFailure(previous.id(),
+                                                                          restoreFailure));
+        }
+
+        /// ROLLED_BACK outcome for the previous-blueprint-exists rollback branch (#760/#724 review
+        /// round 2 item g) — bundled into the SAME `ctx.cluster().apply` batch as the previous
+        /// blueprint's own `AppBlueprintKey` Put, mirroring `failedOutcomeCommand`'s atomicity
+        /// rationale, so a caller reading the outcome for the FAILING blueprint's id never observes
+        /// the restore having landed without also observing the terminal record, or vice versa.
+        /// Recorded against `inflight.id()` — the blueprint being replaced — never `previous.id()`,
+        /// which names a separate, still-healthy blueprint that was never in a failure state.
+        private KVCommand<AetherKey> rolledBackOutcomeCommand(InFlightBlueprint inflight, String cause) {
+            var allSlices = new HashSet<>(inflight.pendingSlices());
+
+            allSlices.addAll(inflight.activeSlices());
+            var key = DeploymentOutcomeKey.deploymentOutcomeKey(inflight.id());
+            var slices = allSlices.stream().map(Artifact::asString).toList();
+            var value = DeploymentOutcomeValue.rolledBack(slices, cause, ctx.nowMs());
+
+            return new KVCommand.Put<>(key, value);
         }
 
         private void handleBlueprintRestoreFailure(BlueprintId blueprintId, Cause cause) {
@@ -2191,8 +2463,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         @Contract
-        void restorePreviousBlueprintForTest(ExpandedBlueprint previous) {
-            restorePreviousBlueprint(previous);
+        void restorePreviousBlueprintForTest(InFlightBlueprint inflight, ExpandedBlueprint previous, String cause) {
+            restorePreviousBlueprint(inflight, previous, cause);
         }
 
         public record InFlightBlueprint(BlueprintId id,
