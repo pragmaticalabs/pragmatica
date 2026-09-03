@@ -19,6 +19,7 @@ import java.util.stream.IntStream;
 
 import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.config.ClusterConfig;
+import org.pragmatica.aether.config.ConfigValidator;
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.config.AppHttpConfig;
@@ -86,6 +87,7 @@ public record Main(String[] args) {
         var nodeLabels = collectNodeLabels();
         var environment = resolveEnvironment(aetherConfig);
         var peers = parsePeers(nodeId, port, nodeLabels, aetherConfig, environment);
+        enforceMinimumClusterSize(peers);
         var sliceConfig = parseSliceConfig(aetherConfig);
         var dhtConfig = parseDhtConfig(aetherConfig);
 
@@ -199,6 +201,17 @@ public record Main(String[] args) {
     @Contract
     private void enforceClusterNamePresent() {
         verifyClusterNamePresent(System.getenv("AETHER_CLUSTER_NAME")).onFailure(this::abortBoot);
+    }
+
+    /// #782 — a cluster is at least three nodes. Runs on the RESOLVED peer list `parsePeers`
+    /// just assembled (whichever arm won: `--peers=`, `CLUSTER_PEERS`, cloud discovery, config, or
+    /// the single-self bootstrap fallback), so it catches every path that can produce a sub-3
+    /// topology — not just a TOML's declarative `[cluster] nodes` field. Delegates to the pure,
+    /// unit-tested [ConfigValidator#validateExpectedClusterSize] guard and exits on violation, the
+    /// same `verify* -> abortBoot` idiom as the cluster-name and dev-mode gates above.
+    @Contract
+    private void enforceMinimumClusterSize(List<NodeInfo> peers) {
+        ConfigValidator.validateExpectedClusterSize(peers.size()).onFailure(this::abortBoot);
     }
 
     /// #298 — the cluster name for runtime config, read from the same env var the boot gate keys on

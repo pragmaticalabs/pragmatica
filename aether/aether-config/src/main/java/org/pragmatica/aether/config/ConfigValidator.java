@@ -12,6 +12,7 @@ import java.util.regex.Pattern;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 
 import static org.pragmatica.lang.io.FileOps.exists;
@@ -223,6 +224,42 @@ public final class ConfigValidator {
             return ValidationFailed.validationFailed(List.copyOf(errors),
                                                      true)
                                    .unwrap();
+        }
+    }
+
+    /// #782 — a cluster is at least three nodes; there is no supported single-node topology.
+    ///
+    /// This gate runs on the RESOLVED peer count a node actually assembles at boot
+    /// (`Main`'s `peers.size()`, computed in `parsePeers` from `--peers=`/`CLUSTER_PEERS`/cloud
+    /// discovery/config, in that order) — not on the declarative `[cluster] nodes` TOML field
+    /// `nodeCountErrors` above already checks. That existing check only fires when a TOML loads,
+    /// and today `Main#loadConfigFile` discards ANY validation failure into `Option.none()`
+    /// instead of aborting boot, so it never actually stops a sub-3-node start in practice.
+    ///
+    /// Kept as a separate top-level entry point — not folded into `validate(AetherConfig)` — so a
+    /// caller holding only the resolved integer (no `AetherConfig` required, no TOML load
+    /// required) can invoke it at the exact point the real count becomes known.
+    public static Result<Unit> validateExpectedClusterSize(int expectedSize) {
+        return expectedSize < MINIMUM_SUPPORTED_CLUSTER_SIZE
+               ? ClusterSizeError.clusterTooSmall(expectedSize).result()
+               : Result.unitResult();
+    }
+
+    private static final int MINIMUM_SUPPORTED_CLUSTER_SIZE = 3;
+
+    public sealed interface ClusterSizeError extends Cause {
+        record ClusterTooSmall(int size) implements ClusterSizeError {
+            @Override
+            public String message() {
+                return "Expected cluster size " + size + " is not a supported topology: a cluster is "
+                     + "at least three nodes. For a single machine, run the documented three-container "
+                     + "quick start (docs/operators/docker-deployment.md, section "
+                     + "\"Single machine (three containers)\") instead of one node.";
+            }
+        }
+
+        static ClusterSizeError clusterTooSmall(int size) {
+            return new ClusterTooSmall(size);
         }
     }
 }
