@@ -452,7 +452,7 @@ the original design intent.
 
 `DEPLOYMENT_FAILED` is emitted **once per (artifact, node) pair** whose deployment attempt failed — `ClusterEventAggregator.handleDeploymentFailed` fires on each node-artifact KV transition to `FAILED`, so a blueprint spread across N nodes that fails deterministically on all of them produces N separate events, each with its own `nodeId` in `details.nodeId` and the failure text in `details.reason`. Because `cluster-events` is a single replicated stream, all N events are visible from `GET /api/v1/events` on **any** node, not only the one that failed.
 
-This matters because none of the other deploy-facing surfaces show it: `POST /api/v1/blueprints` only reports `"status": "applied"` on **acceptance**, before deployment is attempted, and is never updated with the outcome. Under the default `ALL_OR_NOTHING` mode (see [02-deployment.md](../architecture/02-deployment.md#deployment-atomicity)), a deterministic slice-load failure rolls back the entire blueprint and removes the deployment-map entry for that artifact — so `GET /api/v1/slices/status` and `GET /api/v1/blueprints/status/{id}` go back to showing **nothing** for it, not a FAILED status. **`GET /api/v1/events` is the only surface that shows why a blueprint that was accepted never converges** — poll it, filtering for `DEPLOYMENT_FAILED`, when a deploy stays PENDING past its expected time. See the [Failure Almanac](failure-almanac.md#per-node-deployment-failure-under-all_or_nothing-rollback) for the worked example and operator playbook.
+This matters because none of the other deploy-facing surfaces show it: `POST /api/v1/blueprints` only reports `"status": "applied"` on **acceptance**, before deployment is attempted, and is never updated with the outcome. Under the default `ALL_OR_NOTHING` mode (see [02-deployment.md](../architecture/02-deployment.md#deployment-atomicity)), a deterministic slice-load failure rolls back the entire blueprint and removes the blueprint's key from the KV store outright (`ClusterDeploymentState.unloadBlueprintSlices`) — so `GET /api/v1/slices/status` shows nothing for the artifact and `GET /api/v1/blueprints/status/{id}` answers `404 BLUEPRINT_NOT_FOUND`, not a FAILED status [#759 review C2; until #759 Phase 2 lands a durable terminal-outcome record, this 404 is permanent, not a transient race you can outwait]. **`GET /api/v1/events` is the only durable trace of why a blueprint that was accepted never converges** — the query parameters (`sinceEpoch`/`sinceSeq`) are cursor-based, not artifact-based, so "filtering for `DEPLOYMENT_FAILED`" means fetching the feed and matching `details.artifact` yourself; the aggregator retains at most 10,000 events cluster-wide (`ClusterEventAggregator.MAX_RETAINED_EVENTS`), not per-artifact, so a failure can roll off under high event volume before an operator looks. See the [Failure Almanac](failure-almanac.md#per-node-deployment-failure-under-all_or_nothing-rollback) for the worked example and operator playbook.
 
 **Severity Levels:** `INFO`, `WARNING`, `CRITICAL`
 
@@ -749,7 +749,7 @@ Publish (apply) a blueprint definition. The request body is the raw blueprint YA
 }
 ```
 
-> **`"applied"` means accepted, not deployed.** This response is written before allocation runs, and it is never updated with the outcome. `targetInstances`/`activeInstances`/`failedInstances` are a live snapshot of the deployment map taken at response time — typically all-zero for a fresh publish, since nothing has had time to activate yet. `statusUrl` points directly at [`GET /api/v1/blueprints/status/{id}`](#get-apiv1blueprintsstatusid); poll it for progress. If a blueprint stays `PENDING` past its expected time, check [`GET /api/v1/events`](#get-apiv1events) for `DEPLOYMENT_FAILED` — under the default `ALL_OR_NOTHING` mode a failure rolls back the whole blueprint, so the status endpoints go back to showing nothing rather than a FAILED slice, and the event feed is the only place the reason (`details.reason`) appears.
+> **`"applied"` means accepted, not deployed.** This response is written before allocation runs, and it is never updated with the outcome. `targetInstances`/`activeInstances`/`failedInstances` are a live snapshot of the deployment map taken at response time — typically all-zero for a fresh publish, since nothing has had time to activate yet. `statusUrl` points directly at [`GET /api/v1/blueprints/status/{id}`](#get-apiv1blueprintsstatusid); poll it for progress. If a blueprint stays `PENDING` past its expected time, fetch [`GET /api/v1/events`](#get-apiv1events) and match `details.artifact` yourself for `DEPLOYMENT_FAILED` — under the default `ALL_OR_NOTHING` mode a failure rolls back the whole blueprint and removes it from the KV store entirely, so `statusUrl` then answers `404 BLUEPRINT_NOT_FOUND` rather than a FAILED slice [#759 review C2; until #759 Phase 2 replaces this 404 with a durable terminal-outcome record], and the event feed (retained up to 10,000 events cluster-wide, not per-artifact) is the only place the failure reason (`details.reason`) survives.
 
 ### GET /api/v1/blueprints
 
@@ -857,21 +857,28 @@ Deploy a blueprint from an artifact in the cluster's artifact repository.
 ```
 
 #759 — `status` is earned off the deployment map at response time, not assumed from a successful
-publish; deployment is asynchronous, so the common immediate response is `pending`. Three honest
-outcomes, checked in this priority order:
+publish; deployment is asynchronous, so **`pending` is the normal, expected response for a
+first-time deploy** — no node has had a chance to activate a slice yet. Three honest outcomes,
+checked in this priority order:
 
 - **`degraded`** — at least one target instance is already `FAILED` in the deployment map.
   Reachable on `BEST_EFFORT` deploys, or a redeploy onto an artifact with a lingering failure that
   raced `ClusterDeploymentState`'s `ALL_OR_NOTHING` rollback cleanup.
 - **`deployed`** — every declared target instance is already observed `ACTIVE`. Only realistic for
   an idempotent redeploy of an already fully-healthy artifact set.
-- **`pending`** — the default: at least one target instance has not yet activated.
+- **`pending`** — the default: at least one target instance has not yet activated, which is every
+  first-time deploy of a fresh artifact.
 
 `targetInstances`/`activeInstances`/`failedInstances` are the same live snapshot used to derive
 `status`. `statusUrl` (`{id}` percent-encoded, since blueprint ids are artifact-shaped) always
-points at [`GET /api/blueprints/status/{id}`](#get-apiblueprintsstatusid) — poll it for the
-outcome, since a `pending` response here can still resolve to a rolled-back failure that clears the
-deployment-map entry before you check.
+points at [`GET /api/blueprints/status/{id}`](#get-apiblueprintsstatusid) — this is the endpoint
+the CLI's `aether blueprints deploy --wait` polls (`DeploymentWait`) until it reports a terminal
+status. **Until #759 Phase 2**, that poll can dead-end: under the default `ALL_OR_NOTHING` mode a
+deterministic failure rolls back the whole blueprint and removes its KV entry outright, so
+`statusUrl` then answers `404 BLUEPRINT_NOT_FOUND` instead of `FAILED` — the `pending` response you
+got from this call can resolve into a 404, not into a status you can read. The only durable record
+of the failure is [`GET /api/events`](#get-apievents), matched against `details.artifact` yourself
+(see the `DEPLOYMENT_FAILED` discussion above).
 
 #### Single-migrator gate (409 Conflict)
 

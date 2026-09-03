@@ -409,9 +409,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   (default), `degraded` (a target instance already `FAILED`), or `deployed` (every target instance
   `ACTIVE`) — replacing the fixed literal `"deployed"` written before allocation ever ran.
   `statusUrl` points every response, whatever its status, at `GET /api/blueprints/status/{id}` so a
-  `pending`/`degraded` caller can poll the terminal outcome — including the `ALL_OR_NOTHING`
-  rollback case, where the deployment-map entry clears and the event feed is otherwise the only
-  place the reason survives.
+  `pending`/`degraded` caller can poll it. **Until #759 Phase 2**, that poll can dead-end: under the
+  default `ALL_OR_NOTHING` mode a deterministic failure rolls back the whole blueprint and removes
+  its KV entry outright, so `statusUrl` then answers `404 BLUEPRINT_NOT_FOUND` rather than `FAILED`
+  — `GET /api/events`, matched client-side on `details.artifact`, is the only durable record of the
+  failure.
+  [design intent — unverified: the rollback-to-404 sequence is exercised only by unit-level tests
+  (`ClusterDeploymentStateTransactionalTest.RollbackSequence`,
+  `BlueprintStatusAggregationTest#statusRoute_blueprintAbsentFromKv_returns404BlueprintNotFound`),
+  not a live multi-node failure-injection run]
 - **`slices` replaced by `targetInstances`/`activeInstances`/`failedInstances`** on `/deploy`,
   `/publish`, and the blueprint status endpoint's per-slice entries, for consistent instance counts
   across all three.
@@ -419,7 +425,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   still present in the deployment map is reported `FAILED` rather than folded into
   `PENDING`/`DEPLOYING`, and `overallStatus` is `FAILED` if any slice is, ahead of every other
   bucket.
-  [verified: `BlueprintDeployStatusTest`, `BlueprintStatusAggregationTest`]
+  [mechanism: status is derived directly from `deploymentMap()` by construction — pinned in-process
+  by `BlueprintDeployStatusTest`, `BlueprintStatusAggregationTest`]
 
 ## [1.0.0-rc3] - 2026-09-02
 

@@ -144,15 +144,32 @@ public sealed interface ManagementApiResponses {
 
     record ScaleResponse(String status, String artifact, int instances) {}
 
-    /// #759 — `status` is earned off `deploymentMap()` at response time (see
-    /// `SliceRoutes.deployStatus`), not assumed from publish success; `targetInstances` /
-    /// `activeInstances` / `failedInstances` let an operator tell total outage from healthy without
-    /// a follow-up call. `statusUrl` always points at `GET /api/blueprints/status/{id}` because a
-    /// deterministic failure under the default `ALL_OR_NOTHING` atomicity can roll back and clear the
-    /// deployment-map entry before this response is built — `status` then reads `pending` for a deploy
-    /// that already failed, and `statusUrl` (plus `GET /api/events` filtered for `DEPLOYMENT_FAILED`)
-    /// is the only way to learn the outcome afterwards. See
-    /// `aether/docs/reference/management-api.md` `POST /api/blueprints/deploy`.
+    /// #759 review (C1, C2) — this response is a PUBLISH-TIME SNAPSHOT: `SliceRoutes.deployStatus`
+    /// computes it the instant `publishFromArtifact` commits the blueprint, before any node has
+    /// attempted to load a slice [mechanism: `SliceRoutes.java:233-244`]. `pending` (zero
+    /// `activeInstances`, zero `failedInstances`) is therefore the NORMAL first answer for a fresh
+    /// deploy, not a rare or degraded case — `degraded`/`deployed` are reachable here only on a
+    /// redeploy of an already-active artifact set, or under `BEST_EFFORT` where a prior partial
+    /// failure is still visible in `deploymentMap()`. `targetInstances` / `activeInstances` /
+    /// `failedInstances` let an operator tell total outage from healthy without a follow-up call.
+    /// Callers that need the terminal outcome MUST poll `statusUrl` [mechanism: the CLI's
+    /// `aether/cli/.../DeploymentWait.java:32-40,52-67` implements exactly this poll-until-terminal
+    /// loop, driven from `AetherCli.java:2261-2268,2273-2275`].
+    ///
+    /// `statusUrl` always points at `GET /api/blueprints/status/{id}`, but — UNTIL #759 PHASE 2 —
+    /// that endpoint is not durable across a rollback: under the default `ALL_OR_NOTHING`
+    /// atomicity, a deterministic failure triggers `unloadBlueprintSlices`, which removes the
+    /// blueprint's `AppBlueprintKey` from the KV store entirely
+    /// [mechanism: `ClusterDeploymentState.java:2139-2158`], so a `statusUrl` GET issued after
+    /// rollback answers `404 BLUEPRINT_NOT_FOUND`, not `FAILED`. The only durable trace of the
+    /// failure is the `DeploymentFailed` event on `GET /api/events`
+    /// [mechanism: `ClusterEventAggregator.java:881-885` — `details.artifact` names the failed
+    /// artifact; `MAX_RETAINED_EVENTS = 10_000` (`:139`) bounds retention for the whole
+    /// cluster-event stream, not per-artifact; `StatusRoutes.java:114-115` — the route accepts
+    /// only `sinceEpoch`/`sinceSeq`, no server-side artifact filter, so a caller must fetch and
+    /// filter client-side on `details.artifact`]. Phase 2 will make
+    /// `GET /api/blueprints/status/{id}` read a durable terminal-outcome record instead of
+    /// 404ing on it. See `aether/docs/reference/management-api.md` `POST /api/blueprints/deploy`.
     record BlueprintResponse(String status,
                              String blueprint,
                              int targetInstances,
