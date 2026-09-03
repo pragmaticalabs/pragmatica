@@ -42,10 +42,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   durable-pubsub spec (`aether/docs/specs/durable-pubsub-spec.md` §3) now state the guarantee and
   cite it.
   [verified: aether/resource/api/src/test/java/org/pragmatica/aether/resource/TopicConfigTest.java]
-- Nearest-key suggestion via a small self-contained Levenshtein-distance helper (no new
-  dependency). Operator docs (`aether/docs/slice-developers/resource-reference.md`) and the
-  durable-pubsub spec (`aether/docs/specs/durable-pubsub-spec.md` §3 — whose own illustrative TOML
-  carried the dashed spelling this ticket rejects) now state the guarantee and cite it.
 
 ### Fixed (2026-09-03 — #250: storage GC/demotion was wired to a no-op)
 - **Artifact and stream tier demotion and garbage collection now actually run.** `AetherNode`
