@@ -742,11 +742,14 @@ Publish (apply) a blueprint definition. The request body is the raw blueprint YA
 {
   "status": "applied",
   "blueprint": "my-blueprint",
-  "slices": 3
+  "targetInstances": 3,
+  "activeInstances": 0,
+  "failedInstances": 0,
+  "statusUrl": "/api/blueprints/status/my-blueprint"
 }
 ```
 
-> **`"applied"` means accepted, not deployed.** This response is written before allocation runs, and it is never updated with the outcome. Poll [`GET /api/v1/blueprints/status/{id}`](#get-apiv1blueprintsstatusid) for progress; if a blueprint stays `PENDING` past its expected time, check [`GET /api/v1/events`](#get-apiv1events) for `DEPLOYMENT_FAILED` — under the default `ALL_OR_NOTHING` mode a failure rolls back the whole blueprint, so the status endpoints go back to showing nothing rather than a FAILED slice, and the event feed is the only place the reason (`details.reason`) appears.
+> **`"applied"` means accepted, not deployed.** This response is written before allocation runs, and it is never updated with the outcome. `targetInstances`/`activeInstances`/`failedInstances` are a live snapshot of the deployment map taken at response time — typically all-zero for a fresh publish, since nothing has had time to activate yet. `statusUrl` points directly at [`GET /api/v1/blueprints/status/{id}`](#get-apiv1blueprintsstatusid); poll it for progress. If a blueprint stays `PENDING` past its expected time, check [`GET /api/v1/events`](#get-apiv1events) for `DEPLOYMENT_FAILED` — under the default `ALL_OR_NOTHING` mode a failure rolls back the whole blueprint, so the status endpoints go back to showing nothing rather than a FAILED slice, and the event feed is the only place the reason (`details.reason`) appears.
 
 ### GET /api/v1/blueprints
 
@@ -803,13 +806,20 @@ deployment finished.
       "artifact": "org.example:my-slice:1.0.0",
       "targetInstances": 3,
       "activeInstances": 3,
+      "failedInstances": 0,
       "status": "DEPLOYED"
     }
   ]
 }
 ```
 
-Status values: `PENDING`, `DEPLOYING`, `DEPLOYED`, `SCALING_DOWN`. Overall: `DEPLOYED`, `PENDING`, `IN_PROGRESS`, `PARTIAL`.
+Per-slice status values: `PENDING`, `DEPLOYING`, `DEPLOYED`, `SCALING_DOWN`, `FAILED`. Overall: `DEPLOYED`, `PENDING`, `IN_PROGRESS`, `PARTIAL`, `FAILED`.
+
+`failedInstances` counts `SliceState.FAILED` entries still present in the deployment map for that
+slice's artifact (e.g. a `BEST_EFFORT` deploy, or a query landing before `ALL_OR_NOTHING` rollback
+cleanup removes the entry). Whenever it is non-zero the slice's `status` is `FAILED` regardless of
+`activeInstances`, and `overallStatus` is `FAILED` if **any** slice is `FAILED` — this takes
+priority over every other bucket, mirroring `POST /api/blueprints/deploy`'s `degraded` precedence.
 
 ### DELETE /api/v1/blueprints/{id}
 
@@ -837,11 +847,31 @@ Deploy a blueprint from an artifact in the cluster's artifact repository.
 **Response:**
 ```json
 {
-  "status": "deployed",
+  "status": "pending",
   "blueprint": "org.example:my-app:1.0.0",
-  "slices": 5
+  "targetInstances": 5,
+  "activeInstances": 0,
+  "failedInstances": 0,
+  "statusUrl": "/api/blueprints/status/org.example%3Amy-app%3A1.0.0"
 }
 ```
+
+#759 — `status` is earned off the deployment map at response time, not assumed from a successful
+publish; deployment is asynchronous, so the common immediate response is `pending`. Three honest
+outcomes, checked in this priority order:
+
+- **`degraded`** — at least one target instance is already `FAILED` in the deployment map.
+  Reachable on `BEST_EFFORT` deploys, or a redeploy onto an artifact with a lingering failure that
+  raced `ClusterDeploymentState`'s `ALL_OR_NOTHING` rollback cleanup.
+- **`deployed`** — every declared target instance is already observed `ACTIVE`. Only realistic for
+  an idempotent redeploy of an already fully-healthy artifact set.
+- **`pending`** — the default: at least one target instance has not yet activated.
+
+`targetInstances`/`activeInstances`/`failedInstances` are the same live snapshot used to derive
+`status`. `statusUrl` (`{id}` percent-encoded, since blueprint ids are artifact-shaped) always
+points at [`GET /api/blueprints/status/{id}`](#get-apiblueprintsstatusid) — poll it for the
+outcome, since a `pending` response here can still resolve to a rolled-back failure that clears the
+deployment-map entry before you check.
 
 #### Single-migrator gate (409 Conflict)
 
@@ -900,6 +930,22 @@ content in the body). Same body shape as `POST /api/v1/blueprints/deploy`, and s
 
 CLI: `aether blueprints publish <group:artifact:version>` appends the
 `:blueprint` qualifier automatically when constructing the body.
+
+**Response:**
+```json
+{
+  "status": "published",
+  "blueprint": "org.example:my-app:1.0.0",
+  "targetInstances": 5,
+  "activeInstances": 0,
+  "failedInstances": 0,
+  "statusUrl": "/api/blueprints/status/org.example%3Amy-app%3A1.0.0"
+}
+```
+
+`status` is always the fixed literal `published` — a register-only publish never activates the
+blueprint, so `activeInstances`/`failedInstances` are typically all-zero until a later
+`POST /api/v1/blueprints/deploy` actually targets this artifact.
 
 ### POST /api/v1/blueprints/validate
 

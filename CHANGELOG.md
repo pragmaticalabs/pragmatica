@@ -403,6 +403,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `ManagementRoute.API_BASE` (`/api/v1`) with no carve-out, so the un-prefixed form previously
   documented would 404 if followed literally.
 
+### Fixed (2026-09-03 — #759: `POST /api/v1/blueprints/deploy` returned 200 `"deployed"` while slices had actually failed to load)
+- **Deploy response now reports an earned status, not an assumed one, and always carries a
+  `statusUrl`.** `status` is read off the live deployment map at response time — `pending`
+  (default), `degraded` (a target instance already `FAILED`), or `deployed` (every target instance
+  `ACTIVE`) — replacing the fixed literal `"deployed"` written before allocation ever ran.
+  `statusUrl` points every response, whatever its status, at `GET /api/blueprints/status/{id}` so a
+  `pending`/`degraded` caller can poll the terminal outcome — including the `ALL_OR_NOTHING`
+  rollback case, where the deployment-map entry clears and the event feed is otherwise the only
+  place the reason survives.
+- **`slices` replaced by `targetInstances`/`activeInstances`/`failedInstances`** on `/deploy`,
+  `/publish`, and the blueprint status endpoint's per-slice entries, for consistent instance counts
+  across all three.
+- **The status endpoint now reports `FAILED` honestly**: a slice with `SliceState.FAILED` instances
+  still present in the deployment map is reported `FAILED` rather than folded into
+  `PENDING`/`DEPLOYING`, and `overallStatus` is `FAILED` if any slice is, ahead of every other
+  bucket.
+  [verified: `BlueprintDeployStatusTest`, `BlueprintStatusAggregationTest`]
+
 ## [1.0.0-rc3] - 2026-09-02
 
 ### Changed (2026-09-02 — publish-time packaging, one commit after the `v1.0.0-rc3` tag)
