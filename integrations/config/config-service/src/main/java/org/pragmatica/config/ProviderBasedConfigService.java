@@ -9,15 +9,19 @@ import java.lang.reflect.RecordComponent;
 import java.lang.reflect.Type;
 import java.time.Duration;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.parse.Text;
@@ -28,6 +32,7 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
+import static org.pragmatica.lang.Result.unitResult;
 
 
 /// ConfigService implementation that delegates to a ConfigurationProvider.
@@ -112,13 +117,66 @@ public final class ProviderBasedConfigService implements ConfigService {
             var types = extractComponentTypes(components);
             Constructor<T> constructor = configClass.getDeclaredConstructor(types);
 
-            return collectComponentArgs(section, components, configClass).flatMap(args -> invokeFactoryOrConstructor(configClass,
-                                                                                                                     constructor,
-                                                                                                                     types,
-                                                                                                                     args));
+            return strictKeyCheck(section, configClass, components)
+                          .flatMap(_ -> collectComponentArgs(section, components, configClass))
+                          .flatMap(args -> invokeFactoryOrConstructor(configClass, constructor, types, args));
         } catch (ReflectiveOperationException e) {
             return ConfigError.parseFailed(section, e).result();
         }
+    }
+
+    /// Opt-in ([StrictKeys]) rejection of keys the annotated record does not declare. Scoped to
+    /// exactly one path segment past the section prefix, so a nested sub-section (e.g. a consumer
+    /// group table owned by the dashed-by-convention stream parser) is never inspected here —
+    /// `provider.keys()` is one flat merged key set for the whole document, so that isolation has
+    /// to be filtered explicitly rather than falling out of the data structure.
+    private Result<Unit> strictKeyCheck(String section, Class<?> configClass, RecordComponent[] components) {
+        if (!configClass.isAnnotationPresent(StrictKeys.class)) {
+            return unitResult();
+        }
+
+        var known = Arrays.stream(components)
+                          .map(c -> toSnakeCase(c.getName()))
+                          .collect(Collectors.toSet());
+        var prefix = section + ".";
+
+        return provider.keys()
+                       .stream()
+                       .filter(k -> k.startsWith(prefix))
+                       .map(k -> k.substring(prefix.length()))
+                       .filter(k -> k.indexOf('.') < 0)
+                       .filter(k -> !known.contains(k))
+                       .findFirst()
+                       .map(unknown -> ConfigError.unknownKey(section, unknown, nearestKey(unknown, known)).<Unit>result())
+                       .orElseGet(Result::unitResult);
+    }
+
+    private static String nearestKey(String unknown, Set<String> known) {
+        return known.stream()
+                   .min(Comparator.comparingInt(k -> levenshtein(unknown, k)))
+                   .orElse("");
+    }
+
+    private static int levenshtein(String a, String b) {
+        var dp = new int[a.length() + 1][b.length() + 1];
+
+        for (int i = 0; i <= a.length(); i++) {
+            dp[i][0] = i;
+        }
+
+        for (int j = 0; j <= b.length(); j++) {
+            dp[0][j] = j;
+        }
+
+        for (int i = 1; i <= a.length(); i++) {
+            for (int j = 1; j <= b.length(); j++) {
+                var cost = a.charAt(i - 1) == b.charAt(j - 1) ? 0 : 1;
+
+                dp[i][j] = Math.min(Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1), dp[i - 1][j - 1] + cost);
+            }
+        }
+
+        return dp[a.length()][b.length()];
     }
 
     private static Class<?>[] extractComponentTypes(RecordComponent[] components) {

@@ -9,6 +9,7 @@ import java.util.List;
 
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.resource.ResourceVersion;
+import org.pragmatica.config.StrictKeys;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
@@ -54,6 +55,12 @@ import static org.pragmatica.lang.Option.none;
 ///    `resolveTopicName`).
 ///
 /// [#topicName] remains the bare-name convenience accessor used for runtime pub/sub routing.
+///
+/// [StrictKeys]-annotated: an unrecognized key in the topic's own section (most commonly a dashed
+/// key where a `min_sync_replicas`-style underscore is expected) fails the bind loudly instead of
+/// resolving to `none()`/`DEFAULT` indistinguishably from the key never having been written (#738).
+/// The check never inspects nested sub-sections such as a consumer group table.
+@StrictKeys
 public record TopicConfig(String topicName,
                           TopicDurability durability,
                           Option<Integer> partitions,

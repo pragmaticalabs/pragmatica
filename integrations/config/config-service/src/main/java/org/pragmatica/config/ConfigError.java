@@ -136,6 +136,23 @@ public sealed interface ConfigError extends Cause {
         return SecretResolutionFailed.secretResolutionFailed(key, secretPath, underlying).unwrap();
     }
 
+    /// Unknown key found in a section bound by a [StrictKeys]-annotated config record.
+    record UnknownKey(String section, String key, String nearestMatch) implements ConfigError {
+        public static Result<UnknownKey> unknownKey(String section, String key, String nearestMatch) {
+            return success(new UnknownKey(section, key, nearestMatch));
+        }
+
+        @Override
+        public String message() {
+            return "Unknown config key '" + key + "' in section '" + section + "'"
+                 + (nearestMatch.isEmpty() ? "" : " (did you mean '" + nearestMatch + "'?)");
+        }
+    }
+
+    static UnknownKey unknownKey(String section, String key, String nearestMatch) {
+        return UnknownKey.unknownKey(section, key, nearestMatch).unwrap();
+    }
+
     record unused() implements ConfigError {
         public static Result<unused > unused() {
             return success(new unused());
