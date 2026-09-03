@@ -6,17 +6,28 @@ package org.pragmatica.aether.node;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.dht.DHTClient;
+import org.pragmatica.dht.Partition;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.storage.BlockId;
+import org.pragmatica.storage.BlockLifecycle;
 import org.pragmatica.storage.DemotionManager;
+import org.pragmatica.storage.GarbageCollectorConfig;
 import org.pragmatica.storage.StorageGarbageCollector;
 
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import static java.util.Arrays.copyOf;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Unit.unit;
 
 /// #250 Constraint 4 pinning test: node-level storage maintenance wiring.
@@ -130,6 +141,110 @@ class StorageMaintenanceWiringTest {
                 return true;
             }
         };
+    }
+
+    /// #250 review, item 3: the four tests above all pass `Option.none()` for the DHT client, so
+    /// none of them prove a real `DhtStorageTier` ever reaches the tier list `StorageInstance`,
+    /// `DemotionManager`, and `StorageGarbageCollector` are handed by `assembleStreamSetup` --
+    /// they exercise the demotion/GC wiring but never the shared-tier branch of it.
+    ///
+    /// This test builds the production setup WITH a DHT tier present (fake client), writes
+    /// through it, forces the resulting block orphaned and past the (hardcoded, 1-hour)
+    /// GC grace period, runs a maintenance pass (`demote()` + `collectGarbage()`), and asserts
+    /// the content still comes back. `deleteFromPrivateTiers` always removes the memory/disk
+    /// copies once a block is orphan-eligible -- regardless of the shared-tier guard -- so a
+    /// successful read afterward is only possible because the block is still sitting in the DHT
+    /// tier, which is only true if that tier actually reached the collector's tier list AND the
+    /// guard held. Either failure (tier dropped from the list, or guard removed) collapses this
+    /// to `Option.none()`.
+    @Test
+    void defaultStreamStorage_maintenancePass_neverDeletesFromOrDemotesOutOfSharedDhtTier() {
+        var dhtClient = new InMemoryDHTClient();
+        var setup = StorageFactory.defaultStreamStorage(Option.some(dhtClient), streamDataDir, "test-node");
+        var content = "shared-tier-content".getBytes(StandardCharsets.UTF_8);
+
+        var blockId = setup.instance().put(content).await().unwrap();
+
+        assertThat(dhtClient.isEmpty())
+            .as("write-through with a DHT tier present writes the durable copy to the DHT tier "
+               + "first (it is always the last/durable tier when present) -- an empty backing "
+               + "store here means the DHT tier never received the wiring's tier list at all")
+            .isFalse();
+
+        forceOrphanedPastGracePeriod(setup, blockId);
+
+        setup.demotionManager().activate();
+        setup.garbageCollector().activate();
+
+        setup.demotionManager().demote();
+        setup.garbageCollector().collectGarbage();
+
+        setup.instance()
+             .get(blockId)
+             .await()
+             .onFailure(cause -> fail("get should not fail: " + cause.message()))
+             .onSuccess(opt -> assertThat(opt.isPresent())
+                 .as("private (memory/disk) copies are gone once a block is orphan-eligible; "
+                    + "content must still be readable from the shared DHT tier -- empty means "
+                    + "the maintenance pass deleted from, or demoted out of, the shared tier")
+                 .isTrue());
+    }
+
+    /// Drives the block's lifecycle directly to orphaned (refCount 0) and past the GC grace
+    /// cutoff, bypassing the hardcoded 1-hour `GarbageCollectorConfig` default that
+    /// `defaultStreamStorage` does not expose for injection -- the alternative would be a test
+    /// that actually sleeps an hour.
+    private static void forceOrphanedPastGracePeriod(StorageFactory.StorageSetup setup, BlockId blockId) {
+        var expiredCutoff = System.currentTimeMillis()
+                           - GarbageCollectorConfig.garbageCollectorConfig().gracePeriodMs()
+                           - 60_000;
+
+        setup.metadataStore()
+             .computeLifecycle(blockId,
+                               lc -> BlockLifecycle.blockLifecycle(lc.blockId(), lc.presentIn(), 0,
+                                                                   expiredCutoff, lc.createdAt(), lc.accessCount()));
+    }
+
+    /// In-memory `DHTClient` stub backed by a `ConcurrentHashMap`. Mirrors
+    /// `DhtStorageTierTest.InMemoryDHTClient` (aether-storage module) -- duplicated locally
+    /// because that class is package-private in a different module's test tree and unreachable
+    /// from here.
+    private static final class InMemoryDHTClient implements DHTClient {
+        private final ConcurrentHashMap<String, byte[]> store = new ConcurrentHashMap<>();
+
+        @Override
+        public Promise<Option<byte[]>> get(byte[] key) {
+            return Promise.success(option(store.get(keyString(key))).map(v -> copyOf(v, v.length)));
+        }
+
+        @Override
+        public Promise<Unit> put(byte[] key, byte[] value) {
+            store.put(keyString(key), copyOf(value, value.length));
+            return Promise.success(unit());
+        }
+
+        @Override
+        public Promise<Boolean> remove(byte[] key) {
+            return Promise.success(store.remove(keyString(key)) != null);
+        }
+
+        @Override
+        public Promise<Boolean> exists(byte[] key) {
+            return Promise.success(store.containsKey(keyString(key)));
+        }
+
+        @Override
+        public Partition partitionFor(byte[] key) {
+            return null;
+        }
+
+        boolean isEmpty() {
+            return store.isEmpty();
+        }
+
+        private static String keyString(byte[] key) {
+            return new String(key, StandardCharsets.UTF_8);
+        }
     }
 
     private static StorageGarbageCollector countingGarbageCollector(AtomicInteger calls) {
