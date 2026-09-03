@@ -12,12 +12,14 @@ import org.pragmatica.lang.Unit;
 /// #782 — a cluster is at least three nodes; there is no supported single-node topology.
 ///
 /// Kept as its own top-level gate — not folded into [ConfigValidator], which a sibling change is
-/// editing elsewhere — so it can run on the RESOLVED peer count a node actually assembles at boot
-/// (`Main`'s `peers.size()`, computed in `parsePeers` from `--peers=`/`CLUSTER_PEERS`/cloud
-/// discovery/config, in that order). That is a different question from `ConfigValidator`'s
-/// declarative `[cluster] nodes` TOML check, which only fires when a TOML loads and today never
-/// aborts boot on its own (`Main#loadConfigFile` discards any validation failure into
-/// `Option.none()`); this gate is the one that actually stops a sub-3-node start.
+/// editing elsewhere — so it can run on the CONFIGURED expected cluster size (`Main`'s
+/// `expectedClusterSize`: the parsed `--peers=`/`CLUSTER_PEERS` list size, or the discovery/config
+/// arm's `cluster().nodes()`), never on however many peers a boot attempt happened to RESOLVE — a
+/// cloud-discovery majority-at-timeout boot can legitimately resolve fewer peers than configured,
+/// and this gate must not abort that healthy boot. That is a different question from
+/// `ConfigValidator`'s declarative `[cluster] nodes` TOML check, which only fires when a TOML loads
+/// and today never aborts boot on its own (`Main#loadConfigFile` discards any validation failure
+/// into `Option.none()`); this gate is the one that actually stops a sub-3-node start.
 public final class ClusterSizeGate {
     private static final int MINIMUM_SUPPORTED_CLUSTER_SIZE = 3;
 

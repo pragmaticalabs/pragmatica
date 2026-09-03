@@ -10,8 +10,10 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-// #782 — boot-time gate on the RESOLVED peer count (Main#parsePeers().size()), independent of
-// ConfigValidator's declarative [cluster] nodes TOML check. See ClusterSizeGate#enforce.
+// #782 — boot-time gate on the CONFIGURED expected cluster size (Main#expectedClusterSize),
+// independent of ConfigValidator's declarative [cluster] nodes TOML check. See ClusterSizeGate#enforce.
+// Call-site arithmetic (static vs. discovery, configured vs. resolved) is pinned in
+// aether/node's MainClusterSizeTest, not here — this file only exercises the pure function.
 class ClusterSizeGateTest {
 
     @Test
