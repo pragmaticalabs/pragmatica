@@ -562,6 +562,80 @@ class ClusterDeploymentStateTransactionalTest {
         }
     }
 
+    /// #759 review (M2) — the rollback sequence that #759's `BlueprintResponse` doc comment
+    /// (`ManagementApiResponses.java`) and `management-api.md` now describe: a deterministic,
+    /// fatal slice failure under `ALL_OR_NOTHING` removes the blueprint's KV entry outright
+    /// (`unloadBlueprintSlices`, `ClusterDeploymentState.java:2139-2158`), rather than recording a
+    /// FAILED status anyone can read back. No test previously drove this sequence end to end.
+    ///
+    /// This only covers the half of the sequence owned by THIS module — the FAILED `NodeArtifact`
+    /// Put through the `AppBlueprintKey` Remove command. The other half — that
+    /// `GET /api/blueprints/status/{id}` (`SliceRoutes.handleGetBlueprintStatus`, `aether/node`)
+    /// answers 404 once that key is gone — is a different module's HTTP layer and is covered by
+    /// `BlueprintStatusAggregationTest#statusRoute_blueprintAbsentFromKv_returns404BlueprintNotFound`
+    /// in `aether/node`; that test's `Option.none()` stub is exactly the KV post-state this test
+    /// proves is reached. Together the two tests are "FAILED Put → rollback commands → status
+    /// read → 404". **Until #759 Phase 2** lands a durable terminal-outcome record, this is
+    /// current, correct, and permanent behavior, not a race to be tolerated — the name says what
+    /// Phase 2 must flip: once the status route reads that durable record instead of the live KV
+    /// entry, `AppBlueprintKey` can still be removed here, but the status read must no longer 404.
+    @Nested
+    class RollbackSequence {
+        @Test
+        void deterministicFatalFailure_freshDeploy_removesAppBlueprintKeyFromKv() {
+            var expanded = blueprint("app", V1, "slice-a");
+            var sliceArtifact = artifact("slice-a", V1);
+
+            harness.dispatch(new AppBlueprintPutReceived(appBlueprintPut(expanded)));
+            assertThat(cluster.putKeys()).as("initial publish tracks the blueprint in-flight, not yet rolled back")
+                                         .doesNotContain(AppBlueprintKey.appBlueprintKey(expanded.id()));
+
+            harness.dispatch(new NodeArtifactPutReceived(fatalFailurePut(SELF, sliceArtifact, "boom")));
+
+            var blueprintKey = AppBlueprintKey.appBlueprintKey(expanded.id());
+            assertThat(cluster.removeKeys()).as("#759 C2 — deterministic failure under ALL_OR_NOTHING "
+                                                 + "removes the blueprint's KV entry outright, it does not "
+                                                 + "record a durable FAILED status")
+                                            .contains(blueprintKey);
+            assertThat(cluster.removeKeys()).contains(SliceTargetKey.sliceTargetKey(sliceArtifact.base()));
+        }
+
+        @Test
+        void deterministicFatalFailure_nonFatalOrTransient_doesNotRollback() {
+            var expanded = blueprint("app", V1, "slice-a");
+            var sliceArtifact = artifact("slice-a", V1);
+
+            harness.dispatch(new AppBlueprintPutReceived(appBlueprintPut(expanded)));
+            harness.dispatch(new NodeArtifactPutReceived(transientFailurePut(SELF, sliceArtifact, "retry me")));
+
+            assertThat(cluster.removeKeys()).as("a transient (non-fatal) failure retries in place; "
+                                               + "it must not trigger the ALL_OR_NOTHING rollback")
+                                            .doesNotContain(AppBlueprintKey.appBlueprintKey(expanded.id()));
+        }
+    }
+
+    private static ValuePut<AppBlueprintKey, AppBlueprintValue> appBlueprintPut(ExpandedBlueprint expanded) {
+        var key = AppBlueprintKey.appBlueprintKey(expanded.id());
+        var value = AppBlueprintValue.appBlueprintValue(expanded);
+        return new ValuePut<>(new KVCommand.Put<>(key, value), Option.none());
+    }
+
+    private static ValuePut<NodeArtifactKey, NodeArtifactValue> fatalFailurePut(NodeId nodeId,
+                                                                                Artifact artifact,
+                                                                                String reason) {
+        var key = NodeArtifactKey.nodeArtifactKey(nodeId, artifact);
+        var value = new NodeArtifactValue(SliceState.FAILED, Option.option(reason), true, 0, List.of(), 0L);
+        return new ValuePut<>(new KVCommand.Put<>(key, value), Option.none());
+    }
+
+    private static ValuePut<NodeArtifactKey, NodeArtifactValue> transientFailurePut(NodeId nodeId,
+                                                                                    Artifact artifact,
+                                                                                    String reason) {
+        var key = NodeArtifactKey.nodeArtifactKey(nodeId, artifact);
+        var value = new NodeArtifactValue(SliceState.FAILED, Option.option(reason), false, 0, List.of(), 0L);
+        return new ValuePut<>(new KVCommand.Put<>(key, value), Option.none());
+    }
+
     // --- test fixtures (mirrors ClusterDeploymentStateActiveTest) ---
 
     private static SchemaOrchestratorService stubSchemaOrchestrator() {
@@ -663,6 +737,18 @@ class ClusterDeploymentStateTransactionalTest {
             synchronized (commands) {
                 return commands.stream()
                                .filter(c -> c instanceof KVCommand.Put<AetherKey, ?>)
+                               .map(KVCommand::key)
+                               .toList();
+            }
+        }
+
+        /// #759 review (M2) — the rollback-sequence test needs to see `KVCommand.Remove`, not
+        /// just `Put`: `unloadBlueprintSlices` rolls back by REMOVING the `AppBlueprintKey`, it
+        /// never Puts a FAILED status anywhere.
+        List<AetherKey> removeKeys() {
+            synchronized (commands) {
+                return commands.stream()
+                               .filter(c -> c instanceof KVCommand.Remove<AetherKey>)
                                .map(KVCommand::key)
                                .toList();
             }
