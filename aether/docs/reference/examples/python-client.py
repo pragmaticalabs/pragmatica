@@ -172,15 +172,15 @@ class AetherClient:
 
     def promote_deployment(self, deployment_id: str) -> dict:
         """Advance deployment to next stage."""
-        return self._post(f"/api/v1/deploy/{deployment_id}/promote", {})
+        return self._post(f"/api/v1/deploy/promote/{deployment_id}", {})
 
     def complete_deployment(self, deployment_id: str) -> dict:
         """Complete deployment."""
-        return self._post(f"/api/v1/deploy/{deployment_id}/complete", {})
+        return self._post(f"/api/v1/deploy/complete/{deployment_id}", {})
 
     def rollback_deployment(self, deployment_id: str) -> dict:
         """Rollback deployment."""
-        return self._post(f"/api/v1/deploy/{deployment_id}/rollback", {})
+        return self._post(f"/api/v1/deploy/rollback/{deployment_id}", {})
 
 
 def main():
