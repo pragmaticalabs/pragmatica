@@ -37,13 +37,13 @@ name = "orders.completed"
 durability = "durable"        # "ephemeral" (default) | "durable"
 partitions = 4                 # durable only; default 1
 replicas = 2                   # durable only; default 2 (see constraint)
-min-sync-replicas = 2          # durable only; default = replicas
+min_sync_replicas = 2          # durable only; default = replicas
 retention = "7d"               # durable only; stream retention policy
 ```
 
 - `durability = "ephemeral"` (default): exactly today's mechanics, honest signature (D5). Defaulting to ephemeral keeps the zero-config path cheap and makes durability an explicit, costed choice.
 - `durability = "durable"`: backed by a stream `topic:<name>` created at slice activation through the app-stream path (`StreamConfig` — the #410 machinery: committed config, reconcile-on-config-Put placement, epoch-fenced recovery). Its DLQ stream (§9) is created **in the same activation step**.
-- **v1 durable-config constraint (parser-enforced):** `replicas ≥ 2` **and** `min-sync-replicas == replicas`. This is exactly the configuration whose lossless owner-kill failover is proven (streaming-spec §10.5 scoping). Configurations outside it are **rejected at parse** with a pointer to this section: `replicas = 1` provides no failover durability, `min-sync-replicas = 0` is the zero-peer-ack floor (`0==1` footgun, §10.5), and `min-sync < replicas` with `replicas > 2` can drop acked records on single-survivor promotion until #411 (multi-survivor union catch-up) lands. When #411 lands, this constraint relaxes to `2 ≤ min-sync ≤ replicas` by amending this section — not silently.
+- **v1 durable-config constraint (parser-enforced):** `replicas ≥ 2` **and** `min_sync_replicas == replicas`. This is exactly the configuration whose lossless owner-kill failover is proven (streaming-spec §10.5 scoping). Configurations outside it are **rejected at parse** with a pointer to this section: `replicas = 1` provides no failover durability, `min_sync_replicas = 0` is the zero-peer-ack floor (`0==1` footgun, §10.5), and `min-sync < replicas` with `replicas > 2` can drop acked records on single-survivor promotion until #411 (multi-survivor union catch-up) lands. When #411 lands, this constraint relaxes to `2 ≤ min-sync ≤ replicas` by amending this section — not silently. **An unrecognized key at the topic's own level — most commonly this dashed spelling instead of the underscore the binder expects — is itself rejected at parse, naming the nearest correctly-spelled key (#738), rather than silently resolving as if the knob had never been declared.**
 - Partitioning: an optional publisher-supplied message key routes by hash to a partition; keyless events round-robin partitions. Per-partition order is preserved end-to-end (§6).
 
 The `Topic<T>` compile-time layer (#396) is unchanged — it carries the type, the address, and (now) the durability class that selects the publisher shape (D5).

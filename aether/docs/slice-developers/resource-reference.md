@@ -1079,6 +1079,15 @@ would be inert — same stance as #576): either declare `durability = "durable"`
 invalid durable declaration fails slice activation loudly; it never silently downgrades to
 ephemeral delivery.
 
+**Unrecognized keys in a topic's own section are rejected, not ignored** (#738). A mistyped key —
+most commonly a dashed spelling where the table above expects an underscore, e.g.
+`min-sync-replicas` instead of `min_sync_replicas` — used to bind silently as if the key had never
+been written, which for a durability knob meant a topic quietly stayed ephemeral instead of the
+durable tier the operator intended. The bind now fails, naming the nearest correctly-spelled key.
+The check only looks at the keys this table lists; a nested sub-section under the same topic (for
+example a consumer group table) is unaffected, however it is spelled.
+[verified: aether/resource/api/src/test/java/org/pragmatica/aether/resource/TopicConfigTest.java]
+
 ### TOML Example
 
 ```toml

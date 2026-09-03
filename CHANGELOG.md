@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc4] - Unreleased
 
+### Fixed (2026-09-03 — #738: topic sections silently ignored dashed/misspelled keys)
+- **A misspelled or dashed key in a topic's `resources.toml` section is now rejected at parse,
+  naming the nearest correctly-spelled key** — most commonly `min-sync-replicas` where
+  `min_sync_replicas` was meant. Previously the reflective config binder
+  (`ProviderBasedConfigService.bindToClass`, the class every production config caller actually
+  binds through — a separate, unreachable `TomlConfigService` carries the same shape but has zero
+  production callers) resolved any key it did not recognize to `Option.none()`/a component
+  default, making a typo byte-indistinguishable from the key never having been written. For a
+  durability knob this was a fail-open on the durability axis: a mistyped `min_sync_replicas`
+  silently kept a topic on the ephemeral tier instead of raising the durable one the operator
+  declared.
+- **New opt-in `@StrictKeys` annotation**, applied to `TopicConfig` only — every other config
+  record bound by `ProviderBasedConfigService` (six-plus production callers) is unannotated and
+  binds exactly as before; a new record fixture with an extra unrecognized key proves this.
+  [verified: integrations/config/config-service/src/test/java/org/pragmatica/config/ProviderBasedConfigServiceTest.java (StrictKeysScoping)]
+- **Scoped to exactly the keys the annotated record binds**: a nested sub-section under the same
+  topic (e.g. a consumer group table, owned by the dashed-by-convention `StreamConfigParser`) is
+  never inspected by this check, however it is spelled — `provider.keys()` returns one flat merged
+  key set for the whole document, so the isolation is an explicit filter, not a free property of
+  the data structure.
+  [verified: aether/resource/api/src/test/java/org/pragmatica/aether/resource/TopicConfigTest.java]
+- Nearest-key suggestion via a small self-contained Levenshtein-distance helper (no new
+  dependency). Operator docs (`aether/docs/slice-developers/resource-reference.md`) and the
+  durable-pubsub spec (`aether/docs/specs/durable-pubsub-spec.md` §3 — whose own illustrative TOML
+  carried the dashed spelling this ticket rejects) now state the guarantee and cite it.
+
 ### Fixed (2026-09-03 — #250: storage GC/demotion was wired to a no-op)
 - **Artifact and stream tier demotion and garbage collection now actually run.** `AetherNode`
   previously wired storage through `DelegatedStorageAdapter.noOp()` — leader-pinned
