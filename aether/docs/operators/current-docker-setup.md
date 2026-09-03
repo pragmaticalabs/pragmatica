@@ -38,6 +38,8 @@ services:
       CLUSTER_PORT: "8090"
       MANAGEMENT_PORT: "8080"
       PEERS: "node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090"
+      AETHER_CLUSTER_NAME: "aether-dev"
+      AETHER_CLUSTER_SECRET: "change-me-dev-secret"
       JAVA_OPTS: "-Xmx256m -XX:+UseZGC"
     ports:
       - "8080:8080"   # Management API
