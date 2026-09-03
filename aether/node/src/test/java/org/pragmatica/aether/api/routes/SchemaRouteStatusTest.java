@@ -341,6 +341,19 @@ class SchemaRouteStatusTest {
             handle(ManagementRoute.SCHEMA_MIGRATE, Option.none(), Option.none()).onFailure(cause -> Assertions.fail("An active slice owned by a different blueprint must not block re-migration: "
                                                                                                                     + cause.message()));
         }
+
+        /// #760 review round 2 item b pinning test — a slice mid-activation is already occupying the
+        /// datasource it is about to serve from; before the fix `countIfActiveAndOwnedBy` matched only
+        /// `SliceState.ACTIVE`, so a re-arm raced a slice seconds from going live instead of being
+        /// refused like the ACTIVE case above.
+        @Test
+        void migrateRoute_respondsConflict_whenCompletedRecordHasActivatingSlices() {
+            seed(SchemaStatus.COMPLETED);
+            seedSliceInState(ACTIVE_SLICE, OWNER, SliceState.ACTIVATING);
+
+            assertThat(statusFor(ManagementRoute.SCHEMA_MIGRATE)).as("a slice mid-activation is about to serve the same datasource, same as one already ACTIVE")
+                      .isEqualTo(HttpStatus.CONFLICT);
+        }
     }
 
     /// A present-but-unparseable version parameter used to throw `NumberFormatException` out of the

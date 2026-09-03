@@ -226,6 +226,19 @@ public final class SchemaRoutes implements RouteSource {
                : schemaAlreadyServing(datasource, activeCount).promise();
     }
 
+    /// #760 review round 2 item b: a slice mid-activation (ACTIVATING/ROUTING) is already occupying
+    /// the datasource it will serve from once it reaches ACTIVE — refusing to count it would let a
+    /// re-arm race a slice that is seconds from going live. Counting ACTIVATING/ROUTING/ACTIVE alike
+    /// is deliberately over-inclusive rather than under: a false-positive refusal costs the operator a
+    /// retry, a false-negative would strand the very migration this guard exists to protect.
+    ///
+    /// This count is a snapshot read against a live KV store with no lock spanning it and the
+    /// subsequent status Put — a slice can transition into a serving state, or a brand-new one can be
+    /// targeted, in the window between this read and `writeMigratingStatus`'s write. That window is a
+    /// known, accepted race: closing it would need the count and the Put to share a single
+    /// consensus-replicated transaction, which this guard does not attempt. Documented here rather
+    /// than fixed, since the guard's purpose is to catch the common case (a schema re-armed onto an
+    /// already-serving version), not to provide a linearizable barrier.
     private int activeSliceCount(BlueprintId owner) {
         var count = new AtomicInteger();
 
@@ -238,11 +251,13 @@ public final class SchemaRoutes implements RouteSource {
         return count.get();
     }
 
+    private static final Set<SliceState> SERVING_STATES = Set.of(SliceState.ACTIVATING, SliceState.ROUTING, SliceState.ACTIVE);
+
     private void countIfActiveAndOwnedBy(BlueprintId owner,
                                          SliceNodeKey key,
                                          SliceNodeValue value,
                                          AtomicInteger count) {
-        if (value.state() == SliceState.ACTIVE && sliceOwner(key.artifact()).map(actualOwner -> actualOwner.base()
+        if (SERVING_STATES.contains(value.state()) && sliceOwner(key.artifact()).map(actualOwner -> actualOwner.base()
                                                                                                            .equals(owner.base()))
                                                             .or(false)) {
             count.incrementAndGet();
