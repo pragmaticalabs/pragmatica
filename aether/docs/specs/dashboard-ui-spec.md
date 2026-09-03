@@ -1523,17 +1523,17 @@ Phases 2, 3, and 4 can be partially parallelized after Phase 1 is complete.
 
 ### Internal References
 
-- `/Users/sergiyyevtushenko/IdeaProjects/pragmatica/aether/dashboard/src/main/resources/dashboard/` -- Current dashboard source (index.html, dashboard.js, style.css)
-- `/Users/sergiyyevtushenko/IdeaProjects/pragmatica/aether/forge/forge-core/src/main/resources/static/` -- Forge dashboard source (index.html, dashboard.js, style.css)
-- `/Users/sergiyyevtushenko/IdeaProjects/pragmatica/aether/node/src/main/java/org/pragmatica/aether/api/DashboardWebSocketHandler.java` -- WebSocket handler for /ws/dashboard
-- `/Users/sergiyyevtushenko/IdeaProjects/pragmatica/aether/node/src/main/java/org/pragmatica/aether/api/DashboardMetricsPublisher.java` -- Metrics aggregation and broadcasting
-- `/Users/sergiyyevtushenko/IdeaProjects/pragmatica/aether/node/src/main/java/org/pragmatica/aether/api/StatusWebSocketHandler.java` -- WebSocket handler for /ws/status
-- `/Users/sergiyyevtushenko/IdeaProjects/pragmatica/aether/node/src/main/java/org/pragmatica/aether/api/EventWebSocketHandler.java` -- WebSocket handler for /ws/events (delta mode)
-- `/Users/sergiyyevtushenko/IdeaProjects/pragmatica/aether/node/src/main/java/org/pragmatica/aether/api/EventWebSocketPublisher.java` -- Delta event broadcasting
-- `/Users/sergiyyevtushenko/IdeaProjects/pragmatica/aether/node/src/main/java/org/pragmatica/aether/api/StatusWebSocketPublisher.java` -- Periodic status broadcasting
-- `/Users/sergiyyevtushenko/IdeaProjects/pragmatica/aether/node/src/main/java/org/pragmatica/aether/api/ManagementServer.java` -- HTTP server setup with all 3 WebSocket endpoints
-- `/Users/sergiyyevtushenko/IdeaProjects/pragmatica/aether/node/src/main/java/org/pragmatica/aether/api/routes/DashboardRoutes.java` -- Static file serving for dashboard
-- `/Users/sergiyyevtushenko/IdeaProjects/pragmatica/aether/forge/forge-core/src/main/java/org/pragmatica/aether/forge/ForgeServer.java` -- Forge server with WebSocket setup
+- `aether/dashboard/src/main/resources/dashboard/` -- Current dashboard source (index.html, dashboard.js, style.css)
+- `aether/forge/forge-core/src/main/resources/static/` -- Forge dashboard source (index.html, dashboard.js, style.css)
+- `aether/node/src/main/java/org/pragmatica/aether/api/DashboardWebSocketHandler.java` -- WebSocket handler for /ws/dashboard
+- `aether/node/src/main/java/org/pragmatica/aether/api/DashboardMetricsPublisher.java` -- Metrics aggregation and broadcasting
+- `aether/node/src/main/java/org/pragmatica/aether/api/StatusWebSocketHandler.java` -- WebSocket handler for /ws/status
+- `aether/node/src/main/java/org/pragmatica/aether/api/EventWebSocketHandler.java` -- WebSocket handler for /ws/events (delta mode)
+- `aether/node/src/main/java/org/pragmatica/aether/api/EventWebSocketPublisher.java` -- Delta event broadcasting
+- `aether/node/src/main/java/org/pragmatica/aether/api/StatusWebSocketPublisher.java` -- Periodic status broadcasting
+- `aether/node/src/main/java/org/pragmatica/aether/api/ManagementServer.java` -- HTTP server setup with all 3 WebSocket endpoints
+- `aether/node/src/main/java/org/pragmatica/aether/api/routes/DashboardRoutes.java` -- Static file serving for dashboard
+- `aether/forge/forge-core/src/main/java/org/pragmatica/aether/forge/ForgeServer.java` -- Forge server with WebSocket setup
 
 ### Bundle Size Analysis
 
