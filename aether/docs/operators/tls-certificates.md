@@ -14,7 +14,7 @@ Aether uses TLS in three contexts:
 | Management API | TCP (HTTP/1.1 or HTTP/3) | Same as cluster |
 | Application HTTP (slice endpoints) | TCP (HTTP/1.1 or HTTP/3) | Same as cluster |
 
-Additionally, SWIM gossip messages (UDP port 8091) are encrypted with AES-256-GCM using a key
+Additionally, SWIM gossip messages (UDP port 8190) are encrypted with AES-256-GCM using a key
 derived from the same cluster secret.
 
 ## Auto-Generated Certificates (Development and Simple Deployments)
@@ -329,7 +329,7 @@ certificates (no shared trust, suitable only for single-node development).
 Currently, Aether supports self-signed certificates via `SelfSignedCertificateProvider`. The
 `CertificateProvider` interface is designed for extensibility -- cloud CA adapters (e.g., AWS
 Private CA, GCP Certificate Authority Service, HashiCorp Vault PKI) are planned for a future
-release. See [GitHub Issue #88](https://github.com/pragmatica-lite/pragmatica/issues/88) for
+release. See [GitHub Issue #88](https://github.com/pragmaticalabs/pragmatica/issues/88) for
 tracking.
 
 ## Related Documents

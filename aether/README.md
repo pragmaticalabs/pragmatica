@@ -8,11 +8,14 @@ Unified Application Runtime for Java -- scale horizontally without microservices
 > - **Single trust domain.** Aether assumes all cluster nodes and management clients are
 >   operated by one trusted party. It is **not** hardened for multi-tenant or hostile-network
 >   deployment.
-> - **Security is built in but OFF by default in this RC.** The management API supports
->   API-key auth with role-based access (viewer / operator / admin), and inter-node transport
->   runs over TLS (self-signed by default, or operator-supplied certificates) — but the default
->   `SecurityMode` is `NONE`, so auth must be **explicitly enabled**. Making security default-on
->   is a hard gate for the 1.0.0 (GA) release. Separately, `AETHER_INSECURE_DEV_MODE` is an explicit opt-in that
+> - **Security is on by default in this RC.** The management API supports API-key auth with
+>   role-based access (viewer / operator / admin), and inter-node transport runs over TLS
+>   (self-signed by default, or operator-supplied certificates); the default `SecurityMode` is
+>   `API_KEY`, not `NONE` — a fresh cluster with no configured key mints a one-time ADMIN key and
+>   prints it once in the startup log (look for the `AETHER BOOTSTRAP ADMIN API KEY` banner), or
+>   you can preset one via `AETHER_API_KEYS=<key>` or an `[app-http.api-keys.<name>]` table in
+>   `aether.toml`. For local experiments, set `security_mode = "none"` under `[app-http]` in
+>   `aether.toml` to disable auth entirely. Separately, `AETHER_INSECURE_DEV_MODE` is an explicit opt-in that
 >   enables test-injection endpoints; it is **refused at boot** when operator TLS certificates
 >   are configured, and logs a loud startup warning whenever it is active.
 > - **Not yet production-hardened.** Some background reconcilers are tuned for settled clusters

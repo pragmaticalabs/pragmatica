@@ -134,8 +134,14 @@ class DatasourceConnectionProviderInstance implements DatasourceConnectionProvid
                       factory.priority(),
                       factory.supports(config));
             if (factory.supports(config)) {
-                log.info("Selected factory {} for provisioning",
-                         factory.getClass().getSimpleName());
+                // #769: log the resolved effective connection target (post override precedence),
+                // not the raw config, so a claim that an override was applied is checkable from
+                // the log alone. Credential-free by construction: host/port/database/transport only.
+                log.info("Provisioning datasource via {}: host={}, port={}, database={}",
+                         factory.getClass().getSimpleName(),
+                         config.effectiveHost(),
+                         config.effectivePort(),
+                         config.effectiveDatabase());
 
                 return factory.provision(config);
             }

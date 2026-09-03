@@ -91,7 +91,7 @@ We neither claim it works nor hide that it is the open frontier. Until #367 prod
   `core_absence < community_absence` is refused at config load, and that inequality is the whole
   no-double-active guarantee: the community stops serving before the core hands its work to anyone else.
   `[verified: CoreAbsenceDetectorTest 16/16, ClusterDeploymentStateCommunityFsmTest$CoreObservedAbsence
-  6/6, ClusterTimeoutsAbsenceOrderingTest 5/5 — each mutation-checked: removing the cold-start latch or
+  6/6, ClusterTimeoutsAbsenceOrderingTest 7/7 — each mutation-checked: removing the cold-start latch or
   the observed-absence read turns exactly the guarding tests red]`
   `[design intent — unverified: the ORDERING under a real partition. No in-JVM harness can produce one —
   Forge is single-JVM and cannot sever the cluster network — so "the community stopped serving before

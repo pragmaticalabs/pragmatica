@@ -19,6 +19,7 @@ import java.util.stream.IntStream;
 
 import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.config.ClusterConfig;
+import org.pragmatica.aether.config.ClusterSizeGate;
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.config.AppHttpConfig;
@@ -86,6 +87,8 @@ public record Main(String[] args) {
         var nodeLabels = collectNodeLabels();
         var environment = resolveEnvironment(aetherConfig);
         var peers = parsePeers(nodeId, port, nodeLabels, aetherConfig, environment);
+
+        enforceMinimumClusterSize(staticPeersConfigured(), configuredClusterNodes(aetherConfig), peers.size());
         var sliceConfig = parseSliceConfig(aetherConfig);
         var dhtConfig = parseDhtConfig(aetherConfig);
 
@@ -199,6 +202,57 @@ public record Main(String[] args) {
     @Contract
     private void enforceClusterNamePresent() {
         verifyClusterNamePresent(System.getenv("AETHER_CLUSTER_NAME")).onFailure(this::abortBoot);
+    }
+
+    /// #782 fix round — a cluster is at least three nodes, gated on the CONFIGURED topology, never
+    /// on however many peers a boot attempt happened to resolve. The two differ exactly at cloud
+    /// discovery's majority-at-timeout arm (`awaitDiscoveredCorePeers`, :611-663): a healthy
+    /// majority boot of a three-node cluster can legitimately resolve 2 peers when one VM is slow,
+    /// and gating on that resolved count would abort the exact boot that arm exists to allow. See
+    /// [#expectedClusterSize] for the per-arm rule. Delegates to the pure, unit-tested
+    /// [ClusterSizeGate#enforce] guard and exits on violation, the same `verify* -> abortBoot` idiom
+    /// as the cluster-name and dev-mode gates above.
+    @Contract
+    private void enforceMinimumClusterSize(boolean staticPeersConfigured, int configuredNodes, int resolvedPeerCount) {
+        ClusterSizeGate.enforce(expectedClusterSize(staticPeersConfigured, configuredNodes, resolvedPeerCount)).onFailure(this::abortBoot);
+    }
+
+    /// The CONFIGURED expected topology size for the size gate above — pure and unit-tested at the
+    /// real call-site arithmetic (not just `ClusterSizeGate#enforce` in isolation).
+    ///
+    /// Static peers (`--peers=`/`CLUSTER_PEERS`) have no found-vs-expected split: the parsed list
+    /// plus self IS the configuration (`MainPeerAssemblyTest` proves 2 peers + self = 3), so
+    /// `resolvedPeerCount` is already correct there. Discovery and config-generated peers DO have
+    /// that split — `configuredNodes` is `cluster().nodes()`, the SAME value
+    /// `awaitDiscoveredCorePeers`'s `expected` parameter is given (both read it via
+    /// [#configuredClusterNodes], so they cannot silently drift apart) — so a majority-at-timeout
+    /// boot must gate on what was configured, not on what was found.
+    static int expectedClusterSize(boolean staticPeersConfigured, int configuredNodes, int resolvedPeerCount) {
+        if (staticPeersConfigured) {
+            return resolvedPeerCount;
+        }
+
+        return configuredNodes > 0
+               ? configuredNodes
+               : resolvedPeerCount;
+    }
+
+    /// Whether `--peers=`/`CLUSTER_PEERS` is what `parsePeers` will resolve against — mirrors that
+    /// method's own precedence check so [#expectedClusterSize] asks the identical question `parsePeers`
+    /// already answered, rather than re-deriving it from the resolved list after the fact.
+    private boolean staticPeersConfigured() {
+        return findArg("--peers=").isPresent() || findEnv("CLUSTER_PEERS").isPresent();
+    }
+
+    /// Single source for the discovery arm's target (`discoverCloudCorePeers`'s `expected`) and the
+    /// boot-time size gate's `configuredNodes` (`enforceMinimumClusterSize`) — both must read the
+    /// identical field, or a gate that silently drifted from the discovery wait would reproduce the
+    /// #782 fix-round bug this replaces. 0 means "unset" (mirrors `ClusterConfig#UNBOUNDED`'s
+    /// convention).
+    private static int configuredClusterNodes(Option<AetherConfig> aetherConfig) {
+        return aetherConfig.map(cfg -> cfg.cluster()
+                                          .nodes())
+                           .or(0);
     }
 
     /// #298 — the cluster name for runtime config, read from the same env var the boot gate keys on
@@ -581,8 +635,7 @@ public record Main(String[] args) {
                                                           Map<String, String> labels,
                                                           Option<AetherConfig> aetherConfig,
                                                           Option<EnvironmentIntegration> environment) {
-        var expected = aetherConfig.map(cfg -> cfg.cluster()
-                                                  .nodes()).or(0);
+        var expected = configuredClusterNodes(aetherConfig);
 
         return environment.flatMap(EnvironmentIntegration::discovery)
                           .filter(_ -> expected > 0)

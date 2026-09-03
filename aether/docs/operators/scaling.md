@@ -251,8 +251,12 @@ aether status --watch
 
 ### Metrics API
 
+Port 5040 and `/metrics/slices` do not exist; the real management route is
+`SLICES_STATUS` on the management port (8080), prefixed `/api/v1` (`ManagementRoute.java`). The
+response body below is illustrative and unverified against the route's actual schema.
+
 ```bash
-curl http://localhost:5040/metrics/slices
+curl http://localhost:8080/api/v1/slices/status
 
 {
   "order-processor": {

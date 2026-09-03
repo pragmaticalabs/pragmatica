@@ -60,7 +60,7 @@ All configurable timeouts in a single table, grouped by TOML section.
 | `activating` | `1m` | Maximum time for slice activation (dependency resolution + start) |
 | `deactivating` | `30s` | Maximum time for slice deactivation (stop + cleanup) |
 | `unloading` | `2m` | Maximum time for slice unloading (classloader teardown) |
-| `activation_chain` | `5m` | Maximum time for the full activation chain (all dependencies) |
+| `activation_chain` | `90s` | Maximum time for the full activation chain (all dependencies) |
 | `transition_retry_delay` | `2s` | Delay between lifecycle state transition retries |
 | `reconciliation_interval` | `30s` | Interval for deployment state reconciliation (CDM) |
 | `max_lifecycle_retries` | `60` | Maximum number of lifecycle transition retries |
@@ -97,7 +97,7 @@ All configurable timeouts in a single table, grouped by TOML section.
 |----------|---------|-------------|
 | `sync_retry_interval` | `5s` | Interval for retrying consensus state synchronization |
 | `cleanup_interval` | `60s` | Interval for cleaning up old consensus phases |
-| `proposal_timeout` | `3s` | Maximum time to wait for a consensus proposal to complete |
+| `proposal_timeout` | `8s` | Maximum time to wait for a consensus proposal to complete |
 | `phase_stall_check` | `500ms` | Interval for checking stalled consensus phases |
 | `git_persistence` | `30s` | Interval for persisting consensus state to git backup |
 
@@ -115,7 +115,7 @@ All configurable timeouts in a single table, grouped by TOML section.
 |----------|---------|-------------|
 | `period` | `1s` | SWIM protocol round period |
 | `probe_timeout` | `500ms` | Timeout for direct and indirect SWIM probes |
-| `suspect_timeout` | `5s` | Duration a node stays in SUSPECT state before being declared DEAD |
+| `suspect_timeout` | `10s` | Duration a node stays in SUSPECT state before being declared DEAD |
 
 ### `[timeouts.observability]`
 
@@ -133,7 +133,7 @@ All configurable timeouts in a single table, grouped by TOML section.
 
 | TOML Key | Default | Description |
 |----------|---------|-------------|
-| `operation` | `10s` | Timeout for individual DHT get/put operations |
+| `operation` | `30s` | Timeout for individual DHT get/put operations |
 | `anti_entropy_interval` | `30s` | Interval for anti-entropy digest exchange between replicas |
 
 ### `[timeouts.worker]`
@@ -245,7 +245,7 @@ keeps the full per-layer defaults.
 SWIM provides failure detection with sub-second accuracy:
 
 ```
-period (1s)  ──> probe_timeout (500ms) ──> suspect_timeout (5s) ──> DEAD
+period (1s)  ──> probe_timeout (500ms) ──> suspect_timeout (10s) ──> DEAD
 ```
 
 Every `period`, each node probes one random peer. If the direct probe fails within `probe_timeout`, indirect probes are sent through K other nodes. If all probes fail, the target enters SUSPECT state. After `suspect_timeout` without a successful probe, the node is declared DEAD and removed from the cluster.
@@ -256,7 +256,7 @@ Typical detection latency: 1-2 seconds (vs 15s-2min with TCP disconnect detectio
 
 | Timeout | Purpose |
 |---------|---------|
-| `proposal_timeout` (3s) | Maximum time for a single Rabia consensus round |
+| `proposal_timeout` (8s) | Maximum time for a single Rabia consensus round |
 | `phase_stall_check` (500ms) | Detects stuck phases and triggers recovery |
 | `sync_retry_interval` (5s) | Catches up nodes that fell behind |
 | `cleanup_interval` (60s) | Removes phases older than 100 behind current |
@@ -292,7 +292,7 @@ If any transition exceeds its timeout, the slice transitions to FAILED. The `max
 
 ### Activation Chain
 
-`activation_chain` (5m) is the total time budget for activating a slice and all its dependencies. This covers loading (up to 2m) + activating (up to 1m) plus headroom for dependency resolution. A slice with many dependencies needs the chain timeout to cover the cumulative activation time.
+`activation_chain` (90s) is the time budget for the slice's post-loading activation sub-chain (registering for invocation, publishing topic/stream subscriptions and scheduled tasks, config registration, route publication, and transitioning to ACTIVE) — it does not include the separate `loading` phase timeout. A slice with many dependencies needs the chain timeout to cover the cumulative activation time across that sub-chain.
 
 ### Rolling Updates
 
@@ -318,7 +318,7 @@ If any transition exceeds its timeout, the slice transitions to FAILED. The `max
 
 | Timeout | Purpose |
 |---------|---------|
-| `dht.operation` (10s) | Timeout for individual DHT get/put operations |
+| `dht.operation` (30s) | Timeout for individual DHT get/put operations |
 | `dht.anti_entropy_interval` (30s) | How often replicas exchange CRC32 digests to detect drift |
 | `dht.replication.cooldown_delay` (10s) | Startup delay before upgrading from RF=1 to target RF |
 
