@@ -185,7 +185,6 @@ public final class EmberCluster {
     /// with raised SWIM / transport / membership timeouts so a single graceful owner-kill does not trip
     /// the transient QuorumLost→PASSIVE false-removal cascade that falsely marks LIVE survivors DEAD.
     private final AtomicBoolean raisedSwimTimeouts = new AtomicBoolean(false);
-
     /// #715 — this instance's own cluster QUIC/SWIM identity secret. Defaults to a fresh
     /// `SecureRandom` value so distinct `EmberCluster` instances never share cluster identity and
     /// cannot admit each other's nodes; [#withClusterSecret] is the only sanctioned override.
@@ -195,12 +194,13 @@ public final class EmberCluster {
     /// #715 — the `certificateProvider` actually threaded into the most recently constructed node's
     /// [AetherNodeConfig], so SWIM gossip encryption is wired ([AetherNode] otherwise falls back to
     /// `GossipEncryptor.none()`). Exposed to tests via [#wiredCertificateProvider].
-    private final AtomicReference<Option<CertificateProvider>> lastCertificateProvider =
-        new AtomicReference<>(Option.empty());
+    private final AtomicReference<Option<CertificateProvider>> lastCertificateProvider = new AtomicReference<>(Option.empty());
 
     private static byte[] generateClusterSecret() {
         var secret = new byte[32];
+
         new SecureRandom().nextBytes(secret);
+
         return secret;
     }
 
@@ -396,7 +396,8 @@ public final class EmberCluster {
     /// TEST SEAM (#715) — exposes this instance's current cluster QUIC/SWIM identity secret, so
     /// tests can pin whether distinct `EmberCluster` instances are cryptographically distinguishable.
     byte[] currentClusterSecret() {
-        return clusterSecret.get().clone();
+        return clusterSecret.get()
+                            .clone();
     }
 
     /// TEST SEAM (#715) — exposes the `certificateProvider` actually threaded into the most recently
@@ -1004,6 +1005,7 @@ public final class EmberCluster {
                                           coreMax,
                                           targetClusterSize);
         var certificateProvider = SelfSignedCertificateProvider.selfSignedCertificateProvider(clusterSecret.get()).unwrap();
+
         lastCertificateProvider.set(Option.some(certificateProvider));
         var quicTls = buildForgeQuicTls(nodeId, certificateProvider);
         var config = new AetherNodeConfig(topology,
