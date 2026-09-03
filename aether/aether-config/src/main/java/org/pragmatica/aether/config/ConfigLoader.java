@@ -814,7 +814,7 @@ public final class ConfigLoader {
     /// and `StorageGarbageCollector.collectGarbage()` across every storage setup. See
     /// [TimeoutsConfig.StorageMaintenanceTimeouts] for why one shared interval is sufficient.
     private static TimeoutsConfig.StorageMaintenanceTimeouts parseStorageMaintenanceTimeouts(TomlDocument doc,
-                                                                                              TimeoutsConfig.StorageMaintenanceTimeouts d) {
+                                                                                             TimeoutsConfig.StorageMaintenanceTimeouts d) {
         return new TimeoutsConfig.StorageMaintenanceTimeouts(parseTimeSpan(doc,
                                                                            "timeouts.storage_maintenance",
                                                                            "interval",
