@@ -1204,8 +1204,11 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                       .flatMap(toml -> BlueprintParser.parse(toml).option())
                       .flatMap(org.pragmatica.aether.slice.blueprint.Blueprint::deploymentConfig)
                       .map(DeploymentConfig::schemaRequired)
-                      .onEmpty(() -> log.debug("schemaRequired unresolved for {}, defaulting to true (missing blueprint entry, resourcesConfig, or unparsable/incomplete resources.toml)",
-                                               blueprintId))
+                      .onPresent(value -> log.debug("schemaRequired resolved to {} for {} from declared deploymentConfig",
+                                                    value,
+                                                    blueprintId))
+                      .onEmpty(() -> log.warn("schemaRequired unresolved for {}, defaulting to true (missing blueprint entry, resourcesConfig, or unparsable/incomplete resources.toml) — every slice of this blueprint will hold in LOADED until a schema migration record for its datasource reaches COMPLETED",
+                                              blueprintId))
                       .or(true);
         }
 
@@ -1442,41 +1445,53 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// migrations, and that blueprint's own slices do carry its owner, so the safety property is
         /// held from the owning side rather than by refusing to decide here.
         boolean areSchemasReady(SliceNodeKey sliceKey) {
+            return blockingSchemaRecords(sliceKey).isEmpty();
+        }
+
+        /// Named records rather than a boolean so the hold can be reported with detail (#760) — the
+        /// prior `noBlockingSchemaRecords` collapsed the same scan into a single flag, which is all
+        /// [#areSchemasReady(SliceNodeKey)] needs but nothing an operator-facing log could name.
+        private List<SchemaVersionValue> blockingSchemaRecords(SliceNodeKey sliceKey) {
             return Option.option(blueprints.get(sliceKey.artifact()))
                          .filter(Blueprint::schemaRequired)
                          .flatMap(Blueprint::owner)
-                         .map(this::noBlockingSchemaRecords)
-                         .or(true);
+                         .map(this::collectBlockingSchemaRecords)
+                         .or(List.of());
         }
 
-        private boolean noBlockingSchemaRecords(BlueprintId owner) {
-            var schemasReady = new AtomicBoolean(true);
+        private List<SchemaVersionValue> collectBlockingSchemaRecords(BlueprintId owner) {
+            var blocking = new ArrayList<SchemaVersionValue>();
 
             ctx.kvStore()
                .forEach(SchemaVersionKey.class,
                         SchemaVersionValue.class,
-                        (_, value) -> checkSchemaBlocking(owner, value, schemasReady));
+                        (_, value) -> collectIfBlocking(owner, value, blocking));
 
-            return schemasReady.get();
+            return blocking;
         }
 
         /// Ownership matches on `ArtifactBase` (version stripped), so a blueprint that advanced from
         /// `my-app:1.0.0` to `my-app:1.0.1` still owns the records its earlier version wrote — the
         /// same rule `hasConflictingOwnership` and `BlueprintService`'s deploy-time gate apply.
-        private static void checkSchemaBlocking(BlueprintId owner,
-                                                SchemaVersionValue value,
-                                                AtomicBoolean schemasReady) {
+        private static void collectIfBlocking(BlueprintId owner,
+                                              SchemaVersionValue value,
+                                              List<SchemaVersionValue> blocking) {
             if (BLOCKING_SCHEMA_STATUSES.contains(value.status()) && owner.base()
                                                                           .equals(value.owningBlueprint().base())) {
-                schemasReady.set(false);
+                blocking.add(value);
             }
         }
 
         private void tryActivateIfDependenciesReady(SliceNodeKey sliceKey) {
             var artifact = sliceKey.artifact();
+            var blockingRecords = blockingSchemaRecords(sliceKey);
 
-            if (!areSchemasReady(sliceKey)) {
-                log.debug("Slice {} waiting for schema migrations to complete", artifact);
+            if (!blockingRecords.isEmpty()) {
+                log.warn("Slice {} held in LOADED, waiting for schema migrations to complete: {}",
+                         artifact,
+                         blockingRecords.stream()
+                                        .map(v -> v.datasourceName() + "=" + v.status())
+                                        .collect(Collectors.joining(", ")));
 
                 return;
             }

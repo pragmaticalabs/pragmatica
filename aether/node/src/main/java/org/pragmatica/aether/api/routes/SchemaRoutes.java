@@ -6,6 +6,7 @@ package org.pragmatica.aether.api.routes;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
@@ -14,8 +15,10 @@ import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.http.routing.QueryParameter;
 import org.pragmatica.http.routing.Route;
@@ -42,6 +45,15 @@ public final class SchemaRoutes implements RouteSource {
     private static final int DEFAULT_UNDO_VERSION = 0;
     private static final int DEFAULT_BASELINE_VERSION = 1;
 
+    /// Statuses that hold slice activation (#542 / [SchemaRouteError]). Mirrors
+    /// `ClusterDeploymentState.Active.BLOCKING_SCHEMA_STATUSES` — duplicated rather than shared
+    /// because that field is `private` to a nested FSM state and this route lives in a different
+    /// module (`aether-node` vs `aether-deployment`); widening its visibility across a module
+    /// boundary for one three-value set was judged a larger change than repeating it here (#760).
+    private static final Set<SchemaStatus> BLOCKING_STATUSES = Set.of(SchemaStatus.PENDING,
+                                                                      SchemaStatus.MIGRATING,
+                                                                      SchemaStatus.FAILED);
+
     private final Supplier<ManageableNode> nodeSupplier;
 
     private SchemaRoutes(Supplier<ManageableNode> nodeSupplier) {
@@ -52,17 +64,22 @@ public final class SchemaRoutes implements RouteSource {
         return new SchemaRoutes(nodeSupplier);
     }
 
+    /// `heldSlices` names every slice this record currently blocks (#760) — visible on the
+    /// management API without reaching for DEBUG logs. Empty whenever the status is not blocking,
+    /// even if some slice happens to share the owning blueprint.
     record SchemaStatusResponse(String datasource,
                                 int currentVersion,
                                 String lastMigration,
                                 String status,
-                                String owningBlueprint) {
-        static SchemaStatusResponse schemaStatusResponse(SchemaVersionValue v) {
+                                String owningBlueprint,
+                                List<String> heldSlices) {
+        static SchemaStatusResponse schemaStatusResponse(SchemaVersionValue v, List<String> heldSlices) {
             return new SchemaStatusResponse(v.datasourceName(),
                                             v.currentVersion(),
                                             v.lastMigration(),
                                             v.status().name(),
-                                            v.owningBlueprint().asString());
+                                            v.owningBlueprint().asString(),
+                                            heldSlices);
         }
     }
 
@@ -112,17 +129,51 @@ public final class SchemaRoutes implements RouteSource {
                     .kvStore()
                     .forEach(SchemaVersionKey.class,
                              SchemaVersionValue.class,
-                             (_, value) -> entries.add(SchemaStatusResponse.schemaStatusResponse(value)));
+                             (_, value) -> entries.add(SchemaStatusResponse.schemaStatusResponse(value,
+                                                                                                 heldSlices(value))));
 
         return new SchemaStatusListResponse(entries);
     }
 
     private Promise<SchemaStatusResponse> singleSchemaStatus(String datasource) {
-        return lookupSchemaVersion(datasource).map(SchemaStatusResponse::schemaStatusResponse);
+        return lookupSchemaVersion(datasource).map(this::toSchemaStatusResponse);
     }
 
     private Promise<SchemaStatusResponse> schemaHistory(String datasource) {
-        return lookupSchemaVersion(datasource).map(SchemaStatusResponse::schemaStatusResponse);
+        return lookupSchemaVersion(datasource).map(this::toSchemaStatusResponse);
+    }
+
+    private SchemaStatusResponse toSchemaStatusResponse(SchemaVersionValue value) {
+        return SchemaStatusResponse.schemaStatusResponse(value, heldSlices(value));
+    }
+
+    /// Scans `SliceTargetKey`/`SliceTargetValue` for slices owned (base-stripped, matching
+    /// `ClusterDeploymentState`'s ownership rule) by this record's blueprint — empty for any
+    /// non-blocking status, since a COMPLETED record holds nothing regardless of ownership.
+    private List<String> heldSlices(SchemaVersionValue schema) {
+        if (!BLOCKING_STATUSES.contains(schema.status())) {
+            return List.of();
+        }
+
+        var held = new ArrayList<String>();
+
+        nodeSupplier.get()
+                    .kvStore()
+                    .forEach(SliceTargetKey.class,
+                             SliceTargetValue.class,
+                             (key, value) -> collectIfHeldBySchema(schema, key, value, held));
+
+        return held;
+    }
+
+    private static void collectIfHeldBySchema(SchemaVersionValue schema,
+                                              SliceTargetKey key,
+                                              SliceTargetValue value,
+                                              List<String> held) {
+        if (value.owningBlueprint().map(owner -> owner.base()
+                                                      .equals(schema.owningBlueprint().base())).or(false)) {
+            held.add(key.artifactBase().asString());
+        }
     }
 
     private Promise<SchemaMigrateResponse> triggerMigration(String datasource) {

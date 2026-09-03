@@ -9,7 +9,21 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Function;
+import java.util.stream.Collectors;
+
+import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.core.Filter;
+import org.apache.logging.log4j.core.Layout;
+import org.apache.logging.log4j.core.LogEvent;
+import org.apache.logging.log4j.core.LoggerContext;
+import org.apache.logging.log4j.core.appender.AbstractAppender;
+import org.apache.logging.log4j.core.config.Configuration;
+import org.apache.logging.log4j.core.config.LoggerConfig;
+import org.apache.logging.log4j.core.config.Property;
+import org.apache.logging.log4j.core.layout.PatternLayout;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
@@ -49,6 +63,7 @@ import org.pragmatica.serialization.Serializer;
 import org.pragmatica.statemachine.Fsm;
 import org.pragmatica.statemachine.FsmTestHarness;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -79,6 +94,7 @@ class SchemaActivationGateTest {
     private static final String OTHER_DATASOURCE = "database.billing";
     private static final String COORDS = "org.example:orders-app:1.0.0";
     private static final SliceNodeKey SLICE_KEY = SliceNodeKey.sliceNodeKey(SLICE, NODE_A);
+    private static final String ACTIVE_LOGGER_NAME = "org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentState$Active";
 
     private InMemoryKvStore kvStore;
     private RecordingClusterNode cluster;
@@ -322,6 +338,77 @@ class SchemaActivationGateTest {
 
     }
 
+    /// #760: the hold was previously reported at DEBUG only — "Slice {} waiting for schema
+    /// migrations to complete", naming neither the blocking datasource nor its status. An operator
+    /// watching an ordinary log level saw nothing distinguishing a stuck slice from routine startup.
+    /// Raised to WARN and widened to name every blocking record, so the hold is visible without
+    /// reaching for DEBUG. This drives the real gate through the FSM harness (not a wire-check
+    /// against a hand-written message) — the CAS-loss test above documents why a wire-check is
+    /// sometimes the right tradeoff; here the existing `ActivationWiring` harness already reaches
+    /// the log statement at no extra setup cost, so there is no such tradeoff to make.
+    @Nested
+    class HoldVisibility {
+        private CapturingAppender appender;
+        private LoggerConfig loggerConfig;
+        private Level originalLevel;
+
+        @BeforeEach
+        void captureActiveLogger() {
+            appender = CapturingAppender.create("SchemaHoldCapture");
+            appender.start();
+            var ctx = (LoggerContext) LogManager.getContext(false);
+            var configuration = ctx.getConfiguration();
+            loggerConfig = getOrCreateLoggerConfig(configuration);
+            originalLevel = loggerConfig.getLevel();
+            loggerConfig.addAppender(appender, Level.WARN, null);
+            loggerConfig.setLevel(Level.WARN);
+            ctx.updateLoggers();
+        }
+
+        @AfterEach
+        void releaseActiveLogger() {
+            var ctx = (LoggerContext) LogManager.getContext(false);
+            loggerConfig.removeAppender(appender.getName());
+            loggerConfig.setLevel(originalLevel);
+            ctx.updateLoggers();
+            appender.stop();
+        }
+
+        @Test
+        void activate_logsAtWarn_namingBlockingDatasourceAndStatus_whenSliceIsHeld() {
+            seedSliceTarget(Option.some(OWNER));
+            seedLoadedSlice();
+            seedSchema(OWNED_DATASOURCE, SchemaStatus.PENDING, OWNER);
+
+            harness.dispatch(new Activate());
+
+            assertThat(appender.capturedWarns()).as("a held slice must be reported at WARN, naming the blocking datasource and its status")
+                                                .anyMatch(msg -> msg.contains("held in LOADED")
+                                                                 && msg.contains(OWNED_DATASOURCE)
+                                                                 && msg.contains("PENDING"));
+        }
+
+        @Test
+        void activate_doesNotWarn_whenNoRecordBlocks() {
+            seedSliceTarget(Option.some(OWNER));
+            seedLoadedSlice();
+            seedSchema(OWNED_DATASOURCE, SchemaStatus.COMPLETED, OWNER);
+
+            harness.dispatch(new Activate());
+
+            assertThat(appender.capturedWarns()).as("a released slice must not be reported as held")
+                                                .noneMatch(msg -> msg.contains("held in LOADED"));
+        }
+
+        private LoggerConfig getOrCreateLoggerConfig(Configuration configuration) {
+            var existing = configuration.getLoggerConfig(ACTIVE_LOGGER_NAME);
+            if (ACTIVE_LOGGER_NAME.equals(existing.getName())) {return existing;}
+            var fresh = new LoggerConfig(ACTIVE_LOGGER_NAME, Level.WARN, false);
+            configuration.addLogger(ACTIVE_LOGGER_NAME, fresh);
+            return fresh;
+        }
+    }
+
     // --- helpers ---
 
     private ClusterDeploymentState.Active activeState() {
@@ -497,5 +584,31 @@ class SchemaActivationGateTest {
                 return null;
             }
         };
+    }
+
+    /// In-memory log4j2 appender capturing WARN-and-above messages for assertions. Mirrors
+    /// `ClusterTopologyManagerCasLossLoggingTest.CapturingAppender` — kept self-contained here
+    /// rather than shared, matching that precedent's own per-file scope.
+    private static final class CapturingAppender extends AbstractAppender {
+        private final List<String> messages = new CopyOnWriteArrayList<>();
+
+        private CapturingAppender(String name, Layout<?> layout) {
+            super(name, (Filter) null, layout, true, Property.EMPTY_ARRAY);
+        }
+
+        static CapturingAppender create(String name) {
+            var layout = PatternLayout.createDefaultLayout();
+            return new CapturingAppender(name, layout);
+        }
+
+        @Override public void append(LogEvent event) {
+            if (event.getLevel().isMoreSpecificThan(Level.WARN)) {
+                messages.add(event.getMessage().getFormattedMessage());
+            }
+        }
+
+        List<String> capturedWarns() {
+            return messages.stream().collect(Collectors.toUnmodifiableList());
+        }
     }
 }

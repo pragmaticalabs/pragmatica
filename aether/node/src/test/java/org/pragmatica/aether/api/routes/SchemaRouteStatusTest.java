@@ -10,14 +10,18 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.pragmatica.aether.artifact.ArtifactBase;
+import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.http.ContentType;
@@ -176,6 +180,60 @@ class SchemaRouteStatusTest {
         }
     }
 
+    /// #760: `heldSlices` makes a schema hold visible on the management API, without reaching for
+    /// DEBUG logs. Ownership matches on the base artifact coordinates (group:artifact, stripped of
+    /// version) — the same rule `ClusterDeploymentState` uses to decide whether a slice's blueprint
+    /// is the one a schema record blocks.
+    @Nested
+    class HeldSlices {
+        private static final String HELD_SLICE = "org.example:orders-worker";
+        private static final String UNRELATED_SLICE = "org.other:unrelated-worker";
+        private static final Version SLICE_VERSION = new Version(1, 0, 0, "");
+
+        @Test
+        void statusRoute_listsOwnedSlice_whenSchemaIsBlocking() {
+            seed(SchemaStatus.PENDING);
+            seedSliceTarget(HELD_SLICE, OWNER);
+
+            assertThat(successResponseFor(ManagementRoute.SCHEMA_STATUS_ONE).heldSlices()).containsExactly(HELD_SLICE);
+        }
+
+        @Test
+        void statusRoute_matchesOnBase_ignoringOwningBlueprintVersion() {
+            seed(SchemaStatus.MIGRATING);
+            var differentVersionOfSameBase = BlueprintId.blueprintId("org.example:orders-app:9.9.9").unwrap();
+            seedSliceTarget(HELD_SLICE, differentVersionOfSameBase);
+
+            assertThat(successResponseFor(ManagementRoute.SCHEMA_STATUS_ONE).heldSlices()).as("ownership matches the base artifact, not the exact blueprint version")
+                      .containsExactly(HELD_SLICE);
+        }
+
+        @Test
+        void statusRoute_omitsUnrelatedSlice_whenSchemaIsBlocking() {
+            seed(SchemaStatus.FAILED);
+            var unrelatedOwner = BlueprintId.blueprintId("org.other:unrelated-app:1.0.0").unwrap();
+            seedSliceTarget(UNRELATED_SLICE, unrelatedOwner);
+
+            assertThat(successResponseFor(ManagementRoute.SCHEMA_STATUS_ONE).heldSlices()).isEmpty();
+        }
+
+        @Test
+        void statusRoute_reportsNoHeldSlices_whenSchemaIsNotBlocking() {
+            seed(SchemaStatus.COMPLETED);
+            seedSliceTarget(HELD_SLICE, OWNER);
+
+            assertThat(successResponseFor(ManagementRoute.SCHEMA_STATUS_ONE).heldSlices()).as("a COMPLETED record holds nothing regardless of ownership")
+                      .isEmpty();
+        }
+
+        private void seedSliceTarget(String artifactBaseString, BlueprintId owner) {
+            var artifactBase = ArtifactBase.artifactBase(artifactBaseString).unwrap();
+
+            store.put(SliceTargetKey.sliceTargetKey(artifactBase),
+                      SliceTargetValue.sliceTargetValue(SLICE_VERSION, 1, Option.some(owner)));
+        }
+    }
+
     /// A present-but-unparseable version parameter used to throw `NumberFormatException` out of the
     /// handler; nothing between the route builder and `ManagementRouter` lifts, so it was caught only
     /// by the outermost Netty guard, which answers 500 with a bare `{"error":"Internal Server Error"}`
@@ -305,6 +363,18 @@ class SchemaRouteStatusTest {
         handle(route, queryName, queryValue).onSuccess(value -> Assertions.fail("Route " + route.name()
                                                                                + " must fail, got: " + value))
               .onFailure(holder::set);
+
+        return holder.get();
+    }
+
+    /// Mirror of [#causeFrom] for the success path — drives the real route handler and returns the
+    /// value it produced, failing loudly if the route unexpectedly refused.
+    private SchemaRoutes.SchemaStatusResponse successResponseFor(ManagementRoute route) {
+        var holder = new AtomicReference<SchemaRoutes.SchemaStatusResponse>();
+
+        handle(route, Option.none(), Option.none()).onFailure(cause -> Assertions.fail("Route " + route.name()
+                                                                                       + " must succeed, got: " + cause.message()))
+              .onSuccess(value -> holder.set((SchemaRoutes.SchemaStatusResponse) value));
 
         return holder.get();
     }
