@@ -64,6 +64,14 @@ public final class DhtStorageTier implements StorageTier {
         return Long.MAX_VALUE;
     }
 
+    /// #250: the DHT is a cluster-wide shared store -- a block orphaned by THIS node's
+    /// local refcount may still be referenced by another node's local view. Node-local
+    /// garbage collection must never delete here on that basis alone.
+    @Override
+    public boolean isShared() {
+        return true;
+    }
+
     private byte[] buildKey(BlockId id) {
         var hex = id.hexString().getBytes(StandardCharsets.UTF_8);
         var key = new byte[keyPrefixBytes.length + hex.length];

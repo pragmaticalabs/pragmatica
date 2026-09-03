@@ -34,6 +34,21 @@ public interface StorageInstance {
     Promise<Unit> deleteRef(String name);
     /// Delete a block from all tiers and remove its lifecycle metadata. Used by GC.
     Promise<Unit> delete(BlockId id);
+
+    /// Delete a block from node-private tiers only, then remove its lifecycle metadata.
+    /// A tier reporting [StorageTier#isShared] is skipped -- this node's local refcount
+    /// belief is not authoritative for a cluster-shared tier, so orphan-driven garbage
+    /// collection must never issue a delete against it. Used by [StorageGarbageCollector];
+    /// callers that legitimately need "delete everywhere" (explicit content/manifest
+    /// deletion, stream retention) must keep using [#delete].
+    ///
+    /// Default falls back to [#delete] -- correct for any implementation with no
+    /// tier-sharing concept (e.g. test doubles). Only [DefaultStorageInstance], where the
+    /// real hazard exists, overrides this with tier-filtered deletion.
+    default Promise<Unit> deleteFromPrivateTiers(BlockId id) {
+        return delete(id);
+    }
+
     /// Instance name.
     String name();
     /// Tier utilization info.
@@ -145,6 +160,11 @@ final class DefaultStorageInstance implements StorageInstance {
     @Override
     public Promise<Unit> delete(BlockId id) {
         return deleteFromAllTiers(id, 0).onSuccess(_ -> removeLifecycleMetadata(id));
+    }
+
+    @Override
+    public Promise<Unit> deleteFromPrivateTiers(BlockId id) {
+        return deleteFromPrivateTiers(id, 0).onSuccess(_ -> removeLifecycleMetadata(id));
     }
 
     @Override
@@ -347,6 +367,18 @@ final class DefaultStorageInstance implements StorageInstance {
         return tiers.get(tierIndex)
                     .delete(id)
                     .flatMap(_ -> deleteFromAllTiers(id, tierIndex + 1));
+    }
+
+    private Promise<Unit> deleteFromPrivateTiers(BlockId id, int tierIndex) {
+        if (tierIndex >= tiers.size()) {
+            return Promise.success(unit());
+        }
+
+        var tier = tiers.get(tierIndex);
+
+        return (tier.isShared()
+                ? Promise.<Unit> success(unit())
+                : tier.delete(id)).flatMap(_ -> deleteFromPrivateTiers(id, tierIndex + 1));
     }
 
     private void removeLifecycleMetadata(BlockId id) {
