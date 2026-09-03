@@ -7,10 +7,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [1.0.0-rc4] - Unreleased
 
 ### Fixed (2026-09-03 — #250: storage GC/demotion was wired to a no-op)
-- **Storage tier demotion and garbage collection now actually run.** `AetherNode` previously wired
-  storage through `DelegatedStorageAdapter.noOp()` — leader-pinned activation/deactivation toggled
-  correctly, but nothing ever called `.demote()` or `.collectGarbage()`, so tiered storage never
-  shrank in production. A new `StorageMaintenanceDriver` ticks both operations on a fixed-rate timer.
+- **Artifact and stream tier demotion and garbage collection now actually run.** `AetherNode`
+  previously wired storage through `DelegatedStorageAdapter.noOp()` — leader-pinned
+  activation/deactivation toggled correctly, but nothing ever called `.demote()` or
+  `.collectGarbage()`, so tiered storage never shrank in production. A new
+  `StorageMaintenanceDriver` ticks both operations on a fixed-rate timer, fanned out across every
+  entry in `storageSetups` (`artifacts`, `streams`). **The `content` tier is not covered**: it is
+  provisioned separately (`StorageFactory.defaultContentStorage`) as a bare `StorageInstance`
+  outside `storageSetups`, so it gets no demotion and no garbage collection from this driver.
+  Tracked as #783.
 - **New `[timeouts.storage_maintenance]` config**: `interval` key, default `5m`. `AetherNode` logs
   `Storage maintenance enabled: demotion+GC cadence=<interval>, storage setups=<names>` at startup.
 - **DHT tier is now marked cluster-shared** (`DhtStorageTier.isShared() == true`): a block orphaned

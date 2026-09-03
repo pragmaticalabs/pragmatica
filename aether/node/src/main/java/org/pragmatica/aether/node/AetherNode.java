@@ -2570,12 +2570,17 @@ public interface AetherNode extends ManageableNode {
         // #231 Step 2: the remaining control-plane components (CDM, LoadBalancer, ControlLoop,
         // TTMManager, RollbackManager, AbTestManager, DeploymentManager, StorageAdapter, StreamingCoordinator)
         // are leader-pinned via their toggle*OnLeaderChange routes in collectRouteEntries / allEntries below.
-        // #250: real demotion + GC, fanned out across every storage setup (artifacts/content/streams)
-        // via StorageFactory.composite*. Leader-pinned activation below (toggleStorageOnLeaderChange)
-        // is unchanged — only the no-op stand-in is replaced. Both DefaultDemotionManager and
-        // DefaultStorageGarbageCollector self-gate on their internal `active` flag, so the periodic
-        // driver below can call demote()/collectGarbage() unconditionally on every node (leader or
-        // not) and it safely no-ops until this node's adapter is activated.
+        // #250: real demotion + GC, fanned out across every storage setup this node holds via
+        // StorageFactory.composite* -- currently `artifacts` and `streams` (`storageSetups`, built
+        // above). The `content` tier is NOT covered: `defaultContentStorage` (registered above via
+        // registerRuntimeExtensions) provisions a bare StorageInstance for ContentStore outside
+        // `storageSetups`, so it never reaches compositeDemotionManager/compositeGarbageCollector
+        // and gets no demotion or GC from this driver (#783). Leader-pinned activation below
+        // (toggleStorageOnLeaderChange) is unchanged — only the no-op stand-in is replaced. Both
+        // DefaultDemotionManager and DefaultStorageGarbageCollector self-gate on their internal
+        // `active` flag, so the periodic driver below can call demote()/collectGarbage()
+        // unconditionally on every node (leader or not) and it safely no-ops until this node's
+        // adapter is activated.
         var compositeDemotionManager = StorageFactory.compositeDemotionManager(storageSetups);
         var compositeGarbageCollector = StorageFactory.compositeGarbageCollector(storageSetups);
         var delegatedStorageAdapter = DelegatedStorageAdapter.delegatedStorageAdapter(compositeDemotionManager,
