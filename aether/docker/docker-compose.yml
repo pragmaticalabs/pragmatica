@@ -7,8 +7,10 @@ version: "3.9"
 # detection. Host-mapped cluster ports use /udp suffix for explicit protocol binding.
 #
 # Usage:
-#   docker-compose up --build                    # Start 3-node cluster
-#   docker-compose --profile forge up --build   # Start with Forge simulator
+#   export AETHER_CLUSTER_SECRET=<your-secret>    # required, no default is shipped
+#   docker-compose up -d                          # Pull published images, start 3-node cluster
+#   docker-compose up -d --build                  # Build from source instead of pulling
+#   docker-compose --profile forge up --build     # Start with Forge simulator (always built)
 #
 # NOTE — do NOT add `restart: unless-stopped`/`always` to aether-node services.
 # Aether uses a TERMINAL-REMOVAL membership model: a dead NodeId never returns under
@@ -20,6 +22,7 @@ version: "3.9"
 services:
   # Three-node Aether cluster
   aether-node-1:
+    image: ghcr.io/pragmaticalabs/aether-node:${AETHER_VERSION:-1.0.0-rc3}
     build:
       context: ..
       dockerfile: docker/aether-node/Dockerfile
@@ -30,6 +33,8 @@ services:
       CLUSTER_PORT: "8090"
       MANAGEMENT_PORT: "8080"
       PEERS: "node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090"
+      AETHER_CLUSTER_NAME: "aether-local"
+      AETHER_CLUSTER_SECRET: "${AETHER_CLUSTER_SECRET:?export AETHER_CLUSTER_SECRET before docker-compose up}"
       JAVA_OPTS: "-Xmx256m -XX:+UseZGC"
     ports:
       - "8080:8080"       # Management API
@@ -37,13 +42,14 @@ services:
     networks:
       - aether-network
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/api/health"]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health/live"]
       interval: 5s
       timeout: 3s
       retries: 10
       start_period: 20s
 
   aether-node-2:
+    image: ghcr.io/pragmaticalabs/aether-node:${AETHER_VERSION:-1.0.0-rc3}
     build:
       context: ..
       dockerfile: docker/aether-node/Dockerfile
@@ -54,6 +60,8 @@ services:
       CLUSTER_PORT: "8090"
       MANAGEMENT_PORT: "8080"
       PEERS: "node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090"
+      AETHER_CLUSTER_NAME: "aether-local"
+      AETHER_CLUSTER_SECRET: "${AETHER_CLUSTER_SECRET:?export AETHER_CLUSTER_SECRET before docker-compose up}"
       JAVA_OPTS: "-Xmx256m -XX:+UseZGC"
     ports:
       - "8081:8080"
@@ -61,7 +69,7 @@ services:
     networks:
       - aether-network
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/api/health"]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health/live"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -71,6 +79,7 @@ services:
         condition: service_healthy
 
   aether-node-3:
+    image: ghcr.io/pragmaticalabs/aether-node:${AETHER_VERSION:-1.0.0-rc3}
     build:
       context: ..
       dockerfile: docker/aether-node/Dockerfile
@@ -81,6 +90,8 @@ services:
       CLUSTER_PORT: "8090"
       MANAGEMENT_PORT: "8080"
       PEERS: "node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090"
+      AETHER_CLUSTER_NAME: "aether-local"
+      AETHER_CLUSTER_SECRET: "${AETHER_CLUSTER_SECRET:?export AETHER_CLUSTER_SECRET before docker-compose up}"
       JAVA_OPTS: "-Xmx256m -XX:+UseZGC"
     ports:
       - "8082:8080"
@@ -88,7 +99,7 @@ services:
     networks:
       - aether-network
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/api/health"]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health/live"]
       interval: 5s
       timeout: 3s
       retries: 10

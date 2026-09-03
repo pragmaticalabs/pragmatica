@@ -34,9 +34,23 @@ docker build -f docker/aether-forge/Dockerfile -t aether-forge:latest .
 
 ### Run 3-Node Cluster
 
+Requires a cluster secret; there is no shipped default:
+
 ```bash
 cd docker
-docker compose up --build
+export AETHER_CLUSTER_SECRET=<your-secret>
+```
+
+Pull the published images (no local build):
+
+```bash
+docker compose up -d
+```
+
+Or build from source instead:
+
+```bash
+docker compose up -d --build
 ```
 
 This starts:
@@ -54,7 +68,7 @@ Access Forge dashboard at http://localhost:8888
 
 ## Docker Compose Configuration
 
-The `docker/docker compose.yml` defines a 3-node cluster:
+The `docker/docker-compose.yml` defines a 3-node cluster:
 
 ```yaml
 version: "3.9"
