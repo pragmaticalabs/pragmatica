@@ -8,7 +8,10 @@ package org.pragmatica.aether.config;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
+import org.pragmatica.lang.io.TimeSpan;
+
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 class ConfigValidatorTest {
 
@@ -221,5 +224,47 @@ class ConfigValidatorTest {
 
         ConfigValidator.validate(config)
             .onFailureRun(Assertions::fail);
+    }
+
+    /// #250 review: `StorageMaintenanceDriver` schedules on this interval unconditionally; a
+    /// non-positive value must be rejected at validation time, not discovered at scheduler wiring.
+    @Test
+    void validate_fails_whenStorageMaintenanceIntervalNotPositive() {
+        var config = AetherConfig.builder()
+            .withEnvironment(Environment.DOCKER)
+            .timeouts(timeoutsWithStorageMaintenanceInterval(timeSpan(0).millis()))
+            .build();
+
+        ConfigValidator.validate(config)
+            .onSuccessRun(Assertions::fail)
+            .onFailure(cause -> assertThat(cause.message())
+                .contains("Storage maintenance interval must be positive"));
+    }
+
+    /// #250 review (round 2): positivity alone let 1ms through — a value technically legal but far
+    /// below any interval a lifecycle-iterating pass could safely repeat on. A positive-but-below-floor
+    /// interval must also be rejected, with a message distinct from the positivity check above.
+    @Test
+    void validate_fails_whenStorageMaintenanceIntervalBelowMinimum() {
+        var config = AetherConfig.builder()
+            .withEnvironment(Environment.DOCKER)
+            .timeouts(timeoutsWithStorageMaintenanceInterval(timeSpan(1).millis()))
+            .build();
+
+        ConfigValidator.validate(config)
+            .onSuccessRun(Assertions::fail)
+            .onFailure(cause -> assertThat(cause.message())
+                .contains("Storage maintenance interval must be at least"));
+    }
+
+    private static TimeoutsConfig timeoutsWithStorageMaintenanceInterval(TimeSpan interval) {
+        var defaults = TimeoutsConfig.timeoutsConfig();
+
+        return new TimeoutsConfig(defaults.invocation(), defaults.forwarding(), defaults.deployment(),
+                                  defaults.rollingUpdate(), defaults.cluster(), defaults.consensus(),
+                                  defaults.election(), defaults.swim(), defaults.observability(),
+                                  defaults.dht(), defaults.worker(), defaults.security(),
+                                  defaults.repository(), defaults.scaling(),
+                                  new TimeoutsConfig.StorageMaintenanceTimeouts(interval));
     }
 }

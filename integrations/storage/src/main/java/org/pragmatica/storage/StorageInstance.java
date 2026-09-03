@@ -34,6 +34,21 @@ public interface StorageInstance {
     Promise<Unit> deleteRef(String name);
     /// Delete a block from all tiers and remove its lifecycle metadata. Used by GC.
     Promise<Unit> delete(BlockId id);
+
+    /// Delete a block from node-private tiers only, then remove its lifecycle metadata.
+    /// A tier reporting [StorageTier#isShared] is skipped -- this node's local refcount
+    /// belief is not authoritative for a cluster-shared tier, so orphan-driven garbage
+    /// collection must never issue a delete against it. Used by [StorageGarbageCollector];
+    /// callers that legitimately need "delete everywhere" (explicit content/manifest
+    /// deletion, stream retention) must keep using [#delete].
+    ///
+    /// Default falls back to [#delete] -- correct for any implementation with no
+    /// tier-sharing concept (e.g. test doubles). Only [DefaultStorageInstance], where the
+    /// real hazard exists, overrides this with tier-filtered deletion.
+    default Promise<Unit> deleteFromPrivateTiers(BlockId id) {
+        return delete(id);
+    }
+
     /// Instance name.
     String name();
     /// Tier utilization info.
@@ -144,7 +159,13 @@ final class DefaultStorageInstance implements StorageInstance {
 
     @Override
     public Promise<Unit> delete(BlockId id) {
-        return deleteFromAllTiers(id, 0).onSuccess(_ -> removeLifecycleMetadata(id));
+        return deleteFromAllTiers(id, 0).onSuccess(_ -> removeLifecycleMetadata(id, "deleted from all tiers"));
+    }
+
+    @Override
+    public Promise<Unit> deleteFromPrivateTiers(BlockId id) {
+        return deleteFromPrivateTiers(id, 0)
+               .onSuccess(_ -> removeLifecycleMetadata(id, "deleted from private tiers; shared copy retained"));
     }
 
     @Override
@@ -349,8 +370,23 @@ final class DefaultStorageInstance implements StorageInstance {
                     .flatMap(_ -> deleteFromAllTiers(id, tierIndex + 1));
     }
 
-    private void removeLifecycleMetadata(BlockId id) {
+    private Promise<Unit> deleteFromPrivateTiers(BlockId id, int tierIndex) {
+        if (tierIndex >= tiers.size()) {
+            return Promise.success(unit());
+        }
+
+        var tier = tiers.get(tierIndex);
+
+        return (tier.isShared()
+                ? Promise.<Unit> success(unit())
+                : tier.delete(id)).flatMap(_ -> deleteFromPrivateTiers(id, tierIndex + 1));
+    }
+
+    /// #250 review: `delete` and `deleteFromPrivateTiers` diverge in what actually happened to the
+    /// shared (DHT) tier -- one message for both hid that a "private tiers" deletion leaves the
+    /// cluster-shared copy alive, which reads as data loss it is not.
+    private void removeLifecycleMetadata(BlockId id, String outcome) {
         metadataStore.removeLifecycle(id);
-        log.debug("Block {} deleted from all tiers", id);
+        log.debug("Block {} {}", id, outcome);
     }
 }

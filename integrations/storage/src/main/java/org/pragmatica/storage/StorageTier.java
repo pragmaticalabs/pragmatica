@@ -14,4 +14,12 @@ public interface StorageTier {
     TierLevel level();
     long usedBytes();
     long maxBytes();
+
+    /// True when this tier is a cluster-wide shared store (e.g. DHT-backed) rather than
+    /// node-private. Node-local garbage collection must never delete a block from a shared
+    /// tier on the strength of this node's own refcount belief -- another node may still hold
+    /// a live reference. Defaults to false; only a shared-tier implementation overrides it.
+    default boolean isShared() {
+        return false;
+    }
 }

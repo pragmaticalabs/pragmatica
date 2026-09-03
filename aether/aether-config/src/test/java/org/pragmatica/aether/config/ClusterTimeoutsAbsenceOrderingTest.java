@@ -107,7 +107,8 @@ class ClusterTimeoutsAbsenceOrderingTest {
                                           t.worker(),
                                           t.security(),
                                           t.repository(),
-                                          t.scaling());
+                                          t.scaling(),
+                                          t.storageMaintenance());
 
         return new AetherConfig(base.cluster(),
                                 base.node(),

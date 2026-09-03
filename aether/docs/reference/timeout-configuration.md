@@ -177,6 +177,12 @@ itself — a distinct config surface from, and the same underlying defect as, th
 section). **Tracked as #675**, which scopes collapsing all three duplicated auto-heal config surfaces
 into one live one. Setting either field currently has no observable effect.
 
+### `[timeouts.storage_maintenance]`
+
+| TOML Key | Default | Description |
+|----------|---------|-------------|
+| `interval` | `5m` | Cadence of the periodic storage maintenance tick (`StorageMaintenanceDriver`) that runs tier demotion and garbage collection; on startup `AetherNode` logs `Storage maintenance enabled: demotion+GC cadence=<interval>, storage setups=<names>` |
+
 ### Other Timeout-Related Configuration
 
 These timeouts live outside `[timeouts]` for historical reasons but use the same duration format:

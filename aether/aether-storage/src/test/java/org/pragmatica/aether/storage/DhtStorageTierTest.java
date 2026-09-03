@@ -119,6 +119,14 @@ class DhtStorageTierTest {
         void maxBytes_returnsMaxValue() {
             assertThat(tier.maxBytes()).isEqualTo(Long.MAX_VALUE);
         }
+
+        /// #250: the DHT is a cluster-wide shared store -- node-local garbage collection must
+        /// never delete here on the strength of this node's own refcount belief alone. Pins the
+        /// override against a silent revert to the `StorageTier` interface default (`false`).
+        @Test
+        void isShared_returnsTrue() {
+            assertThat(tier.isShared()).isTrue();
+        }
     }
 
     // --- Helpers ---

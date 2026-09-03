@@ -10,9 +10,13 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.StorageFactory.StorageSetup;
+import org.pragmatica.storage.DemotionConfig;
+import org.pragmatica.storage.DemotionManager;
+import org.pragmatica.storage.GarbageCollectorConfig;
 import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.MetadataStore;
 import org.pragmatica.storage.SnapshotManager;
+import org.pragmatica.storage.StorageGarbageCollector;
 import org.pragmatica.storage.StorageInstance;
 import org.pragmatica.storage.StorageReadinessGate;
 
@@ -47,9 +51,16 @@ class StorageRoutesTest {
         var snapshot1 = countingSnapshotManager(snapshotCount);
         var snapshot2 = countingSnapshotManager(new AtomicInteger(0));
 
+        var metadata1 = MetadataStore.inMemoryMetadataStore("artifacts");
+        var metadata2 = MetadataStore.inMemoryMetadataStore("streams");
+
         setups = Map.of(
-            "artifacts", new StorageSetup("artifacts", instance1, snapshot1, gate1, MetadataStore.inMemoryMetadataStore("artifacts")),
-            "streams", new StorageSetup("streams", instance2, snapshot2, gate2, MetadataStore.inMemoryMetadataStore("streams"))
+            "artifacts", new StorageSetup("artifacts", instance1, snapshot1, gate1, metadata1,
+                                          DemotionManager.demotionManager(List.of(), metadata1, DemotionConfig.demotionConfig()),
+                                          StorageGarbageCollector.storageGarbageCollector(instance1, metadata1, GarbageCollectorConfig.garbageCollectorConfig())),
+            "streams", new StorageSetup("streams", instance2, snapshot2, gate2, metadata2,
+                                        DemotionManager.demotionManager(List.of(), metadata2, DemotionConfig.demotionConfig()),
+                                        StorageGarbageCollector.storageGarbageCollector(instance2, metadata2, GarbageCollectorConfig.garbageCollectorConfig()))
         );
 
         var nodeProxy = createNodeProxy(setups);
