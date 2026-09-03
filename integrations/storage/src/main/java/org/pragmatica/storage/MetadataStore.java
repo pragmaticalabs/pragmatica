@@ -48,6 +48,9 @@ public interface MetadataStore {
     Option<BlockId> resolveRef(String refName);
     /// Remove a named reference. Returns the previously mapped block ID, if any.
     Option<BlockId> removeRef(String refName);
+    /// Atomically point `refName` at `blockId`, returning whatever it previously pointed to, if any.
+    /// Pure ref-pointer swap -- does not touch reference counts; callers own the counting.
+    Option<BlockId> replaceRef(String refName, BlockId blockId);
     /// Check whether lifecycle metadata exists for a block.
     boolean containsBlock(BlockId blockId);
     /// The name of the storage instance this metadata store belongs to.
