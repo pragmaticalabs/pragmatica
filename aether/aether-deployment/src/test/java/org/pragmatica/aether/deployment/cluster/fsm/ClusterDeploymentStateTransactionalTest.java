@@ -4,6 +4,18 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm;
 
+import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.core.Filter;
+import org.apache.logging.log4j.core.Layout;
+import org.apache.logging.log4j.core.LogEvent;
+import org.apache.logging.log4j.core.LoggerContext;
+import org.apache.logging.log4j.core.appender.AbstractAppender;
+import org.apache.logging.log4j.core.config.Configuration;
+import org.apache.logging.log4j.core.config.LoggerConfig;
+import org.apache.logging.log4j.core.config.Property;
+import org.apache.logging.log4j.core.layout.PatternLayout;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -38,10 +50,12 @@ import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.NodeState;
 import org.pragmatica.consensus.topology.TopologyManager;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.serialization.Deserializer;
@@ -54,8 +68,10 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
+import java.util.stream.Collectors;
 
 import io.netty.buffer.ByteBuf;
 
@@ -79,6 +95,10 @@ class ClusterDeploymentStateTransactionalTest {
     private static final NodeId NODE_A = new NodeId("node-a");
     private static final Version V1 = Version.version("1.0.0").unwrap();
     private static final Version V2 = Version.version("2.0.0").unwrap();
+    // #760/#724 review round 2 item l: mirrors SchemaActivationGateTest's own ACTIVE_LOGGER_NAME —
+    // targets the FSM's inner Active class directly rather than the outer ClusterDeploymentState,
+    // since that is the logger `log.warn` in handleSucceededOutcomeWriteFailure actually resolves to.
+    private static final String ACTIVE_LOGGER_NAME = "org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentState$Active";
 
     private InMemoryKvStore kvStore;
     private RecordingClusterNode cluster;
@@ -314,6 +334,71 @@ class ClusterDeploymentStateTransactionalTest {
     }
 
     @Nested
+    class SucceededOutcomeWriteFailure {
+        // #760/#724 review round 2 item l: recordSucceededOutcome deliberately bypasses submitBatch
+        // (see its Javadoc) because handleBatchFailure's reconcile() reschedule cannot recover this
+        // write — by the time it runs, trackBlueprintSliceActive has already removed the blueprint
+        // from inFlightBlueprints, so reconcile() has nothing left to revisit. Before this fix, a
+        // failed apply() here was indistinguishable from any other transient batch failure. This
+        // drives that failure with RecordingClusterNode.forcedApplyFailure and pins the targeted WARN.
+        private CapturingAppender appender;
+        private LoggerConfig loggerConfig;
+        private Level originalLevel;
+
+        @BeforeEach
+        void captureActiveLogger() {
+            appender = CapturingAppender.create("SucceededOutcomeWriteFailureCapture");
+            appender.start();
+            var ctx = (LoggerContext) LogManager.getContext(false);
+            var configuration = ctx.getConfiguration();
+            loggerConfig = getOrCreateLoggerConfig(configuration);
+            originalLevel = loggerConfig.getLevel();
+            loggerConfig.addAppender(appender, Level.WARN, null);
+            loggerConfig.setLevel(Level.WARN);
+            ctx.updateLoggers();
+        }
+
+        @AfterEach
+        void releaseActiveLogger() {
+            var ctx = (LoggerContext) LogManager.getContext(false);
+            loggerConfig.removeAppender(appender.getName());
+            loggerConfig.setLevel(originalLevel);
+            ctx.updateLoggers();
+            appender.stop();
+        }
+
+        @Test
+        void trackBlueprintSliceActive_applyFails_warnsNamingBlueprintAndNoRetry() {
+            var deploying = blueprint("app", V1, "slice-a");
+            var activeArtifact = artifact("slice-a", V1);
+            var inflight = ClusterDeploymentState.Active.InFlightBlueprint.inFlightBlueprint(deploying.id(), deploying, Option.empty());
+            activeState().inFlightBlueprints().put(deploying.id(), inflight);
+
+            cluster.forcedApplyFailure = Causes.cause("injected: consensus write failure");
+
+            var activeValue = NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE);
+            var putCommand = new KVCommand.Put<>(NodeArtifactKey.nodeArtifactKey(NODE_A, activeArtifact), activeValue);
+            var event = new NodeArtifactPutReceived(new ValuePut<>(putCommand, Option.none()));
+
+            harness.dispatch(event);
+
+            assertThat(appender.capturedWarns())
+                    .as("a failed recordSucceededOutcome write must be reported at WARN, naming the blueprint and that it will not be retried")
+                    .anyMatch(msg -> msg.contains(deploying.id().asString())
+                                     && msg.contains("NOT persisted")
+                                     && msg.contains("NOT be retried"));
+        }
+
+        private LoggerConfig getOrCreateLoggerConfig(Configuration configuration) {
+            var existing = configuration.getLoggerConfig(ACTIVE_LOGGER_NAME);
+            if (ACTIVE_LOGGER_NAME.equals(existing.getName())) {return existing;}
+            var fresh = new LoggerConfig(ACTIVE_LOGGER_NAME, Level.WARN, false);
+            configuration.addLogger(ACTIVE_LOGGER_NAME, fresh);
+            return fresh;
+        }
+    }
+
+    @Nested
     class BestEffortFailureOutcome {
         // #760/#724 review round 2 item g: BEST_EFFORT deployments never populate
         // inFlightBlueprints (trackInFlightBlueprint's ALL_OR_NOTHING-only guard), so neither
@@ -483,6 +568,11 @@ class ClusterDeploymentStateTransactionalTest {
         // tests can pin that two commands landed in the SAME consensus batch, not merely both
         // somewhere in the recorded history — see DeploymentOutcomeRecord (#759).
         final List<List<KVCommand<AetherKey>>> batches = Collections.synchronizedList(new ArrayList<>());
+        // #760/#724 review round 2 item l: lets a single test force `apply()` to fail without a real
+        // consensus fault, so `recordSucceededOutcome`'s WARN path (SucceededOutcomeWriteFailure below)
+        // can be driven red-before-green. Null (the default) preserves every other test's always-succeeds
+        // behavior untouched.
+        volatile Cause forcedApplyFailure;
 
         RecordingClusterNode(NodeId self) {this.self = self;}
 
@@ -497,6 +587,12 @@ class ClusterDeploymentStateTransactionalTest {
         @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> batch) {
             commands.addAll(batch);
             batches.add(List.copyOf(batch));
+
+            var failure = forcedApplyFailure;
+            if (failure != null) {
+                return failure.promise();
+            }
+
             return Promise.success(Collections.emptyList());
         }
 
@@ -532,5 +628,31 @@ class ClusterDeploymentStateTransactionalTest {
                 return null;
             }
         };
+    }
+
+    /// In-memory log4j2 appender capturing WARN-and-above messages for assertions. Mirrors
+    /// `SchemaActivationGateTest.CapturingAppender` — kept self-contained here rather than shared,
+    /// matching that precedent's own per-file scope.
+    private static final class CapturingAppender extends AbstractAppender {
+        private final List<String> messages = new CopyOnWriteArrayList<>();
+
+        private CapturingAppender(String name, Layout<?> layout) {
+            super(name, (Filter) null, layout, true, Property.EMPTY_ARRAY);
+        }
+
+        static CapturingAppender create(String name) {
+            var layout = PatternLayout.createDefaultLayout();
+            return new CapturingAppender(name, layout);
+        }
+
+        @Override public void append(LogEvent event) {
+            if (event.getLevel().isMoreSpecificThan(Level.WARN)) {
+                messages.add(event.getMessage().getFormattedMessage());
+            }
+        }
+
+        List<String> capturedWarns() {
+            return messages.stream().collect(Collectors.toUnmodifiableList());
+        }
     }
 }

@@ -148,8 +148,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         return sliceState == SliceState.LOADED
                && BLOCKING_SCHEMA_STATUSES.contains(schema.status())
                && sliceOwner.map(owner -> owner.base()
-                                               .equals(schema.owningBlueprint().base())
-                                          && resolveSchemaRequired(kvStore, owner))
+                                               .equals(schema.owningBlueprint().base()) && resolveSchemaRequired(kvStore,
+                                                                                                                 owner))
                             .or(false);
     }
 
@@ -163,12 +163,15 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
     /// resourcesConfig, or unparsable/incomplete resources.toml) — the caller decides how to log
     /// that and what to default to; see [#resolveSchemaRequired(KVStore, BlueprintId)] and
     /// [Active#resolveSchemaRequired(BlueprintId)].
-    static Option<Boolean> resolveDeclaredSchemaRequired(KVStore<AetherKey, AetherValue> kvStore, BlueprintId blueprintId) {
+    static Option<Boolean> resolveDeclaredSchemaRequired(KVStore<AetherKey, AetherValue> kvStore,
+                                                         BlueprintId blueprintId) {
         var blueprintKey = AppBlueprintKey.appBlueprintKey(blueprintId);
+
         return kvStore.get(blueprintKey)
                       .filter(AppBlueprintValue.class::isInstance)
                       .map(AppBlueprintValue.class::cast)
-                      .flatMap(value -> value.blueprint().resourcesConfig())
+                      .flatMap(value -> value.blueprint()
+                                             .resourcesConfig())
                       .flatMap(toml -> BlueprintParser.parse(toml).option())
                       .flatMap(org.pragmatica.aether.slice.blueprint.Blueprint::deploymentConfig)
                       .map(DeploymentConfig::schemaRequired);
@@ -220,6 +223,9 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                   Set<NodeId> workerNodes,
                   Map<SliceNodeKey, Long> transitionalStateTimestamps,
                   Map<Artifact, Integer> consecutiveImbalancedTicks,
+                  // Per-SliceNodeKey WARN/DEBUG dedup for schema holds (#760 follow-up). In-memory
+                  // only, never persisted — resets on leader failover. See #reportSchemaHold's
+                  // Javadoc (#760/#724 review round 2 item l) for the accepted consequence.
                   Map<SliceNodeKey, String> reportedSchemaHolds,
                   AtomicInteger allocationIndex,
                   AtomicBoolean deactivated,
@@ -1256,7 +1262,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         // logging stays here, on Active's own logger, unchanged from before the hoist — it fires
         // once per blueprint-change/restore event, not once per slice/schema pair.
         private boolean resolveSchemaRequired(BlueprintId blueprintId) {
-            return ClusterDeploymentState.resolveDeclaredSchemaRequired(ctx.kvStore(), blueprintId)
+            return ClusterDeploymentState.resolveDeclaredSchemaRequired(ctx.kvStore(),
+                                                                        blueprintId)
                                          .onPresent(value -> log.debug("schemaRequired resolved to {} for {} from declared deploymentConfig",
                                                                        value,
                                                                        blueprintId))
@@ -1456,8 +1463,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             Option.option(blueprints.get(artifact))
                   .flatMap(Blueprint::owner)
                   .onPresent(blueprintId -> submitBatch(List.of(bestEffortFailureCommand(blueprintId,
-                                                                                        artifact,
-                                                                                        failureReason))));
+                                                                                         artifact,
+                                                                                         failureReason))));
         }
 
         private KVCommand<AetherKey> bestEffortFailureCommand(BlueprintId blueprintId,
@@ -1624,6 +1631,19 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// or the set of blocking datasources/statuses actually changing) and DEBUG on a repeat
         /// observation of the same signature, so the operator-visible signal tracks state
         /// transitions rather than event-loop noise.
+        ///
+        /// #760/#724 review round 2 item l: `reportedSchemaHolds` is keyed per [SliceNodeKey] —
+        /// one entry per slice INSTANCE on one node, not per artifact or per datasource — so two
+        /// instances of the same slice held on the same datasource dedup independently and each
+        /// gets its own first WARN. It is plain in-memory `Active` FSM state, never written to the
+        /// KV store, so it does not survive a leader failover: the new leader rebuilds `Active`
+        /// with an empty map and will WARN once more for every hold still standing at that point,
+        /// even one that has been open and unchanged for a long time. This is accepted, not a
+        /// defect — the dedup's job is to suppress noise from an event-driven loop re-evaluating
+        /// an unchanged hold on the SAME leader, not to give the hold itself a durable identity
+        /// across the cluster's whole lifetime. An operator correlating hold WARNs across a
+        /// failover should expect exactly one extra WARN per still-open hold, not a signal that
+        /// the hold is new.
         private void reportSchemaHold(SliceNodeKey sliceKey,
                                       Artifact artifact,
                                       List<SchemaVersionValue> blockingRecords) {
@@ -2278,11 +2298,43 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// (#759 review, BLOCKING 3) — the terminal outcome record must exist for both branches of
         /// the deployment attempt, not just the failure branch, so a caller can distinguish "no
         /// outcome yet" from "succeeded" once the blueprint leaves `inFlightBlueprints`.
+        ///
+        /// #760/#724 review round 2 item l: does NOT go through the shared [#submitBatch(List)] —
+        /// see [#handleSucceededOutcomeWriteFailure(BlueprintId, Cause, List)] for why this call
+        /// site's failure needs a targeted WARN instead of `submitBatch`'s generic ERROR.
         private void recordSucceededOutcome(BlueprintId blueprintId) {
             var key = DeploymentOutcomeKey.deploymentOutcomeKey(blueprintId);
             var value = DeploymentOutcomeValue.succeeded(ctx.nowMs());
+            var command = List.<KVCommand<AetherKey>> of(new KVCommand.Put<>(key, value));
 
-            submitBatch(List.of(new KVCommand.Put<>(key, value)));
+            ctx.cluster()
+               .apply(command)
+               .onFailure(cause -> handleSucceededOutcomeWriteFailure(blueprintId, cause, command));
+        }
+
+        /// Unlike every other write funneled through [#submitBatch(List)], this one cannot be
+        /// recovered by `handleBatchFailure`'s `reconcile()` reschedule: by the time this call
+        /// happens the blueprint has already been removed from `inFlightBlueprints` (one line above
+        /// this call, in `trackBlueprintSliceActive`), and `reconcile()` only acts on in-flight and
+        /// slice state — it never revisits deployment-outcome durability. `submitBatch`'s generic
+        /// `log.error` would therefore describe a write that gets automatically retried, when in
+        /// fact this one does not: the SUCCEEDED record for a blueprint that genuinely finished
+        /// deploying is permanently lost, silently in effect even though not silently in logging.
+        /// This WARN names the blueprint and says so explicitly, then still delegates to
+        /// `handleBatchFailure` for its `deactivated`-guard and existing log volume — no retry path
+        /// is added here; recording the loss for an operator to notice is the whole fix.
+        private void handleSucceededOutcomeWriteFailure(BlueprintId blueprintId,
+                                                        Cause cause,
+                                                        List<KVCommand<AetherKey>> command) {
+            if (!deactivated.get()) {
+                log.warn("SUCCEEDED deployment-outcome record for blueprint {} was NOT persisted ({}) and will NOT be retried"
+                        + " — the blueprint already left in-flight tracking before this write, so no reconciliation pass"
+                        + " revisits it",
+                         blueprintId.asString(),
+                         cause.message());
+            }
+
+            handleBatchFailure(cause, command);
         }
 
         private void rollbackBlueprintForArtifact(Artifact failedArtifact, String cause) {
@@ -2378,7 +2430,6 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             var allSlices = new HashSet<>(inflight.pendingSlices());
 
             allSlices.addAll(inflight.activeSlices());
-
             var key = DeploymentOutcomeKey.deploymentOutcomeKey(inflight.id());
             var slices = allSlices.stream().map(Artifact::asString).toList();
             var value = DeploymentOutcomeValue.rolledBack(slices, cause, ctx.nowMs());
