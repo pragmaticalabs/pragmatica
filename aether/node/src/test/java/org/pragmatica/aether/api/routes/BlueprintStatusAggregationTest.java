@@ -143,6 +143,30 @@ class BlueprintStatusAggregationTest {
         assertThat(sliceStatus(response, SLICE_B)).isEqualTo(new BlueprintSliceStatus(SLICE_B.asString(), 3, 3, 0, "DEPLOYED"));
     }
 
+    /// #759 review (C2 / M2) — half of "FAILED Put → rollback commands → status read → 404": once
+    /// `ClusterDeploymentState.unloadBlueprintSlices` (`aether-deployment`,
+    /// `ClusterDeploymentState.java:2139-2158`) removes the `AppBlueprintKey` after an `ALL_OR_NOTHING`
+    /// rollback, `blueprintService().get(id)` observes exactly what this test fixes in place —
+    /// `Option.none()` — and no prior test drove that path through the real route handler. The other
+    /// half (that the rollback actually issues the KV `Remove`) is
+    /// `ClusterDeploymentStateTransactionalTest.RollbackSequence` in `aether-deployment`; the two
+    /// together prove the sequence `management-api.md` now documents. **Until #759 Phase 2** lands a
+    /// durable terminal-outcome record for `handleGetBlueprintStatus` to read instead, `BLUEPRINT_NOT_FOUND`
+    /// is the correct, current answer here — Phase 2 is what must change this assertion, not a bug to fix now.
+    @Test
+    void statusRoute_blueprintAbsentFromKv_returns404BlueprintNotFound() {
+        var route = statusRouteOver(notFoundBlueprintService(), deploymentMapOver(Map.of()));
+
+        route.handler()
+             .handle(new StatusRequestContext(List.of(BLUEPRINT_ID.asString())))
+             .await()
+             .onSuccess(value -> fail("Expected BLUEPRINT_NOT_FOUND, got a response: " + value))
+             .onFailure(cause -> assertThat(cause.message()).as("SliceRoutes.BLUEPRINT_NOT_FOUND is what the "
+                                                                + "management-api.md rollback-sequence discussion "
+                                                                + "cites as the 404 source")
+                                                             .isEqualTo("Blueprint not found"));
+    }
+
     // --- helpers ---
     private static BlueprintSliceStatus sliceStatus(BlueprintStatusResponse response, Artifact artifact) {
         return response.slices()
@@ -163,15 +187,17 @@ class BlueprintStatusAggregationTest {
     }
 
     private static Route<?> statusRoute(Map<Artifact, Map<NodeId, SliceState>> deployed) {
-        var routes = SliceRoutes.sliceRoutes(() -> nodeOver(deployed))
+        return statusRouteOver(statusBlueprintService(), deploymentMapOver(deployed));
+    }
+
+    /// #759 review (M2) — factored out of [#statusRoute] so the not-found test can supply a
+    /// `BlueprintService` that answers `Option.none()` instead of the fixed [#EXPANDED] blueprint.
+    private static Route<?> statusRouteOver(BlueprintService blueprintService, DeploymentMap deploymentMap) {
+        var routes = SliceRoutes.sliceRoutes(() -> new StatusManageableNode(blueprintService, deploymentMap))
                                 .routes()
                                 .filter(candidate -> candidate.name().equals(ManagementRoute.BLUEPRINT_STATUS.name()))
                                 .toList();
         return routes.isEmpty() ? fail("BLUEPRINT_STATUS route not registered") : routes.getFirst();
-    }
-
-    private static ManageableNode nodeOver(Map<Artifact, Map<NodeId, SliceState>> deployed) {
-        return new StatusManageableNode(statusBlueprintService(), deploymentMapOver(deployed));
     }
 
     private static DeploymentMap deploymentMapOver(Map<Artifact, Map<NodeId, SliceState>> deployed) {
@@ -196,6 +222,28 @@ class BlueprintStatusAggregationTest {
             public Promise<ExpandedBlueprint> publishFromArtifact(String artifactCoords, boolean registerOnly) { return unsupported("publishFromArtifact(registerOnly)"); }
             @Override
             public Option<ExpandedBlueprint> get(BlueprintId id) { return Option.some(EXPANDED); }
+            @Override
+            public List<ExpandedBlueprint> list() { return unsupported("list"); }
+            @Override
+            public Promise<Unit> delete(BlueprintId id) { return unsupported("delete"); }
+            @Override
+            public Result<Blueprint> validate(String dsl) { return unsupported("validate"); }
+        };
+    }
+
+    /// #759 review (M2) — the rollback-sequence not-found case: `get()` answers `Option.none()`,
+    /// matching the post-rollback KV state `unloadBlueprintSlices` leaves behind (see the `@Test`
+    /// this backs).
+    private static BlueprintService notFoundBlueprintService() {
+        return new BlueprintService() {
+            @Override
+            public Promise<ExpandedBlueprint> publish(String dsl) { return unsupported("publish"); }
+            @Override
+            public Promise<ExpandedBlueprint> publishFromArtifact(String artifactCoords) { return unsupported("publishFromArtifact"); }
+            @Override
+            public Promise<ExpandedBlueprint> publishFromArtifact(String artifactCoords, boolean registerOnly) { return unsupported("publishFromArtifact(registerOnly)"); }
+            @Override
+            public Option<ExpandedBlueprint> get(BlueprintId id) { return Option.none(); }
             @Override
             public List<ExpandedBlueprint> list() { return unsupported("list"); }
             @Override
