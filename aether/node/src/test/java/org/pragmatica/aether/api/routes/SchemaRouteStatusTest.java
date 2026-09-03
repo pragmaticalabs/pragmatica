@@ -178,6 +178,14 @@ class SchemaRouteStatusTest {
             seed(SchemaStatus.FAILED);
             handle(ManagementRoute.SCHEMA_RETRY, Option.none(), Option.none()).onFailure(cause -> Assertions.fail("Retry against a FAILED record must succeed: " + cause.message()));
         }
+
+        /// #724: a migration that never dispatched (PENDING) has no other lever short of a redeploy
+        /// to re-trigger it — the retry guard now accepts PENDING alongside FAILED.
+        @Test
+        void retryRoute_succeeds_whenSchemaIsPending() {
+            seed(SchemaStatus.PENDING);
+            handle(ManagementRoute.SCHEMA_RETRY, Option.none(), Option.none()).onFailure(cause -> Assertions.fail("Retry against a PENDING record must succeed (#724): " + cause.message()));
+        }
     }
 
     /// #760: `heldSlices` makes a schema hold visible on the management API, without reaching for

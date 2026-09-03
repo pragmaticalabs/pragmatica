@@ -286,8 +286,12 @@ public final class SchemaRoutes implements RouteSource {
                                   .onSuccess(_ -> AuditLog.schemaManualRetry(datasource));
     }
 
+    /// Accepts FAILED (the original contract: a permanently failed migration) and PENDING (#724: a
+    /// migration that never ran — the operator has no other lever to re-trigger dispatch without a
+    /// redeploy). MIGRATING and COMPLETED remain refused: MIGRATING already has a runner in flight,
+    /// and re-arming a COMPLETED record would replay a migration nothing marked failed.
     private Promise<SchemaMigrateResponse> writeRetryStatus(SchemaVersionValue current, String datasource) {
-        if (current.status() != SchemaStatus.FAILED) {
+        if (current.status() != SchemaStatus.FAILED && current.status() != SchemaStatus.PENDING) {
             return schemaNotFailed(datasource, current.status()).promise();
         }
 

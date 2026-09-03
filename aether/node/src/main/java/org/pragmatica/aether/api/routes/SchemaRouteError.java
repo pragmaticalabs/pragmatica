@@ -44,10 +44,21 @@ public sealed interface SchemaRouteError extends Cause, HttpStatusAware {
         }
     }
 
-    /// 409 — `retry` was addressed at a datasource that is not in `FAILED`. The request is
-    /// well-formed and the datasource exists; the conflict is with current cluster state, which is
-    /// exactly `CONFLICT` rather than `BAD_REQUEST`. Carrying the observed status makes the response
-    /// self-explaining: the operator learns what the state actually is without a second call.
+    /// 409 — `retry` was addressed at a datasource that is not in `FAILED` or `PENDING` (#724: PENDING
+    /// is also retriable, since a migration that never dispatched has no other lever short of a
+    /// redeploy). The request is well-formed and the datasource exists; the conflict is with current
+    /// cluster state, which is exactly `CONFLICT` rather than `BAD_REQUEST`. Carrying the observed
+    /// status makes the response self-explaining: the operator learns what the state actually is
+    /// without a second call.
+    ///
+    /// **`message()` must keep the literal substring "not in FAILED state"** — two integration
+    /// scripts (`10-database/test-schema-retry.sh`, `06-deployment/test-schema-migration.sh`,
+    /// pinned by `SchemaRouteStatusTest.RetryConflict.problemBody_retainsScriptedClientPhrase_whenSchemaIsNotFailed`)
+    /// grep the response body for that exact phrase.
+    ///
+    /// Name kept as `SchemaNotFailed` despite the widened gate: three references total codebase-wide,
+    /// and `SchemaNotRetriable` would ripple further than this ticket's scope justifies. A taste call,
+    /// not a correctness one — the `message()` text is the part a caller actually observes.
     record SchemaNotFailed(String datasource, SchemaStatus currentStatus) implements SchemaRouteError {
         public static SchemaNotFailed schemaNotFailed(String datasource, SchemaStatus currentStatus) {
             return new SchemaNotFailed(datasource, currentStatus);
@@ -57,7 +68,7 @@ public sealed interface SchemaRouteError extends Cause, HttpStatusAware {
         public String message() {
             return "Schema for datasource '" + datasource
                  + "' is not in FAILED state (currently " + currentStatus.name()
-                 + ") — retry only applies to failed migrations";
+                 + ") — retry applies to FAILED or PENDING migrations only";
         }
 
         @Override
