@@ -5,6 +5,7 @@
 package org.pragmatica.aether.ember;
 
 import java.net.InetSocketAddress;
+import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.Map;
 
@@ -21,7 +22,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.net.tcp.TlsConfig;
-import org.pragmatica.net.tcp.security.SelfSignedCertificateProvider;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
 
@@ -34,11 +34,16 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// #715 — pins that each `EmberCluster` instance derives its own cluster QUIC/SWIM identity, so two
 /// independently-created instances (e.g. Forge started twice on one machine, or any two test
 /// harnesses that never called the sanctioned `withClusterSecret` join seam) cannot admit each
-/// other's nodes.
+/// other's nodes — and that two instances explicitly given the SAME secret via `withClusterSecret`
+/// still can (the positive control).
 ///
-/// Written red-first against the pre-fix observability scaffold on `EmberCluster` (`currentClusterSecret`,
-/// `wiredCertificateProvider`): before the fix, EVERY `EmberCluster` instance mirrors the one hardcoded
-/// literal secret, so all three tests below fail for that reason, not a compile error.
+/// Written red-first against a pre-fix observability scaffold on `EmberCluster` (`currentClusterSecret`,
+/// `wiredCertificateProvider`, `wiredQuicTls`): before the fix, EVERY `EmberCluster` instance mirrors
+/// the one hardcoded literal secret, so the rejection/wiring tests below fail for that reason, not a
+/// compile error. `wiredCertificateProvider`/`wiredQuicTls` read the `certificateProvider`/`quicTls`
+/// actually present in the most recently constructed node's real `AetherNodeConfig` object — never a
+/// value mirrored independently at construction time — so reverting either production wiring line
+/// alone (leaving the other untouched) still flips the corresponding test red.
 class EmberClusterForeignAdmissionTest {
     private static final NodeId CLIENT_NODE = NodeId.randomNodeId();
     private static final NodeAddress CLIENT_ADDRESS = new NodeAddress("127.0.0.1", 19291);
@@ -75,12 +80,6 @@ class EmberClusterForeignAdmissionTest {
         return SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(), all);
     }
 
-    private static TlsConfig tlsFromSecret(byte[] secret, String nodeId) {
-        var provider = SelfSignedCertificateProvider.selfSignedCertificateProvider(secret).unwrap();
-
-        return TlsConfig.fromProvider(provider, nodeId, "localhost").unwrap();
-    }
-
     /// Test 1 — secret uniqueness: two independently-created `EmberCluster` instances must derive
     /// DISTINCT cluster identity secrets. Neither instance is started — the secret is fixed at
     /// construction, so this is a cheap, non-networked check.
@@ -114,21 +113,32 @@ class EmberClusterForeignAdmissionTest {
             .isTrue();
     }
 
-    /// Test 3 — the actual admission mechanism, through real Ember-derived key material: a QUIC
-    /// client built from a DIFFERENT `EmberCluster` instance's secret must be rejected by a server
-    /// built from this instance's secret. Neither cluster is started — only the derived secrets are
-    /// used, fed through the same production path (`SelfSignedCertificateProvider` +
-    /// `TlsConfig.fromProvider` + `QuicTlsProvider`) `buildForgeQuicTls`/`QuicClusterServer` use.
+    /// Test 3 — the actual admission mechanism, through the production QUIC/TLS wiring: a QUIC
+    /// client built from a DIFFERENT `EmberCluster` instance's wired TLS must be rejected by a
+    /// server built from this instance's wired TLS. Both clusters are started for real, so
+    /// `createNode` runs and [EmberCluster#wiredQuicTls] reflects the exact `TlsConfig` object
+    /// `buildForgeQuicTls` produced and threaded into the constructed node's real `AetherNodeConfig`
+    /// — reverting `buildForgeQuicTls` back to the shared literal makes both clusters present the
+    /// same TLS identity and this test goes red.
     @Test
-    @Timeout(30)
+    @Timeout(120)
     void clientFromDifferentEmberInstance_isRejected() {
-        clusterA = emberCluster(1, 25330, 25430, 25530, "foreign-d");
-        clusterB = emberCluster(1, 25340, 25440, 25540, "foreign-e");
+        clusterA = emberCluster(3, 25330, 25430, 25530, "foreign-d");
+        clusterB = emberCluster(3, 25340, 25440, 25540, "foreign-e");
+
+        clusterA.start()
+                .await()
+                .onFailure(cause -> fail("cluster A start: " + cause.message()));
+        clusterB.start()
+                .await()
+                .onFailure(cause -> fail("cluster B start: " + cause.message()));
 
         var codec = codec();
         var serverNode = NodeId.randomNodeId();
 
-        var serverSsl = serverSsl(tlsFromSecret(clusterA.currentClusterSecret(), "admission-server"));
+        var serverTls = clusterA.wiredQuicTls()
+                                .fold(() -> fail("cluster A: no wired QUIC TLS"), tls -> tls);
+        var serverSsl = serverSsl(serverTls);
 
         server = QuicClusterServer.quicClusterServer(serverNode, SERVER_ADDRESS, Map.of(), codec, codec,
                                                      serverSsl, Option.empty(), (_, _, _) -> {}, (_, _) -> {});
@@ -138,7 +148,9 @@ class EmberClusterForeignAdmissionTest {
 
         var port = server.boundPort().fold(() -> fail("server not bound"), p -> p);
 
-        var clientSsl = clientSsl(tlsFromSecret(clusterB.currentClusterSecret(), "admission-client"));
+        var clientTls = clusterB.wiredQuicTls()
+                                .fold(() -> fail("cluster B: no wired QUIC TLS"), tls -> tls);
+        var clientSsl = clientSsl(clientTls);
 
         client = QuicClusterClient.quicClusterClient(CLIENT_NODE, CLIENT_ADDRESS, Map.of(), codec, codec,
                                                      clientSsl, Option.empty(), (_, _) -> {});
@@ -148,9 +160,64 @@ class EmberClusterForeignAdmissionTest {
                              .fold(_ -> false, _ -> true);
 
         assertThat(admitted)
-            .as("#715: a QUIC client built from a DIFFERENT EmberCluster instance's secret must not "
-                + "be admitted to this instance's cluster")
+            .as("#715: a QUIC client built from a DIFFERENT EmberCluster instance's wired TLS must "
+                + "not be admitted to this instance's cluster")
             .isFalse();
+    }
+
+    /// Test 4 — positive control: two instances explicitly given the SAME cluster secret via the
+    /// sanctioned [EmberCluster#withClusterSecret] override must be able to admit each other's real
+    /// QUIC nodes, so test 3 above is pinning a real rejection of DIFFERENT secrets rather than QUIC
+    /// simply never admitting anyone. Without this test, deleting the entire admission check would
+    /// make test 3 pass for the wrong reason (every connection rejected) and go undetected.
+    @Test
+    @Timeout(120)
+    void clientFromSameClusterSecret_isAdmitted() {
+        var sharedSecret = new byte[32];
+        new SecureRandom().nextBytes(sharedSecret);
+
+        clusterA = emberCluster(3, 25350, 25450, 25550, "foreign-f");
+        clusterB = emberCluster(3, 25360, 25460, 25560, "foreign-g");
+        clusterA.withClusterSecret(sharedSecret);
+        clusterB.withClusterSecret(sharedSecret);
+
+        clusterA.start()
+                .await()
+                .onFailure(cause -> fail("cluster A start: " + cause.message()));
+        clusterB.start()
+                .await()
+                .onFailure(cause -> fail("cluster B start: " + cause.message()));
+
+        var codec = codec();
+        var serverNode = NodeId.randomNodeId();
+
+        var serverTls = clusterA.wiredQuicTls()
+                                .fold(() -> fail("cluster A: no wired QUIC TLS"), tls -> tls);
+        var serverSsl = serverSsl(serverTls);
+
+        server = QuicClusterServer.quicClusterServer(serverNode, SERVER_ADDRESS, Map.of(), codec, codec,
+                                                     serverSsl, Option.empty(), (_, _, _) -> {}, (_, _) -> {});
+        server.start(0)
+              .await(AWAIT_TIMEOUT)
+              .onFailure(cause -> fail("server start: " + cause.message()));
+
+        var port = server.boundPort().fold(() -> fail("server not bound"), p -> p);
+
+        var clientTls = clusterB.wiredQuicTls()
+                                .fold(() -> fail("cluster B: no wired QUIC TLS"), tls -> tls);
+        var clientSsl = clientSsl(clientTls);
+
+        client = QuicClusterClient.quicClusterClient(CLIENT_NODE, CLIENT_ADDRESS, Map.of(), codec, codec,
+                                                     clientSsl, Option.empty(), (_, _) -> {});
+
+        var admitted = client.connect(serverNode, new InetSocketAddress("127.0.0.1", port))
+                             .await(AWAIT_TIMEOUT)
+                             .fold(_ -> false, _ -> true);
+
+        assertThat(admitted)
+            .as("#715: two EmberCluster instances given the SAME secret via withClusterSecret must "
+                + "admit each other's real QUIC nodes (positive control)")
+            .isTrue();
     }
 
     private static QuicSslContext serverSsl(TlsConfig config) {
