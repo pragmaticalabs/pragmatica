@@ -154,6 +154,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                   Set<NodeId> workerNodes,
                   Map<SliceNodeKey, Long> transitionalStateTimestamps,
                   Map<Artifact, Integer> consecutiveImbalancedTicks,
+                  Map<SliceNodeKey, String> reportedSchemaHolds,
                   AtomicInteger allocationIndex,
                   AtomicBoolean deactivated,
                   CancellableTask reconcileTimer) implements ClusterDeploymentState {
@@ -728,6 +729,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         private void handleSliceNodeRemoval(SliceNodeKey sliceNodeKey) {
             sliceStates.remove(sliceNodeKey);
             transitionalStateTimestamps.remove(sliceNodeKey);
+            reportedSchemaHolds.remove(sliceNodeKey);
             if (permanentlyFailed.contains(sliceNodeKey.artifact())) {
                 return;
             }
@@ -1354,6 +1356,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
             sliceStates.remove(sliceKey);
             transitionalStateTimestamps.remove(sliceKey);
+            reportedSchemaHolds.remove(sliceKey);
             issueUnloadCommand(sliceKey);
             if (sliceNodeValue.fatal()) {
                 handleDeterministicFailure(sliceKey, failureReason);
@@ -1487,15 +1490,12 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             var blockingRecords = blockingSchemaRecords(sliceKey);
 
             if (!blockingRecords.isEmpty()) {
-                log.warn("Slice {} held in LOADED, waiting for schema migrations to complete: {}",
-                         artifact,
-                         blockingRecords.stream()
-                                        .map(v -> v.datasourceName() + "=" + v.status())
-                                        .collect(Collectors.joining(", ")));
+                reportSchemaHold(sliceKey, artifact, blockingRecords);
 
                 return;
             }
 
+            reportSchemaHoldCleared(sliceKey, artifact);
             var dependencies = sliceDependencies.getOrDefault(artifact, Set.of());
 
             if (dependencies.isEmpty()) {
@@ -1512,6 +1512,42 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 log.debug("Slice {} waiting for dependencies to become ACTIVE: {}",
                           artifact,
                           dependencies.stream().filter(dep -> !isDependencyActive(dep)).toList());
+            }
+        }
+
+        /// #760 follow-up: [#tryActivateIfDependenciesReady(SliceNodeKey)] is event-driven — fired
+        /// on the slice's own LOAD, on ANY schema record reaching `COMPLETED`, on a sibling
+        /// dependency activating, and once per blueprint at leader rebuild — never on a fixed
+        /// timer ([#reconcile()] never calls it). A slice held on one datasource still gets
+        /// re-evaluated every time an unrelated datasource completes or a dependency activates
+        /// elsewhere, so a long hold can accumulate many re-observations with nothing about THIS
+        /// slice's hold having changed. WARN once per distinct hold signature (first observation,
+        /// or the set of blocking datasources/statuses actually changing) and DEBUG on a repeat
+        /// observation of the same signature, so the operator-visible signal tracks state
+        /// transitions rather than event-loop noise.
+        private void reportSchemaHold(SliceNodeKey sliceKey,
+                                      Artifact artifact,
+                                      List<SchemaVersionValue> blockingRecords) {
+            var signature = blockingRecords.stream()
+                                           .map(v -> v.datasourceName() + "=" + v.status())
+                                           .collect(Collectors.joining(", "));
+            var previous = reportedSchemaHolds.put(sliceKey, signature);
+
+            if (signature.equals(previous)) {
+                log.debug("Slice {} still held in LOADED, waiting for schema migrations to complete: {}",
+                          artifact,
+                          signature);
+            } else {
+                log.warn("Slice {} held in LOADED, waiting for schema migrations to complete: {}", artifact, signature);
+            }
+        }
+
+        /// Companion to [#reportSchemaHold(SliceNodeKey, Artifact, List)]: fires the single WARN
+        /// that closes the hold, and only when this slice actually had one on record — an
+        /// already-clear slice re-evaluated by an unrelated event must stay silent.
+        private void reportSchemaHoldCleared(SliceNodeKey sliceKey, Artifact artifact) {
+            if (reportedSchemaHolds.remove(sliceKey) != null) {
+                log.warn("Slice {} schema hold cleared, resuming activation", artifact);
             }
         }
 

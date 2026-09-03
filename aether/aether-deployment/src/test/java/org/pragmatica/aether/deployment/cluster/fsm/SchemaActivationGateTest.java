@@ -31,6 +31,7 @@ import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.Blueprint;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Activate;
+import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.NodeArtifactPutReceived;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
@@ -47,6 +48,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -398,6 +400,40 @@ class SchemaActivationGateTest {
 
             assertThat(appender.capturedWarns()).as("a released slice must not be reported as held")
                                                 .noneMatch(msg -> msg.contains("held in LOADED"));
+        }
+
+        /// #760 follow-up: the hold WARN is event-driven, not tick-driven — it fires from
+        /// [`ClusterDeploymentState.Active#tryActivateIfDependenciesReady`], reached from the
+        /// slice's own LOAD, from ANY schema record completing, from a sibling dependency
+        /// activating, and once per blueprint at leader rebuild. A long hold can therefore be
+        /// re-observed many times with nothing about THIS slice's hold having changed. This test
+        /// drives a second, independent `NodeArtifactPutReceived` notification for the SAME slice
+        /// — the exact event production dispatches on every KVStore put
+        /// (`ClusterDeploymentManager.onNodeArtifactPut`) — while the blocking schema record stays
+        /// PENDING on the same datasource, and pins that the operator sees exactly one WARN, not
+        /// one per tick.
+        @Test
+        void activate_warnsOnce_acrossTwoEvaluationTicksAgainstAnUnchangedHold() {
+            seedSliceTarget(Option.some(OWNER));
+            seedLoadedSlice();
+            seedSchema(OWNED_DATASOURCE, SchemaStatus.PENDING, OWNER);
+
+            harness.dispatch(new Activate());
+
+            var artifactKey = NodeArtifactKey.nodeArtifactKey(NODE_A, SLICE);
+            var value = NodeArtifactValue.nodeArtifactValue(SliceState.LOADED, System.currentTimeMillis());
+            var put = new KVCommand.Put<NodeArtifactKey, NodeArtifactValue>(artifactKey, value);
+            var secondTick = new ValuePut<>(put, Option.some(value));
+
+            harness.dispatch(new NodeArtifactPutReceived(secondTick));
+
+            var heldWarns = appender.capturedWarns()
+                                    .stream()
+                                    .filter(msg -> msg.contains("held in LOADED"))
+                                    .toList();
+
+            assertThat(heldWarns).as("a second evaluation tick against the SAME unchanged hold must not repeat the WARN")
+                                 .hasSize(1);
         }
 
         private LoggerConfig getOrCreateLoggerConfig(Configuration configuration) {
