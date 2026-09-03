@@ -4,12 +4,15 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource;
 
+import java.util.Map;
+
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.config.ConfigError;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.config.ProviderBasedConfigService;
+import org.pragmatica.config.source.MapConfigSource;
 import org.pragmatica.config.source.TomlConfigSource;
 import org.pragmatica.lang.parse.TimeSpan;
 
@@ -359,6 +362,34 @@ class TopicConfigTest {
         } finally {
             System.clearProperty("aether.orders.deploy_trace_id");
         }
+    }
+
+    /// Team-lead re-check condition (future-proofing): the static/dynamic split inside the
+    /// builder-composed provider used to be a DENYLIST by type ([org.pragmatica.config.source.EnvironmentConfigSource]
+    /// / [org.pragmatica.config.source.SystemPropertyConfigSource]) — any OTHER `ConfigSource`
+    /// implementation, present or added later, defaulted to "static" and was therefore checked,
+    /// silently reopening the #738 hole for a dynamic source type nobody had named yet. Inverted to
+    /// an ALLOWLIST of exactly the one genuinely file-backed source ([TomlConfigSource]); every
+    /// other `ConfigSource` now defaults to excluded. [MapConfigSource] stands in here for "some
+    /// future dynamic source type nobody has named yet" — it is neither of the two denylisted types,
+    /// so under the old code its key was treated as static and failed this exact bind (red before);
+    /// under the allowlist it is excluded like any unrecognized type (green after).
+    @Test
+    void tomlBinding_ignoresUnknownConfigSourceTypeKeyAtTopicSection_neverFailsStrictBind() {
+        var source = TomlConfigSource.tomlConfigSource("""
+                                                        [orders]
+                                                        topic_name = "order-events"
+                                                        """).unwrap();
+        var extra = MapConfigSource.mapConfigSource("probe", Map.of("orders.deploy_trace_id", "abc123")).unwrap();
+        var provider = ConfigurationProvider.builder()
+                                            .withSource(source)
+                                            .withSource(extra)
+                                            .build();
+        var config = ProviderBasedConfigService.providerBasedConfigService(provider)
+                                                .config("orders", TopicConfig.class)
+                                                .unwrap();
+
+        assertThat(config.topicName()).isEqualTo("order-events");
     }
 
     /// FOLD-IN 3: a quoted key with a literal dot (`"a.b" = 1`) is, once [TomlConfigSource]

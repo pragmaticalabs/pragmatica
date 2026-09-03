@@ -221,16 +221,24 @@ final class LayeredConfigurationProvider implements ConfigurationProvider {
         return mergedValues.keySet();
     }
 
-    /// Excludes [EnvironmentConfigSource] and [SystemPropertyConfigSource] by type — the two
-    /// dynamic layers a builder-composed provider can carry — from the union of `sources`' own
-    /// [ConfigSource#keys()]. Deliberately reads the raw per-source key sets rather than
-    /// `mergedValues.keySet()`: the merged map has already lost which layer contributed which key.
+    /// Allowlists [TomlConfigSource] by type — the one genuinely file-backed source a
+    /// builder-composed provider can carry — from the union of `sources`' own [ConfigSource#keys()].
+    /// Deliberately reads the raw per-source key sets rather than `mergedValues.keySet()`: the
+    /// merged map has already lost which layer contributed which key.
+    ///
+    /// Allowlist, not denylist: an earlier version excluded [EnvironmentConfigSource] and
+    /// [SystemPropertyConfigSource] by name, so any OTHER `ConfigSource` type — present or, worse,
+    /// added later — defaulted to "static" and was checked, silently reopening the #738 hole for a
+    /// dynamic source nobody had named yet. A [MapConfigSource] (in-memory defaults, or any
+    /// programmatic/dynamic layer built on it) is excluded here for the same reason it would be
+    /// excluded if written tomorrow: it is not file-backed, and this method's job is to name the
+    /// ones that are (#738 review finding, round 2).
     @Override
     public Set<String> staticKeys() {
         var result = new LinkedHashSet<String>();
 
         for (var source : sources) {
-            if (isDynamicSource(source)) {
+            if (!isStaticSource(source)) {
                 continue;
             }
 
@@ -240,8 +248,8 @@ final class LayeredConfigurationProvider implements ConfigurationProvider {
         return Collections.unmodifiableSet(result);
     }
 
-    private static boolean isDynamicSource(ConfigSource source) {
-        return source instanceof EnvironmentConfigSource || source instanceof SystemPropertyConfigSource;
+    private static boolean isStaticSource(ConfigSource source) {
+        return source instanceof TomlConfigSource;
     }
 
     @Override

@@ -117,9 +117,10 @@ public final class ProviderBasedConfigService implements ConfigService {
             var types = extractComponentTypes(components);
             Constructor<T> constructor = configClass.getDeclaredConstructor(types);
 
-            return strictKeyCheck(section, configClass, components)
-                          .flatMap(_ -> collectComponentArgs(section, components, configClass))
-                          .flatMap(args -> invokeFactoryOrConstructor(configClass, constructor, types, args));
+            return strictKeyCheck(section, configClass, components).flatMap(_ -> collectComponentArgs(section,
+                                                                                                      components,
+                                                                                                      configClass))
+                                 .flatMap(args -> invokeFactoryOrConstructor(configClass, constructor, types, args));
         } catch (ReflectiveOperationException e) {
             return ConfigError.parseFailed(section, e).result();
         }
@@ -149,11 +150,8 @@ public final class ProviderBasedConfigService implements ConfigService {
             return unitResult();
         }
 
-        var known = Arrays.stream(components)
-                          .map(c -> toSnakeCase(c.getName()))
-                          .collect(Collectors.toSet());
+        var known = Arrays.stream(components).map(c -> toSnakeCase(c.getName())).collect(Collectors.toSet());
         var prefix = section + ".";
-
         var unknownKeys = provider.staticKeys()
                                   .stream()
                                   .filter(k -> k.startsWith(prefix))
@@ -167,10 +165,9 @@ public final class ProviderBasedConfigService implements ConfigService {
             return unitResult();
         }
 
-        var suggestions = unknownKeys.stream()
-                                     .collect(Collectors.toMap(k -> k, k -> nearestKey(k, known)));
+        var suggestions = unknownKeys.stream().collect(Collectors.toMap(k -> k, k -> nearestKey(k, known)));
 
-        return ConfigError.unknownKey(section, unknownKeys, suggestions).<Unit>result();
+        return ConfigError.unknownKey(section, unknownKeys, suggestions).<Unit> result();
     }
 
     private static final int MIN_SUGGESTION_DISTANCE = 3;
@@ -183,11 +180,12 @@ public final class ProviderBasedConfigService implements ConfigService {
         var threshold = Math.max(MIN_SUGGESTION_DISTANCE, unknown.length() / 2);
 
         return known.stream()
-                   .map(k -> Map.entry(k, levenshtein(unknown, k)))
-                   .min(Comparator.comparingInt(Map.Entry::getValue))
-                   .filter(e -> e.getValue() <= threshold)
-                   .map(Map.Entry::getKey)
-                   .orElse("");
+                    .map(k -> Map.entry(k,
+                                        levenshtein(unknown, k)))
+                    .min(Comparator.comparingInt(Map.Entry::getValue))
+                    .filter(e -> e.getValue() <= threshold)
+                    .map(Map.Entry::getKey)
+                    .orElse("");
     }
 
     private static int levenshtein(String a, String b) {
@@ -203,7 +201,9 @@ public final class ProviderBasedConfigService implements ConfigService {
 
         for (int i = 1; i <= a.length(); i++) {
             for (int j = 1; j <= b.length(); j++) {
-                var cost = a.charAt(i - 1) == b.charAt(j - 1) ? 0 : 1;
+                var cost = a.charAt(i - 1) == b.charAt(j - 1)
+                           ? 0
+                           : 1;
 
                 dp[i][j] = Math.min(Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1), dp[i - 1][j - 1] + cost);
             }
@@ -506,8 +506,8 @@ public final class ProviderBasedConfigService implements ConfigService {
 
     private static boolean isStringListType(Type genericType) {
         return genericType instanceof ParameterizedType paramType
-            && paramType.getActualTypeArguments().length == 1
-            && paramType.getActualTypeArguments()[0] == String.class;
+               && paramType.getActualTypeArguments().length == 1
+               && paramType.getActualTypeArguments() [0] == String.class;
     }
 
     private Option<Result<Object>> lookupBackoffStrategy(String fullKey, Class<?> type) {
@@ -557,9 +557,7 @@ public final class ProviderBasedConfigService implements ConfigService {
     // comma-joined-scalar convention (e.g. HetznerEnvironmentIntegrationFactory#ssh_key_ids).
     // Absent key defaults to an empty list, matching collectMapValue's zero-matches behavior.
     private Result<Object> collectListValue(String fullKey) {
-        return success(provider.getString(fullKey)
-                               .map(ProviderBasedConfigService::splitCommaList)
-                               .or(List.of()));
+        return success(provider.getString(fullKey).map(ProviderBasedConfigService::splitCommaList).or(List.of()));
     }
 
     private static List<String> splitCommaList(String raw) {
@@ -596,8 +594,10 @@ public final class ProviderBasedConfigService implements ConfigService {
     }
 
     private Result<Object> exponentialBackoffStrategy(String fullKey) {
-        var initialDelay = optionalIoTimeSpan(fullKey + ".initial_delay", org.pragmatica.lang.io.TimeSpan.timeSpan(100).millis());
-        var maxDelay = optionalIoTimeSpan(fullKey + ".max_delay", org.pragmatica.lang.io.TimeSpan.timeSpan(10).seconds());
+        var initialDelay = optionalIoTimeSpan(fullKey + ".initial_delay",
+                                              org.pragmatica.lang.io.TimeSpan.timeSpan(100).millis());
+        var maxDelay = optionalIoTimeSpan(fullKey + ".max_delay",
+                                          org.pragmatica.lang.io.TimeSpan.timeSpan(10).seconds());
         var factor = optionalDouble(fullKey + ".factor", 2.0);
         var withJitter = optionalBoolean(fullKey + ".with_jitter", false);
 
@@ -611,11 +611,10 @@ public final class ProviderBasedConfigService implements ConfigService {
     private Result<Object> linearBackoffStrategy(String fullKey) {
         return Result.all(requiredIoTimeSpan(fullKey + ".initial_delay"),
                           requiredIoTimeSpan(fullKey + ".increment"),
-                          requiredIoTimeSpan(fullKey + ".max_delay"))
-                     .map((initialDelay, increment, maxDelay) -> BackoffStrategy.linear()
-                                                                                .initialDelay(initialDelay)
-                                                                                .increment(increment)
-                                                                                .maxDelay(maxDelay));
+                          requiredIoTimeSpan(fullKey + ".max_delay")).map((initialDelay, increment, maxDelay) -> BackoffStrategy.linear()
+                                                                                                                                .initialDelay(initialDelay)
+                                                                                                                                .increment(increment)
+                                                                                                                                .maxDelay(maxDelay));
     }
 
     private Result<org.pragmatica.lang.io.TimeSpan> requiredIoTimeSpan(String fullKey) {
@@ -624,18 +623,23 @@ public final class ProviderBasedConfigService implements ConfigService {
                        .toResult(ConfigError.sectionNotFound(fullKey));
     }
 
-    private org.pragmatica.lang.io.TimeSpan optionalIoTimeSpan(String fullKey, org.pragmatica.lang.io.TimeSpan fallback) {
+    private org.pragmatica.lang.io.TimeSpan optionalIoTimeSpan(String fullKey,
+                                                               org.pragmatica.lang.io.TimeSpan fallback) {
         return provider.getString(fullKey)
                        .flatMap(ProviderBasedConfigService::parseIoTimeSpan)
                        .or(fallback);
     }
 
     private double optionalDouble(String fullKey, double fallback) {
-        return provider.getString(fullKey).flatMap(ProviderBasedConfigService::safeParseDouble).or(fallback);
+        return provider.getString(fullKey)
+                       .flatMap(ProviderBasedConfigService::safeParseDouble)
+                       .or(fallback);
     }
 
     private boolean optionalBoolean(String fullKey, boolean fallback) {
-        return provider.getString(fullKey).map(Boolean::parseBoolean).or(fallback);
+        return provider.getString(fullKey)
+                       .map(Boolean::parseBoolean)
+                       .or(fallback);
     }
 
     // --- DEFAULT field lookup ---

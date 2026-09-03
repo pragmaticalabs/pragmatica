@@ -145,17 +145,19 @@ public sealed interface ConfigError extends Cause {
     /// suggestion (empty when no known key is within [ProviderBasedConfigService]'s suggestion
     /// distance bound).
     record UnknownKey(String section, List<String> keys, Map<String, String> suggestions) implements ConfigError {
-        public static Result<UnknownKey> unknownKey(String section, List<String> keys, Map<String, String> suggestions) {
+        public static Result<UnknownKey> unknownKey(String section,
+                                                    List<String> keys,
+                                                    Map<String, String> suggestions) {
             return success(new UnknownKey(section, keys, suggestions));
         }
 
         @Override
         public String message() {
-            var parts = keys.stream()
-                            .map(k -> describeKey(k, suggestions.get(k)))
-                            .collect(Collectors.joining(", "));
+            var parts = keys.stream().map(k -> describeKey(k, suggestions.get(k))).collect(Collectors.joining(", "));
 
-            return "Unknown config key" + (keys.size() > 1 ? "s" : "") + " in section '" + section + "': " + parts;
+            return "Unknown config key" + (keys.size() > 1
+                                           ? "s"
+                                           : "") + " in section '" + section + "': " + parts;
         }
 
         private static String describeKey(String key, String nearestMatch) {

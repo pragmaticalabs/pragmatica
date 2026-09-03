@@ -5,6 +5,7 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
+
 /// Opt-in marker for the reflective record binder (see `ProviderBasedConfigService#bindToClass`):
 /// when present on a config record, every key found at the level the record's own TOML section
 /// binds must correspond to one of the record's components (compared via the same `toSnakeCase`
@@ -20,5 +21,4 @@ import java.lang.annotation.Target;
 /// change to the shared binder's default behavior.
 @Retention(RetentionPolicy.RUNTIME)
 @Target(ElementType.TYPE)
-public @interface StrictKeys {
-}
+public @interface StrictKeys {}
