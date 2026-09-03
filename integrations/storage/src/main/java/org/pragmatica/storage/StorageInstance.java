@@ -159,12 +159,13 @@ final class DefaultStorageInstance implements StorageInstance {
 
     @Override
     public Promise<Unit> delete(BlockId id) {
-        return deleteFromAllTiers(id, 0).onSuccess(_ -> removeLifecycleMetadata(id));
+        return deleteFromAllTiers(id, 0).onSuccess(_ -> removeLifecycleMetadata(id, "deleted from all tiers"));
     }
 
     @Override
     public Promise<Unit> deleteFromPrivateTiers(BlockId id) {
-        return deleteFromPrivateTiers(id, 0).onSuccess(_ -> removeLifecycleMetadata(id));
+        return deleteFromPrivateTiers(id, 0)
+               .onSuccess(_ -> removeLifecycleMetadata(id, "deleted from private tiers; shared copy retained"));
     }
 
     @Override
@@ -381,8 +382,11 @@ final class DefaultStorageInstance implements StorageInstance {
                 : tier.delete(id)).flatMap(_ -> deleteFromPrivateTiers(id, tierIndex + 1));
     }
 
-    private void removeLifecycleMetadata(BlockId id) {
+    /// #250 review: `delete` and `deleteFromPrivateTiers` diverge in what actually happened to the
+    /// shared (DHT) tier -- one message for both hid that a "private tiers" deletion leaves the
+    /// cluster-shared copy alive, which reads as data loss it is not.
+    private void removeLifecycleMetadata(BlockId id, String outcome) {
         metadataStore.removeLifecycle(id);
-        log.debug("Block {} deleted from all tiers", id);
+        log.debug("Block {} {}", id, outcome);
     }
 }
