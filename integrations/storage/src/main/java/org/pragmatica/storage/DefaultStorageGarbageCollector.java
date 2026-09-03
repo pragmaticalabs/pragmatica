@@ -79,8 +79,12 @@ final class DefaultStorageGarbageCollector implements StorageGarbageCollector {
 
     /// Synchronous block deletion. Uses .await() because GC runs on a dedicated
     /// background thread, not on the hot path. Blocking here is intentional.
+    ///
+    /// #250: uses [StorageInstance#deleteFromPrivateTiers], never [StorageInstance#delete] --
+    /// orphan status here comes from THIS node's local metadata, which is not authoritative
+    /// for a cluster-shared tier (another node may still hold a live reference).
     private int deleteBlock(BlockId blockId) {
-        return instance.delete(blockId)
+        return instance.deleteFromPrivateTiers(blockId)
                        .await()
                        .fold(_ -> 0, _ -> 1);
     }

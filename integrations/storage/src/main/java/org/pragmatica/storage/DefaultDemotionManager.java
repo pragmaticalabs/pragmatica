@@ -98,7 +98,16 @@ final class DefaultDemotionManager implements DemotionManager {
         return new DemotionResult(totalDemoted, totalBytes);
     }
 
+    /// #250 review: mirrors the GC-side guard (`StorageInstance#deleteFromPrivateTiers`) rather than
+    /// relying on the convention that a cluster-shared tier is placed last. A shared tier's local
+    /// occupancy belief is not authoritative for demotion decisions any more than it is for deletion --
+    /// treating it as a demotion SOURCE could evict a block this node still needs to serve locally on
+    /// the strength of a watermark reading that has nothing to do with cluster-wide liveness.
     private DemotionResult demoteTier(StorageTier sourceTier, StorageTier targetTier) {
+        if (sourceTier.isShared()) {
+            return DemotionResult.NONE;
+        }
+
         if (!isAboveHighWatermark(sourceTier)) {
             return DemotionResult.NONE;
         }

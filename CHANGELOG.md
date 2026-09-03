@@ -42,6 +42,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   one. `effectiveType()`, `effectiveUsername()`, and `effectivePassword()` are unchanged — no
   URL-derivation applies to type/credentials.
 
+### Fixed (2026-09-03 — #250: storage GC/demotion was wired to a no-op)
+- **Artifact and stream tier demotion and garbage collection now actually run.** `AetherNode`
+  previously wired storage through `DelegatedStorageAdapter.noOp()` — leader-pinned
+  activation/deactivation toggled correctly, but nothing ever called `.demote()` or
+  `.collectGarbage()`, so tiered storage never shrank in production. A new
+  `StorageMaintenanceDriver` ticks both operations on a fixed-rate timer, fanned out across every
+  entry in `storageSetups` (`artifacts`, `streams`). **The `content` tier is not covered**: it is
+  provisioned separately (`StorageFactory.defaultContentStorage`) as a bare `StorageInstance`
+  outside `storageSetups`, so it gets no demotion and no garbage collection from this driver.
+  Tracked as #783.
+- **New `[timeouts.storage_maintenance]` config**: `interval` key, default `5m`. `AetherNode` logs
+  `Storage maintenance enabled: demotion+GC cadence=<interval>, storage setups=<names>` at startup.
+- **DHT tier is now marked cluster-shared** (`DhtStorageTier.isShared() == true`): a block orphaned
+  by this node's local refcount may still be referenced by another node's local view, so node-local
+  garbage collection must never delete it on that basis alone. Enforced in
+  `StorageInstance.deleteFromPrivateTiers` (`integrations/storage`), which skips any tier reporting
+  `isShared()` regardless of the tier list it is handed.
+- Compile-forced by the new 15th `TimeoutsConfig` field: `EmberCluster.raisedSwimTimeoutsConfig()`,
+  `ClusterTimeoutsAbsenceOrderingTest.configWith()`, and `StorageRoutesTest` (rebuilt for
+  `StorageSetup` growing from 5 to 7 components).
+
 ### Fixed (2026-09-03 — #760 / #724 review round: `heldSlices` reported a serving slice as held, and retry could double-dispatch)
 - **`heldSlices` was a parallel derivation that never read per-node slice state.** It matched
   ownership only, so `/migrate` re-arming a `COMPLETED` record while its slices were `ACTIVE` made
