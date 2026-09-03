@@ -59,7 +59,17 @@ import static org.pragmatica.lang.Option.none;
 /// [StrictKeys]-annotated: an unrecognized key in the topic's own section (most commonly a dashed
 /// key where a `min_sync_replicas`-style underscore is expected) fails the bind loudly instead of
 /// resolving to `none()`/`DEFAULT` indistinguishably from the key never having been written (#738).
-/// The check never inspects nested sub-sections such as a consumer group table.
+/// The check never inspects nested sub-sections such as a consumer group table, and is scoped to
+/// the static/file-backed layer only — an environment variable, system property, or KV-overlay
+/// entry landing at `<section>.<one segment>` never fails this check regardless of spelling, since
+/// none of those layers wrote the TOML section this record declares (#738 review finding).
+///
+/// **Known limitation, not a defect**: a quoted key with a literal dot (`"a.b" = 1`) is, once the
+/// TOML source flattens it, byte-identical to a genuine nested sub-table (`[order-events.a]` /
+/// `b = 1`) — nothing downstream of the parser retains section structure to tell them apart, so
+/// such a key is silently accepted rather than flagged as unknown, exactly as a real nested
+/// sub-section would be. Avoid quoted dotted keys in a durable-pubsub topic section; use a nested
+/// table instead if the grouping is intentional.
 @StrictKeys
 public record TopicConfig(String topicName,
                           TopicDurability durability,

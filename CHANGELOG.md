@@ -13,19 +13,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   (`ProviderBasedConfigService.bindToClass`, the class every production config caller actually
   binds through — a separate, unreachable `TomlConfigService` carries the same shape but has zero
   production callers) resolved any key it did not recognize to `Option.none()`/a component
-  default, making a typo byte-indistinguishable from the key never having been written. For a
-  durability knob this was a fail-open on the durability axis: a mistyped `min_sync_replicas`
-  silently kept a topic on the ephemeral tier instead of raising the durable one the operator
-  declared.
+  default, making a typo byte-indistinguishable from the key never having been written. The real
+  fail-open is on the **ephemeral** path, not a durability-tier mis-selection: `durability` alone
+  picks the tier (`TopicConfig.topicConfig`), dash-typo-immune. `TopicConfig.declaredStreamKeys()`
+  only sees a stream knob as declared through its typed `Option` field, so a dashed
+  `min-sync-replicas` resolved to `none()` and stayed invisible to it — `rejectInertKeys()` then
+  found nothing declared and never raised the loud #576 rejection an ephemeral topic carrying a
+  (mistyped) durable-tier knob is supposed to get. The operator's likely-durable declaration was
+  silently discarded with zero signal, on an otherwise-successful ephemeral bind.
 - **New opt-in `@StrictKeys` annotation**, applied to `TopicConfig` only — every other config
-  record bound by `ProviderBasedConfigService` (six-plus production callers) is unannotated and
-  binds exactly as before; a new record fixture with an extra unrecognized key proves this.
-  [verified: integrations/config/config-service/src/test/java/org/pragmatica/config/ProviderBasedConfigServiceTest.java (StrictKeysScoping)]
-- **Scoped to exactly the keys the annotated record binds**: a nested sub-section under the same
-  topic (e.g. a consumer group table, owned by the dashed-by-convention `StreamConfigParser`) is
-  never inspected by this check, however it is spelled — `provider.keys()` returns one flat merged
-  key set for the whole document, so the isolation is an explicit filter, not a free property of
-  the data structure.
+  record bound by `ProviderBasedConfigService` (four production callers:
+  `NodeDeploymentState.java:284`, `ConfigSectionPreflightValidator.java:60`, `AetherNode.java:5869`,
+  `SpiResourceProvider.java:362`) is unannotated and binds exactly as before; the existing
+  `SimpleConfig` test fixture — reused, not new — with an added unrecognized key proves this.
+  [verified: integrations/config/config-service/src/test/java/org/pragmatica/config/ProviderBasedConfigServiceTest.java (StrictKeysScoping.config_nonAnnotatedRecord_ignoresUnrecognizedKey_exactlyAsBeforeTheHook)]
+- **Scoped to exactly the keys the annotated record binds, and to the static/file-backed
+  configuration layer only**: a nested sub-section under the same topic (e.g. a consumer group
+  table, owned by the dashed-by-convention `StreamConfigParser`) is never inspected by this check,
+  however it is spelled — and neither is an environment variable, system property, or KV-overlay
+  entry landing at the same path, since none of those layers wrote the section this record
+  declares (#738 review finding). `provider.keys()` (every layer merged) was the original,
+  too-broad scope; the check now reads the new `ConfigurationProvider.staticKeys()`.
+  [verified: aether/resource/api/src/test/java/org/pragmatica/aether/resource/TopicConfigTest.java (tomlBinding_rejectsDashedTopicLevelKey_evenWithNestedConsumerSubsectionPresent, tomlBinding_ignoresSystemPropertyKeyAtTopicSection_neverFailsStrictBind)]
+- Nearest-key suggestion via a small self-contained Levenshtein-distance helper (no new
+  dependency), bounded to `max(3, key length / 2)` so an unrelated key gets no suggestion at all
+  rather than an unbounded argmin, and every unrecognized key in a section is reported together,
+  not just the first. Operator docs (`aether/docs/slice-developers/resource-reference.md`) and the
+  durable-pubsub spec (`aether/docs/specs/durable-pubsub-spec.md` §3) now state the guarantee and
+  cite it.
   [verified: aether/resource/api/src/test/java/org/pragmatica/aether/resource/TopicConfigTest.java]
 - Nearest-key suggestion via a small self-contained Levenshtein-distance helper (no new
   dependency). Operator docs (`aether/docs/slice-developers/resource-reference.md`) and the
