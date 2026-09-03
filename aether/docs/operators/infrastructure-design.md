@@ -20,7 +20,7 @@ This document describes the planned design for multi-cloud infrastructure manage
 
 | Component | Status | Notes |
 |-----------|--------|-------|
-| `docker/aether-node/Dockerfile` | Ready | eclipse-temurin:25-alpine, proper layering |
+| `docker/aether-node/Dockerfile` | Ready | eclipse-temurin:25-noble, proper layering |
 | `docker/aether-forge/Dockerfile` | Ready | Simulator container |
 | `docker/docker-compose.yml` | Ready | 3-node cluster, healthchecks, networking |
 

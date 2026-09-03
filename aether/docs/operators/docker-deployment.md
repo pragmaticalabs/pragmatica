@@ -70,13 +70,13 @@ services:
       NODE_ID: "node-1"
       CLUSTER_PORT: "8090"
       MANAGEMENT_PORT: "8080"
-      PEERS: "node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090"
+      CLUSTER_PEERS: "node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090"
       AETHER_CLUSTER_NAME: "aether-dev"
       AETHER_CLUSTER_SECRET: "change-me-dev-secret"
       JAVA_OPTS: "-Xmx256m -XX:+UseZGC"
     ports:
       - "8080:8080"
-      - "8090:8090"
+      - "8090:8090/udp"
     networks:
       - aether-network
     healthcheck:
@@ -102,10 +102,10 @@ networks:
 | `NODE_ID` | (auto) | Unique node identifier |
 | `CLUSTER_PORT` | 8090 | Port for cluster communication |
 | `MANAGEMENT_PORT` | 8080 | Port for REST API |
-| `PEERS` | (required) | Cluster peer list |
+| `CLUSTER_PEERS` | (required) | Cluster peer list |
 | `AETHER_CLUSTER_NAME` | (required) | Cluster name; boot aborts if unset. Lowercase DNS-label format (`[a-z]([-a-z0-9]{0,61}[a-z0-9])?`), e.g. `aether-dev` |
 | `AETHER_CLUSTER_SECRET` | (required) | Shared secret used to generate TLS certificates; boot aborts if unset and no `cluster_secret` is configured in the `[tls]` TOML section |
-| `JAVA_OPTS` | `-Xmx512m` | JVM options |
+| `JAVA_OPTS` | `-Xmx256m` | JVM options |
 
 ### Peer List Format
 
@@ -140,7 +140,7 @@ docker run -d \
   --name aether-node-1 \
   -e NODE_ID=node-1 \
   -e CLUSTER_PORT=8090 \
-  -e PEERS="node-1:localhost:8090" \
+  -e CLUSTER_PEERS="node-1:localhost:8090" \
   -e AETHER_CLUSTER_NAME=aether-dev \
   -e AETHER_CLUSTER_SECRET=change-me-dev-secret \
   -p 8080:8080 \
@@ -157,21 +157,21 @@ docker network create aether-net
 # Start nodes
 docker run -d --name node1 --network aether-net \
   -e NODE_ID=node-1 \
-  -e PEERS="node-1:node1:8090,node-2:node2:8090,node-3:node3:8090" \
+  -e CLUSTER_PEERS="node-1:node1:8090,node-2:node2:8090,node-3:node3:8090" \
   -e AETHER_CLUSTER_NAME=aether-dev \
   -e AETHER_CLUSTER_SECRET=change-me-dev-secret \
   -p 8080:8080 aether-node:latest
 
 docker run -d --name node2 --network aether-net \
   -e NODE_ID=node-2 \
-  -e PEERS="node-1:node1:8090,node-2:node2:8090,node-3:node3:8090" \
+  -e CLUSTER_PEERS="node-1:node1:8090,node-2:node2:8090,node-3:node3:8090" \
   -e AETHER_CLUSTER_NAME=aether-dev \
   -e AETHER_CLUSTER_SECRET=change-me-dev-secret \
   -p 8081:8080 aether-node:latest
 
 docker run -d --name node3 --network aether-net \
   -e NODE_ID=node-3 \
-  -e PEERS="node-1:node1:8090,node-2:node2:8090,node-3:node3:8090" \
+  -e CLUSTER_PEERS="node-1:node1:8090,node-2:node2:8090,node-3:node3:8090" \
   -e AETHER_CLUSTER_NAME=aether-dev \
   -e AETHER_CLUSTER_SECRET=change-me-dev-secret \
   -p 8082:8080 aether-node:latest
@@ -224,17 +224,29 @@ volumes:
 
 ### TLS Configuration
 
-For production, enable TLS:
+For production, enable TLS. There are no `TLS_*` environment variables — TLS is a TOML setting
+(`[cluster] tls`, `[tls]` section), with `AETHER_CLUSTER_SECRET` the only TLS-related env var (a
+fallback for `tls.cluster_secret`):
 
 ```yaml
 services:
   aether-node-1:
     environment:
-      TLS_ENABLED: "true"
-      TLS_CERT_PATH: "/config/cert.pem"
-      TLS_KEY_PATH: "/config/key.pem"
+      AETHER_CLUSTER_SECRET: "change-me-dev-secret"
     volumes:
-      - ./certs:/config:ro
+      - ./aether.toml:/config/aether.toml:ro
+      - ./certs:/config/certs:ro
+```
+
+```toml
+[cluster]
+tls = true
+
+[tls]
+auto_generate = false
+cert_path = "/config/certs/cert.pem"
+key_path = "/config/certs/key.pem"
+ca_path = "/config/certs/ca.pem"
 ```
 
 ### Logging
@@ -282,7 +294,7 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.name
-        - name: PEERS
+        - name: CLUSTER_PEERS
           value: "aether-cluster-0:aether-cluster-0.aether:8090,aether-cluster-1:aether-cluster-1.aether:8090,aether-cluster-2:aether-cluster-2.aether:8090"
         resources:
           limits:
@@ -347,7 +359,7 @@ jobs:
    ```bash
    docker exec aether-node-1 wget -q -O- http://aether-node-2:8080/health/live
    ```
-2. Check PEERS environment variable format
+2. Check CLUSTER_PEERS environment variable format
 3. Ensure health checks are passing
 
 ### Performance Issues
@@ -360,7 +372,8 @@ jobs:
 
 ### Base Image
 
-Both images use `eclipse-temurin:25-alpine` for:
+`aether-node` uses `eclipse-temurin:25-noble`; `aether-forge` still uses `eclipse-temurin:25-alpine`
+(the two Dockerfiles have not been aligned). Both are chosen for:
 - Small image size (~200MB)
 - Latest Java 25 features
 - Security patches
