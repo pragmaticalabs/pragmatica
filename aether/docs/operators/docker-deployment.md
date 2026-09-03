@@ -19,9 +19,11 @@ Two container images are available:
 
 ## Quick Start
 
-### Run 3-Node Cluster
+### Single machine (three containers)
 
-Requires a cluster secret; there is no shipped default:
+A cluster is at least three nodes — there is no supported single-node topology. On one
+machine, this compose file runs all three as containers. Requires a cluster secret; there is
+no shipped default:
 
 ```bash
 cd docker
@@ -145,24 +147,9 @@ node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090
 
 ## Running Individual Containers
 
-### Single Node
-
-**Not operational in 1.0.0-rc3.** A single node reaches quorum but never elects a leader, so
-every management route beyond `/health/live` returns 503, and the bootstrap admin key is never
-printed (#782). Run three nodes (see below), or wait for rc4.
-
-```bash
-docker run -d \
-  --name aether-node-1 \
-  -e NODE_ID=node-1 \
-  -e CLUSTER_PORT=8090 \
-  -e CLUSTER_PEERS="node-1:localhost:8090" \
-  -e AETHER_CLUSTER_NAME=aether-dev \
-  -e AETHER_CLUSTER_SECRET=change-me-dev-secret \
-  -p 8080:8080 \
-  -p 8090:8090 \
-  aether-node:latest
-```
+For a single machine, use the compose quick start above — it already runs the required three
+containers. The manual `docker run` form below is for wiring nodes across separate hosts (or a
+hand-built bridge network) without compose.
 
 ### Multi-Node with Docker Network
 

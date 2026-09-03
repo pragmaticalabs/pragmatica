@@ -6,10 +6,10 @@ Status: **Development/Staging Ready**
 
 Aether includes Docker infrastructure for local development and staging environments. This document describes the current setup and how to use it.
 
-**Note:** In 1.0.0-rc3, a single node is not operational beyond `/health/live` — it reaches
-quorum but never elects a leader, so management routes return 503 and the bootstrap admin key is
-never printed (#782). This is why the compose file below runs three nodes; don't reduce it to
-one until rc4.
+**Note:** A cluster is at least three nodes — there is no supported single-node topology; a node
+started with a smaller expected cluster size refuses to boot (#782). This is why the compose file
+below runs three nodes; see "Single machine (three containers)" in
+[Docker Deployment Guide](docker-deployment.md) for the quick start.
 
 ---
 
@@ -61,7 +61,7 @@ services:
 
 ## Usage
 
-### Start 3-Node Cluster
+### Single machine (three containers)
 
 ```bash
 cd docker
