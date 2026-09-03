@@ -199,25 +199,28 @@ public record DatabaseConnectorConfig(Option<String> name,
                    .or(DatabaseType.POSTGRESQL);
     }
 
+    // #769: a URL (async_url, jdbc_url, r2dbc_url) has the highest priority and replaces
+    // host/port/database — resource-reference.md:337,354. The URL-derived value wins whenever
+    // one of the three URL fields parses to it; discrete fields are the fallback, not the
+    // override. Cross-URL-kind ordering inside firstUrlHost/Port/Database (jdbc, then r2dbc,
+    // then async) is unchanged and out of scope for this fix.
     public String effectiveHost() {
-        return host.orElse(() -> firstUrlHost(jdbcUrl, r2dbcUrl, asyncUrl))
-                   .or("localhost");
+        return firstUrlHost(jdbcUrl, r2dbcUrl, asyncUrl).orElse(() -> host)
+                           .or("localhost");
     }
 
     public int effectivePort() {
-        return port.filter(p -> p > 0)
-                   .or(() -> {
-                           var urlPort = firstUrlPort(jdbcUrl, r2dbcUrl, asyncUrl);
+        var urlPort = firstUrlPort(jdbcUrl, r2dbcUrl, asyncUrl);
 
-                           return urlPort > 0
-                                  ? urlPort
-                                  : effectiveType().defaultPort();
-                       });
+        return urlPort > 0
+               ? urlPort
+               : port.filter(p -> p > 0)
+                     .or(() -> effectiveType().defaultPort());
     }
 
     public String effectiveDatabase() {
-        return database.orElse(() -> firstUrlDatabase(jdbcUrl, r2dbcUrl, asyncUrl))
-                       .or("");
+        return firstUrlDatabase(jdbcUrl, r2dbcUrl, asyncUrl).orElse(() -> database)
+                               .or("");
     }
 
     public String effectiveJdbcUrl() {
@@ -327,6 +330,14 @@ public record DatabaseConnectorConfig(Option<String> name,
                                   .map(_ -> Unit.unit());
     }
 
+    // #769 deferred: firstUrlHost/firstUrlPort/firstUrlDatabase check URL kinds in the order
+    // jdbc -> r2dbc -> async, the REVERSE of the documented transport-selection priority
+    // async > r2dbc > jdbc (AsyncSqlConnectorFactory.priority()=20, R2dbcSqlConnectorFactory.priority()=10,
+    // JDBC default=0). This is deliberate, not an oversight: no shipped aether.toml sets two
+    // different URL kinds to different hosts, so the two orderings currently never disagree in
+    // practice, and reconciling them (deriving from the URL kind the selected transport would
+    // actually use) is a separate, larger change. Unreachable by any shipped config today; tracked
+    // for a follow-up (draft: ticket-url-kind-derivation-follows-transport.md, not yet filed).
     private static Option<String> firstUrlHost(Option<String> jdbcUrl,
                                                Option<String> r2dbcUrl,
                                                Option<String> asyncUrl) {

@@ -354,6 +354,16 @@ Transport is selected automatically by priority:
 | `async_url` | `String` (optional) | none | Override async URL — selects postgres-async transport (highest priority) |
 | `properties.*` | `Map<String, String>` | empty | Additional driver-specific properties |
 
+**Overrides and precedence (#769):**
+- Each URL override (`jdbc_url`, `r2dbc_url`, `async_url`) takes precedence over the discrete
+  `host`/`port`/`database` fields for the transport it selects — e.g. if `async_url` embeds its
+  own port, that port is used even when a discrete `port` is also set.
+- Setting **two different URL kinds to different hosts** (e.g. `jdbc_url` pointing at one host and
+  `async_url` at another) is **unsupported** today: the effective host/port/database are derived
+  by checking URL kinds in a fixed order (jdbc, then r2dbc, then async) that does not follow the
+  transport-selection priority above. Until this is reconciled, configure only the URL kind for
+  the transport you intend to use.
+
 ### Database Types
 
 | Type | Default Port | JDBC Driver |
