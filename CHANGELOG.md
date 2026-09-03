@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc4] - Unreleased
 
+### Fixed (2026-09-03 — #737: CursorStore leaked one block per commit; the refcount meant to reclaim it had zero readers)
+- **Every cursor commit leaked its superseded block.** `CursorStore.commit` replaced a cursor's ref with
+  `put` + `createRef`, which points the ref at the new block but never decrements whatever it replaced.
+  Cursor blocks are content-addressed (an 8-byte offset), so every consumer group parked at the same
+  offset shared one block — deleting "the old block" outright on replace would have deleted it out from
+  under every other cursor still pointing at it. `BlockLifecycle#isOrphaned` (refCount<=0) — the check
+  `DefaultStorageGarbageCollector` (#250) reads — had zero writers reaching it for cursor refs, so the
+  leak was permanent, not merely until the next GC pass.
+- **New `StorageInstance#replaceRef(name, content)`**: an atomic ref-replace that writes (or
+  deduplicates) the block for `content`, points `name` at it, and decrements whatever `name` previously
+  pointed to — one operation, never leaving `name` absent. `MetadataStore#replaceRef(name, blockId)`
+  backs it with a pure ref-pointer swap (no refcount side effect; callers own the counting).
+  [mechanism: `DefaultStorageInstance#replaceRef` composes the existing write path (`handlePut`, which
+  already credits the new block — +1 on a fresh write, +1 via dedup on an existing one) with a decrement
+  of whatever the swap displaces, applied only AFTER the swap, so the new block's credit is visible
+  before the old one's debit — pinned by `DefaultStorageInstanceReplaceRefOrderingTest`]
+- `CursorStore.commit` now calls `replaceRef` instead of `put` + `createRef`. The default `replaceRef` on
+  the `StorageInstance` interface still falls back to `put` + `createRef` for any implementor other than
+  `DefaultStorageInstance` — that fallback leaks the superseded block exactly as before; only
+  `DefaultStorageInstance` reclaims it.
+  [verified: aether/aether-stream/src/test/java/org/pragmatica/aether/stream/segment/CursorStoreTest.java
+  — `RefcountReclamation`: a repeated commit and a shared-content commit across two consumer groups both
+  leave the superseded block at refCount 0 and the live block at its correct count]
+- **Remaining exposure, unchanged by this fix**: a cursor block newly reaching refCount 0 is now
+  GC-reachable, which surfaces it to whatever #801 and #802 describe for GC-eligible blocks in general.
+  Neither is fixed here.
+
 ### Fixed (2026-09-03 — #250: storage GC/demotion was wired to a no-op)
 - **Artifact and stream tier demotion and garbage collection now actually run.** `AetherNode`
   previously wired storage through `DelegatedStorageAdapter.noOp()` — leader-pinned
