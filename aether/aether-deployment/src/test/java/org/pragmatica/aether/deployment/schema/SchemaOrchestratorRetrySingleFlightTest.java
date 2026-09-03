@@ -273,6 +273,87 @@ class SchemaOrchestratorRetrySingleFlightTest {
         assertThat(statusesWrittenToKv()).contains(SchemaStatus.COMPLETED);
     }
 
+    /// #760/#724 review round 3 BLOCKING 1, failure half — `acquireLock` claims the in-flight fence
+    /// BEFORE its own lock Put resolves, and pre-fix `finalizeAttempt` (the only fence-release site) was
+    /// nested inside `acquireLock`'s SUCCESS branch, so a lock Put that fails outright never released
+    /// it: the fence leaked forever and every later dispatch on this datasource got LOCK_HELD with no
+    /// recovery short of a leader change (a fresh orchestrator instance with an empty fence map).
+    @Test
+    void lockPutFails_releasesFence_nextDispatchIsNotLockHeld() {
+        seedSchemaVersion(DECLARED_VERSION, LAST_MIGRATION, COORDS);
+
+        var failingCluster = new FailingLockPutClusterNode(SELF, kvStore);
+        var manager = new HangingSchemaManager(SchemaPolicy.schemaPolicy());
+        Repository repository = _ -> NOT_IN_REPOSITORY.promise();
+        var orchestrator = SchemaOrchestratorService.schemaOrchestratorService(failingCluster,
+                                                                               kvStore,
+                                                                               artifactStoreServing(),
+                                                                               repository,
+                                                                               manager,
+                                                                               stubConnectionProvider(),
+                                                                               SELF);
+
+        orchestrator.migrateIfNeeded(DATASOURCE)
+                    .await()
+                    .onSuccess(_ -> Assertions.fail("Expected the lock Put itself to fail"))
+                    .onFailure(cause -> assertThat(cause.message()).doesNotContain("lock held"));
+
+        assertThat(manager.invocations).as("migrate() must never run — the lock Put itself failed before it").isEmpty();
+
+        // Discriminating check: pre-fix, the fence claimed above is never released (finalizeAttempt only
+        // runs on acquireLock's SUCCESS branch), so this second dispatch would get LOCK_HELD forever
+        // instead of reaching its own (this time successful) lock Put.
+        seedSchemaVersion(DECLARED_VERSION, LAST_MIGRATION, COORDS);
+        manager.pending = Promise.success(AetherSchemaManager.SchemaResult.schemaResult(1, DECLARED_VERSION, 1L));
+
+        orchestrator.migrateIfNeeded(DATASOURCE)
+                    .await()
+                    .onFailure(SchemaOrchestratorRetrySingleFlightTest::failOnUnexpectedFailure);
+
+        assertThat(manager.invocations).hasSize(1);
+    }
+
+    /// #760/#724 review round 3 BLOCKING 1, timeout half — a lock Put that never settles (a wedged
+    /// consensus round, a partitioned leader) must release the fence within the same bound as a
+    /// migration attempt, so recovery does not require a leader change either.
+    @Test
+    void lockPutNeverResolves_timesOutAndReleasesFenceWithinBound() {
+        seedSchemaVersion(DECLARED_VERSION, LAST_MIGRATION, COORDS);
+
+        var hangingCluster = new HangingLockPutClusterNode(SELF, kvStore);
+        var shortTimeoutPolicy = SchemaPolicy.schemaPolicy(SchemaPolicy.FailureMode.LEAVE_PARTIAL,
+                                                           SchemaPolicy.FailoverMode.AUTO_RESUME,
+                                                           timeSpan(300).millis());
+        var manager = new HangingSchemaManager(shortTimeoutPolicy);
+        Repository repository = _ -> NOT_IN_REPOSITORY.promise();
+        var orchestrator = SchemaOrchestratorService.schemaOrchestratorService(hangingCluster,
+                                                                               kvStore,
+                                                                               artifactStoreServing(),
+                                                                               repository,
+                                                                               manager,
+                                                                               stubConnectionProvider(),
+                                                                               SELF);
+
+        orchestrator.migrateIfNeeded(DATASOURCE)
+                    .await(timeSpan(3).seconds())
+                    .onSuccess(_ -> Assertions.fail("Expected the wedged lock Put to time out"))
+                    .onFailure(cause -> assertThat(cause.message()).containsIgnoringCase("timed out"));
+
+        assertThat(manager.invocations).as("migrate() must never run — acquireLock itself timed out first").isEmpty();
+
+        // Discriminating check: pre-fix, the fence claimed before the wedged apply() is never released
+        // (acquireLock's own promise never reaches its success branch), so this second dispatch would
+        // get LOCK_HELD forever despite the first lock Put having already timed out.
+        seedSchemaVersion(DECLARED_VERSION, LAST_MIGRATION, COORDS);
+        manager.pending = Promise.success(AetherSchemaManager.SchemaResult.schemaResult(1, DECLARED_VERSION, 1L));
+
+        orchestrator.migrateIfNeeded(DATASOURCE)
+                    .await()
+                    .onFailure(cause -> assertThat(cause.message()).doesNotContain("lock held"));
+
+        assertThat(manager.invocations).hasSize(1);
+    }
+
     private static void assertTransientDatasourceFailure(Cause cause) {
         assertThat(cause).isInstanceOf(SchemaError.DatasourceUnreachable.class);
     }
@@ -590,6 +671,62 @@ class SchemaOrchestratorRetrySingleFlightTest {
             return command instanceof KVCommand.Put<AetherKey, ?> put && put.value() instanceof SchemaVersionValue value
                    ? Option.some(value)
                    : Option.none();
+        }
+    }
+
+    /// #760/#724 review round 3 BLOCKING 1 — the lock Put's own `cluster.apply` fails outright on the
+    /// first call (simulating a rejected consensus round), then succeeds on any later call so a second
+    /// dispatch can prove the fence was actually released.
+    private static final class FailingLockPutClusterNode implements ClusterNode<KVCommand<AetherKey>> {
+        final NodeId self;
+        final InMemoryKvStore kvStore;
+        final AtomicBoolean firstApply = new AtomicBoolean(true);
+
+        FailingLockPutClusterNode(NodeId self, InMemoryKvStore kvStore) {
+            this.self = self;
+            this.kvStore = kvStore;
+        }
+
+        @Override public NodeId self() {return self;}
+        @Override public TopologyManager topologyManager() {return stubTopologyManager(self);}
+        @Override public Promise<Unit> start() {return Promise.unitPromise();}
+        @Override public Promise<Unit> stop() {return Promise.unitPromise();}
+
+        @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> batch) {
+            if (firstApply.compareAndSet(true, false)) {
+                return Causes.cause("Simulated consensus apply failure on the lock Put").promise();
+            }
+
+            kvStore.apply(batch);
+            return Promise.success(Collections.emptyList());
+        }
+    }
+
+    /// #760/#724 review round 3 BLOCKING 1 — the lock Put's own `cluster.apply` never resolves on the
+    /// first call (simulating a wedged/partitioned consensus round), then succeeds on any later call so
+    /// a second dispatch can prove the fence was released once the bound elapsed.
+    private static final class HangingLockPutClusterNode implements ClusterNode<KVCommand<AetherKey>> {
+        final NodeId self;
+        final InMemoryKvStore kvStore;
+        final AtomicBoolean firstApply = new AtomicBoolean(true);
+
+        HangingLockPutClusterNode(NodeId self, InMemoryKvStore kvStore) {
+            this.self = self;
+            this.kvStore = kvStore;
+        }
+
+        @Override public NodeId self() {return self;}
+        @Override public TopologyManager topologyManager() {return stubTopologyManager(self);}
+        @Override public Promise<Unit> start() {return Promise.unitPromise();}
+        @Override public Promise<Unit> stop() {return Promise.unitPromise();}
+
+        @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> batch) {
+            if (firstApply.compareAndSet(true, false)) {
+                return Promise.promise(); // never resolves — simulates a wedged consensus round
+            }
+
+            kvStore.apply(batch);
+            return Promise.success(Collections.emptyList());
         }
     }
 
