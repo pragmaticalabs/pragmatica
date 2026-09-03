@@ -16,6 +16,7 @@ import org.pragmatica.storage.BlockLifecycle;
 import org.pragmatica.storage.BlockMetadata;
 import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.MetadataStore;
+import org.pragmatica.storage.StorageGarbageCollector;
 import org.pragmatica.storage.StorageInstance;
 
 import java.util.ArrayList;
@@ -23,6 +24,8 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.stream.segment.CursorStore.cursorStore;
+import static org.pragmatica.storage.GarbageCollectorConfig.garbageCollectorConfig;
+import static org.pragmatica.storage.StorageGarbageCollector.storageGarbageCollector;
 
 class CursorStoreTest {
 
@@ -295,6 +298,73 @@ class CursorStoreTest {
             return metadataStore.getLifecycle(blockId)
                                  .map(BlockLifecycle::refCount)
                                  .or(-1);
+        }
+    }
+
+    @Nested
+    class GarbageCollectionIntegration {
+
+        private MetadataStore metadataStore;
+        private CursorStore store;
+        private StorageGarbageCollector gc;
+
+        @BeforeEach
+        void setUp() {
+            metadataStore = MetadataStore.inMemoryMetadataStore("gc-integration-test");
+            var storage = StorageInstance.storageInstance("gc-integration-test",
+                                                           List.of(MemoryTier.memoryTier(ONE_GB)),
+                                                           metadataStore);
+            store = cursorStore(storage);
+            // 0 requests the shortest possible grace period; GarbageCollectorConfig floors it at 1ms
+            // (its canonical constructor clamps gracePeriodMs to Math.max(gracePeriodMs, 1)), so the
+            // sleep below -- not a zero grace -- is what actually lets collection proceed.
+            gc = storageGarbageCollector(storage, metadataStore, garbageCollectorConfig(0, 500));
+            gc.activate();
+        }
+
+        /// #737 -- the joining test: [CursorStore#commit]'s refcount-aware replace must produce blocks
+        /// the PRODUCTION [org.pragmatica.storage.StorageGarbageCollector] actually reclaims, not just
+        /// blocks that individually reach refCount 0 (that much is already pinned by
+        /// [RefcountReclamation], against the metadata store directly). Three commits to the same
+        /// cursor leave two superseded, now-orphaned blocks and one live one; after the grace period,
+        /// `collectGarbage` must remove exactly the two superseded blocks, leave the live one in place,
+        /// and leave the cursor's own read path (`fetch`) working.
+        ///
+        /// Red before: reverting `CursorStore.commit` to `deleteRef`-then-`createRef` -- equivalently,
+        /// `put`+`createRef`, which never decrements what it supersedes -- leaves both superseded
+        /// blocks permanently referenced, so `collectGarbage` collects 0, not 2. Confirmed via
+        /// mutation probe.
+        @Test
+        void commit_thenCollectGarbage_reclaimsExactlySupersededBlocks() throws InterruptedException {
+            store.commit(GROUP, STREAM, PARTITION, 10L).await();
+            store.commit(GROUP, STREAM, PARTITION, 20L).await();
+            store.commit(GROUP, STREAM, PARTITION, 30L).await();
+
+            var supersededId10 = blockIdOf(10L);
+            var supersededId20 = blockIdOf(20L);
+            var liveId30 = blockIdOf(30L);
+
+            Thread.sleep(20);
+
+            var collected = gc.collectGarbage();
+
+            assertThat(collected).as("both superseded cursor blocks must be reclaimed").isEqualTo(2);
+            assertThat(metadataStore.containsBlock(supersededId10)).as("superseded block 10 must be gone").isFalse();
+            assertThat(metadataStore.containsBlock(supersededId20)).as("superseded block 20 must be gone").isFalse();
+            assertThat(metadataStore.containsBlock(liveId30)).as("the live block must survive collection").isTrue();
+
+            store.fetch(GROUP, STREAM, PARTITION)
+                 .await()
+                 .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("Expected success"))
+                 .onSuccess(opt -> opt.onPresent(offset -> assertThat(offset).isEqualTo(30L)));
+        }
+
+        private BlockId blockIdOf(long offset) {
+            return BlockId.blockId(CursorStore.encodeOffset(offset))
+                          .fold(_ -> {
+                              org.junit.jupiter.api.Assertions.fail("BlockId computation failed");
+                              return null;
+                          }, id -> id);
         }
     }
 
