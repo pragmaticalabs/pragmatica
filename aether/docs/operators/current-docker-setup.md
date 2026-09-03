@@ -6,6 +6,11 @@ Status: **Development/Staging Ready**
 
 Aether includes Docker infrastructure for local development and staging environments. This document describes the current setup and how to use it.
 
+**Note:** In 1.0.0-rc3, a single node is not operational beyond `/health/live` — it reaches
+quorum but never elects a leader, so management routes return 503 and the bootstrap admin key is
+never printed (#782). This is why the compose file below runs three nodes; don't reduce it to
+one until rc4.
+
 ---
 
 ## Components
@@ -38,12 +43,14 @@ services:
       CLUSTER_PORT: "8090"
       MANAGEMENT_PORT: "8080"
       PEERS: "node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090"
+      AETHER_CLUSTER_NAME: "aether-dev"
+      AETHER_CLUSTER_SECRET: "change-me-dev-secret"
       JAVA_OPTS: "-Xmx256m -XX:+UseZGC"
     ports:
       - "8080:8080"   # Management API
       - "8090:8090"   # Cluster port
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health"]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health/live"]
       interval: 5s
       timeout: 3s
       retries: 10
