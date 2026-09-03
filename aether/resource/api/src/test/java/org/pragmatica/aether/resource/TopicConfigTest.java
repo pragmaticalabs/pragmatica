@@ -311,6 +311,112 @@ class TopicConfigTest {
                         });
     }
 
+    /// Team-lead condition 1 (BLOCKING): `provider.keys()` was the merged composite of every
+    /// layer — system properties ([org.pragmatica.config.source.SystemPropertyConfigSource]),
+    /// environment ([org.pragmatica.config.source.EnvironmentConfigSource]), and the KV overlay
+    /// replayed at startup — so a system property landing at `<section>.<one segment>` used to
+    /// hard-fail a bind the file alone would have accepted, with no file change at all. The check
+    /// is now scoped to [org.pragmatica.config.ConfigurationProvider#staticKeys()], which the
+    /// builder-composed provider implements by excluding [org.pragmatica.config.source.SystemPropertyConfigSource]
+    /// by type: red before the fix (the property alone failed this exact bind), green after.
+    @Test
+    void tomlBinding_ignoresSystemPropertyKeyAtTopicSection_neverFailsStrictBind() {
+        System.setProperty("aether.orders.deploy_trace_id", "abc123");
+
+        try {
+            var config = bind("""
+                              [orders]
+                              topic_name = "order-events"
+                              """, "aether.");
+
+            assertThat(config.topicName()).isEqualTo("order-events");
+        } finally {
+            System.clearProperty("aether.orders.deploy_trace_id");
+        }
+    }
+
+    /// Companion to the above, in the SAME document: a system-property key at the topic section is
+    /// invisible to the strict check while a dashed FILE key is still rejected — proving the
+    /// scoping is to the static/file layer specifically, not merely "system properties never break
+    /// anything."
+    @Test
+    void tomlBinding_rejectsDashedFileKey_whileSystemPropertyKeyAtSameSectionIsIgnored() {
+        System.setProperty("aether.orders.deploy_trace_id", "abc123");
+
+        try {
+            serviceFrom("""
+                        [orders]
+                        topic_name = "order-events"
+                        durability = "durable"
+                        retention = "14d"
+                        min-sync-replicas = 2
+                        """, "aether.").config("orders", TopicConfig.class)
+                            .onSuccess(_ -> fail("dashed file key must still be rejected"))
+                            .onFailure(cause -> {
+                                assertThat(cause).isInstanceOf(ConfigError.UnknownKey.class);
+                                assertThat(((ConfigError.UnknownKey) cause).keys()).containsExactly("min-sync-replicas");
+                            });
+        } finally {
+            System.clearProperty("aether.orders.deploy_trace_id");
+        }
+    }
+
+    /// FOLD-IN 3: a quoted key with a literal dot (`"a.b" = 1`) is, once [TomlConfigSource]
+    /// flattens it, byte-identical to a genuine nested sub-table (`[orders.a]` / `b = 1`) — no
+    /// `ConfigSource`/`ConfigurationProvider` retains section structure past parse time to tell
+    /// them apart. The strict check's `indexOf('.') < 0` scoping — the same guard that protects
+    /// real nested sub-sections such as `[orders.consumers.handler]` above — therefore never flags
+    /// this key. Documented as an intentional escape hatch on [TopicConfig]'s class Javadoc, not a
+    /// defect: this test pins the current (unchanged) behavior rather than proving a fix.
+    @Test
+    void tomlBinding_ignoresQuotedDottedKey_indistinguishableFromNestedSubsection() {
+        var config = bind("""
+                          [orders]
+                          topic_name = "order-events"
+                          "a.b" = 1
+                          """);
+
+        assertThat(config.topicName()).isEqualTo("order-events");
+    }
+
+    /// FOLD-IN 4a: every unrecognized key in the section is named in one error, not just the
+    /// first — `findFirst()` silently hid all but one of several typos, cheapening the diagnostic
+    /// exactly where an operator needs the full list.
+    @Test
+    void tomlBinding_reportsAllUnknownKeys_inOneError_notJustFirst() {
+        serviceFrom("""
+                    [orders]
+                    topic_name = "order-events"
+                    partitons = 4
+                    replicaas = 3
+                    """).config("orders", TopicConfig.class)
+                        .onSuccess(_ -> fail("both typo'd keys must be rejected together"))
+                        .onFailure(cause -> {
+                            assertThat(cause).isInstanceOf(ConfigError.UnknownKey.class);
+                            assertThat(((ConfigError.UnknownKey) cause).keys())
+                                    .containsExactlyInAnyOrder("partitons", "replicaas");
+                            assertThat(cause.message()).contains("partitions").contains("replicas");
+                        });
+    }
+
+    /// FOLD-IN 4b: a key bearing no real resemblance to any known component (team-lead's own
+    /// `zzzzzzzzzzqqqq` example) gets no suggestion at all — an unbounded nearest-match search
+    /// always names SOME component as the argmin, which reads as a real suggestion rather than the
+    /// noise it is.
+    @Test
+    void tomlBinding_omitsSuggestion_forKeyBeyondDistanceThreshold() {
+        serviceFrom("""
+                    [orders]
+                    topic_name = "order-events"
+                    zzzzzzzzzzqqqq = 4
+                    """).config("orders", TopicConfig.class)
+                        .onSuccess(_ -> fail("unknown key must still be rejected"))
+                        .onFailure(cause -> {
+                            assertThat(cause).isInstanceOf(ConfigError.UnknownKey.class);
+                            assertThat(cause.message()).doesNotContain("did you mean");
+                        });
+    }
+
     private static ConfigService serviceFrom(String toml) {
         var source = TomlConfigSource.tomlConfigSource(toml).unwrap();
         var provider = ConfigurationProvider.builder().withSource(source).build();
@@ -318,8 +424,27 @@ class TopicConfigTest {
         return ProviderBasedConfigService.providerBasedConfigService(provider);
     }
 
+    /// Layers a system-property source (priority 200, wins over the TOML file) atop the same TOML
+    /// source `serviceFrom(String)` uses — mirrors the production `node.toml` + env + system-property
+    /// composite closely enough to prove [org.pragmatica.config.ConfigurationProvider#staticKeys()]
+    /// scoping without dragging in the full node-composite construction path.
+    private static ConfigService serviceFrom(String toml, String systemPropertyPrefix) {
+        var source = TomlConfigSource.tomlConfigSource(toml).unwrap();
+        var provider = ConfigurationProvider.builder()
+                                            .withSource(source)
+                                            .withSystemProperties(systemPropertyPrefix)
+                                            .build();
+
+        return ProviderBasedConfigService.providerBasedConfigService(provider);
+    }
+
     private static TopicConfig bind(String toml) {
         return serviceFrom(toml).config("orders", TopicConfig.class)
                                  .unwrap();
+    }
+
+    private static TopicConfig bind(String toml, String systemPropertyPrefix) {
+        return serviceFrom(toml, systemPropertyPrefix).config("orders", TopicConfig.class)
+                                                       .unwrap();
     }
 }
