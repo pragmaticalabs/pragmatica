@@ -1488,15 +1488,19 @@ aether blueprints deploy org.example:my-app:1.0.1   # redeploy the owning bluepr
 aether schema status orders_db
 ```
 
-`retry` only applies to a record in `FAILED`; against any other status it fails with `409 Conflict`
-and ``Schema for datasource '<name>' is not in FAILED state (currently <STATUS>) — retry only
-applies to failed migrations``, naming the status it actually observed. `baseline` requires an
+`retry` applies to a record in `FAILED` **or `PENDING`** (#724 widened the guard — a migration
+that never dispatched has no other lever short of retry or a redeploy); against `MIGRATING` or
+`COMPLETED` it fails with `409 Conflict` and ``Schema for datasource '<name>' is not in FAILED
+state (currently <STATUS>) — retry applies to FAILED or PENDING migrations only``, naming the
+status it actually observed. `baseline` requires an
 existing record — it inherits that record's owning blueprint rather than inventing one, so
 baselining a datasource that has never been published fails with `404 Not Found` and
 ``Schema status not found for datasource '<name>'``.
 
 The cluster leader also writes a `SCHEMA_ACTIVATION_BLOCKED` audit entry when it observes a
-`FAILED` record, naming the datasource, the owning blueprint, and the held slices.
+`FAILED` record, naming the datasource, the owning blueprint, and the held slices. The same held
+slices are visible on demand via `heldSlices` in `aether schema status` output (#760), without
+waiting for that audit entry.
 
 > **Known limit — the gate scopes by migration *ownership*, not by *usage*.** A blueprint that
 > reads or writes a datasource **without declaring migrations for it** is never held when that
