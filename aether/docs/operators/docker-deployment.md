@@ -19,7 +19,35 @@ Two container images are available:
 
 ## Quick Start
 
-### Build Images
+### Run 3-Node Cluster
+
+Requires a cluster secret; there is no shipped default:
+
+```bash
+cd docker
+export AETHER_CLUSTER_SECRET=<your-secret>
+```
+
+Pull the published images (no local build):
+
+```bash
+docker compose up -d
+```
+
+Or build from source instead:
+
+```bash
+docker compose up -d --build
+```
+
+This starts:
+- `aether-node-1` on ports 8080 (API), 8090 (cluster)
+- `aether-node-2` on ports 8081 (API), 8091 (cluster)
+- `aether-node-3` on ports 8082 (API), 8092 (cluster)
+
+### Build images from source (developers)
+
+Only needed for the `--build` path above; the pull path needs neither Java nor Maven.
 
 ```bash
 # Build from project root
@@ -32,18 +60,6 @@ docker build -f docker/aether-node/Dockerfile -t aether-node:latest .
 docker build -f docker/aether-forge/Dockerfile -t aether-forge:latest .
 ```
 
-### Run 3-Node Cluster
-
-```bash
-cd docker
-docker compose up --build
-```
-
-This starts:
-- `aether-node-1` on ports 8080 (API), 8090 (cluster)
-- `aether-node-2` on ports 8081 (API), 8091 (cluster)
-- `aether-node-3` on ports 8082 (API), 8092 (cluster)
-
 ### Run with Forge Simulator
 
 ```bash
@@ -54,7 +70,7 @@ Access Forge dashboard at http://localhost:8888
 
 ## Docker Compose Configuration
 
-The `docker/docker compose.yml` defines a 3-node cluster:
+The `docker/docker-compose.yml` defines a 3-node cluster:
 
 ```yaml
 version: "3.9"
