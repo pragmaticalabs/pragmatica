@@ -46,22 +46,22 @@ public final class CursorStore implements ConsumerCursorStore {
     /// few events, it redelivered the entire retained window. A single upsert has no such window: the ref
     /// resolves to either the old offset or the new one at every instant.
     ///
-    /// What this deliberately does NOT do, stated because the accounting is now asymmetric: the superseded
-    /// block is not reclaimed, so each commit leaves one behind. It cannot be reclaimed here. Blocks are
-    /// CONTENT-ADDRESSED, and a cursor block is just the 8-byte offset — so every cursor in the node
-    /// sitting at offset N shares one block, and deleting "the old block" would pull it out from under any
-    /// other group or partition currently at that offset. Releasing it correctly needs a refcount-aware
-    /// replace on [StorageInstance] (put-ref + increment-new + decrement-old as one step), which does not
-    /// exist today; note also that [org.pragmatica.storage.BlockLifecycle#isUnreferenced] currently has NO
-    /// callers, so the decrement the old code performed reclaimed nothing either. The leak predates this
-    /// change and is unchanged by it — see #264.
+    /// The superseded block IS reclaimed (#737, fixed): [StorageInstance#replaceRef] is a refcount-aware
+    /// ref-replace that increments the new block and decrements whatever the ref previously pointed to,
+    /// as one operation. Blocks are CONTENT-ADDRESSED, and a cursor block is just the 8-byte offset — so
+    /// every cursor in the node sitting at offset N shares one block — replaceRef's accounting handles
+    /// this correctly: a shared block's count reflects exactly how many live refs still point at it, and
+    /// it only reaches [org.pragmatica.storage.BlockLifecycle#isOrphaned] once none do, at which point
+    /// [org.pragmatica.storage.StorageGarbageCollector] can reclaim it. Remaining exposure, pre-existing
+    /// and unchanged by this fix: a cursor block becoming GC-reachable surfaces it to whatever #801 and
+    /// #802 describe for GC-eligible blocks in general.
     @Override
     public Promise<Unit> commit(String consumerGroup, String streamName, int partition, long offset) {
         var refName = buildRefName(consumerGroup, streamName, partition);
         var payload = encodeOffset(offset);
 
-        return storage.put(payload)
-                      .flatMap(blockId -> storage.createRef(refName, blockId))
+        return storage.replaceRef(refName, payload)
+                      .map(_ -> Unit.unit())
                       .onSuccess(_ -> logCommit(consumerGroup, streamName, partition, offset));
     }
 
