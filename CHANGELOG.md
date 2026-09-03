@@ -28,7 +28,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   still emits `"...is not in FAILED state (currently <STATUS>)..."`, pinned by two integration
   scripts and a unit test, now ending `"— retry applies to FAILED or PENDING migrations only"`.
 
-## [1.0.0-rc3] - 2026-09-02
+### Fixed (2026-09-03 — #760 / #724 review round: `heldSlices` reported a serving slice as held, and retry could double-dispatch)
+- **`heldSlices` was a parallel derivation that never read per-node slice state.** It matched
+  ownership only, so `/migrate` re-arming a `COMPLETED` record while its slices were `ACTIVE` made
+  `GET /api/schema/status/{datasource}` report an already-serving slice as held. `heldSlices` now
+  shares the exact predicate the activation gate itself evaluates
+  (`ClusterDeploymentState.blocksSliceActivation`, newly extracted and exposed as
+  `BLOCKING_SCHEMA_STATUSES`) instead of re-deriving it from ownership alone.
+- **`POST /api/schema/migrate/{datasource}` now refuses to re-arm a `COMPLETED` record with a live
+  `ACTIVE` slice.** Re-arming has no orchestrator effect by itself (only a `PENDING` record's Put
+  dispatches a run) but leaves `MIGRATING` — a blocking status with no automatic clearing path —
+  ready to hold the next slice instance that reaches `LOADED`. Refused with `409 Conflict`
+  (`SchemaAlreadyServing`, naming the datasource and active-slice count); a `COMPLETED` record with
+  zero live `ACTIVE` slices is unaffected. See [`POST /api/schema/migrate`](aether/docs/reference/management-api.md#post-apischemamigratedatasource).
+- **Retry dispatch is now single-flight per record across both the timer and the route.** A PENDING
+  record with a live scheduled retry could double-dispatch `migrateIfNeeded` when the route and the
+  timer's KV-lock release raced; `acquireLock` now cancels any scheduled retry for the datasource
+  before proceeding, so exactly one dispatch wins regardless of which path gets there first.
+- **The dedup signature for a repeated schema hold is now a sorted join**, not an unsorted join over
+  a `ConcurrentHashMap` — an unchanged multi-datasource hold could otherwise re-WARN if two
+  evaluations happened to iterate the blocking set in different orders.
+
+
 
 ### Changed (2026-09-02 — publish-time packaging, one commit after the `v1.0.0-rc3` tag)
 - **`aether-setup` no longer publishes its 30 MB executable as the module artifact.** The shaded jar is
