@@ -92,7 +92,7 @@ echo
 
 echo "=== Promote Deployment ==="
 # Replace DEPLOYMENT_ID with actual deployment ID
-# curl -s -X POST "$BASE_URL/api/v1/deploy/DEPLOYMENT_ID/promote" | jq .
+# curl -s -X POST "$BASE_URL/api/v1/deploy/promote/DEPLOYMENT_ID" | jq .
 echo
 
 echo "=== Prometheus Metrics ==="

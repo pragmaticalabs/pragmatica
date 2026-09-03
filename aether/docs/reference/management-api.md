@@ -57,7 +57,7 @@ Roles are hierarchical: ADMIN has all OPERATOR permissions, and OPERATOR has all
 | Node drain | OPERATOR | `POST /api/v1/nodes/drain/{id}` |
 | Scaling | OPERATOR | `POST /api/v1/scale` |
 | Schema operations | OPERATOR | `POST /api/v1/schema/*` |
-| Deployment strategies | OPERATOR | `POST /api/v1/deploy`, `POST /api/v1/deploy/*/promote`, `POST /api/v1/deploy/*/rollback`, `POST /api/v1/deploy/*/complete`, `POST /api/v1/ab-tests/*` |
+| Deployment strategies | OPERATOR | `POST /api/v1/deploy`, `POST /api/v1/deploy/promote/*`, `POST /api/v1/deploy/rollback/*`, `POST /api/v1/deploy/complete/*`, `POST /api/v1/ab-tests/*` |
 | Backup trigger | OPERATOR | `POST /api/v1/backups` |
 | Config overrides | OPERATOR | `PUT /api/v1/config/*` |
 | Alert management | OPERATOR | `POST /api/v1/alerts/clear` |
@@ -1626,65 +1626,6 @@ curl -X DELETE http://localhost:8080/api/v1/thresholds/cpu.usage
 
 ---
 
-## Dynamic Aspects
-
-### GET /api/v1/aspects
-
-Get all configured dynamic aspects.
-
-**Response:**
-```json
-{
-  "org.example:my-slice:1.0.0/processOrder": "LOG_AND_METRICS",
-  "org.example:my-slice:1.0.0/getStatus": "METRICS"
-}
-```
-
-### POST /api/v1/aspects
-
-Set aspect mode on a method.
-
-**Request:**
-```json
-{
-  "artifact": "org.example:my-slice:1.0.0",
-  "method": "processOrder",
-  "mode": "LOG_AND_METRICS"
-}
-```
-
-Available modes: `NONE`, `LOG`, `METRICS`, `LOG_AND_METRICS`
-
-**Response:**
-```json
-{
-  "status": "aspect_set",
-  "artifact": "org.example:my-slice:1.0.0",
-  "method": "processOrder",
-  "mode": "LOG_AND_METRICS"
-}
-```
-
-### DELETE /api/v1/aspects/{artifact}/{method}
-
-Remove aspect configuration for a method.
-
-**Example:**
-```bash
-curl -X DELETE http://localhost:8080/api/v1/aspects/org.example:my-slice:1.0.0/processOrder
-```
-
-**Response:**
-```json
-{
-  "status": "aspect_removed",
-  "artifact": "org.example:my-slice:1.0.0",
-  "method": "processOrder"
-}
-```
-
----
-
 ## Traces
 
 ### GET /api/v1/traces
@@ -2569,30 +2510,6 @@ Strategy-specific fields vary:
 - **CANARY**: includes `currentStage`, `trafficPercent`, `stages`
 - **BLUE_GREEN**: includes `activeSlot` (`BLUE` or `GREEN`)
 
-### GET /api/v1/deploy/{id}/health
-
-Get version health metrics for a deployment.
-
-**Response:**
-```json
-{
-  "deploymentId": "2bKyJE8yxxxxxxxxxxx",
-  "oldVersion": {
-    "version": "1.0.0",
-    "requestCount": 1000,
-    "errorRate": 0.001,
-    "avgLatencyMs": 45.0
-  },
-  "newVersion": {
-    "version": "2.0.0",
-    "requestCount": 250,
-    "errorRate": 0.002,
-    "avgLatencyMs": 50.0
-  },
-  "collectedAt": 1704067200000
-}
-```
-
 ### POST /api/v1/deploy
 
 Start a new deployment. Requires leader node.
@@ -2624,7 +2541,7 @@ Start a new deployment. Requires leader node.
 
 **Response:** Same as `GET /api/v1/deploy/{id}`.
 
-### POST /api/v1/deploy/{id}/promote
+### POST /api/v1/deploy/promote/{id}
 
 Advance a deployment to its next stage. The behavior depends on the strategy:
 - **ROLLING**: Shifts traffic to the next routing ratio
@@ -2635,13 +2552,13 @@ Requires leader node.
 
 **Response:** Same as `GET /api/v1/deploy/{id}`.
 
-### POST /api/v1/deploy/{id}/rollback
+### POST /api/v1/deploy/rollback/{id}
 
 Rollback to old version. Requires leader node.
 
 **Response:** Same as `GET /api/v1/deploy/{id}`.
 
-### POST /api/v1/deploy/{id}/complete
+### POST /api/v1/deploy/complete/{id}
 
 Complete the deployment (finalize new version, decommission old). Requires leader node.
 
@@ -3327,7 +3244,7 @@ a status token against the whole document.
 ]
 ```
 
-### POST /api/v1/cluster/keys/{id}/revoke
+### POST /api/v1/cluster/keys/revoke/{id}
 
 Revoke an API key. The key remains valid during its grace period.
 
@@ -3886,9 +3803,6 @@ separate, still in-flight consolidation effort (spec §3.2–§3.3) owns that su
 | GET | `/api/v1/thresholds` | Threshold Configuration |
 | POST | `/api/v1/thresholds` | Threshold Configuration |
 | DELETE | `/api/v1/thresholds/{metric}` | Threshold Configuration |
-| GET | `/api/v1/aspects` | Dynamic Aspects |
-| POST | `/api/v1/aspects` | Dynamic Aspects |
-| DELETE | `/api/v1/aspects/{artifact}/{method}` | Dynamic Aspects |
 | GET | `/api/v1/traces` | Traces |
 | GET | `/api/v1/traces/{id}` | Traces |
 | GET | `/api/v1/traces/stats` | Traces |
@@ -3919,11 +3833,10 @@ separate, still in-flight consolidation effort (spec §3.2–§3.3) owns that su
 | DELETE | `/api/v1/config/nodes/{id}/{key}` | Dynamic Configuration |
 | GET | `/api/v1/deploy` | Deployments |
 | GET | `/api/v1/deploy/{id}` | Deployments |
-| GET | `/api/v1/deploy/{id}/health` | Deployments |
 | POST | `/api/v1/deploy` | Deployments |
-| POST | `/api/v1/deploy/{id}/promote` | Deployments |
-| POST | `/api/v1/deploy/{id}/rollback` | Deployments |
-| POST | `/api/v1/deploy/{id}/complete` | Deployments |
+| POST | `/api/v1/deploy/promote/{id}` | Deployments |
+| POST | `/api/v1/deploy/rollback/{id}` | Deployments |
+| POST | `/api/v1/deploy/complete/{id}` | Deployments |
 | GET | `/api/v1/ab-tests` | A/B Testing |
 | GET | `/api/v1/ab-tests/{id}` | A/B Testing |
 | GET | `/api/v1/ab-tests/metrics/{id}` | A/B Testing |
