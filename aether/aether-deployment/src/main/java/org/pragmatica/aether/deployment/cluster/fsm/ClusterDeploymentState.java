@@ -1331,8 +1331,16 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                                                       .base());
         }
 
+        // #760/#724 review round 3 GAP: tracking is atomicity-agnostic — trackBlueprintSliceActive's
+        // success detection (removing the blueprint from this map once every slice reaches ACTIVE,
+        // then recordSucceededOutcome) works identically for BEST_EFFORT. Gating this on
+        // ALL_OR_NOTHING left a fully successful BEST_EFFORT deployment with no outcome record at
+        // all. The OTHER ALL_OR_NOTHING-specific consumers of this map (capturePreviousBlueprint,
+        // the rollbackBlueprintForArtifact call site) are independently gated by their own
+        // ctx.atomicity() == ALL_OR_NOTHING check, so widening this guard cannot make them observe a
+        // BEST_EFFORT entry.
         private void trackInFlightBlueprint(ExpandedBlueprint expanded, Option<ExpandedBlueprint> previousExpanded) {
-            if (ctx.atomicity() == DeploymentAtomicity.ALL_OR_NOTHING && !restoringBlueprints.contains(expanded.id())) {
+            if (!restoringBlueprints.contains(expanded.id())) {
                 inFlightBlueprints.put(expanded.id(),
                                        InFlightBlueprint.inFlightBlueprint(expanded.id(), expanded, previousExpanded));
             }

@@ -24,6 +24,7 @@ import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.Blueprint;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Activate;
+import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.AppBlueprintPutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.NodeArtifactPutReceived;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.SliceState;
@@ -496,6 +497,67 @@ class ClusterDeploymentStateTransactionalTest {
                     .stream()
                     .anyMatch(c -> c instanceof KVCommand.Put<AetherKey, ?> p && p.value() instanceof DeploymentOutcomeValue);
             assertThat(anyOutcomePut).isFalse();
+        }
+    }
+
+    @Nested
+    class BestEffortSuccessOutcome {
+        // #760/#724 review round 3 GAP: trackInFlightBlueprint gated inFlightBlueprints population
+        // on ALL_OR_NOTHING, so a BEST_EFFORT deployment whose slices ALL reach ACTIVE never got an
+        // entry in that map — trackBlueprintSliceActive's success detection (removing the blueprint
+        // once pendingSlices empties, then recordSucceededOutcome) is otherwise atomicity-agnostic
+        // and never got a chance to run. Before this fix, a fully successful BEST_EFFORT deployment
+        // wrote NO outcome record at all — BlueprintService's accessor Javadoc case 2 ("an outcome
+        // will land once it does") was false for it. Drives the REAL deploy-registration path via
+        // AppBlueprintPutReceived (not manual inFlightBlueprints seeding, which the sibling tests
+        // above use for OTHER, already-correct code paths) because the bug is specifically in the
+        // gate that decides whether to populate the map in the first place.
+        @Test
+        void handleSliceActive_bestEffortAtomicity_allSlicesActive_recordsSucceededOutcome() {
+            var router = MessageRouter.mutable();
+            var localKvStore = new InMemoryKvStore(router);
+            var localCluster = new RecordingClusterNode(SELF);
+            LongSupplier clock = () -> 10_000_000L;
+            Function<Fsm<ClusterDeploymentState, ClusterFsmEvent>, ClusterDeploymentState> factory =
+                    fsm -> new ClusterDeploymentContext(fsm,
+                                                        SELF,
+                                                        localCluster,
+                                                        localKvStore,
+                                                        router,
+                                                        stubTopologyManager(SELF),
+                                                        stubSchemaOrchestrator(),
+                                                        () -> Set.of(SELF, NODE_A),
+                                                        () -> Set.of(SELF, NODE_A),
+                                                        Set::of,
+                                                        Set.of(SELF, NODE_A),
+                                                        DeploymentAtomicity.BEST_EFFORT,
+                                                        3,
+                                                        timeSpan(300).seconds(),
+                                                        clock).dormant();
+            var localHarness = FsmTestHarness.harness("best-effort-success-test-" + SELF.id(), factory);
+            localHarness.dispatch(new Activate());
+
+            var expanded = blueprint("app", V1, "slice-a");
+            var deployValue = AppBlueprintValue.appBlueprintValue(expanded);
+            var deployCommand = new KVCommand.Put<>(AppBlueprintKey.appBlueprintKey(expanded.id()), deployValue);
+            localHarness.dispatch(new AppBlueprintPutReceived(new ValuePut<>(deployCommand, Option.none())));
+
+            var activeArtifact = artifact("slice-a", V1);
+            var activeValue = NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE);
+            var putCommand = new KVCommand.Put<>(NodeArtifactKey.nodeArtifactKey(NODE_A, activeArtifact), activeValue);
+            localHarness.dispatch(new NodeArtifactPutReceived(new ValuePut<>(putCommand, Option.none())));
+
+            var outcomeKey = DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id());
+            var outcomePut = localCluster.commands
+                    .stream()
+                    .filter(c -> c instanceof KVCommand.Put<AetherKey, ?> && c.key().equals(outcomeKey))
+                    .findFirst();
+            assertThat(outcomePut)
+                    .as("a BEST_EFFORT deployment whose only slice reaches ACTIVE must write a SUCCEEDED outcome")
+                    .isPresent();
+
+            var outcome = (DeploymentOutcomeValue) ((KVCommand.Put<?, ?>) outcomePut.get()).value();
+            assertThat(outcome.status()).isEqualTo(DeploymentOutcomeStatus.SUCCEEDED);
         }
     }
 
