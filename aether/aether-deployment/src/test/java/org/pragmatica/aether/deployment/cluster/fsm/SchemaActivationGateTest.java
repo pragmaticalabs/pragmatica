@@ -473,6 +473,32 @@ class SchemaActivationGateTest {
                                             .contains(OTHER_DATASOURCE);
         }
 
+        /// #760/#724 review round 2 item d: pins
+        /// [ClusterDeploymentState.Active#schemaHoldSignature(List)] directly rather than through the
+        /// WARN-dedup side effect above — that test can only ever observe ONE `ConcurrentHashMap`
+        /// iteration order per run, so it cannot by itself prove the join is order-independent. Feed
+        /// the exact same two records in both orders and require byte-identical signatures.
+        @Test
+        void schemaHoldSignature_sameRecordsInEitherOrder_producesIdenticalSignature() {
+            var first = SchemaVersionValue.schemaVersionValue(OWNED_DATASOURCE,
+                                                              1,
+                                                              "V001__init.sql",
+                                                              SchemaStatus.PENDING,
+                                                              COORDS,
+                                                              OWNER);
+            var second = SchemaVersionValue.schemaVersionValue(OTHER_DATASOURCE,
+                                                               1,
+                                                               "V001__init.sql",
+                                                               SchemaStatus.PENDING,
+                                                               COORDS,
+                                                               OWNER);
+
+            var forward = ClusterDeploymentState.Active.schemaHoldSignature(List.of(first, second));
+            var reversed = ClusterDeploymentState.Active.schemaHoldSignature(List.of(second, first));
+
+            assertThat(forward).isEqualTo(reversed);
+        }
+
         private LoggerConfig getOrCreateLoggerConfig(Configuration configuration) {
             var existing = configuration.getLoggerConfig(ACTIVE_LOGGER_NAME);
             if (ACTIVE_LOGGER_NAME.equals(existing.getName())) {return existing;}

@@ -1586,17 +1586,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         private void reportSchemaHold(SliceNodeKey sliceKey,
                                       Artifact artifact,
                                       List<SchemaVersionValue> blockingRecords) {
-            // #760 review TEST GAP 3: `blockingRecords` is built by `forEach` over a
-            // `ConcurrentHashMap` (blockingSchemaRecords -> collectIfBlocking), so its iteration
-            // order is unspecified and can differ between two evaluations that observe the exact
-            // same set of blocking datasources. Sorted by datasourceName() so the signature is a
-            // stable function of the blocking SET, not of map iteration order — otherwise a slice
-            // blocked on two datasources could see its signature flip between equivalent
-            // evaluations and fire a spurious second WARN for a hold that never actually changed.
-            var signature = blockingRecords.stream()
-                                           .sorted(Comparator.comparing(SchemaVersionValue::datasourceName))
-                                           .map(v -> v.datasourceName() + "=" + v.status())
-                                           .collect(Collectors.joining(", "));
+            var signature = schemaHoldSignature(blockingRecords);
             var previous = reportedSchemaHolds.put(sliceKey, signature);
 
             if (signature.equals(previous)) {
@@ -1606,6 +1596,23 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             } else {
                 log.warn("Slice {} held in LOADED, waiting for schema migrations to complete: {}", artifact, signature);
             }
+        }
+
+        // #760 review TEST GAP 3: `blockingRecords` is built by `forEach` over a
+        // `ConcurrentHashMap` (blockingSchemaRecords -> collectIfBlocking), so its iteration order
+        // is unspecified and can differ between two evaluations that observe the exact same set of
+        // blocking datasources. Sorted by datasourceName() so the signature is a stable function of
+        // the blocking SET, not of map iteration order — otherwise a slice blocked on two
+        // datasources could see its signature flip between equivalent evaluations and fire a
+        // spurious second WARN for a hold that never actually changed. Extracted to a standalone,
+        // package-visible method (#760/#724 review round 2 item d) so the sort-neutralizes-order
+        // property is pinned directly, independent of whatever iteration order the KV store
+        // actually produces in a given test run.
+        static String schemaHoldSignature(List<SchemaVersionValue> blockingRecords) {
+            return blockingRecords.stream()
+                                  .sorted(Comparator.comparing(SchemaVersionValue::datasourceName))
+                                  .map(v -> v.datasourceName() + "=" + v.status())
+                                  .collect(Collectors.joining(", "));
         }
 
         /// Companion to [#reportSchemaHold(SliceNodeKey, Artifact, List)]: fires the single WARN
