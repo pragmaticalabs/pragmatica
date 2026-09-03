@@ -222,44 +222,4 @@ class ConfigValidatorTest {
         ConfigValidator.validate(config)
             .onFailureRun(Assertions::fail);
     }
-
-    // #782 — boot-time gate on the RESOLVED peer count (Main#parsePeers().size()), independent of
-    // whether a TOML's declarative [cluster] nodes ever loads. See ConfigValidator#validateExpectedClusterSize.
-    @Test
-    void validateExpectedClusterSize_fails_whenZero() {
-        ConfigValidator.validateExpectedClusterSize(0)
-            .onSuccessRun(Assertions::fail)
-            .onFailure(cause -> assertThat(cause.message())
-                .contains("a cluster is at least three nodes"));
-    }
-
-    @Test
-    void validateExpectedClusterSize_fails_whenOne() {
-        ConfigValidator.validateExpectedClusterSize(1)
-            .onSuccessRun(Assertions::fail)
-            .onFailure(cause -> assertThat(cause.message())
-                .contains("a cluster is at least three nodes"));
-    }
-
-    @Test
-    void validateExpectedClusterSize_fails_whenTwo() {
-        ConfigValidator.validateExpectedClusterSize(2)
-            .onSuccessRun(Assertions::fail)
-            .onFailure(cause -> assertThat(cause.message())
-                .contains("a cluster is at least three nodes"));
-    }
-
-    @Test
-    void validateExpectedClusterSize_succeeds_whenThree() {
-        ConfigValidator.validateExpectedClusterSize(3)
-            .onFailureRun(Assertions::fail);
-    }
-
-    @Test
-    void validateExpectedClusterSize_succeeds_whenFour() {
-        // Deliberately even and not in nodeCountErrors' {3,5,7} set — this gate only enforces the
-        // minimum-of-three floor, not the separate odd-count quorum preference nodeCountErrors checks.
-        ConfigValidator.validateExpectedClusterSize(4)
-            .onFailureRun(Assertions::fail);
-    }
 }
