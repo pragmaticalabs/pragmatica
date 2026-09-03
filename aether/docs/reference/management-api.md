@@ -4405,7 +4405,7 @@ Returns schema migration status for all datasources.
 | `lastMigration` | string | Filename of the last migration recorded |
 | `status` | string | `PENDING`, `MIGRATING`, `COMPLETED`, `FAILED` |
 | `owningBlueprint` | string | Blueprint id (`group:artifact:version`) that declared the migrations. Whose slices this record holds while `status` is not `COMPLETED` |
-| `heldSlices` | string[] | Slices owned by this record's blueprint currently withheld from activation (#760). Always empty when `status` is `COMPLETED`; populated for `PENDING`, `MIGRATING`, and `FAILED` |
+| `heldSlices` | string[] | Slices owned by this record's blueprint that are currently sitting in `LOADED` state and being held back from `ACTIVE` by a blocking `status` (#760). Requires BOTH a blocking status (`PENDING`, `MIGRATING`, or `FAILED`) AND at least one owned slice in `LOADED`; empty when `status` is `COMPLETED`, and equally empty under a blocking status if no owned slice is currently `LOADED` (e.g. already `ACTIVE`, or not yet loaded) `[mechanism: ClusterDeploymentState.blocksSliceActivation]` |
 
 ### GET /api/schema/status/{datasource}
 
@@ -4458,12 +4458,16 @@ record with **zero** live ACTIVE slices is unaffected and still goes through. Re
 or `undo` first if a genuine re-migration is intended.
 
 **Also refused with `409 Conflict` (#760/#724 review round 2 item l)** when the record is already
-`PENDING`: it already has exactly one in-flight tracking slot, and re-arming to `MIGRATING` gains
-no dispatch effect of its own while stranding that slot with no automatic clearing path. Recovery:
-`POST /api/schema/retry/{datasource}` accepts `PENDING` (unlike `migrate`) and re-triggers dispatch;
-`migrate` itself does not `[mechanism: SchemaRoutes.guardReactivation switches on the observed
-status before any orchestrator effect and returns SchemaAlreadyPending for PENDING without writing
-MIGRATING]`.
+`PENDING`: a fresh `PENDING` `Put` is what dispatches a migration run, so re-arming an already-`PENDING`
+record to `MIGRATING` has no dispatch effect of its own — it neither adds nor replaces any in-flight
+tracking (a `PENDING` record can otherwise sit with zero in-flight tracking at all, which is exactly
+the stuck state #724 fixed) — and would strand the record with no automatic clearing path. Recovery:
+`POST /api/schema/retry/{datasource}` accepts `PENDING` immediately: `writeRetryStatus` re-triggers
+dispatch unconditionally, not only once the record has since failed — the `409` body's "or use retry
+if it has since failed" below describes the common case, not a precondition retry actually enforces.
+`migrate` itself does not re-trigger dispatch `[mechanism: SchemaRoutes.guardReactivation switches on
+the observed status before any orchestrator effect and returns SchemaAlreadyPending for PENDING
+without writing MIGRATING]`.
 
 **Response (success):**
 ```json

@@ -15,9 +15,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   first observation or on a signature change, `DEBUG` on an unchanged repeat, and one `WARN` when
   the hold clears.
 - **`GET /api/schema/status/{datasource}` (and the status-list route) gained `heldSlices`** —
-  the slices a blocking record currently withholds from activation, computed the same way the
-  activation gate scopes ownership. Empty whenever the record is not blocking, so the operator no
-  longer has to correlate DEBUG logs or wait for the `SCHEMA_ACTIVATION_BLOCKED` audit entry.
+  the slices a blocking record currently withholds from activation. Empty whenever the record is
+  not blocking, so the operator no longer has to correlate DEBUG logs or wait for the
+  `SCHEMA_ACTIVATION_BLOCKED` audit entry. (Its derivation was corrected in the review round below —
+  see "`heldSlices` was a parallel derivation that never read per-node slice state.")
 
 ### Fixed (2026-09-03 — #724: a schema migration stuck `PENDING` had no recovery lever short of a redeploy)
 - **`POST /api/schema/retry/{datasource}` now accepts `PENDING` as well as `FAILED`.** A migration
@@ -41,10 +42,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   ready to hold the next slice instance that reaches `LOADED`. Refused with `409 Conflict`
   (`SchemaAlreadyServing`, naming the datasource and active-slice count); a `COMPLETED` record with
   zero live `ACTIVE` slices is unaffected. See [`POST /api/schema/migrate`](aether/docs/reference/management-api.md#post-apischemamigratedatasource).
-- **Retry dispatch is now single-flight per record across both the timer and the route.** A PENDING
-  record with a live scheduled retry could double-dispatch `migrateIfNeeded` when the route and the
-  timer's KV-lock release raced; `acquireLock` now cancels any scheduled retry for the datasource
-  before proceeding, so exactly one dispatch wins regardless of which path gets there first.
+- **Retry dispatch is now single-flight per record across both the timer and the route, on a given
+  leader.** A PENDING record with a live scheduled retry could double-dispatch `migrateIfNeeded`
+  when the route and the timer's KV-lock release raced on the same leader; `acquireLock` now
+  cancels any scheduled retry for the datasource before proceeding, so exactly one dispatch wins on
+  that leader regardless of which path gets there first. Across leaders the consensus lock is the
+  arbiter (`acquireLock`'s `isLockHeld` read followed by a conditional `Put`), and that read-then-Put
+  window is not atomic — this fixes the same-leader double-dispatch, not a cross-leader race.
 - **The dedup signature for a repeated schema hold is now a sorted join**, not an unsorted join over
   a `ConcurrentHashMap` — an unchanged multi-datasource hold could otherwise re-WARN if two
   evaluations happened to iterate the blocking set in different orders.
@@ -58,9 +62,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `FAILED` / `ROLLED_BACK` status, failing slice ids, cause, timestamp) at the terminal
   transition, bundled into the SAME consensus batch as the `AppBlueprintKey` removal — atomic
   with, not vulnerable to, the cleanup that used to remove the only evidence. Only the
-  `SUCCEEDED` and `FAILED` write sites are wired by this fix; `ROLLED_BACK` is a defined status
-  with no write site yet — no current code path distinguishes a rollback-with-restore from a
-  plain failure, so wiring it is deliberately left out of scope here.
+  `SUCCEEDED` and `FAILED` write sites are wired by this fix; `ROLLED_BACK` was a defined status
+  with no write site yet, deliberately left out of scope here — wired two review rounds later by
+  `restorePreviousBlueprint`'s `rolledBackOutcomeCommand`
+  (`ClusterDeploymentState.java:2412`), see the round 2 entry below ("The `ALL_OR_NOTHING`
+  restore-previous-blueprint branch now also writes a `ROLLED_BACK` outcome").
 - **Bounded by KV Put-overwrite-by-key**: the record is keyed by blueprint id, so a redeploy's
   next terminal transition simply overwrites the same key — one outcome kept per blueprint id,
   no accumulation, no separate pruning mechanism.

@@ -1507,12 +1507,15 @@ if a genuine re-migration is intended. A COMPLETED record with zero live ACTIVE 
 through unchanged.
 
 `migrate` also refuses (#760/#724 review round 2 item l) when the record is already `PENDING`: a
-migration accepted but not yet dispatched has exactly one in-flight tracking slot, and a second
-`migrate` call has no dispatch of its own to join — it would only orphan whatever the first call is
-already tracking. The 409 names the datasource. `aether schema retry <datasource>` is the lever for
-a `PENDING` record (it accepts `PENDING`, unlike `migrate` — see above); `migrate` itself does not
-`[mechanism: SchemaRoutes.guardReactivation switches on the observed status before any orchestrator
-effect and returns SchemaAlreadyPending for PENDING without writing MIGRATING]`.
+fresh `PENDING` Put is what dispatches a migration run, so a second `migrate` call has no dispatch
+effect of its own to join — it neither adds nor replaces any in-flight tracking (a `PENDING` record
+can otherwise sit with zero in-flight tracking at all, which is exactly the stuck state #724 fixed)
+and would only strand the record with no automatic clearing path. The 409 names the datasource.
+`aether schema retry <datasource>` is the lever for a `PENDING` record and re-triggers dispatch
+immediately, not only once the record has since failed (it accepts `PENDING`, unlike `migrate` — see
+above); `migrate` itself does not re-trigger dispatch `[mechanism: SchemaRoutes.guardReactivation
+switches on the observed status before any orchestrator effect and returns SchemaAlreadyPending for
+PENDING without writing MIGRATING]`.
 
 The cluster leader also writes a `SCHEMA_ACTIVATION_BLOCKED` audit entry when it observes a
 `FAILED` record, naming the datasource, the owning blueprint, and the held slices. The same held
