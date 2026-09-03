@@ -23,11 +23,13 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.http.routing.QueryParameter;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
@@ -162,12 +164,11 @@ public final class SchemaRoutes implements RouteSource {
         }
 
         var held = new LinkedHashSet<String>();
+        var kvStore = nodeSupplier.get().kvStore();
 
-        nodeSupplier.get()
-                    .kvStore()
-                    .forEach(SliceNodeKey.class,
-                             SliceNodeValue.class,
-                             (key, value) -> collectIfHeldBySchema(schema, key, value, held));
+        kvStore.forEach(SliceNodeKey.class,
+                        SliceNodeValue.class,
+                        (key, value) -> collectIfHeldBySchema(schema, key, value, kvStore, held));
 
         return List.copyOf(held);
     }
@@ -175,8 +176,9 @@ public final class SchemaRoutes implements RouteSource {
     private void collectIfHeldBySchema(SchemaVersionValue schema,
                                        SliceNodeKey key,
                                        SliceNodeValue value,
+                                       KVStore<AetherKey, AetherValue> kvStore,
                                        Set<String> held) {
-        if (ClusterDeploymentState.blocksSliceActivation(value.state(), sliceOwner(key.artifact()), schema)) {
+        if (ClusterDeploymentState.blocksSliceActivation(value.state(), sliceOwner(key.artifact()), schema, kvStore)) {
             held.add(key.artifact().base().asString());
         }
     }

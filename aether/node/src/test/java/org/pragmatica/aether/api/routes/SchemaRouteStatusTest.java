@@ -17,11 +17,14 @@ import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
+import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
@@ -263,6 +266,22 @@ class SchemaRouteStatusTest {
                                                                                                                     + cause.message()));
 
             assertThat(successResponseFor(ManagementRoute.SCHEMA_STATUS_ONE).heldSlices()).as("an ACTIVE slice already passed the gate and has no transition path back through LOADED")
+                      .isEmpty();
+        }
+
+        /// #760 review round 2 item a pinning test — the exact divergent state the review named:
+        /// `heldSlices` and the FSM gate (`blocksSliceActivation`/`blockingSchemaRecords`) resolved
+        /// `schemaRequired` through two different paths (the gate via its in-memory `blueprints` map,
+        /// the route not at all), so a slice owned by a `schema_required = false` blueprint could be
+        /// reported held on the management API even though the gate itself never blocked it. Before
+        /// the fix this asserted `containsExactly(HELD_SLICE)` — the divergence — instead of empty.
+        @Test
+        void statusRoute_omitsSlice_whenOwningBlueprintDoesNotRequireSchema() {
+            seedOwningBlueprintWithoutSchemaRequirement(OWNER);
+            seed(SchemaStatus.PENDING);
+            seedSliceTarget(HELD_SLICE, OWNER);
+
+            assertThat(successResponseFor(ManagementRoute.SCHEMA_STATUS_ONE).heldSlices()).as("schema_required = false means the gate never blocks this slice")
                       .isEmpty();
         }
     }
@@ -508,6 +527,28 @@ class SchemaRouteStatusTest {
         store.put(SliceTargetKey.sliceTargetKey(artifactBase),
                   SliceTargetValue.sliceTargetValue(SLICE_VERSION, 1, Option.some(owner)));
         store.put(SliceNodeKey.sliceNodeKey(artifact, NODE), SliceNodeValue.sliceNodeValue(state));
+    }
+
+    /// #760 review round 2 item a: plants an `AppBlueprintValue` whose embedded resources.toml
+    /// declares `schema_required = false`, so `heldSlices` (via
+    /// `ClusterDeploymentState.resolveSchemaRequired`) resolves ownership to non-schema-required
+    /// instead of defaulting to `true`. Mirrors `SchemaRequiredResolutionTest.resourcesToml`: a
+    /// non-empty `[[slices]]` and a `[deployment].strategy` are both required for `schema_required`
+    /// to be read at all.
+    private void seedOwningBlueprintWithoutSchemaRequirement(BlueprintId owner) {
+        var resourcesToml = """
+                             id = "%s"
+
+                             [[slices]]
+                             artifact = "org.example:seed-slice:1.0.0"
+
+                             [deployment]
+                             strategy = "rolling"
+                             schema_required = false
+                             """.formatted(owner.asString());
+        var expanded = ExpandedBlueprint.expandedBlueprint(owner, List.of(), Option.some(resourcesToml));
+
+        store.put(AppBlueprintKey.appBlueprintKey(owner), AppBlueprintValue.appBlueprintValue(expanded));
     }
 
     private SchemaVersionValue recorded() {

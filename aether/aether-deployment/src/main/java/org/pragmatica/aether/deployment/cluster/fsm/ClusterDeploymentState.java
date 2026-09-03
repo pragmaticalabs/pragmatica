@@ -83,6 +83,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.StreamMetadataValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.VersionRoutingValue;
 import org.pragmatica.aether.slice.kvstore.CommunityState;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
@@ -142,12 +143,43 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
     /// load-bearing, not incidental.
     static boolean blocksSliceActivation(SliceState sliceState,
                                          Option<BlueprintId> sliceOwner,
-                                         SchemaVersionValue schema) {
+                                         SchemaVersionValue schema,
+                                         KVStore<AetherKey, AetherValue> kvStore) {
         return sliceState == SliceState.LOADED
                && BLOCKING_SCHEMA_STATUSES.contains(schema.status())
                && sliceOwner.map(owner -> owner.base()
-                                               .equals(schema.owningBlueprint().base()))
+                                               .equals(schema.owningBlueprint().base())
+                                          && resolveSchemaRequired(kvStore, owner))
                             .or(false);
+    }
+
+    /// #760 review round 2 item a: `heldSlices` (the management-API view) and the FSM gate
+    /// (`blockingSchemaRecords`) previously called schemaRequired resolution through two different
+    /// paths — the gate via the in-memory [Active#blueprints] map, the route not at all — so a
+    /// slice owned by a `schema_required = false` blueprint could be reported held even though the
+    /// gate itself never blocked it. `resolveDeclaredSchemaRequired` is a pure function of the shared
+    /// [KVStore], so both call sites now go through this one static method instead of diverging.
+    /// Returns [Option#empty()] when nothing could be resolved (missing blueprint entry,
+    /// resourcesConfig, or unparsable/incomplete resources.toml) — the caller decides how to log
+    /// that and what to default to; see [#resolveSchemaRequired(KVStore, BlueprintId)] and
+    /// [Active#resolveSchemaRequired(BlueprintId)].
+    static Option<Boolean> resolveDeclaredSchemaRequired(KVStore<AetherKey, AetherValue> kvStore, BlueprintId blueprintId) {
+        var blueprintKey = AppBlueprintKey.appBlueprintKey(blueprintId);
+        return kvStore.get(blueprintKey)
+                      .filter(AppBlueprintValue.class::isInstance)
+                      .map(AppBlueprintValue.class::cast)
+                      .flatMap(value -> value.blueprint().resourcesConfig())
+                      .flatMap(toml -> BlueprintParser.parse(toml).option())
+                      .flatMap(org.pragmatica.aether.slice.blueprint.Blueprint::deploymentConfig)
+                      .map(DeploymentConfig::schemaRequired);
+    }
+
+    /// Deliberately silent, unlike [Active#resolveSchemaRequired(BlueprintId)]: this is invoked once
+    /// per candidate record inside [#blocksSliceActivation] (from both `blockingSchemaRecords`'s
+    /// forEach and `heldSlices`'s forEach), so logging here would fire once per slice-node/schema
+    /// pair per gate pass or status request instead of once per blueprint change.
+    static boolean resolveSchemaRequired(KVStore<AetherKey, AetherValue> kvStore, BlueprintId blueprintId) {
+        return resolveDeclaredSchemaRequired(kvStore, blueprintId).or(true);
     }
 
     record Dormant(ClusterDeploymentContext ctx) implements ClusterDeploymentState {
@@ -1218,27 +1250,19 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                       conflict.map(BlueprintId::asString).or(""));
         }
 
+        // #760 review round 2 item a: the KVStore/TOML resolution itself is hoisted to the
+        // interface (ClusterDeploymentState#resolveDeclaredSchemaRequired) so SchemaRoutes.heldSlices
+        // can share it with the gate instead of two paths that could diverge. The DEBUG/WARN
+        // logging stays here, on Active's own logger, unchanged from before the hoist — it fires
+        // once per blueprint-change/restore event, not once per slice/schema pair.
         private boolean resolveSchemaRequired(BlueprintId blueprintId) {
-            // After the Batch 1 envelope cleanup, slice META-INF/resources.toml no longer round-trips
-            // through KV (BlueprintResourcesKey/Value were removed). The resources TOML is now
-            // embedded directly on the persisted ExpandedBlueprint, so we read it from AppBlueprint.
-            var blueprintKey = AppBlueprintKey.appBlueprintKey(blueprintId);
-
-            return ctx.kvStore()
-                      .get(blueprintKey)
-                      .filter(AppBlueprintValue.class::isInstance)
-                      .map(AppBlueprintValue.class::cast)
-                      .flatMap(value -> value.blueprint()
-                                             .resourcesConfig())
-                      .flatMap(toml -> BlueprintParser.parse(toml).option())
-                      .flatMap(org.pragmatica.aether.slice.blueprint.Blueprint::deploymentConfig)
-                      .map(DeploymentConfig::schemaRequired)
-                      .onPresent(value -> log.debug("schemaRequired resolved to {} for {} from declared deploymentConfig",
-                                                    value,
-                                                    blueprintId))
-                      .onEmpty(() -> log.warn("schemaRequired unresolved for {}, defaulting to true (missing blueprint entry, resourcesConfig, or unparsable/incomplete resources.toml) — every slice of this blueprint will hold in LOADED until a schema migration record for its datasource reaches COMPLETED",
-                                              blueprintId))
-                      .or(true);
+            return ClusterDeploymentState.resolveDeclaredSchemaRequired(ctx.kvStore(), blueprintId)
+                                         .onPresent(value -> log.debug("schemaRequired resolved to {} for {} from declared deploymentConfig",
+                                                                       value,
+                                                                       blueprintId))
+                                         .onEmpty(() -> log.warn("schemaRequired unresolved for {}, defaulting to true (missing blueprint entry, resourcesConfig, or unparsable/incomplete resources.toml) — every slice of this blueprint will hold in LOADED until a schema migration record for its datasource reaches COMPLETED",
+                                                                 blueprintId))
+                                         .or(true);
         }
 
         @Contract
@@ -1491,11 +1515,11 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
         private List<SchemaVersionValue> collectBlockingSchemaRecords(BlueprintId owner) {
             var blocking = new ArrayList<SchemaVersionValue>();
+            var kvStore = ctx.kvStore();
 
-            ctx.kvStore()
-               .forEach(SchemaVersionKey.class,
-                        SchemaVersionValue.class,
-                        (_, value) -> collectIfBlocking(owner, value, blocking));
+            kvStore.forEach(SchemaVersionKey.class,
+                            SchemaVersionValue.class,
+                            (_, value) -> collectIfBlocking(owner, value, kvStore, blocking));
 
             return blocking;
         }
@@ -1512,8 +1536,9 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// LOADED at this call site even though nothing here re-reads its live state.
         private static void collectIfBlocking(BlueprintId owner,
                                               SchemaVersionValue value,
+                                              KVStore<AetherKey, AetherValue> kvStore,
                                               List<SchemaVersionValue> blocking) {
-            if (ClusterDeploymentState.blocksSliceActivation(SliceState.LOADED, Option.some(owner), value)) {
+            if (ClusterDeploymentState.blocksSliceActivation(SliceState.LOADED, Option.some(owner), value, kvStore)) {
                 blocking.add(value);
             }
         }
