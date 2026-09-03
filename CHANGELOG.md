@@ -6,13 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc4] - Unreleased
 
-### Changed (2026-09-03 — #782: single machine now means the three-container compose, not a single node)
-- **A node whose resolved peer count is below three now refuses to boot.** `ConfigValidator.validateExpectedClusterSize`
-  (new) runs at the point `Main` resolves the peer list from `--peers=`/`CLUSTER_PEERS`/cloud discovery/config —
-  catching every path that can produce a sub-3 topology, not just the declarative `[cluster] nodes` TOML field that
-  `nodeCountErrors` already guarded but that `Main#loadConfigFile` silently discarded on failure instead of aborting
-  boot. The failure message names the rule ("a cluster is at least three nodes") and points at the documented
-  quick start.
+### Changed (2026-09-03 — #782: single machine is three containers; cluster size below 3 refused at startup)
+- **A node whose resolved peer count is below three now refuses to boot.** `ClusterSizeGate.enforce` (new, standalone
+  gate in `aether-config`) runs at the point `Main` resolves the peer list from `--peers=`/`CLUSTER_PEERS`/cloud
+  discovery/config — catching every path that can produce a sub-3 topology, not just the declarative
+  `[cluster] nodes` TOML field that `ConfigValidator.nodeCountErrors` already guarded but that `Main#loadConfigFile`
+  silently discarded on failure instead of aborting boot. The failure message names the rule ("a cluster is at least
+  three nodes") and points at the documented quick start.
 - **Docs**: removed the stale "Single Node" section (and its #782 caveat) from `docker-deployment.md`; the existing
   three-container compose is retitled "Single machine (three containers)" as the one documented quick-start path for
   a single machine, with the equivalent fix applied to `current-docker-setup.md`.
