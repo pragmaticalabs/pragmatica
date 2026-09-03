@@ -31,12 +31,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `EmberCluster`/`ForgeServer` instances to join one cluster** — pass the same secret bytes to both
   before calling `start()`. A repo-wide grep found no existing harness, Forge scenario, or multi-JVM
   test that relies on cross-instance/cross-process joining today; nothing else needed updating.
-  [mechanism: `EmberCluster.createNode` is the sole `AetherNode` construction site, so this is the
+  [mechanism: `EmberCluster.createNode` is the sole Ember/Forge construction site, so this is the
   only choke point either mechanism needs]
 - Startup-time regression check for the newly-activated `CertificateRenewalScheduler`
   (dormant while `certificateProvider` was `Option.empty()`): 3-node Ember cluster start, same
   test/machine, before vs. after — 17.88s avg (3 runs) vs. 17.55s avg (3 runs), no regression.
-  [verified: aether/ember/src/test/java/org/pragmatica/aether/ember/EmberClusterForeignAdmissionTest.java#constructedNode_hasCertificateProviderWired]
+  [mechanism: manual wall-clock A/B, 3 runs per side, same machine and test, pre-fix commit vs.
+  post-fix commit — not an automated/CI-enforced measurement, and no cited test measures time]
 
 ### Fixed (2026-09-03 — #250: storage GC/demotion was wired to a no-op)
 - **Artifact and stream tier demotion and garbage collection now actually run.** `AetherNode`
