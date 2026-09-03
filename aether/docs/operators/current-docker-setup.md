@@ -30,7 +30,7 @@ Forge simulator container for load testing and chaos experiments.
 
 ### Docker Compose
 
-#### `docker/docker compose.yml`
+#### `docker/docker-compose.yml`
 
 3-node cluster configuration:
 
@@ -44,7 +44,7 @@ services:
       MANAGEMENT_PORT: "8080"
       CLUSTER_PEERS: "node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090"
       AETHER_CLUSTER_NAME: "aether-dev"
-      AETHER_CLUSTER_SECRET: "change-me-dev-secret"
+      AETHER_CLUSTER_SECRET: "${AETHER_CLUSTER_SECRET:?export AETHER_CLUSTER_SECRET before docker-compose up}"
       JAVA_OPTS: "-Xmx256m -XX:+UseZGC"
     ports:
       - "8080:8080"   # Management API
@@ -65,6 +65,7 @@ services:
 
 ```bash
 cd docker
+export AETHER_CLUSTER_SECRET=<your-secret>   # required, no default is shipped
 docker compose up --build
 ```
 
@@ -110,7 +111,7 @@ Output: Shell scripts for single-machine deployment
 ### DockerGenerator
 
 Output:
-- `docker compose.yml` - Service definitions
+- `docker-compose.yml` - Service definitions
 - `.env` - Environment variables
 - `start.sh` - Cluster start script
 - `stop.sh` - Cluster stop script
