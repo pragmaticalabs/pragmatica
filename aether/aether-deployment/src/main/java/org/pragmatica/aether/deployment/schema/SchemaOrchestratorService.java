@@ -190,9 +190,9 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
         var attemptToken = new Object();
 
         return acquireLock(datasourceName, attemptToken).flatMap(_ -> runMigration(datasourceName, value).flatMap(_ -> releaseLock(datasourceName))
-                                                                    .replaceResult(result -> finalizeAttempt(datasourceName,
-                                                                                                             attemptToken,
-                                                                                                             result)));
+                                                                                  .replaceResult(result -> finalizeAttempt(datasourceName,
+                                                                                                                           attemptToken,
+                                                                                                                           result)));
     }
 
     private Result<Unit> finalizeAttempt(String datasourceName, Object attemptToken, Result<Unit> result) {
@@ -427,7 +427,6 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
 
         var lockValue = SchemaMigrationLockValue.schemaMigrationLockValue(datasourceName, self, LOCK_TTL_MS);
         KVCommand<AetherKey> command = new Put<>(lockKey, lockValue);
-
         // #760/#724 review round 3 BLOCKING 1: bounded the same way as the migration itself
         // (schemaManager.policy().migrationTimeout(), read once per attempt) — before this, a lock Put
         // that failed or never settled left `inFlightMigrations` claimed forever, since `finalizeAttempt`
