@@ -19,19 +19,6 @@ Two container images are available:
 
 ## Quick Start
 
-### Build Images
-
-```bash
-# Build from project root
-
-# Build JARs first
-mvn package -DskipTests
-
-# Build container images
-docker build -f docker/aether-node/Dockerfile -t aether-node:latest .
-docker build -f docker/aether-forge/Dockerfile -t aether-forge:latest .
-```
-
 ### Run 3-Node Cluster
 
 Requires a cluster secret; there is no shipped default:
@@ -57,6 +44,21 @@ This starts:
 - `aether-node-1` on ports 8080 (API), 8090 (cluster)
 - `aether-node-2` on ports 8081 (API), 8091 (cluster)
 - `aether-node-3` on ports 8082 (API), 8092 (cluster)
+
+### Build images from source (developers)
+
+Only needed for the `--build` path above; the pull path needs neither Java nor Maven.
+
+```bash
+# Build from project root
+
+# Build JARs first
+mvn package -DskipTests
+
+# Build container images
+docker build -f docker/aether-node/Dockerfile -t aether-node:latest .
+docker build -f docker/aether-forge/Dockerfile -t aether-forge:latest .
+```
 
 ### Run with Forge Simulator
 
