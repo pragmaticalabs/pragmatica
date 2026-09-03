@@ -1515,7 +1515,7 @@ Phases 2, 3, and 4 can be partially parallelized after Phase 1 is complete.
 
 ### Technical Documentation
 
-- [Aether Management API Reference](/Users/sergiyyevtushenko/IdeaProjects/pragmatica/aether/docs/reference/management-api.md) -- Comprehensive REST + WebSocket endpoint documentation
+- [Aether Management API Reference](../reference/management-api.md) -- Comprehensive REST + WebSocket endpoint documentation
 - [Alpine.js Documentation](https://alpinejs.dev/) -- Reactive framework documentation
 - [uPlot GitHub](https://github.com/leeoniya/uPlot) -- Time series charting library
 - [d3-force Documentation](https://d3js.org/d3-force) -- Force-directed graph layout module

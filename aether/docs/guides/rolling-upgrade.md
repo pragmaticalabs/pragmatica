@@ -43,7 +43,7 @@ If any node fails its canary check, the upgrade halts. The cluster remains in a 
 > terminal-removal membership model (a dead NodeId never returns under the same identity;
 > crash recovery is a new-ULID replacement minted by auto-heal), so runtime auto-restart
 > (`restart: unless-stopped`/`always`, systemd `Restart=on-failure`/`always`) **must stay
-> disabled** on aether-node. See [`../operator/deployment-recovery.md`](../operator/deployment-recovery.md).
+> disabled** on aether-node. See [`../operators/deployment-recovery.md`](../operators/deployment-recovery.md).
 
 ## Options
 

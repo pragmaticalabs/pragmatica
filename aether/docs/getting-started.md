@@ -65,7 +65,7 @@ Step 2 either way.
 ### Pinning a version
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/pragmaticalabs/pragmatica/main/install.sh | sh -s -- --version 1.0.0-rc2
+curl -fsSL https://raw.githubusercontent.com/pragmaticalabs/pragmatica/main/install.sh | sh -s -- --version 1.0.0-rc3
 ```
 
 `--version` pins both tools to the same release. JBCT and Aether are
@@ -73,15 +73,16 @@ versioned independently, though, so use `--jbct-version` / `--aether-version`
 if you need them to diverge (each overrides `--version` for its own tool):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/pragmaticalabs/pragmatica/main/install.sh | sh -s -- --jbct-version 1.0.0-rc2 --aether-version 1.0.0-rc3
+curl -fsSL https://raw.githubusercontent.com/pragmaticalabs/pragmatica/main/install.sh | sh -s -- --jbct-version 1.0.0-rc3 --aether-version 1.0.0-rc3
 ```
 
 Unpinned installs resolve to the newest **published** release, correctly
 ranking GA over `rc-N` over `beta` over `alpha` and always excluding the
 moving `*-candidate` tag — an explicit version fails loudly with a link to the
 releases page rather than silently downloading nothing. (Confirmed
-end-to-end: with an rc3 candidate tag present, an unpinned install still
-resolves to `1.0.0-rc2`, the newest actually-published release.)
+end-to-end: with a `-candidate` tag for the next release present, an
+unpinned install still resolves to `1.0.0-rc3`, the newest
+actually-published release.)
 
 > **Pinning to a `-candidate` tag** — used internally to validate a release
 > before it's tagged GA, most readers won't need this — works the same way

@@ -231,6 +231,6 @@ be read only via stream reads on the `.dlq` stream.
 
 - **Scope:** cluster data-plane (Rabia KV + DHT), cluster availability, streams, pub-sub/notifications, durable-entity (planned). Not covered: `@PgSql`/`@Sql` persistence semantics, AHSE storage, HTTP routing — candidates for a follow-up pass.
 - **Confidence:** each row traces to `file:line`. Items the investigators could not run live (SWIM under-load latency, the off-by-one on a real cluster, STRONG-publish wiring, DHT staleness bound) are flagged UNVERIFIED in the backing notes and should be confirmed before being quoted as hard numbers.
-- **Lens:** [`/consistency-lens`](../../../.claude/skills/consistency-lens/SKILL.md) · Kleppmann, *"Please stop calling databases CP or AP"*.
+- **Lens:** `/consistency-lens` · Kleppmann, [*"Please stop calling databases CP or AP"*](https://martin.kleppmann.com/2015/05/11/please-stop-calling-databases-cp-or-ap.html).
 - **Durable-entity spec:** [`../specs/durable-entity-primitive-spec.md`](../specs/durable-entity-primitive-spec.md).
 - **Corrections worklist:** [`./guarantees-corrections-needed.md`](./guarantees-corrections-needed.md).
