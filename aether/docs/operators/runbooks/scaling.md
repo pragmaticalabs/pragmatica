@@ -158,7 +158,7 @@ ssh aether@<leader-host> 'journalctl -u aether-node --since "10 min ago" | grep 
 2. **Verify deactivation**
    ```bash
    # Watch instances decrease
-   watch -n 2 'aether-cli --connect node1:8080 -c "slices list" | grep my-slice'
+   watch -n 2 'aether --connect node1:8080 slices | grep my-slice'
    ```
 
 ## Capacity Planning

@@ -19,7 +19,7 @@ one until rc4.
 
 #### `docker/aether-node/Dockerfile`
 
-Node container based on `eclipse-temurin:25-alpine`:
+Node container based on `eclipse-temurin:25-noble`:
 - Multi-stage build for smaller images
 - Proper Java options for containers
 - Health check endpoint
@@ -42,13 +42,13 @@ services:
       NODE_ID: "node-1"
       CLUSTER_PORT: "8090"
       MANAGEMENT_PORT: "8080"
-      PEERS: "node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090"
+      CLUSTER_PEERS: "node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090"
       AETHER_CLUSTER_NAME: "aether-dev"
       AETHER_CLUSTER_SECRET: "change-me-dev-secret"
       JAVA_OPTS: "-Xmx256m -XX:+UseZGC"
     ports:
       - "8080:8080"   # Management API
-      - "8090:8090"   # Cluster port
+      - "8090:8090/udp"   # Cluster port
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health/live"]
       interval: 5s
