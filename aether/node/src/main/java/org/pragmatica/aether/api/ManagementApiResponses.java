@@ -144,7 +144,15 @@ public sealed interface ManagementApiResponses {
 
     record ScaleResponse(String status, String artifact, int instances) {}
 
-    record BlueprintResponse(String status, String blueprint, int slices) {}
+    /// #759 — `status` is earned off `deploymentMap()` at response time (see
+    /// `SliceRoutes.deployStatus`), not assumed from publish success; `targetInstances` /
+    /// `activeInstances` / `failedInstances` let an operator tell total outage from healthy without
+    /// a follow-up call.
+    record BlueprintResponse(String status,
+                             String blueprint,
+                             int targetInstances,
+                             int activeInstances,
+                             int failedInstances) {}
 
     record BlueprintListResponse(List<BlueprintSummary> blueprints) {}
 

@@ -212,18 +212,22 @@ public final class SliceRoutes implements RouteSource {
         return nodeSupplier.get()
                            .blueprintService()
                            .publish(body)
-                           .withSuccess(this::pushSecurityOverrides)
-                           .map(expanded -> new BlueprintResponse("applied",
-                                                                  expanded.id().asString(),
-                                                                  expanded.loadOrder().size()))
-                           .onSuccess(r -> auditAndEmitBlueprintDeployed(r.blueprint(),
-                                                                         r.slices()))
+                           .withSuccess(this::onBlueprintActivated)
+                           .map(expanded -> blueprintResponse("applied", expanded))
                            .onFailure(cause -> log.warn("Blueprint publish failed: {}",
                                                         cause.message()));
     }
 
     private static final Cause MISSING_ARTIFACT_COORDS = Causes.cause("Missing 'artifact' field");
 
+    /// #759 — "deployed" must mean every declared instance is verified ACTIVE at response time, not
+    /// merely that the publish command committed. `deployStatus` reads `deploymentMap()` to name three
+    /// honest outcomes: `degraded` for an already-FAILED instance (reachable for BEST_EFFORT deploys
+    /// and for redeploys onto an artifact with a lingering failure — under the default ALL_OR_NOTHING
+    /// atomicity a fresh deterministic failure usually loses the race to
+    /// `ClusterDeploymentState.rollbackBlueprintForArtifact`'s cleanup before this check runs),
+    /// `pending` for the common case where nothing has activated yet, and `deployed` only once every
+    /// target instance is already observed ACTIVE.
     private Promise<BlueprintResponse> handleBlueprintDeploy(BlueprintDeployRequest request) {
         return Option.option(request.artifact())
                      .toResult(MISSING_ARTIFACT_COORDS)
@@ -231,12 +235,8 @@ public final class SliceRoutes implements RouteSource {
                      .flatMap(coords -> nodeSupplier.get()
                                                     .blueprintService()
                                                     .publishFromArtifact(coords))
-                     .withSuccess(this::pushSecurityOverrides)
-                     .map(expanded -> new BlueprintResponse("deployed",
-                                                            expanded.id().asString(),
-                                                            expanded.loadOrder().size()))
-                     .onSuccess(r -> auditAndEmitBlueprintDeployed(r.blueprint(),
-                                                                   r.slices()))
+                     .withSuccess(this::onBlueprintActivated)
+                     .map(this::deployBlueprintResponse)
                      .onFailure(cause -> log.warn("Blueprint artifact deploy failed: {}",
                                                   cause.message()));
     }
@@ -248,9 +248,7 @@ public final class SliceRoutes implements RouteSource {
                      .flatMap(coords -> nodeSupplier.get()
                                                     .blueprintService()
                                                     .publishFromArtifact(coords, true))
-                     .map(expanded -> new BlueprintResponse("published",
-                                                            expanded.id().asString(),
-                                                            expanded.loadOrder().size()))
+                     .map(expanded -> blueprintResponse("published", expanded))
                      .onSuccess(r -> log.info("Blueprint {} published (register-only — not activated)",
                                               r.blueprint()))
                      .onFailure(cause -> log.warn("Blueprint artifact publish failed: {}",
@@ -262,6 +260,63 @@ public final class SliceRoutes implements RouteSource {
                     .appHttpServer()
                     .httpRoutePublisher()
                     .onPresent(pub -> pub.updateSecurityOverrides(expanded.securityOverrides()));
+    }
+
+    private void onBlueprintActivated(ExpandedBlueprint expanded) {
+        pushSecurityOverrides(expanded);
+        auditAndEmitBlueprintDeployed(expanded.id().asString(),
+                                      expanded.loadOrder().size());
+    }
+
+    private record InstanceCounts(int target, int active, int failed) {}
+
+    private InstanceCounts instanceCounts(ExpandedBlueprint expanded) {
+        var node = nodeSupplier.get();
+        var target = expanded.loadOrder().stream().mapToInt(ResolvedSlice::instances).sum();
+        var active = expanded.loadOrder()
+                             .stream()
+                             .mapToInt(slice -> countInstancesInState(node,
+                                                                      slice.artifact(),
+                                                                      SliceState.ACTIVE))
+                             .sum();
+        var failed = expanded.loadOrder()
+                             .stream()
+                             .mapToInt(slice -> countInstancesInState(node,
+                                                                      slice.artifact(),
+                                                                      SliceState.FAILED))
+                             .sum();
+
+        return new InstanceCounts(target, active, failed);
+    }
+
+    private BlueprintResponse blueprintResponse(String status, ExpandedBlueprint expanded) {
+        var counts = instanceCounts(expanded);
+
+        return new BlueprintResponse(status,
+                                     expanded.id().asString(),
+                                     counts.target(),
+                                     counts.active(),
+                                     counts.failed());
+    }
+
+    private BlueprintResponse deployBlueprintResponse(ExpandedBlueprint expanded) {
+        var counts = instanceCounts(expanded);
+
+        return new BlueprintResponse(deployStatus(counts),
+                                     expanded.id().asString(),
+                                     counts.target(),
+                                     counts.active(),
+                                     counts.failed());
+    }
+
+    private static String deployStatus(InstanceCounts counts) {
+        if (counts.failed() > 0) {
+            return "degraded";
+        }
+
+        return counts.target() > 0 && counts.active() >= counts.target()
+               ? "deployed"
+               : "pending";
     }
 
     private BlueprintListResponse buildBlueprintListResponse() {
@@ -338,11 +393,15 @@ public final class SliceRoutes implements RouteSource {
     }
 
     private int countActiveInstances(ManageableNode node, Artifact artifact) {
+        return countInstancesInState(node, artifact, SliceState.ACTIVE);
+    }
+
+    private static int countInstancesInState(ManageableNode node, Artifact artifact, SliceState state) {
         return (int) node.deploymentMap()
                          .byArtifact(artifact)
                          .values()
                          .stream()
-                         .filter(state -> state == SliceState.ACTIVE)
+                         .filter(s -> s == state)
                          .count();
     }
 
