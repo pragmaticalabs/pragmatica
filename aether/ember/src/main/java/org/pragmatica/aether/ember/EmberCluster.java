@@ -5,6 +5,7 @@
 package org.pragmatica.aether.ember;
 
 import java.nio.file.Path;
+import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -21,7 +22,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
-import java.nio.charset.StandardCharsets;
 
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.aether.controller.ControllerConfig;
@@ -186,19 +186,23 @@ public final class EmberCluster {
     /// the transient QuorumLost→PASSIVE false-removal cascade that falsely marks LIVE survivors DEAD.
     private final AtomicBoolean raisedSwimTimeouts = new AtomicBoolean(false);
 
-    /// #715 — this instance's cluster QUIC/SWIM identity secret, as derived by [#buildForgeQuicTls].
-    /// Currently the same hardcoded literal every `EmberCluster` instance uses — the #715 defect
-    /// (any process holding the literal derives the identical CA and gossip key). Exposed to tests
-    /// via [#currentClusterSecret]; not yet used to change behaviour (scaffold only).
-    private final AtomicReference<byte[]> clusterSecret =
-        new AtomicReference<>("aether-forge-cluster-secret".getBytes(StandardCharsets.UTF_8));
+    /// #715 — this instance's own cluster QUIC/SWIM identity secret. Defaults to a fresh
+    /// `SecureRandom` value so distinct `EmberCluster` instances never share cluster identity and
+    /// cannot admit each other's nodes; [#withClusterSecret] is the only sanctioned override.
+    /// Exposed to tests via [#currentClusterSecret].
+    private final AtomicReference<byte[]> clusterSecret = new AtomicReference<>(generateClusterSecret());
 
     /// #715 — the `certificateProvider` actually threaded into the most recently constructed node's
-    /// [AetherNodeConfig]. Currently always [Option#empty] — the #715 defect: SWIM gossip encryption
-    /// is never wired for Ember/Forge nodes ([AetherNode] falls back to `GossipEncryptor.none()`).
-    /// Exposed to tests via [#wiredCertificateProvider]; not yet set anywhere (scaffold only).
+    /// [AetherNodeConfig], so SWIM gossip encryption is wired ([AetherNode] otherwise falls back to
+    /// `GossipEncryptor.none()`). Exposed to tests via [#wiredCertificateProvider].
     private final AtomicReference<Option<CertificateProvider>> lastCertificateProvider =
         new AtomicReference<>(Option.empty());
+
+    private static byte[] generateClusterSecret() {
+        var secret = new byte[32];
+        new SecureRandom().nextBytes(secret);
+        return secret;
+    }
 
     private final class EmberComputeProvider implements ComputeProvider {
         @Override
@@ -376,6 +380,17 @@ public final class EmberCluster {
     @Contract
     public void withRaisedSwimTimeouts() {
         raisedSwimTimeouts.set(true);
+    }
+
+    /// #715 — override this instance's cluster QUIC/SWIM identity secret. MUST be called before
+    /// [#start] (nodes derive their certificate/gossip-key material from this secret at creation).
+    /// Production callers never call this: each instance otherwise gets a fresh `SecureRandom`
+    /// secret, so two independently-created `EmberCluster`/Forge instances never share cluster
+    /// identity and cannot admit each other's nodes. This setter is the ONLY sanctioned way two
+    /// instances can join one cluster — callers who want that pass the SAME bytes to both.
+    @Contract
+    public void withClusterSecret(byte[] secret) {
+        clusterSecret.set(secret.clone());
     }
 
     /// TEST SEAM (#715) — exposes this instance's current cluster QUIC/SWIM identity secret, so
@@ -923,10 +938,7 @@ public final class EmberCluster {
                     .toList();
     }
 
-    private static TlsConfig buildForgeQuicTls(NodeId nodeId) {
-        var secret = "aether-forge-cluster-secret".getBytes(StandardCharsets.UTF_8);
-        var provider = SelfSignedCertificateProvider.selfSignedCertificateProvider(secret).unwrap();
-
+    private static TlsConfig buildForgeQuicTls(NodeId nodeId, CertificateProvider provider) {
         return TlsConfig.fromProvider(provider,
                                       nodeId.id(),
                                       "localhost")
@@ -991,7 +1003,9 @@ public final class EmberCluster {
                                           BackoffConfig.DEFAULT,
                                           coreMax,
                                           targetClusterSize);
-        var quicTls = buildForgeQuicTls(nodeId);
+        var certificateProvider = SelfSignedCertificateProvider.selfSignedCertificateProvider(clusterSecret.get()).unwrap();
+        lastCertificateProvider.set(Option.some(certificateProvider));
+        var quicTls = buildForgeQuicTls(nodeId, certificateProvider);
         var config = new AetherNodeConfig(topology,
                                           ProtocolConfig.testConfig(),
                                           SliceActionConfig.sliceActionConfig(),
@@ -1021,7 +1035,7 @@ public final class EmberCluster {
                                           ClusterDeploymentManager.DeploymentAtomicity.ALL_OR_NOTHING,
                                           activationGated,
                                           nodeTimeouts,
-                                          Option.empty(),
+                                          Option.some(certificateProvider),
                                           Option.empty(),
                                           AetherNodeConfig.DeploymentDefaults.DEFAULT,
                                           HttpProtocol.H1,
