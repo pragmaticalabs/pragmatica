@@ -6,7 +6,11 @@ package org.pragmatica.aether.resource;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
-import org.pragmatica.config.TomlConfigService;
+import org.pragmatica.config.ConfigError;
+import org.pragmatica.config.ConfigService;
+import org.pragmatica.config.ConfigurationProvider;
+import org.pragmatica.config.ProviderBasedConfigService;
+import org.pragmatica.config.source.TomlConfigSource;
 import org.pragmatica.lang.parse.TimeSpan;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -21,6 +25,11 @@ import static org.pragmatica.lang.Option.some;
 /// The durable-pubsub half (spec §3, D1) pins the parse-time constraint: the [TopicConfig#topicConfig]
 /// factory is what the TOML binder invokes, so the TOML round-trip tests are the ones that prove
 /// "rejected at parse" — a factory-only test would pass even if the binder bypassed it.
+///
+/// The TOML round-trip tests bind through the actual production path
+/// (`TomlConfigSource` -> `ConfigurationProvider` -> `ProviderBasedConfigService`), not a
+/// test-only shortcut — `TomlConfigService` has no production caller, so a test built on it would
+/// prove nothing about runtime behavior (#738 post-GO correction).
 class TopicConfigTest {
 
     @Test
@@ -168,44 +177,149 @@ class TopicConfigTest {
 
     @Test
     void tomlBinding_rejectsDurableOutsideProvenConstraint() {
-        TomlConfigService.tomlConfigService("""
-                                            [orders]
-                                            topic_name = "order-events"
-                                            durability = "durable"
-                                            replicas = 3
-                                            min_sync_replicas = 2
-                                            """)
-                         .flatMap(svc -> svc.config("orders", TopicConfig.class))
-                         .onSuccess(_ -> fail("min-sync < replicas must be rejected at parse"))
-                         .onFailure(cause -> assertThat(cause.message()).contains("durable-pubsub-spec"));
+        serviceFrom("""
+                    [orders]
+                    topic_name = "order-events"
+                    durability = "durable"
+                    replicas = 3
+                    min_sync_replicas = 2
+                    """).config("orders", TopicConfig.class)
+                        .onSuccess(_ -> fail("min-sync < replicas must be rejected at parse"))
+                        .onFailure(cause -> assertThat(cause.message()).contains("durable-pubsub-spec"));
     }
 
     @Test
     void tomlBinding_rejectsStreamKeysOnEphemeralTopic() {
-        TomlConfigService.tomlConfigService("""
-                                            [orders]
-                                            topic_name = "order-events"
-                                            partitions = 4
-                                            """)
-                         .flatMap(svc -> svc.config("orders", TopicConfig.class))
-                         .onSuccess(_ -> fail("inert keys on an ephemeral topic must be rejected"))
-                         .onFailure(cause -> assertThat(cause.message()).contains("partitions"));
+        serviceFrom("""
+                    [orders]
+                    topic_name = "order-events"
+                    partitions = 4
+                    """).config("orders", TopicConfig.class)
+                        .onSuccess(_ -> fail("inert keys on an ephemeral topic must be rejected"))
+                        .onFailure(cause -> assertThat(cause.message()).contains("partitions"));
     }
 
     @Test
     void tomlBinding_missingTopicName_staysLoud() {
-        TomlConfigService.tomlConfigService("""
-                                            [orders]
-                                            durability = "durable"
-                                            """)
-                         .flatMap(svc -> svc.config("orders", TopicConfig.class))
-                         .onSuccess(_ -> fail("missing topic_name must not bind via DEFAULT"))
-                         .onFailure(cause -> assertThat(cause).isInstanceOf(TopicConfigError.MissingTopicName.class));
+        serviceFrom("""
+                    [orders]
+                    durability = "durable"
+                    """).config("orders", TopicConfig.class)
+                        .onSuccess(_ -> fail("missing topic_name must not bind via DEFAULT"))
+                        .onFailure(cause -> assertThat(cause).isInstanceOf(TopicConfigError.MissingTopicName.class));
+    }
+
+    /// #738: a dashed key where the binder expects an underscore (`min-sync-replicas` vs
+    /// `min_sync_replicas`) must be rejected, not silently resolved to `none()` — before the fix
+    /// this was byte-indistinguishable from the key never having been written.
+    @Test
+    void tomlBinding_rejectsDashedKey_namingCorrectSpelling() {
+        serviceFrom("""
+                    [orders]
+                    topic_name = "order-events"
+                    durability = "durable"
+                    retention = "14d"
+                    min-sync-replicas = 2
+                    """).config("orders", TopicConfig.class)
+                        .onSuccess(_ -> fail("dashed min-sync-replicas must be rejected, not silently ignored"))
+                        .onFailure(cause -> {
+                            assertThat(cause).isInstanceOf(ConfigError.UnknownKey.class);
+                            assertThat(cause.message()).contains("min_sync_replicas");
+                        });
+    }
+
+    /// A nonsense/typo key is rejected naming the nearest of [TopicConfig]'s known component names
+    /// (Levenshtein distance 1 from `partitions`) — proves the suggestion is computed, not just a
+    /// fixed "unknown key" message.
+    @Test
+    void tomlBinding_rejectsTypoKey_namingNearestKnownComponent() {
+        serviceFrom("""
+                    [orders]
+                    topic_name = "order-events"
+                    partitons = 4
+                    """).config("orders", TopicConfig.class)
+                        .onSuccess(_ -> fail("typo'd key 'partitons' must be rejected"))
+                        .onFailure(cause -> {
+                            assertThat(cause).isInstanceOf(ConfigError.UnknownKey.class);
+                            assertThat(cause.message()).contains("partitions");
+                        });
+    }
+
+    /// Guards against a false positive from the opt-in [org.pragmatica.config.StrictKeys] check:
+    /// every durable-tier key, correctly spelled, still binds clean.
+    @Test
+    void tomlBinding_correctlySpelledDurableSection_bindsWithNoFalsePositive() {
+        var config = bind("""
+                          [orders]
+                          topic_name = "order-events"
+                          durability = "durable"
+                          partitions = 4
+                          replicas = 3
+                          min_sync_replicas = 3
+                          retention = "14d"
+                          """);
+
+        var spec = config.durableSpec().unwrap().unwrap();
+
+        assertThat(spec.partitions()).isEqualTo(4);
+        assertThat(spec.replicas()).isEqualTo(3);
+        assertThat(spec.minSyncReplicas()).isEqualTo(3);
+    }
+
+    /// Team-lead condition 2: the strict check is scoped to exactly the keys [TopicConfig] itself
+    /// binds — a nested sub-section (owned by the dashed-by-convention `StreamConfigParser`) is
+    /// never inspected, however it is spelled. `provider.keys()` returns one flat merged key set
+    /// for the whole document, so nested-table isolation has to be filtered explicitly rather than
+    /// falling out of a per-section data structure — this is the test that would catch a regression
+    /// removing that filter.
+    @Test
+    void tomlBinding_acceptsDashedKeyInsideNestedConsumerSubsection() {
+        var config = bind("""
+                          [orders]
+                          topic_name = "order-events"
+                          durability = "durable"
+                          retention = "14d"
+
+                          [orders.consumers.handler]
+                          batch-size = 100
+                          """);
+
+        assertThat(config.topicName()).isEqualTo("order-events");
+        assertThat(config.durability()).isEqualTo(TopicDurability.DURABLE);
+    }
+
+    /// Companion to the above: a dashed key at the topic level is still rejected — naming its own
+    /// correct spelling, never anything from the nested consumer sub-section — even though a
+    /// dashed key inside that nested sub-section is present and accepted in the same document.
+    @Test
+    void tomlBinding_rejectsDashedTopicLevelKey_evenWithNestedConsumerSubsectionPresent() {
+        serviceFrom("""
+                    [orders]
+                    topic_name = "order-events"
+                    durability = "durable"
+                    retention = "14d"
+                    min-sync-replicas = 2
+
+                    [orders.consumers.handler]
+                    batch-size = 100
+                    """).config("orders", TopicConfig.class)
+                        .onSuccess(_ -> fail("dashed min-sync-replicas at topic level must be rejected"))
+                        .onFailure(cause -> {
+                            assertThat(cause).isInstanceOf(ConfigError.UnknownKey.class);
+                            assertThat(cause.message()).contains("min_sync_replicas");
+                            assertThat(cause.message()).doesNotContain("batch");
+                        });
+    }
+
+    private static ConfigService serviceFrom(String toml) {
+        var source = TomlConfigSource.tomlConfigSource(toml).unwrap();
+        var provider = ConfigurationProvider.builder().withSource(source).build();
+
+        return ProviderBasedConfigService.providerBasedConfigService(provider);
     }
 
     private static TopicConfig bind(String toml) {
-        return TomlConfigService.tomlConfigService(toml)
-                                .flatMap(svc -> svc.config("orders", TopicConfig.class))
-                                .unwrap();
+        return serviceFrom(toml).config("orders", TopicConfig.class)
+                                 .unwrap();
     }
 }
