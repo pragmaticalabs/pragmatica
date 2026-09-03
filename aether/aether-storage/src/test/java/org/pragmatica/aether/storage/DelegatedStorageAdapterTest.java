@@ -79,6 +79,17 @@ class DelegatedStorageAdapterTest {
     }
 
     @Test
+    void activate_demotionManagerFails_adapterReportsInactive() {
+        var adapter = delegatedStorageAdapter(failingDemotionManager("demotion boom"), succeedingGarbageCollector());
+
+        adapter.activate().await();
+
+        assertThat(adapter.isActive())
+            .as("a failed manager activation must leave the adapter reporting inactive, not flip active=true regardless")
+            .isFalse();
+    }
+
+    @Test
     void deactivate_garbageCollectorFails_logsWarningWithCause() {
         var adapter = delegatedStorageAdapter(succeedingDemotionManager(), failingGarbageCollector("gc boom"));
 
