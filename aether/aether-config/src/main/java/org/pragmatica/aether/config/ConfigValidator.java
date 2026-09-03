@@ -15,6 +15,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 
 import static org.pragmatica.lang.io.FileOps.exists;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.lang.Result.success;
 
 
@@ -22,6 +23,11 @@ public final class ConfigValidator {
     private static final Set<Integer> VALID_NODE_COUNTS = Set.of(3, 5, 7);
     private static final Pattern HEAP_PATTERN = Pattern.compile("^\\d+[mMgG]$");
     private static final Set<String> VALID_GC = Set.of("zgc", "g1");
+    /// #250 review: floor below which a storage-maintenance pass (walks every lifecycle in every
+    /// local tier) is more likely to be re-scheduled on top of itself than to finish and idle. Chosen
+    /// two orders of magnitude below the 5-minute production default, not derived from a measured
+    /// worst-case pass duration.
+    private static final TimeSpan MIN_STORAGE_MAINTENANCE_INTERVAL = timeSpan(1).seconds();
 
     private ConfigValidator() {}
 
@@ -62,9 +68,20 @@ public final class ConfigValidator {
     /// unconditionally; a non-positive value would either fail scheduler wiring or spin the tick with
     /// no pacing, so it is rejected here rather than discovered at startup, joining the collected report
     /// with every other config problem.
+    ///
+    /// #250 review (round 2): positivity alone let 1ms through. A pass that iterates every lifecycle in
+    /// every local tier must not run back to back with itself, so a positive-but-below-floor interval is
+    /// reported as its own error rather than folded into the existing positivity message.
     private static void storageMaintenanceErrors(TimeoutsConfig.StorageMaintenanceTimeouts storageMaintenance,
                                                  List<String> errors) {
-        positiveTimeSpanError(storageMaintenance.interval(), "Storage maintenance interval", errors);
+        var interval = storageMaintenance.interval();
+
+        positiveTimeSpanError(interval, "Storage maintenance interval", errors);
+        if (interval.millis() > 0 && interval.millis() < MIN_STORAGE_MAINTENANCE_INTERVAL.millis()) {
+            errors.add("Storage maintenance interval must be at least " + MIN_STORAGE_MAINTENANCE_INTERVAL.millis()
+                      + "ms (a pass that iterates all lifecycles must not run back to back). Got: " + interval.millis()
+                      + "ms");
+        }
     }
 
     /// `reshuffle_concurrency` bounds how many partitions one node materializes+backfills at once. Zero or

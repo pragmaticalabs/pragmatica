@@ -241,6 +241,22 @@ class ConfigValidatorTest {
                 .contains("Storage maintenance interval must be positive"));
     }
 
+    /// #250 review (round 2): positivity alone let 1ms through — a value technically legal but far
+    /// below any interval a lifecycle-iterating pass could safely repeat on. A positive-but-below-floor
+    /// interval must also be rejected, with a message distinct from the positivity check above.
+    @Test
+    void validate_fails_whenStorageMaintenanceIntervalBelowMinimum() {
+        var config = AetherConfig.builder()
+            .withEnvironment(Environment.DOCKER)
+            .timeouts(timeoutsWithStorageMaintenanceInterval(timeSpan(1).millis()))
+            .build();
+
+        ConfigValidator.validate(config)
+            .onSuccessRun(Assertions::fail)
+            .onFailure(cause -> assertThat(cause.message())
+                .contains("Storage maintenance interval must be at least"));
+    }
+
     private static TimeoutsConfig timeoutsWithStorageMaintenanceInterval(TimeSpan interval) {
         var defaults = TimeoutsConfig.timeoutsConfig();
 
