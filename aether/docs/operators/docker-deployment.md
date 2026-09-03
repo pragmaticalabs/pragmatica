@@ -71,6 +71,8 @@ services:
       CLUSTER_PORT: "8090"
       MANAGEMENT_PORT: "8080"
       PEERS: "node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090"
+      AETHER_CLUSTER_NAME: "aether-dev"
+      AETHER_CLUSTER_SECRET: "change-me-dev-secret"
       JAVA_OPTS: "-Xmx256m -XX:+UseZGC"
     ports:
       - "8080:8080"
@@ -78,7 +80,7 @@ services:
     networks:
       - aether-network
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health"]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health/live"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -101,6 +103,8 @@ networks:
 | `CLUSTER_PORT` | 8090 | Port for cluster communication |
 | `MANAGEMENT_PORT` | 8080 | Port for REST API |
 | `PEERS` | (required) | Cluster peer list |
+| `AETHER_CLUSTER_NAME` | (required) | Cluster name; boot aborts if unset. Lowercase DNS-label format (`[a-z]([-a-z0-9]{0,61}[a-z0-9])?`), e.g. `aether-dev` |
+| `AETHER_CLUSTER_SECRET` | (required) | Shared secret used to generate TLS certificates; boot aborts if unset and no `cluster_secret` is configured in the `[tls]` TOML section |
 | `JAVA_OPTS` | `-Xmx512m` | JVM options |
 
 ### Peer List Format
@@ -133,6 +137,8 @@ docker run -d \
   -e NODE_ID=node-1 \
   -e CLUSTER_PORT=8090 \
   -e PEERS="node-1:localhost:8090" \
+  -e AETHER_CLUSTER_NAME=aether-dev \
+  -e AETHER_CLUSTER_SECRET=change-me-dev-secret \
   -p 8080:8080 \
   -p 8090:8090 \
   aether-node:latest
@@ -148,16 +154,22 @@ docker network create aether-net
 docker run -d --name node1 --network aether-net \
   -e NODE_ID=node-1 \
   -e PEERS="node-1:node1:8090,node-2:node2:8090,node-3:node3:8090" \
+  -e AETHER_CLUSTER_NAME=aether-dev \
+  -e AETHER_CLUSTER_SECRET=change-me-dev-secret \
   -p 8080:8080 aether-node:latest
 
 docker run -d --name node2 --network aether-net \
   -e NODE_ID=node-2 \
   -e PEERS="node-1:node1:8090,node-2:node2:8090,node-3:node3:8090" \
+  -e AETHER_CLUSTER_NAME=aether-dev \
+  -e AETHER_CLUSTER_SECRET=change-me-dev-secret \
   -p 8081:8080 aether-node:latest
 
 docker run -d --name node3 --network aether-net \
   -e NODE_ID=node-3 \
   -e PEERS="node-1:node1:8090,node-2:node2:8090,node-3:node3:8090" \
+  -e AETHER_CLUSTER_NAME=aether-dev \
+  -e AETHER_CLUSTER_SECRET=change-me-dev-secret \
   -p 8082:8080 aether-node:latest
 ```
 
@@ -167,7 +179,7 @@ Containers include health checks:
 
 ```dockerfile
 HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \
-    CMD wget --spider -q http://localhost:8080/health || exit 1
+    CMD wget --spider -q http://localhost:8080/health/live || exit 1
 ```
 
 Check health status:
@@ -329,7 +341,7 @@ jobs:
 
 1. Verify all nodes can reach each other:
    ```bash
-   docker exec aether-node-1 wget -q -O- http://aether-node-2:8080/health
+   docker exec aether-node-1 wget -q -O- http://aether-node-2:8080/health/live
    ```
 2. Check PEERS environment variable format
 3. Ensure health checks are passing
