@@ -48,6 +48,22 @@ class SchemaStatusTableTest {
                                                       "heldSlices":[],\
                                                       "owningBlueprint":"org.example:my-app:1.0.0"}""";
 
+    /// #760/#724 review round 3 item 2(e): a FAILED record can hold MORE than one slice, and the
+    /// rendered `heldSlices` JSON array (78 chars for these two artifacts) must not be silently cut
+    /// by the `HELD SLICES` column's fixed width — the single-slice fixture above (36 rendered
+    /// chars) never exceeded the old width and could not catch that truncation.
+    private static final String STATUS_TWO_HELD_SLICES_RESPONSE = """
+                                                                  {"datasources":[\
+                                                                  {"datasource":"orders_db","currentVersion":3,\
+                                                                  "lastMigration":"V003__add_index.sql","status":"COMPLETED",\
+                                                                  "heldSlices":[],\
+                                                                  "owningBlueprint":"org.example:my-app:1.0.0"},\
+                                                                  {"datasource":"billing_db","currentVersion":7,\
+                                                                  "lastMigration":"V007__add_ledger.sql","status":"FAILED",\
+                                                                  "heldSlices":["org.example:billing-worker:2.1.0",\
+                                                                  "org.example:billing-ledger-writer:2.1.0"],\
+                                                                  "owningBlueprint":"org.example:billing:2.1.0"}]}""";
+
     private PrintStream originalOut;
     private ByteArrayOutputStream outCapture;
 
@@ -112,6 +128,21 @@ class SchemaStatusTableTest {
 
         assertThat(failedRow).contains("org.example:billing-worker:2.1.0");
         assertThat(completedRow).doesNotContain("org.example:billing-worker:2.1.0");
+    }
+
+    /// #760/#724 review round 3 item 2(e): `OutputFormatter.extractColumnValue` hard-truncates any
+    /// value longer than the column width with no wrapping, so a record holding more than one slice
+    /// silently lost artifact names off the end of the `HELD SLICES` column.
+    @Test
+    void printQuery_rendersHeldSlices_untruncated_forMultipleHeldSlices() {
+        OutputFormatter.printQuery(STATUS_TWO_HELD_SLICES_RESPONSE,
+                                   parseOptions("--format", "table"),
+                                   AetherCli.SchemaCommand.SCHEMA_STATUS_ALL_TABLE);
+
+        var failedRow = rowContaining("billing_db");
+
+        assertThat(failedRow).contains("org.example:billing-worker:2.1.0")
+                             .contains("org.example:billing-ledger-writer:2.1.0");
     }
 
     @Test

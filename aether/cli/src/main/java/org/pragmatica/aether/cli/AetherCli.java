@@ -3844,7 +3844,7 @@ public class AetherCli implements Runnable {
                                                                                                              10),
                                                                                   new OutputFormatter.Column("HELD SLICES",
                                                                                                              "heldSlices",
-                                                                                                             40),
+                                                                                                             90),
                                                                                   new OutputFormatter.Column("VERSION",
                                                                                                              "currentVersion",
                                                                                                              7),
