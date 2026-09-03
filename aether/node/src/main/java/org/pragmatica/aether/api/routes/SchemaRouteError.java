@@ -106,6 +106,34 @@ public sealed interface SchemaRouteError extends Cause, HttpStatusAware {
         }
     }
 
+    /// 409 — `/migrate` was addressed at a PENDING record (#760/#724 review round 2 item l).
+    /// `guardReactivation` special-cased only COMPLETED-with-active-slices; every other status,
+    /// PENDING included, fell through to `writeMigratingStatus` and was silently re-armed to
+    /// MIGRATING. That reproduces the exact hazard `SchemaAlreadyServing` above already guards
+    /// against: MIGRATING has no automatic clearing path, so a PENDING record — one already sitting
+    /// in the state that dispatches a migration on its own Put (`SchemaOrchestratorService.migrateIfNeeded`,
+    /// #724's single-flight retry) — gains nothing from re-arming and loses its PENDING-specific
+    /// retry lever (`SchemaNotFailed` above) in the process. Refused (409) for the same reason
+    /// COMPLETED-with-active-slices is: no functional benefit, one real hazard.
+    record SchemaAlreadyPending(String datasource) implements SchemaRouteError {
+        public static SchemaAlreadyPending schemaAlreadyPending(String datasource) {
+            return new SchemaAlreadyPending(datasource);
+        }
+
+        @Override
+        public String message() {
+            return "Schema for datasource '" + datasource
+                 + "' already has a migration PENDING — re-arming to MIGRATING has no dispatch effect"
+                 + " of its own and would strand the record with no automatic clearing path; wait for"
+                 + " the pending migration to dispatch, or use retry if it has since failed";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+    }
+
     /// 400 — a present `?version=` / `?targetVersion=` query parameter that is not an integer. This
     /// was previously not a `Cause` at all: `Integer.parseInt` threw out of the handler, past the
     /// routing layer (which lifts nothing) and past `ManagementRouter`, and was caught only by the

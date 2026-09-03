@@ -251,18 +251,19 @@ class SchemaRouteStatusTest {
         /// #760 review BLOCKING 1 pinning test. Before the fix, `heldSlices` matched ownership alone
         /// with no per-node state check, so an ACTIVE slice — one that already passed the activation
         /// gate and has no transition path back through LOADED — was reported as held whenever its
-        /// record carried a blocking status. Seeded from PENDING rather than COMPLETED: a COMPLETED
-        /// record with a live ACTIVE slice is now refused outright by `/migrate`
-        /// ([ReactivationGuard]), so the only way `/migrate` can still legitimately land a blocking
-        /// status next to an already-ACTIVE slice is a record that was never COMPLETED to begin with
-        /// — exactly what this seeds, mirroring a slice that activated on an earlier schema version
-        /// while this datasource's own migration never got past PENDING.
+        /// record carried a blocking status. Seeded from FAILED rather than COMPLETED or PENDING: a
+        /// COMPLETED record with a live ACTIVE slice is refused outright by `/migrate`, and (#760/#724
+        /// review round 2 item l) so is a PENDING one ([ReactivationGuard]) — so the only way `/migrate`
+        /// can still legitimately land a blocking status next to an already-ACTIVE slice is a record
+        /// that is neither COMPLETED nor PENDING, i.e. FAILED — exactly what this seeds, mirroring a
+        /// slice that activated on an earlier schema version while this datasource's own migration
+        /// attempt failed.
         @Test
-        void statusRoute_omitsActiveSlice_whenMigrateReArmsFromPending() {
-            seed(SchemaStatus.PENDING);
+        void statusRoute_omitsActiveSlice_whenMigrateReArmsFromFailed() {
+            seed(SchemaStatus.FAILED);
             seedActiveSlice(HELD_SLICE, OWNER);
 
-            handle(ManagementRoute.SCHEMA_MIGRATE, Option.none(), Option.none()).onFailure(cause -> Assertions.fail("migrate from PENDING must succeed: "
+            handle(ManagementRoute.SCHEMA_MIGRATE, Option.none(), Option.none()).onFailure(cause -> Assertions.fail("migrate from FAILED must succeed: "
                                                                                                                     + cause.message()));
 
             assertThat(successResponseFor(ManagementRoute.SCHEMA_STATUS_ONE).heldSlices()).as("an ACTIVE slice already passed the gate and has no transition path back through LOADED")
@@ -353,6 +354,35 @@ class SchemaRouteStatusTest {
 
             assertThat(statusFor(ManagementRoute.SCHEMA_MIGRATE)).as("a slice mid-activation is about to serve the same datasource, same as one already ACTIVE")
                       .isEqualTo(HttpStatus.CONFLICT);
+        }
+
+        /// #760/#724 review round 2 item l pinning test — before the fix, `guardReactivation` special-
+        /// cased only COMPLETED and let every other status (PENDING included) fall through to
+        /// `writeMigratingStatus`, silently re-arming a PENDING record to MIGRATING with no dispatch
+        /// effect of its own and the same missing-clearing-path hazard `SchemaAlreadyServing` guards
+        /// against above. No active-slice setup is needed: PENDING is refused unconditionally.
+        @Test
+        void migrateRoute_respondsConflict_whenRecordIsPending() {
+            seed(SchemaStatus.PENDING);
+
+            assertThat(statusFor(ManagementRoute.SCHEMA_MIGRATE)).as("a PENDING record already dispatches on its own Put; re-arming it gains nothing and strands the record")
+                      .isEqualTo(HttpStatus.CONFLICT);
+        }
+
+        @Test
+        void migrateRoute_propagatesCauseUnwrapped_whenRecordIsPending() {
+            seed(SchemaStatus.PENDING);
+
+            assertThat(causeFrom(ManagementRoute.SCHEMA_MIGRATE)).isEqualTo(SchemaRouteError.SchemaAlreadyPending.schemaAlreadyPending(DATASOURCE));
+        }
+
+        @Test
+        void problemBody_namesDatasource_whenRecordIsPending() {
+            seed(SchemaStatus.PENDING);
+
+            assertThat(problemBodyFor(ManagementRoute.SCHEMA_MIGRATE)).contains(DATASOURCE)
+                      .contains("already has a migration PENDING")
+                      .contains("409");
         }
     }
 

@@ -39,6 +39,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.parse.Number;
 
 import static org.pragmatica.aether.api.routes.SchemaRouteError.InvalidVersionParameter.invalidVersionParameter;
+import static org.pragmatica.aether.api.routes.SchemaRouteError.SchemaAlreadyPending.schemaAlreadyPending;
 import static org.pragmatica.aether.api.routes.SchemaRouteError.SchemaAlreadyServing.schemaAlreadyServing;
 import static org.pragmatica.aether.api.routes.SchemaRouteError.SchemaNotFailed.schemaNotFailed;
 import static org.pragmatica.aether.api.routes.SchemaRouteError.SchemaRecordNotFound.schemaRecordNotFound;
@@ -208,14 +209,22 @@ public final class SchemaRoutes implements RouteSource {
     /// self-inflicted hold is an operator noticing a stuck LOADED slice and clearing the record
     /// they themselves re-armed. A COMPLETED record with zero live ACTIVE slices (nothing yet
     /// deployed, or a prior deploy never reached ACTIVE) has nothing to protect and is unaffected.
+    ///
+    /// #760/#724 review round 2 item l: a PENDING record hit the same hazard through the `else`
+    /// fallthrough — the guard above special-cased only COMPLETED, so `/migrate` on PENDING silently
+    /// rewrote it to MIGRATING with no dispatch effect and the same missing clearing path. Refused
+    /// (409, [SchemaRouteError.SchemaAlreadyPending]) alongside COMPLETED-with-active-slices; a
+    /// PENDING record already dispatches on its own and gains nothing from being re-armed.
     private Promise<SchemaMigrateResponse> triggerMigration(String datasource) {
         return lookupSchemaVersion(datasource).flatMap(current -> guardReactivation(current, datasource));
     }
 
     private Promise<SchemaMigrateResponse> guardReactivation(SchemaVersionValue current, String datasource) {
-        return current.status() == SchemaStatus.COMPLETED
-               ? refuseIfActiveSlicesPresent(current, datasource)
-               : writeMigratingStatus(current, datasource);
+        return switch (current.status()) {
+            case COMPLETED -> refuseIfActiveSlicesPresent(current, datasource);
+            case PENDING -> schemaAlreadyPending(datasource).promise();
+            default -> writeMigratingStatus(current, datasource);
+        };
     }
 
     private Promise<SchemaMigrateResponse> refuseIfActiveSlicesPresent(SchemaVersionValue current, String datasource) {
