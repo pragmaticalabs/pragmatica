@@ -260,15 +260,17 @@ public final class SchemaRoutes implements RouteSource {
         return count.get();
     }
 
-    private static final Set<SliceState> SERVING_STATES = Set.of(SliceState.ACTIVATING, SliceState.ROUTING, SliceState.ACTIVE);
+    private static final Set<SliceState> SERVING_STATES = Set.of(SliceState.ACTIVATING,
+                                                                 SliceState.ROUTING,
+                                                                 SliceState.ACTIVE);
 
     private void countIfActiveAndOwnedBy(BlueprintId owner,
                                          SliceNodeKey key,
                                          SliceNodeValue value,
                                          AtomicInteger count) {
         if (SERVING_STATES.contains(value.state()) && sliceOwner(key.artifact()).map(actualOwner -> actualOwner.base()
-                                                                                                           .equals(owner.base()))
-                                                            .or(false)) {
+                                                                                                               .equals(owner.base()))
+                                                                .or(false)) {
             count.incrementAndGet();
         }
     }

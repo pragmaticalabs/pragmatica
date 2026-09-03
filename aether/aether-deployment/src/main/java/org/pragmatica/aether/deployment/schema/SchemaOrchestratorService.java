@@ -188,7 +188,8 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     // no owner token needed, the call-site scoping is the ownership proof.
     private Promise<Unit> executeMigrationFlow(String datasourceName, SchemaVersionValue value) {
         return acquireLock(datasourceName).flatMap(_ -> runMigration(datasourceName, value).flatMap(_ -> releaseLock(datasourceName))
-                                                                     .replaceResult(result -> finalizeAttempt(datasourceName, result)));
+                                                                    .replaceResult(result -> finalizeAttempt(datasourceName,
+                                                                                                             result)));
     }
 
     private Result<Unit> finalizeAttempt(String datasourceName, Result<Unit> result) {
@@ -219,9 +220,9 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
 
         emitMigrationStarted(datasourceName, value);
 
-        return updateStatus(datasourceName, value, SchemaStatus.MIGRATING).flatMap(_ -> resolveAndParseMigrations(datasourceName, value)
-                                                                                                     .timeout(schemaManager.policy()
-                                                                                                                          .migrationTimeout()))
+        return updateStatus(datasourceName, value, SchemaStatus.MIGRATING).flatMap(_ -> resolveAndParseMigrations(datasourceName,
+                                                                                                                  value).timeout(schemaManager.policy()
+                                                                                                                                              .migrationTimeout()))
                            .flatMap(_ -> markCompleted(datasourceName, value, startTime))
                            .mapError(cause -> handleMigrationFailure(datasourceName, value, cause));
     }
@@ -358,7 +359,6 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
         if (cause instanceof SchemaError.MigrationSetUnavailable) {
             return FailureClassification.PERMANENT;
         }
-
         // #760/#724 review round 2 item c: a timed-out attempt (Promise.timeout() on
         // resolveAndParseMigrations, bounded by SchemaPolicy#migrationTimeout) is classified explicitly
         // rather than left to the UNKNOWN fallthrough below — both already skip retry and reach

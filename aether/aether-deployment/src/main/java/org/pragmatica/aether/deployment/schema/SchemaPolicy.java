@@ -8,6 +8,7 @@ import org.pragmatica.lang.io.TimeSpan;
 
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
+
 public record SchemaPolicy(FailureMode failureMode, FailoverMode failoverMode, TimeSpan migrationTimeout) {
     public enum FailureMode {
         LEAVE_PARTIAL,
@@ -42,7 +43,9 @@ public record SchemaPolicy(FailureMode failureMode, FailoverMode failoverMode, T
         return new SchemaPolicy(failureMode, failoverMode, DEFAULT_MIGRATION_TIMEOUT);
     }
 
-    public static SchemaPolicy schemaPolicy(FailureMode failureMode, FailoverMode failoverMode, TimeSpan migrationTimeout) {
+    public static SchemaPolicy schemaPolicy(FailureMode failureMode,
+                                            FailoverMode failoverMode,
+                                            TimeSpan migrationTimeout) {
         return new SchemaPolicy(failureMode, failoverMode, migrationTimeout);
     }
 }

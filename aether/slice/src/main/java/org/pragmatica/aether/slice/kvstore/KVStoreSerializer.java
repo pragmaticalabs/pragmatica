@@ -310,9 +310,13 @@ public final class KVStoreSerializer {
     /// This makes the section genuinely round-trippable, so — unlike `app-blueprint` — it is NOT in
     /// [#LOSSY_SECTIONS].
     private static String serializeDeploymentOutcome(DeploymentOutcomeValue v) {
-        var slices = v.failingSlices().stream().map(KVStoreSerializer::escapeOutcomeField).collect(Collectors.joining(","));
+        var slices = v.failingSlices()
+                      .stream()
+                      .map(KVStoreSerializer::escapeOutcomeField)
+                      .collect(Collectors.joining(","));
 
-        return v.status().name() + PIPE + slices + PIPE + escapeOutcomeField(v.cause()) + PIPE + v.timestampMs();
+        return v.status()
+                .name() + PIPE + slices + PIPE + escapeOutcomeField(v.cause()) + PIPE + v.timestampMs();
     }
 
     /// Backslash-escapes `\`, `|`, and `,` for a single field of the `deployment-outcome` wire form.
@@ -321,7 +325,9 @@ public final class KVStoreSerializer {
     /// identifiers being structurally unable to contain a delimiter; `cause` here is arbitrary free
     /// text (an exception/[Cause] message) with no such guarantee, so it needs real escaping.
     private static String escapeOutcomeField(String s) {
-        return s.replace("\\", "\\\\").replace("|", "\\|").replace(",", "\\,");
+        return s.replace("\\", "\\\\")
+                .replace("|", "\\|")
+                .replace(",", "\\,");
     }
 
     /// Inverse of [#escapeOutcomeField].
@@ -361,8 +367,11 @@ public final class KVStoreSerializer {
                 current.append(c);
             }
 
-            backslashRun = (c == '\\') ? backslashRun + 1 : 0;
+            backslashRun = (c == '\\')
+                           ? backslashRun + 1
+                           : 0;
         }
+
         parts.add(current.toString());
 
         return parts;
@@ -736,16 +745,17 @@ public final class KVStoreSerializer {
             return parseFailure("deployment-outcome value requires 4 fields, got " + parts.size());
         }
 
-        return DeploymentOutcomeKey.deploymentOutcomeKey("deployment-outcome/" + identity)
-                                    .flatMap(key -> buildDeploymentOutcomeValue(parts).map(value -> entry(key, value)));
+        return DeploymentOutcomeKey.deploymentOutcomeKey("deployment-outcome/" + identity).flatMap(key -> buildDeploymentOutcomeValue(parts).map(value -> entry(key,
+                                                                                                                                                                value)));
     }
 
     private static Result<DeploymentOutcomeValue> buildDeploymentOutcomeValue(List<String> parts) {
         var slicesRaw = parts.get(1);
         var failingSlices = slicesRaw.isEmpty()
                             ? List.<String> of()
-                            : splitOutcomeField(slicesRaw, ',').stream().map(KVStoreSerializer::unescapeOutcomeField).toList();
-
+                            : splitOutcomeField(slicesRaw, ',').stream()
+                                               .map(KVStoreSerializer::unescapeOutcomeField)
+                                               .toList();
         DeploymentOutcomeStatus status;
 
         try {
