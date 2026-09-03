@@ -43,7 +43,7 @@ services:
       - "8080:8080"   # Management API
       - "8090:8090"   # Cluster port
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health"]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health/live"]
       interval: 5s
       timeout: 3s
       retries: 10
