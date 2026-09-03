@@ -26,13 +26,18 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.http.Headers;
+import org.pragmatica.http.HttpMethod;
+import org.pragmatica.http.QueryParams;
 import org.pragmatica.http.routing.RequestContext;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.type.TypeToken;
 
+import io.netty.handler.codec.http.HttpHeaders;
 import org.junit.jupiter.api.Test;
 
 import static org.pragmatica.aether.api.ManagementApiResponses.BlueprintResponse;
@@ -53,6 +58,10 @@ class BlueprintDeployStatusTest {
     private static final String COORDS = "org.example:orders-app:1.0.0:blueprint";
 
     private static final BlueprintId BLUEPRINT_ID = BlueprintId.blueprintId("org.example:orders-app:1.0.0").unwrap();
+
+    /// #759 — every response, regardless of status, must point the caller at the terminal-outcome
+    /// source rather than leaving "pending" as a dead end with no way to learn what happened next.
+    private static final String STATUS_URL = "/api/blueprints/status/org.example%3Aorders-app%3A1.0.0";
 
     private static final Artifact SLICE_A = Artifact.artifact("org.example:svc-a:1.0.0").unwrap();
     private static final Artifact SLICE_B = Artifact.artifact("org.example:svc-b:1.0.0").unwrap();
@@ -81,6 +90,8 @@ class BlueprintDeployStatusTest {
         assertThat(response.targetInstances()).isEqualTo(5);
         assertThat(response.activeInstances()).isEqualTo(0);
         assertThat(response.failedInstances()).isEqualTo(0);
+        assertThat(response.statusUrl()).as("a pending caller must be told where to poll for the terminal outcome")
+                  .isEqualTo(STATUS_URL);
     }
 
     /// A redeploy of the same artifact set where one instance is already sitting FAILED (left over
@@ -96,6 +107,7 @@ class BlueprintDeployStatusTest {
         assertThat(response.status()).as("a FAILED instance must never be reported as 'deployed'").isEqualTo("degraded");
         assertThat(response.failedInstances()).isEqualTo(1);
         assertThat(response.activeInstances()).isEqualTo(2);
+        assertThat(response.statusUrl()).as("a degraded response must still point at the status endpoint").isEqualTo(STATUS_URL);
     }
 
     /// Positive control: every target instance is already active (idempotent redeploy of an
@@ -115,6 +127,7 @@ class BlueprintDeployStatusTest {
         assertThat(response.status()).isEqualTo("deployed");
         assertThat(response.activeInstances()).isEqualTo(response.targetInstances());
         assertThat(response.failedInstances()).isEqualTo(0);
+        assertThat(response.statusUrl()).as("a deployed response must still carry the status endpoint").isEqualTo(STATUS_URL);
     }
 
     // --- helpers ---
@@ -122,7 +135,7 @@ class BlueprintDeployStatusTest {
         var holder = new AtomicReference<BlueprintResponse>();
 
         deployRoute(deployed).handler()
-                   .handle(requestContext())
+                   .handle(new StubRequestContext())
                    .await()
                    .onSuccess(value -> holder.set((BlueprintResponse) value))
                    .onFailure(cause -> fail("Deploy must succeed, got: " + cause.message()));
@@ -130,13 +143,17 @@ class BlueprintDeployStatusTest {
         return holder.get();
     }
 
+    /// #759 — `.toList()` + a ternary replaces `.findFirst().orElseThrow()`: a missing route is
+    /// still a hard test-setup failure (via `fail`, not a `throw` statement), so JBCT-EX-02 no
+    /// longer fires without weakening the diagnostic.
     private static Route<?> deployRoute(Map<Artifact, Map<NodeId, SliceState>> deployed) {
-        return SliceRoutes.sliceRoutes(() -> nodeOver(deployed))
-                          .routes()
-                          .filter(candidate -> candidate.name()
-                                                        .equals(ManagementRoute.BLUEPRINT_DEPLOY.name()))
-                          .findFirst()
-                          .orElseThrow();
+        var routes = SliceRoutes.sliceRoutes(() -> nodeOver(deployed))
+                                .routes()
+                                .filter(candidate -> candidate.name()
+                                                              .equals(ManagementRoute.BLUEPRINT_DEPLOY.name()))
+                                .toList();
+
+        return routes.isEmpty() ? fail("BLUEPRINT_DEPLOY route not registered") : routes.getFirst();
     }
 
     private static ManageableNode nodeOver(Map<Artifact, Map<NodeId, SliceState>> deployed) {
@@ -222,17 +239,73 @@ class BlueprintDeployStatusTest {
         };
     }
 
+    /// #759 — routes through JUnit's generically-typed `fail` rather than a `throw` statement, so
+    /// an unexpected call to any collaborator method still fails the test immediately (identical
+    /// diagnostic to before) without tripping JBCT-EX-01.
     private static <T> T unsupported(String methodName) {
-        throw new UnsupportedOperationException("Not touched by the deploy route handler: " + methodName);
+        return fail("Not touched by the deploy route handler: " + methodName);
     }
 
-    /// The body route reads its payload through `fromJson` only; nothing else on the context is
-    /// touched before the handler runs.
-    private static RequestContext requestContext() {
-        return (RequestContext) Proxy.newProxyInstance(RequestContext.class.getClassLoader(),
-                                                       new Class[]{RequestContext.class},
-                                                       (_, method, args) -> "fromJson".equals(method.getName())
-                                                                            ? Result.success(new SliceRoutes.BlueprintDeployRequest(COORDS))
-                                                                            : unsupported(method.getName()));
+    /// #759 — hand-written rather than a `Proxy`, following the `StubRequestContext` idiom
+    /// `DeployRouteStatusTest`/`SchemaRouteStatusTest` already use for this exact interface:
+    /// `RequestContext` is small and well-defined, unlike `ManageableNode`'s 50+ methods, where a
+    /// hand-written stub would be pure boilerplate and Proxy stays the established choice (see
+    /// `nodeOver`). The body route reads its payload through `fromJson` only; nothing else on the
+    /// context is touched before the handler runs.
+    private record StubRequestContext() implements RequestContext {
+        @Override
+        public <T> Result<T> fromJson(TypeToken<T> literal) {
+            return asRequested(new SliceRoutes.BlueprintDeployRequest(COORDS));
+        }
+
+        @SuppressWarnings("unchecked")
+        private static <T> Result<T> asRequested(SliceRoutes.BlueprintDeployRequest request) {
+            return Result.success((T) request);
+        }
+
+        @Override
+        public Route<?> route() {
+            return unsupported("route");
+        }
+
+        @Override
+        public List<String> pathParams() {
+            return unsupported("pathParams");
+        }
+
+        @Override
+        public HttpHeaders responseHeaders() {
+            return unsupported("responseHeaders");
+        }
+
+        @Override
+        public String requestId() {
+            return unsupported("requestId");
+        }
+
+        @Override
+        public HttpMethod method() {
+            return unsupported("method");
+        }
+
+        @Override
+        public String path() {
+            return unsupported("path");
+        }
+
+        @Override
+        public Headers headers() {
+            return unsupported("headers");
+        }
+
+        @Override
+        public QueryParams queryParams() {
+            return unsupported("queryParams");
+        }
+
+        @Override
+        public byte[] body() {
+            return unsupported("body");
+        }
     }
 }
