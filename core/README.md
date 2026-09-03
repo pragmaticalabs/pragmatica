@@ -44,6 +44,8 @@ Option<String> name = Option.option(user.getName())
 
 ### Safe Error Handling Without Exceptions
 ```java
+// MathError implements org.pragmatica.lang.Cause (message() is the only method a Cause
+// must define); see "Your First Pragmatica Application" below for a full definition.
 Result<Integer> divide(int a, int b) {
     return b == 0
         ? MathError.DIVISION_BY_ZERO.result()
@@ -106,24 +108,45 @@ implementation 'org.pragmatica-lite:core:1.0.0-rc4'
 ### Your First Pragmatica Application
 
 ```java
+package org.pragmatica.examples;
+
 import org.pragmatica.lang.*;
 
+
 public class Example {
+    // A failure cause: implementing org.pragmatica.lang.Cause requires only message().
+    enum MathError implements Cause {
+        DIVISION_BY_ZERO("Division by zero");
+        private final String message;
+        MathError(String message) {
+            this.message = message;
+        }
+        static MathError divisionByZero() {
+            return DIVISION_BY_ZERO;
+        }
+        @Override
+        public String message() {
+            return message;
+        }
+    }
+
     // Safe division that never throws
     public static Result<Double> safeDivide(double a, double b) {
         return b == 0.0
-            ? MathError.divisionByZero().result()
-            : Result.ok(a / b);
+               ? MathError.divisionByZero().result()
+               : Result.ok(a / b);
     }
 
-    // Chaining operations
-    static void main(String[] args) {
-        safeDivide(10.0, 2.0)
-            .map(result -> result * 2)  // Transform success value
-            .fold(
-                error -> "Error: " + error.message(),
-                success -> "Result: " + success
-            );
+    // Chaining operations. JBCT-RET-01 requires business methods to return one of
+    // T / Option<T> / Result<T> / Promise<T>; the JVM entry point is the sanctioned
+    // exception, suppressed the same way as in aether/aether-setup's AetherUp.main.
+    @SuppressWarnings("JBCT-RET-01")
+    public static void main(String[] args) {
+        var message = safeDivide(10.0, 2.0).map(result -> result * 2)  // Transform success value
+                                .fold(error -> "Error: " + error.message(),
+                                      success -> "Result: " + success);
+
+        System.out.println(message);
     }
 }
 ```
