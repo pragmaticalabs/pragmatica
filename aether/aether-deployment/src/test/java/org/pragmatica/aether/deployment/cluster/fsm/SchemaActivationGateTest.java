@@ -436,6 +436,43 @@ class SchemaActivationGateTest {
                                  .hasSize(1);
         }
 
+        /// #760 review TEST GAP 3: pins the dedup signature as a stable function of the blocking
+        /// SET rather than of `ConcurrentHashMap` iteration order — see
+        /// [ClusterDeploymentState.Active#reportSchemaHold(SliceNodeKey, Artifact, List)]'s
+        /// `Comparator.comparing(SchemaVersionValue::datasourceName)` sort. Two datasources block
+        /// the SAME slice simultaneously, and the second evaluation tick (the same
+        /// `NodeArtifactPutReceived` re-dispatch the single-datasource `warnsOnce` test above uses)
+        /// writes an unrelated `NodeArtifactKey` entry into the same store, which is exactly the
+        /// kind of intervening mutation the unsorted join could have let flip the signature between
+        /// otherwise-equivalent observations. An unchanged two-datasource hold must still WARN
+        /// exactly once, not once per datasource and not once per tick.
+        @Test
+        void activate_warnsOnce_whenTwoDatasourcesBlockTheSameSliceAcrossTwoEvaluationTicks() {
+            seedSliceTarget(Option.some(OWNER));
+            seedLoadedSlice();
+            seedSchema(OWNED_DATASOURCE, SchemaStatus.PENDING, OWNER);
+            seedSchema(OTHER_DATASOURCE, SchemaStatus.PENDING, OWNER);
+
+            harness.dispatch(new Activate());
+
+            var artifactKey = NodeArtifactKey.nodeArtifactKey(NODE_A, SLICE);
+            var value = NodeArtifactValue.nodeArtifactValue(SliceState.LOADED, System.currentTimeMillis());
+            var put = new KVCommand.Put<NodeArtifactKey, NodeArtifactValue>(artifactKey, value);
+            var secondTick = new ValuePut<>(put, Option.some(value));
+
+            harness.dispatch(new NodeArtifactPutReceived(secondTick));
+
+            var heldWarns = appender.capturedWarns()
+                                    .stream()
+                                    .filter(msg -> msg.contains("held in LOADED"))
+                                    .toList();
+
+            assertThat(heldWarns).as("an unchanged two-datasource hold observed across two ticks must WARN exactly once, naming both datasources")
+                                 .hasSize(1);
+            assertThat(heldWarns.getFirst()).contains(OWNED_DATASOURCE)
+                                            .contains(OTHER_DATASOURCE);
+        }
+
         private LoggerConfig getOrCreateLoggerConfig(Configuration configuration) {
             var existing = configuration.getLoggerConfig(ACTIVE_LOGGER_NAME);
             if (ACTIVE_LOGGER_NAME.equals(existing.getName())) {return existing;}

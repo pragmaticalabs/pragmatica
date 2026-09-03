@@ -77,6 +77,35 @@ public sealed interface SchemaRouteError extends Cause, HttpStatusAware {
         }
     }
 
+    /// 409 — `/migrate` was addressed at a COMPLETED record whose owning blueprint has at least one
+    /// live slice instance already ACTIVE (#760 review BLOCKING 1). Re-arming to MIGRATING has no
+    /// orchestrator effect on its own (only a PENDING record's Put dispatches an actual migration —
+    /// see `SchemaRoutes.triggerMigration`'s header) and one real hazard: MIGRATING stays a blocking
+    /// status with no automatic clearing path, so the next slice instance to reach LOADED (scale-up,
+    /// rolling redeploy, rejoining node) is held on a record the operator themselves re-armed. A
+    /// COMPLETED record with zero live ACTIVE slices is unaffected and still allowed through.
+    record SchemaAlreadyServing(String datasource, int activeSliceCount) implements SchemaRouteError {
+        public static SchemaAlreadyServing schemaAlreadyServing(String datasource, int activeSliceCount) {
+            return new SchemaAlreadyServing(datasource, activeSliceCount);
+        }
+
+        @Override
+        public String message() {
+            return "Schema for datasource '" + datasource
+                 + "' is already COMPLETED and serving " + activeSliceCount
+                 + " active slice instance" + (activeSliceCount == 1
+                                               ? ""
+                                               : "s")
+                 + " — re-triggering migration would hold the next slice to activate with no automatic"
+                 + " recovery; baseline or undo first if a re-migration is genuinely intended";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+    }
+
     /// 400 — a present `?version=` / `?targetVersion=` query parameter that is not an integer. This
     /// was previously not a `Cause` at all: `Integer.parseInt` threw out of the handler, past the
     /// routing layer (which lifts nothing) and past `ManagementRouter`, and was caught only by the

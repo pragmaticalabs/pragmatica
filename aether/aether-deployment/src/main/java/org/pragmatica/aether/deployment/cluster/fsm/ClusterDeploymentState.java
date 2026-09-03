@@ -116,6 +116,38 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
     Logger LOG = LoggerFactory.getLogger(ClusterDeploymentState.class);
     ClusterDeploymentContext ctx();
 
+    /// Schema statuses that hold slice activation (#542). FAILED is a blocking status: the
+    /// physical schema sits at a version the slice was not built against until an operator
+    /// retries or redeploys.
+    ///
+    /// #760 review BLOCKING 1 / TEST GAP 5: hoisted from a `private` copy inside [Active] to a
+    /// single shared accessor also used by `SchemaRoutes.heldSlices` (`aether-node`), so the
+    /// activation gate and the management-API report cannot silently diverge on which statuses
+    /// hold a slice.
+    Set<SchemaStatus> BLOCKING_SCHEMA_STATUSES = Set.of(SchemaStatus.PENDING,
+                                                        SchemaStatus.MIGRATING,
+                                                        SchemaStatus.FAILED);
+
+    /// #760 review BLOCKING 1: the SAME predicate the activation gate uses
+    /// ([Active#collectIfBlocking]) to decide whether a schema record holds a slice, exposed so
+    /// `SchemaRoutes.heldSlices` reads live per-node state instead of re-deriving a parallel
+    /// ownership-only check that ignores [SliceState] entirely.
+    ///
+    /// A slice is held only while it sits in [SliceState#LOADED] — i.e. it has not yet passed the
+    /// gate. An [SliceState#ACTIVE] slice already passed it and has no transition path back
+    /// through this check ([SliceState#validTransitions]), so re-arming a COMPLETED record to
+    /// MIGRATING must not retroactively report a serving slice as held: `sliceState == LOADED` is
+    /// load-bearing, not incidental.
+    static boolean blocksSliceActivation(SliceState sliceState,
+                                         Option<BlueprintId> sliceOwner,
+                                         SchemaVersionValue schema) {
+        return sliceState == SliceState.LOADED
+               && BLOCKING_SCHEMA_STATUSES.contains(schema.status())
+               && sliceOwner.map(owner -> owner.base()
+                                               .equals(schema.owningBlueprint().base()))
+                            .or(false);
+    }
+
     record Dormant(ClusterDeploymentContext ctx) implements ClusterDeploymentState {
         @Contract
         @Override
@@ -168,13 +200,6 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// The fallback source label for a joining worker whose membership `source` is absent or
         /// blank (worker-membership-spec D2).
         private static final String DEFAULT_SOURCE = "default";
-
-        /// Schema statuses that hold slice activation (#542). FAILED is a blocking status: the
-        /// physical schema sits at a version the slice was not built against until an operator
-        /// retries or redeploys.
-        private static final Set<SchemaStatus> BLOCKING_SCHEMA_STATUSES = Set.of(SchemaStatus.PENDING,
-                                                                                 SchemaStatus.MIGRATING,
-                                                                                 SchemaStatus.FAILED);
 
         // --- move-only extraction seams (package-private helpers operating on this Active) ---
         StuckTransitionalRemediator stuckRemediator() {
@@ -1476,11 +1501,17 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// Ownership matches on `ArtifactBase` (version stripped), so a blueprint that advanced from
         /// `my-app:1.0.0` to `my-app:1.0.1` still owns the records its earlier version wrote — the
         /// same rule `hasConflictingOwnership` and `BlueprintService`'s deploy-time gate apply.
+        ///
+        /// #760 review BLOCKING 1: delegates to the shared [ClusterDeploymentState#blocksSliceActivation]
+        /// predicate instead of re-checking status/ownership inline, so this gate and
+        /// `SchemaRoutes.heldSlices` cannot drift apart. `SliceState.LOADED` is passed explicitly —
+        /// this method is reachable only from [#tryActivateIfDependenciesReady(SliceNodeKey)], itself
+        /// only invoked when a slice's state just transitioned to LOADED, so the slice is always
+        /// LOADED at this call site even though nothing here re-reads its live state.
         private static void collectIfBlocking(BlueprintId owner,
                                               SchemaVersionValue value,
                                               List<SchemaVersionValue> blocking) {
-            if (BLOCKING_SCHEMA_STATUSES.contains(value.status()) && owner.base()
-                                                                          .equals(value.owningBlueprint().base())) {
+            if (ClusterDeploymentState.blocksSliceActivation(SliceState.LOADED, Option.some(owner), value)) {
                 blocking.add(value);
             }
         }
@@ -1528,7 +1559,15 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         private void reportSchemaHold(SliceNodeKey sliceKey,
                                       Artifact artifact,
                                       List<SchemaVersionValue> blockingRecords) {
+            // #760 review TEST GAP 3: `blockingRecords` is built by `forEach` over a
+            // `ConcurrentHashMap` (blockingSchemaRecords -> collectIfBlocking), so its iteration
+            // order is unspecified and can differ between two evaluations that observe the exact
+            // same set of blocking datasources. Sorted by datasourceName() so the signature is a
+            // stable function of the blocking SET, not of map iteration order — otherwise a slice
+            // blocked on two datasources could see its signature flip between equivalent
+            // evaluations and fire a spurious second WARN for a hold that never actually changed.
             var signature = blockingRecords.stream()
+                                           .sorted(Comparator.comparing(SchemaVersionValue::datasourceName))
                                            .map(v -> v.datasourceName() + "=" + v.status())
                                            .collect(Collectors.joining(", "));
             var previous = reportedSchemaHolds.put(sliceKey, signature);

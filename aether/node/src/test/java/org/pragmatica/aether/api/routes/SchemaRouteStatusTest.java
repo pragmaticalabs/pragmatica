@@ -10,20 +10,25 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
+import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.ContentType;
 import org.pragmatica.http.Headers;
 import org.pragmatica.http.HttpMethod;
@@ -79,6 +84,8 @@ class SchemaRouteStatusTest {
     private static final BlueprintId OWNER = BlueprintId.blueprintId(COORDS).unwrap();
     private static final String INSTANCE = "/api/v1/schema/status/" + DATASOURCE;
     private static final String REQUEST_ID = "req-1";
+    private static final Version SLICE_VERSION = new Version(1, 0, 0, "");
+    private static final NodeId NODE = new NodeId("node-a");
 
     private InMemoryKvStore store;
     private SchemaRoutes routes;
@@ -192,11 +199,15 @@ class SchemaRouteStatusTest {
     /// DEBUG logs. Ownership matches on the base artifact coordinates (group:artifact, stripped of
     /// version) — the same rule `ClusterDeploymentState` uses to decide whether a slice's blueprint
     /// is the one a schema record blocks.
+    ///
+    /// #760 review BLOCKING 1: `heldSlices` used to scan ownership alone (`SliceTargetKey`/
+    /// `SliceTargetValue`) with no per-node state check at all, so `seedSliceTarget` below now also
+    /// plants the LIVE `SliceNodeKey`/`SliceNodeValue` state the fixed implementation actually reads —
+    /// LOADED for the tests below, which model a slice genuinely waiting at the gate.
     @Nested
     class HeldSlices {
         private static final String HELD_SLICE = "org.example:orders-worker";
         private static final String UNRELATED_SLICE = "org.other:unrelated-worker";
-        private static final Version SLICE_VERSION = new Version(1, 0, 0, "");
 
         @Test
         void statusRoute_listsOwnedSlice_whenSchemaIsBlocking() {
@@ -234,11 +245,82 @@ class SchemaRouteStatusTest {
                       .isEmpty();
         }
 
-        private void seedSliceTarget(String artifactBaseString, BlueprintId owner) {
-            var artifactBase = ArtifactBase.artifactBase(artifactBaseString).unwrap();
+        /// #760 review BLOCKING 1 pinning test. Before the fix, `heldSlices` matched ownership alone
+        /// with no per-node state check, so an ACTIVE slice — one that already passed the activation
+        /// gate and has no transition path back through LOADED — was reported as held whenever its
+        /// record carried a blocking status. Seeded from PENDING rather than COMPLETED: a COMPLETED
+        /// record with a live ACTIVE slice is now refused outright by `/migrate`
+        /// ([ReactivationGuard]), so the only way `/migrate` can still legitimately land a blocking
+        /// status next to an already-ACTIVE slice is a record that was never COMPLETED to begin with
+        /// — exactly what this seeds, mirroring a slice that activated on an earlier schema version
+        /// while this datasource's own migration never got past PENDING.
+        @Test
+        void statusRoute_omitsActiveSlice_whenMigrateReArmsFromPending() {
+            seed(SchemaStatus.PENDING);
+            seedActiveSlice(HELD_SLICE, OWNER);
 
-            store.put(SliceTargetKey.sliceTargetKey(artifactBase),
-                      SliceTargetValue.sliceTargetValue(SLICE_VERSION, 1, Option.some(owner)));
+            handle(ManagementRoute.SCHEMA_MIGRATE, Option.none(), Option.none()).onFailure(cause -> Assertions.fail("migrate from PENDING must succeed: "
+                                                                                                                    + cause.message()));
+
+            assertThat(successResponseFor(ManagementRoute.SCHEMA_STATUS_ONE).heldSlices()).as("an ACTIVE slice already passed the gate and has no transition path back through LOADED")
+                      .isEmpty();
+        }
+    }
+
+    /// #760 review BLOCKING 1's 409 decision: `/migrate` writing MIGRATING has no orchestrator effect
+    /// by itself (only a PENDING record's Put dispatches `SchemaOrchestratorService.migrateIfNeeded`),
+    /// so re-arming a COMPLETED record whose owning blueprint has live ACTIVE slices has no functional
+    /// benefit and one real hazard: MIGRATING has no automatic clearing path, so the next slice
+    /// instance to reach LOADED (scale-up, rolling redeploy, rejoining node) is held on a record the
+    /// operator re-armed themselves. Refused (409) rather than allowed; a COMPLETED record with zero
+    /// live ACTIVE slices is unaffected.
+    @Nested
+    class ReactivationGuard {
+        private static final String ACTIVE_SLICE = "org.example:orders-worker";
+
+        @Test
+        void migrateRoute_respondsConflict_whenCompletedRecordHasActiveSlices() {
+            seed(SchemaStatus.COMPLETED);
+            seedActiveSlice(ACTIVE_SLICE, OWNER);
+
+            assertThat(statusFor(ManagementRoute.SCHEMA_MIGRATE)).as("re-arming a serving schema would strand the next LOADED slice with no automatic recovery")
+                      .isEqualTo(HttpStatus.CONFLICT);
+        }
+
+        @Test
+        void migrateRoute_propagatesCauseUnwrapped_whenCompletedRecordHasActiveSlices() {
+            seed(SchemaStatus.COMPLETED);
+            seedActiveSlice(ACTIVE_SLICE, OWNER);
+
+            assertThat(causeFrom(ManagementRoute.SCHEMA_MIGRATE)).isEqualTo(SchemaRouteError.SchemaAlreadyServing.schemaAlreadyServing(DATASOURCE, 1));
+        }
+
+        @Test
+        void problemBody_namesActiveSliceCount_whenCompletedRecordHasActiveSlices() {
+            seed(SchemaStatus.COMPLETED);
+            seedActiveSlice(ACTIVE_SLICE, OWNER);
+
+            assertThat(problemBodyFor(ManagementRoute.SCHEMA_MIGRATE)).contains(DATASOURCE)
+                      .contains("already COMPLETED and serving")
+                      .contains("409");
+        }
+
+        @Test
+        void migrateRoute_succeeds_whenCompletedRecordHasNoActiveSlices() {
+            seed(SchemaStatus.COMPLETED);
+
+            handle(ManagementRoute.SCHEMA_MIGRATE, Option.none(), Option.none()).onFailure(cause -> Assertions.fail("A COMPLETED record with no active slices must be allowed to re-migrate: "
+                                                                                                                    + cause.message()));
+        }
+
+        @Test
+        void migrateRoute_succeeds_whenActiveSlicesAreOwnedByAnotherBlueprint() {
+            seed(SchemaStatus.COMPLETED);
+            var otherOwner = BlueprintId.blueprintId("org.other:unrelated-app:1.0.0").unwrap();
+            seedActiveSlice(ACTIVE_SLICE, otherOwner);
+
+            handle(ManagementRoute.SCHEMA_MIGRATE, Option.none(), Option.none()).onFailure(cause -> Assertions.fail("An active slice owned by a different blueprint must not block re-migration: "
+                                                                                                                    + cause.message()));
         }
     }
 
@@ -404,6 +486,28 @@ class SchemaRouteStatusTest {
     private void seed(SchemaStatus status) {
         store.put(SchemaVersionKey.schemaVersionKey(DATASOURCE),
                   SchemaVersionValue.schemaVersionValue(DATASOURCE, 3, "V003__add_index.sql", status, COORDS, OWNER));
+    }
+
+    /// Plants ownership (`SliceTargetKey`/`SliceTargetValue`) alongside the LIVE per-node state
+    /// (`SliceNodeKey`/`SliceNodeValue`) that `SchemaRoutes.heldSlices` reads post-#760-review — a
+    /// slice genuinely waiting at the gate.
+    private void seedSliceTarget(String artifactBaseString, BlueprintId owner) {
+        seedSliceInState(artifactBaseString, owner, SliceState.LOADED);
+    }
+
+    /// Same join as [#seedSliceTarget], but ACTIVE: a slice that already passed the gate and has no
+    /// transition path back through LOADED.
+    private void seedActiveSlice(String artifactBaseString, BlueprintId owner) {
+        seedSliceInState(artifactBaseString, owner, SliceState.ACTIVE);
+    }
+
+    private void seedSliceInState(String artifactBaseString, BlueprintId owner, SliceState state) {
+        var artifactBase = ArtifactBase.artifactBase(artifactBaseString).unwrap();
+        var artifact = Artifact.artifact(artifactBase, SLICE_VERSION);
+
+        store.put(SliceTargetKey.sliceTargetKey(artifactBase),
+                  SliceTargetValue.sliceTargetValue(SLICE_VERSION, 1, Option.some(owner)));
+        store.put(SliceNodeKey.sliceNodeKey(artifact, NODE), SliceNodeValue.sliceNodeValue(state));
     }
 
     private SchemaVersionValue recorded() {

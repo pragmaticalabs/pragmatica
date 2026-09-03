@@ -5,19 +5,27 @@
 package org.pragmatica.aether.api.routes;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
+import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentState;
 import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
+import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.http.routing.QueryParameter;
@@ -29,6 +37,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.parse.Number;
 
 import static org.pragmatica.aether.api.routes.SchemaRouteError.InvalidVersionParameter.invalidVersionParameter;
+import static org.pragmatica.aether.api.routes.SchemaRouteError.SchemaAlreadyServing.schemaAlreadyServing;
 import static org.pragmatica.aether.api.routes.SchemaRouteError.SchemaNotFailed.schemaNotFailed;
 import static org.pragmatica.aether.api.routes.SchemaRouteError.SchemaRecordNotFound.schemaRecordNotFound;
 import static org.pragmatica.http.routing.PathParameter.aString;
@@ -44,15 +53,6 @@ public final class SchemaRoutes implements RouteSource {
     /// [SchemaRouteError.InvalidVersionParameter].
     private static final int DEFAULT_UNDO_VERSION = 0;
     private static final int DEFAULT_BASELINE_VERSION = 1;
-
-    /// Statuses that hold slice activation (#542 / [SchemaRouteError]). Mirrors
-    /// `ClusterDeploymentState.Active.BLOCKING_SCHEMA_STATUSES` — duplicated rather than shared
-    /// because that field is `private` to a nested FSM state and this route lives in a different
-    /// module (`aether-node` vs `aether-deployment`); widening its visibility across a module
-    /// boundary for one three-value set was judged a larger change than repeating it here (#760).
-    private static final Set<SchemaStatus> BLOCKING_STATUSES = Set.of(SchemaStatus.PENDING,
-                                                                      SchemaStatus.MIGRATING,
-                                                                      SchemaStatus.FAILED);
 
     private final Supplier<ManageableNode> nodeSupplier;
 
@@ -147,37 +147,104 @@ public final class SchemaRoutes implements RouteSource {
         return SchemaStatusResponse.schemaStatusResponse(value, heldSlices(value));
     }
 
-    /// Scans `SliceTargetKey`/`SliceTargetValue` for slices owned (base-stripped, matching
-    /// `ClusterDeploymentState`'s ownership rule) by this record's blueprint — empty for any
-    /// non-blocking status, since a COMPLETED record holds nothing regardless of ownership.
+    /// Scans `SliceNodeKey`/`SliceNodeValue` — the LIVE per-node runtime state, not the
+    /// ownership-only `SliceTargetKey`/`SliceTargetValue` this used to scan — and delegates to the
+    /// SAME predicate ([ClusterDeploymentState#blocksSliceActivation]) the activation gate itself
+    /// uses (#760 review BLOCKING 1). The prior version matched ownership alone with no state
+    /// check at all, so a slice already ACTIVE (which passed the gate and has no transition path
+    /// back through it) was reported as held whenever its record was re-armed to MIGRATING —
+    /// exactly the false positive this rewrite eliminates. Deduped by artifact base: several node
+    /// instances of the same artifact each contribute a `SliceNodeKey`, and the reported shape is
+    /// one entry per held artifact, not one per instance.
     private List<String> heldSlices(SchemaVersionValue schema) {
-        if (!BLOCKING_STATUSES.contains(schema.status())) {
+        if (!ClusterDeploymentState.BLOCKING_SCHEMA_STATUSES.contains(schema.status())) {
             return List.of();
         }
 
-        var held = new ArrayList<String>();
+        var held = new LinkedHashSet<String>();
 
         nodeSupplier.get()
                     .kvStore()
-                    .forEach(SliceTargetKey.class,
-                             SliceTargetValue.class,
+                    .forEach(SliceNodeKey.class,
+                             SliceNodeValue.class,
                              (key, value) -> collectIfHeldBySchema(schema, key, value, held));
 
-        return held;
+        return List.copyOf(held);
     }
 
-    private static void collectIfHeldBySchema(SchemaVersionValue schema,
-                                              SliceTargetKey key,
-                                              SliceTargetValue value,
-                                              List<String> held) {
-        if (value.owningBlueprint().map(owner -> owner.base()
-                                                      .equals(schema.owningBlueprint().base())).or(false)) {
-            held.add(key.artifactBase().asString());
+    private void collectIfHeldBySchema(SchemaVersionValue schema,
+                                       SliceNodeKey key,
+                                       SliceNodeValue value,
+                                       Set<String> held) {
+        if (ClusterDeploymentState.blocksSliceActivation(value.state(), sliceOwner(key.artifact()), schema)) {
+            held.add(key.artifact().base().asString());
         }
     }
 
+    /// `SliceNodeValue` carries no ownership — that lives on `SliceTargetKey`/`SliceTargetValue`
+    /// (the same desired/ownership record `ClusterDeploymentState.Active.blueprints` mirrors), so
+    /// live state and ownership are joined here per slice, one KV read per artifact.
+    private Option<BlueprintId> sliceOwner(Artifact artifact) {
+        var targetKey = SliceTargetKey.sliceTargetKey(artifact.base());
+
+        return nodeSupplier.get()
+                           .kvStore()
+                           .get(targetKey)
+                           .filter(v -> v instanceof SliceTargetValue)
+                           .map(v -> (SliceTargetValue) v)
+                           .flatMap(SliceTargetValue::owningBlueprint);
+    }
+
+    /// #760 review BLOCKING 1: `/migrate` writing MIGRATING has no orchestrator effect by itself —
+    /// only a PENDING record's Put drives `SchemaOrchestratorService.migrateIfNeeded`
+    /// (`ClusterDeploymentState.processSchemaVersionPut`'s MIGRATING branch only logs at DEBUG).
+    /// Re-arming a COMPLETED record whose owning blueprint has live ACTIVE slices therefore has no
+    /// functional benefit and one real hazard: MIGRATING stays a blocking status, so the next slice
+    /// instance to reach LOADED (a scale-up, a rolling redeploy, a rejoining node) is held there
+    /// with no automatic path back — nothing but another manual write ever resolves a directly-set
+    /// MIGRATING record. Refused (409) rather than allowed, since the only way out of that
+    /// self-inflicted hold is an operator noticing a stuck LOADED slice and clearing the record
+    /// they themselves re-armed. A COMPLETED record with zero live ACTIVE slices (nothing yet
+    /// deployed, or a prior deploy never reached ACTIVE) has nothing to protect and is unaffected.
     private Promise<SchemaMigrateResponse> triggerMigration(String datasource) {
-        return lookupSchemaVersion(datasource).flatMap(current -> writeMigratingStatus(current, datasource));
+        return lookupSchemaVersion(datasource).flatMap(current -> guardReactivation(current, datasource));
+    }
+
+    private Promise<SchemaMigrateResponse> guardReactivation(SchemaVersionValue current, String datasource) {
+        return current.status() == SchemaStatus.COMPLETED
+               ? refuseIfActiveSlicesPresent(current, datasource)
+               : writeMigratingStatus(current, datasource);
+    }
+
+    private Promise<SchemaMigrateResponse> refuseIfActiveSlicesPresent(SchemaVersionValue current, String datasource) {
+        var activeCount = activeSliceCount(current.owningBlueprint());
+
+        return activeCount == 0
+               ? writeMigratingStatus(current, datasource)
+               : schemaAlreadyServing(datasource, activeCount).promise();
+    }
+
+    private int activeSliceCount(BlueprintId owner) {
+        var count = new AtomicInteger();
+
+        nodeSupplier.get()
+                    .kvStore()
+                    .forEach(SliceNodeKey.class,
+                             SliceNodeValue.class,
+                             (key, value) -> countIfActiveAndOwnedBy(owner, key, value, count));
+
+        return count.get();
+    }
+
+    private void countIfActiveAndOwnedBy(BlueprintId owner,
+                                         SliceNodeKey key,
+                                         SliceNodeValue value,
+                                         AtomicInteger count) {
+        if (value.state() == SliceState.ACTIVE && sliceOwner(key.artifact()).map(actualOwner -> actualOwner.base()
+                                                                                                           .equals(owner.base()))
+                                                            .or(false)) {
+            count.incrementAndGet();
+        }
     }
 
     private Promise<SchemaMigrateResponse> undoMigration(String datasource, Option<String> targetVersionOpt) {
