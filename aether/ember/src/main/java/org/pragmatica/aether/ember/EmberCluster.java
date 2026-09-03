@@ -191,10 +191,11 @@ public final class EmberCluster {
     /// Exposed to tests via [#currentClusterSecret].
     private final AtomicReference<byte[]> clusterSecret = new AtomicReference<>(generateClusterSecret());
 
-    /// #715 — the `certificateProvider` actually threaded into the most recently constructed node's
-    /// [AetherNodeConfig], so SWIM gossip encryption is wired ([AetherNode] otherwise falls back to
-    /// `GossipEncryptor.none()`). Exposed to tests via [#wiredCertificateProvider].
-    private final AtomicReference<Option<CertificateProvider>> lastCertificateProvider = new AtomicReference<>(Option.empty());
+    /// #715 — the [AetherNodeConfig] object actually passed to the most recently constructed node's
+    /// constructor. Captured from the real `config` value itself, never mirrored independently at
+    /// construction time, so [#wiredCertificateProvider] and [#wiredQuicTls] can never drift from
+    /// what a node was truly wired with.
+    private final AtomicReference<Option<AetherNodeConfig>> lastNodeConfig = new AtomicReference<>(Option.empty());
 
     private static byte[] generateClusterSecret() {
         var secret = new byte[32];
@@ -400,11 +401,23 @@ public final class EmberCluster {
                             .clone();
     }
 
-    /// TEST SEAM (#715) — exposes the `certificateProvider` actually threaded into the most recently
-    /// constructed node's [AetherNodeConfig], so tests can pin whether SWIM gossip encryption is
-    /// wired for real nodes rather than inferring it from the QUIC path alone.
+    /// TEST SEAM (#715) — exposes the `certificateProvider` actually present in the most recently
+    /// constructed node's real [AetherNodeConfig] object, so tests can pin whether SWIM gossip
+    /// encryption is wired for real nodes rather than inferring it from a value set independently of
+    /// the config that was actually built (reverting the config argument alone flips this, since it
+    /// reads the config object itself).
     Option<CertificateProvider> wiredCertificateProvider() {
-        return lastCertificateProvider.get();
+        return lastNodeConfig.get()
+                             .flatMap(AetherNodeConfig::certificateProvider);
+    }
+
+    /// TEST SEAM (#715) — exposes the QUIC `TlsConfig` actually present in the most recently
+    /// constructed node's real [AetherNodeConfig] object — the same value [AetherNode]'s QUIC
+    /// transport uses — so tests can build genuine cross-instance QUIC clients/servers through the
+    /// production wiring instead of re-deriving TLS material independently of it.
+    Option<TlsConfig> wiredQuicTls() {
+        return lastNodeConfig.get()
+                             .map(AetherNodeConfig::quicTls);
     }
 
     private EnvironmentIntegration emberEnvironment() {
@@ -1005,8 +1018,6 @@ public final class EmberCluster {
                                           coreMax,
                                           targetClusterSize);
         var certificateProvider = SelfSignedCertificateProvider.selfSignedCertificateProvider(clusterSecret.get()).unwrap();
-
-        lastCertificateProvider.set(Option.some(certificateProvider));
         var quicTls = buildForgeQuicTls(nodeId, certificateProvider);
         var config = new AetherNodeConfig(topology,
                                           ProtocolConfig.testConfig(),
@@ -1054,6 +1065,8 @@ public final class EmberCluster {
         // name is stamped and the fleet cap stays inert here. Forge has no
         // cloud provider to cap in the first place.
         Option.empty());
+
+        lastNodeConfig.set(Option.some(config));
         // Single-JVM hosting: when this node's SelfDrainCoordinator completes its drain
         // phase, do NOT halt the JVM (would kill all other in-process nodes). Stop the
         // node gracefully and remove it from the cluster's registry instead.
