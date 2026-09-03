@@ -1436,7 +1436,48 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                         ctx.nowMs()));
             if (ctx.atomicity() == DeploymentAtomicity.ALL_OR_NOTHING) {
                 rollbackBlueprintForArtifact(artifact, failureReason);
+            } else {
+                recordBestEffortFailureOutcome(artifact, failureReason);
             }
+        }
+
+        /// #760/#724 review round 2 item g: BEST_EFFORT deployments never populate
+        /// `inFlightBlueprints` (see `trackInFlightBlueprint`'s `ALL_OR_NOTHING`-only guard), so
+        /// neither `rollbackBlueprintForArtifact` nor `trackBlueprintSliceActive`'s
+        /// `recordSucceededOutcome` ever fires for them — a BEST_EFFORT partial failure left no
+        /// durable outcome record at all before this change. This IS the terminal point for that
+        /// path: `handleDeterministicFailure` marks the artifact `permanentlyFailed` and never
+        /// revisits it. A slice with no owning blueprint (`Blueprint::owner` empty — a standalone
+        /// deploy, not part of any blueprint) has no `DeploymentOutcomeKey` to write against and is
+        /// correctly a no-op here. Merges into any existing FAILED record for the same blueprint
+        /// (read-then-Put, not a blind overwrite) so a second independently-failing slice in one
+        /// partial deployment is added to `failingSlices` instead of erasing the first.
+        private void recordBestEffortFailureOutcome(Artifact artifact, String failureReason) {
+            Option.option(blueprints.get(artifact))
+                  .flatMap(Blueprint::owner)
+                  .onPresent(blueprintId -> submitBatch(List.of(bestEffortFailureCommand(blueprintId,
+                                                                                        artifact,
+                                                                                        failureReason))));
+        }
+
+        private KVCommand<AetherKey> bestEffortFailureCommand(BlueprintId blueprintId,
+                                                              Artifact artifact,
+                                                              String failureReason) {
+            var key = DeploymentOutcomeKey.deploymentOutcomeKey(blueprintId);
+            var existingSlices = ctx.kvStore()
+                                    .get(key)
+                                    .filter(v -> v instanceof DeploymentOutcomeValue)
+                                    .map(v -> ((DeploymentOutcomeValue) v).failingSlices())
+                                    .or(List.of());
+            var slices = new ArrayList<>(existingSlices);
+
+            if (!slices.contains(artifact.asString())) {
+                slices.add(artifact.asString());
+            }
+
+            var value = DeploymentOutcomeValue.failed(slices, failureReason, ctx.nowMs());
+
+            return new KVCommand.Put<>(key, value);
         }
 
         private void handleTransientFailure(SliceNodeKey sliceKey, String failureReason) {
@@ -2267,7 +2308,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 inFlightBlueprints.remove(blueprintId);
                 inflight.previousBlueprint()
                         .apply(() -> unloadBlueprintSlices(inflight, cause),
-                               previous -> restorePreviousBlueprint(previous));
+                               previous -> restorePreviousBlueprint(inflight, previous, cause));
                 break;
             }
         }
@@ -2308,21 +2349,41 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             return new KVCommand.Put<>(key, value);
         }
 
-        private void restorePreviousBlueprint(ExpandedBlueprint previous) {
+        private void restorePreviousBlueprint(InFlightBlueprint inflight, ExpandedBlueprint previous, String cause) {
             restoringBlueprints.add(previous.id());
             log.info("ALL_OR_NOTHING: Restoring previous blueprint {} with {} slices",
                      previous.id().asString(),
                      previous.loadOrder().size());
             var bpKey = AppBlueprintKey.appBlueprintKey(previous.id());
             var bpValue = AppBlueprintValue.appBlueprintValue(previous);
-            var command = new KVCommand.Put<AetherKey, AetherValue>(bpKey, bpValue);
+            var bpCommand = new KVCommand.Put<AetherKey, AetherValue>(bpKey, bpValue);
+            var outcomeCommand = rolledBackOutcomeCommand(inflight, cause);
 
             ctx.cluster()
-               .apply(List.of(command))
+               .apply(List.of(bpCommand, outcomeCommand))
                .onSuccess(_ -> SharedScheduler.schedule(() -> restoringBlueprints.remove(previous.id()),
                                                         timeSpan(5).seconds()))
-               .onFailure(cause -> handleBlueprintRestoreFailure(previous.id(),
-                                                                 cause));
+               .onFailure(restoreFailure -> handleBlueprintRestoreFailure(previous.id(),
+                                                                          restoreFailure));
+        }
+
+        /// ROLLED_BACK outcome for the previous-blueprint-exists rollback branch (#760/#724 review
+        /// round 2 item g) — bundled into the SAME `ctx.cluster().apply` batch as the previous
+        /// blueprint's own `AppBlueprintKey` Put, mirroring `failedOutcomeCommand`'s atomicity
+        /// rationale, so a caller reading the outcome for the FAILING blueprint's id never observes
+        /// the restore having landed without also observing the terminal record, or vice versa.
+        /// Recorded against `inflight.id()` — the blueprint being replaced — never `previous.id()`,
+        /// which names a separate, still-healthy blueprint that was never in a failure state.
+        private KVCommand<AetherKey> rolledBackOutcomeCommand(InFlightBlueprint inflight, String cause) {
+            var allSlices = new HashSet<>(inflight.pendingSlices());
+
+            allSlices.addAll(inflight.activeSlices());
+
+            var key = DeploymentOutcomeKey.deploymentOutcomeKey(inflight.id());
+            var slices = allSlices.stream().map(Artifact::asString).toList();
+            var value = DeploymentOutcomeValue.rolledBack(slices, cause, ctx.nowMs());
+
+            return new KVCommand.Put<>(key, value);
         }
 
         private void handleBlueprintRestoreFailure(BlueprintId blueprintId, Cause cause) {
@@ -2342,8 +2403,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         @Contract
-        void restorePreviousBlueprintForTest(ExpandedBlueprint previous) {
-            restorePreviousBlueprint(previous);
+        void restorePreviousBlueprintForTest(InFlightBlueprint inflight, ExpandedBlueprint previous, String cause) {
+            restorePreviousBlueprint(inflight, previous, cause);
         }
 
         public record InFlightBlueprint(BlueprintId id,

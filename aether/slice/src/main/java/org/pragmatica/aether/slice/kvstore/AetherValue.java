@@ -275,11 +275,23 @@ public sealed interface AetherValue {
     }
 
     /// `FAILED` — the blueprint's own slices never reached ACTIVE and there was no previous
-    /// blueprint to fall back to (`unloadBlueprintSlices`'s path). `ROLLED_BACK` — a previous
-    /// blueprint existed and was restored in this blueprint's place (`restorePreviousBlueprint`'s
-    /// path); kept distinct from `FAILED` because a caller needs to know whether the failure left
-    /// the deployment empty or reverted it to a known-good prior version. Not yet written by the
-    /// restore path as of this change — see `ClusterDeploymentState` for the current write sites.
+    /// blueprint to fall back to (`unloadBlueprintSlices`'s path), OR a BEST_EFFORT partial deploy
+    /// left one or more slices permanently failed while the rest stayed up
+    /// (`recordBestEffortFailureOutcome`'s path — `failingSlices` accumulates across independent
+    /// failures in the same blueprint rather than being overwritten by the last one). `ROLLED_BACK`
+    /// — a previous blueprint existed and was restored in this blueprint's place
+    /// (`restorePreviousBlueprint`'s path); kept distinct from `FAILED` because a caller needs to
+    /// know whether the failure left the deployment empty or reverted it to a known-good prior
+    /// version.
+    ///
+    /// #760/#724 review round 2 item g: this record is written only at the specific terminal points
+    /// enumerated above and in `recordSucceededOutcome`. A blueprint deployment that never reaches
+    /// any of them — the FSM host crashes mid-flight before a terminal `submitBatch`/`apply` call is
+    /// even issued, or a deployment simply never resolves (no further `NodeArtifactPutReceived`
+    /// events ever arrive, no deterministic or transient failure is ever reported) — leaves NO
+    /// `DeploymentOutcomeKey` entry at all. Absence of a key is therefore NOT equivalent to any of
+    /// the three statuses below; it means "no attempt reached a terminal write," which is
+    /// indistinguishable, from this record alone, from "no attempt was ever made."
     @Codec
     enum DeploymentOutcomeStatus {
         SUCCEEDED,

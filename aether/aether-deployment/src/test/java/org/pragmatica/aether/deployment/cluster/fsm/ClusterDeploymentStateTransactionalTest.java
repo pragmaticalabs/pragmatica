@@ -203,8 +203,12 @@ class ClusterDeploymentStateTransactionalTest {
         @Test
         void restorePreviousBlueprint_putsUnderPriorVersionKey() {
             var prior = blueprint("app", V1, "slice-a");
+            var failing = blueprint("app", V2, "slice-a");
+            var inflight = ClusterDeploymentState.Active.InFlightBlueprint.inFlightBlueprint(failing.id(),
+                                                                                             failing,
+                                                                                             Option.some(prior));
 
-            activeState().restorePreviousBlueprintForTest(prior);
+            activeState().restorePreviousBlueprintForTest(inflight, prior, "boom");
 
             var expectedKey = AppBlueprintKey.appBlueprintKey(prior.id());
             assertThat(cluster.putKeys()).contains(expectedKey);
@@ -213,11 +217,51 @@ class ClusterDeploymentStateTransactionalTest {
         @Test
         void restorePreviousBlueprint_doesNotPutUnderFailedVersionKey() {
             var prior = blueprint("app", V1, "slice-a");
+            var failing = blueprint("app", V2, "slice-a");
             var failedKey = AppBlueprintKey.appBlueprintKey(blueprintId("app", V2));
+            var inflight = ClusterDeploymentState.Active.InFlightBlueprint.inFlightBlueprint(failing.id(),
+                                                                                             failing,
+                                                                                             Option.some(prior));
 
-            activeState().restorePreviousBlueprintForTest(prior);
+            activeState().restorePreviousBlueprintForTest(inflight, prior, "boom");
 
             assertThat(cluster.putKeys()).doesNotContain(failedKey);
+        }
+
+        // #760/#724 review round 2 item g: `restorePreviousBlueprint` must write ROLLED_BACK in the
+        // SAME consensus batch as the previous blueprint's own AppBlueprintKey Put, mirroring
+        // unloadBlueprintSlices_..._recordsFailedOutcomeAtomicallyWithRemoval below — a caller must
+        // never observe the restore having landed without also observing the terminal outcome
+        // record for the FAILING blueprint, or vice versa.
+        @Test
+        void restorePreviousBlueprint_recordsRolledBackOutcomeAtomicallyWithRestore() {
+            var prior = blueprint("app", V1, "slice-a");
+            var failing = blueprint("app", V2, "slice-a");
+            var inflight = ClusterDeploymentState.Active.InFlightBlueprint.inFlightBlueprint(failing.id(),
+                                                                                             failing,
+                                                                                             Option.some(prior));
+
+            activeState().restorePreviousBlueprintForTest(inflight, prior, "boom: disk full");
+
+            var bpKey = AppBlueprintKey.appBlueprintKey(prior.id());
+            var outcomeKey = DeploymentOutcomeKey.deploymentOutcomeKey(failing.id());
+
+            var outcomePut = cluster.commands
+                    .stream()
+                    .filter(c -> c instanceof KVCommand.Put<AetherKey, ?> && c.key().equals(outcomeKey))
+                    .findFirst();
+            assertThat(outcomePut).isPresent();
+
+            var outcome = (DeploymentOutcomeValue) ((KVCommand.Put<?, ?>) outcomePut.get()).value();
+            assertThat(outcome.status()).isEqualTo(DeploymentOutcomeStatus.ROLLED_BACK);
+            assertThat(outcome.cause()).isEqualTo("boom: disk full");
+
+            var atomicBatch = cluster.batches
+                    .stream()
+                    .filter(batch -> batch.stream().anyMatch(c -> c.key().equals(bpKey))
+                                     && batch.stream().anyMatch(c -> c.key().equals(outcomeKey)))
+                    .findFirst();
+            assertThat(atomicBatch).isPresent();
         }
     }
 
@@ -266,6 +310,107 @@ class ClusterDeploymentStateTransactionalTest {
                                      && batch.stream().anyMatch(c -> c.key().equals(outcomeKey)))
                     .findFirst();
             assertThat(atomicBatch).isPresent();
+        }
+    }
+
+    @Nested
+    class BestEffortFailureOutcome {
+        // #760/#724 review round 2 item g: BEST_EFFORT deployments never populate
+        // inFlightBlueprints (trackInFlightBlueprint's ALL_OR_NOTHING-only guard), so neither
+        // rollbackBlueprintForArtifact nor recordSucceededOutcome ever runs for them — before this
+        // fix a BEST_EFFORT partial failure left no durable outcome record at all. Uses its own
+        // harness (not the shared ALL_OR_NOTHING @BeforeEach fixture) so atomicity can be set to
+        // BEST_EFFORT.
+        @Test
+        void handleDeterministicFailure_bestEffortAtomicity_recordsFailedOutcomeForOwningBlueprint() {
+            var router = MessageRouter.mutable();
+            var localKvStore = new InMemoryKvStore(router);
+            var localCluster = new RecordingClusterNode(SELF);
+            LongSupplier clock = () -> 10_000_000L;
+            Function<Fsm<ClusterDeploymentState, ClusterFsmEvent>, ClusterDeploymentState> factory =
+                    fsm -> new ClusterDeploymentContext(fsm,
+                                                        SELF,
+                                                        localCluster,
+                                                        localKvStore,
+                                                        router,
+                                                        stubTopologyManager(SELF),
+                                                        stubSchemaOrchestrator(),
+                                                        () -> Set.of(SELF, NODE_A),
+                                                        () -> Set.of(SELF, NODE_A),
+                                                        Set::of,
+                                                        Set.of(SELF, NODE_A),
+                                                        DeploymentAtomicity.BEST_EFFORT,
+                                                        3,
+                                                        timeSpan(300).seconds(),
+                                                        clock).dormant();
+            var localHarness = FsmTestHarness.harness("best-effort-test-" + SELF.id(), factory);
+            localHarness.dispatch(new Activate());
+            var active = (ClusterDeploymentState.Active) localHarness.state();
+
+            var owner = blueprintId("app", V1);
+            var failedArtifact = artifact("slice-a", V1);
+            var ownedSlice = Blueprint.blueprint(failedArtifact, 3, 1, Option.some(owner), false);
+            active.blueprints().put(failedArtifact, ownedSlice);
+
+            var failValue = new NodeArtifactValue(SliceState.FAILED, Option.some("boom: disk full"), true, 0, List.of(), 0L);
+            var putCommand = new KVCommand.Put<>(NodeArtifactKey.nodeArtifactKey(NODE_A, failedArtifact), failValue);
+            var event = new NodeArtifactPutReceived(new ValuePut<>(putCommand, Option.none()));
+
+            localHarness.dispatch(event);
+
+            var outcomeKey = DeploymentOutcomeKey.deploymentOutcomeKey(owner);
+            var outcomePut = localCluster.commands
+                    .stream()
+                    .filter(c -> c instanceof KVCommand.Put<AetherKey, ?> && c.key().equals(outcomeKey))
+                    .findFirst();
+            assertThat(outcomePut).isPresent();
+
+            var outcome = (DeploymentOutcomeValue) ((KVCommand.Put<?, ?>) outcomePut.get()).value();
+            assertThat(outcome.status()).isEqualTo(DeploymentOutcomeStatus.FAILED);
+            assertThat(outcome.cause()).isEqualTo("boom: disk full");
+            assertThat(outcome.failingSlices()).containsExactly(failedArtifact.asString());
+        }
+
+        @Test
+        void handleDeterministicFailure_bestEffortAtomicity_noOwningBlueprint_writesNoOutcome() {
+            var router = MessageRouter.mutable();
+            var localKvStore = new InMemoryKvStore(router);
+            var localCluster = new RecordingClusterNode(SELF);
+            LongSupplier clock = () -> 10_000_000L;
+            Function<Fsm<ClusterDeploymentState, ClusterFsmEvent>, ClusterDeploymentState> factory =
+                    fsm -> new ClusterDeploymentContext(fsm,
+                                                        SELF,
+                                                        localCluster,
+                                                        localKvStore,
+                                                        router,
+                                                        stubTopologyManager(SELF),
+                                                        stubSchemaOrchestrator(),
+                                                        () -> Set.of(SELF, NODE_A),
+                                                        () -> Set.of(SELF, NODE_A),
+                                                        Set::of,
+                                                        Set.of(SELF, NODE_A),
+                                                        DeploymentAtomicity.BEST_EFFORT,
+                                                        3,
+                                                        timeSpan(300).seconds(),
+                                                        clock).dormant();
+            var localHarness = FsmTestHarness.harness("best-effort-standalone-test-" + SELF.id(), factory);
+            localHarness.dispatch(new Activate());
+            var active = (ClusterDeploymentState.Active) localHarness.state();
+
+            var standaloneArtifact = artifact("slice-a", V1);
+            var standaloneSlice = Blueprint.blueprint(standaloneArtifact, 3, 1, Option.empty(), false);
+            active.blueprints().put(standaloneArtifact, standaloneSlice);
+
+            var failValue = new NodeArtifactValue(SliceState.FAILED, Option.some("boom"), true, 0, List.of(), 0L);
+            var putCommand = new KVCommand.Put<>(NodeArtifactKey.nodeArtifactKey(NODE_A, standaloneArtifact), failValue);
+            var event = new NodeArtifactPutReceived(new ValuePut<>(putCommand, Option.none()));
+
+            localHarness.dispatch(event);
+
+            var anyOutcomePut = localCluster.commands
+                    .stream()
+                    .anyMatch(c -> c instanceof KVCommand.Put<AetherKey, ?> p && p.value() instanceof DeploymentOutcomeValue);
+            assertThat(anyOutcomePut).isFalse();
         }
     }
 
