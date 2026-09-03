@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc4] - Unreleased
 
+### Fixed (2026-09-03 — #760: a schema hold produced one `WARN` per re-evaluation tick, not per hold)
+- **The hold WARN is event-driven, not tick-driven, and fired on every re-observation of an
+  unchanged hold.** `tryActivateIfDependenciesReady` is reached from the slice's own LOAD, from
+  ANY schema record reaching `COMPLETED`, from a sibling dependency activating, and once per
+  blueprint at leader rebuild — a single long-running hold could log dozens of identical WARNs.
+  A per-slice `reportedSchemaHolds` map now tracks the last-reported blocking signature: `WARN` on
+  first observation or on a signature change, `DEBUG` on an unchanged repeat, and one `WARN` when
+  the hold clears.
+- **`GET /api/schema/status/{datasource}` (and the status-list route) gained `heldSlices`** —
+  the slices a blocking record currently withholds from activation, computed the same way the
+  activation gate scopes ownership. Empty whenever the record is not blocking, so the operator no
+  longer has to correlate DEBUG logs or wait for the `SCHEMA_ACTIVATION_BLOCKED` audit entry.
+
+### Fixed (2026-09-03 — #724: a schema migration stuck `PENDING` had no recovery lever short of a redeploy)
+- **`POST /api/schema/retry/{datasource}` now accepts `PENDING` as well as `FAILED`.** A migration
+  that never dispatched (e.g. the orchestrator crashed before running it) was refused by the same
+  409 guard as an already-`COMPLETED` record, leaving redeploy as the only lever. `MIGRATING` and
+  `COMPLETED` remain refused — a runner is already in flight, or nothing marked the record failed.
+- **The refusal message keeps its scripted-client substring.** `SchemaRouteError.SchemaNotFailed`
+  still emits `"...is not in FAILED state (currently <STATUS>)..."`, pinned by two integration
+  scripts and a unit test, now ending `"— retry applies to FAILED or PENDING migrations only"`.
+
 ## [1.0.0-rc3] - 2026-09-02
 
 ### Changed (2026-09-02 — publish-time packaging, one commit after the `v1.0.0-rc3` tag)
