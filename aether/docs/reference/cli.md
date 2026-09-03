@@ -1511,9 +1511,14 @@ fresh `PENDING` Put is what dispatches a migration run, so a second `migrate` ca
 effect of its own to join — it neither adds nor replaces any in-flight tracking (a `PENDING` record
 can otherwise sit with zero in-flight tracking at all, which is exactly the stuck state #724 fixed)
 and would only strand the record with no automatic clearing path. The 409 names the datasource.
-`aether schema retry <datasource>` is the lever for a `PENDING` record and re-triggers dispatch
-immediately, not only once the record has since failed (it accepts `PENDING`, unlike `migrate` — see
-above); `migrate` itself does not re-trigger dispatch `[mechanism: SchemaRoutes.guardReactivation
+`aether schema retry <datasource>` is the lever for a `PENDING` record and re-triggers dispatch,
+not only once the record has since failed (it accepts `PENDING`, unlike `migrate` — see above).
+Dispatch requires this node's deployment FSM to be the elected leader and `Active` (only that
+state's handler consumes the consensus Put `retry` writes); given that, it still no-ops when either
+guard `SchemaOrchestratorService.acquireLock` checks is already held — the local per-JVM fence or the
+cross-node consensus lock — so a retry racing an in-progress attempt for the same datasource returns
+`LOCK_HELD` rather than starting a second run. `migrate` itself does not re-trigger dispatch
+`[mechanism: SchemaRoutes.guardReactivation
 switches on the observed status before any orchestrator effect and returns SchemaAlreadyPending for
 PENDING without writing MIGRATING]`.
 

@@ -1456,17 +1456,18 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             }
         }
 
-        /// #760/#724 review round 2 item g: BEST_EFFORT deployments never populate
-        /// `inFlightBlueprints` (see `trackInFlightBlueprint`'s `ALL_OR_NOTHING`-only guard), so
-        /// neither `rollbackBlueprintForArtifact` nor `trackBlueprintSliceActive`'s
-        /// `recordSucceededOutcome` ever fires for them — a BEST_EFFORT partial failure left no
-        /// durable outcome record at all before this change. This IS the terminal point for that
-        /// path: `handleDeterministicFailure` marks the artifact `permanentlyFailed` and never
-        /// revisits it. A slice with no owning blueprint (`Blueprint::owner` empty — a standalone
-        /// deploy, not part of any blueprint) has no `DeploymentOutcomeKey` to write against and is
-        /// correctly a no-op here. Merges into any existing FAILED record for the same blueprint
-        /// (read-then-Put, not a blind overwrite) so a second independently-failing slice in one
-        /// partial deployment is added to `failingSlices` instead of erasing the first.
+        /// #760/#724 review round 3 GAP fix (151b11d94): BEST_EFFORT deployments now populate
+        /// `inFlightBlueprints` too (`trackInFlightBlueprint` tracks both atomicities), so this
+        /// path is no longer the only terminal a BEST_EFFORT artifact can reach. A slice that
+        /// reaches ACTIVE is retired via `trackBlueprintSliceActive`, whose own terminal is
+        /// `recordSucceededOutcome` once every slice of the owning blueprint is active. This
+        /// method is the terminal for the other branch: `handleDeterministicFailure` marks the
+        /// artifact `permanentlyFailed` and calls here instead of retrying it. A slice with no
+        /// owning blueprint (`Blueprint::owner` empty — a standalone deploy, not part of any
+        /// blueprint) has no `DeploymentOutcomeKey` to write against and is correctly a no-op
+        /// here. Merges into any existing FAILED record for the same blueprint (read-then-Put,
+        /// not a blind overwrite) so a second independently-failing slice in one partial
+        /// deployment is added to `failingSlices` instead of erasing the first.
         private void recordBestEffortFailureOutcome(Artifact artifact, String failureReason) {
             Option.option(blueprints.get(artifact))
                   .flatMap(Blueprint::owner)

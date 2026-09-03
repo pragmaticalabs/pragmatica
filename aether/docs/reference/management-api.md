@@ -4463,8 +4463,13 @@ record to `MIGRATING` has no dispatch effect of its own — it neither adds nor 
 tracking (a `PENDING` record can otherwise sit with zero in-flight tracking at all, which is exactly
 the stuck state #724 fixed) — and would strand the record with no automatic clearing path. Recovery:
 `POST /api/schema/retry/{datasource}` accepts `PENDING` immediately: `writeRetryStatus` re-triggers
-dispatch unconditionally, not only once the record has since failed — the `409` body's "or use retry
-if it has since failed" below describes the common case, not a precondition retry actually enforces.
+dispatch, not only once the record has since failed — the `409` body's "or use retry if it has since
+failed" below describes the common case, not a precondition retry actually enforces. Dispatch itself
+requires this node's deployment FSM to be the elected leader and `Active` (the consensus Put that
+`writeRetryStatus` writes is only ever consumed by that state's handler); given that, it still
+no-ops when either guard `SchemaOrchestratorService.acquireLock` checks is already held — the local
+per-JVM fence (`inFlightMigrations`) or the cross-node consensus lock — so a retry racing an
+in-progress attempt for the same datasource returns `LOCK_HELD` rather than starting a second run.
 `migrate` itself does not re-trigger dispatch `[mechanism: SchemaRoutes.guardReactivation switches on
 the observed status before any orchestrator effect and returns SchemaAlreadyPending for PENDING
 without writing MIGRATING]`.

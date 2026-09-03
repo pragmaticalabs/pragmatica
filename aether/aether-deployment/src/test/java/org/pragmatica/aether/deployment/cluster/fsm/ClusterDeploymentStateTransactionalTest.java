@@ -401,11 +401,12 @@ class ClusterDeploymentStateTransactionalTest {
 
     @Nested
     class BestEffortFailureOutcome {
-        // #760/#724 review round 2 item g: BEST_EFFORT deployments never populate
-        // inFlightBlueprints (trackInFlightBlueprint's ALL_OR_NOTHING-only guard), so neither
-        // rollbackBlueprintForArtifact nor recordSucceededOutcome ever runs for them — before this
-        // fix a BEST_EFFORT partial failure left no durable outcome record at all. Uses its own
-        // harness (not the shared ALL_OR_NOTHING @BeforeEach fixture) so atomicity can be set to
+        // #760/#724 review round 3 GAP fix (151b11d94): BEST_EFFORT deployments now populate
+        // inFlightBlueprints too (trackInFlightBlueprint tracks both atomicities), so a BEST_EFFORT
+        // artifact reaches one of two terminals depending on how its slice ends — ACTIVE retires it
+        // via trackBlueprintSliceActive's recordSucceededOutcome (see BestEffortSuccessOutcome
+        // below), FAILED retires it here via recordBestEffortFailureOutcome. Uses its own harness
+        // (not the shared ALL_OR_NOTHING @BeforeEach fixture) so atomicity can be set to
         // BEST_EFFORT.
         @Test
         void handleDeterministicFailure_bestEffortAtomicity_recordsFailedOutcomeForOwningBlueprint() {
