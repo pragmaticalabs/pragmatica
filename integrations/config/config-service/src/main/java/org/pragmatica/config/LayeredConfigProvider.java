@@ -118,6 +118,20 @@ public final class LayeredConfigProvider implements ConfigurationProvider {
         return Collections.unmodifiableSet(unionKeys);
     }
 
+    /// Union of every layer's [ConfigurationProvider#staticKeys()] — mirrors [#keys()] exactly,
+    /// just calling the static-only accessor, so a dynamic layer (e.g. a KV-overlay
+    /// [DynamicConfigurationProvider]) contributes nothing here regardless of its position.
+    @Override
+    public Set<String> staticKeys() {
+        var unionKeys = new LinkedHashSet<String>();
+
+        for (var layer : layers) {
+            unionKeys.addAll(layer.staticKeys());
+        }
+
+        return Collections.unmodifiableSet(unionKeys);
+    }
+
     @Override
     public Map<String, String> asMap() {
         var merged = new LinkedHashMap<String, String>();

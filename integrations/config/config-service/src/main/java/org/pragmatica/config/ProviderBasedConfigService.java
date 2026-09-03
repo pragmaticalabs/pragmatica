@@ -127,9 +127,23 @@ public final class ProviderBasedConfigService implements ConfigService {
 
     /// Opt-in ([StrictKeys]) rejection of keys the annotated record does not declare. Scoped to
     /// exactly one path segment past the section prefix, so a nested sub-section (e.g. a consumer
-    /// group table owned by the dashed-by-convention stream parser) is never inspected here —
-    /// `provider.keys()` is one flat merged key set for the whole document, so that isolation has
-    /// to be filtered explicitly rather than falling out of the data structure.
+    /// group table owned by the dashed-by-convention stream parser) is never inspected here.
+    ///
+    /// Scoped to [ConfigurationProvider#staticKeys()] rather than the full merged
+    /// [ConfigurationProvider#keys()]: an environment variable, system property, or KV-overlay
+    /// entry landing at `<section>.<one segment>` must never fail a bind the file alone would have
+    /// accepted, since none of those layers wrote the section that declares this record (#738
+    /// review finding).
+    ///
+    /// A quoted TOML key with a literal dot (e.g. `"a.b" = 1`) is indistinguishable, once
+    /// flattened, from a nested sub-table (`[section.a]` / `b = 1`) — [TomlConfigSource]'s
+    /// flattening step throws that distinction away before it reaches this class or any
+    /// [ConfigurationProvider]. Such a key is therefore never flagged as unknown here, by the same
+    /// `indexOf('.') < 0` scoping that protects genuine nested sub-sections; see the class Javadoc
+    /// on `org.pragmatica.aether.resource.TopicConfig` for the operator-facing statement of this
+    /// limit.
+    ///
+    /// Reports every unknown key in the section in one error, not just the first.
     private Result<Unit> strictKeyCheck(String section, Class<?> configClass, RecordComponent[] components) {
         if (!configClass.isAnnotationPresent(StrictKeys.class)) {
             return unitResult();
@@ -140,20 +154,39 @@ public final class ProviderBasedConfigService implements ConfigService {
                           .collect(Collectors.toSet());
         var prefix = section + ".";
 
-        return provider.keys()
-                       .stream()
-                       .filter(k -> k.startsWith(prefix))
-                       .map(k -> k.substring(prefix.length()))
-                       .filter(k -> k.indexOf('.') < 0)
-                       .filter(k -> !known.contains(k))
-                       .findFirst()
-                       .map(unknown -> ConfigError.unknownKey(section, unknown, nearestKey(unknown, known)).<Unit>result())
-                       .orElseGet(Result::unitResult);
+        var unknownKeys = provider.staticKeys()
+                                  .stream()
+                                  .filter(k -> k.startsWith(prefix))
+                                  .map(k -> k.substring(prefix.length()))
+                                  .filter(k -> k.indexOf('.') < 0)
+                                  .filter(k -> !known.contains(k))
+                                  .sorted()
+                                  .toList();
+
+        if (unknownKeys.isEmpty()) {
+            return unitResult();
+        }
+
+        var suggestions = unknownKeys.stream()
+                                     .collect(Collectors.toMap(k -> k, k -> nearestKey(k, known)));
+
+        return ConfigError.unknownKey(section, unknownKeys, suggestions).<Unit>result();
     }
 
+    private static final int MIN_SUGGESTION_DISTANCE = 3;
+
+    /// Nearest known key by Levenshtein distance, omitted (empty string) beyond a bound of
+    /// `max(3, unknown.length() / 2)` — otherwise a typo bearing no real resemblance to any
+    /// component (e.g. `zzzzzzzzzzqqqq`) still names the argmin of an unbounded search, which
+    /// reads as a real suggestion rather than the noise it is (#738 review finding).
     private static String nearestKey(String unknown, Set<String> known) {
+        var threshold = Math.max(MIN_SUGGESTION_DISTANCE, unknown.length() / 2);
+
         return known.stream()
-                   .min(Comparator.comparingInt(k -> levenshtein(unknown, k)))
+                   .map(k -> Map.entry(k, levenshtein(unknown, k)))
+                   .min(Comparator.comparingInt(Map.Entry::getValue))
+                   .filter(e -> e.getValue() <= threshold)
+                   .map(Map.Entry::getKey)
                    .orElse("");
     }
 

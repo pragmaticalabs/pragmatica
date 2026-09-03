@@ -47,6 +47,13 @@ public final class DynamicConfigurationProvider implements ConfigurationProvider
         return Collections.unmodifiableSet(allKeys);
     }
 
+    /// Excludes the mutable overlay entirely — it IS the KV-replayed-at-startup dynamic layer
+    /// [ConfigurationProvider#staticKeys()] exists to keep out of [StrictKeys] validation.
+    @Override
+    public Set<String> staticKeys() {
+        return base.staticKeys();
+    }
+
     @Override
     public Map<String, String> asMap() {
         var merged = new LinkedHashMap<>(base.asMap());

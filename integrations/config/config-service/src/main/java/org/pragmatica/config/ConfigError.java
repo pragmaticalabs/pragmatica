@@ -1,5 +1,9 @@
 package org.pragmatica.config;
 
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -136,21 +140,33 @@ public sealed interface ConfigError extends Cause {
         return SecretResolutionFailed.secretResolutionFailed(key, secretPath, underlying).unwrap();
     }
 
-    /// Unknown key found in a section bound by a [StrictKeys]-annotated config record.
-    record UnknownKey(String section, String key, String nearestMatch) implements ConfigError {
-        public static Result<UnknownKey> unknownKey(String section, String key, String nearestMatch) {
-            return success(new UnknownKey(section, key, nearestMatch));
+    /// Unknown key(s) found in a section bound by a [StrictKeys]-annotated config record. Carries
+    /// every unknown key in the section, not just the first, each with its own nearest-match
+    /// suggestion (empty when no known key is within [ProviderBasedConfigService]'s suggestion
+    /// distance bound).
+    record UnknownKey(String section, List<String> keys, Map<String, String> suggestions) implements ConfigError {
+        public static Result<UnknownKey> unknownKey(String section, List<String> keys, Map<String, String> suggestions) {
+            return success(new UnknownKey(section, keys, suggestions));
         }
 
         @Override
         public String message() {
-            return "Unknown config key '" + key + "' in section '" + section + "'"
-                 + (nearestMatch.isEmpty() ? "" : " (did you mean '" + nearestMatch + "'?)");
+            var parts = keys.stream()
+                            .map(k -> describeKey(k, suggestions.get(k)))
+                            .collect(Collectors.joining(", "));
+
+            return "Unknown config key" + (keys.size() > 1 ? "s" : "") + " in section '" + section + "': " + parts;
+        }
+
+        private static String describeKey(String key, String nearestMatch) {
+            return nearestMatch == null || nearestMatch.isEmpty()
+                   ? key
+                   : key + " (did you mean '" + nearestMatch + "'?)";
         }
     }
 
-    static UnknownKey unknownKey(String section, String key, String nearestMatch) {
-        return UnknownKey.unknownKey(section, key, nearestMatch).unwrap();
+    static UnknownKey unknownKey(String section, List<String> keys, Map<String, String> suggestions) {
+        return UnknownKey.unknownKey(section, keys, suggestions).unwrap();
     }
 
     record unused() implements ConfigError {
