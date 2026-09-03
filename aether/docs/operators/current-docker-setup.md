@@ -6,6 +6,11 @@ Status: **Development/Staging Ready**
 
 Aether includes Docker infrastructure for local development and staging environments. This document describes the current setup and how to use it.
 
+**Note:** In 1.0.0-rc3, a single node is not operational beyond `/health/live` — it reaches
+quorum but never elects a leader, so management routes return 503 and the bootstrap admin key is
+never printed (#782). This is why the compose file below runs three nodes; don't reduce it to
+one until rc4.
+
 ---
 
 ## Components

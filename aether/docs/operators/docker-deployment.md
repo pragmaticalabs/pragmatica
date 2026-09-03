@@ -131,6 +131,10 @@ node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090
 
 ### Single Node
 
+**Not operational in 1.0.0-rc3.** A single node reaches quorum but never elects a leader, so
+every management route beyond `/health/live` returns 503, and the bootstrap admin key is never
+printed (#782). Run three nodes (see below), or wait for rc4.
+
 ```bash
 docker run -d \
   --name aether-node-1 \
