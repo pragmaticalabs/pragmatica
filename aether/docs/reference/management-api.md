@@ -46,24 +46,24 @@ Roles are hierarchical: ADMIN has all OPERATOR permissions, and OPERATOR has all
 
 | Endpoint Category | Minimum Role | Examples |
 |-------------------|-------------|----------|
-| Blueprint management | ADMIN | `POST /api/blueprints`, `DELETE /api/blueprints/{id}` |
-| Node shutdown | ADMIN | `POST /api/nodes/shutdown/{id}` |
-| Backup restore | ADMIN | `POST /api/backups/restore/{id}` |
-| Log level changes | ADMIN | `PUT /api/logging/levels` |
-| Observability depth | ADMIN | `PUT /api/observability/depth` |
-| Observability config (write) | ADMIN | `POST`/`DELETE /api/observability/config` |
-| Blueprint deploy (from artifact) | OPERATOR | `POST /api/blueprints/deploy` |
-| Blueprint validate | VIEWER | `POST /api/blueprints/validate` |
-| Node drain | OPERATOR | `POST /api/nodes/drain/{id}` |
-| Scaling | OPERATOR | `POST /api/scale` |
-| Schema operations | OPERATOR | `POST /api/schema/*` |
-| Deployment strategies | OPERATOR | `POST /api/deploy`, `POST /api/deploy/*/promote`, `POST /api/deploy/*/rollback`, `POST /api/deploy/*/complete`, `POST /api/ab-tests/*` |
-| Backup trigger | OPERATOR | `POST /api/backups` |
-| Config overrides | OPERATOR | `PUT /api/config/*` |
-| Alert management | OPERATOR | `POST /api/alerts/clear` |
-| Scheduled tasks | OPERATOR | `POST /api/scheduled-tasks/*` |
-| Controller config | OPERATOR | `PUT /api/controller/*` |
-| Threshold config | OPERATOR | `PUT /api/thresholds/*` |
+| Blueprint management | ADMIN | `POST /api/v1/blueprints`, `DELETE /api/v1/blueprints/{id}` |
+| Node shutdown | ADMIN | `POST /api/v1/nodes/shutdown/{id}` |
+| Backup restore | ADMIN | `POST /api/v1/backups/restore/{id}` |
+| Log level changes | ADMIN | `PUT /api/v1/logging/levels` |
+| Observability depth | ADMIN | `PUT /api/v1/observability/depth` |
+| Observability config (write) | ADMIN | `POST`/`DELETE /api/v1/observability/config` |
+| Blueprint deploy (from artifact) | OPERATOR | `POST /api/v1/blueprints/deploy` |
+| Blueprint validate | ADMIN | `POST /api/v1/blueprints/validate` |
+| Node drain | OPERATOR | `POST /api/v1/nodes/drain/{id}` |
+| Scaling | OPERATOR | `POST /api/v1/scale` |
+| Schema operations | OPERATOR | `POST /api/v1/schema/*` |
+| Deployment strategies | OPERATOR | `POST /api/v1/deploy`, `POST /api/v1/deploy/promote/*`, `POST /api/v1/deploy/rollback/*`, `POST /api/v1/deploy/complete/*`, `POST /api/v1/ab-tests/*` |
+| Backup trigger | OPERATOR | `POST /api/v1/backups` |
+| Config overrides | OPERATOR | `PUT /api/v1/config/*` |
+| Alert management | OPERATOR | `POST /api/v1/alerts/clear` |
+| Scheduled tasks | OPERATOR | `POST /api/v1/scheduled-tasks/*` |
+| Controller config | OPERATOR | `PUT /api/v1/controller/*` |
+| Threshold config | OPERATOR | `PUT /api/v1/thresholds/*` |
 | Artifact repository | OPERATOR | `POST /repository/*` |
 | All other mutations | ADMIN | Default for unlisted mutation endpoints |
 
@@ -135,15 +135,15 @@ if a frozen field disappears from this document.
 
 | Endpoint | Frozen fields |
 |----------|--------------|
-| `GET /api/cluster/status` | `leaderId`, `coreCount`, `clusterPhase` |
-| `GET /api/nodes/status` | `nodeId`, `lifecycleState`, `isLeader` |
-| `GET /api/nodes/lifecycle` | array element `nodeId`, `derivedStatus` |
-| `GET /api/nodes/live` | `nodeId`, `swimAlive`, `reportedState` |
+| `GET /api/v1/cluster/status` | `leaderId`, `coreCount`, `clusterPhase` |
+| `GET /api/v1/nodes/status` | `nodeId`, `lifecycleState`, `isLeader` |
+| `GET /api/v1/nodes/lifecycle` | array element `nodeId`, `derivedStatus` |
+| `GET /api/v1/nodes/live` | `nodeId`, `swimAlive`, `reportedState` |
 
 The historical `id` vs `nodeId` rename — which silently broke harness field extraction until a
 cloud run failed — is the regression this contract exists to prevent.
 
-### GET /api/nodes/status
+### GET /api/v1/nodes/status
 
 Get overall cluster status including uptime, cluster info, slice count, and metrics summary.
 
@@ -179,11 +179,11 @@ Get overall cluster status including uptime, cluster info, slice count, and metr
 
 `lifecycleState` carries the node's heartbeat-reported readiness (`SYNCING` / `READY` / `DRAINING`) as cached by the leader from the leader↔node heartbeat. This state is node-authoritative and is **never** stored in or committed to the KV-Store. Empty string when the leader has not yet received a heartbeat from the node (cold-start transient). See `aether/docs/specs/membership-architecture-v2-spec.md`.
 
-### GET /api/nodes/endpoint/{id}
+### GET /api/v1/nodes/endpoint/{id}
 
 Resolve a single node to its cluster-transport `host:port` and a best-effort reachability flag.
 The request lands on any node and is forwarded to the node identified by `{id}` (via the standard
-`nodeIdParam(0)` forwarding pattern shared with `/api/nodes/status/{id}`, `/health/live/{id}`,
+`nodeIdParam(0)` forwarding pattern shared with `/api/v1/nodes/status/{id}`, `/health/live/{id}`,
 etc.), so the address returned is the target node's own view of its transport endpoint.
 
 **Response:**
@@ -201,7 +201,7 @@ etc.), so the address returned is the target node's own view of its transport en
   failure yields `false` without failing the request — the address is always reported so the caller
   learns where to dial. Equivalent to the harness `_resolve_live_endpoint` connect check.
 
-### GET /api/nodes/live
+### GET /api/v1/nodes/live
 
 Unified live-node document served from **any** core node. Joins three sources into one view:
 consensus topology (`address` + `role`), the SWIM-derived membership view (`swimAlive`), and the
@@ -231,7 +231,7 @@ both the topology and the SWIM membership view — surfaces with `swimAlive=fals
   empty string when no pong has been observed.
 - `liveCount`: number of entries with `swimAlive=true`. `zombieCount`: the remainder.
 
-### GET /api/health
+### GET /api/v1/health
 
 Get node health status including readiness and quorum.
 
@@ -265,8 +265,11 @@ No authentication required.
 
 Per-node variant of `/health/live`. The request lands on any node and is forwarded to the
 node identified by `{id}` (via the standard `nodeIdParam(0)` forwarding pattern shared with
-`/api/nodes/status/{id}`, `/api/nodes/inflight/{id}`, `/api/nodes/slices/{id}`, etc.). Response
-shape and authentication semantics match `GET /health/live`.
+`/api/v1/nodes/status/{id}`, `/api/v1/nodes/inflight/{id}`, `/api/v1/nodes/slices/{id}`, etc.). Response
+shape matches `GET /health/live`, but authentication does **not**: `ManagementServer.handleProbeRequest`
+exact-matches only the bare `/health/live` path before the security gate runs, so the `{id}` form falls
+through to `validateManagementSecurity` and requires authentication (VIEWER) like any other route when
+`security_mode` is not `none`.
 
 ### GET /health/ready
 
@@ -296,10 +299,12 @@ Components checked:
 ### GET /health/ready/{id}
 
 Per-node variant of `/health/ready`. Forwarded to the node identified by `{id}` via the standard
-`nodeIdParam(0)` forwarding pattern. Response shape and authentication semantics match
-`GET /health/ready`.
+`nodeIdParam(0)` forwarding pattern. Response shape matches `GET /health/ready`, but authentication
+does **not**: `ManagementServer.handleProbeRequest` exact-matches only the bare `/health/ready` path
+before the security gate runs, so the `{id}` form falls through to `validateManagementSecurity` and
+requires authentication (VIEWER) like any other route when `security_mode` is not `none`.
 
-### GET /api/nodes
+### GET /api/v1/nodes
 
 List all known cluster nodes with role and leader status.
 
@@ -316,7 +321,7 @@ List all known cluster nodes with role and leader status.
 
 - `role`: `"CORE"` (consensus participant) or `"WORKER"` (passive compute). Defaults to `"CORE"` if no `ActivationDirective` exists.
 
-### GET /api/whoami
+### GET /api/v1/whoami
 
 Returns the principal, authorization role, and roles attached to the request's authentication context. Useful for integration-test identity assertions and operator triage — confirms which API key (or anonymous viewer fallback) the management plane resolved for the caller.
 
@@ -347,7 +352,7 @@ Returns the principal, authorization role, and roles attached to the request's a
 
 Route is `LOCAL` (no forwarding) — the answer is per-request, not per-cluster.
 
-### GET /api/events
+### GET /api/v1/events
 
 Get cluster events from the event aggregator. Returns structured events including topology changes, leader elections, deployments, slice failures, and network events.
 
@@ -364,10 +369,10 @@ Both parameters must be used together to form a cursor. Clients should persist t
 **Examples:**
 ```bash
 # All events
-curl http://localhost:8080/api/events
+curl http://localhost:8080/api/v1/events
 
 # Events after a known cursor position
-curl "http://localhost:8080/api/events?sinceEpoch=3&sinceSeq=42"
+curl "http://localhost:8080/api/v1/events?sinceEpoch=3&sinceSeq=42"
 ```
 
 **Response:**
@@ -424,8 +429,8 @@ curl "http://localhost:8080/api/events?sinceEpoch=3&sinceSeq=42"
 - `GENERATION_CHANGED` -- the cluster generation epoch advanced (leader-gated; see below). Severity INFO.
 - `STREAM_REGISTERED` -- a stream was registered (carries the stream `ResourceAddress`). Severity INFO.
 - `STREAM_DELETED` -- a stream was deleted (carries the stream `ResourceAddress`). Severity INFO.
-- `ALERT_INJECTED` -- an operator-injected synthetic alert, replicated cluster-wide so every node serves it on `/api/alerts`. Severity per inject.
-- `TRACE_INJECTED` -- an operator-injected synthetic invocation trace, replicated cluster-wide so every node serves it on `/api/traces`.
+- `ALERT_INJECTED` -- an operator-injected synthetic alert, replicated cluster-wide so every node serves it on `/api/v1/alerts`. Severity per inject.
+- `TRACE_INJECTED` -- an operator-injected synthetic invocation trace, replicated cluster-wide so every node serves it on `/api/v1/traces`.
 - `SELF_DRAIN_INITIATED` -- the draining node reports its own drain start (per-node fact, NOT leader-gated; see below). Severity WARNING.
 - `STREAM_MEMORY_EXCEEDED` -- a node's off-heap stream budget was exhausted at stream create or growth (per-node fact, NOT leader-gated; throttled per `(stream, phase)`). Severity WARNING.
 - `DEPARTURE_PUSH_INCOMPLETE` -- a gracefully-departing node could not confirm, within the drain grace window, that every locally-held DHT chunk reached a surviving replica (per-node fact, NOT leader-gated; see below). Severity WARNING.
@@ -445,15 +450,15 @@ the original design intent.
 
 `DEPARTURE_PUSH_INCOMPLETE` (severity `WARNING`, issue #427) is emitted by a gracefully-departing node when its bounded departure-push (which forwards every locally-held DHT chunk to its new replicas before the node halts) could not confirm all chunks reached a surviving replica within the drain grace window. Like `SELF_DRAIN_INITIATED` it is NOT leader-gated — the leaving node is the only source of truth for its own unpushed chunks. `details` carries `nodeId`, `keysAtRisk` (count of unconfirmed chunks), and `sampleKeys` (a bounded, comma-joined hex sample of the at-risk keys, for operator follow-up). Best-effort: the keys are named rather than silently lost, but if the publish does not land before `Runtime.halt(2)`, the event is lost.
 
-`DEPLOYMENT_FAILED` is emitted **once per (artifact, node) pair** whose deployment attempt failed — `ClusterEventAggregator.handleDeploymentFailed` fires on each node-artifact KV transition to `FAILED`, so a blueprint spread across N nodes that fails deterministically on all of them produces N separate events, each with its own `nodeId` in `details.nodeId` and the failure text in `details.reason`. Because `cluster-events` is a single replicated stream, all N events are visible from `GET /api/events` on **any** node, not only the one that failed.
+`DEPLOYMENT_FAILED` is emitted **once per (artifact, node) pair** whose deployment attempt failed — `ClusterEventAggregator.handleDeploymentFailed` fires on each node-artifact KV transition to `FAILED`, so a blueprint spread across N nodes that fails deterministically on all of them produces N separate events, each with its own `nodeId` in `details.nodeId` and the failure text in `details.reason`. Because `cluster-events` is a single replicated stream, all N events are visible from `GET /api/v1/events` on **any** node, not only the one that failed.
 
-This matters because none of the other deploy-facing surfaces show it: `POST /api/blueprints` only reports `"status": "applied"` on **acceptance**, before deployment is attempted, and is never updated with the outcome. Under the default `ALL_OR_NOTHING` mode (see [02-deployment.md](../architecture/02-deployment.md#deployment-atomicity)), a deterministic slice-load failure rolls back the entire blueprint and removes the deployment-map entry for that artifact — so `GET /api/slices/status` and `GET /api/blueprints/status/{id}` go back to showing **nothing** for it, not a FAILED status. **`GET /api/events` is the only surface that shows why a blueprint that was accepted never converges** — poll it, filtering for `DEPLOYMENT_FAILED`, when a deploy stays PENDING past its expected time. See the [Failure Almanac](failure-almanac.md#per-node-deployment-failure-under-all_or_nothing-rollback) for the worked example and operator playbook.
+This matters because none of the other deploy-facing surfaces show it: `POST /api/v1/blueprints` only reports `"status": "applied"` on **acceptance**, before deployment is attempted, and is never updated with the outcome. Under the default `ALL_OR_NOTHING` mode (see [02-deployment.md](../architecture/02-deployment.md#deployment-atomicity)), a deterministic slice-load failure rolls back the entire blueprint and removes the deployment-map entry for that artifact — so `GET /api/v1/slices/status` and `GET /api/v1/blueprints/status/{id}` go back to showing **nothing** for it, not a FAILED status. **`GET /api/v1/events` is the only surface that shows why a blueprint that was accepted never converges** — poll it, filtering for `DEPLOYMENT_FAILED`, when a deploy stays PENDING past its expected time. See the [Failure Almanac](failure-almanac.md#per-node-deployment-failure-under-all_or_nothing-rollback) for the worked example and operator playbook.
 
 **Severity Levels:** `INFO`, `WARNING`, `CRITICAL`
 
 ---
 
-### GET /api/certificates
+### GET /api/v1/certificates
 
 Return the node's certificate status and runtime TLS posture. Used by operators
 and the CLI (`aether certs status`) to verify TLS is active and to inspect the
@@ -489,7 +494,7 @@ When `tlsEnabled` is `false`, the remaining fields are set to placeholders
 (`"N/A"` / `0` / `"NOT_CONFIGURED"`) — operators consuming this endpoint should
 gate on `tlsEnabled` before reading the cert metadata.
 
-### POST /api/certificates/configure-short-validity
+### POST /api/v1/certificates/configure-short-validity
 
 **Dev-mode only.** Reconfigures the `CertificateRenewalScheduler` so the active certificate appears to expire in `validitySeconds` from now, causing the renewal timer to reschedule at the recomputed 40%-of-remaining mark (24s for `validitySeconds=60`). Used by `Strengthen-cert-rotation-trigger` integration tests (see `aether/docs/.internal/production-readiness-followup-2026-05-21.md` P-NEW-I) to observe automatic cert rotation in seconds rather than waiting hours.
 
@@ -524,9 +529,9 @@ The endpoint also fails when no `CertificateRenewalScheduler` is configured (TLS
 
 > **Blueprint-only deployment model:** Slices are deployed and undeployed exclusively through blueprints.
 > Individual deploy/undeploy endpoints have been removed to enforce dependency validation.
-> Use `POST /api/blueprints` to deploy slices and `DELETE /api/blueprints/{id}` to undeploy them.
+> Use `POST /api/v1/blueprints` to deploy slices and `DELETE /api/v1/blueprints/{id}` to undeploy them.
 
-### GET /api/slices
+### GET /api/v1/slices
 
 Returns cluster-wide slice data including per-node instances, target counts, and version information.
 
@@ -537,8 +542,8 @@ Returns cluster-wide slice data including per-node instances, target counts, and
 | `state` | string | no | Case-insensitive slice instance state (e.g. `ACTIVE`, `LOADED`), or a `+`-separated union of states (e.g. `LOADED+ACTIVE`). When present, the response filters `instances[]` per slice to only those whose `state` is a member of the set (uppercase normalisation + split-on-`+` server-side). Slices with no matching instances are dropped from the response. Omit for unfiltered output. An empty filter (`+` alone) matches no instance. |
 
 **Examples:**
-- `GET /api/slices?state=ACTIVE` — only slices that have at least one `ACTIVE` instance; each slice's `instances[]` restricted to `ACTIVE` entries.
-- `GET /api/slices?state=LOADED+ACTIVE` — only slices that have at least one `LOADED` or `ACTIVE` instance; each slice's `instances[]` restricted to those two states.
+- `GET /api/v1/slices?state=ACTIVE` — only slices that have at least one `ACTIVE` instance; each slice's `instances[]` restricted to `ACTIVE` entries.
+- `GET /api/v1/slices?state=LOADED+ACTIVE` — only slices that have at least one `LOADED` or `ACTIVE` instance; each slice's `instances[]` restricted to those two states.
 
 **Response:**
 ```json
@@ -559,9 +564,9 @@ Returns cluster-wide slice data including per-node instances, target counts, and
 }
 ```
 
-### GET /api/nodes/slices
+### GET /api/v1/nodes/slices
 
-Returns a flat list of slice artifact identifiers loaded on the connected node (the previous behavior of `GET /api/slices`).
+Returns a flat list of slice artifact identifiers loaded on the connected node (the previous behavior of `GET /api/v1/slices`).
 
 **Response:**
 ```json
@@ -573,7 +578,7 @@ Returns a flat list of slice artifact identifiers loaded on the connected node (
 }
 ```
 
-### GET /api/slices/status
+### GET /api/v1/slices/status
 
 Get detailed slice status including per-node state and health.
 
@@ -593,7 +598,7 @@ Get detailed slice status including per-node state and health.
 }
 ```
 
-### GET /api/slices/config/{id}
+### GET /api/v1/slices/config/{id}
 
 Return the effective configuration view for a loaded slice with per-key attribution of which layer of the slice-composite (`slice.toml ⊕ KV-overlay ⊕ node.toml`) produced the resolved value.
 
@@ -601,7 +606,7 @@ Return the effective configuration view for a loaded slice with per-key attribut
 
 Each entry's `source` is one of:
 - `"slice.toml"` — value comes from the slice's intrinsic `META-INF/resources.toml`
-- `"KV"` — value comes from the operator-supplied KV overlay (via `POST /api/config`)
+- `"KV"` — value comes from the operator-supplied KV overlay (via `POST /api/v1/config`)
 - `"node.toml"` — value comes from the node's static `node.toml` file
 
 Entries are sorted alphabetically by `key`. Returns a failure when the slice is not loaded or the node has per-slice config disabled.
@@ -618,7 +623,7 @@ Entries are sorted alphabetically by `key`. Returns a failure when the slice is 
 }
 ```
 
-### GET /api/nodes/routes
+### GET /api/v1/nodes/routes
 
 List HTTP routes registered on the connected node.
 
@@ -636,7 +641,7 @@ List HTTP routes registered on the connected node.
 }
 ```
 
-### GET /api/routes
+### GET /api/v1/routes
 
 List HTTP routes across the cluster.
 
@@ -654,7 +659,7 @@ List HTTP routes across the cluster.
 }
 ```
 
-### GET /api/versions
+### GET /api/v1/versions
 
 List the versioned slices deployed on this node and their API version registries (#198 §11.3).
 Route target is `LOCAL` — the response reflects the versioned slices the queried node hosts, read
@@ -687,7 +692,7 @@ These are the same lifecycle facts surfaced as response headers on a served requ
 }
 ```
 
-### POST /api/scale
+### POST /api/v1/scale
 
 Scale a blueprint-deployed slice to a new instance count. The slice must be part of an active blueprint.
 
@@ -726,7 +731,7 @@ Scale a blueprint-deployed slice to a new instance count. The slice must be part
 
 ## Blueprint Management
 
-### POST /api/blueprints
+### POST /api/v1/blueprints
 
 Publish (apply) a blueprint definition. The request body is the raw blueprint YAML/JSON string.
 
@@ -741,9 +746,9 @@ Publish (apply) a blueprint definition. The request body is the raw blueprint YA
 }
 ```
 
-> **`"applied"` means accepted, not deployed.** This response is written before allocation runs, and it is never updated with the outcome. Poll [`GET /api/blueprints/status/{id}`](#get-apiblueprintsstatusid) for progress; if a blueprint stays `PENDING` past its expected time, check [`GET /api/events`](#get-apievents) for `DEPLOYMENT_FAILED` — under the default `ALL_OR_NOTHING` mode a failure rolls back the whole blueprint, so the status endpoints go back to showing nothing rather than a FAILED slice, and the event feed is the only place the reason (`details.reason`) appears.
+> **`"applied"` means accepted, not deployed.** This response is written before allocation runs, and it is never updated with the outcome. Poll [`GET /api/v1/blueprints/status/{id}`](#get-apiv1blueprintsstatusid) for progress; if a blueprint stays `PENDING` past its expected time, check [`GET /api/v1/events`](#get-apiv1events) for `DEPLOYMENT_FAILED` — under the default `ALL_OR_NOTHING` mode a failure rolls back the whole blueprint, so the status endpoints go back to showing nothing rather than a FAILED slice, and the event feed is the only place the reason (`details.reason`) appears.
 
-### GET /api/blueprints
+### GET /api/v1/blueprints
 
 List all published blueprints.
 
@@ -757,7 +762,7 @@ List all published blueprints.
 }
 ```
 
-### GET /api/blueprints/{id}
+### GET /api/v1/blueprints/{id}
 
 Get blueprint details including slices and dependencies.
 
@@ -777,7 +782,7 @@ Get blueprint details including slices and dependencies.
 }
 ```
 
-### GET /api/blueprints/status/{id}
+### GET /api/v1/blueprints/status/{id}
 
 Get deployment status of a blueprint and each of its slices. `{id}` is the
 blueprint id, which is artifact-shaped (`group:artifact:version`), so its
@@ -785,7 +790,7 @@ colons are percent-encoded in the path segment.
 
 This is the surface `aether blueprints deploy --wait` polls. `activeInstances`
 is counted from the same replicated deployment map that backs
-`GET /api/slices/status`, so the two endpoints cannot disagree about whether a
+`GET /api/v1/slices/status`, so the two endpoints cannot disagree about whether a
 deployment finished.
 
 **Response:**
@@ -806,7 +811,7 @@ deployment finished.
 
 Status values: `PENDING`, `DEPLOYING`, `DEPLOYED`, `SCALING_DOWN`. Overall: `DEPLOYED`, `PENDING`, `IN_PROGRESS`, `PARTIAL`.
 
-### DELETE /api/blueprints/{id}
+### DELETE /api/v1/blueprints/{id}
 
 Delete a published blueprint.
 
@@ -818,7 +823,7 @@ Delete a published blueprint.
 }
 ```
 
-### POST /api/blueprints/deploy
+### POST /api/v1/blueprints/deploy
 
 Deploy a blueprint from an artifact in the cluster's artifact repository.
 
@@ -860,9 +865,9 @@ Rules:
   blueprint republishing at a newer version is an owner advancing its own schema, not a conflict.
 - A blueprint that declares **no** migrations passes the gate trivially. Sharing a datasource for
   reads and writes stays legal — only duplicate *migration ownership* is refused.
-- The gate runs for `registerOnly` publishes too, so `POST /api/blueprints/publish` is refused on
+- The gate runs for `registerOnly` publishes too, so `POST /api/v1/blueprints/publish` is refused on
   the same terms as `/deploy`.
-- `POST /api/blueprints` (raw blueprint content) is **not** subject to the gate: migrations are
+- `POST /api/v1/blueprints` (raw blueprint content) is **not** subject to the gate: migrations are
   read from the artifact jar's `schema/` directory, so a raw-DSL blueprint carries none.
 
 **What this check does and does not promise.** Both routes are task-group targeted
@@ -879,11 +884,11 @@ Why refuse rather than namespace: datasource names are cluster-global (the defau
 same node-global config section), so two blueprints migrating one physical database would
 interleave unrelated version sequences.
 
-### POST /api/blueprints/publish
+### POST /api/v1/blueprints/publish
 
 Publish a blueprint from an artifact already present in the cluster's artifact
-repository. Orthogonal to `POST /api/blueprints` (which takes raw blueprint
-content in the body). Same body shape as `POST /api/blueprints/deploy`, and subject to the same
+repository. Orthogonal to `POST /api/v1/blueprints` (which takes raw blueprint
+content in the body). Same body shape as `POST /api/v1/blueprints/deploy`, and subject to the same
 [single-migrator gate](#single-migrator-gate-409-conflict).
 
 **Request Body:**
@@ -896,7 +901,7 @@ content in the body). Same body shape as `POST /api/blueprints/deploy`, and subj
 CLI: `aether blueprints publish <group:artifact:version>` appends the
 `:blueprint` qualifier automatically when constructing the body.
 
-### POST /api/blueprints/validate
+### POST /api/v1/blueprints/validate
 
 Validate a blueprint without applying it.
 
@@ -970,7 +975,7 @@ For `strengthen_only` policy, security levels are ordered: `public (0) < authent
 
 ## Metrics
 
-### GET /api/metrics
+### GET /api/v1/metrics
 
 Get cluster-wide metrics including per-node load and deployment metrics.
 
@@ -1002,7 +1007,7 @@ cluster-wide map N times (the #591 instrument mis-read exactly this and had to h
 }
 ```
 
-### GET /api/metrics/comprehensive
+### GET /api/v1/metrics/comprehensive
 
 Get comprehensive metrics. **Scope: node-local** — the answering node reports itself.
 
@@ -1012,7 +1017,7 @@ The response has two halves with different time semantics, deliberately:
   are zeros until the first bucket exists.
 - The `consensus` block (#674) is **live** — cumulative monotonic totals read from the consensus
   collector at request time, present from the node's first request. Consumers measuring load
-  difference the totals over their own window (the same contract as `/api/metrics/transport`).
+  difference the totals over their own window (the same contract as `/api/v1/metrics/transport`).
   `pendingBatches` is a level, not a total; `avgDecisionLatencyMs` is derived over the cumulative
   counts; `leaderId` is absent until a leader is known.
 
@@ -1048,7 +1053,7 @@ The response has two halves with different time semantics, deliberately:
 }
 ```
 
-### GET /api/metrics/derived
+### GET /api/v1/metrics/derived
 
 Get derived (computed) metrics including trends, saturation, and health score.
 
@@ -1072,7 +1077,7 @@ Get derived (computed) metrics including trends, saturation, and health score.
 }
 ```
 
-### GET /api/metrics/prometheus
+### GET /api/v1/metrics/prometheus
 
 Get Prometheus-format metrics for scraping.
 
@@ -1084,7 +1089,7 @@ Includes the consensus-load gauges (#674): `consensus_decisions_total`, `consens
 `consensus_pending_batches` (a level) — the same names and values as the comprehensive response's
 `consensus` block.
 
-### GET /api/metrics/transport
+### GET /api/v1/metrics/transport
 
 Get transport-layer metrics. **Scope: node-local** — a flat map of **node-level** QUIC counters
 (the answering node's own totals; there is no per-peer attribution and no byte counter on this
@@ -1093,7 +1098,7 @@ surface): `quic_messages_sent_total` / `quic_messages_received_total` (protocol-
 stream-zombie heal counters. Message counters are monotonic; consumers difference them over their
 own window.
 
-### GET /api/metrics/history
+### GET /api/v1/metrics/history
 
 Get historical metrics for nodes over a time range.
 
@@ -1102,7 +1107,7 @@ Get historical metrics for nodes over a time range.
 
 **Example:**
 ```bash
-curl "http://localhost:8080/api/metrics/history?range=15m"
+curl "http://localhost:8080/api/v1/metrics/history?range=15m"
 ```
 
 **Response:**
@@ -1120,7 +1125,7 @@ curl "http://localhost:8080/api/metrics/history?range=15m"
 }
 ```
 
-### GET /api/metrics/timeouts
+### GET /api/v1/metrics/timeouts
 
 Get per-subsystem cumulative timeout-fired counters. One entry per
 `TimeoutsConfig` subsystem group (14 subsystems mirroring the
@@ -1134,7 +1139,7 @@ observable signal for `[timeouts.*]` taking effect.
 
 **Example:**
 ```bash
-curl http://localhost:8080/api/metrics/timeouts
+curl http://localhost:8080/api/v1/metrics/timeouts
 ```
 
 **Response:**
@@ -1159,14 +1164,14 @@ curl http://localhost:8080/api/metrics/timeouts
 }
 ```
 
-### POST /api/metrics/backfill
+### POST /api/v1/metrics/backfill
 
 **Dev-mode-only.** Seeds synthetic historical-metric samples into the local
 node's `ClusterSyncCollector` ring buffer so historical-range queries
-(`/api/metrics/history?range=...`) can be exercised deterministically
+(`/api/v1/metrics/history?range=...`) can be exercised deterministically
 without waiting hours for the sliding window to populate organically.
 Gated by `AETHER_INSECURE_DEV_MODE=true` — same gate pattern as
-`/api/scheduled-tasks/inject` and `/api/alerts/inject`. Precondition: a node with
+`/api/v1/scheduled-tasks/inject` and `/api/v1/alerts/inject`. Precondition: a node with
 operator-provided TLS certificates refuses to start in dev-mode, so this route is never
 reachable on a node configured with real TLS.
 
@@ -1211,7 +1216,7 @@ Fields:
 - `intervalMs <= 0` → `intervalMs must be greater than 0`.
 - `AETHER_INSECURE_DEV_MODE` unset / `false` → `metrics backfill requires AETHER_INSECURE_DEV_MODE=true`.
 
-### GET /api/nodes/metrics
+### GET /api/v1/nodes/metrics
 
 Get per-node CPU and heap metrics.
 
@@ -1227,7 +1232,7 @@ Get per-node CPU and heap metrics.
 ]
 ```
 
-### GET /api/artifacts/metrics
+### GET /api/v1/artifacts/metrics
 
 Get artifact storage and deployment metrics.
 
@@ -1246,7 +1251,7 @@ Get artifact storage and deployment metrics.
 }
 ```
 
-### GET /api/invocations/metrics
+### GET /api/v1/invocations/metrics
 
 Get per-method invocation metrics.
 
@@ -1257,13 +1262,13 @@ Get per-method invocation metrics.
 **Examples:**
 ```bash
 # All metrics
-curl http://localhost:8080/api/invocations/metrics
+curl http://localhost:8080/api/v1/invocations/metrics
 
 # Filter by artifact
-curl "http://localhost:8080/api/invocations/metrics?artifact=order-service"
+curl "http://localhost:8080/api/v1/invocations/metrics?artifact=order-service"
 
 # Filter by method
-curl "http://localhost:8080/api/invocations/metrics?method=processOrder"
+curl "http://localhost:8080/api/v1/invocations/metrics?method=processOrder"
 ```
 
 **Response:**
@@ -1286,7 +1291,7 @@ curl "http://localhost:8080/api/invocations/metrics?method=processOrder"
 }
 ```
 
-### GET /api/invocations/metrics/slow
+### GET /api/v1/invocations/metrics/slow
 
 Get slow invocation details.
 
@@ -1307,7 +1312,7 @@ Get slow invocation details.
 }
 ```
 
-### GET /api/invocations/metrics/strategy
+### GET /api/v1/invocations/metrics/strategy
 
 Get current slow invocation threshold strategy.
 
@@ -1331,7 +1336,7 @@ Get current slow invocation threshold strategy.
 {"type": "composite"}
 ```
 
-### POST /api/invocations/metrics/strategy
+### POST /api/v1/invocations/metrics/strategy
 
 Strategy changes are not currently supported. This endpoint always returns an error.
 
@@ -1344,7 +1349,7 @@ Strategy changes are not currently supported. This endpoint always returns an er
 
 ## Controller Configuration
 
-### GET /api/controller/config
+### GET /api/v1/controller/config
 
 Get current controller configuration.
 
@@ -1358,7 +1363,7 @@ Get current controller configuration.
 }
 ```
 
-### POST /api/controller/config
+### POST /api/v1/controller/config
 
 Update controller configuration. All fields are optional; only provided fields will be updated.
 
@@ -1385,7 +1390,7 @@ Update controller configuration. All fields are optional; only provided fields w
 }
 ```
 
-### GET /api/controller/status
+### GET /api/v1/controller/status
 
 Get controller status including whether it is enabled and its configuration.
 
@@ -1403,7 +1408,7 @@ Get controller status including whether it is enabled and its configuration.
 }
 ```
 
-### POST /api/controller/evaluate
+### POST /api/v1/controller/evaluate
 
 Trigger immediate controller evaluation.
 
@@ -1414,7 +1419,7 @@ Trigger immediate controller evaluation.
 }
 ```
 
-### GET /api/controller/decisions
+### GET /api/v1/controller/decisions
 
 Get the leader control loop's per-slice scaling decision snapshot (#425). Returns the latest
 decision recorded for each registered artifact during the most recent evaluation cycle, plus the
@@ -1451,7 +1456,7 @@ timestamp.
 
 ## TTM (Time-series Trend Model)
 
-### GET /api/ttm/status
+### GET /api/v1/ttm/status
 
 Get TTM engine status including configuration, state, and latest forecast.
 
@@ -1474,7 +1479,7 @@ Get TTM engine status including configuration, state, and latest forecast.
 }
 ```
 
-### GET /api/ttm/training-data
+### GET /api/v1/ttm/training-data
 
 Export TTM training data (last 120 minute-aggregated samples).
 
@@ -1502,7 +1507,7 @@ Export TTM training data (last 120 minute-aggregated samples).
 
 ## Alert Management
 
-### GET /api/alerts
+### GET /api/v1/alerts
 
 Get all alerts (active + history combined).
 
@@ -1514,15 +1519,15 @@ Get all alerts (active + history combined).
 }
 ```
 
-### GET /api/alerts/active
+### GET /api/v1/alerts/active
 
 Get active alerts only.
 
-### GET /api/alerts/history
+### GET /api/v1/alerts/history
 
 Get alert history only.
 
-### POST /api/alerts/clear
+### POST /api/v1/alerts/clear
 
 Clear all active alerts.
 
@@ -1533,9 +1538,9 @@ Clear all active alerts.
 }
 ```
 
-### POST /api/alerts/inject
+### POST /api/v1/alerts/inject
 
-Insert a synthetic alert entry directly, bypassing threshold evaluation. The entry is visible via `GET /api/alerts` (active list) immediately after this call returns and is also written to alert history with status `INJECTED`. Used by integration tests and operator tooling when no threshold-driven path can produce the alert under test.
+Insert a synthetic alert entry directly, bypassing threshold evaluation. The entry is visible via `GET /api/v1/alerts` (active list) immediately after this call returns and is also written to alert history with status `INJECTED`. Used by integration tests and operator tooling when no threshold-driven path can produce the alert under test.
 
 **RBAC:** OPERATOR · **Routing:** ANY (node-local; alerts are not consensus-replicated)
 
@@ -1567,7 +1572,7 @@ Insert a synthetic alert entry directly, bypassing threshold evaluation. The ent
 
 ## Threshold Configuration
 
-### GET /api/thresholds
+### GET /api/v1/thresholds
 
 Get all configured alert thresholds.
 
@@ -1579,7 +1584,7 @@ Get all configured alert thresholds.
 }
 ```
 
-### POST /api/thresholds
+### POST /api/v1/thresholds
 
 Set an alert threshold. Thresholds are persisted to the KV-Store and replicated across all cluster nodes.
 
@@ -1602,13 +1607,13 @@ Set an alert threshold. Thresholds are persisted to the KV-Store and replicated 
 }
 ```
 
-### DELETE /api/thresholds/{metric}
+### DELETE /api/v1/thresholds/{metric}
 
 Remove an alert threshold. The removal is persisted to the KV-Store and replicated across all cluster nodes.
 
 **Example:**
 ```bash
-curl -X DELETE http://localhost:8080/api/thresholds/cpu.usage
+curl -X DELETE http://localhost:8080/api/v1/thresholds/cpu.usage
 ```
 
 **Response:**
@@ -1621,68 +1626,9 @@ curl -X DELETE http://localhost:8080/api/thresholds/cpu.usage
 
 ---
 
-## Dynamic Aspects
-
-### GET /api/aspects
-
-Get all configured dynamic aspects.
-
-**Response:**
-```json
-{
-  "org.example:my-slice:1.0.0/processOrder": "LOG_AND_METRICS",
-  "org.example:my-slice:1.0.0/getStatus": "METRICS"
-}
-```
-
-### POST /api/aspects
-
-Set aspect mode on a method.
-
-**Request:**
-```json
-{
-  "artifact": "org.example:my-slice:1.0.0",
-  "method": "processOrder",
-  "mode": "LOG_AND_METRICS"
-}
-```
-
-Available modes: `NONE`, `LOG`, `METRICS`, `LOG_AND_METRICS`
-
-**Response:**
-```json
-{
-  "status": "aspect_set",
-  "artifact": "org.example:my-slice:1.0.0",
-  "method": "processOrder",
-  "mode": "LOG_AND_METRICS"
-}
-```
-
-### DELETE /api/aspects/{artifact}/{method}
-
-Remove aspect configuration for a method.
-
-**Example:**
-```bash
-curl -X DELETE http://localhost:8080/api/aspects/org.example:my-slice:1.0.0/processOrder
-```
-
-**Response:**
-```json
-{
-  "status": "aspect_removed",
-  "artifact": "org.example:my-slice:1.0.0",
-  "method": "processOrder"
-}
-```
-
----
-
 ## Traces
 
-### GET /api/traces
+### GET /api/v1/traces
 
 List recent invocation traces.
 
@@ -1695,7 +1641,7 @@ List recent invocation traces.
 
 **Example:**
 ```bash
-curl "http://localhost:8080/api/traces?limit=50&method=processOrder"
+curl "http://localhost:8080/api/v1/traces?limit=50&method=processOrder"
 ```
 
 **Response:**
@@ -1714,13 +1660,13 @@ curl "http://localhost:8080/api/traces?limit=50&method=processOrder"
 }
 ```
 
-### GET /api/traces/{id}
+### GET /api/v1/traces/{id}
 
 Get all trace nodes for a specific request ID.
 
 **Example:**
 ```bash
-curl http://localhost:8080/api/traces/abc-123
+curl http://localhost:8080/api/v1/traces/abc-123
 ```
 
 **Response:**
@@ -1744,7 +1690,7 @@ curl http://localhost:8080/api/traces/abc-123
 }
 ```
 
-### GET /api/traces/stats
+### GET /api/v1/traces/stats
 
 Get aggregated trace statistics.
 
@@ -1762,9 +1708,9 @@ Get aggregated trace statistics.
 }
 ```
 
-### POST /api/traces/inject
+### POST /api/v1/traces/inject
 
-Insert a synthetic trace entry directly into the node-local trace store. The entry is visible via `GET /api/traces` immediately after this call returns and is indistinguishable in shape from runtime-emitted traces, except for the synthetic `nodeId=@injected` / `caller=@injected` markers. Used by integration tests and operator tooling when no deterministic invocation path can produce a trace under test.
+Insert a synthetic trace entry directly into the node-local trace store. The entry is visible via `GET /api/v1/traces` immediately after this call returns and is indistinguishable in shape from runtime-emitted traces, except for the synthetic `nodeId=@injected` / `caller=@injected` markers. Used by integration tests and operator tooling when no deterministic invocation path can produce a trace under test.
 
 **RBAC:** OPERATOR · **Routing:** ANY (node-local; the invocation trace store is not consensus-replicated, so the inject lands on the receiving node and the read-back must hit the same node)
 
@@ -1797,7 +1743,7 @@ Insert a synthetic trace entry directly into the node-local trace store. The ent
 
 ## DHT (Distributed Hash Table)
 
-### GET /api/dht/replication-map
+### GET /api/v1/dht/replication-map
 
 Operator-facing inspection of the active DHT replication topology — which keys
 live on which nodes under the current replication factor. The endpoint walks
@@ -1829,7 +1775,7 @@ matching the supplied `prefix` (or full storage size when no prefix is
 given); `returned` is bounded by `limit`. See
 `aether/docs/.internal/production-readiness-followup-2026-05-21.md` P-NEW-F.
 
-### POST /api/dht/inject
+### POST /api/v1/dht/inject
 
 **Dev-mode-only.** Writes a value into the local DHT storage tier with an
 operator-supplied HLC timestamp, bypassing the regular `DHTClient.put` path
@@ -1838,8 +1784,8 @@ versioned writes) to build deterministic version-conflict scenarios without
 racing the live clock.
 
 Gated by `AETHER_INSECURE_DEV_MODE=true` — same gate pattern as
-`/api/alerts/inject`, `/api/scheduled-tasks/inject`, and
-`/api/metrics/backfill`. Route target is `LOCAL` — tests POST directly to
+`/api/v1/alerts/inject`, `/api/v1/scheduled-tasks/inject`, and
+`/api/v1/metrics/backfill`. Route target is `LOCAL` — tests POST directly to
 the node they wish to mutate (no leader forwarding). Precondition: a node with
 operator-provided TLS certificates refuses to start in dev-mode, so this route is never
 reachable on a node configured with real TLS.
@@ -1891,12 +1837,12 @@ artifact, and stream storage. Each instance exposes its tier topology
 `ReadinessState` (`LOADING_SNAPSHOT` / `SNAPSHOT_LOADED` / `READY`), and metadata
 snapshot epoch/timestamp.
 
-The `/api/storage*` routes are **per-node diagnostics** served node-locally (the
-receiving node's own instances). The `/api/cluster/storage*` routes are
+The `/api/v1/storage*` routes are **per-node diagnostics** served node-locally (the
+receiving node's own instances). The `/api/v1/cluster/storage*` routes are
 **leader-aggregated**: the leader publishes every node's storage status into the
 KV-Store and returns the cluster-wide rollup.
 
-### GET /api/storage
+### GET /api/v1/storage
 
 List the storage instances on the connected node with their tier utilisation and
 readiness.
@@ -1936,11 +1882,11 @@ readiness.
   instance under-reports its real disk footprint by the entire WAL. Every other instance reports
   `null` rather than a zero that would read as "has a WAL, currently empty".
 - `wal.totalBytes`: sum of live WAL bytes across every stream partition on this node — derived from
-  the same snapshot as [`GET /api/storage/retention`](#get-apistorageretention)'s `walTotalBytes`,
+  the same snapshot as [`GET /api/v1/storage/retention`](#get-apiv1storageretention)'s `walTotalBytes`,
   so the two surfaces always agree.
 - `wal.walPartitions`: number of partitions on this node that currently have a WAL.
 
-### GET /api/storage/{name}
+### GET /api/v1/storage/{name}
 
 Detail for a single named storage instance on the connected node, including the
 latest metadata-snapshot marker. Returns a failure when no instance with that name
@@ -1963,9 +1909,9 @@ exists on the node.
 ```
 
 - `snapshot.lastEpoch` / `lastTimestampMs`: epoch and epoch-millis of the most recent metadata snapshot taken by the instance's `SnapshotManager` (`0` when none has been taken yet).
-- `wal`: same semantics as on `GET /api/storage` — non-`null` only when `{name}` is `streams`.
+- `wal`: same semantics as on `GET /api/v1/storage` — non-`null` only when `{name}` is `streams`.
 
-### POST /api/storage/snapshot/{name}
+### POST /api/v1/storage/snapshot/{name}
 
 Force an immediate metadata snapshot of the named storage instance (calls the
 instance's `SnapshotManager.forceSnapshot()`). Returns the epoch and timestamp of
@@ -1984,7 +1930,7 @@ the snapshot just taken.
 }
 ```
 
-### GET /api/cluster/storage
+### GET /api/v1/cluster/storage
 
 Cluster-wide rollup of every node's storage instances. The leader first publishes
 each node's current storage status into the KV-Store, then groups the statuses by
@@ -2023,7 +1969,7 @@ instance name and reports per-instance totals plus a per-node breakdown.
   only on the `streams` instance rows (`0` everywhere else). `totalWalBytes` is the sum of `walBytes`
   across the instance's nodes: on the `streams` instance it is the cluster's total WAL footprint.
 
-### GET /api/cluster/storage/{name}
+### GET /api/v1/cluster/storage/{name}
 
 Cluster-wide detail for a single named instance — the per-node breakdown including
 each node's snapshot marker. Returns a failure when no node reports an instance with
@@ -2054,7 +2000,7 @@ that name.
 }
 ```
 
-- `walBytes` / `totalWalBytes`: same semantics as on `GET /api/cluster/storage` — per-node live WAL
+- `walBytes` / `totalWalBytes`: same semantics as on `GET /api/v1/cluster/storage` — per-node live WAL
   bytes and their sum; non-zero only for the `streams` instance.
 
 ### WAL placement (`[storage.streams] wal_path`)
@@ -2078,7 +2024,7 @@ wal_path = "/data/aether/stream-wal"
 An unwritable WAL directory is a **boot error** (#634 item 2): a node that cannot honour the
 durability its streams declare refuses to start rather than silently acking publishes without fsync.
 
-### GET /api/storage/retention
+### GET /api/v1/storage/retention
 
 The tri-floor retention view (#634-3/4): for every `(stream, partition)` this node holds anything
 for, the local sources of history (WAL, in-memory ring, sealed segments) joined with the two
@@ -2166,7 +2112,7 @@ means that partition is on the non-durable path on this node.
 client is connected, so a violation nobody polls for would stay invisible. A periodic watch re-runs
 this same assembly **every 5 minutes** and, for each NEWLY violated partition, WARN-logs and raises
 one operator alert — name **`retention-invariant`**, severity **`CRITICAL`** — through the alert
-injection path (visible via `GET /api/alerts/active` and `aether alerts active`). A raise requires the
+injection path (visible via `GET /api/v1/alerts/active` and `aether alerts active`). A raise requires the
 SAME partition to be violated on TWO consecutive ticks (the tri-floor join is a non-atomic cut, so a
 truncate landing between reads can synthesize a one-tick phantom). No re-alert while the same
 violation persists; a partition that recovers and later relapses re-earns its two ticks and alerts
@@ -2192,13 +2138,13 @@ periodic `retention-invariant` alert is the push-side surface; this endpoint and
 
 Per-method logging-ladder depth thresholds. Since #277 these routes are backed by the unified
 observability config store (see [Observability Config](#observability-config) below), not a
-separate depth registry. `POST /api/observability/depth` **materializes** a method-scope config:
+separate depth registry. `POST /api/v1/observability/depth` **materializes** a method-scope config:
 on an unconfigured method it pins the baseline-equivalent toggles (logging + metrics + tracing on,
 spans off) with the requested depth — so setting a depth never darkens an injection point, it only
 changes the logging-ladder threshold. `DELETE` removes the method-scope config, falling back to the
 next-broader scope (else the baseline default depth).
 
-### GET /api/observability/depth
+### GET /api/v1/observability/depth
 
 List all configured per-method depth overrides.
 
@@ -2215,7 +2161,7 @@ List all configured per-method depth overrides.
 }
 ```
 
-### POST /api/observability/depth
+### POST /api/v1/observability/depth
 
 Set a per-method depth threshold.
 
@@ -2238,13 +2184,13 @@ Set a per-method depth threshold.
 }
 ```
 
-### DELETE /api/observability/depth/{artifact}/{method}
+### DELETE /api/v1/observability/depth/{artifact}/{method}
 
 Remove a per-method depth override.
 
 **Example:**
 ```bash
-curl -X DELETE http://localhost:8080/api/observability/depth/org.example:my-slice:1.0.0/processOrder
+curl -X DELETE http://localhost:8080/api/v1/observability/depth/org.example:my-slice:1.0.0/processOrder
 ```
 
 **Response:**
@@ -2280,7 +2226,7 @@ Per-injection-point runtime observability facet control (#277). An injection poi
 > cluster-consistent; the per-node live field `invocationCount` (and baseline cells that have no
 > config key) reflect the responding leader node.
 
-### GET /api/observability/config
+### GET /api/v1/observability/config
 
 List the effective observability state of every known injection point and config scope.
 
@@ -2304,12 +2250,12 @@ List the effective observability state of every known injection point and config
 `invocationCount` is `null` when no live cell is registered for the key (e.g. a wildcard scope).
 For a `baseline` entry the toggle fields show the baseline-equivalent set (what actually runs).
 
-### GET /api/observability/config/{artifactBase}/{methodName}
+### GET /api/v1/observability/config/{artifactBase}/{methodName}
 
 Effective state for a single injection point or scope. `*` is accepted for the artifact (`base/*`)
 and global (`*/*`) scopes.
 
-### POST /api/observability/config
+### POST /api/v1/observability/config
 
 Set a whole config snapshot at a scope (ADMIN). Absent boolean fields are `false` (facet off).
 
@@ -2342,7 +2288,7 @@ Set a whole config snapshot at a scope (ADMIN). Absent boolean fields are `false
 
 Use `*` for `artifact` and/or `method` to set the artifact or global scope.
 
-### DELETE /api/observability/config/{artifactBase}/{methodName}
+### DELETE /api/v1/observability/config/{artifactBase}/{methodName}
 
 Remove the config at a scope (ADMIN); resolution falls back to the next-broader scope (else the
 baseline).
@@ -2362,7 +2308,7 @@ baseline).
 
 Runtime log level control with cluster-wide persistence via KV-Store consensus.
 
-### GET /api/logging/levels
+### GET /api/v1/logging/levels
 
 Get all runtime-configured log level overrides.
 
@@ -2374,7 +2320,7 @@ Get all runtime-configured log level overrides.
 }
 ```
 
-### POST /api/logging/levels
+### POST /api/v1/logging/levels
 
 Set log level for a specific logger. The change is persisted to the KV-Store and replicated across all cluster nodes.
 
@@ -2397,13 +2343,13 @@ Available levels: `TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`, `FATAL`, `OFF`
 }
 ```
 
-### DELETE /api/logging/levels/{logger}
+### DELETE /api/v1/logging/levels/{logger}
 
 Reset a logger to its configuration default. The removal is persisted to the KV-Store and replicated across all cluster nodes.
 
 **Example:**
 ```bash
-curl -X DELETE http://localhost:8080/api/logging/levels/org.pragmatica.aether.node
+curl -X DELETE http://localhost:8080/api/v1/logging/levels/org.pragmatica.aether.node
 ```
 
 **Response:**
@@ -2422,7 +2368,7 @@ Configuration overrides are persisted to the KV-Store and replicated across all 
 
 **Note:** Dynamic configuration routes are only available when `DynamicConfigManager` is enabled.
 
-### GET /api/config
+### GET /api/v1/config
 
 Get all configuration values (base + overrides merged).
 
@@ -2435,7 +2381,7 @@ Get all configuration values (base + overrides merged).
 }
 ```
 
-### GET /api/config/overrides
+### GET /api/v1/config/overrides
 
 Get only dynamic overrides from the KV store.
 
@@ -2446,7 +2392,7 @@ Get only dynamic overrides from the KV store.
 }
 ```
 
-### POST /api/config
+### POST /api/v1/config
 
 Set a configuration override. Omit `nodeId` for cluster-wide, include it for node-specific.
 
@@ -2476,13 +2422,13 @@ Set a configuration override. Omit `nodeId` for cluster-wide, include it for nod
 }
 ```
 
-### DELETE /api/config/{key}
+### DELETE /api/v1/config/{key}
 
 Remove a cluster-wide configuration override. The base value from TOML/env/system properties is restored.
 
 **Example:**
 ```bash
-curl -X DELETE http://localhost:8080/api/config/database.port
+curl -X DELETE http://localhost:8080/api/v1/config/database.port
 ```
 
 **Response:**
@@ -2493,13 +2439,13 @@ curl -X DELETE http://localhost:8080/api/config/database.port
 }
 ```
 
-### DELETE /api/config/node/{id}/{key}
+### DELETE /api/v1/config/nodes/{id}/{key}
 
 Remove a node-specific configuration override.
 
 **Example:**
 ```bash
-curl -X DELETE http://localhost:8080/api/config/node/node-2/server.port
+curl -X DELETE http://localhost:8080/api/v1/config/nodes/node-2/server.port
 ```
 
 **Response:**
@@ -2516,7 +2462,7 @@ curl -X DELETE http://localhost:8080/api/config/node/node-2/server.port
 
 Unified deployment API supporting immediate, canary, blue-green, and rolling strategies. All deployment mutation endpoints (start, promote, complete, rollback) require the requesting node to be the cluster leader.
 
-### GET /api/deploy
+### GET /api/v1/deploy
 
 List all active deployments across all strategies.
 
@@ -2539,7 +2485,7 @@ List all active deployments across all strategies.
 }
 ```
 
-### GET /api/deploy/{id}
+### GET /api/v1/deploy/{id}
 
 Get a single deployment by ID. Use `current` as the ID to resolve to the first active deployment.
 
@@ -2564,31 +2510,7 @@ Strategy-specific fields vary:
 - **CANARY**: includes `currentStage`, `trafficPercent`, `stages`
 - **BLUE_GREEN**: includes `activeSlot` (`BLUE` or `GREEN`)
 
-### GET /api/deploy/{id}/health
-
-Get version health metrics for a deployment.
-
-**Response:**
-```json
-{
-  "deploymentId": "2bKyJE8yxxxxxxxxxxx",
-  "oldVersion": {
-    "version": "1.0.0",
-    "requestCount": 1000,
-    "errorRate": 0.001,
-    "avgLatencyMs": 45.0
-  },
-  "newVersion": {
-    "version": "2.0.0",
-    "requestCount": 250,
-    "errorRate": 0.002,
-    "avgLatencyMs": 50.0
-  },
-  "collectedAt": 1704067200000
-}
-```
-
-### POST /api/deploy
+### POST /api/v1/deploy
 
 Start a new deployment. Requires leader node.
 
@@ -2617,9 +2539,9 @@ Start a new deployment. Requires leader node.
 | `requireManualApproval` | boolean | No | Require manual approval (default: false) |
 | `cleanupPolicy` | string | No | `IMMEDIATE`, `GRACE_PERIOD` (default), `MANUAL` |
 
-**Response:** Same as `GET /api/deploy/{id}`.
+**Response:** Same as `GET /api/v1/deploy/{id}`.
 
-### POST /api/deploy/{id}/promote
+### POST /api/v1/deploy/promote/{id}
 
 Advance a deployment to its next stage. The behavior depends on the strategy:
 - **ROLLING**: Shifts traffic to the next routing ratio
@@ -2628,25 +2550,25 @@ Advance a deployment to its next stage. The behavior depends on the strategy:
 
 Requires leader node.
 
-**Response:** Same as `GET /api/deploy/{id}`.
+**Response:** Same as `GET /api/v1/deploy/{id}`.
 
-### POST /api/deploy/{id}/rollback
+### POST /api/v1/deploy/rollback/{id}
 
 Rollback to old version. Requires leader node.
 
-**Response:** Same as `GET /api/deploy/{id}`.
+**Response:** Same as `GET /api/v1/deploy/{id}`.
 
-### POST /api/deploy/{id}/complete
+### POST /api/v1/deploy/complete/{id}
 
 Complete the deployment (finalize new version, decommission old). Requires leader node.
 
-**Response:** Same as `GET /api/deploy/{id}`.
+**Response:** Same as `GET /api/v1/deploy/{id}`.
 
 ---
 
 ## Cluster Topology
 
-### GET /api/cluster/topology
+### GET /api/v1/cluster/topology
 
 Get live cluster topology with per-node details. Returns core/passive/worker counts from the actual connected topology (not static boot-time config).
 
@@ -2708,7 +2630,7 @@ Each `nodeDetails` and `fsmMembers` entry carries BOTH `role` (the self-asserted
 }
 ```
 
-### GET /api/cluster/journal
+### GET /api/v1/cluster/journal
 
 Dump the queried node's transition journal (cluster-topology-overhaul spec, Wave 1 Enrichment A) — a bounded, in-memory, per-node ring buffer recording **every membership-FSM transition** (layer `FSM`) and **every transport peer-lifecycle transition** (layer `PEER`), plus the dialer expected-vs-actual Hello diagnostic (`cause` prefixed `dialer-hello`) and the boot future-history detection (`cause: boot-future-history`). Local route (each node serves its own journal); read-only; pure observability — not consensus, not KV, lost on restart. Capacity defaults to 4096 entries per layer (override with the `aether.journal.capacityPerLayer` system property).
 
@@ -2752,7 +2674,7 @@ Dump the queried node's transition journal (cluster-topology-overhaul spec, Wave
 
 Errors: `layer` values other than `fsm` / `peer` are rejected.
 
-### GET /api/cluster/membership
+### GET /api/v1/cluster/membership
 
 Membership diagnostics — the responding node's authoritative `MembershipFsm` lifecycle view plus its quorum-loss self-drain readiness. Purpose: diagnose SWIM-under-concurrent-loss situations without log-scraping — per survivor, which peers are SUSPECT/DEAD and whether this node's quorum-loss self-drain window is armed and below threshold. **Per-node local view** (each node serves its own membership state); read-only; **not leader-forwarded** — query an individual node to read *that* node's view (e.g. each survivor's view during a multi-core-loss window).
 
@@ -2813,7 +2735,7 @@ Membership diagnostics — the responding node's authoritative `MembershipFsm` l
 > `core_absence < community_absence`, refused at config load otherwise, so a community always stops
 > serving before its work is handed to anyone else.
 
-### GET /api/ownership/{domain}
+### GET /api/v1/ownership/{domain}
 
 Committed ownership + fence diagnostics (#345 item 1f) — for every partition/key in the requested domain: the owner `NodeId`, the committed fence `Epoch`, the responding node's LOCAL per-domain epoch high-water, and a `fenced` flag. Purpose: let an operator (or the cloud handover test) verify that the ownership fence engaged after a takeover — the committed `epoch` is the live fencing token the Rabia applier compares to reject a deposed owner's strictly-older epoch, and `fenced` pinpoints the node/arc that has already observed a newer epoch than the still-committed owner (the deposed-owner window). **Per-node local view** (each node serves its own committed state and its own high-water table); read-only; **not leader/owner-forwarded**. The committed ownership atoms are Rabia-replicated, so a read off any caught-up node reflects the fenced owner; the high-water is per-node, so `fenced` is answered from THIS node's fence table.
 
@@ -2821,7 +2743,7 @@ Committed ownership + fence diagnostics (#345 item 1f) — for every partition/k
 
 **RBAC:** VIEWER · **Routing:** LOCAL
 
-**Response (`GET /api/ownership/stream`):**
+**Response (`GET /api/v1/ownership/stream`):**
 ```json
 {
   "domain": "stream",
@@ -2842,7 +2764,7 @@ Committed ownership + fence diagnostics (#345 item 1f) — for every partition/k
 | `entries[].highWater` | This node's LOCAL per-domain monotonic epoch high-water as `{rabiaTerm, localCounter}`; equals `epoch` in steady state, floors to `epoch` when the arc has not been observed |
 | `entries[].fenced` | `true` when `highWater` is strictly after `epoch` — the deposed-owner window in which this node has observed a newer epoch than the committed owner record shows, so the committed owner would be rejected as stale here (`false` in steady state) |
 
-### GET /api/cluster/generation
+### GET /api/v1/cluster/generation
 
 Get the current cluster generation snapshot as observed by the queried node. The snapshot is a leader-projected view of core members, communities, and DHT partition ownership at a specific epoch; every node caches the latest snapshot it received via pings and serves it locally. This endpoint is always safe to call — when no snapshot has been received yet it returns an empty skeleton with `epoch: null` and `mode: "unknown"` instead of a 503.
 
@@ -2910,7 +2832,7 @@ See [`cluster-generation-spec.md`](../specs/cluster-generation-spec.md) §14.1 f
 }
 ```
 
-### POST /api/cluster/await-quiesced
+### POST /api/v1/cluster/await-quiesced
 
 Block until the queried node has `observedEpoch >= requested` AND the local snapshot reports cluster-wide quiescence at that epoch. Useful for tests and operators that need to wait for a known steady state before proceeding.
 
@@ -2934,7 +2856,7 @@ Block until the queried node has `observedEpoch >= requested` AND the local snap
 
 See [`cluster-generation-spec.md`](../specs/cluster-generation-spec.md) §14.1.
 
-### GET /api/cluster/governors
+### GET /api/v1/cluster/governors
 
 List active community governors (worker pool leaders elected via SWIM).
 
@@ -2958,7 +2880,7 @@ Returns empty list if no worker communities exist (all nodes are core).
 
 ## Declarative Cluster Configuration
 
-### GET /api/cluster/config
+### GET /api/v1/cluster/config
 
 Get the current cluster configuration from the KV-Store.
 
@@ -2985,9 +2907,9 @@ Get the current cluster configuration from the KV-Store.
 `desiredTopology` is the authoritative desired shape, per source and per role. `coreCount` is
 DERIVED from it — the sum of the `core` entries — rather than stored alongside it, so the two
 cannot drift. It is retained because most consumers only need the total, but it cannot say where
-those cores live, which is what `POST /api/cluster/scale` needs in a multi-source cluster.
+those cores live, which is what `POST /api/v1/cluster/scale` needs in a multi-source cluster.
 
-### GET /api/cluster/provisioning
+### GET /api/v1/cluster/provisioning
 
 Provisioning diagnostics — answers "why is a core-membership deficit being or not being filled?" without log-scraping. Combines the leader's end-of-pass reconcile decision snapshot, the provisioning circuit-breaker state, and the most recent provisioning failure. Surfaced only on the leader that owns a Cluster Topology Manager; on any other node a `leader: false` body with zeroed counters and an explanatory `lastReason` is returned (the numeric fields are not meaningful in that case).
 
@@ -3037,7 +2959,7 @@ Provisioning diagnostics — answers "why is a core-membership deficit being or 
 }
 ```
 
-### GET /api/cluster/status
+### GET /api/v1/cluster/status
 
 Get aggregated cluster status including node health, slice deployment info, and certificate status.
 
@@ -3063,7 +2985,7 @@ Get aggregated cluster status including node health, slice deployment info, and 
 ```
 Per-node fields: `kvState` is the node's heartbeat-reported readiness (`SYNCING` / `READY` / `DRAINING`) as cached by the leader from the leader↔node heartbeat. Despite the legacy field name, this value is **never** read from, stored in, or committed to the KV-Store — it is node-authoritative and presence/heartbeat-derived; empty string when the leader has not yet received a heartbeat. `derivedStatus` is the operator-visible projection of presence (SWIM/QUIC) ∪ heartbeat-readiness ∪ quorum. See `aether/docs/specs/membership-architecture-v2-spec.md`.
 
-### POST /api/cluster/config
+### POST /api/v1/cluster/config
 
 Apply a cluster configuration change. Computes a diff against the stored config and executes actionable changes.
 
@@ -3097,7 +3019,7 @@ Apply a cluster configuration change. Computes a diff against the stored config 
 }
 ```
 
-### POST /api/cluster/scale
+### POST /api/v1/cluster/scale
 
 Scale one `(source, role)` of the desired cluster topology.
 
@@ -3122,7 +3044,7 @@ sources, "scale cores to 7" does not say where the new nodes go.
 | `source` | Source name. Blank asks the server to infer it, which succeeds only when exactly one source declares `role`. |
 | `role` | `core`, `worker` or `spot`. Blank defaults to `core`. |
 | `count` | Target node count for this source and role. |
-| `expectedVersion` | Config version read from `GET /api/cluster/config`; the request is rejected if it no longer matches. |
+| `expectedVersion` | Config version read from `GET /api/v1/cluster/config`; the request is rejected if it no longer matches. |
 
 **Response:**
 ```json
@@ -3154,7 +3076,7 @@ is 3. Worker and spot counts carry no quorum constraint and are required only to
   a stale read, and the route confirms the requested count actually landed before reporting success.
   A `VersionConflict` here means another writer — an operator or the auto-heal reconciler — advanced
   the config between this request's read and its commit. Recovery: re-read
-  `GET /api/cluster/config` and re-issue the scale with the fresh `expectedVersion`.
+  `GET /api/v1/cluster/config` and re-issue the scale with the fresh `expectedVersion`.
 
 **`health` values (changed 2026-08-27, #558).** This field previously reported `NodeState.health`,
 which was `HEALTHY` for every node the observer had ever discovered — nothing ever drove a node out of
@@ -3169,7 +3091,7 @@ that state, so a dead node still read `HEALTHY`. It now reports what is actually
 Note that `DISCOVERED` is not a claim of ill health — it means no live link is currently observed, which
 during formation is routine. For a liveness judgement prefer the membership view's on-duty set.
 
-### GET /api/cluster/topology/circuit-breaker
+### GET /api/v1/cluster/topology/circuit-breaker
 
 Snapshot of the CTM (Cluster Topology Manager) provisioning circuit breaker. The breaker trips after `MAX_CONSECUTIVE_PROVISIONING_FAILURES` (default 3) failed slot-deadline expirations or provider API rejections, halting auto-heal until a recovery trigger fires (`setDesiredSize`, `onNodeReady`, phase NORMAL transition, leader handoff, or operator reset).
 
@@ -3185,7 +3107,7 @@ Snapshot of the CTM (Cluster Topology Manager) provisioning circuit breaker. The
 }
 ```
 
-### POST /api/cluster/topology/circuit-breaker/reset
+### POST /api/v1/cluster/topology/circuit-breaker/reset
 
 Operator-triggered reset of the CTM provisioning circuit breaker. Use after fixing an underlying provisioning issue (provider credentials, network connectivity, capacity quota) when none of the auto-recovery triggers (above) have fired. Returns the prior consecutive-failure count for the audit log.
 
@@ -3199,7 +3121,7 @@ Operator-triggered reset of the CTM provisioning circuit breaker. Use after fixi
 }
 ```
 
-### GET /api/cluster/topology/auto-heal
+### GET /api/v1/cluster/topology/auto-heal
 
 Snapshot of the CTM auto-heal toggle. When `enabled=false`, `handleDeficit` is a no-op — deficit-driven replacement provisioning is halted until re-enabled. Operator-controlled gate, distinct from the failure-driven circuit breaker. Use during disruption-budget testing, planned maintenance windows, or any scenario where the cluster should not automatically rebuild after node loss.
 
@@ -3212,7 +3134,7 @@ Snapshot of the CTM auto-heal toggle. When `enabled=false`, `handleDeficit` is a
 }
 ```
 
-### POST /api/cluster/topology/auto-heal/enable
+### POST /api/v1/cluster/topology/auto-heal/enable
 
 Re-enable CTM auto-heal. If a deficit exists at the time of the call, the next reconcile picks it up immediately (no scheduled poll wait). Returns the prior `enabled` state for the audit log.
 
@@ -3226,7 +3148,7 @@ Re-enable CTM auto-heal. If a deficit exists at the time of the call, the next r
 }
 ```
 
-### POST /api/cluster/topology/auto-heal/disable
+### POST /api/v1/cluster/topology/auto-heal/disable
 
 Disable CTM auto-heal. The change applies immediately to the next `handleDeficit` invocation — already-in-flight provisioning attempts continue to completion. Returns the prior `enabled` state for the audit log.
 
@@ -3240,7 +3162,7 @@ Disable CTM auto-heal. The change applies immediately to the next `handleDeficit
 }
 ```
 
-### POST /api/cluster/upgrade
+### POST /api/v1/cluster/upgrade
 
 Initiate a cluster version upgrade. Phase 1 updates the version in the KV-Store config. Full rolling upgrade orchestration uses existing RollingUpdateManager infrastructure.
 
@@ -3273,7 +3195,7 @@ Initiate a cluster version upgrade. Phase 1 updates the version in the KV-Store 
 
 ## API Key Management
 
-### POST /api/cluster/keys
+### POST /api/v1/cluster/keys
 
 Create or update an API key entry. Used by `aether cluster rotate-key` to push new keys.
 
@@ -3298,7 +3220,7 @@ Create or update an API key entry. Used by `aether cluster rotate-key` to push n
 }
 ```
 
-### GET /api/cluster/keys
+### GET /api/v1/cluster/keys
 
 List all API keys with status.
 
@@ -3322,7 +3244,7 @@ a status token against the whole document.
 ]
 ```
 
-### POST /api/cluster/keys/{id}/revoke
+### POST /api/v1/cluster/keys/revoke/{id}
 
 Revoke an API key. The key remains valid during its grace period.
 
@@ -3344,7 +3266,7 @@ Revoke an API key. The key remains valid during its grace period.
 }
 ```
 
-### GET /api/cluster/keys/audit
+### GET /api/v1/cluster/keys/audit
 
 List API key audit trail (create, rotate, revoke, expire events).
 
@@ -3368,7 +3290,7 @@ List API key audit trail (create, rotate, revoke, expire events).
 
 ## Topology
 
-### GET /api/slices/topology
+### GET /api/v1/slices/topology
 
 Get the cluster-wide topology graph showing data flow between endpoints, slices, resources, and pub-sub topics. Nodes are grouped per-slice with `sliceArtifact` for swim-lane layout. Topic connectors carry `topicConfig` for cross-slice pub-sub matching.
 
@@ -3645,14 +3567,14 @@ When no API keys are configured, WebSocket connections are immediately authorize
 
 ## Worker Pools
 
-### GET /api/workers
+### GET /api/v1/workers
 
 List worker nodes across all communities, read from committed consensus state (the governor
 announcements written by each community's `GovernorAnnouncer`). One row per worker; a worker that is
 also its community's governor is flagged with `isGovernor`. Members of dissolved communities are
 omitted. Rows are ordered by community, then node id.
 
-This is the per-worker projection of the same announcements that `/api/cluster/governors` projects
+This is the per-worker projection of the same announcements that `/api/v1/cluster/governors` projects
 per-community.
 
 **Response:**
@@ -3681,23 +3603,23 @@ per-community.
 
 A cluster running no workers returns `{"workers":[]}`.
 
-### GET /api/workers/health
+### GET /api/v1/workers/health
 
 **Not implemented — returns HTTP 501.** Workers publish only their community roster to consensus
 (`GovernorAnnouncementValue`); no per-worker health fact is replicated, so the leader has nothing to
-report. Use `GET /api/workers` for the roster and `GET /api/cluster/membership` for per-node SWIM
+report. Use `GET /api/v1/workers` for the roster and `GET /api/v1/cluster/membership` for per-node SWIM
 state. The corresponding `aether workers health` CLI subcommand was removed in #525.
 
-### GET /api/workers/endpoints
+### GET /api/v1/workers/endpoints
 
 **Not implemented — returns HTTP 501.** Only the *governor's* `tcpAddress` is recorded in consensus,
 never per-worker endpoints, so a cluster-wide worker endpoint table cannot be assembled. Use
-`GET /api/routes` for the cluster HTTP route table. The corresponding `aether workers endpoints` CLI
+`GET /api/v1/routes` for the cluster HTTP route table. The corresponding `aether workers endpoints` CLI
 subcommand was removed in #525.
 
 ---
 
-<!-- Canary and blue-green deployment endpoints are now unified under /api/deploy above. -->
+<!-- Canary and blue-green deployment endpoints are now unified under /api/v1/deploy above. -->
 
 ---
 
@@ -3705,7 +3627,7 @@ subcommand was removed in #525.
 
 All A/B test mutation endpoints require the requesting node to be the cluster leader.
 
-### GET /api/ab-tests
+### GET /api/v1/ab-tests
 
 List all active A/B tests.
 
@@ -3727,7 +3649,7 @@ List all active A/B tests.
 }
 ```
 
-### GET /api/ab-tests/{id}
+### GET /api/v1/ab-tests/{id}
 
 Get A/B test status.
 
@@ -3747,7 +3669,7 @@ Get A/B test status.
 }
 ```
 
-### GET /api/ab-tests/{id}/metrics
+### GET /api/v1/ab-tests/metrics/{id}
 
 Get per-variant metrics for an A/B test.
 
@@ -3773,7 +3695,7 @@ Get per-variant metrics for an A/B test.
 }
 ```
 
-### POST /api/ab-tests/create
+### POST /api/v1/ab-tests/create
 
 Create a new A/B test. Requires leader node.
 
@@ -3797,9 +3719,9 @@ Create a new A/B test. Requires leader node.
 | `splitStrategy` | string | No | `HEADER_HASH`, `COOKIE_HASH`, `HEADER_MATCH`, `PERCENTAGE` (default: `PERCENTAGE`) |
 | `instances` | integer | No | Instances per variant (default: 1) |
 
-**Response:** Same as `GET /api/ab-tests/{id}`.
+**Response:** Same as `GET /api/v1/ab-tests/{id}`.
 
-### POST /api/ab-tests/{id}/conclude
+### POST /api/v1/ab-tests/conclude/{id}
 
 Conclude the A/B test and promote the winning variant. Requires leader node.
 
@@ -3810,13 +3732,13 @@ Conclude the A/B test and promote the winning variant. Requires leader node.
 }
 ```
 
-**Response:** Same as `GET /api/ab-tests/{id}`.
+**Response:** Same as `GET /api/v1/ab-tests/{id}`.
 
 ---
 
 ## Endpoint Summary
 
-Every route below is served under the `/api/v1` prefix (landed 2026-08-28, #300), composed at one
+Every route below is served under the `/api/v1/v1` prefix (landed 2026-08-28, #300), composed at one
 site by `ManagementRoute`'s `API_BASE` constant [mechanism:
 `aether/aether-management-api/.../route/ManagementRoute.java`; design:
 [`management-api-versioning-spec.md`](../specs/management-api-versioning-spec.md) §2.1]. Four
@@ -3881,9 +3803,6 @@ separate, still in-flight consolidation effort (spec §3.2–§3.3) owns that su
 | GET | `/api/v1/thresholds` | Threshold Configuration |
 | POST | `/api/v1/thresholds` | Threshold Configuration |
 | DELETE | `/api/v1/thresholds/{metric}` | Threshold Configuration |
-| GET | `/api/v1/aspects` | Dynamic Aspects |
-| POST | `/api/v1/aspects` | Dynamic Aspects |
-| DELETE | `/api/v1/aspects/{artifact}/{method}` | Dynamic Aspects |
 | GET | `/api/v1/traces` | Traces |
 | GET | `/api/v1/traces/{id}` | Traces |
 | GET | `/api/v1/traces/stats` | Traces |
@@ -3911,19 +3830,18 @@ separate, still in-flight consolidation effort (spec §3.2–§3.3) owns that su
 | GET | `/api/v1/config/overrides` | Dynamic Configuration |
 | POST | `/api/v1/config` | Dynamic Configuration |
 | DELETE | `/api/v1/config/{key}` | Dynamic Configuration |
-| DELETE | `/api/v1/config/node/{id}/{key}` | Dynamic Configuration |
+| DELETE | `/api/v1/config/nodes/{id}/{key}` | Dynamic Configuration |
 | GET | `/api/v1/deploy` | Deployments |
 | GET | `/api/v1/deploy/{id}` | Deployments |
-| GET | `/api/v1/deploy/{id}/health` | Deployments |
 | POST | `/api/v1/deploy` | Deployments |
-| POST | `/api/v1/deploy/{id}/promote` | Deployments |
-| POST | `/api/v1/deploy/{id}/rollback` | Deployments |
-| POST | `/api/v1/deploy/{id}/complete` | Deployments |
+| POST | `/api/v1/deploy/promote/{id}` | Deployments |
+| POST | `/api/v1/deploy/rollback/{id}` | Deployments |
+| POST | `/api/v1/deploy/complete/{id}` | Deployments |
 | GET | `/api/v1/ab-tests` | A/B Testing |
 | GET | `/api/v1/ab-tests/{id}` | A/B Testing |
-| GET | `/api/v1/ab-tests/{id}/metrics` | A/B Testing |
+| GET | `/api/v1/ab-tests/metrics/{id}` | A/B Testing |
 | POST | `/api/v1/ab-tests/create` | A/B Testing |
-| POST | `/api/v1/ab-tests/{id}/conclude` | A/B Testing |
+| POST | `/api/v1/ab-tests/conclude/{id}` | A/B Testing |
 <!-- Rolling update endpoints replaced by unified /api/v1/deploy above -->
 | GET | `/api/v1/slices/topology` | Topology |
 | GET | `/repository/info/{group}/{artifact}/{version}` | Artifact Repository |
@@ -3940,13 +3858,13 @@ separate, still in-flight consolidation effort (spec §3.2–§3.3) owns that su
 | POST | `/api/v1/nodes/drain/{id}` | Node Lifecycle |
 | POST | `/api/v1/nodes/shutdown/{id}` | Node Lifecycle |
 | GET | `/api/v1/scheduled-tasks` | Scheduled Tasks |
-| GET | `/api/v1/scheduled-tasks/{configSection}` | Scheduled Tasks |
-| POST | `/api/v1/scheduled-tasks/{configSection}/{artifact}/{method}/pause` | Scheduled Tasks |
-| POST | `/api/v1/scheduled-tasks/{configSection}/{artifact}/{method}/resume` | Scheduled Tasks |
-| POST | `/api/v1/scheduled-tasks/{configSection}/{artifact}/{method}/trigger` | Scheduled Tasks |
-| GET | `/api/v1/scheduled-tasks/{configSection}/{artifact}/{method}/state` | Scheduled Tasks |
+| GET | `/api/v1/scheduled-tasks/{section}` | Scheduled Tasks |
+| POST | `/api/v1/scheduled-tasks/pause/{section}/{artifact}/{methodName}` | Scheduled Tasks |
+| POST | `/api/v1/scheduled-tasks/resume/{section}/{artifact}/{methodName}` | Scheduled Tasks |
+| POST | `/api/v1/scheduled-tasks/trigger/{section}/{artifact}/{methodName}` | Scheduled Tasks |
+| GET | `/api/v1/scheduled-tasks/state/{section}/{artifact}/{methodName}` | Scheduled Tasks |
 | POST | `/api/v1/scheduled-tasks/inject` | Scheduled Tasks (dev-mode only) |
-| GET | `/api/v1/scheduled-tasks/executions-by-node/{configSection}/{artifact}/{method}` | Scheduled Tasks |
+| GET | `/api/v1/scheduled-tasks/executions-by-node/{section}/{artifact}/{methodName}` | Scheduled Tasks |
 | POST | `/api/v1/certificates/configure-short-validity` | Certificates (dev-mode only) |
 | GET | `/api/v1/workers` | Worker Pools |
 | GET | `/api/v1/workers/health` | Worker Pools (501 — not implemented) |
@@ -3964,7 +3882,7 @@ Node membership is presence-derived (SWIM/QUIC via NTT); node readiness/drain is
 
 **Readiness values (heartbeat-reported):** `SYNCING`, `READY`, `DRAINING`. A node that is no longer present (SWIM/QUIC) simply disappears from the membership view — there is no terminal KV state.
 
-### GET /api/nodes/lifecycle
+### GET /api/v1/nodes/lifecycle
 
 Get membership + readiness for all nodes.
 
@@ -3977,8 +3895,8 @@ Get membership + readiness for all nodes.
 | `state` | string | no | Case-insensitive readiness value (e.g. `READY`, `DRAINING`), or a `+`-separated union (e.g. `READY+SYNCING`). When present, the response is filtered to entries whose `state` is a member of the set. Omit for the unfiltered list. An empty filter (`+` alone) matches no entry. |
 
 **Examples:**
-- `GET /api/nodes/lifecycle?state=READY` — only nodes currently `READY`.
-- `GET /api/nodes/lifecycle?state=READY+SYNCING` — nodes whose readiness is `READY` or `SYNCING`.
+- `GET /api/v1/nodes/lifecycle?state=READY` — only nodes currently `READY`.
+- `GET /api/v1/nodes/lifecycle?state=READY+SYNCING` — nodes whose readiness is `READY` or `SYNCING`.
 
 The `state` value is node-authoritative and heartbeat-reported (`NodeReportedState`); it is never read from the KV-Store.
 
@@ -3998,7 +3916,7 @@ The `state` value is node-authoritative and heartbeat-reported (`NodeReportedSta
 ]
 ```
 
-### GET /api/nodes/lifecycle/{id}
+### GET /api/v1/nodes/lifecycle/{id}
 
 Get membership + readiness for a specific node.
 
@@ -4011,7 +3929,7 @@ Get membership + readiness for a specific node.
 }
 ```
 
-### POST /api/nodes/drain/{id}
+### POST /api/v1/nodes/drain/{id}
 
 Begin draining a node. The leader delivers a `DRAIN` command on the leader↔node heartbeat; the node self-drains (finishes in-flight requests) and reports `DRAINING` on its heartbeat. The CDM evacuates slices respecting the disruption budget. No node-state KV write happens on this path.
 
@@ -4054,7 +3972,7 @@ Which guard applied — and why — is always visible in `message`, both on succ
 }
 ```
 
-### POST /api/nodes/shutdown/{id}
+### POST /api/v1/nodes/shutdown/{id}
 
 Enqueue a graceful shutdown for a node via the membership-v2 DRAIN-command channel. The leader's cluster-sync heartbeat carries `NodePingCommand.DRAIN` to the target, which self-drains (finishes in-flight requests) via its `DrainProcedure` and then halts; the CTM grace-terminate backstop reaps the container if it never self-exits. No direct lifecycle KV write happens on this path.
 
@@ -4068,7 +3986,7 @@ Enqueue a graceful shutdown for a node via the membership-v2 DRAIN-command chann
 }
 ```
 
-### POST /api/nodes/promote/{id}
+### POST /api/v1/nodes/promote/{id}
 
 Promote a node to a new role (CORE or WORKER) by writing a fresh `ActivationDirective` for the node through consensus. The downstream `ClusterDeploymentManager` consumes the resulting `ActivationDirectivePutReceived` event and drives the role-aware node machinery (`ForwardingClusterNode` / `SwitchableClusterNode`) to align runtime behavior to the new role.
 
@@ -4098,7 +4016,7 @@ Accepted values for `targetRole` (case-insensitive): `"CORE"`, `"WORKER"`. Promo
 
 ## Scheduled Tasks
 
-### GET /api/scheduled-tasks
+### GET /api/v1/scheduled-tasks
 
 List all registered scheduled tasks with active timer count and execution state.
 
@@ -4125,7 +4043,7 @@ List all registered scheduled tasks with active timer count and execution state.
 }
 ```
 
-### GET /api/scheduled-tasks/{configSection}
+### GET /api/v1/scheduled-tasks/{section}
 
 Get scheduled tasks filtered by config section.
 
@@ -4137,7 +4055,7 @@ Get scheduled tasks filtered by config section.
 }
 ```
 
-### POST /api/scheduled-tasks/{configSection}/{artifact}/{method}/pause
+### POST /api/v1/scheduled-tasks/pause/{section}/{artifact}/{methodName}
 
 Pause a scheduled task. Cancels the active timer; the task remains registered but will not fire until resumed.
 
@@ -4152,7 +4070,7 @@ Pause a scheduled task. Cancels the active timer; the task remains registered bu
 }
 ```
 
-### POST /api/scheduled-tasks/{configSection}/{artifact}/{method}/resume
+### POST /api/v1/scheduled-tasks/resume/{section}/{artifact}/{methodName}
 
 Resume a paused scheduled task. Restarts the timer with the configured interval or cron expression.
 
@@ -4167,7 +4085,7 @@ Resume a paused scheduled task. Restarts the timer with the configured interval 
 }
 ```
 
-### POST /api/scheduled-tasks/{configSection}/{artifact}/{method}/trigger
+### POST /api/v1/scheduled-tasks/trigger/{section}/{artifact}/{methodName}
 
 Manually trigger a scheduled task immediately, regardless of its schedule or paused state.
 
@@ -4182,7 +4100,7 @@ Manually trigger a scheduled task immediately, regardless of its schedule or pau
 }
 ```
 
-### GET /api/scheduled-tasks/{configSection}/{artifact}/{method}/state
+### GET /api/v1/scheduled-tasks/state/{section}/{artifact}/{methodName}
 
 Get detailed execution state for a specific scheduled task.
 
@@ -4201,7 +4119,7 @@ Get detailed execution state for a specific scheduled task.
 }
 ```
 
-### POST /api/scheduled-tasks/inject
+### POST /api/v1/scheduled-tasks/inject
 
 **Dev-mode only.** Synchronously fire a scheduled task and advance its `lastExecutionAt` timestamp, bypassing the normal schedule. Used by integration tests that need a deterministic way to drive scheduled-task assertions — replaces the warn-then-pass demotion described in `aether/docs/.internal/audits/integration-test-audit-2026-05-21.md` §2.2 (RC1-blocker #16).
 
@@ -4218,7 +4136,7 @@ Gated by the `AETHER_INSECURE_DEV_MODE=true` environment variable on the node. W
 }
 ```
 
-All three fields are required. The `(section, artifact, method)` triple identifies the task using the same coordinates as `/api/scheduled-tasks/{configSection}/{artifact}/{method}/*`.
+All three fields are required. The `(section, artifact, method)` triple identifies the task using the same coordinates as the `pause`/`resume`/`trigger`/`state` endpoints below (e.g. `/api/v1/scheduled-tasks/pause/{section}/{artifact}/{methodName}`).
 
 **Response:**
 ```json
@@ -4231,9 +4149,9 @@ All three fields are required. The `(section, artifact, method)` triple identifi
 }
 ```
 
-`previousExecutionMs` is `0` when no prior state entry exists; otherwise it equals the `lastExecutionAt` value visible via `/api/scheduled-tasks/.../state` immediately before the injection. `currentExecutionMs > previousExecutionMs` is guaranteed on success — tests may assert strict monotonic advancement without polling.
+`previousExecutionMs` is `0` when no prior state entry exists; otherwise it equals the `lastExecutionAt` value visible via `/api/v1/scheduled-tasks/state/{section}/{artifact}/{methodName}` immediately before the injection. `currentExecutionMs > previousExecutionMs` is guaranteed on success — tests may assert strict monotonic advancement without polling.
 
-### GET /api/scheduled-tasks/executions-by-node/{configSection}/{artifact}/{method}
+### GET /api/v1/scheduled-tasks/executions-by-node/{section}/{artifact}/{methodName}
 
 Surface per-node execution attribution for a scheduled task. Used by `TC-08-F3` to distinguish SINGLE-mode tasks (exactly one node executes per fire) from ALL-mode tasks (every cluster member executes per fire).
 
@@ -4251,13 +4169,13 @@ Surface per-node execution attribution for a scheduled task. Used by `TC-08-F3` 
 }
 ```
 
-`executions` is empty when the task has no prior state. Otherwise each entry pairs a `nodeId` with the number of executions attributed to it and the millisecond epoch of the most recent execution. **RC1 limitation:** the current implementation reports the task's `registeredBy` node as the sole executor (count = `totalExecutions`, lastExecutionMs = `lastExecutionAt`). A follow-up tracks adding per-node execution counters to the KV state so ALL-mode tasks can produce true per-node breakdowns. Tests should currently assert on cumulative totals via this endpoint or via `/api/scheduled-tasks/{configSection}/{artifact}/{method}/state`.
+`executions` is empty when the task has no prior state. Otherwise each entry pairs a `nodeId` with the number of executions attributed to it and the millisecond epoch of the most recent execution. **RC1 limitation:** the current implementation reports the task's `registeredBy` node as the sole executor (count = `totalExecutions`, lastExecutionMs = `lastExecutionAt`). A follow-up tracks adding per-node execution counters to the KV state so ALL-mode tasks can produce true per-node breakdowns. Tests should currently assert on cumulative totals via this endpoint or via `/api/v1/scheduled-tasks/state/{section}/{artifact}/{methodName}`.
 
 ---
 
 ## Backup Management
 
-### POST /api/backups
+### POST /api/v1/backups
 
 Trigger a manual backup of the KV-Store state.
 
@@ -4269,7 +4187,7 @@ Trigger a manual backup of the KV-Store state.
 }
 ```
 
-### GET /api/backups
+### GET /api/v1/backups
 
 List available backups.
 
@@ -4284,7 +4202,7 @@ List available backups.
 ]
 ```
 
-### POST /api/backups/restore
+### POST /api/v1/backups/restore
 
 Restore from a specific backup.
 
@@ -4317,7 +4235,7 @@ envelope with the standard `type` / `title` / `status` / `detail` / `instance` m
   "title": "Internal Server Error",
   "status": 500,
   "detail": "<cause message>",
-  "instance": "/api/cluster/topology",
+  "instance": "/api/v1/cluster/topology",
   "requestId": "a1b2c3d4"
 }
 ```
@@ -4362,15 +4280,15 @@ can be attributed to a blueprint that carries no owner, so holding it would be a
 Datasource names are **cluster-global** — the default `schema/V001__*.sql` layout yields the name
 `database` for every blueprint, and all of them resolve it against the same node-global config
 section. That is why a publish claiming a datasource another blueprint already migrates is refused
-at deploy time (see [`POST /api/blueprints/deploy`](#post-apiblueprintsdeploy)) rather than
+at deploy time (see [`POST /api/v1/blueprints/deploy`](#post-apiv1blueprintsdeploy)) rather than
 namespaced per blueprint.
 
-Recovery from a `FAILED` hold: `POST /api/schema/retry/{datasource}` (`FAILED` -> `PENDING` ->
-`COMPLETED`), `POST /api/schema/baseline/{datasource}?version=N` (-> `COMPLETED`), or redeploy the
+Recovery from a `FAILED` hold: `POST /api/v1/schema/retry/{datasource}` (`FAILED` -> `PENDING` ->
+`COMPLETED`), `POST /api/v1/schema/baseline/{datasource}?version=N` (-> `COMPLETED`), or redeploy the
 owning blueprint. The leader also emits a `SCHEMA_ACTIVATION_BLOCKED` audit entry naming the
 datasource, the owning blueprint, and the held slices when it observes a `FAILED` record.
 
-### GET /api/schema/status
+### GET /api/v1/schema/status
 
 Returns schema migration status for all datasources.
 
@@ -4397,7 +4315,7 @@ Returns schema migration status for all datasources.
 | `status` | string | `PENDING`, `MIGRATING`, `COMPLETED`, `FAILED` |
 | `owningBlueprint` | string | Blueprint id (`group:artifact:version`) that declared the migrations. Whose slices this record holds while `status` is not `COMPLETED` |
 
-### GET /api/schema/status/{datasource}
+### GET /api/v1/schema/status/{datasource}
 
 Returns schema status for a specific datasource.
 
@@ -4414,12 +4332,12 @@ Returns schema status for a specific datasource.
 
 Answers `404 Not Found` when the datasource has no schema record.
 
-### GET /api/schema/history/{datasource}
+### GET /api/v1/schema/history/{datasource}
 
 Returns migration history for a datasource (placeholder -- currently returns the same body as
-`GET /api/schema/status/{datasource}`, including `owningBlueprint`).
+`GET /api/v1/schema/status/{datasource}`, including `owningBlueprint`).
 
-### POST /api/schema/migrate/{datasource}
+### POST /api/v1/schema/migrate/{datasource}
 
 Triggers manual schema migration for a datasource. Sets status to `MIGRATING`. Preserves the
 existing record's artifact coordinates and owning blueprint.
@@ -4432,7 +4350,7 @@ existing record's artifact coordinates and owning blueprint.
 }
 ```
 
-### POST /api/schema/undo/{datasource}?targetVersion=N
+### POST /api/v1/schema/undo/{datasource}?targetVersion=N
 
 Undoes migrations to the specified target version. Sets status to `PENDING` at the target version.
 Preserves the existing record's artifact coordinates and owning blueprint.
@@ -4452,7 +4370,7 @@ slices are withheld from activation.
 }
 ```
 
-### POST /api/schema/retry/{datasource}
+### POST /api/v1/schema/retry/{datasource}
 
 Retries a failed schema migration by resetting status from `FAILED` to `PENDING` and clearing the
 attempt counter. This is the primary operator recovery from a `FAILED` activation hold: the
@@ -4471,7 +4389,7 @@ with `409 Conflict` and
 }
 ```
 
-### POST /api/schema/baseline/{datasource}?version=N
+### POST /api/v1/schema/baseline/{datasource}?version=N
 
 Baselines a datasource at the specified version (marks V001..V{N} as applied without executing).
 Sets status to `COMPLETED`, which releases any activation hold on the owning blueprint's slices.
@@ -4517,7 +4435,7 @@ with `400 Bad Request`.
 Endpoints for managing event streams. Streams must be created via stream configuration in blueprints.
 
 > **Two route families, with three operations migrated.** Endpoints in this first group
-> historically used flat `/api/streams/{name}` addressing (single stream name, no version).
+> historically used flat `/api/v1/streams/{name}` addressing (single stream name, no version).
 > **Stream Info**, **Partition Details**, and **Partition Replica State** were folded onto
 > namespaced `(namespace, stream, version)` catalog addressing (management-api-versioning-spec.md
 > §3.2, #742) -- their flat registrations are gone; the URLs below are the current catalog-form
@@ -4533,7 +4451,7 @@ Endpoints for managing event streams. Streams must be created via stream configu
 ### List Streams
 
 ```
-GET /api/streams
+GET /api/v1/streams
 ```
 
 **Auth:** ALL_AUTHENTICATED
@@ -4616,7 +4534,7 @@ GET /api/v1/streams/{name}/{partition}/replicas-local
 
 **Auth:** ALL_AUTHENTICATED · **Routing:** LOCAL (answered by the receiving node, never delegated)
 
-#490 per-node variant of the endpoint above, following the `/api/cluster/membership` pattern: the node whose management port you query answers **from its own** `ReplicaRegistry` and owner resolver. Same response shape. Use it to (a) obtain the owner-authoritative view — query the `hrwOwner` node's port and expect `servedByOwner: true` — or (b) sweep every node's port to compare per-node replica views during failover diagnosis (each node reports what IT believes; divergent views are themselves the operator-meaningful signal). Snapshot read, no hot-path cost.
+#490 per-node variant of the endpoint above, following the `/api/v1/cluster/membership` pattern: the node whose management port you query answers **from its own** `ReplicaRegistry` and owner resolver. Same response shape. Use it to (a) obtain the owner-authoritative view — query the `hrwOwner` node's port and expect `servedByOwner: true` — or (b) sweep every node's port to compare per-node replica views during failover diagnosis (each node reports what IT believes; divergent views are themselves the operator-meaningful signal). Snapshot read, no hot-path cost.
 
 **Response (served by the owner — authoritative):**
 ```json
@@ -4651,7 +4569,7 @@ GET /api/v1/streams/{name}/{partition}/replicas-local
 ### Entity Checkpoints
 
 ```
-GET /api/entity/checkpoints
+GET /api/v1/entity/checkpoints
 ```
 
 **Auth:** ALL_AUTHENTICATED · **Routing:** LOCAL (never delegate-routed)
@@ -4704,7 +4622,7 @@ Revisit if a cluster-wide "keyspaces with stalled checkpointing" alert is wanted
 ### Entity Keyspaces (hosting view)
 
 ```
-GET /api/entity/keyspaces
+GET /api/v1/entity/keyspaces
 ```
 
 **Auth:** ALL_AUTHENTICATED · **Routing:** LOCAL (any caught-up node answers identically)
@@ -4716,7 +4634,7 @@ others — before the fix ownership was minted over ALL nodes, handing partition
 never registered the keyspace, and the defect was diagnosed from typed write refusals instead of one
 GET. This endpoint is that missing surface.
 
-Unlike `/api/entity/checkpoints` above (per-node driver state), this view is assembled from the
+Unlike `/api/v1/entity/checkpoints` above (per-node driver state), this view is assembled from the
 committed registration records in **replicated KV**, so any caught-up node answers identically — no
 need to sweep ports. An empty `keyspaces` list means no node in the cluster has registered a
 durable-entity keyspace.
@@ -4763,7 +4681,7 @@ that is a different (event-shaped) question and would earn a panel.
 ### Stream hydration
 
 ```
-GET /api/streams/hydration
+GET /api/v1/streams/hydration
 ```
 
 **Auth:** ALL_AUTHENTICATED · **Routing:** STREAMING task group
@@ -4825,7 +4743,7 @@ Materialization is placement-gated (increment 2): `ringsMaterialized` drops belo
 ### Declarative Stream Consumers
 
 ```
-GET /api/streams/declarative-consumers
+GET /api/v1/streams/declarative-consumers
 ```
 
 **Auth:** ALL_AUTHENTICATED · **Routing:** LOCAL (per-node)
@@ -4899,7 +4817,7 @@ An empty `consumers` list means no slice in the cluster declares a `[streams.X]`
 ### Create Stream
 
 ```
-POST /api/streams
+POST /api/v1/streams
 ```
 
 **Auth:** OPERATOR_AND_ABOVE
@@ -4926,13 +4844,13 @@ Creates a stream with the given name and optional partition count. Idempotent �
 ### Publish Event
 
 Folded into the namespaced route family -- see [Publish](#publish) under
-[Stream Namespaces](#stream-namespaces). The flat `POST /api/streams/{name}/publish`
+[Stream Namespaces](#stream-namespaces). The flat `POST /api/v1/streams/{name}/publish`
 registration has been removed; nothing serves that path any more.
 
 ### Read Events
 
 ```
-GET /api/streams/read/{name}/{partition}?from={offset}&max={count}
+GET /api/v1/streams/read/{name}/{partition}?from={offset}&max={count}
 ```
 
 **Auth:** ALL_AUTHENTICATED
@@ -4964,13 +4882,13 @@ aether streams read <name> <partition> [--since <offset>] [--limit <count>]
 
 Folded into the namespaced route family -- see
 [Delete Stream Version](#delete-stream-version) under [Stream Namespaces](#stream-namespaces).
-The flat `DELETE /api/streams/{name}` registration has been removed; nothing serves that path
+The flat `DELETE /api/v1/streams/{name}` registration has been removed; nothing serves that path
 any more.
 
 ### Join Consumer Group
 
 ```
-POST /api/streams/groups/join
+POST /api/v1/streams/groups/join
 ```
 
 **Auth:** OPERATOR_AND_ABOVE
@@ -5008,7 +4926,7 @@ aether streams consumer-group join <group> <stream> --consumer-id <id> [--partit
 ### Leave Consumer Group
 
 ```
-POST /api/streams/groups/leave
+POST /api/v1/streams/groups/leave
 ```
 
 **Auth:** OPERATOR_AND_ABOVE
@@ -5035,7 +4953,7 @@ aether streams consumer-group leave <group> <stream> --consumer-id <id>
 ### Consumer Group Status
 
 ```
-GET /api/streams/groups/{id}
+GET /api/v1/streams/groups/{id}
 ```
 
 **Auth:** ALL_AUTHENTICATED
@@ -5077,7 +4995,7 @@ Path parameters appear in route order as `{namespace}/{stream}/{version}` (versi
 ### List Registered Streams (namespaced)
 
 ```
-GET /api/streams/list[?namespace={ns}]
+GET /api/v1/streams/list[?namespace={ns}]
 ```
 
 Snapshot of all registered stream versions across the namespace registry. The optional
@@ -5086,7 +5004,7 @@ Snapshot of all registered stream versions across the namespace registry. The op
 ### List Versions
 
 ```
-GET /api/streams/versions/{namespace}/{stream}
+GET /api/v1/streams/versions/{namespace}/{stream}
 ```
 
 Lists all registered versions of a given `(namespace, stream)`.
@@ -5094,7 +5012,7 @@ Lists all registered versions of a given `(namespace, stream)`.
 ### Latest Version
 
 ```
-GET /api/streams/latest/{namespace}/{stream}
+GET /api/v1/streams/latest/{namespace}/{stream}
 ```
 
 Resolves the highest registered version for a `(namespace, stream)`.
@@ -5102,7 +5020,7 @@ Resolves the highest registered version for a `(namespace, stream)`.
 ### Stream Metadata
 
 ```
-GET /api/streams/metadata/{namespace}/{stream}/{version}
+GET /api/v1/streams/metadata/{namespace}/{stream}/{version}
 ```
 
 Returns the registry entry for an exact stream version (config, partitions, retention, reference
@@ -5111,22 +5029,22 @@ count, `registeredBy`, `registeredAtEpochMs`).
 ### Read Events (tail polling)
 
 ```
-GET /api/streams/events/{namespace}/{stream}/{version}?fromOffset={n}&maxEvents={k}
+GET /api/v1/streams/events/{namespace}/{stream}/{version}?fromOffset={n}&maxEvents={k}
 ```
 
 Paginated event read used by `aether stream tail`. Returns a page of events plus `nextOffset`
 and `hasMore`. `maxEvents` is server-capped (1000). A streaming `tail` subscription
-(SSE/WebSocket) over `/api/streams/tail/...` is **deferred to issue #212**; polling `/events` is
+(SSE/WebSocket) over `/api/v1/streams/tail/...` is **deferred to issue #212**; polling `/events` is
 the supported tail mechanism today.
 
 ### Tail (reserved)
 
 ```
-GET /api/streams/tail/{namespace}/{stream}/{version}
+GET /api/v1/streams/tail/{namespace}/{stream}/{version}
 ```
 
 Reserved for the deferred SSE/WebSocket subscription (#212). Operators tail via polling
-`/api/streams/events/...` in the interim.
+`/api/v1/streams/events/...` in the interim.
 
 ### Publish
 
@@ -5151,9 +5069,9 @@ segment disambiguates them.
 ### Consumer Groups (namespaced)
 
 ```
-GET    /api/streams/groups/{namespace}/{stream}/{version}            # list groups
-POST   /api/streams/groups/create/{namespace}/{stream}/{version}     # create a durable group
-DELETE /api/streams/groups/delete/{namespace}/{stream}/{version}/{group}   # delete a group
+GET    /api/v1/streams/groups/{namespace}/{stream}/{version}            # list groups
+POST   /api/v1/streams/groups/create/{namespace}/{stream}/{version}     # create a durable group
+DELETE /api/v1/streams/groups/delete/{namespace}/{stream}/{version}/{group}   # delete a group
 ```
 
 `create` and `delete` are **OPERATOR_AND_ABOVE** and are subject to the `system:*` write gate.
@@ -5162,8 +5080,8 @@ Deleting a group releases its reference on the stream version.
 ### Namespace Registry Lookup
 
 ```
-GET /api/stream-namespaces/list
-GET /api/stream-namespaces/get/{namespace}/{stream}/{version}
+GET /api/v1/stream-namespaces/list
+GET /api/v1/stream-namespaces/get/{namespace}/{stream}/{version}
 ```
 
 Read-only views served **locally on every node** (target `LOCAL`) — non-governor nodes answer
@@ -5223,7 +5141,7 @@ Stream metadata is held in **two complementary, consensus-replicated registries*
   directly from the replicated KV store.
 
 Because both registries are replicated through consensus, **non-governor nodes serve stream
-metadata (and the `/api/stream-namespaces/*` views) from local replicated state** rather than
+metadata (and the `/api/v1/stream-namespaces/*` views) from local replicated state** rather than
 forwarding to the governor — the #215 fix that gave every node a durable, consistent view of the
 stream registry.
 
@@ -5282,7 +5200,7 @@ Reuses the same `api-keys` configuration as the management API. Requests must in
 `X-API-Key` header. `security_mode` defaults to `api-key` when omitted (issue #290). If no key is
 provisioned, the first elected leader generates one random ADMIN key on first startup and prints
 it once, prominently, to its log -- capture it, since it is not retrievable afterward except by
-rotating it via `/api/cluster/keys`.
+rotating it via `/api/v1/cluster/keys`.
 
 ```toml
 [app-http]
