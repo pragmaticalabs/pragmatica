@@ -467,6 +467,15 @@ public interface SystemTags {
         pin(table, 1669, "org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityScheduleTimerForwardResponse");
         pin(table, 1670, "org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityCancelTimerForward");
 
+        // durable per-blueprint deployment outcome (#759 review BLOCKING 3 / #760 #724 review round
+        // 2 item g) [base 1671] — the natural homes (AetherKey block 1088..1137, AetherValue block
+        // 1600..1659) are both flush against the next block with no free slot, so per this file's
+        // "blocks are advisory" rule these three take the next free slot after the highest pinned tag
+        // instead of pushing every subsequent block's numbering along.
+        pin(table, 1671, "org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentOutcomeKey");
+        pin(table, 1672, "org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeStatus");
+        pin(table, 1673, "org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue");
+
         // ---- 2112..16383 RESERVED ----
         rejectDuplicateTags(table);
 
