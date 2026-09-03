@@ -300,13 +300,72 @@ public final class KVStoreSerializer {
         return sb.toString();
     }
 
-    /// Wire form: `STATUS|slice1,slice2,...|cause|timestampMs`. `cause` is free text with no escaping
-    /// of embedded `|`/`,` — matches this file's existing lossy free-text field convention (see e.g.
-    /// [#parseSliceNodeEntry]'s `reason` field). Fully round-trippable otherwise, so unlike
-    /// `app-blueprint` this section is NOT in [#LOSSY_SECTIONS].
+    /// Wire form: `STATUS|slice1,slice2,...|cause|timestampMs`. Unlike this file's other free-text
+    /// fields (e.g. [#parseSliceNodeEntry]'s `reason`), `cause` and each slice id are escaped via
+    /// [#escapeOutcomeField] (backslash-escaping `\`, `|`, and `,`) before being written, so an
+    /// embedded `|` or `,` survives the round trip instead of corrupting a field boundary (a `|` in
+    /// `cause`) or silently splitting a slice id (a `,` in a slice id). An embedded newline needs no
+    /// special handling here — it is escaped one layer up by [#escapeTomlString], since the whole
+    /// serialized value returned by this method is wrapped in a TOML string before being written.
+    /// This makes the section genuinely round-trippable, so — unlike `app-blueprint` — it is NOT in
+    /// [#LOSSY_SECTIONS].
     private static String serializeDeploymentOutcome(DeploymentOutcomeValue v) {
-        return v.status()
-                .name() + PIPE + String.join(",", v.failingSlices()) + PIPE + v.cause() + PIPE + v.timestampMs();
+        var slices = v.failingSlices().stream().map(KVStoreSerializer::escapeOutcomeField).collect(Collectors.joining(","));
+
+        return v.status().name() + PIPE + slices + PIPE + escapeOutcomeField(v.cause()) + PIPE + v.timestampMs();
+    }
+
+    /// Backslash-escapes `\`, `|`, and `,` for a single field of the `deployment-outcome` wire form.
+    /// Inverse of [#unescapeOutcomeField]. Scoped to this section only — the file's other
+    /// comma/pipe-joined list fields (e.g. [#serializeCommunity]'s `communities`) rely on their
+    /// identifiers being structurally unable to contain a delimiter; `cause` here is arbitrary free
+    /// text (an exception/[Cause] message) with no such guarantee, so it needs real escaping.
+    private static String escapeOutcomeField(String s) {
+        return s.replace("\\", "\\\\").replace("|", "\\|").replace(",", "\\,");
+    }
+
+    /// Inverse of [#escapeOutcomeField].
+    private static String unescapeOutcomeField(String s) {
+        var sb = new StringBuilder();
+
+        for (var i = 0; i < s.length(); i++) {
+            var c = s.charAt(i);
+
+            if (c == '\\' && i + 1 < s.length()) {
+                sb.append(s.charAt(++i));
+            } else {
+                sb.append(c);
+            }
+        }
+
+        return sb.toString();
+    }
+
+    /// Splits `s` on `delimiter`, treating a `delimiter` preceded by an odd number of consecutive
+    /// backslashes as escaped (not a split point). Leaves every backslash sequence untouched in the
+    /// returned substrings — callers run [#unescapeOutcomeField] on each leaf field once all splitting
+    /// (both the outer `|` split and, for the slices field, the inner `,` split) is done, so a `\,`
+    /// surviving the outer `|` split is not prematurely unescaped before the inner split sees it.
+    private static List<String> splitOutcomeField(String s, char delimiter) {
+        var parts = new ArrayList<String>();
+        var current = new StringBuilder();
+        var backslashRun = 0;
+
+        for (var i = 0; i < s.length(); i++) {
+            var c = s.charAt(i);
+
+            if (c == delimiter && backslashRun % 2 == 0) {
+                parts.add(current.toString());
+                current.setLength(0);
+            } else {
+                current.append(c);
+            }
+
+            backslashRun = (c == '\\') ? backslashRun + 1 : 0;
+        }
+        parts.add(current.toString());
+
+        return parts;
     }
 
     private static String serializeStreamRegistry(StreamRegistryValue v) {
@@ -662,27 +721,48 @@ public final class KVStoreSerializer {
     }
 
     /// Inverse of [#serializeDeploymentOutcome]. Wire form: `STATUS|slice1,slice2,...|cause|timestampMs`.
-    /// An empty slices field yields an empty list, matching [DeploymentOutcomeValue#succeeded].
+    /// The outer `|` split and, for the slices field, the inner `,` split are both escape-aware (see
+    /// [#splitOutcomeField]), and each leaf field is unescaped via [#unescapeOutcomeField]. An empty
+    /// slices field yields an empty list, matching [DeploymentOutcomeValue#succeeded]. A malformed
+    /// record — wrong field count, unrecognized status, non-numeric timestamp — fails via
+    /// [#buildDeploymentOutcomeValue]'s guarded [Result]; same as every other section in this file,
+    /// that failure composes through [Result#allOf] into a failure of the WHOLE [#fromToml] snapshot
+    /// load. This section is deliberately not special-cased to skip-and-continue on a bad record —
+    /// doing so here alone would be inconsistent with how every other section already behaves.
     private static Result<Map.Entry<AetherKey, AetherValue>> parseDeploymentOutcomeEntry(String identity, String raw) {
-        var parts = raw.split("\\|", -1);
+        var parts = splitOutcomeField(raw, '|');
 
-        if (parts.length != 4) {
-            return parseFailure("deployment-outcome value requires 4 fields, got " + parts.length);
+        if (parts.size() != 4) {
+            return parseFailure("deployment-outcome value requires 4 fields, got " + parts.size());
         }
 
-        return DeploymentOutcomeKey.deploymentOutcomeKey("deployment-outcome/" + identity).map(key -> entry(key,
-                                                                                                            buildDeploymentOutcomeValue(parts)));
+        return DeploymentOutcomeKey.deploymentOutcomeKey("deployment-outcome/" + identity)
+                                    .flatMap(key -> buildDeploymentOutcomeValue(parts).map(value -> entry(key, value)));
     }
 
-    private static DeploymentOutcomeValue buildDeploymentOutcomeValue(String[] parts) {
-        var failingSlices = parts[1].isEmpty()
+    private static Result<DeploymentOutcomeValue> buildDeploymentOutcomeValue(List<String> parts) {
+        var slicesRaw = parts.get(1);
+        var failingSlices = slicesRaw.isEmpty()
                             ? List.<String> of()
-                            : List.of(parts[1].split(","));
+                            : splitOutcomeField(slicesRaw, ',').stream().map(KVStoreSerializer::unescapeOutcomeField).toList();
 
-        return new DeploymentOutcomeValue(DeploymentOutcomeStatus.valueOf(parts[0]),
-                                          failingSlices,
-                                          parts[2],
-                                          Long.parseLong(parts[3]));
+        DeploymentOutcomeStatus status;
+
+        try {
+            status = DeploymentOutcomeStatus.valueOf(parts.get(0));
+        } catch (IllegalArgumentException e) {
+            return parseFailure("deployment-outcome value has invalid status: " + parts.get(0));
+        }
+
+        long timestampMs;
+
+        try {
+            timestampMs = Long.parseLong(parts.get(3));
+        } catch (NumberFormatException e) {
+            return parseFailure("deployment-outcome value has invalid timestamp: " + parts.get(3));
+        }
+
+        return success(new DeploymentOutcomeValue(status, failingSlices, unescapeOutcomeField(parts.get(2)), timestampMs));
     }
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseEndpointEntry(String identity, String raw) {

@@ -234,6 +234,38 @@ class KVStoreSerializerTest {
         }
 
         @Test
+        void fromToml_deploymentOutcomeInvalidStatus_returnsParseFailureNotRawException() {
+            var toml = """
+                       [meta]
+                       phase = 1
+                       timestamp = "2026-01-01T00:00:00Z"
+
+                       [deployment-outcome]
+                       "com.example:bad-status-app:1.0.0" = "NOT_A_REAL_STATUS||cause|1710072000000"
+                       """;
+
+            KVStoreSerializer.fromToml(toml)
+                             .onSuccessRun(Assertions::fail)
+                             .onFailure(cause -> assertThat(cause.message()).isNotEmpty());
+        }
+
+        @Test
+        void fromToml_deploymentOutcomeInvalidTimestamp_returnsParseFailureNotRawException() {
+            var toml = """
+                       [meta]
+                       phase = 1
+                       timestamp = "2026-01-01T00:00:00Z"
+
+                       [deployment-outcome]
+                       "com.example:bad-timestamp-app:1.0.0" = "SUCCEEDED||cause|not-a-number"
+                       """;
+
+            KVStoreSerializer.fromToml(toml)
+                             .onSuccessRun(Assertions::fail)
+                             .onFailure(cause -> assertThat(cause.message()).isNotEmpty());
+        }
+
+        @Test
         void fromToml_ephemeralSection_skippedOnRestore() {
             var toml = """
                        [meta]
@@ -719,6 +751,48 @@ class KVStoreSerializerTest {
                                  assertThat(value.communityId()).isEmpty();
                                  assertThat(value.governorHint()).isEmpty();
                                  assertThat(value).isEqualTo(AetherValue.ActivationDirectiveValue.worker());
+                             });
+        }
+
+        @Test
+        void roundTrip_deploymentOutcome_escapesPipeCommaAndNewlineInCauseAndSliceIds_preservesExactly() {
+            var entries = new LinkedHashMap<AetherKey, AetherValue>();
+            var blueprintId = BlueprintId.blueprintId("com.example:outcome-app:1.0.0").unwrap();
+            var key = DeploymentOutcomeKey.deploymentOutcomeKey(blueprintId);
+            var cause = "boom | kaboom, again\nsecond line";
+            var slices = List.of("com.example:svc,a:1.0.0", "com.example:svc|b:2.0.0");
+            var value = DeploymentOutcomeValue.failed(slices, cause, 1710072000000L);
+            entries.put(key, value);
+
+            KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP)
+                             .flatMap(KVStoreSerializer::fromToml)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(restored -> {
+                                 assertThat(restored).hasSize(1);
+                                 var outcome = (DeploymentOutcomeValue) restored.get(key);
+                                 assertThat(outcome.status()).isEqualTo(DeploymentOutcomeStatus.FAILED);
+                                 assertThat(outcome.cause()).isEqualTo(cause);
+                                 assertThat(outcome.failingSlices()).isEqualTo(slices);
+                                 assertThat(outcome.timestampMs()).isEqualTo(1710072000000L);
+                             });
+        }
+
+        @Test
+        void roundTrip_deploymentOutcome_emptyFailingSlices_preservesEmptyList() {
+            var entries = new LinkedHashMap<AetherKey, AetherValue>();
+            var blueprintId = BlueprintId.blueprintId("com.example:outcome-app-empty:1.0.0").unwrap();
+            var key = DeploymentOutcomeKey.deploymentOutcomeKey(blueprintId);
+            var value = DeploymentOutcomeValue.succeeded(1710072000000L);
+            entries.put(key, value);
+
+            KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP)
+                             .flatMap(KVStoreSerializer::fromToml)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(restored -> {
+                                 var outcome = (DeploymentOutcomeValue) restored.get(key);
+                                 assertThat(outcome.status()).isEqualTo(DeploymentOutcomeStatus.SUCCEEDED);
+                                 assertThat(outcome.failingSlices()).isEmpty();
+                                 assertThat(outcome.cause()).isEmpty();
                              });
         }
     }
