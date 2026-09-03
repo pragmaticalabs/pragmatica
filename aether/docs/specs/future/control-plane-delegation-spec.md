@@ -3,7 +3,7 @@
 > ⚠️ **Design only — not implemented in the 1.0.0 line.** This is a design specification with no shipped implementation. It describes intended future work, not current Aether behavior — do not use it as a reference for what currently-shipping Aether does. The `Status` field below reflects design maturity, not build status.
 
 **Status:** Implementation-Ready
-**Issue:** [#102](https://github.com/pragmatica-io/pragmatica/issues/102)
+**Issue:** [#102](https://github.com/pragmaticalabs/pragmatica/issues/102)
 **Branch:** release-1.0.0-rc1
 **Last Updated:** 2026-04-04
 

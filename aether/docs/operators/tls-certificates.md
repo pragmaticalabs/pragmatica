@@ -329,7 +329,7 @@ certificates (no shared trust, suitable only for single-node development).
 Currently, Aether supports self-signed certificates via `SelfSignedCertificateProvider`. The
 `CertificateProvider` interface is designed for extensibility -- cloud CA adapters (e.g., AWS
 Private CA, GCP Certificate Authority Service, HashiCorp Vault PKI) are planned for a future
-release. See [GitHub Issue #88](https://github.com/pragmatica-lite/pragmatica/issues/88) for
+release. See [GitHub Issue #88](https://github.com/pragmaticalabs/pragmatica/issues/88) for
 tracking.
 
 ## Related Documents
