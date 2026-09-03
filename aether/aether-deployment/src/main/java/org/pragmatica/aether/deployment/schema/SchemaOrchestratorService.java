@@ -6,6 +6,7 @@ package org.pragmatica.aether.deployment.schema;
 
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ScheduledFuture;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.AuditLog;
@@ -39,6 +40,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
@@ -169,13 +171,33 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
         return value instanceof SchemaVersionValue;
     }
 
+    // #760/#724 review BLOCKING 2: cleanup runs via `replaceResult` (DEPENDENT), not
+    // `onFailure`/`onResultRun` (INDEPENDENT — dispatched onto AsyncExecutor, not ordered before
+    // this promise's result reaches a caller). The in-flight fence must be cleared, and a failed
+    // attempt's lock released, before a caller reacting to this promise's outcome (a manual
+    // retry route, in particular) can observe it.
     private Promise<Unit> executeMigrationFlow(String datasourceName, SchemaVersionValue value) {
         return acquireLock(datasourceName).flatMap(_ -> runMigration(datasourceName, value))
                           .flatMap(_ -> releaseLock(datasourceName))
-                          .onFailure(_ -> releaseLockSilently(datasourceName))
-                          .onResultRun(() -> inFlightMigrations.remove(datasourceName));
+                          .replaceResult(result -> finalizeAttempt(datasourceName, result));
     }
 
+    private Result<Unit> finalizeAttempt(String datasourceName, Result<Unit> result) {
+        inFlightMigrations.remove(datasourceName);
+        if (result.isFailure()) {
+            releaseLockSilently(datasourceName);
+        }
+
+        return result;
+    }
+
+    // #760/#724 review BLOCKING 2: uses `mapError` (DEPENDENT), not `onFailure` (INDEPENDENT —
+    // dispatched onto AsyncExecutor, explicitly NOT ordered before the promise's resolution
+    // reaches `.await()` or any downstream caller). `handleMigrationFailure` registers the retry
+    // (`scheduledRetries.put`); that registration must complete before this failure becomes
+    // observable, or a caller that reacts immediately (a manual retry) can run
+    // `cancelScheduledRetry` before the put lands, orphaning an uncancelled timer that later
+    // fires a redundant, uncoordinated migration attempt.
     private Promise<Unit> runMigration(String datasourceName, SchemaVersionValue value) {
         var startTime = System.currentTimeMillis();
 
@@ -184,7 +206,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
         return updateStatus(datasourceName, value, SchemaStatus.MIGRATING).flatMap(_ -> resolveAndParseMigrations(datasourceName,
                                                                                                                   value))
                            .flatMap(_ -> markCompleted(datasourceName, value, startTime))
-                           .onFailure(cause -> handleMigrationFailure(datasourceName, value, cause));
+                           .mapError(cause -> handleMigrationFailure(datasourceName, value, cause));
     }
 
     private void emitMigrationStarted(String datasourceName, SchemaVersionValue value) {
@@ -210,7 +232,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                                                                             self)));
     }
 
-    private void handleMigrationFailure(String datasourceName, SchemaVersionValue value, Cause cause) {
+    private Cause handleMigrationFailure(String datasourceName, SchemaVersionValue value, Cause cause) {
         var classification = classifyFailure(cause);
         var attemptNumber = value.attemptCount() + 1;
         var artifactCoords = Option.option(value.artifactCoords()).or("");
@@ -220,6 +242,8 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
         } else {
             emitPermanentFailure(datasourceName, value, cause, classification, attemptNumber, artifactCoords);
         }
+
+        return cause;
     }
 
     private void scheduleRetry(String datasourceName,
@@ -258,7 +282,9 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
         updateStatusWithAttempt(datasourceName, value, SchemaStatus.PENDING, attemptNumber).onFailure(c -> log.error("Failed to update retry status for '{}': {}",
                                                                                                                      datasourceName,
                                                                                                                      c.message()));
-        SharedScheduler.schedule(() -> migrateIfNeeded(datasourceName), timeSpan(nextRetryMs).millis());
+        var future = SharedScheduler.schedule(() -> migrateIfNeeded(datasourceName), timeSpan(nextRetryMs).millis());
+
+        scheduledRetries.put(datasourceName, future);
     }
 
     private void emitPermanentFailure(String datasourceName,
@@ -338,12 +364,22 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     private static final Cause LOCK_HELD = Causes.cause("Schema migration lock held — skipping duplicate");
 
     private final java.util.Set<String> inFlightMigrations = ConcurrentHashMap.newKeySet();
+    private final ConcurrentHashMap<String, ScheduledFuture<?>> scheduledRetries = new ConcurrentHashMap<>();
 
+    /// Single-flight fence across BOTH dispatch paths (the backoff timer in [#scheduleRetry] and any
+    /// external re-dispatch — manual retry route, rebuild recovery). `inFlightMigrations` alone only
+    /// covers the window an attempt is actually running; once a failed attempt releases it, a stale,
+    /// already-scheduled backoff timer and a fresh external dispatch can both later acquire it in
+    /// sequence, redundantly re-running the same migration scripts (#760/#724 review, BLOCKING 2).
+    /// Cancelling only AFTER the fence is claimed — not on every call — matters: `scheduleRetry`'s own
+    /// KV status write can re-enter here while attempt N is still fenced, and that re-entrant call must
+    /// fail fast on the fence without ever touching the retry it is itself part of.
     private Promise<Unit> acquireLock(String datasourceName) {
         if (!inFlightMigrations.add(datasourceName)) {
             return LOCK_HELD.promise();
         }
 
+        cancelScheduledRetry(datasourceName);
         var lockKey = SchemaMigrationLockKey.schemaMigrationLockKey(datasourceName);
 
         if (isLockHeld(lockKey)) {
@@ -357,6 +393,14 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
 
         return cluster.apply(List.of(command))
                       .mapToUnit();
+    }
+
+    private void cancelScheduledRetry(String datasourceName) {
+        Option.option(scheduledRetries.remove(datasourceName)).onPresent(SchemaOrchestratorServiceInstance::cancelFuture);
+    }
+
+    private static void cancelFuture(ScheduledFuture<?> future) {
+        future.cancel(false);
     }
 
     private boolean isLockHeld(SchemaMigrationLockKey lockKey) {
