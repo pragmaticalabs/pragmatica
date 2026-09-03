@@ -199,25 +199,28 @@ public record DatabaseConnectorConfig(Option<String> name,
                    .or(DatabaseType.POSTGRESQL);
     }
 
+    // #769: a URL (async_url, jdbc_url, r2dbc_url) has the highest priority and replaces
+    // host/port/database — resource-reference.md:337,354. The URL-derived value wins whenever
+    // one of the three URL fields parses to it; discrete fields are the fallback, not the
+    // override. Cross-URL-kind ordering inside firstUrlHost/Port/Database (jdbc, then r2dbc,
+    // then async) is unchanged and out of scope for this fix.
     public String effectiveHost() {
-        return host.orElse(() -> firstUrlHost(jdbcUrl, r2dbcUrl, asyncUrl))
-                   .or("localhost");
+        return firstUrlHost(jdbcUrl, r2dbcUrl, asyncUrl).orElse(() -> host)
+                           .or("localhost");
     }
 
     public int effectivePort() {
-        return port.filter(p -> p > 0)
-                   .or(() -> {
-                           var urlPort = firstUrlPort(jdbcUrl, r2dbcUrl, asyncUrl);
+        var urlPort = firstUrlPort(jdbcUrl, r2dbcUrl, asyncUrl);
 
-                           return urlPort > 0
-                                  ? urlPort
-                                  : effectiveType().defaultPort();
-                       });
+        return urlPort > 0
+               ? urlPort
+               : port.filter(p -> p > 0)
+                     .or(() -> effectiveType().defaultPort());
     }
 
     public String effectiveDatabase() {
-        return database.orElse(() -> firstUrlDatabase(jdbcUrl, r2dbcUrl, asyncUrl))
-                       .or("");
+        return firstUrlDatabase(jdbcUrl, r2dbcUrl, asyncUrl).orElse(() -> database)
+                               .or("");
     }
 
     public String effectiveJdbcUrl() {

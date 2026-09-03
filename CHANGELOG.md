@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc4] - Unreleased
 
+### Fixed (2026-09-03 — #769: `database.async_url` operator override was ignored by slice stores while the log claimed it was applied)
+- **`DatabaseConnectorConfig.effectiveHost()`/`effectivePort()`/`effectiveDatabase()` gave the
+  discrete `host`/`port`/`database` fields unconditional precedence over a configured URL**,
+  inverting the documented contract (`resource-reference.md`: `jdbc_url`/`r2dbc_url`/`async_url`
+  "replaces host/port/database"). An operator who set only `async_url` to redirect a datastore had
+  the override silently discarded by every consumer of the effective accessors
+  (`AsyncSqlConnectorFactory`, `PgSqlConnectorFactory`, `NotificationListenerFactory`,
+  `AsyncJooqConnectorFactory`), while `effectiveAsyncUrl()` itself was already URL-first and correct.
+- The three accessors now prefer the URL-derived value (via the existing, unchanged
+  jdbc→r2dbc→async internal ordering) and fall back to the discrete field only when no URL yields
+  one. `effectiveType()`, `effectiveUsername()`, and `effectivePassword()` are unchanged — no
+  URL-derivation applies to type/credentials.
+
 ## [1.0.0-rc3] - 2026-09-02
 
 ### Changed (2026-09-02 — publish-time packaging, one commit after the `v1.0.0-rc3` tag)

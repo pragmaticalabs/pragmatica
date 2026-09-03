@@ -485,4 +485,92 @@ class DatabaseConnectorConfigTest {
             assertThat(str).doesNotContain("user:pass@");
         }
     }
+
+    // #769: resource-reference.md:337,354 documents a URL (async_url, jdbc_url, r2dbc_url) as
+    // highest priority, replacing host/port/database. The effective accessors previously gave
+    // discrete fields unconditional precedence over the URL, so an operator override that only
+    // touched async_url was silently ignored by every consumer of effectiveHost/Port/Database.
+    @Nested
+    class EffectiveComponentsUrlPrecedence {
+
+        @Test
+        void effectiveHost_prefersAsyncUrl_overDiscreteFields_whenBothPresentAndDiffer() {
+            var config = databaseConnectorConfigBuilder()
+                .withName("db")
+                .withHost("intrinsic-host")
+                .withPort(5432)
+                .withDatabase("intrinsic-db")
+                .withAsyncUrl("postgresql://override-host:6543/override-db")
+                .build()
+                .unwrap();
+
+            assertThat(config.effectiveHost()).isEqualTo("override-host");
+            assertThat(config.effectivePort()).isEqualTo(6543);
+            assertThat(config.effectiveDatabase()).isEqualTo("override-db");
+        }
+
+        // Real values from examples/comprehensive-persistence/src/main/resources/resources.toml
+        // [database] section, where discrete fields and async_url agree. Proves the precedence
+        // fix changes nothing for the repo's own resources.toml files.
+        @Test
+        void effectiveHost_staysConsistent_whenDiscreteFieldsAndAsyncUrlAgree_realResourcesTomlValues() {
+            var config = databaseConnectorConfigBuilder()
+                .withName("comprehensive-primary")
+                .withHost("localhost")
+                .withPort(5432)
+                .withDatabase("forge")
+                .withAsyncUrl("postgresql://localhost:5432/forge")
+                .build()
+                .unwrap();
+
+            assertThat(config.effectiveHost()).isEqualTo("localhost");
+            assertThat(config.effectivePort()).isEqualTo(5432);
+            assertThat(config.effectiveDatabase()).isEqualTo("forge");
+        }
+
+        @Test
+        void effectiveHost_usesDiscreteFields_whenNoUrlPresent() {
+            var config = databaseConnectorConfigBuilder()
+                .withName("db")
+                .withType(DatabaseType.POSTGRESQL)
+                .withHost("discrete-host")
+                .withPort(5555)
+                .withDatabase("discrete-db")
+                .build()
+                .unwrap();
+
+            assertThat(config.effectiveHost()).isEqualTo("discrete-host");
+            assertThat(config.effectivePort()).isEqualTo(5555);
+            assertThat(config.effectiveDatabase()).isEqualTo("discrete-db");
+        }
+
+        @Test
+        void effectiveHost_prefersUrl_overDiscreteFields_forJdbcAndR2dbcUrlsToo() {
+            var jdbcConfig = databaseConnectorConfigBuilder()
+                .withName("jdbc-db")
+                .withHost("intrinsic-host")
+                .withPort(5432)
+                .withDatabase("intrinsic-db")
+                .withJdbcUrl("jdbc:postgresql://override-host:6543/override-db")
+                .build()
+                .unwrap();
+
+            assertThat(jdbcConfig.effectiveHost()).isEqualTo("override-host");
+            assertThat(jdbcConfig.effectivePort()).isEqualTo(6543);
+            assertThat(jdbcConfig.effectiveDatabase()).isEqualTo("override-db");
+
+            var r2dbcConfig = databaseConnectorConfigBuilder()
+                .withName("r2dbc-db")
+                .withHost("intrinsic-host")
+                .withPort(5432)
+                .withDatabase("intrinsic-db")
+                .withR2dbcUrl("r2dbc:postgresql://override-host2:6544/override-db2")
+                .build()
+                .unwrap();
+
+            assertThat(r2dbcConfig.effectiveHost()).isEqualTo("override-host2");
+            assertThat(r2dbcConfig.effectivePort()).isEqualTo(6544);
+            assertThat(r2dbcConfig.effectiveDatabase()).isEqualTo("override-db2");
+        }
+    }
 }
