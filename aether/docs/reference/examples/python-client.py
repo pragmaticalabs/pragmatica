@@ -49,24 +49,24 @@ class AetherClient:
     # Cluster Status
     def status(self) -> dict:
         """Get cluster status."""
-        return self._get("/api/nodes/status")
+        return self._get("/api/v1/nodes/status")
 
     def health(self) -> dict:
         """Get health status."""
-        return self._get("/api/health")
+        return self._get("/api/v1/health")
 
     def nodes(self) -> dict:
         """List cluster nodes."""
-        return self._get("/api/nodes")
+        return self._get("/api/v1/nodes")
 
     # Slice Management
     def slices(self) -> dict:
         """List deployed slices."""
-        return self._get("/api/slices")
+        return self._get("/api/v1/slices")
 
     def apply_blueprint(self, blueprint_content: str) -> dict:
         """Apply a blueprint (deploy slices)."""
-        url = f"{self.base_url}/api/blueprints"
+        url = f"{self.base_url}/api/v1/blueprints"
         try:
             req = urllib.request.Request(
                 url,
@@ -83,7 +83,7 @@ class AetherClient:
 
     def delete_blueprint(self, blueprint_id: str) -> dict:
         """Delete a blueprint (undeploy slices)."""
-        url = f"{self.base_url}/api/blueprints/{blueprint_id}"
+        url = f"{self.base_url}/api/v1/blueprints/{blueprint_id}"
         try:
             req = urllib.request.Request(url, method="DELETE")
             with urllib.request.urlopen(req) as response:
@@ -95,55 +95,55 @@ class AetherClient:
 
     def scale(self, artifact: str, instances: int) -> dict:
         """Scale a slice."""
-        return self._post("/api/scale", {"artifact": artifact, "instances": instances})
+        return self._post("/api/v1/scale", {"artifact": artifact, "instances": instances})
 
     # Metrics
     def metrics(self) -> dict:
         """Get cluster metrics."""
-        return self._get("/api/metrics")
+        return self._get("/api/v1/metrics")
 
     def invocation_metrics(self) -> dict:
         """Get invocation metrics."""
-        return self._get("/api/invocations/metrics")
+        return self._get("/api/v1/invocations/metrics")
 
     def slow_invocations(self) -> dict:
         """Get slow invocations."""
-        return self._get("/api/invocations/metrics/slow")
+        return self._get("/api/v1/invocations/metrics/slow")
 
     # Controller
     def controller_config(self) -> dict:
         """Get controller configuration."""
-        return self._get("/api/controller/config")
+        return self._get("/api/v1/controller/config")
 
     def update_controller_config(self, **kwargs) -> dict:
         """Update controller configuration."""
-        return self._post("/api/controller/config", kwargs)
+        return self._post("/api/v1/controller/config", kwargs)
 
     def controller_status(self) -> dict:
         """Get controller status."""
-        return self._get("/api/controller/status")
+        return self._get("/api/v1/controller/status")
 
     # Alerts
     def alerts(self) -> dict:
         """Get all alerts."""
-        return self._get("/api/alerts")
+        return self._get("/api/v1/alerts")
 
     def active_alerts(self) -> dict:
         """Get active alerts."""
-        return self._get("/api/alerts/active")
+        return self._get("/api/v1/alerts/active")
 
     def clear_alerts(self) -> dict:
         """Clear all alerts."""
-        return self._post("/api/alerts/clear", {})
+        return self._post("/api/v1/alerts/clear", {})
 
     # Thresholds
     def thresholds(self) -> dict:
         """Get all thresholds."""
-        return self._get("/api/thresholds")
+        return self._get("/api/v1/thresholds")
 
     def set_threshold(self, metric: str, warning: float, critical: float) -> dict:
         """Set a threshold."""
-        return self._post("/api/thresholds", {
+        return self._post("/api/v1/thresholds", {
             "metric": metric,
             "warning": warning,
             "critical": critical
@@ -160,27 +160,27 @@ class AetherClient:
             "instances": instances,
             **kwargs
         }
-        return self._post("/api/deploy", data)
+        return self._post("/api/v1/deploy", data)
 
     def deployments(self) -> dict:
         """List active deployments."""
-        return self._get("/api/deploy")
+        return self._get("/api/v1/deploy")
 
     def deployment_status(self, deployment_id: str) -> dict:
         """Get deployment status."""
-        return self._get(f"/api/deploy/{deployment_id}")
+        return self._get(f"/api/v1/deploy/{deployment_id}")
 
     def promote_deployment(self, deployment_id: str) -> dict:
         """Advance deployment to next stage."""
-        return self._post(f"/api/deploy/{deployment_id}/promote", {})
+        return self._post(f"/api/v1/deploy/{deployment_id}/promote", {})
 
     def complete_deployment(self, deployment_id: str) -> dict:
         """Complete deployment."""
-        return self._post(f"/api/deploy/{deployment_id}/complete", {})
+        return self._post(f"/api/v1/deploy/{deployment_id}/complete", {})
 
     def rollback_deployment(self, deployment_id: str) -> dict:
         """Rollback deployment."""
-        return self._post(f"/api/deploy/{deployment_id}/rollback", {})
+        return self._post(f"/api/v1/deploy/{deployment_id}/rollback", {})
 
 
 def main():
