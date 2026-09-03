@@ -163,6 +163,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   (e.g. how long the blueprint has sat in a non-terminal `get(id)`). Documentation only, no behavior
   change — a real fix is out of scope for this round.
 
+### Fixed (2026-09-03 — #760 / #724 review round 3: fence release is per-attempt, lock write is timeout-bounded, BEST_EFFORT success now writes a durable outcome, and a stale doc path prefix)
+- **The migration fence is a per-attempt token, released only by the attempt that owns it.**
+  `SchemaOrchestratorService.acquireLock`'s `inFlightMigrations` release is a `remove(key, token)`
+  compare-and-remove, not a bare `remove(key)` — a release that runs late can never clear a later
+  attempt's fence entry, only its own. The consensus lock `Put` is now bounded by
+  `schemaManager.policy().migrationTimeout()` (the same bound as the migration itself); on timeout
+  or failure the fence is released synchronously via `mapError`, so an operator-triggered retry
+  immediately after a failed lock write observes the fence already cleared rather than racing an
+  async cleanup callback. Recovery from a wedged consensus round or partitioned leader does not
+  require a leader change — the fence still releases within the migration's own timeout.
+  [verified: aether/aether-deployment/src/test/java/org/pragmatica/aether/deployment/schema/SchemaOrchestratorRetrySingleFlightTest.java]
+- **A `BEST_EFFORT` deployment whose slices all reach `ACTIVE` now writes a `SUCCEEDED` durable
+  outcome record.** `trackInFlightBlueprint` tracks both `ALL_OR_NOTHING` and `BEST_EFFORT`
+  blueprints — previously only `ALL_OR_NOTHING` deployments populated `inFlightBlueprints`, so a
+  `BEST_EFFORT` slice reaching `ACTIVE` never reached `recordSucceededOutcome` and a
+  fully-successful `BEST_EFFORT` deployment left `BlueprintService.outcome()` with nothing to
+  return. The success path is now the same `trackBlueprintSliceActive` → `recordSucceededOutcome`
+  call both atomicities share.
+  [verified: aether/aether-deployment/src/test/java/org/pragmatica/aether/deployment/cluster/fsm/ClusterDeploymentStateTransactionalTest.java, `BestEffortSuccessOutcome`]
+- **`management-api.md` corrected five `/api/schema/...` paths (and one anchor link) to the actual
+  `/api/v1/schema/...` prefix** — every schema management-API route is composed through
+  `ManagementRoute.API_BASE` (`/api/v1`) with no carve-out, so the un-prefixed form previously
+  documented would 404 if followed literally.
+
 ## [1.0.0-rc3] - 2026-09-02
 
 ### Changed (2026-09-02 — publish-time packaging, one commit after the `v1.0.0-rc3` tag)
