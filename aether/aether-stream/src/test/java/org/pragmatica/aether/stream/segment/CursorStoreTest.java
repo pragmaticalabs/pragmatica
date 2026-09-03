@@ -12,8 +12,10 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.storage.BlockId;
+import org.pragmatica.storage.BlockLifecycle;
 import org.pragmatica.storage.BlockMetadata;
 import org.pragmatica.storage.MemoryTier;
+import org.pragmatica.storage.MetadataStore;
 import org.pragmatica.storage.StorageInstance;
 
 import java.util.ArrayList;
@@ -223,6 +225,76 @@ class CursorStoreTest {
         @Override
         public void shutdown() {
             delegate.shutdown();
+        }
+    }
+
+    @Nested
+    class RefcountReclamation {
+
+        private MetadataStore metadataStore;
+        private CursorStore store;
+
+        @BeforeEach
+        void setUp() {
+            metadataStore = MetadataStore.inMemoryMetadataStore("refcount-test");
+            var storage = StorageInstance.storageInstance("refcount-test",
+                                                           List.of(MemoryTier.memoryTier(ONE_GB)),
+                                                           metadataStore);
+            store = cursorStore(storage);
+        }
+
+        /// #737 — a cursor block that no live cursor points at any more must reach refCount 0 so
+        /// [org.pragmatica.storage.StorageGarbageCollector] can reclaim it. A repeat commit of the SAME
+        /// offset is included deliberately: it must not leak an extra reference either.
+        @Test
+        void commit_repeatedly_leavesExactlyOneLiveBlock() {
+            store.commit(GROUP, STREAM, PARTITION, 10L).await();
+            store.commit(GROUP, STREAM, PARTITION, 20L).await();
+            store.commit(GROUP, STREAM, PARTITION, 20L).await();
+            store.commit(GROUP, STREAM, PARTITION, 30L).await();
+
+            assertThat(refCountOf(10L)).as("superseded block must be collectable").isEqualTo(0);
+            assertThat(refCountOf(20L))
+                    .as("superseded block must be collectable -- the repeat commit must not leak an extra reference")
+                    .isEqualTo(0);
+            assertThat(refCountOf(30L)).as("the current cursor value must hold exactly one live reference").isEqualTo(1);
+        }
+
+        /// #737 — cursor blocks are content-addressed, so two cursors sitting at the same offset share
+        /// one block. Releasing one cursor must not collect a block the other still needs.
+        @Test
+        void commit_sharedContent_onlyReleasedWhenLastCursorMovesAway() {
+            var groupX = "group-x";
+            var groupY = "group-y";
+
+            store.commit(groupX, STREAM, PARTITION, 42L).await();
+            store.commit(groupY, STREAM, PARTITION, 42L).await();
+
+            assertThat(refCountOf(42L)).as("two cursors independently reference the shared block").isEqualTo(2);
+
+            store.commit(groupX, STREAM, PARTITION, 99L).await();
+
+            assertThat(refCountOf(42L))
+                    .as("group-y still points at the shared block -- it must not be collectable yet")
+                    .isEqualTo(1);
+
+            store.commit(groupY, STREAM, PARTITION, 99L).await();
+
+            assertThat(refCountOf(42L))
+                    .as("no cursor references it any more -- now it must be collectable")
+                    .isEqualTo(0);
+        }
+
+        private int refCountOf(long offset) {
+            var blockId = BlockId.blockId(CursorStore.encodeOffset(offset))
+                                  .fold(_ -> {
+                                      org.junit.jupiter.api.Assertions.fail("BlockId computation failed");
+                                      return null;
+                                  }, id -> id);
+
+            return metadataStore.getLifecycle(blockId)
+                                 .map(BlockLifecycle::refCount)
+                                 .or(-1);
         }
     }
 
