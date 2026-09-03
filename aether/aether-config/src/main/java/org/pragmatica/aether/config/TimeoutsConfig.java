@@ -22,7 +22,8 @@ public record TimeoutsConfig(InvocationTimeouts invocation,
                              WorkerTimeouts worker,
                              SecurityTimeouts security,
                              RepositoryTimeouts repository,
-                             ScalingTimeouts scaling) {
+                             ScalingTimeouts scaling,
+                             StorageMaintenanceTimeouts storageMaintenance) {
     public static TimeoutsConfig timeoutsConfig() {
         return new TimeoutsConfig(InvocationTimeouts.invocationTimeouts(),
                                   ForwardingTimeouts.forwardingTimeouts(),
@@ -37,7 +38,8 @@ public record TimeoutsConfig(InvocationTimeouts invocation,
                                   WorkerTimeouts.workerTimeouts(),
                                   SecurityTimeouts.securityTimeouts(),
                                   RepositoryTimeouts.repositoryTimeouts(),
-                                  ScalingTimeouts.scalingTimeouts());
+                                  ScalingTimeouts.scalingTimeouts(),
+                                  StorageMaintenanceTimeouts.storageMaintenanceTimeouts());
     }
 
     public record InvocationTimeouts(TimeSpan timeout,
@@ -237,6 +239,19 @@ public record TimeoutsConfig(InvocationTimeouts invocation,
                                        timeSpan(60).seconds(),
                                        timeSpan(10).seconds(),
                                        timeSpan(15).seconds());
+        }
+    }
+
+    /// #250: single tick interval driving BOTH `DemotionManager.demote()` and
+    /// `StorageGarbageCollector.collectGarbage()` across every storage setup. One shared cadence is
+    /// sufficient because each operation is already internally self-limiting regardless of how often
+    /// it is ticked -- demotion only acts once a tier crosses its high watermark, GC only collects
+    /// blocks already past their grace period -- so a conservative 5-minute tick costs nothing when
+    /// neither is due. This is a maintenance cadence, not a request-path deadline, hence the wider
+    /// scale than [ClusterTimeouts] / [DhtTimeouts].
+    public record StorageMaintenanceTimeouts(TimeSpan interval) {
+        public static StorageMaintenanceTimeouts storageMaintenanceTimeouts() {
+            return new StorageMaintenanceTimeouts(timeSpan(5).minutes());
         }
     }
 }

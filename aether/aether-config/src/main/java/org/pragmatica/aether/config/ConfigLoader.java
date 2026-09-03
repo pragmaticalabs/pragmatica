@@ -541,7 +541,8 @@ public final class ConfigLoader {
                                   parseWorkerTimeouts(doc, defaults.worker()),
                                   parseSecurityTimeouts(doc, defaults.security()),
                                   parseRepositoryTimeouts(doc, defaults.repository()),
-                                  parseScalingTimeouts(doc, defaults.scaling()));
+                                  parseScalingTimeouts(doc, defaults.scaling()),
+                                  parseStorageMaintenanceTimeouts(doc, defaults.storageMaintenance()));
     }
 
     private static TimeoutsConfig.InvocationTimeouts parseInvocationTimeouts(TomlDocument doc,
@@ -807,6 +808,17 @@ public final class ConfigLoader {
                                                                 "timeouts.scaling",
                                                                 "auto_heal_startup_cooldown",
                                                                 d.autoHealStartupCooldown()));
+    }
+
+    /// #250: `[timeouts.storage_maintenance] interval` -- the tick driving both `DemotionManager.demote()`
+    /// and `StorageGarbageCollector.collectGarbage()` across every storage setup. See
+    /// [TimeoutsConfig.StorageMaintenanceTimeouts] for why one shared interval is sufficient.
+    private static TimeoutsConfig.StorageMaintenanceTimeouts parseStorageMaintenanceTimeouts(TomlDocument doc,
+                                                                                              TimeoutsConfig.StorageMaintenanceTimeouts d) {
+        return new TimeoutsConfig.StorageMaintenanceTimeouts(parseTimeSpan(doc,
+                                                                           "timeouts.storage_maintenance",
+                                                                           "interval",
+                                                                           d.interval()));
     }
 
     private static TimeSpan parseTimeSpanOrMs(TomlDocument doc,

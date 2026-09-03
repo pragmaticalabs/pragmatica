@@ -15,19 +15,26 @@ import org.pragmatica.dht.DHTClient;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.parse.TimeSpan;
+import org.pragmatica.storage.DemotionConfig;
+import org.pragmatica.storage.DemotionManager;
+import org.pragmatica.storage.GarbageCollectorConfig;
 import org.pragmatica.storage.LocalDiskTier;
 import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.MetadataSnapshot;
 import org.pragmatica.storage.MetadataStore;
 import org.pragmatica.storage.SnapshotConfig;
 import org.pragmatica.storage.SnapshotManager;
+import org.pragmatica.storage.StorageGarbageCollector;
 import org.pragmatica.storage.StorageInstance;
 import org.pragmatica.storage.StorageReadinessGate;
 import org.pragmatica.storage.StorageTier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.pragmatica.lang.Unit.unit;
 
 
 public final class StorageFactory {
@@ -51,14 +58,117 @@ public final class StorageFactory {
                                StorageInstance instance,
                                SnapshotManager snapshotManager,
                                StorageReadinessGate readinessGate,
-                               MetadataStore metadataStore) {
+                               MetadataStore metadataStore,
+                               DemotionManager demotionManager,
+                               StorageGarbageCollector garbageCollector) {
         public static StorageSetup storageSetup(String name,
                                                 StorageInstance instance,
                                                 SnapshotManager snapshotManager,
                                                 StorageReadinessGate readinessGate,
-                                                MetadataStore metadataStore) {
-            return new StorageSetup(name, instance, snapshotManager, readinessGate, metadataStore);
+                                                MetadataStore metadataStore,
+                                                DemotionManager demotionManager,
+                                                StorageGarbageCollector garbageCollector) {
+            return new StorageSetup(name,
+                                    instance,
+                                    snapshotManager,
+                                    readinessGate,
+                                    metadataStore,
+                                    demotionManager,
+                                    garbageCollector);
         }
+    }
+
+    /// #250: fan out demotion across every storage setup so leader-pinned activation
+    /// (`DelegatedStorageAdapter`) and the periodic maintenance tick (`StorageMaintenanceDriver`)
+    /// each see ONE `DemotionManager` regardless of how many storage instances the node runs.
+    /// Each child is independently self-limiting on its own tier watermarks, so summing `demote()`
+    /// results and fanning out `activate()`/`deactivate()` is safe and requires no coordination.
+    public static DemotionManager compositeDemotionManager(Map<String, StorageSetup> setups) {
+        var managers = setups.values().stream().map(StorageSetup::demotionManager).toList();
+
+        return new DemotionManager() {
+            @Override
+            public int demote() {
+                return managers.stream()
+                               .mapToInt(DemotionManager::demote)
+                               .sum();
+            }
+
+            @Override
+            public DemotionStats stats() {
+                return managers.stream()
+                               .map(DemotionManager::stats)
+                               .reduce(StorageFactory::mergeDemotionStats)
+                               .orElseGet(() -> new DemotionStats(0, 0, 0));
+            }
+
+            @Override
+            public Result<Unit> activate() {
+                return Result.allOf(managers.stream().map(DemotionManager::activate).toList()).map(_ -> unit());
+            }
+
+            @Override
+            public Result<Unit> deactivate() {
+                return Result.allOf(managers.stream().map(DemotionManager::deactivate).toList()).map(_ -> unit());
+            }
+
+            @Override
+            public boolean isActive() {
+                return managers.stream()
+                               .allMatch(DemotionManager::isActive);
+            }
+        };
+    }
+
+    private static DemotionManager.DemotionStats mergeDemotionStats(DemotionManager.DemotionStats a,
+                                                                    DemotionManager.DemotionStats b) {
+        return new DemotionManager.DemotionStats(a.blocksDemoted() + b.blocksDemoted(),
+                                                 a.bytesMoved() + b.bytesMoved(),
+                                                 Math.max(a.lastRunMs(), b.lastRunMs()));
+    }
+
+    /// #250: same fan-out as [#compositeDemotionManager], for garbage collection.
+    public static StorageGarbageCollector compositeGarbageCollector(Map<String, StorageSetup> setups) {
+        var collectors = setups.values().stream().map(StorageSetup::garbageCollector).toList();
+
+        return new StorageGarbageCollector() {
+            @Override
+            public int collectGarbage() {
+                return collectors.stream()
+                                 .mapToInt(StorageGarbageCollector::collectGarbage)
+                                 .sum();
+            }
+
+            @Override
+            public GCStats stats() {
+                return collectors.stream()
+                                 .map(StorageGarbageCollector::stats)
+                                 .reduce(StorageFactory::mergeGcStats)
+                                 .orElseGet(() -> new GCStats(0, 0));
+            }
+
+            @Override
+            public Result<Unit> activate() {
+                return Result.allOf(collectors.stream().map(StorageGarbageCollector::activate).toList()).map(_ -> unit());
+            }
+
+            @Override
+            public Result<Unit> deactivate() {
+                return Result.allOf(collectors.stream().map(StorageGarbageCollector::deactivate).toList()).map(_ -> unit());
+            }
+
+            @Override
+            public boolean isActive() {
+                return collectors.stream()
+                                 .allMatch(StorageGarbageCollector::isActive);
+            }
+        };
+    }
+
+    private static StorageGarbageCollector.GCStats mergeGcStats(StorageGarbageCollector.GCStats a,
+                                                                StorageGarbageCollector.GCStats b) {
+        return new StorageGarbageCollector.GCStats(a.blocksCollected() + b.blocksCollected(),
+                                                   Math.max(a.lastRunMs(), b.lastRunMs()));
     }
 
     static Map<String, StorageSetup> createAll(Map<String, StorageConfig> configs,
@@ -169,11 +279,21 @@ public final class StorageFactory {
                                                            nodeId);
         var snapshotManager = SnapshotManager.snapshotManager(metadataStore, snapshotConfig);
         var readinessGate = StorageReadinessGate.storageReadinessGate();
+        var demotionManager = DemotionManager.demotionManager(tiers, metadataStore, DemotionConfig.demotionConfig());
+        var garbageCollector = StorageGarbageCollector.storageGarbageCollector(instance,
+                                                                               metadataStore,
+                                                                               GarbageCollectorConfig.garbageCollectorConfig());
 
         restoreAndSignalReady(STREAMS_NAME, snapshotManager, metadataStore, readinessGate);
         log.info("Storage 'streams' created: {} tier(s), data dir={}", tiers.size(), snapshotDir.getParent());
 
-        return StorageSetup.storageSetup(STREAMS_NAME, instance, snapshotManager, readinessGate, metadataStore);
+        return StorageSetup.storageSetup(STREAMS_NAME,
+                                         instance,
+                                         snapshotManager,
+                                         readinessGate,
+                                         metadataStore,
+                                         demotionManager,
+                                         garbageCollector);
     }
 
     private static Result<StorageSetup> createOne(String name,
@@ -220,11 +340,21 @@ public final class StorageFactory {
         var snapshotConfig = buildSnapshotConfig(config, nodeId);
         var snapshotManager = SnapshotManager.snapshotManager(metadataStore, snapshotConfig);
         var readinessGate = StorageReadinessGate.storageReadinessGate();
+        var demotionManager = DemotionManager.demotionManager(tiers, metadataStore, DemotionConfig.demotionConfig());
+        var garbageCollector = StorageGarbageCollector.storageGarbageCollector(instance,
+                                                                               metadataStore,
+                                                                               GarbageCollectorConfig.garbageCollectorConfig());
 
         restoreAndSignalReady(name, snapshotManager, metadataStore, readinessGate);
         log.info("Storage '{}' created: {} tier(s), snapshot path={}", name, tiers.size(), config.snapshotPath());
 
-        return StorageSetup.storageSetup(name, instance, snapshotManager, readinessGate, metadataStore);
+        return StorageSetup.storageSetup(name,
+                                         instance,
+                                         snapshotManager,
+                                         readinessGate,
+                                         metadataStore,
+                                         demotionManager,
+                                         garbageCollector);
     }
 
     private static SnapshotConfig buildSnapshotConfig(StorageConfig config, String nodeId) {

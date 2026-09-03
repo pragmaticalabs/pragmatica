@@ -2570,7 +2570,22 @@ public interface AetherNode extends ManageableNode {
         // #231 Step 2: the remaining control-plane components (CDM, LoadBalancer, ControlLoop,
         // TTMManager, RollbackManager, AbTestManager, DeploymentManager, StorageAdapter, StreamingCoordinator)
         // are leader-pinned via their toggle*OnLeaderChange routes in collectRouteEntries / allEntries below.
-        var delegatedStorageAdapter = DelegatedStorageAdapter.noOp();
+        // #250: real demotion + GC, fanned out across every storage setup (artifacts/content/streams)
+        // via StorageFactory.composite*. Leader-pinned activation below (toggleStorageOnLeaderChange)
+        // is unchanged — only the no-op stand-in is replaced. Both DefaultDemotionManager and
+        // DefaultStorageGarbageCollector self-gate on their internal `active` flag, so the periodic
+        // driver below can call demote()/collectGarbage() unconditionally on every node (leader or
+        // not) and it safely no-ops until this node's adapter is activated.
+        var compositeDemotionManager = StorageFactory.compositeDemotionManager(storageSetups);
+        var compositeGarbageCollector = StorageFactory.compositeGarbageCollector(storageSetups);
+        var delegatedStorageAdapter = DelegatedStorageAdapter.delegatedStorageAdapter(compositeDemotionManager,
+                                                                                      compositeGarbageCollector);
+        var storageMaintenanceDriver = StorageMaintenanceDriver.storageMaintenanceDriver(compositeDemotionManager,
+                                                                                         compositeGarbageCollector);
+
+        LOG.info("Storage maintenance enabled: demotion+GC cadence={}, storage setups={}",
+                 config.timeouts().storageMaintenance().interval(),
+                 storageSetups.keySet());
         var consumerGroupRegistry = ConsumerGroupRegistry.consumerGroupRegistry();
         var consumerGroupCoordinator = ConsumerGroupCoordinator.consumerGroupCoordinator(clusterNode);
         var managementServerRef = new AtomicReference<Option<ManagementServer>>(Option.empty());
@@ -3723,6 +3738,12 @@ public interface AetherNode extends ManageableNode {
         // self-gates on its mutation-count / interval trigger, so a 10s tick is cheap when not due.
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(() -> snapshotAllSetups(storageSetups),
                                                                       METADATA_SNAPSHOT_INTERVAL));
+        // #250 storage maintenance driver: demote()/collectGarbage() have no other caller — without this
+        // tick, tiered storage never shrinks in production regardless of the leader-pinned adapter's
+        // activation state. Cadence is operator-configurable ([timeouts.storage_maintenance] interval,
+        // default 5m); both operations self-gate internally, so this tick is cheap when inactive or idle.
+        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(storageMaintenanceDriver::tick,
+                                                                      config.timeouts().storageMaintenance().interval()));
         // W5 WAL disk-reclamation driver: truncate every partition's write-ahead log up to its DURABLE
         // last-sealed offset so the WAL does not grow unbounded. Records <= lastSealedOffset are already in
         // durable cold segments (served post-restart by the tiered reader), so dropping them from the WAL

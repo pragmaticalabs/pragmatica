@@ -933,7 +933,8 @@ public final class EmberCluster {
                                   defaults.worker(),
                                   defaults.security(),
                                   defaults.repository(),
-                                  defaults.scaling());
+                                  defaults.scaling(),
+                                  defaults.storageMaintenance());
     }
 
     private AetherNode createNode(NodeId nodeId,
