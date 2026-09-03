@@ -74,6 +74,7 @@ import org.pragmatica.aether.slice.SliceActionConfig;
 import org.pragmatica.consensus.net.ClusterFormationConfig;
 import org.pragmatica.consensus.topology.BackoffConfig;
 import org.pragmatica.net.tcp.TlsConfig;
+import org.pragmatica.net.tcp.security.CertificateProvider;
 import org.pragmatica.net.tcp.security.SelfSignedCertificateProvider;
 
 import org.slf4j.Logger;
@@ -184,6 +185,20 @@ public final class EmberCluster {
     /// with raised SWIM / transport / membership timeouts so a single graceful owner-kill does not trip
     /// the transient QuorumLost→PASSIVE false-removal cascade that falsely marks LIVE survivors DEAD.
     private final AtomicBoolean raisedSwimTimeouts = new AtomicBoolean(false);
+
+    /// #715 — this instance's cluster QUIC/SWIM identity secret, as derived by [#buildForgeQuicTls].
+    /// Currently the same hardcoded literal every `EmberCluster` instance uses — the #715 defect
+    /// (any process holding the literal derives the identical CA and gossip key). Exposed to tests
+    /// via [#currentClusterSecret]; not yet used to change behaviour (scaffold only).
+    private final AtomicReference<byte[]> clusterSecret =
+        new AtomicReference<>("aether-forge-cluster-secret".getBytes(StandardCharsets.UTF_8));
+
+    /// #715 — the `certificateProvider` actually threaded into the most recently constructed node's
+    /// [AetherNodeConfig]. Currently always [Option#empty] — the #715 defect: SWIM gossip encryption
+    /// is never wired for Ember/Forge nodes ([AetherNode] falls back to `GossipEncryptor.none()`).
+    /// Exposed to tests via [#wiredCertificateProvider]; not yet set anywhere (scaffold only).
+    private final AtomicReference<Option<CertificateProvider>> lastCertificateProvider =
+        new AtomicReference<>(Option.empty());
 
     private final class EmberComputeProvider implements ComputeProvider {
         @Override
@@ -361,6 +376,19 @@ public final class EmberCluster {
     @Contract
     public void withRaisedSwimTimeouts() {
         raisedSwimTimeouts.set(true);
+    }
+
+    /// TEST SEAM (#715) — exposes this instance's current cluster QUIC/SWIM identity secret, so
+    /// tests can pin whether distinct `EmberCluster` instances are cryptographically distinguishable.
+    byte[] currentClusterSecret() {
+        return clusterSecret.get().clone();
+    }
+
+    /// TEST SEAM (#715) — exposes the `certificateProvider` actually threaded into the most recently
+    /// constructed node's [AetherNodeConfig], so tests can pin whether SWIM gossip encryption is
+    /// wired for real nodes rather than inferring it from the QUIC path alone.
+    Option<CertificateProvider> wiredCertificateProvider() {
+        return lastCertificateProvider.get();
     }
 
     private EnvironmentIntegration emberEnvironment() {
