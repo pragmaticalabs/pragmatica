@@ -1438,7 +1438,7 @@ aether schema baseline <datasource> -v <version>
 |------------|-------------|
 | `status [datasource]` | Show schema status (all or specific) |
 | `history <datasource>` | Show migration history |
-| `migrate <datasource>` | Trigger manual migration |
+| `migrate <datasource>` | Trigger manual migration (refused with `409` if the record is COMPLETED and already serving) |
 | `undo <datasource> -v N` | Undo to target version |
 | `retry <datasource>` | Retry a failed migration (clears the activation hold) |
 | `baseline <datasource> -v N` | Baseline at version |
@@ -1496,6 +1496,14 @@ status it actually observed. `baseline` requires an
 existing record — it inherits that record's owning blueprint rather than inventing one, so
 baselining a datasource that has never been published fails with `404 Not Found` and
 ``Schema status not found for datasource '<name>'``.
+
+`migrate` similarly refuses (#760 review BLOCKING 1) when the record is `COMPLETED` **and** the
+owning blueprint has at least one slice instance already `ACTIVE` — re-arming to `MIGRATING` would
+hold the next slice reaching `LOADED` (scale-up, rolling redeploy, a rejoining node) with no
+automatic recovery, since only a `PENDING` record's Put actually dispatches a migration run. The
+409 names the datasource and how many active instances it is serving; `baseline` or `undo` first
+if a genuine re-migration is intended. A COMPLETED record with zero live ACTIVE slices still goes
+through unchanged.
 
 The cluster leader also writes a `SCHEMA_ACTIVATION_BLOCKED` audit entry when it observes a
 `FAILED` record, naming the datasource, the owning blueprint, and the held slices. The same held

@@ -4448,11 +4448,28 @@ Returns migration history for a datasource (placeholder -- currently returns the
 Triggers manual schema migration for a datasource. Sets status to `MIGRATING`. Preserves the
 existing record's artifact coordinates and owning blueprint.
 
-**Response:**
+**Refused with `409 Conflict` (#760 review BLOCKING 1)** when the record is `COMPLETED` **and**
+the owning blueprint has at least one slice instance already `ACTIVE`. Re-arming a COMPLETED
+record to `MIGRATING` has no orchestrator effect by itself — only a `PENDING` record's KV `Put`
+dispatches an actual migration run — but `MIGRATING` is itself a blocking status with no automatic
+clearing path, so the next slice instance to reach `LOADED` (scale-up, rolling redeploy, a
+rejoining node) would be held indefinitely on a record the operator just re-armed. A COMPLETED
+record with **zero** live ACTIVE slices is unaffected and still goes through. Recovery: `baseline`
+or `undo` first if a genuine re-migration is intended.
+
+**Response (success):**
 ```json
 {
   "success": true,
   "message": "Migration triggered for orders_db"
+}
+```
+
+**Response (409 — blueprint already serving):**
+```json
+{
+  "status": 409,
+  "detail": "Schema for datasource 'orders_db' is already COMPLETED and serving 3 active slice instances — re-triggering migration would hold the next slice to activate with no automatic recovery; baseline or undo first if a re-migration is genuinely intended"
 }
 ```
 
@@ -4530,6 +4547,7 @@ with `400 Bad Request`.
 > |-----------|--------|----------|
 > | Datasource has no schema record (every route that reads one) | `404 Not Found` | ``Schema status not found for datasource '<name>'`` |
 > | `retry` against a datasource that is not `FAILED` or `PENDING` | `409 Conflict` | ``Schema for datasource '<name>' is not in FAILED state (currently <STATUS>) — retry applies to FAILED or PENDING migrations only`` |
+> | `migrate` against a COMPLETED record whose owning blueprint has ≥1 live ACTIVE slice | `409 Conflict` | ``Schema for datasource '<name>' is already COMPLETED and serving <N> active slice instance(s) — re-triggering migration would hold the next slice to activate with no automatic recovery; baseline or undo first if a re-migration is genuinely intended`` |
 > | `?version=` / `?targetVersion=` present but not an integer | `400 Bad Request` | ``Invalid '<parameter>' parameter: '<value>' is not an integer`` |
 >
 > An **absent** `version`/`targetVersion` is not an error — it takes the documented default
