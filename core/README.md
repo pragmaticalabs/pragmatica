@@ -228,7 +228,7 @@ Explore comprehensive examples in the [examples](../examples) directory:
 
 ## Integrations
 
-### Jackson JSON (3.0.0)
+### Jackson JSON (3.0+)
 
 Serialize and deserialize Result, Option, and Promise types:
 
@@ -301,21 +301,21 @@ Monitor Result, Option, and Promise operations:
 ```
 
 ```java
-// Wrap operations with metrics
-var wrappedOperation = ResultMetrics.timed(
-    registry,
-    "user.fetch",
-    Tags.of("service", "user-service"),
-    () -> fetchUser(userId)
-);
+// Timer around a Result-returning operation: duration plus success/failure counts
+var fetchMetrics = ResultMetrics.timer("user.fetch")
+    .registry(registry)
+    .tags("service", "user-service")
+    .build();
 
-// Automatic success/failure tracking
-Promise<Data> monitored = PromiseMetrics.counted(
-    registry,
-    "api.call",
-    Tags.of("endpoint", "/users"),
-    apiClient.fetchData()
-);
+Supplier<Result<User>> fetchUser = fetchMetrics.around(() -> userRepository.fetch(userId));
+
+// Counter around a Promise-returning function: success/failure counts only
+var apiMetrics = PromiseMetrics.counter("api.call")
+    .registry(registry)
+    .tags("endpoint", "/users")
+    .build();
+
+Fn1<Promise<Data>, Query> fetchData = apiMetrics.around(apiClient::fetchData);
 ```
 
 ## Contributing
