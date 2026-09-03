@@ -32,15 +32,24 @@ public interface StorageInstance {
     Option<BlockId> resolveRef(String name);
     /// Delete a named reference.
     Promise<Unit> deleteRef(String name);
-    /// Atomically replace what `name` points to: writes (or deduplicates) the block for `content`,
-    /// then points `name` at it. Never leaves `name` absent -- unlike `deleteRef` then `createRef`, it
-    /// resolves to the old target or the new one at every instant.
+
+    /// Replaces what `name` points to: writes (or deduplicates) the block for `content`, then points
+    /// `name` at it. Never leaves `name` absent -- unlike `deleteRef` then `createRef`, it resolves to
+    /// the old target or the new one at every instant. [DefaultStorageInstance]'s composite: the
+    /// metadata pointer swap itself is atomic, but the new block's credit and the displaced block's
+    /// decrement are only ordered, not atomic together -- a crash between them over-counts the
+    /// displaced block (#737).
     ///
-    /// Default falls back to [#put] + [#createRef] -- leaks the superseded block's refcount; only
-    /// [DefaultStorageInstance] reclaims it.
+    /// Default falls back to [#put] + [#createRef], which has two independent counting defects: it
+    /// never decrements the superseded block (leaks its refcount forever -- only
+    /// [DefaultStorageInstance] reclaims it), AND it double-counts the NEW block -- [#put] already
+    /// credits it (fresh write or dedup, +1), then [#createRef] credits it again (+1), so it sits at
+    /// refCount 2 for one logical reference. Even an explicit [#deleteRef] afterward only brings it to
+    /// 1; it never reaches zero and is never GC-eligible.
     default Promise<BlockId> replaceRef(String name, byte[] content) {
         return put(content).flatMap(id -> createRef(name, id).map(_ -> id));
     }
+
     /// Delete a block from all tiers and remove its lifecycle metadata. Used by GC.
     Promise<Unit> delete(BlockId id);
 
@@ -181,8 +190,8 @@ final class DefaultStorageInstance implements StorageInstance {
 
     @Override
     public Promise<Unit> deleteFromPrivateTiers(BlockId id) {
-        return deleteFromPrivateTiers(id, 0)
-               .onSuccess(_ -> removeLifecycleMetadata(id, "deleted from private tiers; shared copy retained"));
+        return deleteFromPrivateTiers(id, 0).onSuccess(_ -> removeLifecycleMetadata(id,
+                                                                                    "deleted from private tiers; shared copy retained"));
     }
 
     @Override
@@ -213,12 +222,15 @@ final class DefaultStorageInstance implements StorageInstance {
                : deduplicateBlock(id);
     }
 
-    /// Atomically points `refName` at `newId`, decrementing whatever it previously pointed to.
-    /// `newId`'s own reference count was already accounted for by [#handlePut] -- a fresh block starts
-    /// at refCount 1, deduplication already incremented an existing one -- so this only has to release
-    /// the superseded target, and it does so only AFTER the swap: the new target is credited before
-    /// the old one is debited, so a concurrent GC scan can never observe a floor-clamped transient zero
-    /// on a block that is, at that same instant, still genuinely live (#737).
+    /// Points `refName` at `newId`, decrementing whatever it previously pointed to. `newId`'s own
+    /// reference count was already accounted for by [#handlePut] -- a fresh block starts at refCount
+    /// 1, deduplication already incremented an existing one -- so this only has to release the
+    /// superseded target. The metadata pointer swap itself is atomic; the credit (already applied by
+    /// [#handlePut], before this call) and the decrement (applied here, after the swap) are only
+    /// ordered, not atomic together -- a crash between the swap and the decrement over-counts the
+    /// displaced block (never decremented, stays live). The swap-then-decrement order is still load-
+    /// bearing for a different hazard: a concurrent GC scan can never observe a floor-clamped
+    /// transient zero on a block that is, at that same instant, still genuinely live (#737).
     private BlockId repointRef(String refName, BlockId newId) {
         metadataStore.replaceRef(refName, newId)
                      .onPresent(oldId -> metadataStore.computeLifecycle(oldId, BlockLifecycle::withRefCountDecremented));

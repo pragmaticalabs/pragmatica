@@ -43,8 +43,10 @@ public final class CursorStore implements ConsumerCursorStore {
     /// left a window in which the ref did not exist at all — and for a cursor, absent is much worse than
     /// stale: [#fetch] answers `Option.empty()`, which the caller reads as "this group has never
     /// committed" and resumes from the earliest RETAINED offset. So a crash in that window did not cost a
-    /// few events, it redelivered the entire retained window. A single upsert has no such window: the ref
-    /// resolves to either the old offset or the new one at every instant.
+    /// few events, it redelivered the entire retained window. A single upsert has no such window: the
+    /// ref itself always resolves to a valid block, either the old offset or the new one, at every
+    /// instant. That guarantee covers the REF's presence only -- it says nothing about the refcount
+    /// bookkeeping of the block behind it; see below for that.
     ///
     /// The superseded block IS reclaimed (#737, fixed): [StorageInstance#replaceRef] is a refcount-aware
     /// ref-replace that increments the new block and decrements whatever the ref previously pointed to,
@@ -53,8 +55,10 @@ public final class CursorStore implements ConsumerCursorStore {
     /// this correctly: a shared block's count reflects exactly how many live refs still point at it, and
     /// it only reaches [org.pragmatica.storage.BlockLifecycle#isOrphaned] once none do, at which point
     /// [org.pragmatica.storage.StorageGarbageCollector] can reclaim it. Remaining exposure, pre-existing
-    /// and unchanged by this fix: a cursor block becoming GC-reachable surfaces it to whatever #801 and
-    /// #802 describe for GC-eligible blocks in general.
+    /// and unchanged by this fix: a cursor block becoming GC-reachable surfaces it to two known gaps in
+    /// GC-eligible blocks generally: #801 (a concurrent deduplicating put can resurrect a block between
+    /// GC's orphan scan and its delete step) and #802 (a block demoted to the DHT alone drops out of
+    /// every node's local GC candidate set, with no cluster-wide reclamation process).
     @Override
     public Promise<Unit> commit(String consumerGroup, String streamName, int partition, long offset) {
         var refName = buildRefName(consumerGroup, streamName, partition);
