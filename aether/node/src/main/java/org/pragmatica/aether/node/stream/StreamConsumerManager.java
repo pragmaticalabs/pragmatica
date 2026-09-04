@@ -667,9 +667,8 @@ public interface StreamConsumerManager {
             active.keySet()
                   .stream()
                   .filter(key -> key.streamName()
-                                    .equals(declaration.streamName())
-                             && key.consumerGroup()
-                                   .equals(declaration.consumerGroup()))
+                                    .equals(declaration.streamName()) && key.consumerGroup()
+                                                                            .equals(declaration.consumerGroup()))
                   .toList()
                   .forEach(this::detach);
         }
