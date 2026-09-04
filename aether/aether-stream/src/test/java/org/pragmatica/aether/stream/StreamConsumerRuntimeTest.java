@@ -495,6 +495,18 @@ class StreamConsumerRuntimeTest {
             };
         }
 
+        /// `onFailure`/`onSuccess` attached to a still-unresolved [Promise] fire through
+        /// [org.pragmatica.lang.Promise]'s virtual-thread event dispatch once it resolves, not
+        /// synchronously in the resolving thread — so a late resolution's side effect must be
+        /// polled for, not asserted immediately after `.fail(...)`/`.succeed(...)`.
+        private static void awaitCount(java.util.function.LongSupplier actual, long expected) throws InterruptedException {
+            var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+
+            while (actual.getAsLong() != expected && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+        }
+
         @Test
         void close_countsFailure_whenFinalCommitFailsSynchronously_andDoesNotWaitOutTheBound() throws Exception {
             createTestStream("orders");
@@ -520,7 +532,7 @@ class StreamConsumerRuntimeTest {
         }
 
         @Test
-        void close_boundsTheWait_whenFinalCommitNeverSettles_thenCountsALateFailure() {
+        void close_boundsTheWait_whenFinalCommitNeverSettles_thenCountsALateFailure() throws InterruptedException {
             createTestStream("orders");
             Promise<Unit> pending = Promise.promise();
             var store = committing(pending);
@@ -544,6 +556,7 @@ class StreamConsumerRuntimeTest {
 
             pending.fail(StreamError.General.BUFFER_EMPTY);
 
+            awaitCount(observedRuntime::cursorCommitFailureCount, 1L);
             assertThat(observedRuntime.cursorCommitFailureCount()).describedAs("a failure that resolves after the bound is still logged and counted")
                       .isEqualTo(1L);
         }

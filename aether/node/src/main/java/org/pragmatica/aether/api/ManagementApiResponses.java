@@ -815,7 +815,9 @@ public sealed interface ManagementApiResponses {
     /// failed or did not settle within their shutdown bound; see the redelivery contract on
     /// `org.pragmatica.aether.stream.StreamConsumerRuntime#close`. It is not reset by a redeploy or a
     /// reconcile, only by a node restart.
-    record DeclarativeConsumersResponse(int attachedSubscriptions, long cursorCommitFailureCount, List<DeclarativeConsumerDetail> consumers) {}
+    record DeclarativeConsumersResponse(int attachedSubscriptions,
+                                        long cursorCommitFailureCount,
+                                        List<DeclarativeConsumerDetail> consumers) {}
 
     /// One declared `[streams.X]` consumer as this node sees it.
     ///
@@ -852,7 +854,10 @@ public sealed interface ManagementApiResponses {
     /// event. `lastCursorCommitFailure` (#654) is this partition's most recent cursor commit failure
     /// detail while the consumer stays attached, empty when its last commit succeeded — same
     /// empty-for-absent convention as `DeclarativeConsumerDetail#diagnostic`.
-    record DeclarativeConsumerPartition(int partition, long committedOffset, boolean stalled, String lastCursorCommitFailure) {}
+    record DeclarativeConsumerPartition(int partition,
+                                        long committedOffset,
+                                        boolean stalled,
+                                        String lastCursorCommitFailure) {}
 
     /// Per-stream hydration row: `partitionsDeclared` the configured partition count,
     /// `ringsMaterialized` the rings actually built on this node (gated below declared on non-replicas),

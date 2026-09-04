@@ -209,7 +209,6 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         var commits = new ArrayList<Promise<Unit>>(consumers.size());
 
         consumers.forEach((key, state) -> commits.add(flushCursorForKey(key, state)));
-
         if (commits.isEmpty()) {
             return;
         }
@@ -219,7 +218,9 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                .onFailure(cause -> LOG.log(System.Logger.Level.WARNING,
                                            "{0} cursor commit(s) did not settle within the {1}ms shutdown bound ({2}); "
                                           + "node stop is continuing, late results are still logged and counted",
-                                           commits.size(), CURSOR_COMMIT_SHUTDOWN_BOUND.millis(), cause.message()));
+                                           commits.size(),
+                                           CURSOR_COMMIT_SHUTDOWN_BOUND.millis(),
+                                           cause.message()));
     }
 
     private void reapIdleConsumers() {
@@ -323,7 +324,10 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// has nothing to commit and nothing to fail, so it resolves the fallback unit promise rather than
     /// going through [#onCursorCommitFailure].
     private Promise<Unit> observedCommit(ConsumerKey key, ConsumerState state) {
-        return cursorStore.map(store -> store.commit(key.groupId(), key.streamName(), key.partition(), state.cursor())
+        return cursorStore.map(store -> store.commit(key.groupId(),
+                                                     key.streamName(),
+                                                     key.partition(),
+                                                     state.cursor())
                                              .onSuccess(_ -> state.clearCursorCommitFailure())
                                              .onFailure(cause -> onCursorCommitFailure(key, state, cause)))
                           .or(Promise.unitPromise());
@@ -334,9 +338,11 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         state.recordCursorCommitFailure(cause.message());
         LOG.log(System.Logger.Level.ERROR,
                 "Cursor commit failed for consumer group {0} on stream {1} partition {2}: {3}",
-                key.groupId(), key.streamName(), key.partition(), cause.message());
+                key.groupId(),
+                key.streamName(),
+                key.partition(),
+                cause.message());
     }
-
 
     private void scheduleNextPoll(ConsumerKey key, ConsumerState state) {
         if (state.isCancelled()) {

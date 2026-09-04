@@ -97,7 +97,6 @@ public interface StreamConsumerManager {
 
     List<ConsumerStatus> statuses();
     int activeSubscriptionCount();
-
     /// #654: node-wide count of cursor commits (final flush at detach, or periodic checkpoint) that
     /// failed or did not settle within their shutdown bound. Delegates to the underlying
     /// [org.pragmatica.aether.stream.StreamConsumerRuntime#cursorCommitFailureCount].

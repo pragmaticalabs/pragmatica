@@ -64,7 +64,6 @@ public interface StreamConsumerRuntime extends AutoCloseable {
     /// Snapshot of everything currently subscribed. Pure read, assembled on request — the operator
     /// surface for "is this consumer actually attached, and where is it?" (#488).
     List<SubscriptionSnapshot> subscriptions();
-
     /// #654: node-wide count of cursor commits — final flush at detach, or periodic checkpoint —
     /// that failed or did not settle within their bound. Monotonic for the life of this runtime;
     /// survives a consumer's removal from the live subscription set, unlike
@@ -82,7 +81,6 @@ public interface StreamConsumerRuntime extends AutoCloseable {
                                 boolean stalled,
                                 IdlePolicy idlePolicy,
                                 Option<String> lastCursorCommitFailure) {}
-
 
     /// Whether the idle reaper may unsubscribe a consumer that has not polled recently.
     ///
