@@ -531,12 +531,13 @@ public final class StorageFactory {
                                                                                                       diskTier,
                                                                                                       t))
                                                                       .or(List.of(memoryTier, diskTier))),
-                            ring -> EncryptingStorageTier.wrapLocalDisk(diskTier, diskPath, ring)
-                                                         .flatMap(encDisk -> maybeEncryptDht(dhtClient, dhtKeyPrefix, keyring).map(dht -> dht.map(t -> List.<StorageTier> of(memoryTier,
-                                                                                                                                                                             encDisk,
-                                                                                                                                                                             t))
-                                                                                                                                             .or(List.of(memoryTier,
-                                                                                                                                                         encDisk)))));
+                            ring -> EncryptingStorageTier.wrapLocalDisk(diskTier, diskPath, ring).flatMap(encDisk -> maybeEncryptDht(dhtClient,
+                                                                                                                                     dhtKeyPrefix,
+                                                                                                                                     keyring).map(dht -> dht.map(t -> List.<StorageTier> of(memoryTier,
+                                                                                                                                                                                            encDisk,
+                                                                                                                                                                                            t))
+                                                                                                                                                            .or(List.of(memoryTier,
+                                                                                                                                                                        encDisk)))));
     }
 
     private static StorageSetup assembleSetup(String name,
