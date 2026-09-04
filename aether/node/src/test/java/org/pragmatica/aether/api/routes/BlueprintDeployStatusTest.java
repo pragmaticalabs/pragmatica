@@ -115,7 +115,11 @@ class BlueprintDeployStatusTest {
 
     /// #759 — every response, regardless of status, must point the caller at the terminal-outcome
     /// source rather than leaving "pending" as a dead end with no way to learn what happened next.
-    private static final String STATUS_URL = "/api/blueprints/status/org.example%3Aorders-app%3A1.0.0";
+    /// #759 review — the prefix comes from the registered [ManagementRoute#BLUEPRINT_STATUS] route,
+    /// never a literal, so this constant cannot silently re-agree with a hardcoded wrong path in
+    /// `SliceRoutes#blueprintStatusUrl`: it was red (`/api/blueprints/status/...` vs.
+    /// `/api/v1/blueprints/status/...`) before that method derived its prefix the same way.
+    private static final String STATUS_URL = ManagementRoute.BLUEPRINT_STATUS.prefix() + "/org.example%3Aorders-app%3A1.0.0";
 
     private static final Artifact SLICE_A = Artifact.artifact("org.example:svc-a:1.0.0").unwrap();
     private static final Artifact SLICE_B = Artifact.artifact("org.example:svc-b:1.0.0").unwrap();
@@ -146,6 +150,11 @@ class BlueprintDeployStatusTest {
         assertThat(response.failedInstances()).isEqualTo(0);
         assertThat(response.statusUrl()).as("a pending caller must be told where to poll for the terminal outcome")
                   .isEqualTo(STATUS_URL);
+        // #759 review — anchored independently of STATUS_URL's id-encoding suffix: this is red
+        // whenever `blueprintStatusUrl` stops deriving from the registered route (e.g. a hardcoded
+        // `/api/blueprints/status/` literal, missing the `/v1` the route actually serves under).
+        assertThat(response.statusUrl()).as("statusUrl must be anchored to the registered BLUEPRINT_STATUS route, never a hardcoded literal")
+                  .startsWith(ManagementRoute.BLUEPRINT_STATUS.prefix());
     }
 
     /// A redeploy of the same artifact set where one instance is already sitting FAILED (left over
