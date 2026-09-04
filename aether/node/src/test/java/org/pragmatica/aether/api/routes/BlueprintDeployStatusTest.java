@@ -50,6 +50,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.HttpNodeRouteValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue;
@@ -261,6 +262,15 @@ class BlueprintDeployStatusTest {
             @Override
             public Option<ExpandedBlueprint> get(BlueprintId id) {
                 return Option.none();
+            }
+
+            /// #759 Phase 2 added this abstract accessor to `BlueprintService`; the deploy-response
+            /// route under test here never reads it (only `GET /api/blueprints/status/{id}` does —
+            /// see `BlueprintStatusAggregationTest`), so it fails loudly via `unsupported` like every
+            /// other untouched collaborator method on this stub.
+            @Override
+            public Option<DeploymentOutcomeValue> outcome(BlueprintId id) {
+                return unsupported("outcome");
             }
 
             @Override
