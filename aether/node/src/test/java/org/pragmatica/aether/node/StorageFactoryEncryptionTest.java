@@ -22,6 +22,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.storage.BlockEncryptor;
 import org.pragmatica.storage.BlockId;
+import org.pragmatica.storage.EncryptingStorageTier;
 import org.pragmatica.storage.EncryptionError;
 import org.pragmatica.storage.EncryptionKeyring;
 import org.pragmatica.storage.LocalDiskTier;
@@ -249,6 +250,59 @@ class StorageFactoryEncryptionTest {
                                                   .isTrue();
             assertThat(cause.source().unwrap()).isInstanceOf(EncryptionError.EnablingOverExistingPlaintext.class);
         });
+    }
+
+    /// #253 review round 3 SHOULD-FIX (2026-09-04 ruling): pins the `buildTierList` ordering fix --
+    /// [#maybeEncryptDht] (and the marker write inside it) must run only AFTER
+    /// [org.pragmatica.storage.EncryptingStorageTier#wrapLocalDisk]'s legacy-plaintext scan has
+    /// already succeeded, never before it. Seeds a raw plaintext block on disk (forcing
+    /// `wrapLocalDisk` to refuse) with a DHT client also present and a keyring supplied; the first
+    /// boot must fail closed AND leave no DHT-side marker behind, and a second boot of the SAME disk
+    /// directory and the SAME `InMemoryDHTClient` with `encrypted = false` (no keyring) must then
+    /// succeed -- proving the failed first attempt did not orphan a marker that would otherwise trip
+    /// `refuseIfDhtEncryptedWithoutKeyring` and lock the operator out until the marker was deleted by
+    /// hand. Before the fix, the eagerly-evaluated `maybeEncryptDht` call wrote the marker before
+    /// `wrapLocalDisk` ran, so this test's first boot would still fail but the marker check below
+    /// would find one present anyway.
+    @Test
+    void createAll_leavesNoDhtMarker_whenDiskGuardRefusesBeforeDhtEncryptionIsApplied() {
+        var diskDir = tempDir.resolve("vault-legacy-disk-with-dht");
+
+        seedRawPlaintextBlock(diskDir);
+
+        var dhtClient = new InMemoryDHTClient();
+        var firstBoot = StorageFactory.createAll(Map.of(INSTANCE, storageConfigAt(diskDir, true)),
+                                                 NODE_ID,
+                                                 Option.some(dhtClient),
+                                                 Option.some(singleKeyRing("key-1")));
+
+        assertThat(firstBoot.isFailure()).as("the disk-side legacy-plaintext guard must still refuse the boot "
+                                            + "when a DHT client is also present")
+                                         .isTrue();
+        firstBoot.onFailure(cause -> assertThat(cause.source().unwrap()).isInstanceOf(EncryptionError.EnablingOverExistingPlaintext.class));
+
+        var markerKey = (INSTANCE + "-blocks/" + EncryptingStorageTier.MARKER_FILE_NAME).getBytes(StandardCharsets.UTF_8);
+
+        dhtClient.get(markerKey)
+                 .await()
+                 .onFailure(cause -> fail("reading the DHT marker key must not itself fail: " + cause.message()))
+                 .onSuccess(marker -> assertThat(marker.isPresent()).as("a boot refused by the disk-side guard must "
+                                                                        + "not have written the DHT marker first -- "
+                                                                        + "the ordering bug this test pins would have "
+                                                                        + "stamped the namespace as encrypted with no "
+                                                                        + "ciphertext ever written under it")
+                                                                    .isFalse());
+
+        var secondBoot = StorageFactory.createAll(Map.of(INSTANCE, storageConfigAt(diskDir, false)),
+                                                  NODE_ID,
+                                                  Option.some(dhtClient),
+                                                  Option.none());
+
+        assertThat(secondBoot.isSuccess()).as("with no marker orphaned by the failed first boot, rebooting the same "
+                                             + "DHT namespace unencrypted must succeed rather than tripping "
+                                             + "refuseIfDhtEncryptedWithoutKeyring on a namespace that was never "
+                                             + "actually encrypted")
+                                          .isTrue();
     }
 
     /// #253 BLOCKING #3 (2026-09-04 ruling): the reverse direction of the test above, through
