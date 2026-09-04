@@ -102,6 +102,13 @@
   `management-api.md`'s undo and baseline sections and in `cli.md`: the operator's correct sequence
   is to undo, then deploy a blueprint that declares the lower version, or accept the re-migration.
   A guard that refuses (or requires `force` for) such a publish is tracked separately in #834.
+  [mechanism: `AetherSchemaManager.executeUndoStep` (:684-692) runs the down-script and deletes
+  that version's row from `aether_schema_history`, descending through every version above the
+  target; every publish writes `(artifact's declared maxVersion, PENDING)` to the datasource's
+  single `SchemaVersionKey` via `BlueprintService.buildMigrationCommand` (:520-543) without reading
+  the record first; `migrate()` then reads the real history, sees the undone rows gone, and
+  re-applies them. Only a republish triggers this — the recovery scan and a leader change never
+  touch a `COMPLETED` record.]
 - **Known limitation, not fixed here: `acquireLock`'s cross-node lock check is not atomic (#766).**
   `undo`, `baseline`, and `migrate` all share `SchemaOrchestratorService.acquireLock`. Its
   cross-node `SchemaMigrationLockKey` check is a read (`isLockHeld`) followed by a separate write
