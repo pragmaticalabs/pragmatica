@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
@@ -519,11 +520,14 @@ public final class ScheduledTaskRoutes implements RouteSource {
         return new TaskStateResponse(configSection, artifactStr, methodStr, 0, 0, 0, 0, "", 0, 0);
     }
 
-    /// P-NEW-H (2026-05-21): Surfaces per-node execution attribution for a scheduled task.
-    /// RC1 implementation uses the global state's `registeredBy` node as the sole executor —
-    /// per-node counter aggregation requires schema changes to `ScheduledTaskStateValue`
-    /// tracked as a follow-up. Tests using ALL-mode tasks must assert on the global
-    /// `totalExecutions` rather than per-node attribution until that is implemented.
+    /// #841: surfaces per-node execution attribution for an ALL-mode scheduled task, one row per
+    /// node that has written a per-node `ScheduledTaskStateKey` for this task (see that key's
+    /// javadoc for the wire-format rationale). Aggregates by scanning the live KV-store — the same
+    /// `KVStore.forEach` idiom [#selectHostingHint] uses — rather than the single-row
+    /// `ScheduledTaskStateRegistry` mirror, because the registry is keyed 1:1 and cannot represent
+    /// several nodes' rows for the same task. A SINGLE-mode task, or an ALL-mode task with no
+    /// per-node row yet (pre-#841 global-shaped state, or simply no execution since upgrade),
+    /// reports an empty list here — its counters are visible instead via `/state`'s global key.
     private Promise<ScheduledTaskExecutionsByNodeResponse> getExecutionsByNode(String configSection,
                                                                                String artifactStr,
                                                                                String methodStr) {
@@ -537,22 +541,45 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                                                         String configSection,
                                                                         String artifactStr,
                                                                         String methodStr) {
-        var stateKey = ScheduledTaskStateKey.scheduledTaskStateKey(task.configSection(),
-                                                                   task.artifact(),
-                                                                   task.methodName());
+        var executions = new ArrayList<ScheduledTaskNodeExecution>();
 
-        return stateRegistry.stateFor(stateKey)
-                            .fold(() -> new ScheduledTaskExecutionsByNodeResponse(configSection,
-                                                                                  artifactStr,
-                                                                                  methodStr,
-                                                                                  List.of()),
-                                  state -> new ScheduledTaskExecutionsByNodeResponse(configSection,
-                                                                                     artifactStr,
-                                                                                     methodStr,
-                                                                                     List.of(new ScheduledTaskNodeExecution(task.registeredBy()
-                                                                                                                                .id(),
-                                                                                                                            state.totalExecutions(),
-                                                                                                                            state.lastExecutionAt()))));
+        nodeSupplier.get()
+                    .kvStore()
+                    .forEach(ScheduledTaskStateKey.class,
+                             ScheduledTaskStateValue.class,
+                             (key, value) -> collectNodeExecution(executions, task, key, value));
+        executions.sort(Comparator.comparing(ScheduledTaskNodeExecution::nodeId));
+
+        return new ScheduledTaskExecutionsByNodeResponse(configSection, artifactStr, methodStr, List.copyOf(executions));
+    }
+
+    /// Two filters, both required: `matchesTaskIdentity` excludes rows belonging to a DIFFERENT
+    /// task the scan also walks past (the KV-store holds every scheduled task's state, not just
+    /// this one); `key.node()` being present excludes a same-task GLOBAL row (pre-#841 shape, or a
+    /// SINGLE-mode task's row) — that shape can never be node-scoped (see
+    /// `ScheduledTaskStateKey`'s javadoc), so it is filtered here rather than misread as a node's
+    /// execution count.
+    private static void collectNodeExecution(List<ScheduledTaskNodeExecution> executions,
+                                             ScheduledTask task,
+                                             ScheduledTaskStateKey key,
+                                             ScheduledTaskStateValue value) {
+        if (!matchesTaskIdentity(key, task)) {
+            return;
+        }
+
+        key.node()
+           .onPresent(nodeId -> executions.add(new ScheduledTaskNodeExecution(nodeId.id(),
+                                                                              value.totalExecutions(),
+                                                                              value.lastExecutionAt())));
+    }
+
+    private static boolean matchesTaskIdentity(ScheduledTaskStateKey key, ScheduledTask task) {
+        return key.configSection()
+                  .equals(task.configSection())
+               && key.artifact()
+                     .equals(task.artifact())
+               && key.methodName()
+                     .equals(task.methodName());
     }
 
     private sealed interface InjectError extends Cause permits InjectError.General, InjectError.SliceNotLocal {

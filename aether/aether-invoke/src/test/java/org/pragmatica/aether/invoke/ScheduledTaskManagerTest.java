@@ -348,7 +348,7 @@ class ScheduledTaskManagerTest {
             putTask("cache", artifact, method, self, "1s", ExecutionMode.ALL);
             establishQuorum();
 
-            var key = ScheduledTaskStateKey.scheduledTaskStateKey("cache", artifact, method);
+            var key = ScheduledTaskStateKey.scheduledTaskStateKey("cache", artifact, method, self);
             awaitTrue(() -> stateFor(key).map(v -> v.totalExecutions() >= 2).or(false), 4000);
             manager.stop(); // freeze — no further tick can land between detection and assertion
 
@@ -366,7 +366,7 @@ class ScheduledTaskManagerTest {
             putTask("cache", artifact, method, self, "1s", ExecutionMode.ALL);
             establishQuorum();
 
-            var key = ScheduledTaskStateKey.scheduledTaskStateKey("cache", artifact, method);
+            var key = ScheduledTaskStateKey.scheduledTaskStateKey("cache", artifact, method, self);
             awaitTrue(() -> stateFor(key).map(v -> v.consecutiveFailures() >= 1).or(false), 4000);
 
             var afterFailure = stateFor(key).unwrap();
@@ -396,7 +396,7 @@ class ScheduledTaskManagerTest {
             // this keeps ctx.inFlight claimed for the key past the second tick.
             awaitTrue(() -> invocations.size() >= 1, 3000);
 
-            var key = ScheduledTaskStateKey.scheduledTaskStateKey("cache", artifact, method);
+            var key = ScheduledTaskStateKey.scheduledTaskStateKey("cache", artifact, method, self);
 
             // Second tick (~2s) must find the key still in-flight: recorded as a skip, no
             // second invoke.
@@ -417,6 +417,69 @@ class ScheduledTaskManagerTest {
             assertThat(finalState.totalExecutions()).isEqualTo(1);
             assertThat(finalState.skippedOverlaps()).isEqualTo(1);
             assertThat(invocations).hasSize(1);
+        }
+
+        private Option<ScheduledTaskStateValue> stateFor(ScheduledTaskStateKey key) {
+            return Option.option(stateMap.get(key));
+        }
+    }
+
+    /// #841: ALL-mode runs independently on every node once quorum is established (no leader
+    /// election needed), so two nodes firing the SAME task identity concurrently must never
+    /// share one counter row — each writes under its own `ctx.self()`-scoped
+    /// `ScheduledTaskStateKey` into the (here, shared) backing map. Two separate
+    /// [ScheduledTaskManager] instances — one per node identity — are driven against their own
+    /// registries but the SAME `stateMap`, mirroring the shared cluster-wide KVStore a real
+    /// deployment would replicate to both nodes; a lost update would show up as one node's row
+    /// missing or its count stuck below the fire count actually observed.
+    @Nested
+    class MultiNodeStateIsolation {
+        @Test
+        void allModeTask_twoNodesFiringConcurrently_eachNodeOwnsDistinctCounterRow() {
+            var nodeB = new NodeId("node-other");
+            var registryB = ScheduledTaskRegistry.scheduledTaskRegistry();
+            var invocationsB = new CopyOnWriteArrayList<InvocationRecord>();
+            var stubInvokerB = new StubSliceInvoker(invocationsB, Option.none());
+            var leaderManagerB = new TestLeaderManager(nodeB);
+
+            Consumer<KVCommand<AetherKey>> stateWriterB = command -> {
+                if (command instanceof KVCommand.Put<AetherKey, ?> put
+                    && put.key() instanceof ScheduledTaskStateKey stateKey
+                    && put.value() instanceof ScheduledTaskStateValue stateValue) {
+                    stateMap.put(stateKey, stateValue);
+                }
+            };
+
+            var managerB = ScheduledTaskManager.scheduledTaskManager(registryB,
+                                                                      stubInvokerB,
+                                                                      nodeB,
+                                                                      stateWriterB,
+                                                                      key -> Option.option(stateMap.get(key)),
+                                                                      leaderManagerB);
+            try {
+                putTask("cache", artifact, method, self, "1s", ExecutionMode.ALL);
+                establishQuorum();
+
+                var putB = new KVCommand.Put<>(ScheduledTaskKey.scheduledTaskKey("cache", artifact, method),
+                                               ScheduledTaskValue.intervalTask(nodeB, "1s", ExecutionMode.ALL));
+                registryB.onScheduledTaskPut(new ValuePut<>(putB, Option.none()));
+                managerB.onQuorumStateChange(ClusterStateNotification.active());
+
+                var keyA = ScheduledTaskStateKey.scheduledTaskStateKey("cache", artifact, method, self);
+                var keyB = ScheduledTaskStateKey.scheduledTaskStateKey("cache", artifact, method, nodeB);
+
+                awaitTrue(() -> stateFor(keyA).map(v -> v.totalExecutions() >= 2).or(false), 4000);
+                awaitTrue(() -> stateFor(keyB).map(v -> v.totalExecutions() >= 2).or(false), 4000);
+
+                manager.stop();
+                managerB.stop();
+
+                assertThat(stateFor(keyA).unwrap().totalExecutions()).isEqualTo(2);
+                assertThat(stateFor(keyB).unwrap().totalExecutions()).isEqualTo(2);
+                assertThat(stateMap).as("both nodes' rows must survive side by side").containsKeys(keyA, keyB);
+            } finally {
+                managerB.stop();
+            }
         }
 
         private Option<ScheduledTaskStateValue> stateFor(ScheduledTaskStateKey key) {

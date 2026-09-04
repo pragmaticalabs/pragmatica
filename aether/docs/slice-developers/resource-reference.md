@@ -1250,7 +1250,7 @@ Scheduled tasks can be managed at runtime via the Management API and CLI:
 
 - **Pause** — suspends a task's timer without removing the schedule. The task will not fire until resumed
 - **Resume** — restarts a paused task's timer from the current time
-- **Manual trigger** — fires a task immediately regardless of schedule or paused state
+- **Manual trigger** — fires a task immediately regardless of schedule or paused state, unless a run is already in flight (an automatic fire or another manual trigger), in which case it is refused with `409 Conflict` naming the task rather than run concurrently [mechanism: `ScheduledTaskManager.tryClaim`/`release`; pinned by `ScheduledTaskRoutesTriggerTest#ConflictGuard` — component-level, not a live multi-node run]
 
 Pause/resume state is persisted in the KV-Store through consensus — it survives leader failover and node restarts.
 
@@ -1270,6 +1270,8 @@ The runtime tracks execution metrics for each scheduled task:
 | `lastFailureMessage` | Error message from the most recent failure |
 
 Execution state is written to the KV-Store after each execution via a read-modify-write against the prior state entry (fire-and-forget write, but the counters themselves are accumulated, not overwritten) [verified: `aether/aether-invoke/.../ScheduledTaskManagerTest.java` — `FireBehavior` nested class]. Query via `GET /api/scheduled-tasks/{config}/{artifact}/{method}/state`.
+
+As of #841, `execution_mode = "all"` tasks accumulate this state **per node** — each quorum member reads and writes its own node-scoped KV entry, so two nodes firing the same task concurrently never share one counter and neither can lose the other's update; `execution_mode = "single"` keeps the original unscoped key unchanged, since only one node ever executes it. See `GET /api/v1/scheduled-tasks/executions-by-node/{section}/{artifact}/{methodName}` in the Management API for the per-node breakdown [mechanism: `ScheduledTaskManager.TaskOps.stateKeyFor(ctx, task)` keys ALL-mode by `ctx.self()`; pinned by `aether/aether-invoke/.../ScheduledTaskManagerTest.java#MultiNodeStateIsolation` — two manager instances against a shared backing map in one JVM, not a live multi-node run]. **Rolling-upgrade note:** the pre-#841 global entry for an ALL-mode task is left in the KV-Store untouched but is never read by the new node-scoped code path, so a task's per-node counters restart at zero after upgrading rather than continuing from the old shared total.
 
 ### Overlap Protection
 

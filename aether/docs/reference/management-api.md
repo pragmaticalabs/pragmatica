@@ -4243,6 +4243,9 @@ Manually trigger a scheduled task immediately, regardless of its schedule or pau
 }
 ```
 
+**409 Conflict** — the task has a run already in flight (an automatic fixed-rate/cron fire, or another manual trigger that claimed first). The manual fire is refused rather than run concurrently with the in-progress execution, to avoid double-counting `totalExecutions`; retry once the in-progress run completes
+[mechanism: `ScheduledTaskManager.tryClaim`/`release` guard the manual-trigger path; pinned by `aether/node/src/test/java/org/pragmatica/aether/api/routes/ScheduledTaskRoutesTriggerTest.java#ConflictGuard` and `aether/aether-invoke/.../ScheduledTaskManagerTest.java#TriggerGuard` — component-level against the real guard, not a live multi-node run].
+
 ### GET /api/v1/scheduled-tasks/state/{section}/{artifact}/{methodName}
 
 Get detailed execution state for a specific scheduled task.
@@ -4313,7 +4316,11 @@ Surface per-node execution attribution for a scheduled task. Used by `TC-08-F3` 
 }
 ```
 
-`executions` is empty when the task has no prior state. Otherwise each entry pairs a `nodeId` with the number of executions attributed to it and the millisecond epoch of the most recent execution. **RC1 limitation:** the current implementation reports the task's `registeredBy` node as the sole executor (count = `totalExecutions`, lastExecutionMs = `lastExecutionAt`). A follow-up tracks adding per-node execution counters to the KV state so ALL-mode tasks can produce true per-node breakdowns. Tests should currently assert on cumulative totals via this endpoint or via `/api/v1/scheduled-tasks/state/{section}/{artifact}/{methodName}`.
+`executions` is empty when the task has no prior state. Otherwise each entry pairs a `nodeId` with the number of executions attributed to it and the millisecond epoch of the most recent execution, sorted ascending by `nodeId`. As of #841 this is a real per-node breakdown, not an attribution stub: each entry comes from that node's own `ScheduledTaskStateKey`-scoped KV row, populated by scanning the live `KVStore` for state entries carrying a node component — a SINGLE-mode task therefore reports exactly the one node that has ever executed it, and an ALL-mode task reports one row per quorum member that has fired it independently
+[mechanism: `ScheduledTaskRoutes.buildExecutionsByNode` scans the live `KVStore` by key type; pinned by `aether/node/src/test/java/org/pragmatica/aether/api/routes/ScheduledTaskRoutesExecutionsByNodeTest.java#MultipleNodes` and `#WithState` — component-level against a real `KVStore`, not a live multi-node run].
+
+**Rolling-upgrade note:** a pre-#841 state entry (no node component) is excluded from this scan rather than misread as belonging to a node, so an ALL-mode task's per-node counts restart at zero after upgrading rather than continuing from the old shared total
+[mechanism: the scan filters on `key.node().isPresent()` and task identity; pinned by `ScheduledTaskRoutesExecutionsByNodeTest.java#InvalidEntriesExcluded` — component-level, not a live multi-node run].
 
 ---
 

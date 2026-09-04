@@ -336,10 +336,24 @@ public interface ScheduledTaskManager {
             executeTask(ctx, task, nextFireAt).onResultRun(() -> ctx.inFlight.remove(key));
         }
 
+        /// ALL-mode runs independently on every node (`Following` + `Leading`), so a shared,
+        /// no-node key would have every node clobber the same counter row (#841). Scoping the key
+        /// by `ctx.self()` gives each node its own row. SINGLE-mode runs on exactly one node at a
+        /// time (the leader) — leadership can change hands, but only one node ever writes at a
+        /// given moment, so the pre-#841 global (no-node) key is kept unchanged.
+        private static ScheduledTaskStateKey stateKeyFor(Context ctx, ScheduledTask task) {
+            return task.executionMode() == ExecutionMode.ALL
+                   ? ScheduledTaskStateKey.scheduledTaskStateKey(task.configSection(),
+                                                                 task.artifact(),
+                                                                 task.methodName(),
+                                                                 ctx.self)
+                   : ScheduledTaskStateKey.scheduledTaskStateKey(task.configSection(),
+                                                                 task.artifact(),
+                                                                 task.methodName());
+        }
+
         private static void recordSkippedOverlap(Context ctx, ScheduledTask task) {
-            var key = ScheduledTaskStateKey.scheduledTaskStateKey(task.configSection(),
-                                                                  task.artifact(),
-                                                                  task.methodName());
+            var key = stateKeyFor(ctx, task);
             var prior = ctx.stateReader.apply(key);
             var value = ScheduledTaskStateValue.skippedOverlapState(prior, System.currentTimeMillis());
 
@@ -442,9 +456,7 @@ public interface ScheduledTaskManager {
         }
 
         private static void writeSuccessState(Context ctx, ScheduledTask task, long nextFireAt) {
-            var key = ScheduledTaskStateKey.scheduledTaskStateKey(task.configSection(),
-                                                                  task.artifact(),
-                                                                  task.methodName());
+            var key = stateKeyFor(ctx, task);
             var prior = ctx.stateReader.apply(key);
             var priorTotal = prior.map(ScheduledTaskStateValue::totalExecutions).or(0);
             var priorSkipped = prior.map(ScheduledTaskStateValue::skippedOverlaps).or(0);
@@ -454,9 +466,7 @@ public interface ScheduledTaskManager {
         }
 
         private static void writeFailureState(Context ctx, ScheduledTask task, String message, long nextFireAt) {
-            var key = ScheduledTaskStateKey.scheduledTaskStateKey(task.configSection(),
-                                                                  task.artifact(),
-                                                                  task.methodName());
+            var key = stateKeyFor(ctx, task);
             var prior = ctx.stateReader.apply(key);
             var priorFailures = prior.map(ScheduledTaskStateValue::consecutiveFailures).or(0);
             var priorTotal = prior.map(ScheduledTaskStateValue::totalExecutions).or(0);
