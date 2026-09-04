@@ -4,13 +4,26 @@ document.addEventListener('alpine:init', function() {
         maxEvents: 200,
         severityFilter: 'ALL',
 
+        // #304: node-mode ClusterEventView carries its HLC time under `at` (packed physical-ms/counter,
+        // HlcTimestamp.pack), never `timestamp` — that field belongs to Forge-mode ForgeEvent only.
+        // These helpers read whichever the payload actually carries instead of assuming `timestamp`.
+        eventMillis(event) {
+            if (event.at && typeof event.at.packed === 'number') {
+                return Math.floor(event.at.packed / 65536);
+            }
+            return event.timestamp || 0;
+        },
+
+        eventKey(event) {
+            return this.eventMillis(event) + ':' + event.type;
+        },
+
         addEvents(events) {
             if (!Array.isArray(events)) return;
             var self = this;
             events.forEach(function(event) {
-                var exists = self.recent.some(function(e) {
-                    return e.timestamp === event.timestamp && e.type === event.type;
-                });
+                var key = self.eventKey(event);
+                var exists = self.recent.some(function(e) { return self.eventKey(e) === key; });
                 if (!exists) {
                     self.recent.unshift(event);
                 }
