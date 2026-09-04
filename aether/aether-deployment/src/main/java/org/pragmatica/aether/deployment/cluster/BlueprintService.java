@@ -22,6 +22,7 @@ import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.BlueprintStreamBindingsKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentOutcomeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
@@ -100,6 +101,17 @@ public interface BlueprintService {
     /// A caller needing to tell "will complete soon" (case 2) apart from "permanently stuck, needs
     /// intervention" (cases 3-4) must consult additional state — e.g. `get(id)`'s presence plus how
     /// long the blueprint has been in that state — `outcome()` alone cannot make that distinction.
+    ///
+    /// #759 review, BLOCKING 3 (fix): `publishFromArtifact` bundles a `KVCommand.Remove` of this key
+    /// into the SAME consensus batch as the `AppBlueprintKey` Put that starts the new attempt, so the
+    /// two land atomically. This closes the retry gap above case 2: before this fix, publishing a new
+    /// attempt of an `id` that had already reached a terminal FAILED/ROLLED_BACK outcome left the STALE
+    /// prior record in place until the new attempt's own terminal write, so a caller polling mid-flight
+    /// saw the LAST attempt's failure while the new one was actively converging. The guarantee is now:
+    /// at any instant, `id` is either in flight with `outcome(id)` empty, or terminal with exactly one
+    /// record for the CURRENT attempt — never in flight while this method still reports a previous
+    /// attempt's result. This does not resolve cases 3-4 above; it only ensures case 2 is never
+    /// confused with a stale case-3/4-shaped terminal record from an earlier attempt of the same id.
     Option<AetherValue.DeploymentOutcomeValue> outcome(BlueprintId id);
     List<ExpandedBlueprint> list();
     Promise<Unit> delete(BlueprintId id);
@@ -379,6 +391,19 @@ class BlueprintServiceInstance implements BlueprintService {
         var commands = new ArrayList<KVCommand<AetherKey>>();
 
         commands.add(buildBlueprintPutCommand(expanded, registerOnly));
+        // #759 review, BLOCKING: a fresh publish reuses `expanded.id()` on a retry after a prior
+        // FAILED/ROLLED_BACK attempt of the SAME blueprint id, and `outcome(id)` otherwise keeps
+        // returning that stale terminal record — indistinguishable from the new attempt already
+        // having failed — until the new attempt itself reaches a terminal transition. Bundling this
+        // Remove into the SAME consensus batch as the AppBlueprintKey Put above makes the two land
+        // atomically, so at any instant `id` is either in flight with no outcome, or terminal with
+        // exactly one, never "in flight" while `outcome(id)` still shows the LAST attempt's result.
+        // `DeploymentOutcomeValue` is not fenced (no `EpochBearing`/`LeaderValue`), so the witnessless
+        // `Remove(key)` constructor is admitted unconditionally by the applier. No FSM event is wired
+        // for `DeploymentOutcomeKey` changes (unlike `AppBlueprintKey`'s `handleAppBlueprintChange`/
+        // `handleAppBlueprintRemoval`), so this Remove's position in the batch relative to the Put
+        // above is NOT load-bearing — nothing subscribes to either notification.
+        commands.add(new Remove<>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id())));
         // Slice META-INF/resources.toml is intentionally NOT published to KV — it is local to
         // each node and applied via the per-slice intrinsic config layer at slice load
         // (see SliceStore.loadSlice). The resourcesConfig parameter is kept here because the

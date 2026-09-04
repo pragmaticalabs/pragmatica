@@ -6,6 +6,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc4] - Unreleased
 
+### Fixed (2026-09-04 — #759 review: a redeployed blueprint id kept reporting its previous attempt's terminal outcome while the new attempt was converging)
+- **A retry of a previously FAILED/ROLLED_BACK blueprint id read as still-failed until its own
+  terminal write landed.** `DeploymentOutcomeKey` is written only at the four terminal FSM
+  transitions and was never cleared when a new deployment of the same id started —
+  `BlueprintId` wraps the artifact, so a retry reuses the key, and the (now outcome-first)
+  blueprint-status route reported the prior attempt's `FAILED`/`ROLLED_BACK` outcome while the
+  live redeploy was actively converging, a false-negative on deployment health with no code path
+  that would ever clear it on its own.
+- **`BlueprintService.buildAllCommands` now bundles a `KVCommand.Remove` of the publishing id's
+  `DeploymentOutcomeKey` into the SAME consensus batch as the `AppBlueprintKey` Put that starts the
+  new attempt.** The two land atomically, so `outcome(id)` is now: *at any instant, either the
+  blueprint is in flight with no outcome, or terminal with exactly one record for the current
+  attempt — never in flight while reporting a previous attempt's result.* No operator action
+  clears the stale state; every publish clears it for its own id, automatically, as the fix.
+- **No ordering dependency, unlike the `AppBlueprintKey` Put/Remove pair #809 hardens** —
+  `DeploymentOutcomeKey` has no FSM event-dispatch handler wired to it (no
+  `DeploymentOutcomePutReceived`/`RemoveReceived` case exists), so this Remove's position in the
+  batch relative to the blueprint Put is not load-bearing; nothing subscribes to either
+  notification. `DeploymentOutcomeValue` is not fenced (`EpochBearing`/`LeaderValue`), so the
+  witnessless `Remove(key)` form is admitted unconditionally by the KV applier.
+- Javadoc on `BlueprintService.outcome(BlueprintId id)` states the new in-flight-XOR-terminal
+  guarantee directly; it does not resolve the pre-existing crash-orphaned/stuck ambiguity
+  documented there (#760/#724 review round 2 item i) — it only ensures the in-flight case is never
+  confused with a stale terminal record from an earlier attempt of the same id.
+  [mechanism: same consensus batch as the `AppBlueprintKey` Put — see `KVCommand`'s batch-apply
+  semantics; both commands commit together or not at all]
+- Pinning test `BlueprintPublishOwnershipTest.OutcomeClearedAtPublish` drives a real
+  `publishFromArtifact` through the actual command-building path against a seeded FAILED outcome for
+  the same blueprint id, asserting `outcome(id)` is empty after the new publish lands, plus a
+  no-prior-outcome control case. Mutation-probed: red with the `Remove` line dropped (`Expecting
+  value to be true but was false`), green restored — the control case stayed green under the same
+  mutation, as expected, since it has no prior outcome to clear.
+  [verified: aether/aether-deployment/src/test/java/org/pragmatica/aether/deployment/cluster/BlueprintPublishOwnershipTest.java]
+
 ### Fixed (2026-09-04 — #715: Forge/Ember clusters admitted nodes from foreign local processes)
 - **Every `EmberCluster` instance (and therefore every `ForgeServer`, built directly on it) derived
   its cluster QUIC/SWIM identity from one hardcoded literal secret, shared by every process on the

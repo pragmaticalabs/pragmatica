@@ -194,6 +194,48 @@ class BlueprintPublishOwnershipTest {
         }
     }
 
+    /// #759 review: `DeploymentOutcomeKey` is written only at the four terminal FSM transitions and
+    /// was never cleared when a NEW deployment of the same blueprint id started. `BlueprintId` wraps
+    /// the artifact, so a retry reuses the key, and `BlueprintService.outcome(id)` — the outcome-first
+    /// status route's read path — kept reporting the PREVIOUS attempt's terminal outcome while the new
+    /// attempt was actively converging. `buildAllCommands` now bundles a `Remove` of this key into the
+    /// SAME consensus batch as the `AppBlueprintKey` Put that starts the new attempt.
+    @Nested
+    class OutcomeClearedAtPublish {
+        @Test
+        void publishFromArtifact_clearsStaleOutcome_fromPriorFailedAttempt_ofSameBlueprintId() {
+            seedFailedOutcome(OWNER);
+
+            publish(OWNER_COORDS, withoutMigrations(OWNER_COORDS)).onFailure(BlueprintPublishOwnershipTest::failOnUnexpectedFailure);
+
+            assertThat(recordedOutcome().isEmpty())
+                    .as("a fresh publish of a previously FAILED id must clear the stale outcome — outcome(id) "
+                        + "must be empty until the NEW attempt's own terminal write, never carry the PREVIOUS "
+                        + "attempt's result forward")
+                    .isTrue();
+        }
+
+        @Test
+        void publishFromArtifact_leavesNoOutcome_whenIdNeverHadOne() {
+            publish(OWNER_COORDS, withoutMigrations(OWNER_COORDS)).onFailure(BlueprintPublishOwnershipTest::failOnUnexpectedFailure);
+
+            assertThat(recordedOutcome().isEmpty()).as("a first-ever publish has no prior outcome to clear; the "
+                                                        + "Remove of an absent key is a no-op")
+                                                    .isTrue();
+        }
+
+        private void seedFailedOutcome(BlueprintId id) {
+            store.processCommand(new KVCommand.Put<>(AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(id),
+                                                      AetherValue.DeploymentOutcomeValue.failed(List.of("orders-api"),
+                                                                                                "prior attempt failed",
+                                                                                                1L)));
+        }
+
+        private Option<AetherValue> recordedOutcome() {
+            return store.get(AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(OWNER));
+        }
+    }
+
     // --- helpers ---
 
     /// The cause must reach the caller UNWRAPPED. `ProblemResponses.resolveStatus` keys the response
