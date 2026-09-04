@@ -19,7 +19,7 @@ class DerivedMetricsTest {
         void healthScore_perfectValues_returnsOne() {
             var metrics = new DerivedMetrics(100.0, 0.0, 0.0,
                 0.0, 0.0, 0.0,
-                0.0, 0.0, 0.0,
+                0.0, 0.0,
                 0.0, 0.0, 0.0);
 
             assertThat(metrics.healthScore()).isCloseTo(1.0, within(0.001));
@@ -29,7 +29,7 @@ class DerivedMetricsTest {
         void healthScore_oneSecondP99_latencyComponentIsZero() {
             var metrics = new DerivedMetrics(100.0, 0.0, 0.0,
                 0.0, 0.0, 1000.0,
-                0.0, 0.0, 0.0,
+                0.0, 0.0,
                 0.0, 0.0, 0.0);
 
             // latencyScore = max(0, 1 - 1000/1000) = 0 -> 0 * 0.3 = 0
@@ -44,7 +44,7 @@ class DerivedMetricsTest {
         void healthScore_fullSaturation_returnsZero() {
             var metrics = new DerivedMetrics(0.0, 0.1, 0.0,
                 0.0, 0.0, 1000.0,
-                1.0, 1.0, 0.0,
+                1.0, 1.0,
                 0.0, 0.0, 0.0);
 
             // latency = 0 * 0.3, eventLoop = 0 * 0.3, heap = 0 * 0.2, error = max(0, 1-0.1*10) = 0 * 0.2
@@ -55,7 +55,7 @@ class DerivedMetricsTest {
         void healthScore_halfSaturation_returnsExpected() {
             var metrics = new DerivedMetrics(0.0, 0.0, 0.0,
                 0.0, 0.0, 500.0,
-                0.5, 0.5, 0.0,
+                0.5, 0.5,
                 0.0, 0.0, 0.0);
 
             // latency = max(0, 1 - 500/1000) = 0.5 * 0.3 = 0.15
@@ -73,7 +73,7 @@ class DerivedMetricsTest {
         void stressed_highEventLoopSaturation_returnsTrue() {
             var metrics = new DerivedMetrics(0.0, 0.0, 0.0,
                 0.0, 0.0, 0.0,
-                0.71, 0.0, 0.0,
+                0.71, 0.0,
                 0.0, 0.0, 0.0);
 
             assertThat(metrics.stressed()).isTrue();
@@ -83,7 +83,7 @@ class DerivedMetricsTest {
         void stressed_highHeapSaturation_returnsTrue() {
             var metrics = new DerivedMetrics(0.0, 0.0, 0.0,
                 0.0, 0.0, 0.0,
-                0.0, 0.81, 0.0,
+                0.0, 0.81,
                 0.0, 0.0, 0.0);
 
             assertThat(metrics.stressed()).isTrue();
@@ -93,7 +93,7 @@ class DerivedMetricsTest {
         void stressed_highErrorRate_returnsTrue() {
             var metrics = new DerivedMetrics(0.0, 0.051, 0.0,
                 0.0, 0.0, 0.0,
-                0.0, 0.0, 0.0,
+                0.0, 0.0,
                 0.0, 0.0, 0.0);
 
             assertThat(metrics.stressed()).isTrue();
@@ -103,7 +103,7 @@ class DerivedMetricsTest {
         void stressed_allBelowThresholds_returnsFalse() {
             var metrics = new DerivedMetrics(0.0, 0.01, 0.0,
                 0.0, 0.0, 0.0,
-                0.5, 0.5, 0.0,
+                0.5, 0.5,
                 0.0, 0.0, 0.0);
 
             assertThat(metrics.stressed()).isFalse();
@@ -116,7 +116,7 @@ class DerivedMetricsTest {
         void hasCapacity_allBelowThresholds_returnsTrue() {
             var metrics = new DerivedMetrics(0.0, 0.005, 0.0,
                 0.0, 0.0, 0.0,
-                0.3, 0.4, 0.0,
+                0.3, 0.4,
                 0.0, 0.0, 0.0);
 
             assertThat(metrics.hasCapacity()).isTrue();
@@ -126,7 +126,7 @@ class DerivedMetricsTest {
         void hasCapacity_highEventLoop_returnsFalse() {
             var metrics = new DerivedMetrics(0.0, 0.005, 0.0,
                 0.0, 0.0, 0.0,
-                0.6, 0.4, 0.0,
+                0.6, 0.4,
                 0.0, 0.0, 0.0);
 
             assertThat(metrics.hasCapacity()).isFalse();
@@ -139,7 +139,7 @@ class DerivedMetricsTest {
         void deteriorating_positiveTrends_returnsTrue() {
             var metrics = new DerivedMetrics(0.0, 0.0, 0.0,
                 0.0, 0.0, 0.0,
-                0.0, 0.0, 0.0,
+                0.0, 0.0,
                 0.2, 60.0, 0.02);
 
             assertThat(metrics.deteriorating()).isTrue();
@@ -149,7 +149,7 @@ class DerivedMetricsTest {
         void deteriorating_stableTrends_returnsFalse() {
             var metrics = new DerivedMetrics(0.0, 0.0, 0.0,
                 0.0, 0.0, 0.0,
-                0.0, 0.0, 0.0,
+                0.0, 0.0,
                 0.0, 0.0, 0.0);
 
             assertThat(metrics.deteriorating()).isFalse();
@@ -159,7 +159,7 @@ class DerivedMetricsTest {
         void improving_negativeTrends_returnsTrue() {
             var metrics = new DerivedMetrics(0.0, 0.0, 0.0,
                 0.0, 0.0, 0.0,
-                0.0, 0.0, 0.0,
+                0.0, 0.0,
                 -0.1, -20.0, -0.01);
 
             assertThat(metrics.improving()).isTrue();
@@ -169,7 +169,7 @@ class DerivedMetricsTest {
         void improving_positiveTrends_returnsFalse() {
             var metrics = new DerivedMetrics(0.0, 0.0, 0.0,
                 0.0, 0.0, 0.0,
-                0.0, 0.0, 0.0,
+                0.0, 0.0,
                 0.1, 20.0, 0.01);
 
             assertThat(metrics.improving()).isFalse();
@@ -188,7 +188,6 @@ class DerivedMetricsTest {
             assertThat(DerivedMetrics.EMPTY.latencyP99()).isEqualTo(0.0);
             assertThat(DerivedMetrics.EMPTY.eventLoopSaturation()).isEqualTo(0.0);
             assertThat(DerivedMetrics.EMPTY.heapSaturation()).isEqualTo(0.0);
-            assertThat(DerivedMetrics.EMPTY.backpressureRate()).isEqualTo(0.0);
             assertThat(DerivedMetrics.EMPTY.cpuTrend()).isEqualTo(0.0);
             assertThat(DerivedMetrics.EMPTY.latencyTrend()).isEqualTo(0.0);
             assertThat(DerivedMetrics.EMPTY.errorTrend()).isEqualTo(0.0);

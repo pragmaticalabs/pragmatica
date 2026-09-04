@@ -614,6 +614,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
                                                      self.labels(),
                                                      serializer,
                                                      deserializer,
+                                                     quicMetrics,
                                                      serverSslContext,
                                                      Option.empty(),
                                                      this::onPeerConnected,
@@ -623,6 +624,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
                                                      self.labels(),
                                                      serializer,
                                                      deserializer,
+                                                     quicMetrics,
                                                      clientSslContext,
                                                      Option.empty(),
                                                      this::onMessageReceived);
@@ -1040,6 +1042,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
                                                      self.labels(),
                                                      serializer,
                                                      deserializer,
+                                                     quicMetrics,
                                                      newServerSsl,
                                                      Option.empty(),
                                                      this::onPeerConnected,
@@ -1049,6 +1052,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
                                                      self.labels(),
                                                      serializer,
                                                      deserializer,
+                                                     quicMetrics,
                                                      newClientSsl,
                                                      Option.empty(),
                                                      this::onMessageReceived);
@@ -1855,6 +1859,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private WriteOutcome writeIfWritable(QuicStreamChannel ch, byte[] bytes, NodeId peerId, StreamType streamType) {
         if (ch.isWritable()) {
             quicMetrics.onMessageSent();
+            quicMetrics.onBytesSent(bytes.length);
             ch.writeAndFlush(Unpooled.wrappedBuffer(bytes))
               .addListener(future -> handleWriteResult(future, peerId, streamType));
 
@@ -1977,6 +1982,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
         if (ch.isActive() && ch.isWritable()) {
             quicMetrics.onMessageSent();
+            quicMetrics.onBytesSent(bytes.length);
             ch.writeAndFlush(Unpooled.wrappedBuffer(bytes))
               .addListener(future -> handleWriteResult(future, peerId, streamType));
 

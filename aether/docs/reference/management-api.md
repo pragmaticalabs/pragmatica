@@ -1092,11 +1092,16 @@ Includes the consensus-load gauges (#674): `consensus_decisions_total`, `consens
 ### GET /api/v1/metrics/transport
 
 Get transport-layer metrics. **Scope: node-local** — a flat map of **node-level** QUIC counters
-(the answering node's own totals; there is no per-peer attribution and no byte counter on this
-surface): `quic_messages_sent_total` / `quic_messages_received_total` (protocol-message counts),
-`quic_active_connections`, handshake totals/failures, backpressure and write-failure indicators,
-stream-zombie heal counters. Message counters are monotonic; consumers difference them over their
-own window.
+(the answering node's own totals; there is no per-peer attribution): `quic_messages_sent_total` /
+`quic_messages_received_total` (protocol-message counts), `quic_bytes_sent_total` /
+`quic_bytes_received_total` (#726), `quic_active_connections`, handshake totals/failures,
+backpressure and write-failure indicators, stream-zombie heal counters. All counters are monotonic;
+consumers difference them over their own window.
+
+**`quic_bytes_sent_total` / `quic_bytes_received_total` (#726)** count PAYLOAD bytes at the lane
+boundary — the serialized frame handed to the channel on send, and the frame decoded from the
+buffer on receive — after the pipeline has already stripped QUIC framing, TLS encryption overhead,
+and retransmits. This is **not a wire-byte or bandwidth figure**; do not treat it as one.
 
 ### GET /api/v1/metrics/history
 

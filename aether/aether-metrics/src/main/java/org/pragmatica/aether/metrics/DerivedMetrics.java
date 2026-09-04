@@ -12,22 +12,10 @@ public record DerivedMetrics(double requestRate,
                              double latencyP99,
                              double eventLoopSaturation,
                              double heapSaturation,
-                             double backpressureRate,
                              double cpuTrend,
                              double latencyTrend,
                              double errorTrend) {
-    public static final DerivedMetrics EMPTY = new DerivedMetrics(0.0,
-                                                                  0.0,
-                                                                  0.0,
-                                                                  0.0,
-                                                                  0.0,
-                                                                  0.0,
-                                                                  0.0,
-                                                                  0.0,
-                                                                  0.0,
-                                                                  0.0,
-                                                                  0.0,
-                                                                  0.0);
+    public static final DerivedMetrics EMPTY = new DerivedMetrics(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
 
     public double healthScore() {
         double latencyScore = Math.max(0, 1.0 - (latencyP99 / 1000.0));

@@ -146,7 +146,6 @@ import org.pragmatica.aether.metrics.deployment.DeploymentMetricsScheduler;
 import org.pragmatica.aether.metrics.eventloop.EventLoopMetricsCollector;
 import org.pragmatica.aether.metrics.gc.GCMetricsCollector;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
-import org.pragmatica.aether.metrics.network.NetworkMetricsHandler;
 import org.pragmatica.aether.repository.RepositoryFactory;
 import org.pragmatica.aether.slice.*;
 import org.pragmatica.aether.storage.DelegatedStorageAdapter;
@@ -472,7 +471,6 @@ public interface AetherNode extends ManageableNode {
                                                config.activationGated(),
                                                config.clusterFormation());
         var rabiaMetricsCollector = RabiaMetricsCollector.rabiaMetricsCollector();
-        var networkMetricsHandler = NetworkMetricsHandler.networkMetricsHandler();
         var persistence = resolvePersistence(config);
         var leaderTerm = new AtomicLong(0L);
         Supplier<Long> rabiaTermSupplier = leaderTerm::get;
@@ -587,7 +585,6 @@ public interface AetherNode extends ManageableNode {
                                                              deferredInvoker,
                                                              clusterNode,
                                                              rabiaMetricsCollector,
-                                                             networkMetricsHandler,
                                                              serializer,
                                                              deserializer,
                                                              nodeCodec,
@@ -1314,7 +1311,6 @@ public interface AetherNode extends ManageableNode {
                                                    DeferredSliceInvokerFacade deferredInvoker,
                                                    RabiaNode<KVCommand<AetherKey>> clusterNode,
                                                    RabiaMetricsCollector rabiaMetricsCollector,
-                                                   NetworkMetricsHandler networkMetricsHandler,
                                                    Serializer serializer,
                                                    Deserializer deserializer,
                                                    SliceCodec nodeCodec,
@@ -2364,7 +2360,6 @@ public interface AetherNode extends ManageableNode {
                                                                                                   .millis());
         var snapshotCollector = ComprehensiveSnapshotCollector.comprehensiveSnapshotCollector(gcMetricsCollector,
                                                                                               eventLoopMetricsCollector,
-                                                                                              networkMetricsHandler,
                                                                                               rabiaMetricsCollector,
                                                                                               invocationMetrics,
                                                                                               minuteAggregator);

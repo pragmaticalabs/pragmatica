@@ -99,6 +99,7 @@ public sealed interface QuicClusterServer {
     /// @param selfLabels        this node's metadata labels
     /// @param serializer        message serializer
     /// @param deserializer      message deserializer
+    /// @param quicMetrics       transport metrics sink (payload byte/message counters; #726)
     /// @param sslContext        QUIC server SSL context (TLS 1.3)
     /// @param sharedEventLoop   optional shared event loop group
     /// @param connectionHandler callback invoked when a peer completes Hello handshake
@@ -108,6 +109,7 @@ public sealed interface QuicClusterServer {
                                                Map<String, String> selfLabels,
                                                Serializer serializer,
                                                Deserializer deserializer,
+                                               QuicTransportMetrics quicMetrics,
                                                QuicSslContext sslContext,
                                                Option<EventLoopGroup> sharedEventLoop,
                                                PeerConnectionHandler connectionHandler,
@@ -117,6 +119,7 @@ public sealed interface QuicClusterServer {
                                              selfLabels,
                                              serializer,
                                              deserializer,
+                                             quicMetrics,
                                              sslContext,
                                              sharedEventLoop,
                                              connectionHandler,
@@ -166,6 +169,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
     private final Map<String, String> selfLabels;
     private final Serializer serializer;
     private final Deserializer deserializer;
+    private final QuicTransportMetrics quicMetrics;
     private final QuicSslContext sslContext;
     private final Option<EventLoopGroup> sharedEventLoop;
     private final PeerConnectionHandler connectionHandler;
@@ -179,6 +183,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
                               Map<String, String> selfLabels,
                               Serializer serializer,
                               Deserializer deserializer,
+                              QuicTransportMetrics quicMetrics,
                               QuicSslContext sslContext,
                               Option<EventLoopGroup> sharedEventLoop,
                               PeerConnectionHandler connectionHandler,
@@ -188,6 +193,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
         this.selfLabels = Map.copyOf(selfLabels);
         this.serializer = serializer;
         this.deserializer = deserializer;
+        this.quicMetrics = quicMetrics;
         this.sslContext = sslContext;
         this.sharedEventLoop = sharedEventLoop;
         this.connectionHandler = connectionHandler;
@@ -444,6 +450,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
                         new QuicLaneDataHandler(peerConnection.peerId(),
                                                 lane,
                                                 deserializer,
+                                                quicMetrics,
                                                 messageReceiver,
                                                 log));
             log.debug("Attached {} lane stream from peer {}", lane, peerConnection.peerId());
@@ -512,6 +519,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
                         new QuicLaneDataHandler(hello.sender(),
                                                 StreamType.CONTROL,
                                                 deserializer,
+                                                quicMetrics,
                                                 messageReceiver,
                                                 log));
             log.info("QUIC Hello handshake complete with peer {} (address={})", hello.sender(), hello.address());
@@ -549,7 +557,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
                     ch.pipeline()
                       .addLast(new io.netty.handler.codec.LengthFieldBasedFrameDecoder(MAX_FRAME_LENGTH, 0, 4, 0, 4))
                       .addLast(new io.netty.handler.codec.LengthFieldPrepender(4))
-                      .addLast(new QuicLaneDataHandler(peerNodeId, lane, deserializer, messageReceiver, log));
+                      .addLast(new QuicLaneDataHandler(peerNodeId, lane, deserializer, quicMetrics, messageReceiver, log));
                 }
             };
 

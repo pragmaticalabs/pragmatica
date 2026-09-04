@@ -17,7 +17,6 @@ import org.pragmatica.aether.metrics.consensus.RabiaMetricsCollector;
 import org.pragmatica.aether.metrics.eventloop.EventLoopMetricsCollector;
 import org.pragmatica.aether.metrics.gc.GCMetricsCollector;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
-import org.pragmatica.aether.metrics.network.NetworkMetricsHandler;
 import org.pragmatica.aether.metrics.observability.ObservabilityRegistry;
 import org.pragmatica.aether.metrics.timeout.TimeoutMetricsRegistry;
 import org.pragmatica.aether.metrics.timeout.TimeoutSubsystem;
@@ -277,7 +276,6 @@ class MetricsRoutesTest {
             var snapshotCollector = ComprehensiveSnapshotCollector.comprehensiveSnapshotCollector(
                 GCMetricsCollector.gcMetricsCollector(),
                 EventLoopMetricsCollector.eventLoopMetricsCollector(),
-                NetworkMetricsHandler.networkMetricsHandler(),
                 rabia,
                 InvocationMetricsCollector.invocationMetricsCollector(),
                 MinuteAggregator.minuteAggregator());

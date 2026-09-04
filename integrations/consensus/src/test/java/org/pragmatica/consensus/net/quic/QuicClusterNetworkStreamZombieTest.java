@@ -301,6 +301,26 @@ class QuicClusterNetworkStreamZombieTest {
                 assertThat(nodeB.quicMetrics().streamZombieEvictionCount())
                     .as("a live handshake never strands the acceptor with an unhealable lane")
                     .isZero();
+                // #726: the keepalive beacon is a real CONTROL-lane write/read on a live two-node
+                // pipeline — proves the payload-byte counters move at BOTH lane boundaries (send:
+                // QuicClusterNetwork#writeIfWritable, receive: QuicLaneDataHandler#channelRead0),
+                // for BOTH the dialer and the acceptor (the two directions share one handler class).
+                // The send-side counter increments synchronously on the calling thread inside
+                // writeIfWritable/rawBackpressuredWrite, so it is already positive once keepaliveTick()
+                // returns. The receive-side counter only increments once the OTHER node's real QUIC
+                // event loop has scheduled and run channelRead0 for the inbound frame — under
+                // concurrent reactor load that can take longer than "immediately", so it is awaited
+                // like every other cross-node convergence in this test, not asserted synchronously.
+                assertThat(nodeA.quicMetrics().bytesSentCount())
+                    .as("#726: the dialer's keepalive write increments its payload-byte send counter")
+                    .isPositive();
+                awaitTrue(() -> nodeB.quicMetrics().bytesReceivedCount() > 0,
+                          "#726: the acceptor's receipt of the dialer's frame increments its payload-byte receive counter");
+                assertThat(nodeB.quicMetrics().bytesSentCount())
+                    .as("#726: the acceptor's own keepalive write increments its payload-byte send counter")
+                    .isPositive();
+                awaitTrue(() -> nodeA.quicMetrics().bytesReceivedCount() > 0,
+                          "#726: the dialer's receipt of the acceptor's frame increments its payload-byte receive counter");
             } finally {
                 nodeA.stop().await(AWAIT_TIMEOUT);
                 nodeB.stop().await(AWAIT_TIMEOUT);

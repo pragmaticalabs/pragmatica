@@ -9,7 +9,6 @@ import java.util.Map;
 import org.pragmatica.aether.metrics.consensus.RabiaMetrics;
 import org.pragmatica.aether.metrics.eventloop.EventLoopMetrics;
 import org.pragmatica.aether.metrics.gc.GCMetrics;
-import org.pragmatica.aether.metrics.network.NetworkMetrics;
 
 
 public record ComprehensiveSnapshot(long timestamp,
@@ -18,7 +17,6 @@ public record ComprehensiveSnapshot(long timestamp,
                                     long heapMax,
                                     GCMetrics gc,
                                     EventLoopMetrics eventLoop,
-                                    NetworkMetrics network,
                                     RabiaMetrics consensus,
                                     long totalInvocations,
                                     long successfulInvocations,
@@ -31,7 +29,6 @@ public record ComprehensiveSnapshot(long timestamp,
                                                                                 0,
                                                                                 GCMetrics.EMPTY,
                                                                                 EventLoopMetrics.EMPTY,
-                                                                                NetworkMetrics.EMPTY,
                                                                                 RabiaMetrics.EMPTY,
                                                                                 0,
                                                                                 0,
