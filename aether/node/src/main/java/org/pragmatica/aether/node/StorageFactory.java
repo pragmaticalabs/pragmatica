@@ -505,6 +505,16 @@ public final class StorageFactory {
     /// #253 SHOULD-FIX #1 (2026-09-04 ruling): same guard extended to the DHT tier via
     /// [#refuseIfDhtEncryptedWithoutKeyring] -- the disk-side check alone left the DHT tier's own
     /// marker unchecked when disk happened to be present too.
+    ///
+    /// #253 review round 3 SHOULD-FIX (2026-09-04 ruling): [#maybeEncryptDht] (and the marker write
+    /// inside it) is called from WITHIN each branch below, after that branch's disk-side guard has
+    /// already succeeded -- never hoisted above `keyring.fold` as an eagerly-evaluated `var`. The
+    /// eager form used to stamp the DHT namespace's `.encryption-enabled` marker before
+    /// [EncryptingStorageTier#wrapLocalDisk]'s legacy-plaintext scan ran, so a boot refused by that
+    /// scan still left a marker behind with no ciphertext ever written under it -- and backing out to
+    /// `encrypted = false` then tripped [#refuseIfDhtEncryptedWithoutKeyring] on a namespace that was
+    /// never actually encrypted, locking the operator out until the key was restored or the marker
+    /// deleted by hand.
     private static Result<List<StorageTier>> buildTierList(String name,
                                                            MemoryTier memoryTier,
                                                            LocalDiskTier diskTier,
@@ -512,18 +522,17 @@ public final class StorageFactory {
                                                            Option<DHTClient> dhtClient,
                                                            String dhtKeyPrefix,
                                                            Option<EncryptionKeyring> keyring) {
-        var dhtResult = maybeEncryptDht(dhtClient, dhtKeyPrefix, keyring);
-
         return keyring.fold(() -> EncryptingStorageTier.refuseIfEncryptedWithoutKeyring(diskPath, name)
                                                        .flatMap(_ -> refuseIfDhtEncryptedWithoutKeyring(dhtClient,
                                                                                                         dhtKeyPrefix,
                                                                                                         name))
-                                                       .flatMap(_ -> dhtResult)
+                                                       .flatMap(_ -> maybeEncryptDht(dhtClient, dhtKeyPrefix, keyring))
                                                        .map(dht -> dht.map(t -> List.<StorageTier> of(memoryTier,
                                                                                                       diskTier,
                                                                                                       t))
                                                                       .or(List.of(memoryTier, diskTier))),
-                            ring -> EncryptingStorageTier.wrapLocalDisk(diskTier, diskPath, ring).flatMap(encDisk -> dhtResult.map(dht -> dht.map(t -> List.<StorageTier> of(memoryTier,
+                            ring -> EncryptingStorageTier.wrapLocalDisk(diskTier, diskPath, ring)
+                                                         .flatMap(encDisk -> maybeEncryptDht(dhtClient, dhtKeyPrefix, keyring).map(dht -> dht.map(t -> List.<StorageTier> of(memoryTier,
                                                                                                                                                                              encDisk,
                                                                                                                                                                              t))
                                                                                                                                              .or(List.of(memoryTier,
