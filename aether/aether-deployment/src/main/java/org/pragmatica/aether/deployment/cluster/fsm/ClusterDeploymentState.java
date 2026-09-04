@@ -700,9 +700,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// history, so a restored worker positively observed absent is removed here with the same
         /// batch a live departure gets, instead of being placed on again this term.
         private void sweepDeadRestoredWorkers() {
-            var deadWorkers = workerNodes.stream()
-                                         .filter(ctx.communityLiveness()::isAbsent)
-                                         .toList();
+            var deadWorkers = workerNodes.stream().filter(ctx.communityLiveness()::isAbsent).toList();
 
             if (deadWorkers.isEmpty()) {
                 return;
@@ -711,10 +709,9 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             log.info("Sweeping {} worker(s) restored from KVStore but observed absent from liveness: {}",
                      deadWorkers.size(),
                      deadWorkers);
-            deadWorkers.forEach(node -> handleNodeRemoval(node).onFailure(cause -> log.error(
-                    "Failed to sweep dead restored worker {}: {}",
-                    node,
-                    cause.message())));
+            deadWorkers.forEach(node -> handleNodeRemoval(node).onFailure(cause -> log.error("Failed to sweep dead restored worker {}: {}",
+                                                                                             node,
+                                                                                             cause.message())));
         }
 
         private void restoreAppBlueprint(AppBlueprintValue appBlueprintValue) {
@@ -1870,14 +1867,12 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             artifactKeysToRemove.stream()
                                 .<KVCommand<AetherKey>> map(KVCommand.Remove::new)
                                 .forEach(consensusCommands::add);
-            sliceKeysToRemove.stream()
-                             .<KVCommand<AetherKey>> map(KVCommand.Remove::new)
-                             .forEach(consensusCommands::add);
+            sliceKeysToRemove.stream().<KVCommand<AetherKey>> map(KVCommand.Remove::new).forEach(consensusCommands::add);
             consensusCommands.add(new KVCommand.Remove<>(ActivationDirectiveKey.activationDirectiveKey(removedNode)));
             consensusCommands.addAll(nodeRouteCommands);
             workerNodes.remove(removedNode);
             log.info("Removed {} slice states, {} node-artifact entries, {} node-routes updates, and the "
-                     + "activation directive for departed node {}",
+                    + "activation directive for departed node {}",
                      sliceKeysToRemove.size(),
                      artifactKeysToRemove.size(),
                      nodeRouteCommands.size(),
