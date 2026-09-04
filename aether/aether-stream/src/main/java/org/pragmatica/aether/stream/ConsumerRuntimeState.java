@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
@@ -21,6 +22,7 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.TerminalOperation;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.JitterUtil;
@@ -30,6 +32,7 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Unit.unit;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 final class ConsumerRuntimeState implements StreamConsumerRuntime {
@@ -42,6 +45,13 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     private static final long MAX_BACKOFF_MS = 10_000;
     private static final long CONSUMER_TIMEOUT_MS = 60_000L;
     private static final long IDLE_CHECK_INTERVAL_MS = 10_000L;
+    /// #654: bounds the final-commit batch in [#close] so a wedged or slow consensus write cannot
+    /// hold node shutdown. Well under [org.pragmatica.consensus.rabia.ProtocolConfig#DEFAULT_APPLY_TIMEOUT]
+    /// (30s) — a commit that would still succeed given the full apply timeout is treated as failed
+    /// for THIS shutdown and reported via [#cursorCommitFailureCount] / [ConsumerState#lastCursorCommitFailure]
+    /// rather than holding the node. [design intent — unverified: 5s is not derived from a measured
+    /// commit-latency distribution, it is a judgment call reviewed and accepted for this fix].
+    private static final TimeSpan CURSOR_COMMIT_SHUTDOWN_BOUND = timeSpan(5).seconds();
 
     private final StreamPartitionManager partitionManager;
     private final DeadLetterHandler dlHandler;
@@ -51,6 +61,10 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     private final ConcurrentHashMap<ConsumerKey, ConsumerState> consumers = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private final ScheduledFuture<?> idleConsumerChecker;
+    /// #654: node-wide count of cursor commits (final flush or periodic checkpoint) that resolved
+    /// with a failure or never settled at all. Survives a consumer's removal from [#consumers] at
+    /// detach, which a per-consumer-only field could not. Exposed via [#cursorCommitFailureCount].
+    private final AtomicLong cursorCommitFailureCount = new AtomicLong(0);
 
     ConsumerRuntimeState(StreamPartitionManager partitionManager, DeadLetterHandler dlHandler) {
         this(partitionManager, dlHandler, none(), none());
@@ -124,13 +138,19 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                         .toList();
     }
 
+    @Override
+    public long cursorCommitFailureCount() {
+        return cursorCommitFailureCount.get();
+    }
+
     private static SubscriptionSnapshot toSnapshot(ConsumerKey key, ConsumerState state) {
         return new SubscriptionSnapshot(key.streamName(),
                                         key.partition(),
                                         key.groupId(),
                                         state.cursor(),
                                         state.isStalled(),
-                                        state.idlePolicy());
+                                        state.idlePolicy(),
+                                        state.lastCursorCommitFailure());
     }
 
     @Override
@@ -170,11 +190,36 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     public void close() {
         if (closed.compareAndSet(false, true)) {
             idleConsumerChecker.cancel(false);
-            consumers.forEach(this::flushCursorForKey);
+            awaitFinalCursorCommits();
             consumers.forEach(this::removePushListener);
             consumers.values().forEach(ConsumerState::cancel);
             consumers.clear();
         }
+    }
+
+    /// #654: batches every consumer's final cursor commit into one bounded wait so a slow or wedged
+    /// consensus write cannot hold node stop past [#CURSOR_COMMIT_SHUTDOWN_BOUND] — this runs inside
+    /// the #488 ordering window, while [#partitionManager] and the cursor store are still alive.
+    /// Each commit's [#observedCommit] handlers are attached BEFORE batching, so a commit that only
+    /// resolves after the bound is still logged and counted: [Promise#await(TimeSpan)] leaves an
+    /// unresolved promise running rather than cancelling it, and `onSuccess`/`onFailure` return the
+    /// same promise instance, so batching for the bound changes nothing about when those handlers fire.
+    @TerminalOperation
+    private void awaitFinalCursorCommits() {
+        var commits = new ArrayList<Promise<Unit>>(consumers.size());
+
+        consumers.forEach((key, state) -> commits.add(flushCursorForKey(key, state)));
+
+        if (commits.isEmpty()) {
+            return;
+        }
+
+        Promise.allOf(commits)
+               .await(CURSOR_COMMIT_SHUTDOWN_BOUND)
+               .onFailure(cause -> LOG.log(System.Logger.Level.WARNING,
+                                           "{0} cursor commit(s) did not settle within the {1}ms shutdown bound ({2}); "
+                                          + "node stop is continuing, late results are still logged and counted",
+                                           commits.size(), CURSOR_COMMIT_SHUTDOWN_BOUND.millis(), cause.message()));
     }
 
     private void reapIdleConsumers() {
@@ -231,12 +276,17 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         subscribePushOrPoll(key, state);
     }
 
-    private void flushCursorForKey(ConsumerKey key, ConsumerState state) {
+    /// #654: the final commit for one consumer at detach (either interactive [#unsubscribe] or batch
+    /// [#close]). Returns the observed commit so [#awaitFinalCursorCommits] can bound-await the whole
+    /// batch; [#cleanupConsumer]'s call discards the same return value on purpose — a single
+    /// interactive detach does not gate node shutdown, so nothing there needs to await it, and the
+    /// failure is already logged/counted inside [#observedCommit] regardless of who awaits.
+    private Promise<Unit> flushCursorForKey(ConsumerKey key, ConsumerState state) {
         if (!state.cursorInitialized()) {
-            return;
+            return Promise.unitPromise();
         }
 
-        cursorStore.onPresent(store -> store.commit(key.groupId(), key.streamName(), key.partition(), state.cursor()));
+        return observedCommit(key, state);
     }
 
     private void subscribePushOrPoll(ConsumerKey key, ConsumerState state) {
@@ -262,10 +312,31 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
 
     private void checkpointIfNeeded(ConsumerKey key, ConsumerState state) {
         if (state.shouldCheckpoint()) {
-            cursorStore.onPresent(store -> store.commit(key.groupId(), key.streamName(), key.partition(), state.cursor()));
+            observedCommit(key, state);
             state.resetCheckpointCounters();
         }
     }
+
+    /// #654: the single place that performs a cursor commit and observes its outcome — shared by the
+    /// detach paths ([#flushCursorForKey]) and the periodic path ([#checkpointIfNeeded]), closing the
+    /// discard defect for both call sites at once. A missing [#cursorStore] (no persistence configured)
+    /// has nothing to commit and nothing to fail, so it resolves the fallback unit promise rather than
+    /// going through [#onCursorCommitFailure].
+    private Promise<Unit> observedCommit(ConsumerKey key, ConsumerState state) {
+        return cursorStore.map(store -> store.commit(key.groupId(), key.streamName(), key.partition(), state.cursor())
+                                             .onSuccess(_ -> state.clearCursorCommitFailure())
+                                             .onFailure(cause -> onCursorCommitFailure(key, state, cause)))
+                          .or(Promise.unitPromise());
+    }
+
+    private void onCursorCommitFailure(ConsumerKey key, ConsumerState state, Cause cause) {
+        cursorCommitFailureCount.incrementAndGet();
+        state.recordCursorCommitFailure(cause.message());
+        LOG.log(System.Logger.Level.ERROR,
+                "Cursor commit failed for consumer group {0} on stream {1} partition {2}: {3}",
+                key.groupId(), key.streamName(), key.partition(), cause.message());
+    }
+
 
     private void scheduleNextPoll(ConsumerKey key, ConsumerState state) {
         if (state.isCancelled()) {
@@ -584,6 +655,13 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         private final AtomicLong currentPollMs = new AtomicLong(MIN_POLL_MS);
         private final AtomicLong lastCheckpointTime = new AtomicLong(System.currentTimeMillis());
         private final AtomicLong lastPollTime = new AtomicLong(System.currentTimeMillis());
+        /// #654: detail of the most recent cursor commit failure for this consumer, cleared on the
+        /// next successful commit. Read by [ConsumerRuntimeState#toSnapshot] onto
+        /// [StreamConsumerRuntime.SubscriptionSnapshot] while this consumer is still attached — most
+        /// useful for a periodic [ConsumerRuntimeState#checkpointIfNeeded] failure, since detach
+        /// removes the entry from [ConsumerRuntimeState#consumers] and this per-consumer detail goes
+        /// with it. What survives detach is the node-wide [ConsumerRuntimeState#cursorCommitFailureCount].
+        private volatile String lastCursorCommitFailure;
 
         private ConsumerState(ConsumerConfig config,
                               ConsumerCallback callback,
@@ -733,6 +811,20 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         void cancel() {
             cancelled.set(true);
             option(future).onPresent(f -> f.cancel(false));
+        }
+
+        Option<String> lastCursorCommitFailure() {
+            return option(lastCursorCommitFailure);
+        }
+
+        @Contract
+        void recordCursorCommitFailure(String detail) {
+            lastCursorCommitFailure = detail;
+        }
+
+        @Contract
+        void clearCursorCommitFailure() {
+            lastCursorCommitFailure = null;
         }
     }
 }

@@ -4981,10 +4981,13 @@ What this node knows about declarative `[streams.X]` consumers — slice methods
 
 **Guarantee.** At-least-once delivery per partition, conditional on the slice being `ACTIVE` on at least one live node. Duplicates arise from redelivery after a handler failure under `RETRY`, from the reconcile-tick window during an ownership or placement change (old and new assignee may both deliver), and from resuming at the last checkpoint (≤1000 events or ≤30s of progress) rather than the last delivered offset after an ungraceful move — a graceful detach flushes the exact cursor. Not effectively-once: there is no fencing token on delivery, and two transiently-divergent assignment views can both deliver and both write the cursor, last write winning.
 
+**Redelivery contract on cursor commit failure (#654).** A cursor commit is a consensus write and can fail, or simply not settle before a graceful detach needs to proceed — detach bounds the final flush to 5 seconds and treats a commit that has not settled within that bound as failed for the shutdown, even if it later succeeds. On the consumer's next attach it resumes from its LAST COMMITTED offset [mechanism: `loadCursorAndStart` unconditionally fetches and applies the last committed offset before starting delivery] and redelivers every event since — consumers must be idempotent. Every such failure is counted in `cursorCommitFailureCount` and, while the consumer stays attached, the detail is visible on that partition's `lastCursorCommitFailure`. Operator recovery: none needed for an isolated failure at one shutdown — that is ordinary at-least-once behavior; a sustained rise in `cursorCommitFailureCount` across restarts, rather than an isolated one, is the signal worth investigating (consensus write path health) [design intent — unverified].
+
 **Response:**
 ```json
 {
   "attachedSubscriptions": 2,
+  "cursorCommitFailureCount": 0,
   "consumers": [
     {
       "stream": "orders",
@@ -4997,8 +5000,8 @@ What this node knows about declarative `[streams.X]` consumers — slice methods
       "sliceDeployedLocally": true,
       "eventTypePublishable": true,
       "assignedPartitions": [
-        {"partition": 0, "committedOffset": 42, "stalled": false},
-        {"partition": 2, "committedOffset": 17, "stalled": false}
+        {"partition": 0, "committedOffset": 42, "stalled": false, "lastCursorCommitFailure": ""},
+        {"partition": 2, "committedOffset": 17, "stalled": false, "lastCursorCommitFailure": ""}
       ],
       "partitionAssignments": [
         {"partition": 0, "consumerNode": "node-1", "ownerNode": "node-1"},
@@ -5019,6 +5022,7 @@ What this node knows about declarative `[streams.X]` consumers — slice methods
 | Field | Description |
 |-------|-------------|
 | `attachedSubscriptions` | Subscriptions actually attached ON THIS NODE — the number of partitions assigned here, not the stream's partition count |
+| `cursorCommitFailureCount` | Node-wide count of cursor commits — final flush at detach, or periodic checkpoint — that failed or did not settle within their bound (#654). Monotonic for the life of the node's runtime; keeps counting a failure after the consumer that produced it detaches |
 | `consumers[].stream` | Stream the consumer is declared against |
 | `consumers[].configSection` | The `[streams.X]` section in the slice's `resources.toml` |
 | `consumers[].artifact` | Artifact declaring the consumer |
@@ -5028,7 +5032,7 @@ What this node knows about declarative `[streams.X]` consumers — slice methods
 | `consumers[].eventType` | Declared event type |
 | `consumers[].sliceDeployedLocally` | Whether the declaring slice is loaded on THIS node |
 | `consumers[].eventTypePublishable` | Whether the slice's own codec registry knows the event type (#526). **Absent when this node cannot know** — the probe needs the slice's codec, which only a node hosting the slice has |
-| `consumers[].assignedPartitions` | Live subscriptions on this node: `partition`, `committedOffset` (next offset to read — one past the last delivered), `stalled` |
+| `consumers[].assignedPartitions` | Live subscriptions on this node: `partition`, `committedOffset` (next offset to read — one past the last delivered), `stalled`, `lastCursorCommitFailure` (this partition's most recent cursor commit failure detail while attached; empty when its last commit succeeded, #654) |
 | `consumers[].unassignedPartitions` | **The loud gap:** partitions no node can consume because the slice is `ACTIVE` nowhere. Absent when there is no gap. It is NOT a gap for this node to lack the slice — since #535 the owner need not host it. During a deploy the same emptiness is reported as "not being consumed YET" in `diagnostic` rather than as a gap |
 | `consumers[].partitionAssignments` | Full partition→node map: `consumerNode` (who consumes it), `ownerNode` (who owns it). Reads are forwarded whenever they differ. Either is `null` during the bootstrap window; `consumerNode` is also `null` when nothing can consume |
 | `consumers[].diagnostic` | Operator-facing explanation of whichever condition applies; empty when the consumer is healthy and reading locally |

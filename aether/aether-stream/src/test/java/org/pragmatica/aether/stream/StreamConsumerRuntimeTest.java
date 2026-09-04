@@ -10,6 +10,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.LongStream;
 
 import org.pragmatica.aether.slice.ConsumerConfig;
@@ -18,6 +19,8 @@ import org.pragmatica.aether.slice.ConsumerConfig.ProcessingMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.stream.DeadLetterHandler.DeadLetterEntry;
+import org.pragmatica.aether.stream.segment.ConsumerCursorStore;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
@@ -28,6 +31,7 @@ import org.junit.jupiter.api.Test;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.aether.stream.StreamConsumerRuntime.streamConsumerRuntime;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -466,6 +470,173 @@ class StreamConsumerRuntimeTest {
                               (offset, payload, ts) -> Promise.unitPromise())
                    .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("Expected failure"))
                    .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.CONSUMER_RUNTIME_CLOSED));
+        }
+    }
+
+    /// #654: `flushCursorForKey` (detach) and `checkpointIfNeeded` (periodic) used to discard
+    /// `ConsumerCursorStore.commit`'s result outright — no await, no log, no counter, no visible
+    /// surface. These pin the fix: a synchronously-failing commit is observed immediately, a commit
+    /// that outlives the shutdown bound does not hold [ConsumerRuntimeState#close], a late resolution
+    /// past the bound is still logged and counted, a successful commit lets a later attach resume
+    /// without redelivery, and a periodic checkpoint failure never blocks delivery.
+    @Nested
+    class CursorCommitObservability {
+        private static ConsumerCursorStore committing(Promise<Unit> commitResult) {
+            return new ConsumerCursorStore() {
+                @Override
+                public Promise<Unit> commit(String consumerGroup, String streamName, int partition, long offset) {
+                    return commitResult;
+                }
+
+                @Override
+                public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition) {
+                    return Promise.success(none());
+                }
+            };
+        }
+
+        @Test
+        void close_countsFailure_whenFinalCommitFailsSynchronously_andDoesNotWaitOutTheBound() throws Exception {
+            createTestStream("orders");
+            var store = committing(StreamError.General.BUFFER_EMPTY.promise());
+            var observedRuntime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);
+
+            observedRuntime.subscribe("orders",
+                                      0,
+                                      ConsumerConfig.consumerConfig("group-1"),
+                                      (offset, payload, ts) -> Promise.unitPromise());
+            assertThat(observedRuntime.cursorCommitFailureCount()).isZero();
+
+            var start = System.nanoTime();
+
+            observedRuntime.close();
+
+            var elapsedMs = (System.nanoTime() - start) / 1_000_000;
+
+            assertThat(observedRuntime.cursorCommitFailureCount()).describedAs("the previously-discarded commit failure is now observed")
+                      .isEqualTo(1L);
+            assertThat(elapsedMs).describedAs("a commit that fails synchronously must not wait out the shutdown bound")
+                      .isLessThan(1000L);
+        }
+
+        @Test
+        void close_boundsTheWait_whenFinalCommitNeverSettles_thenCountsALateFailure() {
+            createTestStream("orders");
+            Promise<Unit> pending = Promise.promise();
+            var store = committing(pending);
+            var observedRuntime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);
+
+            observedRuntime.subscribe("orders",
+                                      0,
+                                      ConsumerConfig.consumerConfig("group-1"),
+                                      (offset, payload, ts) -> Promise.unitPromise());
+
+            var start = System.nanoTime();
+
+            observedRuntime.close();
+
+            var elapsedMs = (System.nanoTime() - start) / 1_000_000;
+
+            assertThat(elapsedMs).describedAs("node stop must not be held past the #654 shutdown bound")
+                      .isBetween(4500L, 9000L);
+            assertThat(observedRuntime.cursorCommitFailureCount()).describedAs("an unresolved commit has nothing to count yet")
+                      .isZero();
+
+            pending.fail(StreamError.General.BUFFER_EMPTY);
+
+            assertThat(observedRuntime.cursorCommitFailureCount()).describedAs("a failure that resolves after the bound is still logged and counted")
+                      .isEqualTo(1L);
+        }
+
+        @Test
+        void unsubscribe_thenResubscribe_resumesFromCommittedCursor_noRedelivery() throws InterruptedException {
+            createTestStream("orders");
+            var committed = new AtomicReference<Long>();
+            var store = new ConsumerCursorStore() {
+                @Override
+                public Promise<Unit> commit(String consumerGroup, String streamName, int partition, long offset) {
+                    committed.set(offset);
+
+                    return Promise.unitPromise();
+                }
+
+                @Override
+                public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition) {
+                    return Promise.success(option(committed.get()));
+                }
+            };
+            var observedRuntime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);
+            var delivered = new CopyOnWriteArrayList<Long>();
+            var firstLatch = new CountDownLatch(1);
+
+            try {
+                observedRuntime.subscribe("orders",
+                                          0,
+                                          ConsumerConfig.consumerConfig("group-1"),
+                                          (offset, payload, ts) -> {
+                                              delivered.add(offset);
+                                              firstLatch.countDown();
+
+                                              return Promise.unitPromise();
+                                          });
+                manager.publishLocal("orders", 0, "event-1".getBytes(UTF_8), 1000L);
+                assertThat(firstLatch.await(5, TimeUnit.SECONDS)).isTrue();
+                observedRuntime.unsubscribe("orders", 0, "group-1");
+                assertThat(committed.get()).describedAs("committed offset is one past the last delivered offset")
+                          .isEqualTo(1L);
+
+                var secondLatch = new CountDownLatch(1);
+
+                observedRuntime.subscribe("orders",
+                                          0,
+                                          ConsumerConfig.consumerConfig("group-1"),
+                                          (offset, payload, ts) -> {
+                                              delivered.add(offset);
+                                              secondLatch.countDown();
+
+                                              return Promise.unitPromise();
+                                          });
+                manager.publishLocal("orders", 0, "event-2".getBytes(UTF_8), 2000L);
+                assertThat(secondLatch.await(5, TimeUnit.SECONDS)).isTrue();
+                assertThat(delivered).describedAs("each offset is delivered exactly once across the detach/reattach")
+                          .containsExactly(0L, 1L);
+            } finally {
+                observedRuntime.close();
+            }
+        }
+
+        @Test
+        void checkpointIfNeeded_countsFailure_withoutBlockingDelivery() throws InterruptedException {
+            createTestStream("orders");
+            var store = committing(StreamError.General.BUFFER_EMPTY.promise());
+            var observedRuntime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);
+            var config = ConsumerConfig.consumerConfig("group-1", 1, ProcessingMode.ORDERED, ErrorStrategy.RETRY, 10L, 3, "");
+            var delivered = new CopyOnWriteArrayList<Long>();
+            var latch = new CountDownLatch(2);
+
+            try {
+                observedRuntime.subscribe("orders",
+                                          0,
+                                          config,
+                                          (offset, payload, ts) -> {
+                                              delivered.add(offset);
+                                              latch.countDown();
+
+                                              return Promise.unitPromise();
+                                          });
+                // The 10ms checkpoint interval elapses before the first event, so the very first
+                // successful delivery already trips checkpointIfNeeded's time-based branch.
+                Thread.sleep(50);
+                manager.publishLocal("orders", 0, "event-1".getBytes(UTF_8), 1000L);
+                manager.publishLocal("orders", 0, "event-2".getBytes(UTF_8), 2000L);
+                assertThat(latch.await(5, TimeUnit.SECONDS)).describedAs("a periodic checkpoint commit failure must not block delivery")
+                          .isTrue();
+                assertThat(delivered).containsExactly(0L, 1L);
+                assertThat(observedRuntime.cursorCommitFailureCount()).describedAs("the periodic checkpoint's discarded failure is now observed")
+                          .isGreaterThanOrEqualTo(1L);
+            } finally {
+                observedRuntime.close();
+            }
         }
     }
 

@@ -98,6 +98,11 @@ public interface StreamConsumerManager {
     List<ConsumerStatus> statuses();
     int activeSubscriptionCount();
 
+    /// #654: node-wide count of cursor commits (final flush at detach, or periodic checkpoint) that
+    /// failed or did not settle within their shutdown bound. Delegates to the underlying
+    /// [org.pragmatica.aether.stream.StreamConsumerRuntime#cursorCommitFailureCount].
+    long cursorCommitFailureCount();
+
     /// Inert manager for `ManageableNode` proxies that have no stream runtime behind them. Reports
     /// no consumers; it never fabricates any.
     static StreamConsumerManager inactive() {
@@ -117,6 +122,11 @@ public interface StreamConsumerManager {
 
             @Override
             public int activeSubscriptionCount() {
+                return 0;
+            }
+
+            @Override
+            public long cursorCommitFailureCount() {
                 return 0;
             }
         }
@@ -155,7 +165,11 @@ public interface StreamConsumerManager {
         Map<NodeId, SliceState> placement(Artifact artifact);
     }
 
-    record PartitionCursor(int partition, long cursor, boolean stalled) {}
+    /// `lastCursorCommitFailure` (#654): detail of this partition's most recent cursor commit
+    /// failure while the consumer stays attached; [Option#none] once it commits successfully again,
+    /// or if none has failed. Sourced from
+    /// [org.pragmatica.aether.stream.StreamConsumerRuntime.SubscriptionSnapshot#lastCursorCommitFailure].
+    record PartitionCursor(int partition, long cursor, boolean stalled, Option<String> lastCursorCommitFailure) {}
 
     /// Who consumes one partition, and who owns it. Both are computed locally and identically on every
     /// node, so a single call to any node answers "who consumes partition 3, and does it read locally?"
@@ -601,6 +615,11 @@ public interface StreamConsumerManager {
         }
 
         @Override
+        public long cursorCommitFailureCount() {
+            return runtime.cursorCommitFailureCount();
+        }
+
+        @Override
         public List<ConsumerStatus> statuses() {
             var cursors = cursorsByKey();
 
@@ -618,7 +637,8 @@ public interface StreamConsumerManager {
                                                                                     snapshot.consumerGroup()),
                                                     snapshot -> new PartitionCursor(snapshot.partition(),
                                                                                     snapshot.cursor(),
-                                                                                    snapshot.stalled()),
+                                                                                    snapshot.stalled(),
+                                                                                    snapshot.lastCursorCommitFailure()),
                                                     (first, _) -> first));
         }
 
