@@ -6,6 +6,67 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc4] - Unreleased
 
+### Fixed (2026-09-03 — #737: CursorStore leaked one block per commit; the refcount meant to reclaim it had zero readers)
+- **Every cursor commit leaked its superseded block.** `CursorStore.commit` replaced a cursor's ref with
+  `put` + `createRef`, which points the ref at the new block but never decrements whatever it replaced.
+  Cursor blocks are content-addressed (an 8-byte offset), so every consumer group parked at the same
+  offset shared one block — deleting "the old block" outright on replace would have deleted it out from
+  under every other cursor still pointing at it. `BlockLifecycle#isOrphaned` (refCount<=0) — the check
+  `DefaultStorageGarbageCollector` (#250) reads — had zero writers reaching it for cursor refs, so the
+  leak was permanent, not merely until the next GC pass.
+- **New `StorageInstance#replaceRef(name, content)`**: writes (or deduplicates) the block for
+  `content`, points `name` at it, and decrements whatever `name` previously pointed to — one
+  operation, never leaving `name` absent. The metadata pointer swap itself is atomic; the new
+  block's credit and the displaced block's decrement are only ordered, not atomic together — a
+  crash between them over-counts the displaced block (never decremented, stays live).
+  `MetadataStore#replaceRef(name, blockId)` backs the swap with a pure ref-pointer move (no
+  refcount side effect; callers own the counting).
+  [mechanism: `DefaultStorageInstance#replaceRef` composes the existing write path (`handlePut`, which
+  already credits the new block — +1 on a fresh write, +1 via dedup on an existing one) with a decrement
+  of whatever the swap displaces, applied only AFTER the swap, so the new block's credit is visible
+  before the old one's debit — pinned by `DefaultStorageInstanceReplaceRefOrderingTest`]
+- `CursorStore.commit` now calls `replaceRef` instead of `put` + `createRef`. The default `replaceRef` on
+  the `StorageInstance` interface still falls back to `put` + `createRef` for any implementor other than
+  `DefaultStorageInstance`, which has two independent counting defects: it leaks the superseded block
+  exactly as before (only `DefaultStorageInstance` reclaims it), and it double-counts the NEW block —
+  `put` already credits it (fresh write or dedup, +1), then `createRef` credits it again (+1), so it
+  sits at refCount 2 for one logical reference and never reaches zero even after an explicit
+  `deleteRef`.
+  [verified: aether/aether-stream/src/test/java/org/pragmatica/aether/stream/segment/CursorStoreTest.java
+  — `RefcountReclamation`: a repeated commit and a shared-content commit across two consumer groups both
+  leave the superseded block at refCount 0 and the live block at its correct count;
+  `GarbageCollectionIntegration#commit_thenCollectGarbage_reclaimsExactlySupersededBlocks`: three commits
+  to one cursor, then the production `StorageGarbageCollector#collectGarbage` (not a direct metadata-store
+  assertion) reclaims exactly the two superseded blocks, leaves the live one and `fetch` intact]
+- **GC grace period now runs from when a block was orphaned, not from when it was last read**
+  (fix round 2, same ticket). The original grace filter keyed on `lastAccessedAt`, which is set at
+  creation and only refreshed on a successful read — a block read once, held referenced for a long
+  time, and orphaned just now would already have a stale `lastAccessedAt` and skip the grace
+  entirely. `BlockLifecycle` gained a seventh field, `orphanedAt`: stamped with the current instant
+  only on the refCount transition from >0 to <=0, left unchanged by a redundant decrement at the
+  floor, and cleared back to 0 on resurrection (0 → 1+). On-disk/wire compatibility: existing
+  six-field snapshot and KV-Store records still parse — the 6-arg `BlockLifecycle` reconstruction
+  factory derives `orphanedAt` from `lastAccessedAt` for an already-orphaned legacy entry (0 for a
+  live one), so a pre-upgrade orphan becomes collectible once that borrowed timestamp clears the
+  grace period, and a live entry is unaffected.
+  [mechanism: `BlockLifecycle#withRefCountIncremented`/`withRefCountDecremented`
+  (`integrations/storage/src/main/java/org/pragmatica/storage/BlockLifecycle.java:90-111`) stamp/clear
+  `orphanedAt` only on the actual >0↔<=0 transition, never on a same-side no-op — pinned by
+  `BlockLifecycleTest#withRefCountDecremented_redundantAtFloor_doesNotRestartGraceClock` and
+  `#withRefCountIncremented_resurrection_clearsOrphanedAt`]
+  [verified: integrations/storage/src/test/java/org/pragmatica/storage/StorageGarbageCollectorTest.java
+  — `collectGarbage_orphanedNow_survivesEvenWithStaleLastAccessedAt`: a block backdated on
+  `lastAccessedAt` by 10x the grace period but orphaned just now still survives collection]
+- **Remaining exposure, unchanged by this fix**: a cursor block newly reaching refCount 0 is now
+  GC-reachable, which surfaces it to two known gaps in GC-eligible blocks generally: #801 (a
+  concurrent deduplicating `put` can resurrect a block between GC's orphan scan and its delete step,
+  since the two run with no lock held across the gap) and #802 (a block demoted to the DHT alone
+  drops out of every node's local GC candidate set once its private-tier lifecycle record is gone,
+  with no cluster-wide process owning its reclamation). Neither is fixed here. Two callers still
+  replace refs the old way and leak exactly as `CursorStore.commit` did before this fix —
+  `DefaultContentStore.java:55` and `StorageSegmentSink.java:62` both call `put` + `createRef` instead
+  of `replaceRef`; tracked separately by #812 (rc4), not fixed here.
+
 ### Fixed (2026-09-03 — #760: a schema hold produced one `WARN` per re-evaluation tick, not per hold)
 - **The hold WARN is event-driven, not tick-driven, and fired on every re-observation of an
   unchanged hold.** `tryActivateIfDependenciesReady` is reached from the slice's own LOAD, from
