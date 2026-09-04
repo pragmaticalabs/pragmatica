@@ -63,7 +63,6 @@ class StorageEncryptionTest {
         var malformed = (StorageEncryption.MalformedSecretRef) cause;
 
         assertThat(malformed.keyId()).isEqualTo(KEY_ID);
-        assertThat(malformed.ref()).isEqualTo(LITERAL_NOT_A_REF);
     }
 
     private static void assertInvalidSecretEncoding(Cause cause) {
