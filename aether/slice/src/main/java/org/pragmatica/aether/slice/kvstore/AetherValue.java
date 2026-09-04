@@ -369,26 +369,45 @@ public sealed interface AetherValue {
                                    int consecutiveFailures,
                                    int totalExecutions,
                                    String lastFailureMessage,
-                                   long updatedAt) implements AetherValue {
-        public static ScheduledTaskStateValue successState(long nextFireAt, int totalExecutions) {
+                                   long updatedAt,
+                                   int skippedOverlaps) implements AetherValue {
+        public static ScheduledTaskStateValue successState(long nextFireAt, int totalExecutions, int skippedOverlaps) {
             return new ScheduledTaskStateValue(System.currentTimeMillis(),
                                                nextFireAt,
                                                0,
                                                totalExecutions,
                                                "",
-                                               System.currentTimeMillis());
+                                               System.currentTimeMillis(),
+                                               skippedOverlaps);
         }
 
         public static ScheduledTaskStateValue failureState(long nextFireAt,
                                                            int consecutiveFailures,
                                                            int totalExecutions,
+                                                           int skippedOverlaps,
                                                            String failureMessage) {
             return new ScheduledTaskStateValue(System.currentTimeMillis(),
                                                nextFireAt,
                                                consecutiveFailures,
                                                totalExecutions,
                                                failureMessage,
-                                               System.currentTimeMillis());
+                                               System.currentTimeMillis(),
+                                               skippedOverlaps);
+        }
+
+        /// Records a skipped fixed-rate fire (previous invocation still in flight). Preserves every
+        /// other field from `prior` untouched — only `updatedAt` (doubling as "last-skip timestamp")
+        /// and `skippedOverlaps` advance. Absent prior state (first-ever fire skipped) starts from zero.
+        public static ScheduledTaskStateValue skippedOverlapState(Option<ScheduledTaskStateValue> prior,
+                                                                  long skippedAt) {
+            return prior.map(p -> new ScheduledTaskStateValue(p.lastExecutionAt(),
+                                                              p.nextFireAt(),
+                                                              p.consecutiveFailures(),
+                                                              p.totalExecutions(),
+                                                              p.lastFailureMessage(),
+                                                              skippedAt,
+                                                              p.skippedOverlaps() + 1))
+                        .or(new ScheduledTaskStateValue(0, 0, 0, 0, "", skippedAt, 1));
         }
     }
 

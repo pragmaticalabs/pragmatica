@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -17,16 +18,22 @@ import org.pragmatica.aether.invoke.SliceInvoker;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.ExecutionMode;
 import org.pragmatica.aether.slice.MethodName;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskStateKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskStateValue;
+import org.pragmatica.cluster.state.kvstore.KVCommand.Put;
+import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.Option;
+import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.serialization.Deserializer;
+import org.pragmatica.serialization.Serializer;
 
 import java.lang.reflect.Proxy;
 import java.util.ArrayList;
@@ -39,10 +46,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 
 
-/// Covers `GET /api/scheduled-tasks/executions-by-node` (P-NEW-H, 2026-05-21).
-/// Validates per-node execution attribution surfacing for TC-08-F3 (SINGLE-mode vs ALL-mode
-/// scheduled task tests). Current RC1 implementation reports the task's `registeredBy`
-/// node as the sole executor — assertions reflect that contract.
+/// Covers `GET /api/scheduled-tasks/executions-by-node` (P-NEW-H, 2026-05-21; per-node state
+/// keys, #841). Since #841, ALL-mode tasks write their execution counter under a per-node-scoped
+/// `ScheduledTaskStateKey` (one row per executing node, keyed by `ctx.self()`) instead of a single
+/// cluster-wide counter — concurrent executions on different nodes would otherwise clobber the
+/// same row. The route now aggregates by scanning the live `KVStore` for entries matching the
+/// task's identity with a node component present ([ScheduledTaskRoutes#buildExecutionsByNode]),
+/// replacing the old RC1 stub that attributed every execution to `task.registeredBy()`. A
+/// pre-#841 global-shaped entry (no node component) and another task's per-node entry must both
+/// be excluded from the aggregation — see `InvalidEntriesExcluded`, which pins the rolling-upgrade
+/// safety property that the old global key can never be misread as a node's row.
 class ScheduledTaskRoutesExecutionsByNodeTest {
 
     private static final String SECTION = "demo.section";
@@ -52,20 +65,26 @@ class ScheduledTaskRoutesExecutionsByNodeTest {
 
     private StubRegistry registry;
     private StubStateRegistry stateRegistry;
+    private KVStore<AetherKey, AetherValue> store;
 
     @BeforeEach
     void setUp() {
         registry = new StubRegistry();
         stateRegistry = new StubStateRegistry();
+        store = new KVStore<>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
     }
 
     private ScheduledTaskRoutes buildRoutes() {
         return ScheduledTaskRoutes.scheduledTaskRoutes(registry,
                                                         stubManager(),
-                                                        ScheduledTaskRoutesExecutionsByNodeTest::stubNode,
+                                                        () -> nodeOver(store),
                                                         stubInvoker(),
                                                         stateRegistry,
                                                         () -> true);
+    }
+
+    private void seed(AetherKey key, AetherValue value) {
+        store.process(store.createBatch(List.of(new Put<>(key, value))));
     }
 
     @Nested
@@ -109,13 +128,14 @@ class ScheduledTaskRoutesExecutionsByNodeTest {
     class WithState {
 
         @Test
-        void executionsByNode_taskWithState_reportsRegisteredByNodeWithTotal() {
+        void executionsByNode_taskWithNodeScopedState_reportsThatNodeWithTotal() {
             registry.addTask(SECTION, ARTIFACT, METHOD, EXECUTOR_NODE);
             var stateKey = ScheduledTaskStateKey.scheduledTaskStateKey(SECTION,
                                                                         artifact(ARTIFACT),
-                                                                        new MethodName(METHOD));
+                                                                        new MethodName(METHOD),
+                                                                        new NodeId(EXECUTOR_NODE));
             var executionAt = System.currentTimeMillis();
-            stateRegistry.put(stateKey, new ScheduledTaskStateValue(executionAt, 0, 0, 7, "", executionAt));
+            seed(stateKey, new ScheduledTaskStateValue(executionAt, 0, 0, 7, "", executionAt, 0));
 
             var routes = buildRoutes();
 
@@ -129,6 +149,76 @@ class ScheduledTaskRoutesExecutionsByNodeTest {
             assertThat(response.executions().get(0).nodeId()).isEqualTo(EXECUTOR_NODE);
             assertThat(response.executions().get(0).count()).isEqualTo(7);
             assertThat(response.executions().get(0).lastExecutionMs()).isEqualTo(executionAt);
+        }
+    }
+
+    @Nested
+    class MultipleNodes {
+
+        @Test
+        void executionsByNode_twoNodesWithState_reportsOneRowPerNodeSortedById() {
+            registry.addTask(SECTION, ARTIFACT, METHOD, EXECUTOR_NODE);
+
+            var nodeB = new NodeId("node-b");
+            var nodeA = new NodeId("node-a");
+            var atB = System.currentTimeMillis();
+            var atA = atB + 1000;
+
+            // Seeded out of node-id order — the route must sort the aggregated rows itself.
+            seed(ScheduledTaskStateKey.scheduledTaskStateKey(SECTION, artifact(ARTIFACT), new MethodName(METHOD), nodeB),
+                 new ScheduledTaskStateValue(atB, 0, 0, 3, "", atB, 0));
+            seed(ScheduledTaskStateKey.scheduledTaskStateKey(SECTION, artifact(ARTIFACT), new MethodName(METHOD), nodeA),
+                 new ScheduledTaskStateValue(atA, 0, 0, 9, "", atA, 0));
+
+            var routes = buildRoutes();
+
+            var response = invoke(routes, SECTION, ARTIFACT, METHOD)
+                            .onFailure(cause -> fail("Must succeed: " + cause.message()))
+                            .await()
+                            .or((ScheduledTaskExecutionsByNodeResponse) null);
+
+            assertThat(response).isNotNull();
+            assertThat(response.executions()).hasSize(2);
+            assertThat(response.executions().get(0).nodeId()).isEqualTo("node-a");
+            assertThat(response.executions().get(0).count()).isEqualTo(9);
+            assertThat(response.executions().get(1).nodeId()).isEqualTo("node-b");
+            assertThat(response.executions().get(1).count()).isEqualTo(3);
+        }
+    }
+
+    @Nested
+    class InvalidEntriesExcluded {
+
+        @Test
+        void executionsByNode_globalKeyAndOtherTaskEntry_bothExcludedFromAggregation() {
+            registry.addTask(SECTION, ARTIFACT, METHOD, EXECUTOR_NODE);
+
+            // Pre-#841 global-shaped entry for THIS task's identity — no node component. Must
+            // never be misread as a node's row by the new per-node scan.
+            var globalKey = ScheduledTaskStateKey.scheduledTaskStateKey(SECTION, artifact(ARTIFACT), new MethodName(METHOD));
+            var globalAt = System.currentTimeMillis();
+            seed(globalKey, new ScheduledTaskStateValue(globalAt, 0, 0, 5, "", globalAt, 0));
+
+            // Node-scoped entry for a DIFFERENT task's identity — must never leak into this
+            // task's aggregation.
+            var otherTaskKey = ScheduledTaskStateKey.scheduledTaskStateKey(SECTION,
+                                                                            artifact("org.example:other:1.0.0"),
+                                                                            new MethodName(METHOD),
+                                                                            new NodeId(EXECUTOR_NODE));
+            var otherAt = System.currentTimeMillis();
+            seed(otherTaskKey, new ScheduledTaskStateValue(otherAt, 0, 0, 11, "", otherAt, 0));
+
+            var routes = buildRoutes();
+
+            var response = invoke(routes, SECTION, ARTIFACT, METHOD)
+                            .onFailure(cause -> fail("Must succeed: " + cause.message()))
+                            .await()
+                            .or((ScheduledTaskExecutionsByNodeResponse) null);
+
+            assertThat(response).isNotNull();
+            assertThat(response.executions())
+                    .as("neither the pre-upgrade global row nor another task's per-node row may surface here")
+                    .isEmpty();
         }
     }
 
@@ -192,6 +282,8 @@ class ScheduledTaskRoutesExecutionsByNodeTest {
             @Override public void onQuorumStateChange(ClusterStateNotification notification) {}
             @Override public int activeTimerCount() { return 0; }
             @Override public void stop() {}
+            @Override public boolean tryClaim(org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey key) { return true; }
+            @Override public void release(org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey key) {}
         };
     }
 
@@ -205,14 +297,29 @@ class ScheduledTaskRoutesExecutionsByNodeTest {
         );
     }
 
-    private static ManageableNode stubNode() {
+    private static ManageableNode nodeOver(KVStore<AetherKey, AetherValue> store) {
         return (ManageableNode) Proxy.newProxyInstance(
             ManageableNode.class.getClassLoader(),
             new Class[]{ManageableNode.class},
-            (_, _, _) -> {
-                throw new UnsupportedOperationException("Node should not be called for executions-by-node");
+            (_, method, _) -> switch (method.getName()) {
+                case "kvStore" -> store;
+                default -> throw new UnsupportedOperationException("Not implemented in test proxy: " + method.getName());
             }
         );
+    }
+
+    private static Serializer stubSerializer() {
+        return new Serializer() {
+            @Override public <T> void write(ByteBuf byteBuf, T object) {}
+        };
+    }
+
+    private static Deserializer stubDeserializer() {
+        return new Deserializer() {
+            @Override public <T> T read(ByteBuf byteBuf) {
+                return null;
+            }
+        };
     }
 
     private static final class StubRegistry implements ScheduledTaskRegistry {
@@ -237,12 +344,11 @@ class ScheduledTaskRoutesExecutionsByNodeTest {
         @Override public void setChangeListener(BiConsumer<ScheduledTaskKey, Option<ScheduledTask>> listener) {}
     }
 
+    /// No longer read by the executions-by-node route (which now scans the live `KVStore`
+    /// instead) — kept only because [ScheduledTaskRoutes#scheduledTaskRoutes] still requires a
+    /// `ScheduledTaskStateRegistry` for its OTHER routes (list/summary/single-state).
     private static final class StubStateRegistry implements ScheduledTaskStateRegistry {
         private final Map<ScheduledTaskStateKey, ScheduledTaskStateValue> map = new HashMap<>();
-
-        void put(ScheduledTaskStateKey key, ScheduledTaskStateValue value) {
-            map.put(key, value);
-        }
 
         @Override public void onStatePut(ValuePut<ScheduledTaskStateKey, ScheduledTaskStateValue> valuePut) {}
         @Override public void onStateRemove(ValueRemove<ScheduledTaskStateKey, ScheduledTaskStateValue> valueRemove) {}

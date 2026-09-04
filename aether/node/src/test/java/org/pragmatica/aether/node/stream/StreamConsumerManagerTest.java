@@ -125,6 +125,21 @@ class StreamConsumerManagerTest {
                                                            self);
     }
 
+    /// A seam for #545's re-resolution race: `reconcile()` and `declarationFor` each re-read
+    /// declarations independently, and a REAL registry answers both reads identically within one
+    /// synchronous call, so the ambiguity branch cannot be driven from a real registry. A mock that
+    /// answers the two reads DIFFERENTLY reproduces the only interleaving in which it matters.
+    private StreamConsumerManager managerWithRegistry(StreamConsumerRegistry customRegistry) {
+        return StreamConsumerManager.streamConsumerManager(customRegistry,
+                                                           runtime,
+                                                           invoker,
+                                                           invocationHandler,
+                                                           FrameworkCodecs.frameworkCodecs(),
+                                                           ownership,
+                                                           placement,
+                                                           SELF);
+    }
+
     private void declare(String eventType, boolean batchMode) {
         var key = StreamRegistrationKey.streamRegistrationKey(STREAM, CONFIG_SECTION, ARTIFACT, METHOD);
         var value = StreamRegistrationValue.streamRegistrationValue(SELF, GROUP, batchMode, eventType);
@@ -574,6 +589,182 @@ class StreamConsumerManagerTest {
         }
     }
 
+    /// #545: two DIFFERENT ARTIFACTS declaring the same `(stream, group)` collide — `SubscriptionKey`
+    /// and `ConsumerKey` are deliberately artifact-free, so nothing downstream can tell them apart, and
+    /// the historical `declarationFor` `findFirst()` picked a winner arbitrarily. Two VERSIONS of the
+    /// SAME artifact sharing a group is the opposite case: the intended blue-green collapse, and must
+    /// keep working exactly as before.
+    @Nested
+    class GroupCollisions {
+        private static final Artifact OTHER_ARTIFACT = Artifact.artifact("org.example:payments:1.0.0").unwrap();
+
+        private void declare(Artifact artifact, String eventType, boolean batchMode) {
+            var key = StreamRegistrationKey.streamRegistrationKey(STREAM, CONFIG_SECTION, artifact, METHOD);
+            var value = StreamRegistrationValue.streamRegistrationValue(SELF, GROUP, batchMode, eventType);
+
+            registry.onStreamRegistrationPut(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none()));
+        }
+
+        @Test
+        void reconcile_subscribesNeitherSide_whenTwoArtifactsShareOneGroup() {
+            declare(ARTIFACT, "java.lang.String", false);
+            declare(OTHER_ARTIFACT, "java.lang.String", false);
+            deploySliceLocally();
+            when(invocationHandler.localSlice(OTHER_ARTIFACT)).thenReturn(Option.some(new StubBridge(Option.none())));
+            ownership.ownedBySelf(0, 1, 2, 3);
+            manager().reconcile();
+            assertThat(runtime.subscribedPartitions()).describedAs("neither colliding artifact may consume — an arbitrary winner was the #545 defect, not a feature to preserve for either side")
+                      .isEmpty();
+        }
+
+        @Test
+        void statuses_nameBothArtifactsStreamAndGroup_whenTheyCollide() {
+            declare(ARTIFACT, "java.lang.String", false);
+            declare(OTHER_ARTIFACT, "java.lang.String", false);
+            var manager = manager();
+
+            manager.reconcile();
+            assertThat(manager.statuses()).hasSize(2)
+                      .allSatisfy(status -> assertThat(status.diagnostic().or("")).describedAs("an operator reading EITHER artifact's status must see both names, the stream and the group — not just its own")
+                                                     .contains(ARTIFACT.base().asString())
+                                                     .contains(OTHER_ARTIFACT.base().asString())
+                                                     .contains(STREAM)
+                                                     .contains(GROUP));
+        }
+
+        @Test
+        void reconcile_doesNotFlagCollision_whenTwoVersionsOfOneArtifactShareTheGroup() {
+            var upgraded = Artifact.artifact("org.example:orders:1.1.0").unwrap();
+
+            declare(ARTIFACT, "java.lang.String", false);
+            declare(upgraded, "java.lang.String", false);
+            deploySliceLocally();
+            when(invocationHandler.localSlice(upgraded)).thenReturn(Option.some(new StubBridge(Option.none())));
+            ownership.ownedBySelf(0, 1, 2, 3);
+            var manager = manager();
+
+            manager.reconcile();
+            assertThat(manager.statuses()).hasSize(2)
+                      .allSatisfy(status -> assertThat(status.diagnostic()).describedAs("two VERSIONS of one artifact sharing a group is the intended blue-green collapse (see TopicGroupDeclarationSource), not a collision")
+                                                     .isEqualTo(Option.none()));
+            assertThat(runtime.subscribedPartitions()).describedAs("the shared group keeps consuming across the upgrade window — the collision guard must not treat it as a fault")
+                      .containsExactlyInAnyOrder(0, 1, 2, 3);
+        }
+
+        /// `reconcile()`'s own guard already keeps a colliding declaration's key out of `desired`, so a
+        /// REAL registry can never drive `declarationFor` into an ambiguous match: both reads it takes
+        /// — the one `reconcile()` uses to build `desired` and the one it makes internally to resolve a
+        /// key back to a declaration — see the same snapshot. The only way the ambiguity branch is
+        /// reachable at all is a THIRD declaration landing between those two reads (a KV notification
+        /// racing a `reconcile()` in flight); a mock registry answering the two reads differently is
+        /// the only way to reproduce that interleaving synchronously. Proves the branch is not dead
+        /// code: it is what keeps that race from picking a side.
+        @Test
+        void declarationFor_refusesToPickAWinner_whenACollisionAppearsBetweenTheTwoDeclarationReads() {
+            var declarationA = new StreamConsumerRegistry.ConsumerDeclaration(STREAM, CONFIG_SECTION, ARTIFACT, METHOD, GROUP, false, "java.lang.String");
+            var declarationB = new StreamConsumerRegistry.ConsumerDeclaration(STREAM, CONFIG_SECTION, OTHER_ARTIFACT, METHOD, GROUP, false, "java.lang.String");
+            var raceyRegistry = mock(StreamConsumerRegistry.class);
+
+            when(raceyRegistry.allDeclarations()).thenReturn(List.of(declarationA))
+                                                 .thenReturn(List.of(declarationA, declarationB));
+            deploySliceLocally();
+            ownership.ownedBySelf(0, 1, 2, 3);
+
+            managerWithRegistry(raceyRegistry).reconcile();
+
+            assertThat(runtime.subscribedPartitions()).describedAs("the collision surfaced only on re-resolution — `declarationFor` must still refuse to pick a side, never fall back to the first match")
+                      .isEmpty();
+        }
+
+        /// The other three tests all declare both sides before the first `reconcile()` — this is the
+        /// LATE-arriving case: the first artifact is already actively consuming when the second,
+        /// colliding declaration appears. `reconcile()` re-derives `collidingGroups` from scratch on
+        /// EVERY call and re-evaluates every registered declaration against it, so the fix must not be
+        /// read as "a collision blocks attachment" only — it must also retract an attachment made before
+        /// the collision existed. Fail-closed is a fresh re-check each round, not a one-time gate at
+        /// first sight.
+        @Test
+        void reconcile_unsubscribesTheFirstArtifact_whenACollidingDeclarationArrivesLate() {
+            declare(ARTIFACT, "java.lang.String", false);
+            deploySliceLocally();
+            ownership.ownedBySelf(0, 1, 2, 3);
+            var manager = manager();
+
+            manager.reconcile();
+            assertThat(runtime.subscribedPartitions()).describedAs("before the second artifact declares, the sole declarant consumes normally")
+                      .containsExactlyInAnyOrder(0, 1, 2, 3);
+            assertThat(manager.statuses()).describedAs("before the collision, the sole declarant carries no diagnostic")
+                      .hasSize(1)
+                      .allSatisfy(status -> assertThat(status.diagnostic()).isEqualTo(Option.none()));
+
+            declare(OTHER_ARTIFACT, "java.lang.String", false);
+            when(invocationHandler.localSlice(OTHER_ARTIFACT)).thenReturn(Option.some(new StubBridge(Option.none())));
+            manager.reconcile();
+            assertThat(runtime.subscribedPartitions()).describedAs("the late collision must retract the already-active side too — a stale active subscription surviving would be a silent gap in the #545 fail-closed guarantee")
+                      .isEmpty();
+            assertThat(manager.statuses()).describedAs("the transition must also surface the diagnostic on BOTH sides — the first artifact's prior clean status must not survive the retraction unexplained")
+                      .hasSize(2)
+                      .allSatisfy(status -> assertThat(status.diagnostic().or("")).contains(ARTIFACT.base().asString())
+                                                     .contains(OTHER_ARTIFACT.base().asString())
+                                                     .contains(STREAM)
+                                                     .contains(GROUP));
+        }
+
+        /// Review of #844, finding 2: `unsubscribeAllFor` used to filter `active` by consumer group
+        /// alone, so a collision on ONE stream could sweep an unrelated, non-colliding subscription on
+        /// a DIFFERENT stream that merely happens to reuse the same group string. `RecordingRuntime` is
+        /// keyed by (stream, partition) precisely so this is observable at all: `invoices` never
+        /// collides (its `ConsumerGroupKey` is `("invoices", GROUP)`, distinct from `("orders", GROUP)`).
+        ///
+        /// Two reconcile() calls, not one: `unsubscribeAllFor` fires INSIDE `desiredFor`'s evaluation,
+        /// before `subscribeIfAbsent` ever runs, so the sweep needs `invoices` ALREADY active from a
+        /// prior round to have anything to hit.
+        ///
+        /// Final membership is NOT the pinning assertion — a mutation probe proved this the hard way.
+        /// `attach()` uses `active.putIfAbsent`, so even a same-pass detach of `invoices` self-heals
+        /// silently: `invoices`'s declaration is still non-colliding and still in `desired`, so
+        /// `subscribeIfAbsent` re-subscribes it before `reconcile()` returns, and `subscribedPartitions`
+        /// looks identical either way. What actually differs is `subscribeCalls`: a group-only filter
+        /// detaches and then transparently RE-subscribes `invoices` — a spurious `unsubscribe`/
+        /// `subscribe` round trip a real runtime would feel as a graceful cursor flush plus a fresh
+        /// resume, wasted work with a resume-window gap, not permanent data loss. The stream-scoped
+        /// filter never touches `invoices` at all: zero new subscribe calls.
+        @Test
+        void reconcile_leavesAnUnrelatedStreamAlone_whenItsGroupNameCollidesOnlyOnAnotherStream() {
+            var otherStream = "invoices";
+            var otherConfigSection = "streams.invoices";
+            var otherStreamArtifact = Artifact.artifact("org.example:invoices:1.0.0").unwrap();
+
+            var otherKey = StreamRegistrationKey.streamRegistrationKey(otherStream, otherConfigSection, otherStreamArtifact, METHOD);
+            var otherValue = StreamRegistrationValue.streamRegistrationValue(SELF, GROUP, false, "java.lang.String");
+            registry.onStreamRegistrationPut(new ValuePut<>(new KVCommand.Put<>(otherKey, otherValue), Option.none()));
+            when(invocationHandler.localSlice(otherStreamArtifact)).thenReturn(Option.some(new StubBridge(Option.none())));
+
+            declare(ARTIFACT, "java.lang.String", false);
+            deploySliceLocally();
+            ownership.ownedBySelf(0, 1, 2, 3);
+            var manager = manager();
+
+            manager.reconcile();
+            assertThat(runtime.subscribedPartitions(STREAM)).describedAs("orders' sole declarant consumes normally before the collision")
+                      .containsExactlyInAnyOrder(0, 1, 2, 3);
+            assertThat(runtime.subscribedPartitions(otherStream)).describedAs("invoices' sole declarant, reusing the same group NAME on a different stream, also consumes normally and is now ACTIVE")
+                      .containsExactlyInAnyOrder(0, 1, 2, 3);
+            var subscribeCallsBeforeCollision = runtime.subscribeCalls;
+
+            declare(OTHER_ARTIFACT, "java.lang.String", false);
+            when(invocationHandler.localSlice(OTHER_ARTIFACT)).thenReturn(Option.some(new StubBridge(Option.none())));
+            manager.reconcile();
+
+            assertThat(runtime.subscribedPartitions(STREAM)).describedAs("both colliding artifacts on `orders` must be retracted")
+                      .isEmpty();
+            assertThat(runtime.subscribedPartitions(otherStream)).describedAs("membership alone doesn't distinguish the fix from the bug — attach()'s putIfAbsent self-heals a same-pass detach")
+                      .containsExactlyInAnyOrder(0, 1, 2, 3);
+            assertThat(runtime.subscribeCalls).describedAs("the actual symptom: a group-only filter detaches `invoices` mid-pass and then transparently re-subscribes it since it is still desired — a spurious unsubscribe+resubscribe a real runtime would feel as a needless cursor flush and resume. A stream-scoped filter never touches `invoices`: zero new subscribe calls since before the collision")
+                      .isEqualTo(subscribeCallsBeforeCollision);
+        }
+    }
+
     @Nested
     class Lifecycle {
         @Test
@@ -674,13 +865,27 @@ class StreamConsumerManagerTest {
     }
 
     /// Records subscribe/unsubscribe instead of running a delivery loop, so the assignment decision is
-    /// observable without a partition manager.
+    /// observable without a partition manager. Keyed by (stream, partition) rather than partition
+    /// alone — #545 review: a partition number is not unique across streams, and the over-detach bug
+    /// in `unsubscribeAllFor` (group matched, stream did not) can only be pinned by a double that keeps
+    /// two streams' subscriptions apart. Every existing test uses one stream, so `subscribedPartitions()`
+    /// (no-arg) stays behaviorally identical to the old partition-only map.
     private static final class RecordingRuntime implements StreamConsumerRuntime {
-        private final Map<Integer, String> subscriptions = new ConcurrentHashMap<>();
+        private record StreamPartition(String streamName, int partition) {}
+
+        private final Map<StreamPartition, String> subscriptions = new ConcurrentHashMap<>();
         private int subscribeCalls;
 
         List<Integer> subscribedPartitions() {
-            return List.copyOf(subscriptions.keySet());
+            return subscriptions.keySet().stream().map(StreamPartition::partition).distinct().toList();
+        }
+
+        List<Integer> subscribedPartitions(String streamName) {
+            return subscriptions.keySet()
+                                .stream()
+                                .filter(key -> key.streamName().equals(streamName))
+                                .map(StreamPartition::partition)
+                                .toList();
         }
 
         @Override
@@ -698,14 +903,14 @@ class StreamConsumerManagerTest {
                                       ConsumerCallback callback,
                                       IdlePolicy idlePolicy) {
             subscribeCalls++;
-            subscriptions.put(partition, config.groupId());
+            subscriptions.put(new StreamPartition(streamName, partition), config.groupId());
 
             return Result.unitResult();
         }
 
         @Override
         public Result<Unit> unsubscribe(String streamName, int partition, String consumerGroup) {
-            subscriptions.remove(partition);
+            subscriptions.remove(new StreamPartition(streamName, partition));
 
             return Result.unitResult();
         }
@@ -729,8 +934,8 @@ class StreamConsumerManagerTest {
         public List<SubscriptionSnapshot> subscriptions() {
             return subscriptions.entrySet()
                                 .stream()
-                                .map(entry -> new SubscriptionSnapshot(STREAM,
-                                                                       entry.getKey(),
+                                .map(entry -> new SubscriptionSnapshot(entry.getKey().streamName(),
+                                                                       entry.getKey().partition(),
                                                                        entry.getValue(),
                                                                        0L,
                                                                        false,

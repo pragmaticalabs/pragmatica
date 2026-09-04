@@ -125,6 +125,7 @@ class ClusterTimeoutsAbsenceOrderingTest {
                                 base.cloud(),
                                 base.endpoints(),
                                 base.streaming(),
-                                base.membership());
+                                base.membership(),
+                                base.storageEncryption());
     }
 }

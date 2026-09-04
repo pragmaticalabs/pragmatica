@@ -919,6 +919,9 @@ public interface HttpForwarder {
 
                 pendingForwards.put(correlationId, pending);
                 pendingForwardsByNode.computeIfAbsent(targetNode, _ -> ConcurrentHashMap.newKeySet()).add(correlationId);
+                // #838 review round 1: return value discarded on purpose -- the scheduled fail targets
+                // `internalPromise` itself (see Promise#timeout javadoc), so this still arms the timeout
+                // even though the derived promise it returns here is never used.
                 internalPromise.timeout(hopTimeout);
                 var forwardRequest = new HttpForwardRequest(selfNodeId,
                                                             correlationId,

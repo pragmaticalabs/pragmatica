@@ -4295,6 +4295,13 @@ public class AetherCli implements Runnable {
             @Parameters(index = "1", description = "Message content")
             private String message;
 
+            /// #524: Management-API publish writes untyped bytes, so it cannot extract an
+            /// `@PartitionKey` the way an app publish does — an explicit `--partition` here is the
+            /// operator choosing a target directly, not key-based routing. Omitted keeps the
+            /// unchanged default: partition 0.
+            @CommandLine.Option(names = "--partition", description = "Target partition (default: 0). Management-API publish does no key-based routing -- it writes untyped bytes with no event to extract a key from, so this is a direct, deliberate target choice.")
+            private Integer partition;
+
             @Override
             public Integer call() {
                 return resolveStreamAddress(address).fold(StreamCommand::handleAddressError, this::publish);
@@ -4302,7 +4309,9 @@ public class AetherCli implements Runnable {
 
             private int publish(ResourceAddress addr) {
                 var encoded = Base64.getEncoder().encodeToString(message.getBytes());
-                var body = "{\"data\":\"" + encoded + "\"}";
+                var body = partition == null
+                           ? "{\"data\":\"" + encoded + "\"}"
+                           : "{\"data\":\"" + encoded + "\",\"partition\":" + partition + "}";
                 var response = streamParent.parent.post(STREAMS_PUBLISH,
                                                         List.of(addr.namespace().value(),
                                                                 addr.name().value(),

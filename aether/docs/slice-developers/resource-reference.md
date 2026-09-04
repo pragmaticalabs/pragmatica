@@ -1250,7 +1250,7 @@ Scheduled tasks can be managed at runtime via the Management API and CLI:
 
 - **Pause** — suspends a task's timer without removing the schedule. The task will not fire until resumed
 - **Resume** — restarts a paused task's timer from the current time
-- **Manual trigger** — fires a task immediately regardless of schedule or paused state
+- **Manual trigger** — fires a task immediately regardless of schedule or paused state, unless a run is already in flight (an automatic fire or another manual trigger), in which case it is refused with `409 Conflict` naming the task rather than run concurrently [mechanism: `ScheduledTaskManager.tryClaim`/`release`; pinned by `ScheduledTaskRoutesTriggerTest#ConflictGuard` — component-level, not a live multi-node run]
 
 Pause/resume state is persisted in the KV-Store through consensus — it survives leader failover and node restarts.
 
@@ -1263,12 +1263,29 @@ The runtime tracks execution metrics for each scheduled task:
 | Metric | Description |
 |--------|-------------|
 | `lastExecutionAt` | Epoch millis of the most recent execution |
-| `nextFireAt` | Epoch millis of the next scheduled fire (cron tasks) |
-| `consecutiveFailures` | Number of consecutive failed executions (resets on success) |
+| `nextFireAt` | Epoch millis of the next scheduled fire — computed for both interval and cron tasks [verified: `ScheduledTaskManagerTest` — `fireFixedRate`/`fireCron` write a real `nextFireAt` on every fire, not a placeholder] |
+| `consecutiveFailures` | Number of consecutive failed executions; resets to `0` on the next success |
 | `totalExecutions` | Lifetime execution count |
+| `skippedOverlaps` | Count of fires skipped because the previous run of the same task was still in flight — fixed-rate tasks only; see Overlap Protection below |
 | `lastFailureMessage` | Error message from the most recent failure |
 
-Execution state is written to the KV-Store after each execution (fire-and-forget). Query via `GET /api/scheduled-tasks/{config}/{artifact}/{method}/state`.
+Execution state is written to the KV-Store after each execution via a read-modify-write against the prior state entry (fire-and-forget write, but the counters themselves are accumulated, not overwritten) [verified: `aether/aether-invoke/.../ScheduledTaskManagerTest.java` — `FireBehavior` nested class]. Query via `GET /api/scheduled-tasks/{config}/{artifact}/{method}/state`.
+
+As of #841, `execution_mode = "all"` tasks accumulate this state **per node** — each quorum member reads and writes its own node-scoped KV entry, so two nodes firing the same task concurrently never share one counter and neither can lose the other's update; `execution_mode = "single"` keeps the original unscoped key unchanged, since only one node ever executes it. `GET /api/v1/scheduled-tasks/executions-by-node/{section}/{artifact}/{methodName}` in the Management API returns the literal per-node breakdown, one row per node; the tasks-list summary (`GET /api/v1/scheduled-tasks`) and this section's own `GET .../state` endpoint instead report one *combined* row per task, applying a fixed per-field rule: `totalExecutions` and `skippedOverlaps` are summed across nodes, `consecutiveFailures` and `lastExecutionAt` take the max, `nextFireAt` takes the min, and `lastFailureMessage` (together with `updatedAt`) is taken from whichever node's row has the newest `updatedAt`
+[mechanism: `ScheduledTaskManager.TaskOps.stateKeyFor(ctx, task)` keys ALL-mode writes by `ctx.self()`; `ScheduledTaskRoutes.toSummary`/`buildStateResponse`/`buildExecutionsByNode` all scan the same node-scoped rows to build their respective views; pinned by `ScheduledTaskManagerTest.java#MultiNodeStateIsolation` and `ScheduledTaskRoutesAllModeAggregationTest.java` — component-level, not a live multi-node run]. **Rolling-upgrade note:** the pre-#841 global entry for an ALL-mode task is left in the KV-Store untouched but is excluded by all three surfaces above, so a task's per-node counters restart at zero after upgrading rather than continuing from the old shared total. The dev-only `POST /api/v1/scheduled-tasks/inject` route (see Management API) now keys an `all`-mode task's write by `ctx.self()` too, mirroring the automatic path, so its writes are visible on all three surfaces above; a `single`-mode task's `/inject` call still races the leader's automatic fire on the same unscoped entry, with no `tryClaim`/`release` guard around the read-modify-write (`/trigger` writes no state entry at all, so it is not a racer on this key) — a documented TOCTOU caveat, not addressed by this change.
+
+### Overlap Protection
+
+- **Fixed-rate (`interval`) tasks skip a fire while the previous run of the same task is still executing**, rather than allowing concurrent overlapping runs. A skipped fire increments `skippedOverlaps` and does not touch `totalExecutions` or `consecutiveFailures` [verified: `ScheduledTaskManagerTest#fixedRate_overlappingFire_recordsSkipInsteadOfDoubleExecution`].
+- **Cron tasks re-schedule after the previous execution completes**, not after the fire is launched — so a slow execution delays the next cron fire rather than launching two runs concurrently; there is nothing to skip and `skippedOverlaps` never increments for cron tasks.
+- This is a fixed default (skip, not queue or run concurrently); there is no per-task configuration knob.
+
+### Schedule Validation
+
+The `interval`/`cron` string is **node-local configuration** (`ScheduleConfig`, resolved per node from its own config document), not something the blueprint DSL parser can see — blueprint validation happens strictly earlier and has no access to per-node config. The earliest point an invalid interval/cron string can be rejected is therefore **slice activation**, not blueprint validation.
+
+An invalid string (fails `CronExpression.parse` or `ScheduledTaskManager.IntervalParser.parse`) fails activation for that scheduled task before any KV write happens — the malformed schedule is never registered. The failure is observable the same way any other activation failure is: it surfaces as a WARNING-severity `DeploymentFailed` event (via the existing `ClusterEventAggregator.handleDeploymentFailed` path) naming the task, the offending string, and the parser's error message — no separate plumbing was added for this
+[verified: `NodeDeploymentStateScheduledTaskValidationTest`].
 
 ### Method Constraints
 

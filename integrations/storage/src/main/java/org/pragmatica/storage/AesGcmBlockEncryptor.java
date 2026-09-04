@@ -19,6 +19,7 @@ final class AesGcmBlockEncryptor implements BlockEncryptor {
     private static final int IV_LENGTH_BYTES = 12;
     private static final int GCM_TAG_LENGTH_BITS = 128;
     private static final int REQUIRED_KEY_LENGTH = 32;
+    private static final byte[] EMPTY_AAD = new byte[0];
 
     private final byte[] key;
     private final String keyId;
@@ -32,7 +33,7 @@ final class AesGcmBlockEncryptor implements BlockEncryptor {
 
     static Result<BlockEncryptor> aesGcmBlockEncryptor(byte[] key, String keyId) {
         if (key.length != REQUIRED_KEY_LENGTH) {
-            return new EncryptionError.InvalidKeyLength(key.length, REQUIRED_KEY_LENGTH).result();
+            return new EncryptionError.InvalidKeyLength(keyId, key.length, REQUIRED_KEY_LENGTH).result();
         }
 
         return Result.success(new AesGcmBlockEncryptor(key, keyId));
@@ -40,12 +41,22 @@ final class AesGcmBlockEncryptor implements BlockEncryptor {
 
     @Override
     public Result<EncryptedData> encrypt(byte[] data) {
-        return generateIv().flatMap(iv -> performEncryption(data, iv));
+        return encrypt(data, EMPTY_AAD);
+    }
+
+    @Override
+    public Result<EncryptedData> encrypt(byte[] data, byte[] aad) {
+        return generateIv().flatMap(iv -> performEncryption(data, iv, aad));
     }
 
     @Override
     public Result<byte[]> decrypt(byte[] encryptedData, EncryptionParams params) {
-        return doCipher(EncryptionError.DecryptionFailed::new, Cipher.DECRYPT_MODE, encryptedData, params.iv());
+        return decrypt(encryptedData, params, EMPTY_AAD);
+    }
+
+    @Override
+    public Result<byte[]> decrypt(byte[] encryptedData, EncryptionParams params, byte[] aad) {
+        return doCipher(EncryptionError.DecryptionFailed::new, Cipher.DECRYPT_MODE, encryptedData, params.iv(), aad);
     }
 
     private Result<byte[]> generateIv() {
@@ -56,9 +67,9 @@ final class AesGcmBlockEncryptor implements BlockEncryptor {
         return Result.success(iv);
     }
 
-    private Result<EncryptedData> performEncryption(byte[] data, byte[] iv) {
-        return doCipher(EncryptionError.EncryptionFailed::new, Cipher.ENCRYPT_MODE, data, iv).map(ciphertext -> toEncryptedData(ciphertext,
-                                                                                                                                iv));
+    private Result<EncryptedData> performEncryption(byte[] data, byte[] iv, byte[] aad) {
+        return doCipher(EncryptionError.EncryptionFailed::new, Cipher.ENCRYPT_MODE, data, iv, aad).map(ciphertext -> toEncryptedData(ciphertext,
+                                                                                                                                     iv));
     }
 
     private EncryptedData toEncryptedData(byte[] ciphertext, byte[] iv) {
@@ -67,11 +78,14 @@ final class AesGcmBlockEncryptor implements BlockEncryptor {
 
     /// Run the JCE cipher, capturing any [`GeneralSecurityException`] into a [`Result`] via the
     /// supplied error factory so the crypto-failure path is surfaced as a [`Cause`] rather than a
-    /// checked exception propagated out of the encryptor.
+    /// checked exception propagated out of the encryptor. `aad` (possibly empty) is always fed to
+    /// the cipher via `updateAAD` -- an empty array is a cryptographic no-op, so callers that never
+    /// pass AAD get byte-identical output to the pre-AAD implementation.
     private Result<byte[]> doCipher(Fn1<? extends Cause, ? super Throwable> errorMapper,
                                     int mode,
                                     byte[] input,
-                                    byte[] iv) {
+                                    byte[] iv,
+                                    byte[] aad) {
         return Result.lift(errorMapper,
                            () -> {
                                var spec = new GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv);
@@ -79,6 +93,7 @@ final class AesGcmBlockEncryptor implements BlockEncryptor {
                                var cipher = Cipher.getInstance(ALGORITHM);
 
                                cipher.init(mode, secretKey, spec);
+                               cipher.updateAAD(aad);
 
                                return cipher.doFinal(input);
                            });

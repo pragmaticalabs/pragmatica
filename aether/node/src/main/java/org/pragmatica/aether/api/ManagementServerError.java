@@ -48,6 +48,40 @@ public sealed interface ManagementServerError extends Cause, HttpStatusAware {
         }
     }
 
+    /// #524 SHOULD-FIX 1: the Management-API publish auto-create guard (`ensureStreamExists`) could
+    /// not materialize the stream -- a genuine failure (capacity exhausted, or STRONG consistency
+    /// requiring AHSE storage), never a transient config-visibility race, which the manager resolves
+    /// internally and never surfaces here. The declared partition count is therefore genuinely
+    /// unknown at the route, so `validatePartition` must never guess one (e.g. against a hardcoded
+    /// default) -- this reports 409 naming the stream and the underlying cause instead of silently
+    /// accepting an invalid partition or rejecting a valid one against a fabricated count.
+    record StreamUnavailable(String streamName, String reason) implements ManagementServerError {
+        @Override
+        public String message() {
+            return "Stream '" + streamName + "' is not available: " + reason;
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+    }
+
+    /// #524: an explicit `partition` on a Management-API publish named a partition the stream does not
+    /// declare. Names the valid range rather than silently writing to partition 0 or 500ing.
+    record InvalidPartition(int requested, int partitionCount) implements ManagementServerError {
+        @Override
+        public String message() {
+            return "Partition %d is out of range; this stream has partitions [0, %d)".formatted(requested,
+                                                                                                partitionCount);
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.BAD_REQUEST;
+        }
+    }
+
     record NotLeader(String leaderId) implements ManagementServerError {
         @Override
         public String message() {
