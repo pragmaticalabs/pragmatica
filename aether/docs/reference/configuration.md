@@ -271,8 +271,11 @@ the nonce is authenticated (AES-GCM AAD) but not encrypted — editing the heade
 in a different valid key id, fails decryption closed. A block with no recognizable header (fewer
 than 4 bytes, or a non-matching magic) is treated as **legacy plaintext**: enabling encryption over a
 local-disk directory that already holds unmarked block files is refused at boot; a DHT tier has no
-directory to scan and instead fails closed per block on read. A block whose header names a key id
-absent from the configured keyring fails with `UnknownKeyId` rather than a truncated read.
+directory to scan for that forward-direction check, so an unmarked plaintext block on the DHT tier is
+instead caught per block on read, exactly as before this ruling. The DHT tier does still have its own
+boot-time check, but in the opposite direction — see "Reverse-direction refusal" below. A block whose
+header names a key id absent from the configured keyring fails with `UnknownKeyId` rather than a
+truncated read.
 
 **Reverse-direction refusal.** The legacy-plaintext checks above guard *enabling* encryption over
 existing plaintext; boot also refuses the opposite move — *disabling* encryption (or omitting
