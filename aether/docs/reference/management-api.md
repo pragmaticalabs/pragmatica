@@ -4272,6 +4272,8 @@ Get detailed execution state for a specific scheduled task.
 Same ALL-mode aggregation as the tasks-list summary above: for an `execution_mode = "all"` task every field is combined across each node's own row rather than read from a single shared entry. `lastFailureMessage`/`updatedAt` are not summable across nodes, so they are taken together from whichever per-node row has the higher `updatedAt`
 [mechanism: `ScheduledTaskRoutes.buildStateResponse` branches on `ExecutionMode.ALL` into `aggregateAllModeState`/`combineNodeStates`; pinned by `ScheduledTaskRoutesAllModeAggregationTest.java#SingleTaskState` — component-level against a real `KVStore`, not a live multi-node run].
 
+Both aggregate surfaces above (list summary and this single-task state) expose only the combined totals per task, never a per-node list field — the per-node breakdown lives exclusively on `GET /api/v1/scheduled-tasks/executions-by-node/{section}/{artifact}/{methodName}` below.
+
 ### POST /api/v1/scheduled-tasks/inject
 
 **Dev-mode only.** Synchronously fire a scheduled task and advance its `lastExecutionAt` timestamp, bypassing the normal schedule. Used by integration tests that need a deterministic way to drive scheduled-task assertions — replaces the warn-then-pass demotion described in `aether/docs/.internal/audits/integration-test-audit-2026-05-21.md` §2.2 (RC1-blocker #16).
@@ -4304,7 +4306,10 @@ All three fields are required. The `(section, artifact, method)` triple identifi
 
 `previousExecutionMs` is `0` when no prior state entry exists; otherwise it equals the `lastExecutionAt` value visible via `/api/v1/scheduled-tasks/state/{section}/{artifact}/{methodName}` immediately before the injection. `currentExecutionMs > previousExecutionMs` is guaranteed on success — tests may assert strict monotonic advancement without polling.
 
-**Caveat for `execution_mode = "all"` tasks:** unlike the automatic and `/trigger` paths, `/inject` always writes the pre-#841 unscoped state entry, never a per-node one. For a `single`-mode task this is the same entry the leader's automatic fire and `/trigger` use — no change. For an `all`-mode task, the write lands on an entry the tasks-list, single-task-state, and `executions-by-node` endpoints all now exclude (the same filter that excludes a pre-#841 rolling-upgrade entry, see below), so `currentExecutionMs` in this response advances but never becomes visible on any other Management API surface. There is also no `tryClaim`/`release` guard around the read-modify-write here, unlike `/trigger` — a concurrent writer to the same entry between the read and the write is silently lost. Both are accepted limitations of a dev/test-only route, not defects to work around at call time.
+**Keying for `execution_mode = "all"` tasks (fixed in this PR):** `/inject` now keys its state write by `ctx.self()` for an `all`-mode task, exactly mirroring the automatic and `/trigger` paths, so the write lands on this node's own row and is immediately visible on the tasks-list summary, single-task state, and `executions-by-node` endpoints — no longer an orphaned write
+[mechanism: `ScheduledTaskRoutes.injectStateKeyFor` branches on `task.executionMode()` the same way `ScheduledTaskManager.TaskOps#stateKeyFor` does for the automatic path; pinned by `ScheduledTaskRoutesInjectTest.java#KeyScoping.inject_onAllModeTask_advancesStateVisibleOnStateEndpoint` — component-level against a real `KVStore`, not a live multi-node run].
+
+**Remaining caveat for `execution_mode = "single"` tasks:** `/inject` still writes the same unscoped state entry the leader's automatic fire and `/trigger` use, with no `tryClaim`/`release` guard around the read-modify-write — a concurrent writer to that same entry between the read and the write is silently lost. This TOCTOU gap is unchanged by the keying fix above and remains an accepted limitation of a dev/test-only route, not a defect to work around at call time.
 
 ### GET /api/v1/scheduled-tasks/executions-by-node/{section}/{artifact}/{methodName}
 
