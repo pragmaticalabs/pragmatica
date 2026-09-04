@@ -16,11 +16,15 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
+import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -397,6 +401,79 @@ class ClusterDeploymentStateActiveTest {
         }
     }
 
+    /// #543 condition 1: the pre-fix `undoToVersion`/`baselineAtVersion` wrote a bare PENDING
+    /// status and reported success without ever running the schema manager. This FSM's own stalled-
+    /// migration recovery (`recoverStalledSchemaMigrations`, run from `onEntry` on every leader
+    /// activation) treats any PENDING record as an interrupted migration and re-dispatches it via
+    /// `handleSchemaPending` → `schemaOrchestrator().migrateIfNeeded(...)` — a FORWARD migration.
+    /// Applied to an undo's leftover PENDING record, that silently re-ran the very migrations the
+    /// operator had just undone. Undo/baseline now write `SchemaStatus.COMPLETED`, never PENDING,
+    /// which routes `collectSchemaRecovery`'s `status == PENDING` filter around the record entirely
+    /// — not merely "usually skips it", structurally cannot match. `pendingRecord_isStillReDispatched`
+    /// is the control: without it, an orchestrator that is never called for ANY reason would pass
+    /// `completedRecord...` too, proving nothing.
+    @Nested
+    class SchemaRecoveryDispatch {
+        private static final String DATASOURCE = "database.orders";
+        private static final BlueprintId OWNER = BlueprintId.blueprintId("org.example:orders-app:1.0.0").unwrap();
+
+        private ClusterDeploymentState.Active activeWithSchemaRecord(SchemaStatus status, RecordingSchemaOrchestrator orchestrator) {
+            var router = MessageRouter.mutable();
+            var localKv = new InMemoryKvStore(router);
+            var localCluster = new RecordingClusterNode(SELF);
+
+            localKv.put(SchemaVersionKey.schemaVersionKey(DATASOURCE),
+                        SchemaVersionValue.schemaVersionValue(DATASOURCE,
+                                                              7,
+                                                              "V007__baseline",
+                                                              status,
+                                                              "org.example:orders-app:1.0.0",
+                                                              OWNER));
+
+            Function<Fsm<ClusterDeploymentState, ClusterFsmEvent>, ClusterDeploymentState> factory =
+                    fsm -> new ClusterDeploymentContext(fsm,
+                                                        SELF,
+                                                        localCluster,
+                                                        localKv,
+                                                        router,
+                                                        stubTopologyManager(SELF),
+                                                        orchestrator,
+                                                        () -> Set.of(SELF),
+                                                        () -> Set.of(SELF),
+                                                        Set::of,
+                                                        Set.of(SELF),
+                                                        DeploymentAtomicity.ALL_OR_NOTHING,
+                                                        3,
+                                                        timeSpan(300).seconds(),
+                                                        injectedClock::get).dormant();
+            var localHarness = FsmTestHarness.harness("schema-recovery-" + status + "-" + System.nanoTime(), factory);
+            localHarness.dispatch(new Activate());
+            return (ClusterDeploymentState.Active) localHarness.state();
+        }
+
+        @Test
+        void completedRecord_fromUndo_isNeverReDispatchedAsPending() {
+            var orchestrator = new RecordingSchemaOrchestrator();
+
+            activeWithSchemaRecord(SchemaStatus.COMPLETED, orchestrator);
+
+            assertThat(orchestrator.migrateIfNeededCalls)
+                    .as("a COMPLETED record — what undo/baseline now write — must never be treated as a stalled PENDING migration")
+                    .isEmpty();
+        }
+
+        @Test
+        void pendingRecord_isStillReDispatched_provingTheTestCanTellTheDifference() {
+            var orchestrator = new RecordingSchemaOrchestrator();
+
+            activeWithSchemaRecord(SchemaStatus.PENDING, orchestrator);
+
+            assertThat(orchestrator.migrateIfNeededCalls)
+                    .as("control: a genuinely PENDING record must still be re-dispatched on activation — otherwise this test proves nothing")
+                    .containsExactly(DATASOURCE);
+        }
+    }
+
     /// #325 fix 2a: a slice stuck in ROUTING past 3× its 30s timeout must join the force-unload
     /// remediation arm (issuing UNLOAD), and the relocated `transitionalStateTimestamps.remove()`
     /// must fire only inside the handled arm — a fresh (non-stuck) transitional entry is left
@@ -467,6 +544,25 @@ class ClusterDeploymentStateActiveTest {
                 return Promise.success(Unit.unit());
             }
         };
+    }
+
+    /// Unlike [#stubSchemaOrchestrator], records every `migrateIfNeeded` call so
+    /// [SchemaRecoveryDispatch] can assert an undo-produced COMPLETED record never triggers one.
+    private static final class RecordingSchemaOrchestrator implements SchemaOrchestratorService {
+        final List<String> migrateIfNeededCalls = Collections.synchronizedList(new ArrayList<>());
+
+        @Override public Promise<Unit> migrateIfNeeded(String datasourceName) {
+            migrateIfNeededCalls.add(datasourceName);
+            return Promise.success(Unit.unit());
+        }
+
+        @Override public Promise<Unit> undoTo(String datasourceName, int targetVersion) {
+            return Promise.success(Unit.unit());
+        }
+
+        @Override public Promise<Unit> baseline(String datasourceName, int version) {
+            return Promise.success(Unit.unit());
+        }
     }
 
     private static TopologyManager stubTopologyManager(NodeId self) {

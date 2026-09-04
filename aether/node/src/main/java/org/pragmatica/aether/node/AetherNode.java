@@ -1933,6 +1933,11 @@ public interface AetherNode extends ManageableNode {
             }
 
             @Override
+            public SchemaOrchestratorService schemaOrchestrator() {
+                return clusterDeploymentManager.schemaOrchestrator();
+            }
+
+            @Override
             public int managementPort() {
                 return config.managementPort();
             }

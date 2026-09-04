@@ -36,15 +36,18 @@ import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.parse.Number;
 
 import static org.pragmatica.aether.api.routes.SchemaRouteError.InvalidVersionParameter.invalidVersionParameter;
 import static org.pragmatica.aether.api.routes.SchemaRouteError.SchemaAlreadyPending.schemaAlreadyPending;
 import static org.pragmatica.aether.api.routes.SchemaRouteError.SchemaAlreadyServing.schemaAlreadyServing;
 import static org.pragmatica.aether.api.routes.SchemaRouteError.SchemaNotFailed.schemaNotFailed;
+import static org.pragmatica.aether.api.routes.SchemaRouteError.SchemaNotLeader.schemaNotLeader;
 import static org.pragmatica.aether.api.routes.SchemaRouteError.SchemaRecordNotFound.schemaRecordNotFound;
 import static org.pragmatica.http.routing.PathParameter.aString;
 import static org.pragmatica.lang.Result.success;
+import static org.pragmatica.lang.Unit.unit;
 
 
 public final class SchemaRoutes implements RouteSource {
@@ -280,8 +283,23 @@ public final class SchemaRoutes implements RouteSource {
                                .flatMap(targetVersion -> undoToVersion(datasource, targetVersion));
     }
 
-    private Promise<SchemaMigrateResponse> undoToVersion(String datasource, int targetVersion) {
-        return lookupSchemaVersion(datasource).flatMap(current -> writeUndoStatus(current, datasource, targetVersion));
+    /// #543 ("schema undo is unreachable"): this used to write a bare KV status (PENDING) and
+    /// report success without ever calling the schema manager's `undo` operation — see
+    /// `SchemaOrchestratorService.undoTo`'s header for why that was actively wrong, not merely
+    /// inert. Now: confirm the record exists (404), confirm this node is the leader (409 —
+    /// condition 2), delegate to the real orchestrator SYNCHRONOUSLY, then report what actually
+    /// happened by re-reading KV (condition 3) rather than echoing the request back.
+    ///
+    /// Package-visible so the undo contract can be exercised directly against a REAL
+    /// `SchemaOrchestratorServiceInstance` (matching [#baselineDatasource]'s precedent): review
+    /// round 1 BLOCKING 1 found every existing undo test substituting a stub orchestrator, so
+    /// nothing failed when this method's delegation to the real manager was reverted to a stub.
+    Promise<SchemaMigrateResponse> undoToVersion(String datasource, int targetVersion) {
+        return lookupSchemaVersion(datasource).flatMap(_ -> requireLeader(datasource, "undo"))
+                                  .flatMap(_ -> nodeSupplier.get()
+                                                            .schemaOrchestrator()
+                                                            .undoTo(datasource, targetVersion))
+                                  .flatMap(_ -> reportOutcome(datasource, "Undo"));
     }
 
     /// Package-visible so the baseline contract can be exercised directly (matching
@@ -293,8 +311,56 @@ public final class SchemaRoutes implements RouteSource {
                                .flatMap(version -> baselineAtVersion(datasource, version));
     }
 
+    /// #543: this used to write a fabricated COMPLETED status directly, with zero database
+    /// interaction — see `SchemaOrchestratorService.baseline`'s header. Same shape as
+    /// [#undoToVersion]: existence check, leader-bind, real orchestrator call, re-read for the
+    /// response.
     private Promise<SchemaMigrateResponse> baselineAtVersion(String datasource, int version) {
-        return lookupSchemaVersion(datasource).flatMap(current -> writeBaselineStatus(current, datasource, version));
+        return lookupSchemaVersion(datasource).flatMap(_ -> requireLeader(datasource, "baseline"))
+                                  .flatMap(_ -> nodeSupplier.get()
+                                                            .schemaOrchestrator()
+                                                            .baseline(datasource, version))
+                                  .flatMap(_ -> reportOutcome(datasource, "Baseline"));
+    }
+
+    /// #543 condition 2: `SchemaOrchestratorServiceInstance`'s single-flight fence is an
+    /// in-process `ConcurrentHashMap`, not a KV-transactional lock — it serializes calls on ONE
+    /// node and does nothing for a second node mutating the same schema row concurrently.
+    /// Leader-binding closes that gap without a distributed lock of its own, the same way AB-test
+    /// mutations already rely on exactly one node ever running at a time
+    /// (`AbTestRoutes.requireLeader`) — not reused directly: that helper raises a bare `Cause`,
+    /// which `ProblemResponses` cannot distinguish from a genuine server fault and answers 500 for.
+    /// This uses the [HttpStatusAware]-typed [SchemaRouteError.SchemaNotLeader] (409) instead, so
+    /// the caller can tell "retry the leader" from "the cluster broke".
+    ///
+    /// review round 1 SHOULD-FIX 5: this check is itself check-then-act, undisclosed until now.
+    /// `node.isLeader()` is read once, here; the manager call it guards runs afterward with no
+    /// re-check, so leadership can change between this read and that call's completion. Same
+    /// missing-compare-and-set shape as #766's lock race, one layer up at the leader gate rather
+    /// than at `acquireLock`'s KV lock — tracked under #766 rather than separately (see
+    /// management-api.md's `acquireLock` callout).
+    private Promise<Unit> requireLeader(String datasource, String operation) {
+        var node = nodeSupplier.get();
+
+        return node.isLeader()
+               ? Promise.success(unit())
+               : schemaNotLeader(datasource, operation, node.leader()).promise();
+    }
+
+    /// #543 condition 3: reports what [AetherSchemaManager] actually did by re-reading the KV
+    /// record `SchemaOrchestratorService.undoTo`/`.baseline` just wrote from its own real
+    /// `SchemaResult.currentVersion()` — never the caller's requested version. Keeping
+    /// `SchemaOrchestratorService`'s interface as `Promise<Unit>` (12 unrelated FSM/deployment
+    /// tests fake it as a no-op) means this re-read, not a richer return type, is how the route
+    /// learns the outcome.
+    private Promise<SchemaMigrateResponse> reportOutcome(String datasource, String operation) {
+        return lookupSchemaVersion(datasource).map(value -> SchemaMigrateResponse.schemaMigrateResponse(true,
+                                                                                                        operation
+                                                                                                       + " complete for '" + datasource
+                                                                                                       + "' — now at version " + value.currentVersion()
+                                                                                                       + " (" + value.status()
+                                                                                                                     .name()
+                                                                                                       + ")"));
     }
 
     /// An absent parameter takes the documented default; a present one must parse, so a typo is a
@@ -329,43 +395,6 @@ public final class SchemaRoutes implements RouteSource {
 
         return applySchemaUpdate(datasource, updated).map(_ -> SchemaMigrateResponse.schemaMigrateResponse(true,
                                                                                                            "Migration triggered for " + datasource));
-    }
-
-    private Promise<SchemaMigrateResponse> writeUndoStatus(SchemaVersionValue current,
-                                                           String datasource,
-                                                           int targetVersion) {
-        var updated = SchemaVersionValue.schemaVersionValue(datasource,
-                                                            targetVersion,
-                                                            current.lastMigration(),
-                                                            SchemaStatus.PENDING,
-                                                            current.artifactCoords(),
-                                                            current.owningBlueprint());
-
-        return applySchemaUpdate(datasource, updated).map(_ -> SchemaMigrateResponse.schemaMigrateResponse(true,
-                                                                                                           "Undo to version " + targetVersion
-                                                                                                          + " initiated for " + datasource));
-    }
-
-    /// Baselining rewrites only the version, the marker migration name and the status. The artifact
-    /// coordinates and the owning blueprint are carried over from the existing record: dropping the
-    /// coordinates breaks `SchemaOrchestratorService.resolveAndParseMigrations` on any later
-    /// migrate, and dropping the owner detaches the record from the blueprint whose activation gate
-    /// consults it. A datasource with no record cannot be baselined — there is no owner to inherit,
-    /// and inventing an unowned record would produce exactly the orphan the required-ownership
-    /// component exists to make unrepresentable.
-    private Promise<SchemaMigrateResponse> writeBaselineStatus(SchemaVersionValue current,
-                                                               String datasource,
-                                                               int version) {
-        var baselined = SchemaVersionValue.schemaVersionValue(datasource,
-                                                              version,
-                                                              "V" + String.format("%03d", version) + "__baseline",
-                                                              SchemaStatus.COMPLETED,
-                                                              current.artifactCoords(),
-                                                              current.owningBlueprint());
-
-        return applySchemaUpdate(datasource, baselined).map(_ -> SchemaMigrateResponse.schemaMigrateResponse(true,
-                                                                                                             "Baselined " + datasource
-                                                                                                            + " at version " + version));
     }
 
     private Promise<List<Long>> applySchemaUpdate(String datasource, SchemaVersionValue value) {

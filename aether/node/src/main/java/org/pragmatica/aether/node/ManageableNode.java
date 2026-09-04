@@ -19,6 +19,7 @@ import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.drain.InFlightRequestTracker;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.ntt.QuorumLossSnapshot;
+import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.node.journal.TransitionJournal;
 import org.pragmatica.aether.node.lifecycle.NodeLifecycle;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
@@ -205,6 +206,11 @@ public interface ManageableNode {
     boolean isReady();
     Option<NodeId> leader();
     <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands);
+    /// #543: `SchemaRoutes` needs the orchestrator itself — not just KV read/write — for undo and
+    /// baseline to run through the same artifact-resolution, single-flight fence, and
+    /// `AetherSchemaManager` call path forward migrate already uses, instead of writing a status
+    /// record no reconciler tick ever acts on.
+    SchemaOrchestratorService schemaOrchestrator();
     int managementPort();
     int appHttpPort();
     long uptimeSeconds();

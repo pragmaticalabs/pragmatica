@@ -56,7 +56,6 @@ import org.pragmatica.serialization.Serializer;
 
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import io.netty.buffer.ByteBuf;
@@ -64,18 +63,37 @@ import io.netty.buffer.ByteBuf;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/// #542 adjacent defect — `POST /api/schema/{ds}/baseline` used the coordinates-less
-/// `SchemaVersionValue` factory, which reset `artifactCoords` to `""`. That silently broke
-/// `SchemaOrchestratorService.resolveAndParseMigrations` on any later migrate (the declared scripts
-/// could no longer be located) and, once ownership became a record component, would have detached
-/// the record from the blueprint whose activation gate consults it. Baselining now rewrites only the
-/// version, the marker name and the status.
-class SchemaRoutesBaselineTest {
+/// #543 / PR #832 review round 1 BLOCKING 2: `SchemaRoutesBaselineTest`'s
+/// `BaselineOnlySchemaManager.baseline` echoes the requested `baselineVersion` straight back as
+/// `SchemaResult.currentVersion()`, so `SchemaRoutesBaselineTest
+/// .baselineDatasource_rewritesVersionAndStatus_forExistingRecord`'s `isEqualTo(7)` assertion
+/// passes identically whether production writes `result.currentVersion()` (correct, per
+/// `SchemaOrchestratorService.recordOutcome`'s header) or the raw request parameter (the bug
+/// condition 3 exists to rule out) — request and result are indistinguishable when they're equal.
+///
+/// [DivergentVersionSchemaManager] breaks that tie for BOTH undo and baseline: it reports a
+/// `currentVersion` one past what was requested, simulating the review's own example ("requested
+/// V, history says V+1 because one down-script was unavailable"). Each test below asserts the KV
+/// record carries THAT divergent value, not the request — so a regression that substitutes the
+/// request parameter back in is caught, while `SchemaRoutesBaselineTest`'s non-discriminating
+/// case remains valid for the properties it does pin (coordinate/owner preservation).
+///
+/// Red-before (recorded per the review's Process section): wrapping `schemaManager.undo`/
+/// `.baseline`'s result with `.map(result -> SchemaResult.schemaResult(result.appliedCount(),
+/// <the raw request parameter>, result.totalMs()))` in `SchemaOrchestratorService.undoTo`/
+/// `.baseline` — i.e. production writing the parameter — fails both tests below (the KV record
+/// then carries the request value, which is exactly what each assertion rejects). Restoring the
+/// original body (no such wrapping — `result.currentVersion()` flows through unmodified) turns
+/// both green again. See PR #832 for the verified revert transcript.
+class SchemaRoutesVersionIntegrityTest {
     private static final String DATASOURCE = "database.orders";
     private static final String COORDS = "org.example:orders-app:1.0.0";
     private static final BlueprintId OWNER = BlueprintId.blueprintId(COORDS).unwrap();
-    private static final String LAST_MIGRATION = "V003__add_index.sql";
     private static final NodeId SELF = new NodeId("node-a");
+    // #832 review round 4 item C: an unbounded `await()` turns a never-settling regression into a
+    // hang instead of a red test — bound both calls below by the same safety-net idiom used in
+    // SchemaRoutesUndoBaselineTimeoutTest.
+    private static final TimeSpan TEST_SAFETY_NET = timeSpan(2).seconds();
 
     private static final DatabaseConnectorConfig STUB_CONFIG = new DatabaseConnectorConfig(Option.none(),
                                                                                             Option.some(DatabaseType.POSTGRESQL),
@@ -90,17 +108,6 @@ class SchemaRoutesBaselineTest {
                                                                                             Option.none(),
                                                                                             Option.none());
 
-    /// `schema/orders/*.sql` is the layout `BlueprintArtifactParser` maps to the exact key
-    /// `"database.orders"` this file baselines — folder name becomes the `"database."`-prefixed
-    /// datasource key. The script CONTENT never runs: [BaselineOnlySchemaManager] fakes the actual
-    /// SQL execution, so only `scripts.isEmpty() == false` matters for resolution to succeed.
-    private static final String BLUEPRINT_TOML = """
-            id = "org.example:orders-app:1.0.0"
-
-            [[slices]]
-            artifact = "org.example:orders-service:1.0.0"
-            """;
-
     private InMemoryKvStore store;
     private SchemaRoutes routes;
 
@@ -108,108 +115,76 @@ class SchemaRoutesBaselineTest {
     void setUp() {
         store = new InMemoryKvStore(MessageRouter.mutable());
         routes = SchemaRoutes.schemaRoutes(() -> nodeOver(store));
+        store.put(SchemaVersionKey.schemaVersionKey(DATASOURCE),
+                  SchemaVersionValue.schemaVersionValue(DATASOURCE,
+                                                        5,
+                                                        "V005__prior.sql",
+                                                        SchemaStatus.COMPLETED,
+                                                        COORDS,
+                                                        OWNER));
     }
 
-    @Nested
-    class Preservation {
-        @Test
-        void baselineDatasource_preservesArtifactCoords_forExistingRecord() {
-            seed(SchemaStatus.COMPLETED);
+    @Test
+    void undoToVersion_recordsTheManagersReportedVersion_notTheRequestedTarget() {
+        var requestedTarget = 2;
+        var managerReportedVersion = requestedTarget + 1; // one down-script was unavailable
 
-            routes.baselineDatasource(DATASOURCE, Option.some("7"))
-                  .await()
-                  .onFailure(SchemaRoutesBaselineTest::failOnUnexpectedFailure);
+        routes.undoToVersion(DATASOURCE, requestedTarget)
+              .await(TEST_SAFETY_NET)
+              .onFailure(SchemaRoutesVersionIntegrityTest::failOnUnexpectedFailure);
 
-            assertThat(recorded().artifactCoords()).as("dropping the coordinates orphans the declared migration set")
-                                                   .isEqualTo(COORDS);
-        }
-
-        @Test
-        void baselineDatasource_preservesOwningBlueprint_forExistingRecord() {
-            seed(SchemaStatus.COMPLETED);
-
-            routes.baselineDatasource(DATASOURCE, Option.some("7"))
-                  .await()
-                  .onFailure(SchemaRoutesBaselineTest::failOnUnexpectedFailure);
-
-            assertThat(recorded().owningBlueprint()).as("dropping the owner detaches the record from its activation gate")
-                                                    .isEqualTo(OWNER);
-        }
-
-        @Test
-        void baselineDatasource_rewritesVersionAndStatus_forExistingRecord() {
-            seed(SchemaStatus.FAILED);
-
-            routes.baselineDatasource(DATASOURCE, Option.some("7"))
-                  .await()
-                  .onFailure(SchemaRoutesBaselineTest::failOnUnexpectedFailure);
-
-            assertThat(recorded().currentVersion()).isEqualTo(7);
-            assertThat(recorded().status()).isEqualTo(SchemaStatus.COMPLETED);
-            assertThat(recorded().lastMigration()).isEqualTo("V007__baseline");
-        }
+        assertThat(recorded().currentVersion()).as("the KV record must carry what the manager reported it actually did, "
+                                                    + "not the version the caller asked for")
+                                               .isEqualTo(managerReportedVersion)
+                                               .isNotEqualTo(requestedTarget);
+        assertThat(recorded().lastMigration()).as("the migration marker must be built from the manager's reported "
+                                                   + "version, zero-padded, not the requested target")
+                                              .isEqualTo("U%03d__undo".formatted(managerReportedVersion));
     }
 
-    @Nested
-    class MissingRecord {
-        @Test
-        void baselineDatasource_fails_whenDatasourceHasNoRecord() {
-            routes.baselineDatasource(DATASOURCE, Option.some("7"))
-                  .await()
-                  .onSuccess(_ -> Assertions.fail("Baselining a datasource with no record must not fabricate an unowned one"))
-                  .onFailure(cause -> assertThat(cause.message()).contains("Schema status not found"));
-        }
+    @Test
+    void baselineDatasource_recordsTheManagersReportedVersion_notTheRequestedVersion() {
+        var requestedVersion = 7;
+        var managerReportedVersion = requestedVersion + 1; // history disagrees with the request
 
-        @Test
-        void baselineDatasource_writesNothing_whenDatasourceHasNoRecord() {
-            routes.baselineDatasource(DATASOURCE, Option.some("7")).await();
+        routes.baselineDatasource(DATASOURCE, Option.some(String.valueOf(requestedVersion)))
+              .await(TEST_SAFETY_NET)
+              .onFailure(SchemaRoutesVersionIntegrityTest::failOnUnexpectedFailure);
 
-            assertThat(store.get(SchemaVersionKey.schemaVersionKey(DATASOURCE)).isPresent()).isFalse();
-        }
+        assertThat(recorded().currentVersion()).as("the KV record must carry what the manager reported it actually did, "
+                                                    + "not the version the caller asked for")
+                                               .isEqualTo(managerReportedVersion)
+                                               .isNotEqualTo(requestedVersion);
+        assertThat(recorded().lastMigration()).as("the migration marker must be built from the manager's reported "
+                                                   + "version, zero-padded, not the requested version")
+                                              .isEqualTo("V%03d__baseline".formatted(managerReportedVersion));
     }
 
     // --- helpers ---
 
     private static void failOnUnexpectedFailure(Cause cause) {
-        Assertions.fail("Unexpected baseline failure: " + cause.message());
-    }
-
-    private void seed(SchemaStatus status) {
-        store.put(SchemaVersionKey.schemaVersionKey(DATASOURCE),
-                  SchemaVersionValue.schemaVersionValue(DATASOURCE,
-                                                        3,
-                                                        LAST_MIGRATION,
-                                                        status,
-                                                        COORDS,
-                                                        OWNER));
+        Assertions.fail("Unexpected failure: " + cause.message());
     }
 
     private SchemaVersionValue recorded() {
         return store.get(SchemaVersionKey.schemaVersionKey(DATASOURCE))
                     .filter(SchemaVersionValue.class::isInstance)
                     .map(SchemaVersionValue.class::cast)
-                    .or(SchemaRoutesBaselineTest::noRecord);
+                    .or(SchemaRoutesVersionIntegrityTest::noRecord);
     }
 
     private static SchemaVersionValue noRecord() {
         return Assertions.fail("No schema version record was written");
     }
 
-    /// #543: `SchemaRoutes.baselineAtVersion` now calls `requireLeader` before delegating to
-    /// `ManageableNode.schemaOrchestrator()`, so the proxy must answer both — and, per the brief's
-    /// "real handler, not fixture-rebuilding helpers" requirement, `schemaOrchestrator()` hands back a
-    /// REAL `SchemaOrchestratorService` (the same production factory `AetherNode` wires up), not a
-    /// fake that just echoes what the test wants. Only the boundary collaborators genuinely external
-    /// to this fix — the artifact store, the DB connector, and [BaselineOnlySchemaManager]'s actual SQL
-    /// execution — are stubbed. Every assertion in [Preservation] is therefore produced by the real
-    /// route → orchestrator → KV-write path, condition 3's evidence included (the written
-    /// `currentVersion` comes from `SchemaResult.currentVersion()`, not the raw request parameter).
+    /// Same wiring `SchemaRoutesBaselineTest.nodeOver` establishes, with
+    /// [DivergentVersionSchemaManager] in place of `BaselineOnlySchemaManager`.
     private ManageableNode nodeOver(InMemoryKvStore kvStore) {
         var orchestrator = SchemaOrchestratorService.schemaOrchestratorService(new PlainClusterNode(SELF, kvStore),
                                                                                kvStore,
                                                                                artifactStoreServing(),
                                                                                noLocalRepository(),
-                                                                               new BaselineOnlySchemaManager(),
+                                                                               new DivergentVersionSchemaManager(),
                                                                                stubConnectionProvider(),
                                                                                SELF);
 
@@ -233,9 +208,6 @@ class SchemaRoutesBaselineTest {
         return Promise.success(List.of());
     }
 
-    /// Mirrors `SchemaOrchestratorRetrySingleFlightTest`'s `Repository repository = _ ->
-    /// NOT_IN_REPOSITORY.promise();` — a repository miss is the common case, forcing resolution to
-    /// fall back to [#artifactStoreServing].
     private static Repository noLocalRepository() {
         return _ -> Causes.cause("Artifact not present in local repository").promise();
     }
@@ -244,7 +216,12 @@ class SchemaRoutesBaselineTest {
         var bytes = new ByteArrayOutputStream();
 
         try (var zip = new ZipOutputStream(bytes)) {
-            writeEntry(zip, "META-INF/blueprint.toml", BLUEPRINT_TOML);
+            writeEntry(zip, "META-INF/blueprint.toml", """
+                    id = "org.example:orders-app:1.0.0"
+
+                    [[slices]]
+                    artifact = "org.example:orders-service:1.0.0"
+                    """);
             writeEntry(zip, "schema/orders/V001__init.sql", "CREATE TABLE orders(id INT);");
         } catch (IOException e) {
             throw new IllegalStateException("Failed to build test blueprint jar", e);
@@ -349,30 +326,27 @@ class SchemaRoutesBaselineTest {
         };
     }
 
-    /// Echoes the requested version back as `SchemaResult.currentVersion()` — exactly what a real
-    /// baseline implementation does (baseline sets the current version to the requested one). `undo`
-    /// and `migrate` are never exercised by this file's tests and fail loudly if they ever are, so a
-    /// wiring mistake shows up as a test failure instead of a silently wrong result.
-    private static final class BaselineOnlySchemaManager implements AetherSchemaManager {
+    /// Reports a `currentVersion` ONE PAST whatever was requested, for both undo and baseline —
+    /// the review's own example of a real, legitimate divergence (history disagreeing with the
+    /// request because a script was unavailable), not an arbitrary or degenerate stub value.
+    /// `migrate` is never exercised by this file's tests and fails loudly if it ever is.
+    private static final class DivergentVersionSchemaManager implements AetherSchemaManager {
         @Override
         public Promise<SchemaResult> migrate(String datasource, List<MigrationEntry> scripts, SqlConnector connector, String nodeId, BlueprintId owner) {
-            return Causes.cause("migrate() not exercised by SchemaRoutesBaselineTest").promise();
+            return Causes.cause("migrate() not exercised by SchemaRoutesVersionIntegrityTest").promise();
         }
 
         @Override
         public Promise<SchemaResult> undo(String datasource, int targetVersion, List<MigrationEntry> scripts, SqlConnector connector, String nodeId, BlueprintId owner) {
-            return Causes.cause("undo() not exercised by SchemaRoutesBaselineTest").promise();
+            return Promise.success(SchemaResult.schemaResult(scripts.size(), targetVersion + 1, 1L));
         }
 
         @Override
         public Promise<SchemaResult> baseline(String datasource, int baselineVersion, List<MigrationEntry> scripts, SqlConnector connector, String nodeId, BlueprintId owner) {
-            return Promise.success(SchemaResult.schemaResult(scripts.size(), baselineVersion, 1L));
+            return Promise.success(SchemaResult.schemaResult(scripts.size(), baselineVersion + 1, 1L));
         }
     }
 
-    /// Applies commands straight to the test's own `InMemoryKvStore` — no blocking, no dispatch
-    /// recording, unlike `SchemaOrchestratorRetrySingleFlightTest`'s `RecordingClusterNode`, since no
-    /// test here needs either.
     private static final class PlainClusterNode implements ClusterNode<KVCommand<AetherKey>> {
         private final NodeId self;
         private final InMemoryKvStore kvStore;
