@@ -452,7 +452,7 @@ the original design intent.
 
 `DEPLOYMENT_FAILED` is emitted **once per (artifact, node) pair** whose deployment attempt failed — `ClusterEventAggregator.handleDeploymentFailed` fires on each node-artifact KV transition to `FAILED`, so a blueprint spread across N nodes that fails deterministically on all of them produces N separate events, each with its own `nodeId` in `details.nodeId` and the failure text in `details.reason`. Because `cluster-events` is a single replicated stream, all N events are visible from `GET /api/v1/events` on **any** node, not only the one that failed.
 
-This matters because none of the other deploy-facing surfaces show it: `POST /api/v1/blueprints` only reports `"status": "applied"` on **acceptance**, before deployment is attempted, and is never updated with the outcome. Under the default `ALL_OR_NOTHING` mode (see [02-deployment.md](../architecture/02-deployment.md#deployment-atomicity)), a deterministic slice-load failure rolls back the entire blueprint and removes the blueprint's key from the KV store outright (`ClusterDeploymentState.unloadBlueprintSlices`) — so `GET /api/v1/slices/status` shows nothing for the artifact and `GET /api/v1/blueprints/status/{id}` answers `404 BLUEPRINT_NOT_FOUND`, not a FAILED status [#759 review C2; until #759 Phase 2 lands a durable terminal-outcome record, this 404 is permanent, not a transient race you can outwait]. **`GET /api/v1/events` is the only durable trace of why a blueprint that was accepted never converges** — the query parameters (`sinceEpoch`/`sinceSeq`) are cursor-based, not artifact-based, so "filtering for `DEPLOYMENT_FAILED`" means fetching the feed and matching `details.artifact` yourself; the aggregator retains at most 10,000 events cluster-wide (`ClusterEventAggregator.MAX_RETAINED_EVENTS`), not per-artifact, so a failure can roll off under high event volume before an operator looks. See the [Failure Almanac](failure-almanac.md#per-node-deployment-failure-under-all_or_nothing-rollback) for the worked example and operator playbook.
+This matters because most deploy-facing surfaces don't show it immediately: `POST /api/v1/blueprints` only reports `"status": "applied"` on **acceptance**, before deployment is attempted, and is never updated with the outcome. Under the default `ALL_OR_NOTHING` mode (see [02-deployment.md](../architecture/02-deployment.md#deployment-atomicity)), a deterministic slice-load failure rolls back the entire blueprint and removes the blueprint's key from the KV store outright (`ClusterDeploymentState.unloadBlueprintSlices`) — so `GET /api/v1/slices/status` shows nothing for the artifact, but the terminal `FAILED`/`ROLLED_BACK` outcome recorded at the same time survives that removal (#759 Phase 2 — see `SliceRoutes.handleGetBlueprintStatus`): `GET /api/v1/blueprints/status/{id}` answers `200` with `overallStatus` `FAILED` or `ROLLED_BACK`, `cause`, and `failingSlices`, not `404`. `404 BLUEPRINT_NOT_FOUND` now means only that neither a terminal outcome nor a live KV entry exists for that id. **`GET /api/v1/events` remains the per-node timeline of why a blueprint failed** — the query parameters (`sinceEpoch`/`sinceSeq`) are cursor-based, not artifact-based, so "filtering for `DEPLOYMENT_FAILED`" means fetching the feed and matching `details.artifact` yourself; the aggregator retains at most 10,000 events cluster-wide (`ClusterEventAggregator.MAX_RETAINED_EVENTS`), not per-artifact, so an individual event can roll off under high event volume before an operator looks — the durable outcome summary at `statusUrl` does not expire the same way. See the [Failure Almanac](failure-almanac.md#per-node-deployment-failure-under-all_or_nothing-rollback) for the worked example and operator playbook.
 
 **Severity Levels:** `INFO`, `WARNING`, `CRITICAL`
 
@@ -749,7 +749,7 @@ Publish (apply) a blueprint definition. The request body is the raw blueprint YA
 }
 ```
 
-> **`"applied"` means accepted, not deployed.** This response is written before allocation runs, and it is never updated with the outcome. `targetInstances`/`activeInstances`/`failedInstances` are a live snapshot of the deployment map taken at response time — typically all-zero for a fresh publish, since nothing has had time to activate yet. `statusUrl` points directly at [`GET /api/v1/blueprints/status/{id}`](#get-apiv1blueprintsstatusid); poll it for progress. If a blueprint stays `PENDING` past its expected time, fetch [`GET /api/v1/events`](#get-apiv1events) and match `details.artifact` yourself for `DEPLOYMENT_FAILED` — under the default `ALL_OR_NOTHING` mode a failure rolls back the whole blueprint and removes it from the KV store entirely, so `statusUrl` then answers `404 BLUEPRINT_NOT_FOUND` rather than a FAILED slice [#759 review C2; until #759 Phase 2 replaces this 404 with a durable terminal-outcome record], and the event feed (retained up to 10,000 events cluster-wide, not per-artifact) is the only place the failure reason (`details.reason`) survives.
+> **`"applied"` means accepted, not deployed.** This response is written before allocation runs, and it is never updated with the outcome. `targetInstances`/`activeInstances`/`failedInstances` are a live snapshot of the deployment map taken at response time — typically all-zero for a fresh publish, since nothing has had time to activate yet. `statusUrl` points directly at [`GET /api/v1/blueprints/status/{id}`](#get-apiv1blueprintsstatusid); poll it for progress. If a blueprint stays `PENDING` past its expected time, fetch [`GET /api/v1/events`](#get-apiv1events) and match `details.artifact` yourself for `DEPLOYMENT_FAILED` to see the per-node failure reason (`details.reason`) and when it happened — under the default `ALL_OR_NOTHING` mode a failure rolls back the whole blueprint and removes it from the KV store entirely, but `statusUrl` now answers with the durable terminal outcome (`FAILED`/`ROLLED_BACK`, `cause`, `failingSlices`) rather than `404` (#759 Phase 2); the event feed is still the timeline of what happened on which node, not a replacement for that summary.
 
 ### GET /api/v1/blueprints
 
@@ -872,13 +872,18 @@ checked in this priority order:
 `targetInstances`/`activeInstances`/`failedInstances` are the same live snapshot used to derive
 `status`. `statusUrl` (`{id}` percent-encoded, since blueprint ids are artifact-shaped) always
 points at [`GET /api/blueprints/status/{id}`](#get-apiblueprintsstatusid) — this is the endpoint
-the CLI's `aether blueprints deploy --wait` polls (`DeploymentWait`) until it reports a terminal
-status. **Until #759 Phase 2**, that poll can dead-end: under the default `ALL_OR_NOTHING` mode a
-deterministic failure rolls back the whole blueprint and removes its KV entry outright, so
-`statusUrl` then answers `404 BLUEPRINT_NOT_FOUND` instead of `FAILED` — the `pending` response you
-got from this call can resolve into a 404, not into a status you can read. The only durable record
-of the failure is [`GET /api/events`](#get-apievents), matched against `details.artifact` yourself
-(see the `DEPLOYMENT_FAILED` discussion above).
+the CLI's `aether blueprints deploy --wait` polls (`DeploymentWait`) until it reports `DEPLOYED`.
+Under the default `ALL_OR_NOTHING` mode a deterministic failure rolls back the whole blueprint and
+removes its KV entry outright, so the `deployed`/`degraded`/`pending` status this call derived from
+the deployment map disappears along with it — but the terminal `FAILED`/`ROLLED_BACK` outcome
+recorded at the same time survives that removal, and `statusUrl` now answers `200` with that
+outcome (`overallStatus`, `cause`, `failingSlices`) instead of `404` (#759 Phase 2). `--wait` itself
+still only treats `DEPLOYED` as complete — a rolled-back deployment exits with `TIMEOUT` by design
+(see `DeploymentWait`'s own header), not by reading the failure — so a caller that needs the reason
+either polls `statusUrl` directly after `--wait` gives up, or watches
+[`GET /api/events`](#get-apievents) for `DEPLOYMENT_FAILED`, matched against `details.artifact`
+yourself (see the `DEPLOYMENT_FAILED` discussion above), which gives the per-node timeline that
+`statusUrl`'s summary does not.
 
 #### Single-migrator gate (409 Conflict)
 
