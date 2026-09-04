@@ -238,16 +238,20 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// recognized as the SAME incident and skips its own counter increment; the later resolution still
     /// logs its own failure cause, since that cause is new information even when the count is not.
     ///
-    /// Only the COUNTER ([#cursorCommitFailureCount]) is protected against being rolled back by a later
-    /// success: once incremented here it stays incremented, because a commit that has not settled
-    /// within the bound counts as failed for THIS shutdown even if it later succeeds (see [#close]'s
-    /// own javadoc, `management-api.md`'s redelivery paragraph). The per-consumer DETAIL TEXT
-    /// ([ConsumerState#recordCursorCommitFailure]) carries no such guarantee: it is only ever cleared
-    /// OPTIMISTICALLY at the start of the next commit attempt ([#observedCommit]), and there is no next
-    /// attempt once this consumer is torn down at close — the consumer is discarded from [#consumers]
-    /// moments later and nothing thereafter reads its detail field, so the text is provably unobservable
-    /// past this point regardless of what is written into it. The counter is the only part of this
-    /// report that is actually observable on the final-commit path.
+    /// The COUNTER ([#cursorCommitFailureCount]) and the per-consumer DETAIL TEXT
+    /// ([ConsumerState#recordCursorCommitFailure]) carry different guarantees here. The counter cannot
+    /// be decremented by a later settle: once incremented here it stays incremented, because a commit
+    /// that has not settled within the bound counts as failed for THIS shutdown even if it later
+    /// succeeds (see [#close]'s own javadoc, `management-api.md`'s redelivery paragraph). The detail
+    /// text has no such protection — [#onCursorCommitFailure] and [#recordIfRecovered] are the SAME
+    /// `observedCommit`-attached handlers already waiting on this promise, and when they eventually
+    /// fire they overwrite "unsettled at shutdown bound" with a more precise cause
+    /// (`local commit: ...` / `checkpoint publish: ...`), exactly as they would for any other commit.
+    /// That overwrite is harmless because the detail — whichever text it ends up holding — is discarded
+    /// with the consumer: [#close] removes it from [#consumers] moments after this method returns, and
+    /// nothing reads [ConsumerState#lastCursorCommitFailure] again once the consumer is gone from that
+    /// map. The counter is the only part of this report that is actually observable on the final-commit
+    /// path.
     private void reportIfUnsettled(PendingCommit pending) {
         if (pending.commit().isResolved()) {
             return;
