@@ -2562,22 +2562,22 @@ public interface AetherNode extends ManageableNode {
 
         resourceProviderSetup.spiProvider()
                              .onPresent(spi -> {
-                                 // #253 ruling (2026-09-04): the `content` instance below is
-                                 // provisioned via the keyring-less `defaultContentStorage` (see
-                                 // #783 note at compositeDemotionManager/compositeGarbageCollector
-                                 // below) -- so when a node-wide keyring IS configured, its
-                                 // coverage silently excludes this instance. Named here, at boot,
-                                 // so the gap is operator-visible and not only documented.
-                                 storageKeyring.onPresent(_ -> LOG.warn("Storage encryption is configured "
-                                                                        + "([storage.encryption]) but the 'content' "
-                                                                        + "storage instance is NOT covered (#783): "
-                                                                        + "its blocks are stored in plaintext"));
-                                 registerRuntimeExtensions(spi,
-                                                           topicSubscriptionRegistry,
-                                                           sliceInvoker,
-                                                           cacheDhtClient,
-                                                           StorageFactory.defaultContentStorage(dhtClientOption));
-                             });
+                                            // #253 ruling (2026-09-04): the `content` instance below is
+                                            // provisioned via the keyring-less `defaultContentStorage` (see
+                                            // #783 note at compositeDemotionManager/compositeGarbageCollector
+                                            // below) -- so when a node-wide keyring IS configured, its
+                                            // coverage silently excludes this instance. Named here, at boot,
+                                            // so the gap is operator-visible and not only documented.
+                                            storageKeyring.onPresent(_ -> LOG.warn("Storage encryption is configured "
+                                                                                  + "([storage.encryption]) but the 'content' "
+                                                                                  + "storage instance is NOT covered (#783): "
+                                                                                  + "its blocks are stored in plaintext"));
+                                            registerRuntimeExtensions(spi,
+                                                                      topicSubscriptionRegistry,
+                                                                      sliceInvoker,
+                                                                      cacheDhtClient,
+                                                                      StorageFactory.defaultContentStorage(dhtClientOption));
+                                        });
         var selfAddress = findSelfAddress(config);
         var nodeDeploymentManager = NodeDeploymentManager.nodeDeploymentManagerFromSnapshot(config.self(),
                                                                                             selfAddress,
