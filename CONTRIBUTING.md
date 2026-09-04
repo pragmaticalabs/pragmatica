@@ -108,6 +108,9 @@ branch, and the diagnosis.
   expected of contributors).
 - Open the PR against `main`. A maintainer will review, request changes if needed, and choose the
   merge strategy at merge time.
+- Do not edit `CHANGELOG.md`. Add your entry as `changelog.d/<issue-number>-<slug>.md` in the format
+  described in [`changelog.d/README.md`](changelog.d/README.md); the file is assembled at release
+  prep, and a CI check refuses a direct edit. Documentation-only PRs need no fragment.
 
 ### Sign-off
 

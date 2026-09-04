@@ -1,0 +1,23 @@
+name: Changelog fragment
+
+# CHANGELOG.md is assembled from changelog.d/ at release prep; a feature PR adds a fragment and never
+# edits the file. See changelog.d/README.md. Labels: `no-changelog` waives the fragment,
+# `release-prep` allows the CHANGELOG.md edit.
+on:
+  pull_request:
+    branches: [main, release-*]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+jobs:
+  fragment:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check the changelog fragment
+        env:
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: scripts/changelog-check.sh "origin/${{ github.base_ref }}"
