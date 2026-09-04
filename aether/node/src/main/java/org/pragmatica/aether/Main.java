@@ -19,6 +19,7 @@ import java.util.Map;
 import java.util.function.IntConsumer;
 import java.util.regex.Pattern;
 import java.util.stream.IntStream;
+import java.util.concurrent.TimeUnit;
 
 import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.config.ClusterConfig;
@@ -62,6 +63,8 @@ import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.swim.NettySwimTransport;
 
 import com.sun.management.HotSpotDiagnosticMXBean;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.core.LoggerContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -524,6 +527,11 @@ public record Main(String[] args) {
     /// blocked is UNKNOWN (#749 acceptance item 1) -- the thread dump below is what will eventually answer
     /// that from a real occurrence, not a diagnosis made here.
     static final int SHUTDOWN_TIMEOUT_EXIT_CODE = 3;
+    /// #838 review round 1: bound on [#flushLogs] so a wedged appender (blocking async queue,
+    /// unreachable network sink) cannot re-introduce the unbounded hang the halt seam below exists
+    /// to remove. Generous relative to typical flush latency, small relative to [#SHUTDOWN_TIMEOUT]
+    /// so it cannot itself consume the process's shutdown budget.
+    private static final TimeSpan FLUSH_TIMEOUT = TimeSpan.timeSpan(5).seconds();
 
     private void registerShutdownHook(AetherNode node) {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> shutdownNode(node,
@@ -532,10 +540,14 @@ public record Main(String[] args) {
                                                                            Runtime.getRuntime()::halt)));
     }
 
-    /// Synchronous flush of the log4j2 context. Must run to completion before [Runtime#halt] -- halt()
-    /// performs no appender flush of its own, so anything not flushed here is lost with the process.
+    /// Synchronous flush of the log4j2 context, bounded by [#FLUSH_TIMEOUT] -- halt() performs no
+    /// appender flush of its own, so anything not flushed here is lost with the process. #838 review
+    /// round 1: [LogManager#shutdown()] has no timeout of its own; [LoggerContext#stop(long,TimeUnit)]
+    /// does, and is used instead so a wedged appender bounds the flush rather than hanging it.
     private static void flushLogs() {
-        org.apache.logging.log4j.LogManager.shutdown();
+        var ctx = (LoggerContext) LogManager.getContext(false);
+
+        ctx.stop(FLUSH_TIMEOUT.millis(), TimeUnit.MILLISECONDS);
     }
 
     /// Package-private and parameterized (timeout / log-flush / halt as injected seams) so the expiry
@@ -552,8 +564,14 @@ public record Main(String[] args) {
                       timeout,
                       SHUTDOWN_TIMEOUT_EXIT_CODE);
             dumpThreads();
-            flushLogs.run();
-            haltFn.accept(SHUTDOWN_TIMEOUT_EXIT_CODE);
+            // #838 review round 1: halt is in `finally` so a throwing flushLogs.run() cannot preempt
+            // it and restore the unbounded hang this method exists to remove -- flushLogs itself is
+            // bounded (see its doc), so this can delay the halt by at most FLUSH_TIMEOUT, never hang it.
+            try {
+                flushLogs.run();
+            } finally {
+                haltFn.accept(SHUTDOWN_TIMEOUT_EXIT_CODE);
+            }
 
             return;
         }
