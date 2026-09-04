@@ -130,6 +130,13 @@ public final class ScheduledTaskRoutes implements RouteSource {
         return triggerTask(configSection, artifactStr, methodStr);
     }
 
+    /// Package-private accessor mirroring `triggerForTest`: lets unit tests drive the single-task
+    /// `/state` handler (including the #680/#841 ALL-mode per-node aggregation in
+    /// [#buildStateResponse]) without standing up the HTTP routing layer.
+    Promise<TaskStateResponse> getTaskStateForTest(String configSection, String artifactStr, String methodStr) {
+        return getTaskState(configSection, artifactStr, methodStr);
+    }
+
     record TaskSummary(String configSection,
                        String artifact,
                        String method,
@@ -454,7 +461,24 @@ public final class ScheduledTaskRoutes implements RouteSource {
                       .equals(methodStr);
     }
 
+    /// #680/#841: an ALL-mode task's automatic fires write per-node `ScheduledTaskStateKey` rows
+    /// (one per node running its own independent timer), so `stateRegistry` — a single-row,
+    /// per-JVM mirror synced only for the unscoped key — reports zero or stale totals for such a
+    /// task. Reading it unconditionally here was the #680 defect surviving on this endpoint after
+    /// the per-node key fix (which only corrected the WRITE side, in `ScheduledTaskManager`). ALL-
+    /// mode tasks aggregate across the cluster's per-node rows instead, via
+    /// [#aggregateAllModeState] (same `KVStore.forEach` idiom as [#buildExecutionsByNode]);
+    /// SINGLE-mode tasks keep the cheap `stateRegistry` read (one writer, already correct).
     private TaskSummary toSummary(ScheduledTask task) {
+        if (task.executionMode() == ExecutionMode.ALL) {
+            return aggregateAllModeState(task).fold(() -> buildSummary(task, 0, 0, 0, 0),
+                                                    state -> buildSummary(task,
+                                                                          state.lastExecutionAt(),
+                                                                          state.nextFireAt(),
+                                                                          state.consecutiveFailures(),
+                                                                          state.totalExecutions()));
+        }
+
         var stateKey = ScheduledTaskStateKey.scheduledTaskStateKey(task.configSection(),
                                                                    task.artifact(),
                                                                    task.methodName());
@@ -494,30 +518,111 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                                                                                   methodStr));
     }
 
+    /// Same #680/#841 gap as [#toSummary], on the single-task `/state` surface: an ALL-mode task
+    /// aggregates its per-node rows via [#aggregateAllModeState] instead of the single-row
+    /// `stateRegistry` mirror. `lastFailureMessage`/`updatedAt` are not naturally summable across
+    /// nodes — [#combineNodeStates] takes them from whichever per-node row is freshest by
+    /// `updatedAt`, the same tie-break the combine uses for every non-additive field.
     private Promise<TaskStateResponse> buildStateResponse(ScheduledTask task,
                                                           String configSection,
                                                           String artifactStr,
                                                           String methodStr) {
+        if (task.executionMode() == ExecutionMode.ALL) {
+            return Promise.success(aggregateAllModeState(task).fold(() -> emptyStateResponse(configSection,
+                                                                                             artifactStr,
+                                                                                             methodStr),
+                                                                    state -> toStateResponse(configSection,
+                                                                                             artifactStr,
+                                                                                             methodStr,
+                                                                                             state)));
+        }
+
         var stateKey = ScheduledTaskStateKey.scheduledTaskStateKey(task.configSection(),
                                                                    task.artifact(),
                                                                    task.methodName());
 
         return stateRegistry.stateFor(stateKey)
                             .fold(() -> Promise.success(emptyStateResponse(configSection, artifactStr, methodStr)),
-                                  state -> Promise.success(new TaskStateResponse(configSection,
-                                                                                 artifactStr,
-                                                                                 methodStr,
-                                                                                 state.lastExecutionAt(),
-                                                                                 state.nextFireAt(),
-                                                                                 state.consecutiveFailures(),
-                                                                                 state.totalExecutions(),
-                                                                                 state.lastFailureMessage(),
-                                                                                 state.updatedAt(),
-                                                                                 state.skippedOverlaps())));
+                                  state -> Promise.success(toStateResponse(configSection, artifactStr, methodStr, state)));
+    }
+
+    private static TaskStateResponse toStateResponse(String configSection,
+                                                     String artifactStr,
+                                                     String methodStr,
+                                                     ScheduledTaskStateValue state) {
+        return new TaskStateResponse(configSection,
+                                     artifactStr,
+                                     methodStr,
+                                     state.lastExecutionAt(),
+                                     state.nextFireAt(),
+                                     state.consecutiveFailures(),
+                                     state.totalExecutions(),
+                                     state.lastFailureMessage(),
+                                     state.updatedAt(),
+                                     state.skippedOverlaps());
     }
 
     private static TaskStateResponse emptyStateResponse(String configSection, String artifactStr, String methodStr) {
         return new TaskStateResponse(configSection, artifactStr, methodStr, 0, 0, 0, 0, "", 0, 0);
+    }
+
+    /// Cluster-wide combine of an ALL-mode task's per-node [ScheduledTaskStateValue] rows, feeding
+    /// [#toSummary] and [#buildStateResponse] the same 7-field shape a single global row used to
+    /// carry — so both downstream call sites are unchanged past this seam. Not every field is
+    /// summable: `totalExecutions`/`skippedOverlaps` are (every node's count is real activity, #680
+    /// spec's explicit "totals summed"); `consecutiveFailures` takes the MAX across nodes (surfaces
+    /// the worst-case node rather than hiding it behind a healthier one); `lastExecutionAt` takes
+    /// the MAX (freshest activity, cluster-wide); `nextFireAt` takes the MIN (the soonest upcoming
+    /// fire across the independent per-node timers is the next cluster-wide activity an operator
+    /// would wait for); `lastFailureMessage`/`updatedAt` are taken together from whichever row has
+    /// the highest `updatedAt`, so the message always describes the state it is paired with rather
+    /// than an arbitrary older row's text next to a newer timestamp. [design intent — unverified
+    /// beyond the field-level reasoning above; no review ruling pins these five choices specifically,
+    /// only the two additive fields].
+    private static ScheduledTaskStateValue combineNodeStates(ScheduledTaskStateValue a, ScheduledTaskStateValue b) {
+        var latest = a.updatedAt() >= b.updatedAt()
+                     ? a
+                     : b;
+
+        return new ScheduledTaskStateValue(Math.max(a.lastExecutionAt(), b.lastExecutionAt()),
+                                           Math.min(a.nextFireAt(), b.nextFireAt()),
+                                           Math.max(a.consecutiveFailures(), b.consecutiveFailures()),
+                                           a.totalExecutions() + b.totalExecutions(),
+                                           latest.lastFailureMessage(),
+                                           latest.updatedAt(),
+                                           a.skippedOverlaps() + b.skippedOverlaps());
+    }
+
+    /// Scans the live KV store for every per-node row belonging to `task` (same
+    /// `matchesTaskIdentity` filter [#buildExecutionsByNode] uses) and folds them into one
+    /// [ScheduledTaskStateValue] via [#combineNodeStates]. `Option.none()` means no per-node row
+    /// exists yet for this ALL-mode task — no execution since the #841 upgrade, or none ever — in
+    /// which case the caller reports zero/empty, exactly as a brand-new task would. The pre-#841
+    /// global key is never read here: it is excluded by [#matchesTaskIdentity]'s own scan surface
+    /// (it walks `ScheduledTaskStateKey` rows and [#collectNodeState] additionally requires
+    /// `key.node().isPresent()`), so a stale global row can never be misread as a node's row.
+    private Option<ScheduledTaskStateValue> aggregateAllModeState(ScheduledTask task) {
+        var perNodeStates = new ArrayList<ScheduledTaskStateValue>();
+
+        nodeSupplier.get()
+                    .kvStore()
+                    .forEach(ScheduledTaskStateKey.class,
+                             ScheduledTaskStateValue.class,
+                             (key, value) -> collectNodeState(perNodeStates, task, key, value));
+
+        return perNodeStates.stream()
+                            .reduce(ScheduledTaskRoutes::combineNodeStates)
+                            .map(Option::some)
+                            .orElseGet(Option::none);
+    }
+
+    private static void collectNodeState(List<ScheduledTaskStateValue> states,
+                                         ScheduledTask task,
+                                         ScheduledTaskStateKey key,
+                                         ScheduledTaskStateValue value) {
+        if (matchesTaskIdentity(key, task) && key.node().isPresent()) {
+            states.add(value);
+        }
     }
 
     /// #841: surfaces per-node execution attribution for an ALL-mode scheduled task, one row per
