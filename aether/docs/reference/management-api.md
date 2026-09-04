@@ -834,15 +834,56 @@ defaults shown above rather than leaving them out]`. Treat a present-but-empty `
 }
 ```
 
-Once a blueprint's key leaves the KV store — `ALL_OR_NOTHING` rollback, or a `BEST_EFFORT` deploy
-left permanently failed — the deployment map has nothing left to report per-slice, so `slices` is
-empty. This is the durable terminal outcome instead: `overallStatus` is `FAILED` or `ROLLED_BACK`,
-`cause` is the human-readable failure reason, `failingSlices` lists the full artifact coordinates
-(`group:artifact:version`, never a bare slice id) of every slice that failed, and `timestampMs` is
-the epoch-millis time the outcome was recorded. Before this outcome key existed, the same request
-answered `404` with no way to learn what happened
+Once a blueprint's key leaves the KV store entirely — `ALL_OR_NOTHING` rollback only — the deployment
+map has nothing left to report per-slice, so `slices` is empty. This is the durable terminal outcome
+instead: `overallStatus` is `FAILED` or `ROLLED_BACK`, `cause` is the human-readable failure reason,
+`failingSlices` lists the full artifact coordinates (`group:artifact:version`, never a bare slice id)
+of every slice that failed, and `timestampMs` is the epoch-millis time the outcome was recorded. Before
+this outcome key existed, the same request answered `404` with no way to learn what happened
 `[mechanism: exercised by `BlueprintDeployStatusTest` and `BlueprintStatusAggregationTest`
 against the real route handler; no live multi-node failure-injection run — #759]`.
+
+**Response — terminal failure, blueprint still live (`BEST_EFFORT`, or a restored blueprint with a
+lingering outcome):**
+```json
+{
+  "id": "org.example:my-app:1.0.0",
+  "overallStatus": "PARTIAL",
+  "slices": [
+    {
+      "artifact": "org.example:my-slice:1.0.0",
+      "targetInstances": 2,
+      "activeInstances": 1,
+      "failedInstances": 1,
+      "status": "FAILED"
+    },
+    {
+      "artifact": "org.example:other-slice:1.0.0",
+      "targetInstances": 3,
+      "activeInstances": 3,
+      "failedInstances": 0,
+      "status": "DEPLOYED"
+    }
+  ],
+  "cause": "instance allocation failed: insufficient capacity for org.example:my-slice:1.0.0",
+  "failingSlices": ["org.example:my-slice:1.0.0"],
+  "timestampMs": 1735689600000
+}
+```
+`BEST_EFFORT` records a terminal outcome for the failed slice without removing the blueprint's KV
+entry, so siblings keep serving; a restored blueprint can likewise stay fully healthy while an outcome
+from the original failed deploy lingers, because nothing later clears a terminal record for a
+blueprint id that stays live. Either way `slices` is NOT empty here — it carries the same live
+per-slice detail as the happy path, alongside the outcome's `cause`/`failingSlices`/`timestampMs`.
+`overallStatus` is always `PARTIAL` in this shape, even on the rare case where every instance is
+currently `ACTIVE`, so a caller always knows to check `cause` rather than assume a bare `DEPLOYED`
+`[mechanism: `SliceRoutes.resolveTerminalOutcomeStatus` consults the live blueprint before choosing
+between this shape and the empty-`slices` shape above; pinned by `BlueprintStatusAggregationTest`
+(`statusRoute_blueprintLiveAndHealthyWithLingeringRolledBackOutcome_reportsPartialWithLiveSliceCounts`,
+`statusRoute_blueprintLiveWithTerminalFailure_bestEffort_reportsPartialWithSliceCounts`) — unit-level,
+no live multi-node failure-injection run — #759]`. Recovery: a `BEST_EFFORT` `PARTIAL` clears by
+redeploying the failed slice; a lingering restore-time outcome clears the next time that blueprint id
+is redeployed or deleted.
 
 Per-slice status values: `PENDING`, `DEPLOYING`, `DEPLOYED`, `SCALING_DOWN`, `FAILED`. Overall: `DEPLOYED`, `PENDING`, `IN_PROGRESS`, `PARTIAL`, `FAILED`, `ROLLED_BACK`.
 

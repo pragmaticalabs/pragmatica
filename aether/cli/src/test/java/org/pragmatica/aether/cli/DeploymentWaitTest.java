@@ -32,7 +32,7 @@ class DeploymentWaitTest {
     /// plus `statusUrl`, not the retired `slices` count.
     private static final String DEPLOY_RESPONSE = """
             {"status":"pending","blueprint":"org.example:hello:1.0.0-SNAPSHOT","targetInstances":3,\
-            "activeInstances":0,"failedInstances":0,"statusUrl":"/api/blueprints/status/org.example%3Ahello%3A1.0.0-SNAPSHOT"}""";
+            "activeInstances":0,"failedInstances":0,"statusUrl":"/api/v1/blueprints/status/org.example%3Ahello%3A1.0.0-SNAPSHOT"}""";
 
     private static final String COMPLETED_BLUEPRINT_STATUS = """
             {"id":"org.example:hello:1.0.0-SNAPSHOT",

@@ -569,16 +569,17 @@ class ClusterDeploymentStateTransactionalTest {
     /// FAILED status anyone can read back. No test previously drove this sequence end to end.
     ///
     /// This only covers the half of the sequence owned by THIS module — the FAILED `NodeArtifact`
-    /// Put through the `AppBlueprintKey` Remove command. The other half — that
-    /// `GET /api/v1/blueprints/status/{id}` (`SliceRoutes.handleGetBlueprintStatus`, `aether/node`)
-    /// answers 404 once that key is gone — is a different module's HTTP layer and is covered by
-    /// `BlueprintStatusAggregationTest#statusRoute_blueprintAbsentFromKvAndNoOutcome_returns404BlueprintNotFound`
-    /// in `aether/node`; that test's `Option.none()` stub is exactly the KV post-state this test
-    /// proves is reached. Together the two tests are "FAILED Put → rollback commands → status
-    /// read → 404". **Until #759 Phase 2** lands a durable terminal-outcome record, this is
-    /// current, correct, and permanent behavior, not a race to be tolerated — the name says what
-    /// Phase 2 must flip: once the status route reads that durable record instead of the live KV
-    /// entry, `AppBlueprintKey` can still be removed here, but the status read must no longer 404.
+    /// Put through the `AppBlueprintKey` Remove command. The other half is a different module's HTTP
+    /// layer: **#759 Phase 2 has since landed** (`SliceRoutes.routeBlueprintStatusByOutcome`,
+    /// `aether/node`) and reads the durable `DeploymentOutcomeValue` this rollback sequence also
+    /// writes, ahead of the (now-removed) live `AppBlueprintKey` — so a real status read after THIS
+    /// exact sequence answers `200` `FAILED`/`ROLLED_BACK` with `cause`/`failingSlices`, not `404`
+    /// (`BlueprintStatusAggregationTest#statusRoute_outcomeFailed_returns200Failed`,
+    /// `#statusRoute_outcomeRolledBack_returns200RolledBack`). `404
+    /// BLUEPRINT_NOT_FOUND` (`BlueprintStatusAggregationTest#statusRoute_blueprintAbsentFromKvAndNoOutcome_returns404BlueprintNotFound`)
+    /// is now the DIFFERENT, narrower case of no outcome ever having been recorded for the id at all —
+    /// not the general shape of this test's rollback sequence, as an earlier version of this comment
+    /// claimed before Phase 2 landed.
     @Nested
     class RollbackSequence {
         @Test
