@@ -305,24 +305,25 @@ public interface SmtpClient extends AsyncCloseable {
 /// @param auth            Authentication credentials (optional)
 /// @param connectTimeout  TCP connection timeout
 /// @param commandTimeout  Timeout for individual SMTP command responses
-/// @param poolSize        Maximum number of pooled connections
-/// @param heloHostname    Hostname to use in EHLO/HELO command
 public record SmtpConfig(String host,
                           int port,
                           SmtpTlsMode tlsMode,
                           Option<SmtpAuth> auth,
                           TimeSpan connectTimeout,
-                          TimeSpan commandTimeout,
-                          int poolSize,
-                          Option<String> heloHostname) {
+                          TimeSpan commandTimeout) {
 
     static final int DEFAULT_PORT_PLAIN = 25;
     static final int DEFAULT_PORT_SUBMISSION = 587;
     static final int DEFAULT_PORT_SMTPS = 465;
     static final TimeSpan DEFAULT_CONNECT_TIMEOUT = TimeSpan.timeSpan(10).seconds();
     static final TimeSpan DEFAULT_COMMAND_TIMEOUT = TimeSpan.timeSpan(30).seconds();
-    static final int DEFAULT_POOL_SIZE = 4;
 }
+
+// NOTE (2026-09-04, #671 follow-up): connection pooling (`poolSize`) and a configurable
+// EHLO/HELO hostname (`heloHostname`) were part of this draft but were not carried into the
+// shipped `org.pragmatica.net.smtp.SmtpConfig` — that record has only the six fields above.
+// Removed here rather than marked Phase 2: no pooling/HELO-override work is tracked, so
+// "not implemented" would overstate an actual plan. If pooling is designed later, re-add here.
 ```
 
 ### 4.4 TLS Modes
@@ -779,18 +780,16 @@ public interface OrderConfirmation {
 [notification]
 backend = "smtp"
 
-[notification.smtp]
+[notification.smtp_config]
 host = "smtp.example.com"
 port = 587
 tls_mode = "STARTTLS"         # NONE | STARTTLS | IMPLICIT
 username = "user@example.com"
 password = "${SMTP_PASSWORD}"  # Environment variable substitution
-pool_size = 4
 connect_timeout = "10s"
 command_timeout = "30s"
-helo_hostname = "myapp.example.com"
 
-[notification.retry]
+[notification.retry_config]
 max_attempts = 3
 initial_delay = "1s"
 max_delay = "30s"
@@ -803,13 +802,13 @@ backoff_multiplier = 2.0
 [notification]
 backend = "http"
 
-[notification.http]
+[notification.http_config]
 provider_hint = "sendgrid"
 api_key = "${SENDGRID_API_KEY}"
 from_address = "noreply@example.com"
 # endpoint = "https://api.sendgrid.com/v3/mail/send"  # optional override
 
-[notification.retry]
+[notification.retry_config]
 max_attempts = 3
 initial_delay = "1s"
 max_delay = "30s"
@@ -822,12 +821,12 @@ backoff_multiplier = 2.0
 [notification]
 backend = "http"
 
-[notification.http]
+[notification.http_config]
 provider_hint = "mailgun"
 api_key = "${MAILGUN_API_KEY}"
 endpoint = "https://api.mailgun.net/v3/mg.example.com/messages"
 
-[notification.retry]
+[notification.retry_config]
 max_attempts = 3
 initial_delay = "500ms"
 max_delay = "15s"
@@ -841,7 +840,7 @@ For applications needing both transactional and marketing email backends:
 ```toml
 [notification.transactional]
 backend = "smtp"
-[notification.transactional.smtp]
+[notification.transactional.smtp_config]
 host = "smtp.example.com"
 port = 587
 tls_mode = "STARTTLS"
@@ -850,7 +849,7 @@ password = "${SMTP_TX_PASSWORD}"
 
 [notification.marketing]
 backend = "http"
-[notification.marketing.http]
+[notification.marketing.http_config]
 provider_hint = "sendgrid"
 api_key = "${SENDGRID_MARKETING_KEY}"
 ```
@@ -873,22 +872,30 @@ public @interface MarketingEmail {}
 ```java
 /// TOML-mapped configuration for notification resource.
 ///
-/// @param backend    Backend type: "smtp" or "http"
-/// @param smtp       SMTP configuration (when backend = "smtp")
-/// @param http       HTTP vendor configuration (when backend = "http")
-/// @param retry      Retry policy configuration
+/// @param backend      Backend type: "smtp" or "http"
+/// @param smtpConfig   SMTP configuration (when backend = "smtp")
+/// @param httpConfig   HTTP vendor configuration (when backend = "http")
+/// @param retryConfig  Retry policy configuration
 public record NotificationConfig(String backend,
-                                  Option<SmtpConfig> smtp,
-                                  Option<HttpEmailConfig> http,
-                                  RetryConfig retry) {
+                                  Option<SmtpConfig> smtpConfig,
+                                  Option<HttpEmailConfig> httpConfig,
+                                  RetryConfig retryConfig) {
 
     static NotificationConfig notificationConfig(String backend,
-                                                  Option<SmtpConfig> smtp,
-                                                  Option<HttpEmailConfig> http,
-                                                  RetryConfig retry) {
-        return new NotificationConfig(backend, smtp, http, retry);
+                                                  Option<SmtpConfig> smtpConfig,
+                                                  Option<HttpEmailConfig> httpConfig,
+                                                  RetryConfig retryConfig) {
+        return new NotificationConfig(backend, smtpConfig, httpConfig, retryConfig);
     }
 }
+
+// NOTE (2026-09-04, #671 follow-up): field names above are renamed from the original draft
+// (`smtp`/`http`/`retry`) to match the shipped record's fields, since the binder derives TOML
+// section names from these field names (camelCase -> snake_case) — this is the direct cause of
+// the stale `[notification.smtp]`/`[notification.http]`/`[notification.retry]` section names
+// corrected throughout §7 above. The shipped record also wraps `retryConfig` in `Option<...>`
+// with a `RetryConfig.DEFAULT` fallback (`effectiveRetryConfig()`), unlike the non-optional
+// `RetryConfig retry` shown here; that type-level difference is outside this fix's scope.
 
 /// Retry policy configuration.
 ///
