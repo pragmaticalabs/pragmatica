@@ -570,9 +570,9 @@ class ClusterDeploymentStateTransactionalTest {
     ///
     /// This only covers the half of the sequence owned by THIS module — the FAILED `NodeArtifact`
     /// Put through the `AppBlueprintKey` Remove command. The other half — that
-    /// `GET /api/blueprints/status/{id}` (`SliceRoutes.handleGetBlueprintStatus`, `aether/node`)
+    /// `GET /api/v1/blueprints/status/{id}` (`SliceRoutes.handleGetBlueprintStatus`, `aether/node`)
     /// answers 404 once that key is gone — is a different module's HTTP layer and is covered by
-    /// `BlueprintStatusAggregationTest#statusRoute_blueprintAbsentFromKv_returns404BlueprintNotFound`
+    /// `BlueprintStatusAggregationTest#statusRoute_blueprintAbsentFromKvAndNoOutcome_returns404BlueprintNotFound`
     /// in `aether/node`; that test's `Option.none()` stub is exactly the KV post-state this test
     /// proves is reached. Together the two tests are "FAILED Put → rollback commands → status
     /// read → 404". **Until #759 Phase 2** lands a durable terminal-outcome record, this is
