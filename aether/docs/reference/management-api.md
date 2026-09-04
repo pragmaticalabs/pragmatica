@@ -4418,11 +4418,21 @@ without writing MIGRATING]`.
 
 ### POST /api/v1/schema/undo/{datasource}?targetVersion=N
 
-Undoes migrations to the specified target version. Sets status to `PENDING` at the target version.
-Preserves the existing record's artifact coordinates and owning blueprint.
+Delegates to the schema orchestrator's real `undoTo` operation, which runs the target version's
+`U<version>__*.sql` undo script against the datasource. (#543: the prior implementation wrote a
+bare `PENDING` status and reported success without ever invoking the orchestrator — since
+`PENDING` is a **blocking** status, every "undo" silently withheld the owning blueprint's slices
+from activation instead of undoing anything.)
 
-Note that `PENDING` is a **blocking** status: while the undo is outstanding, the owning blueprint's
-slices are withheld from activation.
+Requires this node to be the cluster leader. A non-leader node refuses outright with
+`409 Conflict` rather than attempting the write and rolling back, because the orchestrator's
+single-flight fence is in-process only and does not protect a schema row from a second node
+mutating it concurrently — see the leader-binding row in the status-code table below.
+
+On success the response reflects a re-read of what the orchestrator actually did: status is
+`COMPLETED` (undo is a completed operation on the artifact, never `PENDING`), and the reported
+version is the artifact's real current version afterward, not the version requested. Preserves the
+existing record's artifact coordinates and owning blueprint.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -4432,9 +4442,13 @@ slices are withheld from activation.
 ```json
 {
   "success": true,
-  "message": "Undo to version 2 initiated for orders_db"
+  "message": "Undo complete for 'orders_db' — now at version 2 (COMPLETED)"
 }
 ```
+
+A target version with no matching undo script in the artifact, or one whose script content no
+longer matches its recorded checksum, is rejected rather than silently no-op'd — see
+`UndoNotAvailable` / `ChecksumMismatch` in the status-code table.
 
 ### POST /api/v1/schema/retry/{datasource}
 
@@ -4458,13 +4472,25 @@ in flight) and `COMPLETED` (nothing marked it failed) are refused with `409 Conf
 
 ### POST /api/v1/schema/baseline/{datasource}?version=N
 
-Baselines a datasource at the specified version (marks V001..V{N} as applied without executing).
-Sets status to `COMPLETED`, which releases any activation hold on the owning blueprint's slices.
+Delegates to the schema orchestrator's real `baseline` operation, which records V001..V{N} as
+applied without executing them. (#543: the prior implementation wrote a fabricated `COMPLETED`
+status directly, with zero database interaction.)
+
+Requires this node to be the cluster leader, for the same reason and with the same
+`409 Conflict` refusal as `undo` above.
+
+Sets status to `COMPLETED` on success, which releases any activation hold on the owning
+blueprint's slices; the reported version is the orchestrator's own re-read, not the requested one.
 
 The existing record's artifact coordinates and owning blueprint are **inherited**, not rewritten.
 A datasource with **no existing schema record cannot be baselined** — the call fails with
 `404 Not Found` and ``Schema status not found for datasource '<name>'`` rather than fabricating an
 unowned record. Publish (or deploy) the owning blueprint first so the record exists.
+
+A datasource with versioned migrations already applied past the requested baseline version cannot
+be baselined either — that would silently disagree with the database's actual applied history;
+undo to the target version instead, or baseline at (or above) the existing version — see
+`BaselineConflict` in the status-code table.
 
 `version` is optional and defaults to `1` when absent; a present-but-non-integer value is rejected
 with `400 Bad Request`.
@@ -4477,7 +4503,7 @@ with `400 Bad Request`.
 ```json
 {
   "success": true,
-  "message": "Baselined orders_db at version 3"
+  "message": "Baseline complete for 'orders_db' — now at version 3 (COMPLETED)"
 }
 ```
 
@@ -4489,13 +4515,20 @@ with `400 Bad Request`.
 > | Condition | Status | `detail` |
 > |-----------|--------|----------|
 > | Datasource has no schema record (every route that reads one) | `404 Not Found` | ``Schema status not found for datasource '<name>'`` |
+> | `undo` or `baseline` issued against a non-leader node (#543) | `409 Conflict` | ``Schema <operation> for datasource '<name>' requires the leader node — current leader: <id>`` (leader suffix omitted when unknown) — retry against the named leader |
 > | `retry` against a datasource that is not `FAILED` or `PENDING` | `409 Conflict` | ``Schema for datasource '<name>' is not in FAILED state (currently <STATUS>) — retry applies to FAILED or PENDING migrations only`` |
 > | `migrate` against a COMPLETED record whose owning blueprint has ≥1 live ACTIVE slice | `409 Conflict` | ``Schema for datasource '<name>' is already COMPLETED and serving <N> active slice instance(s) — re-triggering migration would hold the next slice to activate with no automatic recovery; baseline or undo first if a re-migration is genuinely intended`` |
 > | `migrate` against a record that is already `PENDING` | `409 Conflict` | ``Schema for datasource '<name>' already has a migration PENDING — re-arming to MIGRATING has no dispatch effect of its own and would strand the record with no automatic clearing path; wait for the pending migration to dispatch, or use retry if it has since failed`` |
+> | `undo` against a target version with no matching `U<version>__*.sql` script in the artifact (#543) | `422 Unprocessable Entity` | ``Undo script not available for datasource '<name>' at version <version>`` — publish a blueprint revision carrying the missing script, or choose a target version the artifact can actually undo to |
+> | `undo` against a version whose recorded checksum no longer matches the script content (#543) | `422 Unprocessable Entity` | ``Checksum mismatch for datasource '<name>' at version <version>: expected <expected> but found <actual>`` — the migration script was edited after being applied; restore its original content, or baseline past the drifted version |
+> | `baseline` against a datasource with versioned migrations already applied past the requested version (#543) | `409 Conflict` | ``Baseline conflict for datasource '<name>': versioned migrations already applied up to version <existingVersion>`` — undo to the target version instead, or baseline at (or above) `<existingVersion>` |
 > | `?version=` / `?targetVersion=` present but not an integer | `400 Bad Request` | ``Invalid '<parameter>' parameter: '<value>' is not an integer`` |
 >
 > An **absent** `version`/`targetVersion` is not an error — it takes the documented default
-> (`1` for baseline, `0` for undo). Any other failure on these routes remains a `500`.
+> (`1` for baseline, `0` for undo). `undo` and `baseline` map every orchestrator failure above
+> through `HttpStatusAware`; only a genuinely unmapped failure remains a `500` (#543 replaced the
+> prior behavior, under which neither route ever reached the orchestrator, so no orchestrator
+> failure had ever surfaced through them before).
 
 ---
 

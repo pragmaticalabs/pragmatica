@@ -38,6 +38,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand.Remove;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn3;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -154,18 +155,192 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                       .or(Promise.success(unit()));
     }
 
+    /// #543 ("schema undo is unreachable"): this used to just write a bare KV status — PENDING —
+    /// and report success, never calling [AetherSchemaManager#undo]. That was actively wrong, not
+    /// merely inert: [#migrateIfNeeded]'s own reconciler tick picks up ANY PENDING record and
+    /// dispatches [#executeMigrationFlow], which calls `schemaManager.migrate(...)` FORWARD from
+    /// the full script list — so an "undone" datasource was migrated straight back past the target
+    /// version on the very next tick, silently undoing the undo it claimed to have performed.
     @Override
     public Promise<Unit> undoTo(String datasourceName, int targetVersion) {
-        log.info("Undo to version {} requested for datasource: {} (not yet implemented)", targetVersion, datasourceName);
-
-        return Promise.success(unit());
+        return executeUndoOrBaseline(datasourceName,
+                                     "undo",
+                                     (connector, scripts, owner) -> schemaManager.undo(datasourceName,
+                                                                                       targetVersion,
+                                                                                       scripts,
+                                                                                       connector,
+                                                                                       self.id(),
+                                                                                       owner));
     }
 
+    /// #543: the prior version wrote a fabricated COMPLETED status directly, with a synthetic
+    /// `lastMigration` marker built from the caller's raw request parameter — no call to
+    /// [AetherSchemaManager#baseline], no real database interaction of any kind. The 409/422
+    /// conflicts baseline can genuinely raise ([SchemaError.BaselineConflict],
+    /// [SchemaError.ChecksumMismatch]) were unreachable because nothing ever asked the manager.
     @Override
     public Promise<Unit> baseline(String datasourceName, int version) {
-        log.info("Baseline version {} requested for datasource: {} (not yet implemented)", version, datasourceName);
+        return executeUndoOrBaseline(datasourceName,
+                                     "baseline",
+                                     (connector, scripts, owner) -> schemaManager.baseline(datasourceName,
+                                                                                           version,
+                                                                                           scripts,
+                                                                                           connector,
+                                                                                           self.id(),
+                                                                                           owner));
+    }
 
-        return Promise.success(unit());
+    /// Shared undo/baseline execution. Calls the real manager operation SYNCHRONOUSLY, before any
+    /// KV write — the antithesis of "write a status, let a later reconciler tick do the work" that
+    /// [#undoTo]'s header describes. The final write is always `SchemaStatus.COMPLETED`, never
+    /// `PENDING`: [#migrateIfNeeded]'s own `status == PENDING` filter is what then keeps the
+    /// reconciler from ever revisiting this record on its own [mechanism: the reconciler's
+    /// PENDING-only guard structurally excludes a COMPLETED record — #543 condition 1, no
+    /// additional guard needed beyond writing the correct terminal status].
+    ///
+    /// Shares [#executeMigrationFlow]'s single-flight fence (`inFlightMigrations`, keyed by
+    /// `datasourceName`) so a `/migrate` dispatch and an `/undo` or `/baseline` call against the
+    /// SAME datasource can never run concurrently on this node [mechanism: `ConcurrentHashMap
+    /// .putIfAbsent` — #543 condition 2's in-process half]. That fence is per-JVM, not
+    /// KV-transactional — it does nothing for a second cluster node reading and writing the same
+    /// schema row at the same time. The route layer closes that cross-node gap by binding both
+    /// operations to the leader ([SchemaRouteError.SchemaNotLeader]) rather than by widening this
+    /// fence into a distributed lock.
+    private Promise<Unit> executeUndoOrBaseline(String datasourceName,
+                                                String operation,
+                                                Fn3<Promise<AetherSchemaManager.SchemaResult>, SqlConnector, List<MigrationEntry>, BlueprintId> terminalOp) {
+        var versionKey = SchemaVersionKey.schemaVersionKey(datasourceName);
+
+        return kvStore.get(versionKey)
+                      .filter(SchemaOrchestratorServiceInstance::isSchemaVersionValue)
+                      .map(SchemaVersionValue.class::cast)
+                      .map(value -> runUndoOrBaseline(datasourceName, operation, value, terminalOp))
+                      .or(() -> schemaRecordVanished(datasourceName, operation));
+    }
+
+    /// The route layer (`SchemaRoutes.undoToVersion`/`baselineAtVersion`) already confirms the
+    /// record exists — the same [SchemaRouteError.SchemaRecordNotFound] 404 check `/status` and
+    /// `/history` use — before ever dispatching here, so this covers a narrow, disclosed race (the
+    /// record deleted between that check and this call) rather than a path any route drives today;
+    /// no route deletes a schema version record. A bare [Cause] (500) is deliberate here, unlike
+    /// every genuine failure below: this one has no semantic status of its own to carry.
+    private static Promise<Unit> schemaRecordVanished(String datasourceName, String operation) {
+        return Causes.cause("Schema version record for '" + datasourceName
+                           + "' disappeared between the route's existence check and " + operation
+                           + " dispatch").promise();
+    }
+
+    private Promise<Unit> runUndoOrBaseline(String datasourceName,
+                                            String operation,
+                                            SchemaVersionValue value,
+                                            Fn3<Promise<AetherSchemaManager.SchemaResult>, SqlConnector, List<MigrationEntry>, BlueprintId> terminalOp) {
+        var attemptToken = new Object();
+
+        return acquireLock(datasourceName, attemptToken).flatMap(_ -> resolveMigrationScripts(datasourceName, value).flatMap(scripts -> provisionAndRun(datasourceName,
+                                                                                                                                                        scripts,
+                                                                                                                                                        value.owningBlueprint(),
+                                                                                                                                                        terminalOp))
+                                                                                             .flatMap(result -> recordOutcome(datasourceName,
+                                                                                                                              operation,
+                                                                                                                              value,
+                                                                                                                              result))
+                                                                                             .flatMap(_ -> releaseLock(datasourceName))
+                                                                                             .replaceResult(result -> finalizeAttempt(datasourceName,
+                                                                                                                                      attemptToken,
+                                                                                                                                      result)));
+    }
+
+    private Promise<AetherSchemaManager.SchemaResult> provisionAndRun(String datasourceName,
+                                                                      List<MigrationEntry> scripts,
+                                                                      BlueprintId owner,
+                                                                      Fn3<Promise<AetherSchemaManager.SchemaResult>, SqlConnector, List<MigrationEntry>, BlueprintId> terminalOp) {
+        return provisionConnector(datasourceName).flatMap(connector -> terminalOp.apply(connector, scripts, owner)
+                                                                                 .onResultRun(() -> releaseConnectorSilently(datasourceName)));
+    }
+
+    /// #543 condition 3: writes `result.currentVersion()` — the value [AetherSchemaManager]
+    /// actually reports for what it just did to the database — never `value.currentVersion()`
+    /// (the pre-existing record, unchanged by this operation) and never a version re-derived
+    /// independently from the request. A future change to how the manager computes the
+    /// post-operation version therefore cannot silently desync this KV record from the schema
+    /// history table it is supposed to describe. `attemptCount` resets to 0: a completed undo or
+    /// baseline is a fresh terminal state, not a retry of anything.
+    private Promise<Unit> recordOutcome(String datasourceName,
+                                        String operation,
+                                        SchemaVersionValue value,
+                                        AetherSchemaManager.SchemaResult result) {
+        log.info("Schema {} for '{}' complete: {} script(s) applied, now at version {}",
+                 operation,
+                 datasourceName,
+                 result.appliedCount(),
+                 result.currentVersion());
+        var key = SchemaVersionKey.schemaVersionKey(datasourceName);
+        var updated = SchemaVersionValue.schemaVersionValue(datasourceName,
+                                                            result.currentVersion(),
+                                                            lastMigrationFor(operation, result),
+                                                            SchemaStatus.COMPLETED,
+                                                            value.artifactCoords(),
+                                                            value.owningBlueprint(),
+                                                            0);
+        KVCommand<AetherKey> command = new Put<>(key, updated);
+
+        return cluster.apply(List.of(command))
+                      .mapToUnit();
+    }
+
+    /// A synthetic marker, not a claim about which real script file ran: `appliedCount` can be
+    /// greater than one (undo or baseline can step through several scripts to reach the target),
+    /// so there is no single "the applied filename" to report honestly without duplicating
+    /// [AetherSchemaManager]'s own script-selection logic here. `"V<version>__baseline"` keeps the
+    /// convention [SchemaRoutes] used inline before this fix (pinned by
+    /// `SchemaRoutesBaselineTest`), now built from the REAL applied version instead of the
+    /// caller's raw request parameter; `"U<version>__undo"` is the analogous marker for undo, new
+    /// with this fix since undo previously never reached a real completion at all.
+    private static String lastMigrationFor(String operation, AetherSchemaManager.SchemaResult result) {
+        var version = String.format("%03d", result.currentVersion());
+
+        return "baseline".equals(operation)
+               ? "V" + version + "__baseline"
+               : "U" + version + "__undo";
+    }
+
+    /// The route layer's existence check guarantees a schema version RECORD, but not one that
+    /// still declares a resolvable migration set. Unlike [#resolveAndParseMigrations] (forward
+    /// migrate's resolution chain, where [#noDeclaredMigrations] treats an empty set as legitimate
+    /// — a background reconciliation pass finding nothing pending is fine), an absent-coordinates
+    /// or empty-scripts outcome is a genuine, reportable failure here: undo and baseline are
+    /// operator requests to perform one specific action against one specific artifact, so "there
+    /// is nothing to act on" is always an error, never a quiet no-op.
+    private Promise<List<MigrationEntry>> resolveMigrationScripts(String datasourceName, SchemaVersionValue value) {
+        return Option.option(value.artifactCoords())
+                     .filter(Verify.Is::present)
+                     .map(coords -> resolveDeclaredScripts(datasourceName, value, coords))
+                     .or(() -> SchemaError.MigrationArtifactUnresolved.migrationArtifactUnresolved(datasourceName,
+                                                                                                   value.currentVersion(),
+                                                                                                   declaredMigration(value))
+                                                                      .promise());
+    }
+
+    private Promise<List<MigrationEntry>> resolveDeclaredScripts(String datasourceName,
+                                                                 SchemaVersionValue value,
+                                                                 String artifactCoords) {
+        return Artifact.artifact(artifactCoords)
+                       .async()
+                       .flatMap(this::resolveArtifactBytes)
+                       .flatMap(jarBytes -> BlueprintArtifactParser.parse(jarBytes).async())
+                       .flatMap(artifact -> scriptsFor(datasourceName, value, artifact));
+    }
+
+    private static Promise<List<MigrationEntry>> scriptsFor(String datasourceName,
+                                                            SchemaVersionValue value,
+                                                            BlueprintArtifact artifact) {
+        return Option.option(artifact.schemaMigrations().get(datasourceName))
+                     .filter(list -> !list.isEmpty())
+                     .map(Promise::success)
+                     .or(() -> SchemaError.MigrationSetUnavailable.migrationSetUnavailable(datasourceName,
+                                                                                           value.artifactCoords(),
+                                                                                           value.currentVersion())
+                                                                  .promise());
     }
 
     private static boolean isSchemaVersionValue(AetherValue value) {

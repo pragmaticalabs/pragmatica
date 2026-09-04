@@ -1439,9 +1439,9 @@ aether schema baseline <datasource> -v <version>
 | `status [datasource]` | Show schema status (all or specific) |
 | `history <datasource>` | Show migration history |
 | `migrate <datasource>` | Trigger manual migration (refused with `409` if the record is COMPLETED and already serving, or already PENDING) |
-| `undo <datasource> -v N` | Undo to target version |
+| `undo <datasource> -v N` | Undo to target version — leader-only (`409` on a follower); `422` if the version has no undo script or fails its checksum |
 | `retry <datasource>` | Retry a failed migration (clears the activation hold) |
-| `baseline <datasource> -v N` | Baseline at version |
+| `baseline <datasource> -v N` | Baseline at version — leader-only (`409` on a follower or on applied history past the target version) |
 
 #### `aether schema status` output
 
@@ -1497,6 +1497,22 @@ status it actually observed. `baseline` requires an
 existing record — it inherits that record's owning blueprint rather than inventing one, so
 baselining a datasource that has never been published fails with `404 Not Found` and
 ``Schema status not found for datasource '<name>'``.
+
+`undo` and `baseline` both require this node to be the cluster leader (#543) — a non-leader node
+refuses immediately with `409 Conflict` and ``Schema <operation> for datasource '<name>' requires
+the leader node — current leader: <id>`` (leader suffix omitted when unknown), rather than
+attempting the write and rolling back; the orchestrator's own single-flight fence is in-process
+only and does not protect a schema row from a second node mutating it concurrently. Both then
+delegate to the schema orchestrator's real `undoTo` / `baseline` operation and report its own
+re-read of the outcome — status is always `COMPLETED` on success, never a bare `PENDING` (the prior
+`undo` implementation wrote `PENDING` and reported success without ever running the undo script,
+which silently held the owning blueprint's slices instead of undoing anything). `undo` against a
+target version with no matching `U<version>__*.sql` script, or one whose checksum no longer
+matches the script content, fails with `422 Unprocessable Entity` rather than a generic `500`.
+`baseline` against a datasource with versioned migrations already applied past the requested
+version fails with `409 Conflict` (``Baseline conflict for datasource '<name>': versioned
+migrations already applied up to version <existingVersion>``) — undo to the target version instead,
+or baseline at (or above) the existing version.
 
 `migrate` similarly refuses (#760 review BLOCKING 1) when the record is `COMPLETED` **and** the
 owning blueprint has at least one slice instance already `ACTIVE` — re-arming to `MIGRATING` would

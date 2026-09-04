@@ -11,7 +11,11 @@ import org.pragmatica.lang.Cause;
 
 
 public sealed interface SchemaError extends Cause {
-    record ChecksumMismatch(String datasource, int version, long expected, long actual) implements SchemaError {
+    /// #543 condition 4: surfaces as HTTP 422 — the request (which script version to migrate)
+    /// is well-formed and the datasource exists; what's wrong is the content already applied to it,
+    /// not a conflict with current cluster/database state (that's [BaselineConflict]'s 409) and not
+    /// a malformed request (that's a 400 at the route layer).
+    record ChecksumMismatch(String datasource, int version, long expected, long actual) implements SchemaError, HttpStatusAware {
         public static ChecksumMismatch checksumMismatch(String datasource, int version, long expected, long actual) {
             return new ChecksumMismatch(datasource, version, expected, actual);
         }
@@ -22,6 +26,11 @@ public sealed interface SchemaError extends Cause {
                  + "' at version " + version
                  + ": expected " + expected
                  + " but found " + actual;
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.UNPROCESSABLE_ENTITY;
         }
     }
 
@@ -58,7 +67,12 @@ public sealed interface SchemaError extends Cause {
         }
     }
 
-    record BaselineConflict(String datasource, int existingVersion) implements SchemaError {
+    /// #543 condition 4: surfaces as HTTP 409 on `/baseline` — the request is well-formed and the
+    /// datasource exists; the conflict is with existing database state (versioned migrations already
+    /// applied), exactly the [DatasourceOwnershipConflict] precedent below. Recovery: baseline is not
+    /// the right operation for a datasource with applied history — undo to the target version instead,
+    /// or baseline at (or above) `existingVersion`.
+    record BaselineConflict(String datasource, int existingVersion) implements SchemaError, HttpStatusAware {
         public static BaselineConflict baselineConflict(String datasource, int existingVersion) {
             return new BaselineConflict(datasource, existingVersion);
         }
@@ -68,9 +82,21 @@ public sealed interface SchemaError extends Cause {
             return "Baseline conflict for datasource '" + datasource
                  + "': versioned migrations already applied up to version " + existingVersion;
         }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
     }
 
-    record UndoNotAvailable(String datasource, int version) implements SchemaError {
+    /// #543 condition 4: surfaces as HTTP 422 — the requested target version exists in the applied
+    /// history but the artifact carries no matching `U`-prefixed undo script for it, so the content
+    /// needed to fulfill the request is missing. Not a state conflict (409): the datasource's current
+    /// state is exactly what it should be, and re-issuing the same request against different cluster
+    /// state would not change the outcome — only publishing an artifact with the undo script would.
+    /// Recovery: publish a blueprint revision carrying the missing `U<version>__*.sql` script, or
+    /// choose a target version this artifact can actually undo to.
+    record UndoNotAvailable(String datasource, int version) implements SchemaError, HttpStatusAware {
         public static UndoNotAvailable undoNotAvailable(String datasource, int version) {
             return new UndoNotAvailable(datasource, version);
         }
@@ -78,6 +104,11 @@ public sealed interface SchemaError extends Cause {
         @Override
         public String message() {
             return "Undo script not available for datasource '" + datasource + "' at version " + version;
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.UNPROCESSABLE_ENTITY;
         }
     }
 
