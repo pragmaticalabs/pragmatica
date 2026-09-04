@@ -312,9 +312,7 @@ public final class ScheduledTaskRoutes implements RouteSource {
 
     private Promise<ScheduledTaskInjectResponse> invokeAndAdvanceState(ScheduledTask task,
                                                                        ScheduledTaskInjectRequest req) {
-        var stateKey = ScheduledTaskStateKey.scheduledTaskStateKey(task.configSection(),
-                                                                   task.artifact(),
-                                                                   task.methodName());
+        var stateKey = injectStateKeyFor(task);
         var priorState = stateRegistry.stateFor(stateKey);
         var previousExecutionMs = priorState.map(ScheduledTaskStateValue::lastExecutionAt).or(0L);
 
@@ -323,6 +321,22 @@ public final class ScheduledTaskRoutes implements RouteSource {
                               Unit.unit())
                       .onFailure(cause -> writeFailureBestEffort(stateKey, priorState, cause))
                       .flatMap(_ -> writeSuccessAndRespond(stateKey, priorState, req, previousExecutionMs));
+    }
+
+    /// Mirrors `ScheduledTaskManager.TaskOps#stateKeyFor` so `/inject` writes land on the same
+    /// row the automatic path reads and the Management API aggregates: an ALL-mode task is
+    /// scoped by this node, same as an automatic fire, so the write is visible on the per-node
+    /// aggregation (#841) instead of landing on the unscoped key every ALL-mode read surface
+    /// now filters out. SINGLE-mode keeps the pre-#841 unscoped key unchanged — it still races
+    /// the leader's automatic fire and `/trigger` on that same key (no `tryClaim`/`release`
+    /// guard here), a documented TOCTOU caveat, not fixed by this change.
+    private ScheduledTaskStateKey injectStateKeyFor(ScheduledTask task) {
+        return task.executionMode() == ExecutionMode.ALL
+               ? ScheduledTaskStateKey.scheduledTaskStateKey(task.configSection(),
+                                                             task.artifact(),
+                                                             task.methodName(),
+                                                             nodeSupplier.get().self())
+               : ScheduledTaskStateKey.scheduledTaskStateKey(task.configSection(), task.artifact(), task.methodName());
     }
 
     private Promise<ScheduledTaskInjectResponse> writeSuccessAndRespond(ScheduledTaskStateKey stateKey,
