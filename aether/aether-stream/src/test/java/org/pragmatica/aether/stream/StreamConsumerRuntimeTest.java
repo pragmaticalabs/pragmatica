@@ -531,8 +531,16 @@ class StreamConsumerRuntimeTest {
                       .isLessThan(1000L);
         }
 
+        /// #654 round 2: the documented contract for [ConsumerRuntimeState#awaitFinalCursorCommits] is
+        /// that a commit still unresolved when the shutdown bound expires counts as failed for THIS
+        /// shutdown immediately — not only if/when it eventually resolves. The count therefore reaches
+        /// 1 the instant `close()` returns, before `pending` is ever settled. A commit already marked
+        /// this way that goes on to resolve with a genuine failure is a second, distinct event on the
+        /// same node-wide counter ([ConsumerRuntimeState#cursorCommitFailureCount] is an event count,
+        /// not a deduplicated-incident count) — not a case this test needs to police further; the
+        /// no-rollback guarantee that matters is pinned by the `succeed`-after-bound test below.
         @Test
-        void close_boundsTheWait_whenFinalCommitNeverSettles_thenCountsALateFailure() throws InterruptedException {
+        void close_countsUnsettledCommit_whenFinalCommitNeverSettlesWithinBound() throws InterruptedException {
             createTestStream("orders");
             Promise<Unit> pending = Promise.promise();
             var store = committing(pending);
@@ -551,13 +559,54 @@ class StreamConsumerRuntimeTest {
 
             assertThat(elapsedMs).describedAs("node stop must not be held past the #654 shutdown bound")
                       .isBetween(4500L, 9000L);
-            assertThat(observedRuntime.cursorCommitFailureCount()).describedAs("an unresolved commit has nothing to count yet")
-                      .isZero();
+            assertThat(observedRuntime.cursorCommitFailureCount())
+                      .describedAs("unresolved at the shutdown bound counts as failed for THIS shutdown immediately, before the promise ever resolves")
+                      .isEqualTo(1L);
 
             pending.fail(StreamError.General.BUFFER_EMPTY);
 
-            awaitCount(observedRuntime::cursorCommitFailureCount, 1L);
-            assertThat(observedRuntime.cursorCommitFailureCount()).describedAs("a failure that resolves after the bound is still logged and counted")
+            awaitCount(observedRuntime::cursorCommitFailureCount, 2L);
+            assertThat(observedRuntime.cursorCommitFailureCount())
+                      .describedAs("the promise later resolving with a genuine failure is counted again, on top of the bound-expiry mark, not instead of it")
+                      .isEqualTo(2L);
+        }
+
+        /// #654 round 2: the ruling's actual guarantee — a commit marked unsettled at the shutdown
+        /// bound must stay counted even when it turns out, after the fact, that the write succeeded.
+        /// A plain success carries no failure for the ordinary `observedCommit` handlers to observe, so
+        /// without the bound-expiry mark this commit would never be counted at all despite genuinely
+        /// overrunning the shutdown bound. [ConsumerState#recordCursorCommitFailure] is only ever
+        /// cleared at the START of a NEXT commit attempt, and there is no next attempt once this
+        /// consumer is torn down at close, so the later success cannot roll this back.
+        @Test
+        void close_countsUnsettledCommit_evenWhenFinalCommitLaterSucceeds() throws InterruptedException {
+            createTestStream("orders");
+            Promise<Unit> pending = Promise.promise();
+            var store = committing(pending);
+            var observedRuntime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);
+
+            observedRuntime.subscribe("orders",
+                                      0,
+                                      ConsumerConfig.consumerConfig("group-1"),
+                                      (offset, payload, ts) -> Promise.unitPromise());
+
+            var start = System.nanoTime();
+
+            observedRuntime.close();
+
+            var elapsedMs = (System.nanoTime() - start) / 1_000_000;
+
+            assertThat(elapsedMs).describedAs("node stop must not be held past the #654 shutdown bound")
+                      .isBetween(4500L, 9000L);
+            assertThat(observedRuntime.cursorCommitFailureCount())
+                      .describedAs("unresolved at the shutdown bound counts as failed for THIS shutdown immediately, before the promise ever resolves")
+                      .isEqualTo(1L);
+
+            pending.succeed(Unit.unit());
+            Thread.sleep(200);
+
+            assertThat(observedRuntime.cursorCommitFailureCount())
+                      .describedAs("a later success must not decrement or clear a commit already marked unsettled at the shutdown bound — the node was already stopping without durable confirmation")
                       .isEqualTo(1L);
         }
 
