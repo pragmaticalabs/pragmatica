@@ -549,7 +549,6 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             if (deactivated.get()) {
                 return;
             }
-
             // #731 round 2: a cold leader's `sweepDeadRestoredWorkers` call inside
             // `rebuildStateFromKVStore` (Active.onEntry, immediate) can find no governor
             // announcements yet — SWIM/community state has not had time to converge. This
@@ -754,8 +753,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                         GovernorAnnouncementValue.class,
                         (_, value) -> {
                             if (!value.dissolved()) {
-                                members.addAll(value.members());
-                            }
+                            members.addAll(value.members());
+                        }
                         });
 
             return members;
