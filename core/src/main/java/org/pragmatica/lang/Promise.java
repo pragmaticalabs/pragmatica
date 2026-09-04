@@ -22,6 +22,8 @@ import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
@@ -3127,7 +3129,26 @@ public sealed interface Promise<T> permits PromiseImpl {
 
 enum AsyncExecutor {
     INSTANCE;
+
+    // #749/#750: .timeout()'s delayed-failure task used to share this pool's virtual-thread carriers with
+    // every other .async() offload in the codebase. A timeout is exactly the guard relied on when the
+    // system is under load -- and CPU-bound work pinning every carrier is a form of load -- so a timeout
+    // that must win a carrier to fire is not actually bounded. This scheduler is dedicated SOLELY to
+    // runAsync(TimeSpan, Runnable): platform threads, scheduled by the OS rather than the JVM's
+    // virtual-thread carrier pool, so they cannot be starved by virtual-thread carrier exhaustion.
+    // General .async() offload work (runAsync(Runnable)) is unchanged and still runs on `executor`.
+    //
+    // Sized at a small fixed pool rather than one thread: firing a timeout resolves its promise inline
+    // on this scheduler's own thread (Promise.allOf's aggregation runs inline via CompletionMap, not
+    // offloaded -- see #749 condition-1 analysis), so a continuation that blocks on that thread would
+    // stall every OTHER pending timeout sharing a single-threaded scheduler. Four lanes bound that blast
+    // radius to "more than four timeouts blocked concurrently", not "any one blocked timeout".
+    private static final int TIMEOUT_SCHEDULER_THREADS = 4;
     private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+    private final ScheduledExecutorService timeoutScheduler =
+        Executors.newScheduledThreadPool(TIMEOUT_SCHEDULER_THREADS,
+                                          Thread.ofPlatform().name("promise-timeout-scheduler-", 0).daemon(true).factory());
+
     @Contract
     void runAsync(Runnable runnable) {
         var snapshot = ContextPropagation.INSTANCE.capture();
@@ -3138,16 +3159,8 @@ enum AsyncExecutor {
     void runAsync(TimeSpan delay, Runnable runnable) {
         var snapshot = ContextPropagation.INSTANCE.capture();
 
-        executor.submit(() -> ContextPropagation.INSTANCE.runWith(snapshot,
-                                                                  () -> {
-                                                                      try {
-                                                                      Thread.sleep(delay.duration());
-                                                                  } catch (InterruptedException e) {
-                                                                      Thread.currentThread().interrupt();
-                                                                  }
-
-                                                                      runnable.run();
-                                                                  }));
+        timeoutScheduler.schedule(() -> ContextPropagation.INSTANCE.runWith(snapshot, runnable),
+                                   delay.nanos(), TimeUnit.NANOSECONDS);
     }
 }
 
