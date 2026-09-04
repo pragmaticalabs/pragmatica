@@ -230,7 +230,6 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     @TerminalOperation
     private void awaitFinalCursorCommits() {
         consumers.forEach(this::flushCursorForKey);
-
         var snapshot = List.copyOf(inFlightCommits);
 
         if (snapshot.isEmpty()) {
@@ -292,7 +291,6 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// one increment per unsettled commit, ever. The detail text is recorded unconditionally either way.
     private void reportCommitOutcome(TrackedCommit tracked, String detail, String errorTemplate, Object... errorArgs) {
         tracked.state().recordCursorCommitFailure(detail);
-
         if (tracked.reported().compareAndSet(false, true)) {
             cursorCommitFailureCount.incrementAndGet();
             LOG.log(System.Logger.Level.ERROR, errorTemplate, errorArgs);
@@ -433,12 +431,14 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     private Promise<Unit> observedCommit(ConsumerKey key, ConsumerState state) {
         return cursorStore.map(store -> {
                                    state.clearCursorCommitFailure();
-
                                    var commit = store.commit(key.groupId(),
                                                              key.streamName(),
                                                              key.partition(),
                                                              state.cursor());
-                                   var tracked = new TrackedCommit(key, state, commit, new AtomicBoolean(false));
+                                   var tracked = new TrackedCommit(key,
+                                                                   state,
+                                                                   commit,
+                                                                   new AtomicBoolean(false));
 
                                    inFlightCommits.add(tracked);
 
@@ -457,7 +457,9 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// arriving after the bound already reported this commit unsettled logs WARNING, not a second ERROR,
     /// and does not increment [#cursorCommitFailureCount] again.
     private void recordIfRecovered(TrackedCommit tracked, ConsumerCursorStore store) {
-        store.lastRecoveredFailure(tracked.key().groupId(), tracked.key().streamName(), tracked.key().partition())
+        store.lastRecoveredFailure(tracked.key().groupId(),
+                                   tracked.key().streamName(),
+                                   tracked.key().partition())
              .onPresent(detail -> reportCheckpointRecovered(tracked, detail));
     }
 
@@ -812,7 +814,6 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         /// removes the entry from [ConsumerRuntimeState#consumers] and this per-consumer detail goes
         /// with it. What survives detach is the node-wide [ConsumerRuntimeState#cursorCommitFailureCount].
         private volatile String lastCursorCommitFailure;
-
 
         private ConsumerState(ConsumerConfig config,
                               ConsumerCallback callback,
