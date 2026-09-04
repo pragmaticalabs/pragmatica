@@ -21,11 +21,13 @@ import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue;
 import org.pragmatica.cluster.node.ClusterNode;
@@ -143,6 +145,14 @@ class ClusterDeploymentStateWorkerRemovalTest {
         harness.dispatch(new WorkerLeaveReceived(WorkerLeaveDecision.workerLeaveDecision(nodeId, HlcTimestamp.ZERO)));
     }
 
+    /// Seeds the KV-committed, SWIM-derived community roster `sweepDeadRestoredWorkers` now reads —
+    /// the same `GovernorAnnouncementValue` record `WorkerRoutes` projects for `/api/workers` — so
+    /// tests can simulate a converged (or not-yet-converged, by never calling this) leader.
+    private void announceCommunityMembership(List<NodeId> members) {
+        kvStore.put(GovernorAnnouncementKey.forCommunity(COMMUNITY_ID),
+                    GovernorAnnouncementValue.governorAnnouncementValue(new NodeId("node-governor"), members, "localhost:9100"));
+    }
+
     @Nested
     class WorkerLifecycle {
         @Test
@@ -227,14 +237,21 @@ class ClusterDeploymentStateWorkerRemovalTest {
                     .contains(WORKER_1);
         }
 
-        /// #731 refinement (BLOCKING 1 + SHOULD-FIX 3, one mechanism): a leader that never locally
-        /// observed this worker's JOIN — a freshly booted leader, or an asymmetric connection window
-        /// — restores it purely from its durable `ActivationDirectiveKey` on activation, with no
+        /// #731 round 2 (Opus re-review of `8e0fb5927`): a leader that never locally observed this
+        /// worker's JOIN — a freshly booted leader, or an asymmetric connection window — restores it
+        /// purely from its durable `ActivationDirectiveKey` on activation, with no
         /// `MembershipDeltaProjector` REMOVED edge ever able to fire for it (its `everJoined` gate
-        /// filters exactly this case upstream). Liveness, observed independently of local join
-        /// history, is the only signal left to catch a worker that is dead on arrival.
+        /// filters exactly this case upstream). The round-1 cut of this sweep used
+        /// `ctx.communityLiveness()::isAbsent` (pong-history-based) as its liveness source; on a
+        /// COLD leader with no pong history for anyone yet, that source reads `false` ("not absent")
+        /// for every restored worker, so the sweep silently no-oped on exactly the scenario it exists
+        /// to catch — and the same source could, in reverse, wrongly remove a genuinely live worker
+        /// merely pong-silent past the absence window. The three tests below pin the corrected
+        /// source instead: `GovernorAnnouncementValue.members()`, the community roster each governor
+        /// recomputes from SWIM and commits through consensus (the same record `WorkerRoutes`
+        /// projects for `/api/workers`) — independent of both local join history and pong bookkeeping.
         @Test
-        void leaderActivation_restoredWorkerObservedAbsentFromLiveness_isRemoved() {
+        void leaderActivation_restoredWorkerAbsentFromCommunityMembership_isRemoved() {
             var deadWorker = new NodeId("node-worker-dead");
             var artifactKey = NodeArtifactKey.nodeArtifactKey(deadWorker, ARTIFACT);
             var routesKey = NodeRoutesKey.nodeRoutesKey(deadWorker, ARTIFACT);
@@ -245,18 +262,100 @@ class ClusterDeploymentStateWorkerRemovalTest {
             kvStore.put(artifactKey, NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE));
             kvStore.put(routesKey, NodeRoutesValue.empty());
             kvStore.put(sliceKey, AetherValue.SliceNodeValue.sliceNodeValue(SliceState.ACTIVE));
-
-            activeState().ctx().setCommunityLiveness(node -> node.equals(deadWorker));
+            // Converged community membership that does not include deadWorker. communityLiveness is
+            // left at its default `unwired()` (never absent for anyone) — the exact cold-leader,
+            // no-pong-history condition the pong-based source used to misread as "keep".
+            announceCommunityMembership(List.of(SELF));
 
             activeState().rebuildStateFromKVStore();
 
             assertThat(activeState().workerNodes())
-                    .as("#731: a restored worker the leader observes absent from liveness must not survive activation")
+                    .as("#731 round 2: a restored worker absent from the announced community roster must not "
+                        + "survive activation, even with no pong history for it at all")
                     .doesNotContain(deadWorker);
             assertThat(kvStore.get(directiveKey))
                     .as("#731: the dead restored worker's ActivationDirectiveKey must be removed so it cannot "
                         + "resurrect the pool slot on the next activation")
                     .isEqualTo(Option.empty());
+            assertThat(kvStore.get(artifactKey)).isEqualTo(Option.empty());
+            assertThat(kvStore.get(routesKey)).isEqualTo(Option.empty());
+            assertThat(kvStore.get(sliceKey)).isEqualTo(Option.empty());
+
+            // Removal must be durable, not just an in-memory edit that a later activation's
+            // ActivationDirectiveKey-driven restore would undo: drive a second rebuild (a stand-in
+            // for a subsequent leader activation) and confirm the worker does not resurrect.
+            activeState().rebuildStateFromKVStore();
+
+            assertThat(activeState().workerNodes())
+                    .as("#731: a removed worker's ActivationDirectiveKey is gone, so a later activation's "
+                        + "restore-from-KVStore must not bring it back")
+                    .doesNotContain(deadWorker);
+        }
+
+        @Test
+        void leaderActivation_restoredWorkerPresentInCommunityMembershipDespiteAbsentLiveness_isKept() {
+            var restoredWorker = new NodeId("node-worker-restored");
+            var artifactKey = NodeArtifactKey.nodeArtifactKey(restoredWorker, ARTIFACT);
+            var routesKey = NodeRoutesKey.nodeRoutesKey(restoredWorker, ARTIFACT);
+            var sliceKey = SliceNodeKey.sliceNodeKey(ARTIFACT, restoredWorker);
+            var directiveKey = ActivationDirectiveKey.activationDirectiveKey(restoredWorker);
+
+            kvStore.put(directiveKey, ActivationDirectiveValue.worker(COMMUNITY_ID, ""));
+            kvStore.put(artifactKey, NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE));
+            kvStore.put(routesKey, NodeRoutesValue.empty());
+            kvStore.put(sliceKey, AetherValue.SliceNodeValue.sliceNodeValue(SliceState.ACTIVE));
+            announceCommunityMembership(List.of(SELF, restoredWorker));
+            // Pong-based liveness wrongly claims this worker is absent — the regression case: if the
+            // sweep ever reverts to consulting `communityLiveness()` instead of SWIM membership, this
+            // stub alone makes it remove a worker that membership says is still present.
+            activeState().ctx().setCommunityLiveness(node -> node.equals(restoredWorker));
+
+            activeState().rebuildStateFromKVStore();
+
+            assertThat(activeState().workerNodes())
+                    .as("#731 round 2: a worker present in the announced community roster must be kept even "
+                        + "when pong-based liveness wrongly reports it absent")
+                    .contains(restoredWorker);
+            assertThat(kvStore.get(directiveKey)).as("kept worker's ActivationDirectiveKey survives").isNotEqualTo(Option.empty());
+            assertThat(kvStore.get(artifactKey)).as("kept worker's NodeArtifactKey survives").isNotEqualTo(Option.empty());
+            assertThat(kvStore.get(routesKey)).as("kept worker's NodeRoutesKey survives").isNotEqualTo(Option.empty());
+            assertThat(kvStore.get(sliceKey)).as("kept worker's SliceNodeKey survives").isNotEqualTo(Option.empty());
+        }
+
+        @Test
+        void leaderActivation_coldLeaderNoAnnouncementYet_removesOnlyOnceMembershipConvergesAtDeferredRecheck() {
+            var deadWorker = new NodeId("node-worker-dead-cold");
+            var artifactKey = NodeArtifactKey.nodeArtifactKey(deadWorker, ARTIFACT);
+            var routesKey = NodeRoutesKey.nodeRoutesKey(deadWorker, ARTIFACT);
+            var sliceKey = SliceNodeKey.sliceNodeKey(ARTIFACT, deadWorker);
+            var directiveKey = ActivationDirectiveKey.activationDirectiveKey(deadWorker);
+
+            kvStore.put(directiveKey, ActivationDirectiveValue.worker(COMMUNITY_ID, ""));
+            kvStore.put(artifactKey, NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE));
+            kvStore.put(routesKey, NodeRoutesValue.empty());
+            kvStore.put(sliceKey, AetherValue.SliceNodeValue.sliceNodeValue(SliceState.ACTIVE));
+
+            // No GovernorAnnouncementKey anywhere yet: a genuinely cold leader that has not seen a
+            // single governor election. The immediate sweep inside `rebuildStateFromKVStore` (the
+            // Active.onEntry call site) must no-op rather than guess, so the worker survives this call.
+            activeState().rebuildStateFromKVStore();
+
+            assertThat(activeState().workerNodes())
+                    .as("#731 round 2: with no announcement anywhere yet, the immediate sweep must not remove "
+                        + "anything — it cannot tell a dead worker from one SWIM just hasn't reported yet")
+                    .contains(deadWorker);
+
+            // Membership converges: a governor is elected and announces a roster that does not
+            // include deadWorker. `deferredTopologyRecheck` (the 2s-scheduled retry from onEntry) is
+            // invoked directly here in place of waiting out the real delay.
+            announceCommunityMembership(List.of(SELF));
+            activeState().deferredTopologyRecheckForTest();
+
+            assertThat(activeState().workerNodes())
+                    .as("#731 round 2: once membership has converged, the deferred recheck must catch the dead "
+                        + "restored worker the cold immediate sweep could not")
+                    .doesNotContain(deadWorker);
+            assertThat(kvStore.get(directiveKey)).isEqualTo(Option.empty());
             assertThat(kvStore.get(artifactKey)).isEqualTo(Option.empty());
             assertThat(kvStore.get(routesKey)).isEqualTo(Option.empty());
             assertThat(kvStore.get(sliceKey)).isEqualTo(Option.empty());

@@ -550,6 +550,12 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 return;
             }
 
+            // #731 round 2: a cold leader's `sweepDeadRestoredWorkers` call inside
+            // `rebuildStateFromKVStore` (Active.onEntry, immediate) can find no governor
+            // announcements yet — SWIM/community state has not had time to converge. This
+            // 2s-deferred retry is what actually catches the dead-restored-worker case on a
+            // freshly elected leader; see `sweepDeadRestoredWorkers`'s doc comment.
+            sweepDeadRestoredWorkers();
             cleanupStaleNodeRoutes();
             cleanupStaleSliceEntries();
             cleanupStaleNodeArtifactEntries();
@@ -696,22 +702,63 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// may never have been locally observed joining (a freshly booted leader, or one that
         /// connected asymmetrically) — `MembershipDeltaProjector`'s `everJoined` gate then filters
         /// its REMOVED edge upstream of `processRemoved`, so the live-leader `WorkerLeaveDecision`
-        /// path can never fire for it. Liveness is the only signal independent of local join
-        /// history, so a restored worker positively observed absent is removed here with the same
-        /// batch a live departure gets, instead of being placed on again this term.
+        /// path can never fire for it. A restored worker absent from every community's SWIM-observed
+        /// roster is removed here with the same batch a live departure gets, instead of being placed
+        /// on again this term.
+        ///
+        /// The source is `GovernorAnnouncementValue.members()` — the community roster each governor
+        /// recomputes from SWIM and commits through consensus, the same record `WorkerRoutes` projects
+        /// for `/api/workers` — never `ctx.communityLiveness()`. Pong-history absence and membership
+        /// absence are different signals: `communityLiveness().isAbsent` reads `false` ("not absent")
+        /// for a peer this process has never received a pong from at all, which is exactly the
+        /// cold-leader, never-locally-observed case this sweep exists to catch, so gating on it
+        /// silently no-ops on the scenario it targets (round-2 review finding). It also runs the
+        /// other way: a live worker merely pong-silent past the absence window at activation would be
+        /// wrongly removed with nothing to re-register it. Membership presence has neither failure
+        /// mode: absent-with-no-pong-history is still removed, present-with-no-pong-history is kept.
+        ///
+        /// No non-dissolved announcement anywhere in the KVStore reads as "not observed yet" rather
+        /// than "everyone is gone" — removing nothing is the safe direction on a leader that has not
+        /// yet seen a single governor election. `deferredTopologyRecheck`, scheduled 2s into
+        /// `Active.onEntry()`, calls this again, so a sweep that no-ops here because governor state
+        /// had not yet converged still runs once it has.
         private void sweepDeadRestoredWorkers() {
-            var deadWorkers = workerNodes.stream().filter(ctx.communityLiveness()::isAbsent).toList();
+            var observedMembers = observedCommunityMembers();
+
+            if (observedMembers.isEmpty()) {
+                return;
+            }
+
+            var deadWorkers = workerNodes.stream().filter(node -> !observedMembers.contains(node)).toList();
 
             if (deadWorkers.isEmpty()) {
                 return;
             }
 
-            log.info("Sweeping {} worker(s) restored from KVStore but observed absent from liveness: {}",
+            log.info("Sweeping {} worker(s) restored from KVStore but absent from every announced community roster: {}",
                      deadWorkers.size(),
                      deadWorkers);
             deadWorkers.forEach(node -> handleNodeRemoval(node).onFailure(cause -> log.error("Failed to sweep dead restored worker {}: {}",
                                                                                              node,
                                                                                              cause.message())));
+        }
+
+        /// The union of every non-dissolved community's SWIM-observed membership — the same KVStore
+        /// projection `WorkerRoutes.buildWorkersResponse` reads for `/api/workers`, since both answer
+        /// "which nodes are current community members" from the one authoritative source.
+        private Set<NodeId> observedCommunityMembers() {
+            Set<NodeId> members = new HashSet<>();
+
+            ctx.kvStore()
+               .forEach(GovernorAnnouncementKey.class,
+                        GovernorAnnouncementValue.class,
+                        (_, value) -> {
+                            if (!value.dissolved()) {
+                                members.addAll(value.members());
+                            }
+                        });
+
+            return members;
         }
 
         private void restoreAppBlueprint(AppBlueprintValue appBlueprintValue) {
@@ -2534,6 +2581,14 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         @Contract
         void restorePreviousBlueprintForTest(InFlightBlueprint inflight, ExpandedBlueprint previous, String cause) {
             restorePreviousBlueprint(inflight, previous, cause);
+        }
+
+        /// #731 round 2: lets a test invoke the 2s-deferred retry (`Active.onEntry`'s
+        /// `SharedScheduler.schedule(this::deferredTopologyRecheck, ...)` call site) synchronously,
+        /// to pin the cold-leader-then-converged sequencing without waiting out the real delay.
+        @Contract
+        void deferredTopologyRecheckForTest() {
+            deferredTopologyRecheck();
         }
 
         public record InFlightBlueprint(BlueprintId id,
