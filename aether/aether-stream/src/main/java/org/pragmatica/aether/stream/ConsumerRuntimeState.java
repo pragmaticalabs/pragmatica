@@ -416,37 +416,34 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// discard defect for both call sites at once. A missing [#cursorStore] (no persistence configured)
     /// has nothing to commit and nothing to fail, so it resolves the fallback unit promise rather than
     /// going through [#onCursorCommitFailure].
-    ///
-    /// #654 round 2: cleared OPTIMISTICALLY at the start of the attempt, not on the outer promise's
-    /// success — a store composed of sub-stages (e.g. the node's cluster-aware store) can settle this
-    /// promise successfully while still recovering an inner failure (see
-    /// [ConsumerCursorStore#lastRecoveredFailure]), and [#recordIfRecovered] runs from the same
+    private Promise<Unit> observedCommit(ConsumerKey key, ConsumerState state) {
+        return cursorStore.map(store -> issueTrackedCommit(key, state, store))
+                          .or(Promise.unitPromise());
+    }
+
+    /// #654 round 2: clears the consumer's recorded failure OPTIMISTICALLY at the start of the attempt,
+    /// not on the outer promise's success — a store composed of sub-stages (e.g. the node's
+    /// cluster-aware store) can settle this promise successfully while still recovering an inner failure
+    /// (see [ConsumerCursorStore#lastRecoveredFailure]), and [#recordIfRecovered] runs from the same
     /// `.onSuccess` that would otherwise have cleared it, so clearing there would erase what it just
     /// recorded.
     ///
-    /// #654 round 4: mints THIS commit's [TrackedCommit] — and its own dedup token — right here, the one
-    /// entry point shared by both call sites, and registers it into [#inFlightCommits] before the commit
-    /// can possibly resolve, so a `store.commit(...)` that resolves synchronously never leaves a stale
-    /// entry behind (the registration happens before `onResult` is even attached).
-    private Promise<Unit> observedCommit(ConsumerKey key, ConsumerState state) {
-        return cursorStore.map(store -> {
-                                   state.clearCursorCommitFailure();
-                                   var commit = store.commit(key.groupId(),
-                                                             key.streamName(),
-                                                             key.partition(),
-                                                             state.cursor());
-                                   var tracked = new TrackedCommit(key,
-                                                                   state,
-                                                                   commit,
-                                                                   new AtomicBoolean(false));
+    /// #654 round 4 (JBCT): extracted out of [#observedCommit]'s `cursorStore.map` lambda, which had
+    /// grown into a five-statement block. Mints THIS commit's [TrackedCommit] — and its own dedup token
+    /// — right here, the one entry point shared by both call sites via [#observedCommit], and registers
+    /// it into [#inFlightCommits] before the commit can possibly resolve, so a `store.commit(...)` that
+    /// resolves synchronously never leaves a stale entry behind (the registration happens before
+    /// `onResult` is even attached).
+    private Promise<Unit> issueTrackedCommit(ConsumerKey key, ConsumerState state, ConsumerCursorStore store) {
+        state.clearCursorCommitFailure();
+        var commit = store.commit(key.groupId(), key.streamName(), key.partition(), state.cursor());
+        var tracked = new TrackedCommit(key, state, commit, new AtomicBoolean(false));
 
-                                   inFlightCommits.add(tracked);
+        inFlightCommits.add(tracked);
 
-                                   return commit.onResult(_ -> inFlightCommits.remove(tracked))
-                                                .onSuccess(_ -> recordIfRecovered(tracked, store))
-                                                .onFailure(cause -> onCursorCommitFailure(tracked, cause));
-                               })
-                          .or(Promise.unitPromise());
+        return commit.onResult(_ -> inFlightCommits.remove(tracked))
+                     .onSuccess(_ -> recordIfRecovered(tracked, store))
+                     .onFailure(cause -> onCursorCommitFailure(tracked, cause));
     }
 
     /// #654 round 2: `commit(...)` settled successfully, but the store may have recovered a sub-stage
