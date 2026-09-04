@@ -1438,7 +1438,7 @@ aether schema baseline <datasource> -v <version>
 |------------|-------------|
 | `status [datasource]` | Show schema status (all or specific) |
 | `history <datasource>` | Show migration history |
-| `migrate <datasource>` | Trigger manual migration |
+| `migrate <datasource>` | Trigger manual migration (refused with `409` if the record is COMPLETED and already serving, or already PENDING) |
 | `undo <datasource> -v N` | Undo to target version |
 | `retry <datasource>` | Retry a failed migration (clears the activation hold) |
 | `baseline <datasource> -v N` | Baseline at version |
@@ -1453,6 +1453,7 @@ command.
 |--------|-----------|---------|
 | `DATASOURCE` | `datasource` | Datasource name (cluster-global, not per-blueprint) |
 | `STATUS` | `status` | `PENDING`, `MIGRATING`, `COMPLETED`, `FAILED` |
+| `HELD SLICES` | `heldSlices` | Slice artifacts withheld from activation by this record (#760) — always empty for `COMPLETED` |
 | `VERSION` | `currentVersion` | Highest version recorded |
 | `LAST MIGRATION` | `lastMigration` | Filename of the last migration recorded |
 | `OWNING BLUEPRINT` | `owningBlueprint` | Blueprint that declared the migrations — **whose slices this record holds** while `status` is not `COMPLETED` |
@@ -1488,15 +1489,44 @@ aether blueprints deploy org.example:my-app:1.0.1   # redeploy the owning bluepr
 aether schema status orders_db
 ```
 
-`retry` only applies to a record in `FAILED`; against any other status it fails with `409 Conflict`
-and ``Schema for datasource '<name>' is not in FAILED state (currently <STATUS>) — retry only
-applies to failed migrations``, naming the status it actually observed. `baseline` requires an
+`retry` applies to a record in `FAILED` **or `PENDING`** (#724 widened the guard — a migration
+that never dispatched has no other lever short of retry or a redeploy); against `MIGRATING` or
+`COMPLETED` it fails with `409 Conflict` and ``Schema for datasource '<name>' is not in FAILED
+state (currently <STATUS>) — retry applies to FAILED or PENDING migrations only``, naming the
+status it actually observed. `baseline` requires an
 existing record — it inherits that record's owning blueprint rather than inventing one, so
 baselining a datasource that has never been published fails with `404 Not Found` and
 ``Schema status not found for datasource '<name>'``.
 
+`migrate` similarly refuses (#760 review BLOCKING 1) when the record is `COMPLETED` **and** the
+owning blueprint has at least one slice instance already `ACTIVE` — re-arming to `MIGRATING` would
+hold the next slice reaching `LOADED` (scale-up, rolling redeploy, a rejoining node) with no
+automatic recovery, since only a `PENDING` record's Put actually dispatches a migration run. The
+409 names the datasource and how many active instances it is serving; `baseline` or `undo` first
+if a genuine re-migration is intended. A COMPLETED record with zero live ACTIVE slices still goes
+through unchanged.
+
+`migrate` also refuses (#760/#724 review round 2 item l) when the record is already `PENDING`: a
+fresh `PENDING` Put is what dispatches a migration run, so a second `migrate` call has no dispatch
+effect of its own to join — it neither adds nor replaces any in-flight tracking (a `PENDING` record
+can otherwise sit with zero in-flight tracking at all, which is exactly the stuck state #724 fixed)
+and would only strand the record with no automatic clearing path. The 409 names the datasource.
+`aether schema retry <datasource>` is the lever for a `PENDING` record and re-triggers dispatch,
+not only once the record has since failed (it accepts `PENDING`, unlike `migrate` — see above).
+Dispatch requires this node's deployment FSM to be the elected leader and `Active` (only that
+state's handler consumes the consensus Put `retry` writes); given that, it still no-ops when either
+guard `SchemaOrchestratorService.acquireLock` checks is already held — the local per-JVM fence or the
+cross-node consensus lock — so a retry racing an in-progress attempt for the same datasource returns
+`LOCK_HELD` rather than starting a second run. `migrate` itself does not re-trigger dispatch
+`[mechanism: SchemaRoutes.guardReactivation
+switches on the observed status before any orchestrator effect and returns SchemaAlreadyPending for
+PENDING without writing MIGRATING]`.
+
 The cluster leader also writes a `SCHEMA_ACTIVATION_BLOCKED` audit entry when it observes a
-`FAILED` record, naming the datasource, the owning blueprint, and the held slices.
+`FAILED` record, naming the datasource, the owning blueprint, and the held slices. The same held
+slices render in the `HELD SLICES` column of `aether schema status` output (#760/#724 review round
+2 item k), without waiting for that audit entry — before this fix the table stopped at `OWNING
+BLUEPRINT` and `heldSlices` was reachable only via `--format json` or `--field heldSlices`.
 
 > **Known limit — the gate scopes by migration *ownership*, not by *usage*.** A blueprint that
 > reads or writes a datasource **without declaring migrations for it** is never held when that

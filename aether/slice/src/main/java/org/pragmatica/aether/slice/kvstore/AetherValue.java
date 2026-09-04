@@ -240,6 +240,65 @@ public sealed interface AetherValue {
         }
     }
 
+    /// Durable terminal outcome of one blueprint's deployment attempt, keyed by
+    /// `AetherKey.DeploymentOutcomeKey`. Written by `ClusterDeploymentState` at the FSM's terminal
+    /// transitions (full deployment, ALL_OR_NOTHING rollback) and never removed when the blueprint's
+    /// own `AppBlueprintValue` is torn down — this is the record of what happened, not part of the
+    /// blueprint's active configuration, so it survives rollback and remains readable via
+    /// `BlueprintService.lastOutcome` after `GET /api/blueprints/status/{id}` would otherwise 404.
+    ///
+    /// `timestampMs` is passed in explicitly (no internal `System.currentTimeMillis()` default,
+    /// unlike `SchemaVersionValue`) so the FSM call site can supply `ClusterDeploymentContext.nowMs()`
+    /// — the same test-controllable clock already used for this class's `DeploymentFailed` event
+    /// timestamps, keeping both artifacts of one failure event on one clock read.
+    record DeploymentOutcomeValue(DeploymentOutcomeStatus status,
+                                  List<String> failingSlices,
+                                  String cause,
+                                  long timestampMs) implements AetherValue {
+        public static DeploymentOutcomeValue succeeded(long timestampMs) {
+            return new DeploymentOutcomeValue(DeploymentOutcomeStatus.SUCCEEDED, List.of(), "", timestampMs);
+        }
+
+        public static DeploymentOutcomeValue failed(List<String> failingSlices, String cause, long timestampMs) {
+            return new DeploymentOutcomeValue(DeploymentOutcomeStatus.FAILED,
+                                              List.copyOf(failingSlices),
+                                              cause,
+                                              timestampMs);
+        }
+
+        public static DeploymentOutcomeValue rolledBack(List<String> failingSlices, String cause, long timestampMs) {
+            return new DeploymentOutcomeValue(DeploymentOutcomeStatus.ROLLED_BACK,
+                                              List.copyOf(failingSlices),
+                                              cause,
+                                              timestampMs);
+        }
+    }
+
+    /// `FAILED` — the blueprint's own slices never reached ACTIVE and there was no previous
+    /// blueprint to fall back to (`unloadBlueprintSlices`'s path), OR a BEST_EFFORT partial deploy
+    /// left one or more slices permanently failed while the rest stayed up
+    /// (`recordBestEffortFailureOutcome`'s path — `failingSlices` accumulates across independent
+    /// failures in the same blueprint rather than being overwritten by the last one). `ROLLED_BACK`
+    /// — a previous blueprint existed and was restored in this blueprint's place
+    /// (`restorePreviousBlueprint`'s path); kept distinct from `FAILED` because a caller needs to
+    /// know whether the failure left the deployment empty or reverted it to a known-good prior
+    /// version.
+    ///
+    /// #760/#724 review round 2 item g: this record is written only at the specific terminal points
+    /// enumerated above and in `recordSucceededOutcome`. A blueprint deployment that never reaches
+    /// any of them — the FSM host crashes mid-flight before a terminal `submitBatch`/`apply` call is
+    /// even issued, or a deployment simply never resolves (no further `NodeArtifactPutReceived`
+    /// events ever arrive, no deterministic or transient failure is ever reported) — leaves NO
+    /// `DeploymentOutcomeKey` entry at all. Absence of a key is therefore NOT equivalent to any of
+    /// the three statuses below; it means "no attempt reached a terminal write," which is
+    /// indistinguishable, from this record alone, from "no attempt was ever made."
+    @Codec
+    enum DeploymentOutcomeStatus {
+        SUCCEEDED,
+        FAILED,
+        ROLLED_BACK
+    }
+
     record SliceNodeValue(SliceState state, Option<String> failureReason, boolean fatal, long transitionedAt) implements AetherValue {
         public static SliceNodeValue sliceNodeValue(SliceState state) {
             return new SliceNodeValue(state, none(), false, defaultTransitionedAt(state));

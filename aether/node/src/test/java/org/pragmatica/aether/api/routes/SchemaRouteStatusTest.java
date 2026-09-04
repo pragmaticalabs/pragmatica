@@ -10,16 +10,28 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.artifact.ArtifactBase;
+import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
+import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
+import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.ContentType;
 import org.pragmatica.http.Headers;
 import org.pragmatica.http.HttpMethod;
@@ -75,6 +87,8 @@ class SchemaRouteStatusTest {
     private static final BlueprintId OWNER = BlueprintId.blueprintId(COORDS).unwrap();
     private static final String INSTANCE = "/api/v1/schema/status/" + DATASOURCE;
     private static final String REQUEST_ID = "req-1";
+    private static final Version SLICE_VERSION = new Version(1, 0, 0, "");
+    private static final NodeId NODE = new NodeId("node-a");
 
     private InMemoryKvStore store;
     private SchemaRoutes routes;
@@ -173,6 +187,202 @@ class SchemaRouteStatusTest {
         void retryRoute_succeeds_whenSchemaIsFailed() {
             seed(SchemaStatus.FAILED);
             handle(ManagementRoute.SCHEMA_RETRY, Option.none(), Option.none()).onFailure(cause -> Assertions.fail("Retry against a FAILED record must succeed: " + cause.message()));
+        }
+
+        /// #724: a migration that never dispatched (PENDING) has no other lever short of a redeploy
+        /// to re-trigger it — the retry guard now accepts PENDING alongside FAILED.
+        @Test
+        void retryRoute_succeeds_whenSchemaIsPending() {
+            seed(SchemaStatus.PENDING);
+            handle(ManagementRoute.SCHEMA_RETRY, Option.none(), Option.none()).onFailure(cause -> Assertions.fail("Retry against a PENDING record must succeed (#724): " + cause.message()));
+        }
+    }
+
+    /// #760: `heldSlices` makes a schema hold visible on the management API, without reaching for
+    /// DEBUG logs. Ownership matches on the base artifact coordinates (group:artifact, stripped of
+    /// version) — the same rule `ClusterDeploymentState` uses to decide whether a slice's blueprint
+    /// is the one a schema record blocks.
+    ///
+    /// #760 review BLOCKING 1: `heldSlices` used to scan ownership alone (`SliceTargetKey`/
+    /// `SliceTargetValue`) with no per-node state check at all, so `seedSliceTarget` below now also
+    /// plants the LIVE `SliceNodeKey`/`SliceNodeValue` state the fixed implementation actually reads —
+    /// LOADED for the tests below, which model a slice genuinely waiting at the gate.
+    @Nested
+    class HeldSlices {
+        private static final String HELD_SLICE = "org.example:orders-worker";
+        private static final String UNRELATED_SLICE = "org.other:unrelated-worker";
+
+        @Test
+        void statusRoute_listsOwnedSlice_whenSchemaIsBlocking() {
+            seed(SchemaStatus.PENDING);
+            seedSliceTarget(HELD_SLICE, OWNER);
+
+            assertThat(successResponseFor(ManagementRoute.SCHEMA_STATUS_ONE).heldSlices()).containsExactly(HELD_SLICE);
+        }
+
+        @Test
+        void statusRoute_matchesOnBase_ignoringOwningBlueprintVersion() {
+            seed(SchemaStatus.MIGRATING);
+            var differentVersionOfSameBase = BlueprintId.blueprintId("org.example:orders-app:9.9.9").unwrap();
+            seedSliceTarget(HELD_SLICE, differentVersionOfSameBase);
+
+            assertThat(successResponseFor(ManagementRoute.SCHEMA_STATUS_ONE).heldSlices()).as("ownership matches the base artifact, not the exact blueprint version")
+                      .containsExactly(HELD_SLICE);
+        }
+
+        @Test
+        void statusRoute_omitsUnrelatedSlice_whenSchemaIsBlocking() {
+            seed(SchemaStatus.FAILED);
+            var unrelatedOwner = BlueprintId.blueprintId("org.other:unrelated-app:1.0.0").unwrap();
+            seedSliceTarget(UNRELATED_SLICE, unrelatedOwner);
+
+            assertThat(successResponseFor(ManagementRoute.SCHEMA_STATUS_ONE).heldSlices()).isEmpty();
+        }
+
+        @Test
+        void statusRoute_reportsNoHeldSlices_whenSchemaIsNotBlocking() {
+            seed(SchemaStatus.COMPLETED);
+            seedSliceTarget(HELD_SLICE, OWNER);
+
+            assertThat(successResponseFor(ManagementRoute.SCHEMA_STATUS_ONE).heldSlices()).as("a COMPLETED record holds nothing regardless of ownership")
+                      .isEmpty();
+        }
+
+        /// #760 review BLOCKING 1 pinning test. Before the fix, `heldSlices` matched ownership alone
+        /// with no per-node state check, so an ACTIVE slice — one that already passed the activation
+        /// gate and has no transition path back through LOADED — was reported as held whenever its
+        /// record carried a blocking status. Seeded from FAILED rather than COMPLETED or PENDING: a
+        /// COMPLETED record with a live ACTIVE slice is refused outright by `/migrate`, and (#760/#724
+        /// review round 2 item l) so is a PENDING one ([ReactivationGuard]) — so the only way `/migrate`
+        /// can still legitimately land a blocking status next to an already-ACTIVE slice is a record
+        /// that is neither COMPLETED nor PENDING, i.e. FAILED — exactly what this seeds, mirroring a
+        /// slice that activated on an earlier schema version while this datasource's own migration
+        /// attempt failed.
+        @Test
+        void statusRoute_omitsActiveSlice_whenMigrateReArmsFromFailed() {
+            seed(SchemaStatus.FAILED);
+            seedActiveSlice(HELD_SLICE, OWNER);
+
+            handle(ManagementRoute.SCHEMA_MIGRATE, Option.none(), Option.none()).onFailure(cause -> Assertions.fail("migrate from FAILED must succeed: "
+                                                                                                                    + cause.message()));
+
+            assertThat(successResponseFor(ManagementRoute.SCHEMA_STATUS_ONE).heldSlices()).as("an ACTIVE slice already passed the gate and has no transition path back through LOADED")
+                      .isEmpty();
+        }
+
+        /// #760 review round 2 item a pinning test — the exact divergent state the review named:
+        /// `heldSlices` and the FSM gate (`blocksSliceActivation`/`blockingSchemaRecords`) resolved
+        /// `schemaRequired` through two different paths (the gate via its in-memory `blueprints` map,
+        /// the route not at all), so a slice owned by a `schema_required = false` blueprint could be
+        /// reported held on the management API even though the gate itself never blocked it. Before
+        /// the fix this asserted `containsExactly(HELD_SLICE)` — the divergence — instead of empty.
+        @Test
+        void statusRoute_omitsSlice_whenOwningBlueprintDoesNotRequireSchema() {
+            seedOwningBlueprintWithoutSchemaRequirement(OWNER);
+            seed(SchemaStatus.PENDING);
+            seedSliceTarget(HELD_SLICE, OWNER);
+
+            assertThat(successResponseFor(ManagementRoute.SCHEMA_STATUS_ONE).heldSlices()).as("schema_required = false means the gate never blocks this slice")
+                      .isEmpty();
+        }
+    }
+
+    /// #760 review BLOCKING 1's 409 decision: `/migrate` writing MIGRATING has no orchestrator effect
+    /// by itself (only a PENDING record's Put dispatches `SchemaOrchestratorService.migrateIfNeeded`),
+    /// so re-arming a COMPLETED record whose owning blueprint has live ACTIVE slices has no functional
+    /// benefit and one real hazard: MIGRATING has no automatic clearing path, so the next slice
+    /// instance to reach LOADED (scale-up, rolling redeploy, rejoining node) is held on a record the
+    /// operator re-armed themselves. Refused (409) rather than allowed; a COMPLETED record with zero
+    /// live ACTIVE slices is unaffected.
+    @Nested
+    class ReactivationGuard {
+        private static final String ACTIVE_SLICE = "org.example:orders-worker";
+
+        @Test
+        void migrateRoute_respondsConflict_whenCompletedRecordHasActiveSlices() {
+            seed(SchemaStatus.COMPLETED);
+            seedActiveSlice(ACTIVE_SLICE, OWNER);
+
+            assertThat(statusFor(ManagementRoute.SCHEMA_MIGRATE)).as("re-arming a serving schema would strand the next LOADED slice with no automatic recovery")
+                      .isEqualTo(HttpStatus.CONFLICT);
+        }
+
+        @Test
+        void migrateRoute_propagatesCauseUnwrapped_whenCompletedRecordHasActiveSlices() {
+            seed(SchemaStatus.COMPLETED);
+            seedActiveSlice(ACTIVE_SLICE, OWNER);
+
+            assertThat(causeFrom(ManagementRoute.SCHEMA_MIGRATE)).isEqualTo(SchemaRouteError.SchemaAlreadyServing.schemaAlreadyServing(DATASOURCE, 1));
+        }
+
+        @Test
+        void problemBody_namesActiveSliceCount_whenCompletedRecordHasActiveSlices() {
+            seed(SchemaStatus.COMPLETED);
+            seedActiveSlice(ACTIVE_SLICE, OWNER);
+
+            assertThat(problemBodyFor(ManagementRoute.SCHEMA_MIGRATE)).contains(DATASOURCE)
+                      .contains("already COMPLETED and serving")
+                      .contains("409");
+        }
+
+        @Test
+        void migrateRoute_succeeds_whenCompletedRecordHasNoActiveSlices() {
+            seed(SchemaStatus.COMPLETED);
+
+            handle(ManagementRoute.SCHEMA_MIGRATE, Option.none(), Option.none()).onFailure(cause -> Assertions.fail("A COMPLETED record with no active slices must be allowed to re-migrate: "
+                                                                                                                    + cause.message()));
+        }
+
+        @Test
+        void migrateRoute_succeeds_whenActiveSlicesAreOwnedByAnotherBlueprint() {
+            seed(SchemaStatus.COMPLETED);
+            var otherOwner = BlueprintId.blueprintId("org.other:unrelated-app:1.0.0").unwrap();
+            seedActiveSlice(ACTIVE_SLICE, otherOwner);
+
+            handle(ManagementRoute.SCHEMA_MIGRATE, Option.none(), Option.none()).onFailure(cause -> Assertions.fail("An active slice owned by a different blueprint must not block re-migration: "
+                                                                                                                    + cause.message()));
+        }
+
+        /// #760 review round 2 item b pinning test — a slice mid-activation is already occupying the
+        /// datasource it is about to serve from; before the fix `countIfActiveAndOwnedBy` matched only
+        /// `SliceState.ACTIVE`, so a re-arm raced a slice seconds from going live instead of being
+        /// refused like the ACTIVE case above.
+        @Test
+        void migrateRoute_respondsConflict_whenCompletedRecordHasActivatingSlices() {
+            seed(SchemaStatus.COMPLETED);
+            seedSliceInState(ACTIVE_SLICE, OWNER, SliceState.ACTIVATING);
+
+            assertThat(statusFor(ManagementRoute.SCHEMA_MIGRATE)).as("a slice mid-activation is about to serve the same datasource, same as one already ACTIVE")
+                      .isEqualTo(HttpStatus.CONFLICT);
+        }
+
+        /// #760/#724 review round 2 item l pinning test — before the fix, `guardReactivation` special-
+        /// cased only COMPLETED and let every other status (PENDING included) fall through to
+        /// `writeMigratingStatus`, silently re-arming a PENDING record to MIGRATING with no dispatch
+        /// effect of its own and the same missing-clearing-path hazard `SchemaAlreadyServing` guards
+        /// against above. No active-slice setup is needed: PENDING is refused unconditionally.
+        @Test
+        void migrateRoute_respondsConflict_whenRecordIsPending() {
+            seed(SchemaStatus.PENDING);
+
+            assertThat(statusFor(ManagementRoute.SCHEMA_MIGRATE)).as("a PENDING record already dispatches on its own Put; re-arming it gains nothing and strands the record")
+                      .isEqualTo(HttpStatus.CONFLICT);
+        }
+
+        @Test
+        void migrateRoute_propagatesCauseUnwrapped_whenRecordIsPending() {
+            seed(SchemaStatus.PENDING);
+
+            assertThat(causeFrom(ManagementRoute.SCHEMA_MIGRATE)).isEqualTo(SchemaRouteError.SchemaAlreadyPending.schemaAlreadyPending(DATASOURCE));
+        }
+
+        @Test
+        void problemBody_namesDatasource_whenRecordIsPending() {
+            seed(SchemaStatus.PENDING);
+
+            assertThat(problemBodyFor(ManagementRoute.SCHEMA_MIGRATE)).contains(DATASOURCE)
+                      .contains("already has a migration PENDING")
+                      .contains("409");
         }
     }
 
@@ -309,6 +519,18 @@ class SchemaRouteStatusTest {
         return holder.get();
     }
 
+    /// Mirror of [#causeFrom] for the success path — drives the real route handler and returns the
+    /// value it produced, failing loudly if the route unexpectedly refused.
+    private SchemaRoutes.SchemaStatusResponse successResponseFor(ManagementRoute route) {
+        var holder = new AtomicReference<SchemaRoutes.SchemaStatusResponse>();
+
+        handle(route, Option.none(), Option.none()).onFailure(cause -> Assertions.fail("Route " + route.name()
+                                                                                       + " must succeed, got: " + cause.message()))
+              .onSuccess(value -> holder.set((SchemaRoutes.SchemaStatusResponse) value));
+
+        return holder.get();
+    }
+
     private Result<?> handle(ManagementRoute route, Option<String> queryName, Option<String> queryValue) {
         return schemaRoute(route).handler()
                           .handle(requestContext(queryName, queryValue))
@@ -326,6 +548,50 @@ class SchemaRouteStatusTest {
     private void seed(SchemaStatus status) {
         store.put(SchemaVersionKey.schemaVersionKey(DATASOURCE),
                   SchemaVersionValue.schemaVersionValue(DATASOURCE, 3, "V003__add_index.sql", status, COORDS, OWNER));
+    }
+
+    /// Plants ownership (`SliceTargetKey`/`SliceTargetValue`) alongside the LIVE per-node state
+    /// (`SliceNodeKey`/`SliceNodeValue`) that `SchemaRoutes.heldSlices` reads post-#760-review — a
+    /// slice genuinely waiting at the gate.
+    private void seedSliceTarget(String artifactBaseString, BlueprintId owner) {
+        seedSliceInState(artifactBaseString, owner, SliceState.LOADED);
+    }
+
+    /// Same join as [#seedSliceTarget], but ACTIVE: a slice that already passed the gate and has no
+    /// transition path back through LOADED.
+    private void seedActiveSlice(String artifactBaseString, BlueprintId owner) {
+        seedSliceInState(artifactBaseString, owner, SliceState.ACTIVE);
+    }
+
+    private void seedSliceInState(String artifactBaseString, BlueprintId owner, SliceState state) {
+        var artifactBase = ArtifactBase.artifactBase(artifactBaseString).unwrap();
+        var artifact = Artifact.artifact(artifactBase, SLICE_VERSION);
+
+        store.put(SliceTargetKey.sliceTargetKey(artifactBase),
+                  SliceTargetValue.sliceTargetValue(SLICE_VERSION, 1, Option.some(owner)));
+        store.put(SliceNodeKey.sliceNodeKey(artifact, NODE), SliceNodeValue.sliceNodeValue(state));
+    }
+
+    /// #760 review round 2 item a: plants an `AppBlueprintValue` whose embedded resources.toml
+    /// declares `schema_required = false`, so `heldSlices` (via
+    /// `ClusterDeploymentState.resolveSchemaRequired`) resolves ownership to non-schema-required
+    /// instead of defaulting to `true`. Mirrors `SchemaRequiredResolutionTest.resourcesToml`: a
+    /// non-empty `[[slices]]` and a `[deployment].strategy` are both required for `schema_required`
+    /// to be read at all.
+    private void seedOwningBlueprintWithoutSchemaRequirement(BlueprintId owner) {
+        var resourcesToml = """
+                             id = "%s"
+
+                             [[slices]]
+                             artifact = "org.example:seed-slice:1.0.0"
+
+                             [deployment]
+                             strategy = "rolling"
+                             schema_required = false
+                             """.formatted(owner.asString());
+        var expanded = ExpandedBlueprint.expandedBlueprint(owner, List.of(), Option.some(resourcesToml));
+
+        store.put(AppBlueprintKey.appBlueprintKey(owner), AppBlueprintValue.appBlueprintValue(expanded));
     }
 
     private SchemaVersionValue recorded() {

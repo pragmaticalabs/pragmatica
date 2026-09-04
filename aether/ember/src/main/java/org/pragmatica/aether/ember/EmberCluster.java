@@ -5,6 +5,7 @@
 package org.pragmatica.aether.ember;
 
 import java.nio.file.Path;
+import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -21,7 +22,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
-import java.nio.charset.StandardCharsets;
 
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.aether.controller.ControllerConfig;
@@ -74,6 +74,7 @@ import org.pragmatica.aether.slice.SliceActionConfig;
 import org.pragmatica.consensus.net.ClusterFormationConfig;
 import org.pragmatica.consensus.topology.BackoffConfig;
 import org.pragmatica.net.tcp.TlsConfig;
+import org.pragmatica.net.tcp.security.CertificateProvider;
 import org.pragmatica.net.tcp.security.SelfSignedCertificateProvider;
 
 import org.slf4j.Logger;
@@ -184,6 +185,25 @@ public final class EmberCluster {
     /// with raised SWIM / transport / membership timeouts so a single graceful owner-kill does not trip
     /// the transient QuorumLost→PASSIVE false-removal cascade that falsely marks LIVE survivors DEAD.
     private final AtomicBoolean raisedSwimTimeouts = new AtomicBoolean(false);
+    /// #715 — this instance's own cluster QUIC/SWIM identity secret. Defaults to a fresh
+    /// `SecureRandom` value so distinct `EmberCluster` instances never share cluster identity and
+    /// cannot admit each other's nodes; [#withClusterSecret] is the only sanctioned override.
+    /// Exposed to tests via [#currentClusterSecret].
+    private final AtomicReference<byte[]> clusterSecret = new AtomicReference<>(generateClusterSecret());
+
+    /// #715 — the [AetherNodeConfig] object actually passed to the most recently constructed node's
+    /// constructor. Captured from the real `config` value itself, never mirrored independently at
+    /// construction time, so [#wiredCertificateProvider] and [#wiredQuicTls] can never drift from
+    /// what a node was truly wired with.
+    private final AtomicReference<Option<AetherNodeConfig>> lastNodeConfig = new AtomicReference<>(Option.empty());
+
+    private static byte[] generateClusterSecret() {
+        var secret = new byte[32];
+
+        new SecureRandom().nextBytes(secret);
+
+        return secret;
+    }
 
     private final class EmberComputeProvider implements ComputeProvider {
         @Override
@@ -361,6 +381,43 @@ public final class EmberCluster {
     @Contract
     public void withRaisedSwimTimeouts() {
         raisedSwimTimeouts.set(true);
+    }
+
+    /// #715 — override this instance's cluster QUIC/SWIM identity secret. MUST be called before
+    /// [#start] (nodes derive their certificate/gossip-key material from this secret at creation).
+    /// Production callers never call this: each instance otherwise gets a fresh `SecureRandom`
+    /// secret, so two independently-created `EmberCluster`/Forge instances never share cluster
+    /// identity and cannot admit each other's nodes. This setter is the ONLY sanctioned way two
+    /// instances can join one cluster — callers who want that pass the SAME bytes to both.
+    @Contract
+    public void withClusterSecret(byte[] secret) {
+        clusterSecret.set(secret.clone());
+    }
+
+    /// TEST SEAM (#715) — exposes this instance's current cluster QUIC/SWIM identity secret, so
+    /// tests can pin whether distinct `EmberCluster` instances are cryptographically distinguishable.
+    byte[] currentClusterSecret() {
+        return clusterSecret.get()
+                            .clone();
+    }
+
+    /// TEST SEAM (#715) — exposes the `certificateProvider` actually present in the most recently
+    /// constructed node's real [AetherNodeConfig] object, so tests can pin whether SWIM gossip
+    /// encryption is wired for real nodes rather than inferring it from a value set independently of
+    /// the config that was actually built (reverting the config argument alone flips this, since it
+    /// reads the config object itself).
+    Option<CertificateProvider> wiredCertificateProvider() {
+        return lastNodeConfig.get()
+                             .flatMap(AetherNodeConfig::certificateProvider);
+    }
+
+    /// TEST SEAM (#715) — exposes the QUIC `TlsConfig` actually present in the most recently
+    /// constructed node's real [AetherNodeConfig] object — the same value [AetherNode]'s QUIC
+    /// transport uses — so tests can build genuine cross-instance QUIC clients/servers through the
+    /// production wiring instead of re-deriving TLS material independently of it.
+    Option<TlsConfig> wiredQuicTls() {
+        return lastNodeConfig.get()
+                             .map(AetherNodeConfig::quicTls);
     }
 
     private EnvironmentIntegration emberEnvironment() {
@@ -895,10 +952,7 @@ public final class EmberCluster {
                     .toList();
     }
 
-    private static TlsConfig buildForgeQuicTls(NodeId nodeId) {
-        var secret = "aether-forge-cluster-secret".getBytes(StandardCharsets.UTF_8);
-        var provider = SelfSignedCertificateProvider.selfSignedCertificateProvider(secret).unwrap();
-
+    private static TlsConfig buildForgeQuicTls(NodeId nodeId, CertificateProvider provider) {
         return TlsConfig.fromProvider(provider,
                                       nodeId.id(),
                                       "localhost")
@@ -963,7 +1017,8 @@ public final class EmberCluster {
                                           BackoffConfig.DEFAULT,
                                           coreMax,
                                           targetClusterSize);
-        var quicTls = buildForgeQuicTls(nodeId);
+        var certificateProvider = SelfSignedCertificateProvider.selfSignedCertificateProvider(clusterSecret.get()).unwrap();
+        var quicTls = buildForgeQuicTls(nodeId, certificateProvider);
         var config = new AetherNodeConfig(topology,
                                           ProtocolConfig.testConfig(),
                                           SliceActionConfig.sliceActionConfig(),
@@ -993,7 +1048,7 @@ public final class EmberCluster {
                                           ClusterDeploymentManager.DeploymentAtomicity.ALL_OR_NOTHING,
                                           activationGated,
                                           nodeTimeouts,
-                                          Option.empty(),
+                                          Option.some(certificateProvider),
                                           Option.empty(),
                                           AetherNodeConfig.DeploymentDefaults.DEFAULT,
                                           HttpProtocol.H1,
@@ -1010,6 +1065,8 @@ public final class EmberCluster {
         // name is stamped and the fleet cap stays inert here. Forge has no
         // cloud provider to cap in the first place.
         Option.empty());
+
+        lastNodeConfig.set(Option.some(config));
         // Single-JVM hosting: when this node's SelfDrainCoordinator completes its drain
         // phase, do NOT halt the JVM (would kill all other in-process nodes). Stop the
         // node gracefully and remove it from the cluster's registry instead.

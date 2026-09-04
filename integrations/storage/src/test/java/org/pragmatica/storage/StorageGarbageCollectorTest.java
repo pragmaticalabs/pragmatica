@@ -49,12 +49,21 @@ class StorageGarbageCollectorTest {
     private void makeOrphanedPastGrace(BlockId blockId) {
         var expired = System.currentTimeMillis() - GRACE_PERIOD_MS - 100;
         metadataStore.computeLifecycle(blockId, lc -> new BlockLifecycle(
-            lc.blockId(), lc.presentIn(), 0, expired, lc.createdAt(), lc.accessCount()));
+            lc.blockId(), lc.presentIn(), 0, expired, lc.createdAt(), lc.accessCount(), expired));
     }
 
     private void makeOrphanedRecent(BlockId blockId) {
+        var now = System.currentTimeMillis();
         metadataStore.computeLifecycle(blockId, lc -> new BlockLifecycle(
-            lc.blockId(), lc.presentIn(), 0, System.currentTimeMillis(), lc.createdAt(), lc.accessCount()));
+            lc.blockId(), lc.presentIn(), 0, now, lc.createdAt(), lc.accessCount(), now));
+    }
+
+    /// Backdates lastAccessedAt while leaving refCount/orphanedAt untouched -- simulates a block
+    /// that was read a long time ago and has sat referenced (not orphaned) ever since.
+    private void backdateLastAccessedAt(BlockId blockId, long millisAgo) {
+        var stale = System.currentTimeMillis() - millisAgo;
+        metadataStore.computeLifecycle(blockId, lc -> new BlockLifecycle(
+            lc.blockId(), lc.presentIn(), lc.refCount(), stale, lc.createdAt(), lc.accessCount(), lc.orphanedAt()));
     }
 
     @Nested
@@ -88,6 +97,22 @@ class StorageGarbageCollectorTest {
         void collectGarbage_recentlyOrphaned_skipsBeforeGracePeriod() {
             var id = storeBlock(CONTENT_A);
             makeOrphanedRecent(id);
+
+            var collected = gc.collectGarbage();
+
+            assertThat(collected).isZero();
+            assertThat(metadataStore.containsBlock(id)).isTrue();
+        }
+
+        /// #737 fix round 2: the grace period must run from when the block was ORPHANED, not
+        /// from when it was last READ. A block can be read once, held referenced for a long
+        /// time, and only orphaned just now -- its stale lastAccessedAt must not rob it of the
+        /// grace period a block orphaned this instant is owed.
+        @Test
+        void collectGarbage_orphanedNow_survivesEvenWithStaleLastAccessedAt() {
+            var id = storeBlock(CONTENT_A);
+            backdateLastAccessedAt(id, GRACE_PERIOD_MS * 10);
+            metadataStore.computeLifecycle(id, BlockLifecycle::withRefCountDecremented);
 
             var collected = gc.collectGarbage();
 
@@ -192,10 +217,11 @@ class StorageGarbageCollectorTest {
             var id = sharedInstance.put(CONTENT_A).await()
                                    .fold(c -> { fail("put failed: " + c.message()); return null; },
                                          blockId -> blockId);
-            sharedMetadataStore.computeLifecycle(id, lc -> new BlockLifecycle(
-                lc.blockId(), lc.presentIn(), 0,
-                System.currentTimeMillis() - GRACE_PERIOD_MS - 100,
-                lc.createdAt(), lc.accessCount()));
+            sharedMetadataStore.computeLifecycle(id, lc -> {
+                var expired = System.currentTimeMillis() - GRACE_PERIOD_MS - 100;
+
+                return new BlockLifecycle(lc.blockId(), lc.presentIn(), 0, expired, lc.createdAt(), lc.accessCount(), expired);
+            });
 
             var collected = sharedGc.collectGarbage();
 
