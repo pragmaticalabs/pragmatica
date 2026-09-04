@@ -675,6 +675,31 @@ class StreamConsumerManagerTest {
             assertThat(runtime.subscribedPartitions()).describedAs("the collision surfaced only on re-resolution — `declarationFor` must still refuse to pick a side, never fall back to the first match")
                       .isEmpty();
         }
+
+        /// The other three tests all declare both sides before the first `reconcile()` — this is the
+        /// LATE-arriving case: the first artifact is already actively consuming when the second,
+        /// colliding declaration appears. `reconcile()` re-derives `collidingGroups` from scratch on
+        /// EVERY call and re-evaluates every registered declaration against it, so the fix must not be
+        /// read as "a collision blocks attachment" only — it must also retract an attachment made before
+        /// the collision existed. Fail-closed is a fresh re-check each round, not a one-time gate at
+        /// first sight.
+        @Test
+        void reconcile_unsubscribesTheFirstArtifact_whenACollidingDeclarationArrivesLate() {
+            declare(ARTIFACT, "java.lang.String", false);
+            deploySliceLocally();
+            ownership.ownedBySelf(0, 1, 2, 3);
+            var manager = manager();
+
+            manager.reconcile();
+            assertThat(runtime.subscribedPartitions()).describedAs("before the second artifact declares, the sole declarant consumes normally")
+                      .containsExactlyInAnyOrder(0, 1, 2, 3);
+
+            declare(OTHER_ARTIFACT, "java.lang.String", false);
+            when(invocationHandler.localSlice(OTHER_ARTIFACT)).thenReturn(Option.some(new StubBridge(Option.none())));
+            manager.reconcile();
+            assertThat(runtime.subscribedPartitions()).describedAs("the late collision must retract the already-active side too — a stale active subscription surviving would be a silent gap in the #545 fail-closed guarantee")
+                      .isEmpty();
+        }
     }
 
     @Nested
