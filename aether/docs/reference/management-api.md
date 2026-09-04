@@ -5277,6 +5277,28 @@ POST /api/v1/streams/{namespace}/{stream}/{version}/publish-batch
 **Auth:** OPERATOR_AND_ABOVE. Publishes one event (or a batch). **Writes to `system:*` streams
 are rejected with `405 Method Not Allowed`** — see below.
 
+Body: `{"data": "<base64>", "partition": <int>}`. `partition` is optional; omitted, it defaults
+to **partition 0** (unchanged pre-#524 behavior). **This path does no key-based routing** — unlike
+an app publish (#507), which extracts `@PartitionKey` from a typed event, Management-API publish
+writes untyped bytes with no event class to read a key from, so an explicit `partition` here is
+the operator naming a target directly. A `partition` outside `[0, partitionCount)` for the stream
+is rejected with `400 Bad Request`, naming the valid range — never a silent write to partition 0,
+never `500`. `[mechanism: ManagementServerError.InvalidPartition, ProblemResponses HttpStatusAware
+dispatch]`
+
+When the stream's partition count cannot be determined — the auto-create guard could not
+materialize the stream locally (capacity exhausted, or `STRONG` consistency requiring AHSE
+storage) — the request is rejected with `409 Conflict`, naming the stream and the underlying
+cause, rather than validated against a guessed count. `[mechanism: ManagementServerError.StreamUnavailable,
+ProblemResponses HttpStatusAware dispatch]`
+
+**Batch publish is not atomic.** `publish-batch` validates and writes each item independently and
+concurrently; when one item names an out-of-range `partition`, items before it (and possibly after
+it) may already be durably written before the batch call fails. The response on failure names only
+the first invalid item — it does not report which of the other items committed. `[mechanism:
+publishMany fires every item concurrently via Promise.allOf with no short-circuit, then
+Result.allOf surfaces only the first Result failure]`
+
 ### Delete Stream Version
 
 ```
