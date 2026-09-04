@@ -341,6 +341,12 @@ class ClusterDeploymentStateWorkerRemovalTest {
             // sweep ever reverts to consulting `communityLiveness()` instead of SWIM membership, this
             // stub alone makes it remove a worker that membership says is still present.
             activeState().ctx().setCommunityLiveness(node -> node.equals(restoredWorker));
+            // #731 round 4: localAliveMembersSupplier must be wired here too, or FIX 4's fail-safe
+            // guard skips the sweep entirely and this test's "isKept" assertion passes vacuously
+            // regardless of the dual-signal logic below. Deliberately does NOT include restoredWorker
+            // (unlike the announcement above), so the sweep actually runs and this pins that presence
+            // in the ANNOUNCEMENT alone — not the local view — is what keeps the worker.
+            activeState().ctx().setLocalAliveMembersSupplier(() -> Set.of(SELF));
 
             activeState().rebuildStateFromKVStore();
 

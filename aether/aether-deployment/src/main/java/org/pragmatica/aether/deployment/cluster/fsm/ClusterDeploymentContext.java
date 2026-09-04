@@ -333,8 +333,11 @@ public final class ClusterDeploymentContext {
         communityLiveness = view;
     }
 
-    /// The leader's local SWIM-derived alive-member view (#731 round 3). Defaults to an empty set
-    /// (`Set::of`) until wired, matching the pre-round-3 sweep behaviour.
+    /// The leader's local SWIM-derived alive-member view (#731 round 3). Defaults to
+    /// [#UNWIRED_MARKER] (an empty `Set::of`) until wired — since #731 round 4, that default is never
+    /// actually consulted by the sweep: [#localAliveMembersWired] gates `sweepDeadRestoredWorkers` to
+    /// skip entirely while unwired, rather than degenerating to the round-2-era observed-only check
+    /// this empty set would otherwise silently reproduce.
     public Supplier<Set<NodeId>> localAliveMembersSupplier() {
         return localAliveMembersSupplier;
     }
