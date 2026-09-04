@@ -164,35 +164,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `DefaultContentStore.java:55` and `StorageSegmentSink.java:62` both call `put` + `createRef` instead
   of `replaceRef`; tracked separately by #812 (rc4), not fixed here.
 
-### Fixed (2026-09-04 — #759 Phase 2: `GET /api/v1/blueprints/status/{id}` still answered 404 after a rollback, even though a durable outcome record now exists)
-- **The status route consults `BlueprintService.outcome(id)` unconditionally, before `get(id)`.**
-  A terminal `FAILED`/`ROLLED_BACK` outcome now wins over whatever `get(id)` currently holds —
-  including a stale non-empty value the with-previous rollback path can leave behind (a KV-store
-  defect tracked separately, out of scope here) — because the durable outcome record written at
-  the same terminal transition (see the "#759 review, BLOCKING 3" and "#760 / #724 review round 2"
-  entries below) is authoritative regardless of what the live KV entry happens to contain. Only
-  when the outcome is `SUCCEEDED` or absent (never deployed, still in flight, or crash-orphaned —
-  these three stay indistinguishable from `outcome()` alone) does the route fall back to the
-  pre-existing `get(id)`-based logic.
-  [mechanism: `SliceRoutes.routeBlueprintStatusByOutcome` filters on `DeploymentOutcomeStatus`
-  before ever reading `get(id)`; pinned by `BlueprintStatusAggregationTest`
-  (`statusRoute_outcomeFailed_returns200Failed`, `statusRoute_outcomeRolledBack_returns200RolledBack`,
-  `statusRoute_outcomeSucceeded_returns404`,
-  `statusRoute_blueprintPresentStalePreFailure_outcomeRolledBack_returns200RolledBack`) — unit-level,
-  not a live multi-node failure-injection run]
-- **This retracts the "Until #759 Phase 2" / `[design intent — unverified]` claim in the original
-  #759 entry below**: post-rollback `statusUrl` GETs now answer `200` with `overallStatus`
-  `FAILED`/`ROLLED_BACK`, `cause`, and `failingSlices` instead of a permanent `404`. `404
-  BLUEPRINT_NOT_FOUND` now means only "no terminal outcome recorded and nothing live in the KV
-  store either." `GET /api/events` remains the per-node failure timeline — not superseded, since
-  `statusUrl` reports the durable summary, not the sequence of what happened on which node.
-- **`BlueprintStatusResponse` gained `cause` (String), `failingSlices` (List<String>), and
-  `timestampMs` (long)**, populated from the outcome record on the FAILED/ROLLED_BACK path and
-  degenerate (`""`, `List.of()`, `0L`) on the unchanged `get(id)`-derived path — following the
-  `CertificateStatusResponse` precedent (dormant dimensions show true degenerate values, never
-  fabricated ones).
-  [mechanism: `SliceRoutes.toBlueprintStatusResponse(BlueprintId, DeploymentOutcomeValue)` overload]
-
 ### Fixed (2026-09-03 — #760: a schema hold produced one `WARN` per re-evaluation tick, not per hold)
 - **The hold WARN is event-driven, not tick-driven, and fired on every re-observation of an
   unchanged hold.** `tryActivateIfDependenciesReady` is reached from the slice's own LOAD, from
@@ -331,7 +302,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Fixed (2026-09-03 — #759 review, BLOCKING 3: a rolled-back blueprint had no outcome to read after `unloadBlueprintSlices` removed its key)
 - **A durable per-blueprint deployment outcome record now survives ALL_OR_NOTHING rollback.**
   `unloadBlueprintSlices` unconditionally removed the failed blueprint's `AppBlueprintKey`, so
-  `GET /api/v1/blueprints/status/{id}` returned 404 after a rollback, with only the transient
+  `GET /api/blueprints/status/{id}` returned 404 after a rollback, with only the transient
   `DeploymentFailed` event on `/api/events` as evidence. The FSM now writes an
   `AetherKey.DeploymentOutcomeKey` / `AetherValue.DeploymentOutcomeValue` pair (`SUCCEEDED` /
   `FAILED` / `ROLLED_BACK` status, failing slice ids, cause, timestamp) at the terminal
@@ -431,31 +402,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `/api/v1/schema/...` prefix** — every schema management-API route is composed through
   `ManagementRoute.API_BASE` (`/api/v1`) with no carve-out, so the un-prefixed form previously
   documented would 404 if followed literally.
-
-### Fixed (2026-09-03 — #759: `POST /api/v1/blueprints/deploy` returned 200 `"deployed"` while slices had actually failed to load)
-- **Deploy response now reports an earned status, not an assumed one, and always carries a
-  `statusUrl`.** `status` is read off the live deployment map at response time — `pending`
-  (default), `degraded` (a target instance already `FAILED`), or `deployed` (every target instance
-  `ACTIVE`) — replacing the fixed literal `"deployed"` written before allocation ever ran.
-  `statusUrl` points every response, whatever its status, at `GET /api/v1/blueprints/status/{id}` so a
-  `pending`/`degraded` caller can poll it. **Until #759 Phase 2**, that poll can dead-end: under the
-  default `ALL_OR_NOTHING` mode a deterministic failure rolls back the whole blueprint and removes
-  its KV entry outright, so `statusUrl` then answers `404 BLUEPRINT_NOT_FOUND` rather than `FAILED`
-  — `GET /api/events`, matched client-side on `details.artifact`, is the only durable record of the
-  failure.
-  [design intent — unverified: the rollback-to-404 sequence is exercised only by unit-level tests
-  (`ClusterDeploymentStateTransactionalTest.RollbackSequence`,
-  `BlueprintStatusAggregationTest#statusRoute_blueprintAbsentFromKvAndNoOutcome_returns404BlueprintNotFound`),
-  not a live multi-node failure-injection run]
-- **`slices` replaced by `targetInstances`/`activeInstances`/`failedInstances`** on `/deploy`,
-  `/publish`, and the blueprint status endpoint's per-slice entries, for consistent instance counts
-  across all three.
-- **The status endpoint now reports `FAILED` honestly**: a slice with `SliceState.FAILED` instances
-  still present in the deployment map is reported `FAILED` rather than folded into
-  `PENDING`/`DEPLOYING`, and `overallStatus` is `FAILED` if any slice is, ahead of every other
-  bucket.
-  [mechanism: status is derived directly from `deploymentMap()` by construction — pinned in-process
-  by `BlueprintDeployStatusTest`, `BlueprintStatusAggregationTest`]
 
 ## [1.0.0-rc3] - 2026-09-02
 
