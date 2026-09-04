@@ -125,7 +125,11 @@ document.addEventListener('alpine:init', function() {
                         this.updateSparklines();
                         this.updateCharts();
                     } else if (data.type === 'ALERT' || data.type === 'ALERT_RESOLVED') {
-                        Alpine.store('alerts').updateFromWs(data.data || data);
+                        // #292: the discriminator lives at the TOP level only (AlertManager.buildAlertMessage
+                        // sends {"type":"ALERT","data":{...}}, never duplicated inside data) — pass the whole
+                        // envelope through so the store can read `type` itself instead of an already-unwrapped
+                        // payload that never carries it.
+                        Alpine.store('alerts').updateFromWs(data);
                     } else if (data.type === 'HISTORY') {
                         Alpine.store('alerts').updateFromWsHistory(data.data || data);
                     }

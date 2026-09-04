@@ -121,12 +121,28 @@ class AlertWsEnvelopeContractTest {
     }
 
     /// #292 fix, "alerts included in the poll fallback" (CTO scope ruling): the alerts store must be
-    /// refreshed from the same gated poll loop that drives events/status, not left WS-only.
+    /// refreshed from the same gated REPEATING poll timer that drives events/status, not left WS-only.
+    ///
+    /// Scoped to `startPolling()`'s own body, not the whole file: `loadInitialData()` already calls
+    /// `Alpine.store('alerts').refresh()` exactly once, on page load — that pre-existing call would
+    /// make a whole-file `contains` check pass vacuously whether or not the repeating timer was ever
+    /// touched, and self-healing after a missed/dropped WS message is exactly what a one-time
+    /// initial-load call cannot provide.
     @Test
-    void appJs_pollFallback_refreshesAlertsStore() {
+    void appJs_startPolling_refreshesAlertsStoreOnTheRepeatingTimer_notOnlyOnce() {
         var appJs = resource("/dashboard/js/app.js");
+        var start = appJs.indexOf("startPolling() {");
+        var end = appJs.indexOf("async pollStatus() {", start);
 
-        assertThat(appJs).contains("Alpine.store('alerts').refresh()");
+        assertThat(start).as("startPolling() must exist in app.js").isNotNegative();
+        assertThat(end).as("pollStatus() must follow startPolling() so its body is boundable").isGreaterThan(start);
+
+        var startPollingBody = appJs.substring(start, end);
+
+        assertThat(startPollingBody)
+                .as("alerts must be refreshed from the REPEATING poll timer inside startPolling(), not only "
+                    + "once from loadInitialData()")
+                .contains("Alpine.store('alerts').refresh()");
     }
 
     /// #292 fix, half 2: `alerts.js` must read the discriminator off the still-wrapped envelope
