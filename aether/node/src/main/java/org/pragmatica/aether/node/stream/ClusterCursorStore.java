@@ -79,14 +79,16 @@ public record ClusterCursorStore(ConsumerCursorStore local,
         return commandWriter.apply(checkpointCommand(consumerGroup, streamName, partition, offset))
                             .onSuccess(_ -> recoveredFailures.remove(key))
                             .recover(cause -> {
-                                recoveredFailures.put(key, cause.message());
-                                log.warn("Cluster cursor checkpoint {}/{}[{}] not committed, local commit stands: {}",
-                                        consumerGroup,
-                                        streamName,
-                                        partition,
-                                        cause.message());
-                                return Unit.unit();
-                            });
+                                         recoveredFailures.put(key,
+                                                               cause.message());
+                                         log.warn("Cluster cursor checkpoint {}/{}[{}] not committed, local commit stands: {}",
+                                                  consumerGroup,
+                                                  streamName,
+                                                  partition,
+                                                  cause.message());
+
+                                         return Unit.unit();
+                                     });
     }
 
     private static StreamCursorCheckpointKey checkpointKey(String consumerGroup, String streamName, int partition) {
