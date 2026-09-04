@@ -716,6 +716,14 @@ class StreamConsumerManagerTest {
         /// keyed by (stream, partition) precisely so this cross-stream leak is observable: `invoices`
         /// never collides (its `ConsumerGroupKey` is `("invoices", GROUP)`, distinct from `("orders",
         /// GROUP)`) and must stay fully subscribed while `orders`'s two colliding artifacts both drop.
+        ///
+        /// MUST be two reconcile() calls, not one: `unsubscribeAllFor` fires as a side effect INSIDE
+        /// `desiredFor`'s evaluation, before `desired.forEach(subscribeIfAbsent)` ever runs — so on a
+        /// single reconcile() call `active` is still empty when the sweep happens and a group-only
+        /// filter finds nothing to over-detach regardless of the fix. The leak only exists once
+        /// `invoices` is ALREADY active from a prior round and a fresh collision on `orders` re-enters
+        /// `unsubscribeAllFor` against a now-populated `active` map — confirmed by mutation probe: the
+        /// single-call shape passed unchanged against the reverted, unscoped filter.
         @Test
         void reconcile_leavesAnUnrelatedStreamAlone_whenItsGroupNameCollidesOnlyOnAnotherStream() {
             var otherStream = "invoices";
@@ -728,16 +736,23 @@ class StreamConsumerManagerTest {
             when(invocationHandler.localSlice(otherStreamArtifact)).thenReturn(Option.some(new StubBridge(Option.none())));
 
             declare(ARTIFACT, "java.lang.String", false);
-            declare(OTHER_ARTIFACT, "java.lang.String", false);
             deploySliceLocally();
-            when(invocationHandler.localSlice(OTHER_ARTIFACT)).thenReturn(Option.some(new StubBridge(Option.none())));
             ownership.ownedBySelf(0, 1, 2, 3);
+            var manager = manager();
 
-            manager().reconcile();
+            manager.reconcile();
+            assertThat(runtime.subscribedPartitions(STREAM)).describedAs("orders' sole declarant consumes normally before the collision")
+                      .containsExactlyInAnyOrder(0, 1, 2, 3);
+            assertThat(runtime.subscribedPartitions(otherStream)).describedAs("invoices' sole declarant, reusing the same group NAME on a different stream, also consumes normally and is now ACTIVE")
+                      .containsExactlyInAnyOrder(0, 1, 2, 3);
 
-            assertThat(runtime.subscribedPartitions(STREAM)).describedAs("both colliding artifacts on `orders` must stay unsubscribed")
+            declare(OTHER_ARTIFACT, "java.lang.String", false);
+            when(invocationHandler.localSlice(OTHER_ARTIFACT)).thenReturn(Option.some(new StubBridge(Option.none())));
+            manager.reconcile();
+
+            assertThat(runtime.subscribedPartitions(STREAM)).describedAs("both colliding artifacts on `orders` must be retracted")
                       .isEmpty();
-            assertThat(runtime.subscribedPartitions(otherStream)).describedAs("`invoices` reused the SAME group name but never collided — a group-only filter in `unsubscribeAllFor` would incorrectly sweep it too")
+            assertThat(runtime.subscribedPartitions(otherStream)).describedAs("`invoices` reused the SAME group name but never collided — a group-only filter in `unsubscribeAllFor` would incorrectly sweep its already-active subscription too")
                       .containsExactlyInAnyOrder(0, 1, 2, 3);
         }
     }
