@@ -164,10 +164,13 @@ class ClusterDeploymentStateWorkerRemovalTest {
             var sliceKey = SliceNodeKey.sliceNodeKey(ARTIFACT, WORKER_1);
 
             // handleNodeRemoval rebuilds sliceStates from live NodeArtifactKey KV entries FIRST
-            // (additive-only), so seeding the KV entry is both necessary (KV-cleanup assertion) and
-            // sufficient (in-memory sliceStates-removal assertion) — no separate direct seed needed.
+            // (additive-only), so seeding the NodeArtifactKey entry is sufficient for the in-memory
+            // sliceStates-removal assertion. No production path ever PUTs a SliceNodeKey row directly
+            // (slice-state persistence goes exclusively through NodeArtifactKey), so the SliceNodeKey
+            // row is seeded here purely as test setup, to make the KV-removal assertion meaningful.
             kvStore.put(artifactKey, NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE));
             kvStore.put(routesKey, NodeRoutesValue.empty());
+            kvStore.put(sliceKey, AetherValue.SliceNodeValue.sliceNodeValue(SliceState.ACTIVE));
 
             leaveWorker(WORKER_1);
 
@@ -182,6 +185,10 @@ class ClusterDeploymentStateWorkerRemovalTest {
                     .isEqualTo(Option.empty());
             assertThat(kvStore.get(routesKey))
                     .as("#731: the departed worker's NodeRoutesKey KV entry must be removed")
+                    .isEqualTo(Option.empty());
+            assertThat(kvStore.get(sliceKey))
+                    .as("#731: the departed worker's SliceNodeKey KV entry must be removed directly, "
+                        + "not left to the stale sweep")
                     .isEqualTo(Option.empty());
         }
 
@@ -218,6 +225,41 @@ class ClusterDeploymentStateWorkerRemovalTest {
             assertThat(activeState().workerNodes())
                     .as("#731: a departed worker must be able to rejoin and be re-registered")
                     .contains(WORKER_1);
+        }
+
+        /// #731 refinement (BLOCKING 1 + SHOULD-FIX 3, one mechanism): a leader that never locally
+        /// observed this worker's JOIN — a freshly booted leader, or an asymmetric connection window
+        /// — restores it purely from its durable `ActivationDirectiveKey` on activation, with no
+        /// `MembershipDeltaProjector` REMOVED edge ever able to fire for it (its `everJoined` gate
+        /// filters exactly this case upstream). Liveness, observed independently of local join
+        /// history, is the only signal left to catch a worker that is dead on arrival.
+        @Test
+        void leaderActivation_restoredWorkerObservedAbsentFromLiveness_isRemoved() {
+            var deadWorker = new NodeId("node-worker-dead");
+            var artifactKey = NodeArtifactKey.nodeArtifactKey(deadWorker, ARTIFACT);
+            var routesKey = NodeRoutesKey.nodeRoutesKey(deadWorker, ARTIFACT);
+            var sliceKey = SliceNodeKey.sliceNodeKey(ARTIFACT, deadWorker);
+            var directiveKey = ActivationDirectiveKey.activationDirectiveKey(deadWorker);
+
+            kvStore.put(directiveKey, ActivationDirectiveValue.worker(COMMUNITY_ID, ""));
+            kvStore.put(artifactKey, NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE));
+            kvStore.put(routesKey, NodeRoutesValue.empty());
+            kvStore.put(sliceKey, AetherValue.SliceNodeValue.sliceNodeValue(SliceState.ACTIVE));
+
+            activeState().ctx().setCommunityLiveness(node -> node.equals(deadWorker));
+
+            activeState().rebuildStateFromKVStore();
+
+            assertThat(activeState().workerNodes())
+                    .as("#731: a restored worker the leader observes absent from liveness must not survive activation")
+                    .doesNotContain(deadWorker);
+            assertThat(kvStore.get(directiveKey))
+                    .as("#731: the dead restored worker's ActivationDirectiveKey must be removed so it cannot "
+                        + "resurrect the pool slot on the next activation")
+                    .isEqualTo(Option.empty());
+            assertThat(kvStore.get(artifactKey)).isEqualTo(Option.empty());
+            assertThat(kvStore.get(routesKey)).isEqualTo(Option.empty());
+            assertThat(kvStore.get(sliceKey)).isEqualTo(Option.empty());
         }
     }
 

@@ -534,6 +534,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             log.info("Rebuilding cluster deployment state from KVStore");
             ctx.kvStore().forEach(AetherKey.class, AetherValue.class, this::processKVEntry);
             log.info("Restored {} blueprints and {} worker nodes from KVStore", blueprints.size(), workerNodes.size());
+            sweepDeadRestoredWorkers();
             rebuildSliceStateFromKVStoreEntries();
             triggerLoadedSliceActivation();
             cleanupStaleNodeRoutes();
@@ -689,6 +690,31 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 workerNodes.add(key.nodeId());
                 log.trace("Restored worker node: {}", key.nodeId());
             }
+        }
+
+        /// #731 leader-change gap: a worker restored here from its durable `ActivationDirectiveKey`
+        /// may never have been locally observed joining (a freshly booted leader, or one that
+        /// connected asymmetrically) — `MembershipDeltaProjector`'s `everJoined` gate then filters
+        /// its REMOVED edge upstream of `processRemoved`, so the live-leader `WorkerLeaveDecision`
+        /// path can never fire for it. Liveness is the only signal independent of local join
+        /// history, so a restored worker positively observed absent is removed here with the same
+        /// batch a live departure gets, instead of being placed on again this term.
+        private void sweepDeadRestoredWorkers() {
+            var deadWorkers = workerNodes.stream()
+                                         .filter(ctx.communityLiveness()::isAbsent)
+                                         .toList();
+
+            if (deadWorkers.isEmpty()) {
+                return;
+            }
+
+            log.info("Sweeping {} worker(s) restored from KVStore but observed absent from liveness: {}",
+                     deadWorkers.size(),
+                     deadWorkers);
+            deadWorkers.forEach(node -> handleNodeRemoval(node).onFailure(cause -> log.error(
+                    "Failed to sweep dead restored worker {}: {}",
+                    node,
+                    cause.message())));
         }
 
         private void restoreAppBlueprint(AppBlueprintValue appBlueprintValue) {
@@ -1844,23 +1870,25 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             artifactKeysToRemove.stream()
                                 .<KVCommand<AetherKey>> map(KVCommand.Remove::new)
                                 .forEach(consensusCommands::add);
+            sliceKeysToRemove.stream()
+                             .<KVCommand<AetherKey>> map(KVCommand.Remove::new)
+                             .forEach(consensusCommands::add);
+            consensusCommands.add(new KVCommand.Remove<>(ActivationDirectiveKey.activationDirectiveKey(removedNode)));
             consensusCommands.addAll(nodeRouteCommands);
             workerNodes.remove(removedNode);
-            log.info("Removed {} slice states, {} node-artifact entries, and {} node-routes updates for departed node {}",
+            log.info("Removed {} slice states, {} node-artifact entries, {} node-routes updates, and the "
+                     + "activation directive for departed node {}",
                      sliceKeysToRemove.size(),
                      artifactKeysToRemove.size(),
                      nodeRouteCommands.size(),
                      removedNode);
-            if (!consensusCommands.isEmpty()) {
-                return ctx.cluster()
-                          .apply(consensusCommands)
-                          .mapToUnit()
-                          .onFailure(cause -> log.error("Failed to remove keys for departed node {}: {}",
-                                                        removedNode,
-                                                        cause.message()));
-            }
 
-            return Promise.unitPromise();
+            return ctx.cluster()
+                      .apply(consensusCommands)
+                      .mapToUnit()
+                      .onFailure(cause -> log.error("Failed to remove keys for departed node {}: {}",
+                                                    removedNode,
+                                                    cause.message()));
         }
 
         private List<NodeArtifactKey> findNodeArtifactKeysForNode(NodeId nodeId) {

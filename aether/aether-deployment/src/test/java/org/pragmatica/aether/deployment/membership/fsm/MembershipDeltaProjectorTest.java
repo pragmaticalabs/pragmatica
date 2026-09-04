@@ -226,14 +226,6 @@ class MembershipDeltaProjectorTest {
             assertThat(workerLeaves.getFirst().stampedAt()).isEqualTo(HLC);
         }
 
-        @Test
-        void workerLeave_reachesTheNodeRemovalChannel_ratherThanBeingDropped() {
-            projector.onDelta(joined(W, "worker"));
-            projector.onDelta(removed(W, "worker"));
-
-            assertThat(workerLeaves).extracting(WorkerLeaveDecision::nodeId).containsExactly(W);
-        }
-
         /// Symmetric to [`#workerJoin_repeated_emitsExactlyOnce`]: the once-only guard is
         /// `announcedWorkers.remove`, consumed by the FIRST REMOVED edge, so a structurally
         /// impossible (per the FSM's `everJoined`) duplicate REMOVED edge for the same worker

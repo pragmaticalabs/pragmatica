@@ -5,20 +5,38 @@
   members of the CORE `announced` baseline; a worker is deliberately kept out of that baseline (the
   #728 core-delta invariant), so its REMOVED edge returned early and
   `ClusterDeploymentState.handleNodeRemoval` was never reached for it. `workerNodes`, the worker's
-  `SliceNodeKey`/`NodeArtifactKey`/`NodeRoutesKey` KV entries, and any blueprint shortfall its
-  departure created had no code path to clear or re-place them, regardless of how long the worker had
-  been dead. `processRemoved` now emits a new, symmetric `WorkerLeaveDecision` when
-  `announcedWorkers.remove(node)` is true and the node is not core-announced; the cluster deployment
-  FSM's new `WorkerLeaveReceived` arm runs the same `handleNodeRemoval(nodeId).onSuccess(_ ->
-  reconcile())` the CORE arm already used, so a worker's clean-up and a core node's clean-up are the
-  same code path. The CORE `NodeRemoved` arm is unchanged.
+  `SliceNodeKey`/`NodeArtifactKey`/`NodeRoutesKey`/`ActivationDirectiveKey` KV entries, and any
+  blueprint shortfall its departure created had no code path to clear or re-place them, regardless of
+  how long the worker had been dead. `processRemoved` now emits a new, symmetric
+  `WorkerLeaveDecision` when `announcedWorkers.remove(node)` is true and the node is not
+  core-announced; the cluster deployment FSM's new `WorkerLeaveReceived` arm runs the same
+  `handleNodeRemoval(nodeId).onSuccess(_ -> reconcile())` the CORE arm already used, so a worker's
+  clean-up and a core node's clean-up are the same code path. The CORE `NodeRemoved` arm is
+  unchanged. `handleNodeRemoval` itself now also removes the departed node's `ActivationDirectiveKey`
+  unconditionally — previously nothing ever issued `KVCommand.Remove` for it, so a dead worker's pool
+  slot came back on the next leader activation (`restoreWorkerNode` re-adds any node whose surviving
+  directive says WORKER, and `buildAllocationPool` copies `workerNodes` with no liveness
+  intersection). A worker a new leader never locally observed joining — a fresh boot, or an
+  asymmetric connection window — could still never be cleaned up even after that: `processRemoved`'s
+  emission is gated on `everJoined`, upstream of the fix above, so `rebuildStateFromKVStore()` now
+  runs a new sweep after restoring `workerNodes` from `ActivationDirectiveKey` entries, removing every
+  restored worker the leader's `CommunityLivenessView` currently reports absent through the same
+  removal batch a live departure gets. The `SliceNodeKey` rows are a correction, not an addition: they
+  were previously reachable, if late, through the pre-existing `StaleEntryCleaner` sweeps (which run
+  against core-only `activeNodes()` and so treat any worker's rows as stale regardless of liveness —
+  tracked separately as #850); `handleNodeRemoval` stripped the in-memory `sliceStates` entries and
+  the `NodeArtifactKey` rows those sweeps read to find KV rows to remove, which made a
+  `handleNodeRemoval`-cleaned worker's `SliceNodeKey` rows unreachable by every sweep.
+  `handleNodeRemoval` now removes them from KV directly, in the same batch as
+  `NodeArtifactKey`/`NodeRoutesKey`, mirroring the existing `cleanupAfterLifecycleDepartedAtomic`
+  pattern.
   [verified: `ClusterDeploymentStateWorkerRemovalTest#workerLeave_departedWorker_clearsAllocationPoolAndKvFootprint`,
   `#workerLeave_outstandingBlueprintShortfall_reconcileRePlacesOntoRemainingPool`,
   `#workerRejoin_afterDeparture_reRegistersInAllocationPool`,
+  `#leaderActivation_restoredWorkerObservedAbsentFromLiveness_isRemoved`,
   `#coreNodeRemoved_membershipDecision_clearsSliceStateAndKvFootprint` (core-arm regression, confirmed
   unaffected); `MembershipDeltaProjectorTest$WorkerScoping#workerRemoval_emitsOnWorkerLeaveChannelOnly_coreArmUntouched`,
   `#workerRemoval_duplicateEdge_emitsLeaveOnce`,
-  `#workerLeave_reachesTheNodeRemovalChannel_ratherThanBeingDropped`,
   `#workerRejoinAfterRemoval_emitsAgain_becauseTheWorkerBaselineIsPruned` — driven in-process through
   the real projector/FSM harness (`FsmTestHarness`), not a live multi-node run; each test mutation-probed
   by reverting only its corresponding production hunk and confirming it fails]
