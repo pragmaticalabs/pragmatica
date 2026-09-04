@@ -4,7 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether;
 
-import java.io.IOException;
 import java.net.InetAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -20,8 +19,6 @@ import java.util.Map;
 import java.util.function.IntConsumer;
 import java.util.regex.Pattern;
 import java.util.stream.IntStream;
-
-import com.sun.management.HotSpotDiagnosticMXBean;
 
 import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.config.ClusterConfig;
@@ -64,6 +61,7 @@ import org.pragmatica.net.tcp.security.SelfSignedCertificateProvider;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.swim.NettySwimTransport;
 
+import com.sun.management.HotSpotDiagnosticMXBean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -511,7 +509,6 @@ public record Main(String[] args) {
     /// generous relative to `EmberCluster`'s 10s-per-node test bound (this covers ONE node, not N in
     /// parallel) while still failing the container's stop/restart grace period loudly instead of silently.
     private static final TimeSpan SHUTDOWN_TIMEOUT = TimeSpan.timeSpan(30).seconds();
-
     /// #838 review round 1, BLOCKING 1 (owner-confirmed): `System.exit()` from inside a shutdown hook
     /// DEADLOCKS -- `Shutdown.exit()` blocks on the `Shutdown` class monitor already held by the thread
     /// running `runHooks()`, which is the very thread executing this hook, so it joins itself. Proven by
@@ -529,8 +526,10 @@ public record Main(String[] args) {
     static final int SHUTDOWN_TIMEOUT_EXIT_CODE = 3;
 
     private void registerShutdownHook(AetherNode node) {
-        Runtime.getRuntime()
-               .addShutdownHook(new Thread(() -> shutdownNode(node, SHUTDOWN_TIMEOUT, Main::flushLogs, Runtime.getRuntime()::halt)));
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> shutdownNode(node,
+                                                                           SHUTDOWN_TIMEOUT,
+                                                                           Main::flushLogs,
+                                                                           Runtime.getRuntime()::halt)));
     }
 
     /// Synchronous flush of the log4j2 context. Must run to completion before [Runtime#halt] -- halt()
@@ -550,7 +549,8 @@ public record Main(String[] args) {
         if (!stopping.isResolved()) {
             log.error("Node did not stop within {}; halting with code {} (shutdown timeout -- see "
                      + "aether/docs/reference/node-operations.md#exit-codes). Thread dump follows.",
-                      timeout, SHUTDOWN_TIMEOUT_EXIT_CODE);
+                      timeout,
+                      SHUTDOWN_TIMEOUT_EXIT_CODE);
             dumpThreads();
             flushLogs.run();
             haltFn.accept(SHUTDOWN_TIMEOUT_EXIT_CODE);
@@ -562,13 +562,11 @@ public record Main(String[] args) {
         log.info("Node stopped");
     }
 
-    /// Best-effort diagnostic: never let a failure to dump threads mask the timeout it was meant to explain.
+    /// Best-effort diagnostic: a failed dump is logged and never blocks the halt it was meant to explain.
     private static void dumpThreads() {
-        try {
-            captureThreadDump().forEach(line -> log.error("{}", line));
-        } catch (Throwable dumpFailure) {
-            log.error("Failed to capture shutdown-timeout thread dump: {}", dumpFailure.toString());
-        }
+        captureThreadDump().onSuccess(lines -> lines.forEach(line -> log.error("{}", line)))
+                         .onFailure(cause -> log.error("Failed to capture shutdown-timeout thread dump: {}",
+                                                       cause.message()));
     }
 
     /// #838 review round 1, SHOULD-FIX: [ThreadMXBean#dumpAllThreads] omits virtual threads -- exactly the
@@ -576,18 +574,24 @@ public record Main(String[] args) {
     /// on them. [HotSpotDiagnosticMXBean#dumpThreads] includes virtual threads; it writes a pre-formatted
     /// dump to a file rather than returning `ThreadInfo[]`, and refuses to overwrite an existing file, so
     /// a fresh path is created and deleted around each call regardless of outcome.
-    static List<String> captureThreadDump() throws IOException {
-        var dumpPath = Files.createTempFile("aether-thread-dump-", ".txt");
-        Files.delete(dumpPath); // dumpThreads(String, ...) refuses to write over an existing file
+    ///
+    /// #838 review round 1, JBCT-EX-01: returns [Result] rather than throwing -- a checked [IOException]
+    /// on this best-effort diagnostic path must not propagate past [#dumpThreads], which logs-and-continues
+    /// on either outcome rather than branching on a caught exception.
+    static Result<List<String>> captureThreadDump() {
+        return Result.lift(() -> {
+            var dumpPath = Files.createTempFile("aether-thread-dump-", ".txt");
 
-        try {
-            ManagementFactory.getPlatformMXBean(HotSpotDiagnosticMXBean.class)
-                              .dumpThreads(dumpPath.toString(), HotSpotDiagnosticMXBean.ThreadDumpFormat.TEXT_PLAIN);
+            Files.delete(dumpPath);  // dumpThreads(String, ...) refuses to write over an existing file
+            try {
+                ManagementFactory.getPlatformMXBean(HotSpotDiagnosticMXBean.class).dumpThreads(dumpPath.toString(),
+                                                                                               HotSpotDiagnosticMXBean.ThreadDumpFormat.TEXT_PLAIN);
 
-            return Files.readAllLines(dumpPath, StandardCharsets.UTF_8);
-        } finally {
-            Files.deleteIfExists(dumpPath);
-        }
+                return Files.readAllLines(dumpPath, StandardCharsets.UTF_8);
+            } finally {
+                Files.deleteIfExists(dumpPath);
+            }
+        });
     }
 
     private void startNodeAndWait(AetherNode node, NodeId nodeId) {
