@@ -1,3 +1,29 @@
+// #294/#300 (three-state health gate, corrected after #846 review): a pure decision function,
+// kept separate from checkHealth()'s store-mutation and warn-once side effects, so the health
+// classification is one small reviewable unit. Inputs are probeHealth() results ({reachable, json}
+// for each of the versioned and bare paths); output is either `{unknown: true}` — deliberately
+// OMITTING `degraded` so the caller has nothing to assign and a prior verdict survives untouched —
+// or `{unknown: false, degraded: <bool>}` once at least one path proved the server is reachable.
+//
+// No JS test runner exists anywhere in this repo (confirmed: no GraalJS/Nashorn/javax.script
+// dependency in any pom.xml or test source) and adding one is out of scope for this fix, so this
+// stays pinned by structural Java contract-test assertions on the extracted body — the same honest,
+// disclosed technique already used for the rest of this file's coverage — rather than by executing
+// it. Extracting it as a standalone pure function is still worth doing on its own terms: it is
+// reviewable in isolation, and it makes "unknown never overwrites degraded" a structural property
+// of the object shape instead of something checkHealth() has to remember to preserve.
+function decideHealthState(v1, bare) {
+    var reachable = v1.reachable || bare.reachable;
+    if (!reachable) {
+        return { unknown: true };
+    }
+    var health = (v1.json && v1.json.status) ? v1 : bare;
+    return {
+        unknown: false,
+        degraded: !!(health.json && health.json.status) && health.json.status !== 'healthy'
+    };
+}
+
 document.addEventListener('alpine:init', function() {
     Alpine.data('app', function() {
         return {
@@ -146,10 +172,16 @@ document.addEventListener('alpine:init', function() {
                 // Always poll REST for full state (loadTargets, slices, etc.)
                 // WS provides incremental metrics but REST has the complete picture
                 this.pollTimer = setInterval(function() {
-                    // #294: health is probed on every tick, ungated, so the gate itself can detect
-                    // recovery — every OTHER poll below is skipped while the cluster is degraded.
+                    var cluster = Alpine.store('cluster');
+                    // #294 (three states): while the server is UNREACHABLE (network error on both
+                    // health paths, not merely reachable-and-unhealthy), every timer — including the
+                    // health probe itself — backs off to a shared slow 10s retry instead of hammering
+                    // a dead backend at full 2s/3s cadence. `unknownRetryDue()` is a no-op false when
+                    // healthUnknown is already false, so the known-reachable case (healthy OR
+                    // degraded) is unaffected and still probes every tick to catch recovery fast.
+                    if (cluster.healthUnknown && !cluster.unknownRetryDue()) return;
                     self.checkHealth();
-                    if (Alpine.store('cluster').degraded) return;
+                    if (cluster.degraded) return;
                     self.pollStatus();
                     Alpine.store('events').refresh();
                     Alpine.store('alerts').refresh();
@@ -158,7 +190,9 @@ document.addEventListener('alpine:init', function() {
                 // Secondary stores: poll at lower frequency as fallback
                 // for when WS misses INITIAL_STATE or drops connection
                 this.secondaryPollTimer = setInterval(function() {
-                    if (Alpine.store('cluster').degraded) return;
+                    var cluster = Alpine.store('cluster');
+                    if (cluster.degraded) return;
+                    if (cluster.healthUnknown && !cluster.unknownRetryDue()) return;
                     Alpine.store('topology').refresh();
                     Alpine.store('desiredTopology').refresh();
                     Alpine.store('governors').refresh();
@@ -173,35 +207,44 @@ document.addEventListener('alpine:init', function() {
             },
 
             async checkHealth() {
-                // #294/#300: try the versioned path FIRST — it is the ONLY health path the real node's
-                // Management API serves (ManagementRoute has no bare '/health' route at all, per #300's
-                // path-versioning gap), then fall back to bare '/health', which is what Forge actually
-                // serves and has never migrated. Probing versioned-first is what makes this gate work
-                // against a real node, not just Forge; probing bare-only (the original #294 fix) meant
-                // the gate silently never engaged against a real node at all.
+                // #294/#300 (three-state gate, corrected after #846 review): try the versioned path
+                // FIRST — it is the ONLY health path the real node's Management API serves
+                // (ManagementRoute has no bare '/health' route at all, per #300's path-versioning
+                // gap) — then fall back to bare '/health', which is what Forge actually serves and
+                // has never migrated. probeHealth() (not the shared RestClient.get()) is used here
+                // because it alone distinguishes "reachable, no route" (any HTTP response, 404
+                // included) from "unreachable" (a fetch-level network error) — a distinction
+                // RestClient.get() collapses to an identical null for both, which is exactly the gap
+                // the #846 review found: this method's PREVIOUS revision could not tell a real total
+                // outage apart from a harmless 404 and fail-opened on both alike.
                 //
+                // decideHealthState() (module scope, top of this file) is the pure decision; this
+                // method only applies it and owns the once-only warning side effect.
+                var v1 = await RestClient.probeHealth('/api/v1/health');
+                var bare = (v1.json && v1.json.status) ? { reachable: false, json: null } : await RestClient.probeHealth('/health');
+                var decision = decideHealthState(v1, bare);
+                var cluster = Alpine.store('cluster');
+
+                cluster.healthUnknown = decision.unknown;
+                if (decision.unknown) {
+                    // Both paths were genuinely UNREACHABLE (refused/timeout), not merely 404 — the
+                    // 404 case is folded into `degraded` below via decideHealthState's fail-open.
+                    // `degraded` is deliberately left untouched: a prior known-degraded verdict must
+                    // not read back as healthy just because the network to check it also died.
+                    if (!this._healthProbeUnreachableWarned) {
+                        this._healthProbeUnreachableWarned = true;
+                        console.warn('[Dashboard] health probe unreachable on both /api/v1/health and /health; backing off to a slow 10s retry and holding the last known health state');
+                    }
+                    return;
+                }
+                this._healthProbeUnreachableWarned = false;
                 // 'degraded' is keyed on the semantic `status !== 'healthy'`, not a literal 'degraded'
                 // wire value — none exists. The real node's HealthResponse.status is only ever
                 // "healthy"/"unhealthy"; Forge's is hardcoded to always "healthy" and can never signal
-                // degradation, an honest limit on this gate against Forge.
-                var health = await RestClient.get('/api/v1/health');
-                if (!health) {
-                    health = await RestClient.get('/health');
-                }
-                if (health && health.status) {
-                    Alpine.store('cluster').degraded = health.status !== 'healthy';
-                    return;
-                }
-                // Fail-open: neither path answered (both 404, or the network call itself failed).
-                // This is UNKNOWN health, not degraded health — a probe failure must never set
-                // degraded=true, or any target that serves neither health path would wedge every
-                // OTHER poll behind a health check that can never succeed. Treat unknown as healthy
-                // and keep polling; warn once, not on every 2s tick.
-                Alpine.store('cluster').degraded = false;
-                if (!this._healthProbeUnreachableWarned) {
-                    this._healthProbeUnreachableWarned = true;
-                    console.warn('[Dashboard] health probe failed on both /api/v1/health and /health; treating as healthy (fail-open) and continuing to poll');
-                }
+                // degradation, an honest limit on this gate against Forge. A path that answered but
+                // has no health route here (404 on both) fails OPEN via decideHealthState — reachable
+                // is not the same claim as degraded.
+                cluster.degraded = decision.degraded;
             },
 
             async pollStatus() {

@@ -11,6 +11,9 @@ document.addEventListener('alpine:init', function() {
             if (event.at && typeof event.at.packed === 'number') {
                 return Math.floor(event.at.packed / 65536);
             }
+            // Neither `at` nor `timestamp` present collapses eventKey() to a constant "0:TYPE" for
+            // every event of that type — an honest limit, not a bug: no known payload shape reaches
+            // this branch today, so it has never needed a real fallback.
             return event.timestamp || 0;
         },
 

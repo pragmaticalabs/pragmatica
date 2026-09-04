@@ -5,10 +5,34 @@ document.addEventListener('alpine:init', function() {
         targetClusterSize: 0,
         healthy: true,
         // #294: never fabricate a degraded verdict before the first health probe returns — only
-        // app.js's checkHealth() flips this, and it fails OPEN to false whenever a probe reports
-        // healthy OR whenever neither health path answers at all; only an explicit "unhealthy"
-        // status sets this true.
+        // app.js's checkHealth() flips this. `degraded` means an explicit "unhealthy" status was
+        // RECEIVED; a probe that answers with a 404 (reachable, no health route here) fails OPEN
+        // and never touches this. See `healthUnknown` below for the third state: a probe that could
+        // not reach the server at all leaves `degraded` exactly as it was.
         degraded: false,
+        // #294 (three-state health gate, corrected after #846 review): distinct from `degraded`.
+        // Set true only when BOTH health paths fail with a network-level error (refused, timeout) —
+        // the server could not be reached at all, as opposed to being reached and found unhealthy,
+        // or reached and found to have no health route (both of those are `degraded`/false, never
+        // this). checkHealth() never overwrites a prior `degraded=true` when this is set — an
+        // outage on top of a known-degraded cluster must not read back as "healthy". Cleared the
+        // moment either probe answers anything, even a 404. While true, pollers back off to a slow
+        // 10s retry via `unknownRetryDue()` instead of hammering a dead backend at full cadence, and
+        // RestClient suppresses the resulting network-error toasts (see rest-client.js).
+        healthUnknown: false,
+        _lastUnknownRetryAt: 0,
+
+        // Shared throttle so every poll timer (app.js's two, requests.js's own) agrees on when the
+        // next attempt during an unknown-health outage is due, rather than each independently
+        // retrying at its own cadence and recreating the storm this state exists to avoid.
+        unknownRetryDue() {
+            var now = Date.now();
+            if (!this._lastUnknownRetryAt || now - this._lastUnknownRetryAt >= 10000) {
+                this._lastUnknownRetryAt = now;
+                return true;
+            }
+            return false;
+        },
         uptimeSeconds: 0,
         controllerConfig: null,
         ttmStatus: 'DISABLED',
