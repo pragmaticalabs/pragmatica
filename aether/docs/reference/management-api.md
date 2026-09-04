@@ -3219,6 +3219,13 @@ is 3. Worker and spot counts carry no quorum constraint and are required only to
   A `VersionConflict` here means another writer — an operator or the auto-heal reconciler — advanced
   the config between this request's read and its commit. Recovery: re-read
   `GET /api/v1/cluster/config` and re-issue the scale with the fresh `expectedVersion`.
+- No cluster config is stored yet (e.g. right after a `docker compose down -v` volume wipe and fresh
+  bootstrap — #335). A scale request cannot create one: it carries only `source`/`role`/`count`, none
+  of the cluster name, semver version, distribution strategy, zones, or deployment settings a config
+  needs, all of which `aether cluster bootstrap` derives from a full `aether-cluster.toml`. The
+  response names the missing recovery command with the request's own source/role/count filled in
+  (`aether cluster bootstrap <aether-cluster.toml>`, then retry the scale) instead of guessing at
+  defaults or answering 500.
 
 **`health` values (changed 2026-08-27, #558).** This field previously reported `NodeState.health`,
 which was `HEALTHY` for every node the observer had ever discovered — nothing ever drove a node out of

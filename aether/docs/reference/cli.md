@@ -1971,6 +1971,18 @@ A `(source, role)` the topology does not declare is also refused rather than cre
 mistyped source name would become a real provisioning target. Add the pair to the config and use
 `aether cluster apply` instead.
 
+Scaling a cluster with no stored config (e.g. right after a `docker compose down -v` volume wipe and
+fresh bootstrap — #335) is refused the same way, not created from the scale request: a `--count`
+alone has none of the cluster name, version, or deployment settings a config needs. The error names
+the actual recovery:
+
+```
+No cluster configuration stored. A scale request cannot create one — it carries only
+source/role/count, not the cluster name, version, or deployment settings a config requires. Run
+'aether cluster bootstrap <aether-cluster.toml>' first, then retry 'aether cluster scale --role core
+--count 7'.
+```
+
 **Quorum safety is validated by the server, not the CLI.** A per-source count is not the cluster
 total: scaling one core source to 1 is legal when another source carries 2. Only the server holds
 the whole topology, so only the server can do that arithmetic. It checks the resulting cluster-wide

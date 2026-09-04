@@ -574,8 +574,22 @@ public final class ClusterConfigRoutes implements RouteSource {
         return action.symbol() + " " + action.description();
     }
 
-    private Promise<ScaleClusterResponse> handleScale(ScaleRequest request) {
-        return lookupClusterConfig().flatMap(stored -> applyScale(stored, request));
+    /// #335: this used to route through [#lookupClusterConfig], which folds absence into the bare,
+    /// statusless [#ConfigNotFoundError] the read routes use — an operator saw a 500 that read like
+    /// server failure. A `ScaleRequest` carries only source/role/count/expectedVersion, never enough
+    /// to synthesize the cluster name, version, or deployment settings a fresh `ClusterConfigValue`
+    /// needs (the #290 bootstrap path derives all of those from a full TOML document), so there is no
+    /// honest way to bootstrap one here. This branches on [#storedClusterConfig] directly so the
+    /// no-config case gets a typed refusal naming the real recovery, not a guess and not a 500.
+    Promise<ScaleClusterResponse> handleScale(ScaleRequest request) {
+        return storedClusterConfig().fold(() -> noConfigForScale(request), stored -> applyScale(stored, request));
+    }
+
+    private static Promise<ScaleClusterResponse> noConfigForScale(ScaleRequest request) {
+        var role = effectiveRole(nonBlank(request.role()));
+        var source = nonBlank(request.source()).or("");
+
+        return new ClusterConfigError.NoConfigToScale(source, role, request.count()).promise();
     }
 
     /// `source` and `role` arrive from Jackson, where an omitted JSON field is `null`, and an operator
@@ -770,7 +784,9 @@ public final class ClusterConfigRoutes implements RouteSource {
     /// Committed cluster config as an OPTION — absence is a state, not a failure.
     ///
     /// [#lookupClusterConfig] keeps the promise-shaped view for the read routes, which genuinely
-    /// want "no config" to be an error response. [#routeApply] needs the distinction preserved.
+    /// want "no config" to be an error response. [#routeApply] needs the distinction preserved, and
+    /// so does [#handleScale] (#335) — a scale request answers absence with its own typed refusal,
+    /// not the read routes' bare not-found.
     private Option<ClusterConfigValue> storedClusterConfig() {
         return nodeSupplier.get()
                            .kvStore()
