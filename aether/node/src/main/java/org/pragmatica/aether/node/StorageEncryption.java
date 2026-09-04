@@ -83,11 +83,11 @@ public final class StorageEncryption {
 
         return matcher.matches()
                ? Result.success(matcher.group(1))
-               : Result.failure(new MalformedSecretRef(keyId, ref));
+               : Result.failure(new MalformedSecretRef(keyId));
     }
 
     private static Result<byte[]> decodeKey(String keyId, String secret) {
-        return Result.lift(cause -> new InvalidSecretEncoding(keyId, cause.getMessage()),
+        return Result.lift(_ -> new InvalidSecretEncoding(keyId),
                            () -> Base64.getDecoder().decode(secret));
     }
 
@@ -112,7 +112,12 @@ public final class StorageEncryption {
     /// `StorageEncryptionConfigValidator` already rejects this before boot ever reaches here on the
     /// normal load path; this only fires if `resolveKeyring` is invoked with a config that bypassed
     /// that validator.
-    public record MalformedSecretRef(String keyId, String ref) implements Cause {
+    ///
+    /// #253 review round 2 NOTE: the offending `ref` is deliberately NOT a record component -- a raw
+    /// inline value in `${secrets:...}` shape but not matching it could itself be (or resemble)
+    /// secret material, and a record's generated `toString` would print it verbatim into any log or
+    /// error surface that renders this cause.
+    public record MalformedSecretRef(String keyId) implements Cause {
         @Override
         public String message() {
             return "storage.encryption.keys." + keyId + " is not a '${secrets:<path>}' reference (inline value)";
@@ -121,10 +126,14 @@ public final class StorageEncryption {
 
     /// The secret resolved for `keyId` is not valid Base64 -- the required encoding for a raw AES
     /// key (the same convention `GossipKeyRotationHandler` uses elsewhere in this module).
-    public record InvalidSecretEncoding(String keyId, String reason) implements Cause {
+    ///
+    /// #253 review round 2 NOTE: the JDK's `Base64` decode-failure message names the offending
+    /// character (e.g. its hex code point) FROM the secret's own decoded/raw text -- relaying it
+    /// would leak a fragment of key material into logs. `keyId` alone is enough to act on.
+    public record InvalidSecretEncoding(String keyId) implements Cause {
         @Override
         public String message() {
-            return "storage.encryption.keys." + keyId + " did not decode as Base64: " + reason;
+            return "storage.encryption.keys." + keyId + " did not decode as Base64";
         }
     }
 }
