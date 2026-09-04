@@ -577,10 +577,14 @@ public final class ClusterConfigRoutes implements RouteSource {
     /// #335: this used to route through [#lookupClusterConfig], which folds absence into the bare,
     /// statusless [#ConfigNotFoundError] the read routes use — an operator saw a 500 that read like
     /// server failure. A `ScaleRequest` carries only source/role/count/expectedVersion, never enough
-    /// to synthesize the cluster name, version, or deployment settings a fresh `ClusterConfigValue`
-    /// needs (the #290 bootstrap path derives all of those from a full TOML document), so there is no
-    /// honest way to bootstrap one here. This branches on [#storedClusterConfig] directly so the
-    /// no-config case gets a typed refusal naming the real recovery, not a guess and not a 500.
+    /// to synthesize a fresh `ClusterConfigValue`: version, deployment type, the full topology and
+    /// core bounds have no source but the operator (the #290 bootstrap path derives all of those from
+    /// a full TOML document). Cluster name is the one exception — every running node already knows it
+    /// (`AetherNodeConfig.clusterName()`, stamped from `AETHER_CLUSTER_NAME` at boot) — but that value
+    /// isn't reachable here: `ManageableNode` exposes no accessor for it. Either way there is no honest
+    /// way to bootstrap a config from this route today. This branches on [#storedClusterConfig]
+    /// directly so the no-config case gets a typed refusal naming the real recovery, not a guess and
+    /// not a 500.
     Promise<ScaleClusterResponse> handleScale(ScaleRequest request) {
         return storedClusterConfig().fold(() -> noConfigForScale(request), stored -> applyScale(stored, request));
     }
