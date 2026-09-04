@@ -386,6 +386,84 @@ class StorageFactoryEncryptionTest {
         stored.onPresent(raw -> assertPlaintextAtRest(raw, "the DHT tier"));
     }
 
+    /// #253 SHOULD-FIX #1 (2026-09-04 ruling): mirrors
+    /// `createAll_fails_whenDiskCarriesEncryptionMarker_andNoKeyringSuppliedForInstance` for the DHT
+    /// namespace, on exactly the path review round 2 named -- disk tier absent (here: a `diskPath`
+    /// that already exists as a plain FILE, forcing `LocalDiskTier.localDiskTier` to fail and
+    /// `buildTiers` to route into `handleDiskTierUnavailable`'s memory+DHT fallback) -- where
+    /// `maybeEncryptDht` used to hand back the bare DHT tier unconditionally, regardless of a marker
+    /// left by an earlier encrypting boot. First boot enables encryption and writes a block through
+    /// the degraded (memory+DHT) instance, seeding the DHT-side `.encryption-enabled` marker exactly
+    /// as a real encrypted boot would; the second boot reuses the SAME `InMemoryDHTClient` and the
+    /// SAME broken `diskPath` but supplies no keyring, and must fail closed rather than silently
+    /// handing back the bare DHT tier over existing ciphertext.
+    @Test
+    void createAll_fails_whenDhtCarriesEncryptionMarker_andDiskUnavailable_andNoKeyringSupplied() throws IOException {
+        var brokenDiskPath = tempDir.resolve("vault-disk-unavailable");
+
+        Files.writeString(brokenDiskPath, "a plain file here forces LocalDiskTier construction to fail");
+
+        var dhtClient = new InMemoryDHTClient();
+        var seeded = createAllOrFail(Map.of(INSTANCE, storageConfigAt(brokenDiskPath, true)),
+                                     Option.some(dhtClient),
+                                     Option.some(singleKeyRing("key-1")));
+
+        writeThrough(seeded.get(INSTANCE));
+
+        var result = StorageFactory.createAll(Map.of(INSTANCE, storageConfigAt(brokenDiskPath, false)),
+                                              NODE_ID,
+                                              Option.some(dhtClient),
+                                              Option.none());
+
+        assertThat(result.isFailure()).as("booting a previously-encrypted DHT namespace with the disk tier "
+                                          + "unavailable and no keyring for this instance must fail closed, not "
+                                          + "silently return the bare DHT tier over existing ciphertext")
+                                      .isTrue();
+        result.onFailure(cause -> {
+            assertThat(cause.message()).contains(INSTANCE);
+            assertThat(cause.source().isPresent()).isTrue();
+            assertThat(cause.source().unwrap()).isInstanceOf(EncryptionError.EncryptedTierRequiresKeyring.class);
+        });
+    }
+
+    /// #253 SHOULD-FIX #1 (2026-09-04 ruling): the legacy/forward-direction counterpart to the test
+    /// above, on the same degraded (disk-unavailable) path -- confirms the new DHT marker mechanism
+    /// leaves the EXISTING, unchanged per-block legacy-plaintext detection
+    /// ([org.pragmatica.storage.EncryptingStorageTier#get]) untouched. There is still no boot-time
+    /// FORWARD scan for a DHT tier (unlike [org.pragmatica.storage.EncryptingStorageTier#wrapLocalDisk]'s
+    /// directory walk) -- a raw plaintext block written before encryption was ever enabled for this
+    /// namespace is invisible to the marker write/check added above, and stays detectable only
+    /// reactively, per read, exactly as before this round.
+    @Test
+    void createAll_stillRefusesLegacyPlaintextBlock_perRead_onDhtTier_whenDiskUnavailable() throws IOException {
+        var brokenDiskPath = tempDir.resolve("vault-disk-unavailable-legacy");
+
+        Files.writeString(brokenDiskPath, "a plain file here forces LocalDiskTier construction to fail");
+
+        var dhtClient = new InMemoryDHTClient();
+        var legacyBlockId = BlockId.blockId(PLAINTEXT).unwrap();
+
+        // Seeds a RAW plaintext block directly into the DHT store, exactly as a pre-#253 unencrypted
+        // boot would have left it -- bypassing the tier entirely, mirroring `seedRawPlaintextBlock`'s
+        // disk-side technique. No marker exists yet, so this is the "empty/fresh" case as far as the
+        // new marker check is concerned.
+        dhtClient.put(INSTANCE + "-blocks/" + legacyBlockId.hexString(), PLAINTEXT)
+                 .await()
+                 .onFailure(cause -> fail("seeding a raw plaintext DHT block failed: " + cause.message()));
+
+        var seeded = createAllOrFail(Map.of(INSTANCE, storageConfigAt(brokenDiskPath, true)),
+                                     Option.some(dhtClient),
+                                     Option.some(singleKeyRing("key-1")));
+
+        seeded.get(INSTANCE)
+              .instance()
+              .get(legacyBlockId)
+              .await()
+              .onSuccess(_ -> fail("a raw plaintext block predating encryption must not decrypt or pass through "
+                                   + "silently just because a later boot enabled encryption over this DHT namespace"))
+              .onFailure(cause -> assertThat(cause).isInstanceOf(EncryptionError.LegacyPlaintextBlock.class));
+    }
+
     /// In-memory `DHTClient` stub backed by a `ConcurrentHashMap`, plus a raw-value accessor so a
     /// test can read what the DHT tier actually stored without decrypting through it. Mirrors
     /// `StorageMaintenanceWiringTest.InMemoryDHTClient` -- duplicated for the same reason recorded
