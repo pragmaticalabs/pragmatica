@@ -589,21 +589,40 @@ Two backends are supported: `smtp` (direct SMTP) and `http` (vendor API).
 
 #### SMTP Backend
 
-Nested under `[notification.smtp]`:
+`smtpConfig` is declared `Option<SmtpConfig>` — the binder derives its section from the
+component name (camelCase → snake_case), so it reads `[notification.smtp_config]`, not
+`[notification.smtp]` (#671).
+
+Nested under `[notification.smtp_config]`. `SmtpConfig` has convenience factory methods
+with defaults (`587`/`STARTTLS`/`10s`/`30s`), but the binder only calls a factory whose
+parameters match the record's constructor exactly — none of `SmtpConfig`'s overloads do — so
+it always falls back to the constructor, which requires every field below. Unlike
+`RetryConfig`, `SmtpConfig` has no static `DEFAULT` instance for the binder's per-field
+fallback to read from, so **all of these fields must currently be set explicitly** when
+`[notification.smtp_config]` is present, even though the "Default" column shows the value the
+factory methods would otherwise apply:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `host` | `String` | required | SMTP server hostname |
-| `port` | `int` | `587` | SMTP server port |
-| `tls_mode` | `SmtpTlsMode` | `STARTTLS` | TLS mode: `NONE`, `STARTTLS`, `IMPLICIT` |
-| `auth.username` | `String` (optional, nested) | none | AUTH PLAIN username — under `[notification.smtp.auth]` |
-| `auth.password` | `String` (optional, nested) | none | AUTH PLAIN password — under `[notification.smtp.auth]` |
-| `connect_timeout` | duration | `10s` | TCP connection timeout |
-| `command_timeout` | duration | `30s` | SMTP command timeout |
+| `port` | `int` | required — `587` not yet reachable via the binder | SMTP server port |
+| `tls_mode` | `SmtpTlsMode` | required — `STARTTLS` not yet reachable via the binder | TLS mode: `NONE`, `STARTTLS`, `IMPLICIT` |
+| `auth.username` | `String` (optional, nested) | none | AUTH PLAIN username — under `[notification.smtp_config.auth]` |
+| `auth.password` | `String` (optional, nested) | none | AUTH PLAIN password — under `[notification.smtp_config.auth]` |
+| `connect_timeout` | duration | required — `10s` not yet reachable via the binder | TCP connection timeout |
+| `command_timeout` | duration | required — `30s` not yet reachable via the binder | SMTP command timeout |
+
+Omitting any of `port`/`tls_mode`/`connect_timeout`/`command_timeout` does not fail with a
+message naming the missing field — the whole `[notification.smtp_config]` bind fails with a
+`Config section not found: NotificationConfig.smtpConfig` error instead, even though the
+section is present (binder mechanism; tracked as a #671 follow-up, not fixed in this change).
 
 #### HTTP Vendor Backend
 
-Nested under `[notification.http]`:
+`httpConfig` is declared `Option<HttpEmailConfig>`, so for the same reason it reads
+`[notification.http_config]`, not `[notification.http]` (#671).
+
+Nested under `[notification.http_config]`:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -614,13 +633,17 @@ Nested under `[notification.http]`:
 
 #### Retry Configuration
 
-Nested under `[notification.retry]`:
+`retryConfig` is declared `Option<RetryConfig>`, so it reads `[notification.retry_config]`,
+not `[notification.retry]` (#671). The delay fields bind as `TimeSpan` (duration-string
+values like `"500ms"` or `"2s"`, or a bare number of seconds), not a raw millisecond `long`.
+
+Nested under `[notification.retry_config]`:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `max_attempts` | `int` | `3` | Maximum delivery attempts |
-| `initial_delay_ms` | `long` | `1000` | Initial retry delay in milliseconds |
-| `max_delay_ms` | `long` | `30000` | Maximum retry delay in milliseconds |
+| `initial_delay` | duration | `1s` | Initial retry delay |
+| `max_delay` | duration | `30s` | Maximum retry delay |
 | `backoff_multiplier` | `double` | `2.0` | Exponential backoff multiplier |
 
 ### API
@@ -670,16 +693,18 @@ sender.send(notification)
 [notification]
 backend = "smtp"
 
-[notification.smtp]
+[notification.smtp_config]
 host = "smtp.example.com"
 port = 587
 tls_mode = "STARTTLS"
+connect_timeout = "10s"
+command_timeout = "30s"
 
-[notification.smtp.auth]
+[notification.smtp_config.auth]
 username = "noreply@example.com"
 password = "${secrets:smtp/password}"
 
-[notification.retry]
+[notification.retry_config]
 max_attempts = 3
 ```
 
@@ -688,14 +713,14 @@ max_attempts = 3
 [notification]
 backend = "http"
 
-[notification.http]
+[notification.http_config]
 provider_hint = "sendgrid"
 api_key = "${secrets:sendgrid/api-key}"
 from_address = "noreply@example.com"
 
-[notification.retry]
+[notification.retry_config]
 max_attempts = 5
-initial_delay_ms = 2000
+initial_delay = "2s"
 ```
 
 **Mailgun (HTTP vendor):**
@@ -703,7 +728,7 @@ initial_delay_ms = 2000
 [notification]
 backend = "http"
 
-[notification.http]
+[notification.http_config]
 provider_hint = "mailgun"
 api_key = "${secrets:mailgun/api-key}"
 ```
