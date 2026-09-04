@@ -13,6 +13,7 @@ import java.util.function.Supplier;
 import java.util.stream.Stream;
 
 import org.pragmatica.aether.api.ManagementApiResponses.StreamReplicasResponse;
+import org.pragmatica.aether.api.ManagementServerError;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.ReadPreference;
@@ -55,6 +56,9 @@ public final class StreamApiRoutes implements RouteSource {
     private static final Cause STREAM_NOT_FOUND = Causes.cause("Stream not found");
     private static final Cause GROUP_NOT_FOUND = Causes.cause("Consumer group not found");
     private static final int DEFAULT_PARTITIONS = 4;
+    /// #524: pre-fix hardwired publish target, preserved as the explicit default for an omitted
+    /// `partition` field so existing callers see unchanged behavior.
+    private static final int DEFAULT_PUBLISH_PARTITION = 0;
 
     private static final RetentionPolicy MANAGEMENT_API_RETENTION = RetentionPolicy.retentionPolicy(10_000,
                                                                                                     4 * 1024 * 1024L,
@@ -129,7 +133,11 @@ public final class StreamApiRoutes implements RouteSource {
         }
     }
 
-    public record PublishRequest(String data) {}
+    /// `partition` is optional (absent/`null` on the wire keeps the pre-#524 default: partition 0).
+    /// Management-API publish writes UNTYPED bytes — there is no event class to read an
+    /// `@PartitionKey` from, so unlike the app publish path (#507) an explicit partition here is the
+    /// operator choosing a target directly, never key-based routing.
+    public record PublishRequest(String data, Integer partition) {}
 
     public record PublishResponse(String address, long offset) {}
 
@@ -603,9 +611,11 @@ public final class StreamApiRoutes implements RouteSource {
                      .async();
     }
 
-    /// Owner-routed publish to partition 0. When this node is metadata-only (#265) the write is
-    /// forwarded to the partition owner via [StreamWriteRouter] instead of failing PARTITION_NOT_LOCAL
-    /// on a local append; an owner node appends locally (and awaits the min-sync barrier).
+    /// Owner-routed publish to an explicit `partition` (#524: default 0 — unchanged from the earlier
+    /// hardwired behavior — when the request omits it). When this node is metadata-only (#265) the
+    /// write is forwarded to the partition owner via [StreamWriteRouter] instead of failing
+    /// PARTITION_NOT_LOCAL on a local append; an owner node appends locally (and awaits the min-sync
+    /// barrier).
     ///
     /// Engine key via [StreamManager#engineKey], not `addr.asString()`: a `system`-namespace address
     /// must resolve to the bare name the engine keys operator-created flat streams by, or this publish
@@ -613,12 +623,29 @@ public final class StreamApiRoutes implements RouteSource {
     private Promise<Long> publishOne(ResourceAddress addr, PublishRequest request) {
         var streamName = StreamManager.engineKey(addr);
         var payload = decodePayload(request.data());
+        var partition = Option.option(request.partition()).or(DEFAULT_PUBLISH_PARTITION);
 
         return ensureStreamExists(streamName).async()
+                                 .flatMap(_ -> validatePartition(streamName, partition).async())
                                  .flatMap(_ -> streamWriteRouter().publish(streamName,
-                                                                           0,
+                                                                           partition,
                                                                            payload,
                                                                            System.currentTimeMillis()));
+    }
+
+    /// #524 guard: an out-of-range `partition` on a Management-API publish must fail 4xx naming the
+    /// valid range — never a silent write to partition 0, never a 500. Reads the LOCAL materialized
+    /// partition count (same source [#ensureStreamExists] just guaranteed is present); falls back to
+    /// the management default only in the pathological case where materialization was swallowed by
+    /// `ensureStreamExists`'s `.recover`, so this check itself never 500s.
+    private Result<org.pragmatica.lang.Unit> validatePartition(String streamName, int partition) {
+        var partitionCount = streamManager().streamInfo(streamName)
+                                          .map(StreamPartitionManager.StreamInfo::partitions)
+                                          .or(DEFAULT_PARTITIONS);
+
+        return partition >= 0 && partition < partitionCount
+               ? Result.unitResult()
+               : new ManagementServerError.InvalidPartition(partition, partitionCount).result();
     }
 
     /// Adapter boundary: JSON `data` may legally be absent (null on the wire). Wrap into Option,

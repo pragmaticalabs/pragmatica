@@ -75,7 +75,7 @@ class StreamRoutesEngineKeyRoundTripTest {
             apiRoutes.publishEvent(StreamManager.SYSTEM_NAMESPACE,
                                    STREAM_NAME,
                                    VERSION,
-                                   new StreamApiRoutes.PublishRequest("payload"))
+                                   new StreamApiRoutes.PublishRequest("payload", null))
                      .await()
                      .onFailure(cause -> fail("publish against the system-namespace address must resolve to the "
                                               + "stream CREATE minted: " + cause))

@@ -1605,15 +1605,22 @@ on: partitions no node can consume because the declaring slice is `ACTIVE` nowhe
 
 See [Management API — Declarative Stream Consumers](management-api.md#declarative-stream-consumers).
 
-### `aether streams publish <name-or-address> <message>`
+### `aether streams publish <name-or-address> <message> [--partition N]`
 
 Publish a text message to a stream. The message is base64-encoded automatically. Bare name
 defaults to `system:<name>:1.0.0`; a `namespace:stream:version` address targets any stream.
 Wraps `POST /api/v1/streams/{namespace}/{stream}/{version}/publish`.
 
+`--partition N` targets a specific partition; omitted, it defaults to **partition 0** (unchanged
+behavior). This command does no key-based routing — Management-API publish writes untyped bytes
+with no event to extract an `@PartitionKey` from (unlike an app publish, #507), so `--partition`
+is a direct, deliberate target choice, not a routing key. Naming a partition outside the stream's
+declared range fails with `400 Bad Request` naming the valid range.
+
 ```bash
 aether streams publish my-events "Hello, world!"
 aether streams publish orders:order-events:1.0.0 "Hello, world!"
+aether streams publish my-events "Hello, world!" --partition 2
 ```
 
 ### `aether streams read <name-or-address> <partition>`

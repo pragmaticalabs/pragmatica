@@ -5267,6 +5267,15 @@ POST /api/v1/streams/{namespace}/{stream}/{version}/publish-batch
 **Auth:** OPERATOR_AND_ABOVE. Publishes one event (or a batch). **Writes to `system:*` streams
 are rejected with `405 Method Not Allowed`** — see below.
 
+Body: `{"data": "<base64>", "partition": <int>}`. `partition` is optional; omitted, it defaults
+to **partition 0** (unchanged pre-#524 behavior). **This path does no key-based routing** — unlike
+an app publish (#507), which extracts `@PartitionKey` from a typed event, Management-API publish
+writes untyped bytes with no event class to read a key from, so an explicit `partition` here is
+the operator naming a target directly. A `partition` outside `[0, partitionCount)` for the stream
+is rejected with `400 Bad Request`, naming the valid range — never a silent write to partition 0,
+never `500`. `[mechanism: ManagementServerError.InvalidPartition, ProblemResponses HttpStatusAware
+dispatch]`
+
 ### Delete Stream Version
 
 ```

@@ -48,6 +48,21 @@ public sealed interface ManagementServerError extends Cause, HttpStatusAware {
         }
     }
 
+    /// #524: an explicit `partition` on a Management-API publish named a partition the stream does not
+    /// declare. Names the valid range rather than silently writing to partition 0 or 500ing.
+    record InvalidPartition(int requested, int partitionCount) implements ManagementServerError {
+        @Override
+        public String message() {
+            return "Partition %d is out of range; this stream has partitions [0, %d)".formatted(requested,
+                                                                                                partitionCount);
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.BAD_REQUEST;
+        }
+    }
+
     record NotLeader(String leaderId) implements ManagementServerError {
         @Override
         public String message() {
