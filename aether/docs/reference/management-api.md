@@ -745,7 +745,7 @@ Publish (apply) a blueprint definition. The request body is the raw blueprint YA
   "targetInstances": 3,
   "activeInstances": 0,
   "failedInstances": 0,
-  "statusUrl": "/api/blueprints/status/my-blueprint"
+  "statusUrl": "/api/v1/blueprints/status/my-blueprint"
 }
 ```
 
@@ -796,7 +796,7 @@ is counted from the same replicated deployment map that backs
 `GET /api/v1/slices/status`, so the two endpoints cannot disagree about whether a
 deployment finished.
 
-**Response:**
+**Response — deployed (happy path):**
 ```json
 {
   "id": "my-blueprint",
@@ -809,17 +809,49 @@ deployment finished.
       "failedInstances": 0,
       "status": "DEPLOYED"
     }
-  ]
+  ],
+  "cause": "",
+  "failingSlices": [],
+  "timestampMs": 0
 }
 ```
 
-Per-slice status values: `PENDING`, `DEPLOYING`, `DEPLOYED`, `SCALING_DOWN`, `FAILED`. Overall: `DEPLOYED`, `PENDING`, `IN_PROGRESS`, `PARTIAL`, `FAILED`.
+`cause`, `failingSlices`, and `timestampMs` are present on every response, not only a failing one
+`[mechanism: BlueprintStatusResponse is a record — Java records serialize every component, so
+these three fields can never be omitted; the happy-path construction site supplies the degenerate
+defaults shown above rather than leaving them out]`. Treat a present-but-empty `cause`/
+`failingSlices` and a `timestampMs` of `0` as "no terminal failure recorded," not as missing data.
+
+**Response — terminal failure (blueprint removed from the KV store):**
+```json
+{
+  "id": "org.example:my-app:1.0.0",
+  "overallStatus": "FAILED",
+  "slices": [],
+  "cause": "instance allocation failed: insufficient capacity for org.example:my-slice:1.0.0",
+  "failingSlices": ["org.example:my-slice:1.0.0"],
+  "timestampMs": 1735689600000
+}
+```
+
+Once a blueprint's key leaves the KV store — `ALL_OR_NOTHING` rollback, or a `BEST_EFFORT` deploy
+left permanently failed — the deployment map has nothing left to report per-slice, so `slices` is
+empty. This is the durable terminal outcome instead: `overallStatus` is `FAILED` or `ROLLED_BACK`,
+`cause` is the human-readable failure reason, `failingSlices` lists the full artifact coordinates
+(`group:artifact:version`, never a bare slice id) of every slice that failed, and `timestampMs` is
+the epoch-millis time the outcome was recorded. Before this outcome key existed, the same request
+answered `404` with no way to learn what happened
+`[design intent — unverified: the terminal-outcome-over-404 behavior is exercised only by
+unit-level tests (`BlueprintDeployStatusTest`, `BlueprintStatusAggregationTest`), not a live
+multi-node failure-injection run — #759]`.
+
+Per-slice status values: `PENDING`, `DEPLOYING`, `DEPLOYED`, `SCALING_DOWN`, `FAILED`. Overall: `DEPLOYED`, `PENDING`, `IN_PROGRESS`, `PARTIAL`, `FAILED`, `ROLLED_BACK`.
 
 `failedInstances` counts `SliceState.FAILED` entries still present in the deployment map for that
 slice's artifact (e.g. a `BEST_EFFORT` deploy, or a query landing before `ALL_OR_NOTHING` rollback
 cleanup removes the entry). Whenever it is non-zero the slice's `status` is `FAILED` regardless of
 `activeInstances`, and `overallStatus` is `FAILED` if **any** slice is `FAILED` — this takes
-priority over every other bucket, mirroring `POST /api/blueprints/deploy`'s `degraded` precedence.
+priority over every other bucket, mirroring `POST /api/v1/blueprints/deploy`'s `degraded` precedence.
 
 ### DELETE /api/v1/blueprints/{id}
 
@@ -852,7 +884,7 @@ Deploy a blueprint from an artifact in the cluster's artifact repository.
   "targetInstances": 5,
   "activeInstances": 0,
   "failedInstances": 0,
-  "statusUrl": "/api/blueprints/status/org.example%3Amy-app%3A1.0.0"
+  "statusUrl": "/api/v1/blueprints/status/org.example%3Amy-app%3A1.0.0"
 }
 ```
 
@@ -871,7 +903,7 @@ checked in this priority order:
 
 `targetInstances`/`activeInstances`/`failedInstances` are the same live snapshot used to derive
 `status`. `statusUrl` (`{id}` percent-encoded, since blueprint ids are artifact-shaped) always
-points at [`GET /api/blueprints/status/{id}`](#get-apiblueprintsstatusid) — this is the endpoint
+points at [`GET /api/v1/blueprints/status/{id}`](#get-apiv1blueprintsstatusid) — this is the endpoint
 the CLI's `aether blueprints deploy --wait` polls (`DeploymentWait`) until it reports `DEPLOYED`.
 Under the default `ALL_OR_NOTHING` mode a deterministic failure rolls back the whole blueprint and
 removes its KV entry outright, so the `deployed`/`degraded`/`pending` status this call derived from
@@ -951,7 +983,7 @@ CLI: `aether blueprints publish <group:artifact:version>` appends the
   "targetInstances": 5,
   "activeInstances": 0,
   "failedInstances": 0,
-  "statusUrl": "/api/blueprints/status/org.example%3Amy-app%3A1.0.0"
+  "statusUrl": "/api/v1/blueprints/status/org.example%3Amy-app%3A1.0.0"
 }
 ```
 
