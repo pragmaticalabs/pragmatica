@@ -290,7 +290,6 @@ class DashboardPollingGateContractTest {
                                 + "the other's due-ness, which is exactly the bug being fixed")
                   .contains("_lastUnknownRetryAt: 0,")
                   .contains("_lastHealthProbeRetryAt: 0,");
-
         var unknownStart = clusterJs.indexOf("unknownRetryDue() {");
         var unknownEnd = clusterJs.indexOf("},", unknownStart);
         var healthProbeStart = clusterJs.indexOf("healthProbeRetryDue() {");
@@ -298,10 +297,10 @@ class DashboardPollingGateContractTest {
 
         assertThat(unknownStart).as("unknownRetryDue() must exist").isNotNegative();
         assertThat(healthProbeStart).as("healthProbeRetryDue() must exist as a genuinely separate method, "
-                                       + "not a renamed unknownRetryDue()").isNotNegative();
+                                       + "not a renamed unknownRetryDue()")
+                  .isNotNegative();
         assertThat(healthProbeStart).as("the two methods must be textually distinct declarations")
                   .isNotEqualTo(unknownStart);
-
         var unknownBody = clusterJs.substring(unknownStart, unknownEnd);
         var healthProbeBody = clusterJs.substring(healthProbeStart, healthProbeEnd);
 
@@ -316,8 +315,8 @@ class DashboardPollingGateContractTest {
                                       + "starvation this fix removes")
                   .contains("_lastHealthProbeRetryAt")
                   .doesNotContain("_lastUnknownRetryAt");
-
         var requestsJs = resource("/dashboard/js/stores/requests.js").unwrap();
+
         assertThat(requestsJs).as("the health re-probe throttle is exclusive to app.js's primary timer — it "
                                  + "must never leak into requests.js's data-poll gate, or that data poller "
                                  + "would start starving the health re-probe again from a different call site")
@@ -334,7 +333,6 @@ class DashboardPollingGateContractTest {
 
         assertThat(pollTimerStart).as("the primary poll timer must exist").isNotNegative();
         assertThat(pollTimerEnd).as("the primary poll timer's body must be boundable").isGreaterThan(pollTimerStart);
-
         var body = appJs.substring(pollTimerStart, pollTimerEnd);
         var checkHealthCallIndex = body.indexOf("self.checkHealth();");
         var healthProbeGateIndex = body.indexOf("cluster.healthProbeRetryDue()");
@@ -355,10 +353,11 @@ class DashboardPollingGateContractTest {
                                         + "call, guarding only pollStatus()/events/alerts below it — never the "
                                         + "health re-probe above it, which is the whole point of the split")
                   .isGreaterThan(checkHealthCallIndex);
-        assertThat(occurrences(appJs, "cluster.healthProbeRetryDue()")).as("exactly one call site in the whole "
-                                                                          + "file — the primary timer's checkHealth() gate. If the secondary timer or "
-                                                                          + "requests.js ever called this too, it would reintroduce exactly the "
-                                                                          + "starvation this throttle exists to prevent")
+        assertThat(occurrences(appJs,
+                               "cluster.healthProbeRetryDue()")).as("exactly one call site in the whole "
+                                                                   + "file — the primary timer's checkHealth() gate. If the secondary timer or "
+                                                                   + "requests.js ever called this too, it would reintroduce exactly the "
+                                                                   + "starvation this throttle exists to prevent")
                   .isEqualTo(1);
     }
 
