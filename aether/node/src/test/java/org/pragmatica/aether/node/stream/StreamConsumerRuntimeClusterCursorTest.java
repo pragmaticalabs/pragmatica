@@ -148,12 +148,12 @@ class StreamConsumerRuntimeClusterCursorTest {
     }
 
     /// #654 round 2: the count reaches 1 IMMEDIATELY when `close()` returns — the bound expiring with
-    /// `pending` still unresolved is what counts it, not the later `pending.fail(...)`. A commit already
-    /// marked this way that goes on to resolve with a genuine failure is a second, distinct event on the
-    /// same node-wide counter: a deliberate simplification (the counter counts events, not deduplicated
-    /// incidents), not a decrement/reset case — the `succeed`-after-bound test below is the guarantee
-    /// that actually matters (no rollback), so this test only needs to show the count does not go
-    /// backwards or vanish once the late failure arrives.
+    /// `pending` still unresolved is what counts it, not the later `pending.fail(...)`.
+    /// #654 round 3: a commit already marked this way that goes on to resolve with a genuine failure is
+    /// the SAME incident, not a second one — [ConsumerRuntimeState#recordIfRecovered] skips its own
+    /// counter increment once [ConsumerState#wasUnsettledAtShutdownBound] is set, so the count stays at
+    /// 1 even after the late failure lands; the `succeed`-after-bound test below pins the no-rollback
+    /// guarantee for a late SUCCESS.
     @Test
     void close_countsUnsettledCommit_whenConsensusPublishNeverSettlesWithinBound() throws InterruptedException {
         Promise<Unit> pending = Promise.promise();
@@ -178,11 +178,11 @@ class StreamConsumerRuntimeClusterCursorTest {
                   .isEqualTo(1L);
 
         pending.fail(CheckpointRejected.INSTANCE);
+        Thread.sleep(200);
 
-        awaitCount(runtime::cursorCommitFailureCount, 2L);
         assertThat(runtime.cursorCommitFailureCount())
-                .describedAs("the promise later resolving with a genuine failure is counted again, on top of the bound-expiry mark, not instead of it")
-                .isEqualTo(2L);
+                .describedAs("the promise later resolving with a genuine failure is the same incident already counted at the bound, not a second one")
+                .isEqualTo(1L);
     }
 
     /// #654 round 2: the ruling's actual guarantee — a commit marked unsettled at the shutdown bound

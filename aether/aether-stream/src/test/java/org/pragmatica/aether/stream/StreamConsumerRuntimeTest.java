@@ -495,18 +495,6 @@ class StreamConsumerRuntimeTest {
             };
         }
 
-        /// `onFailure`/`onSuccess` attached to a still-unresolved [Promise] fire through
-        /// [org.pragmatica.lang.Promise]'s virtual-thread event dispatch once it resolves, not
-        /// synchronously in the resolving thread — so a late resolution's side effect must be
-        /// polled for, not asserted immediately after `.fail(...)`/`.succeed(...)`.
-        private static void awaitCount(java.util.function.LongSupplier actual, long expected) throws InterruptedException {
-            var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
-
-            while (actual.getAsLong() != expected && System.nanoTime() < deadline) {
-                Thread.sleep(10);
-            }
-        }
-
         @Test
         void close_countsFailure_whenFinalCommitFailsSynchronously_andDoesNotWaitOutTheBound() throws Exception {
             createTestStream("orders");
@@ -534,11 +522,13 @@ class StreamConsumerRuntimeTest {
         /// #654 round 2: the documented contract for [ConsumerRuntimeState#awaitFinalCursorCommits] is
         /// that a commit still unresolved when the shutdown bound expires counts as failed for THIS
         /// shutdown immediately — not only if/when it eventually resolves. The count therefore reaches
-        /// 1 the instant `close()` returns, before `pending` is ever settled. A commit already marked
-        /// this way that goes on to resolve with a genuine failure is a second, distinct event on the
-        /// same node-wide counter ([ConsumerRuntimeState#cursorCommitFailureCount] is an event count,
-        /// not a deduplicated-incident count) — not a case this test needs to police further; the
-        /// no-rollback guarantee that matters is pinned by the `succeed`-after-bound test below.
+        /// 1 the instant `close()` returns, before `pending` is ever settled.
+        /// #654 round 3: a commit already marked unsettled at the bound that goes on to resolve with a
+        /// genuine failure is the SAME incident, not a second one —
+        /// [ConsumerRuntimeState#onCursorCommitFailure] skips its own counter increment once
+        /// [ConsumerState#wasUnsettledAtShutdownBound] is set, so the count stays at 1 even after the
+        /// late failure lands; the no-rollback guarantee for a late SUCCESS is pinned by the
+        /// `succeed`-after-bound test below.
         @Test
         void close_countsUnsettledCommit_whenFinalCommitNeverSettlesWithinBound() throws InterruptedException {
             createTestStream("orders");
@@ -564,11 +554,11 @@ class StreamConsumerRuntimeTest {
                       .isEqualTo(1L);
 
             pending.fail(StreamError.General.BUFFER_EMPTY);
+            Thread.sleep(200);
 
-            awaitCount(observedRuntime::cursorCommitFailureCount, 2L);
             assertThat(observedRuntime.cursorCommitFailureCount())
-                      .describedAs("the promise later resolving with a genuine failure is counted again, on top of the bound-expiry mark, not instead of it")
-                      .isEqualTo(2L);
+                      .describedAs("the promise later resolving with a genuine failure is the same incident already counted at the bound, not a second one")
+                      .isEqualTo(1L);
         }
 
         /// #654 round 2: the ruling's actual guarantee — a commit marked unsettled at the shutdown
