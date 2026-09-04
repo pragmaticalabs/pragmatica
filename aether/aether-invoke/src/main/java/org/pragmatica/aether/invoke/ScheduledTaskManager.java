@@ -6,12 +6,14 @@ package org.pragmatica.aether.invoke;
 
 import java.time.Instant;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.LongSupplier;
 
 import org.pragmatica.aether.invoke.ScheduledTaskRegistry.ScheduledTask;
 import org.pragmatica.aether.slice.ExecutionMode;
@@ -29,6 +31,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Verify;
@@ -59,6 +62,7 @@ public interface ScheduledTaskManager {
                                                      SliceInvoker invoker,
                                                      NodeId self,
                                                      Consumer<KVCommand<AetherKey>> stateWriter,
+                                                     Function<ScheduledTaskStateKey, Option<ScheduledTaskStateValue>> stateReader,
                                                      LeaderManager leaderManager) {
         var ctxHolder = new AtomicReference<Context>();
         Function<Fsm<SchedulerState, ClusterFsmEvent>, SchedulerState> initialStateFactory = f -> buildContextAndInitialState(ctxHolder,
@@ -67,6 +71,7 @@ public interface ScheduledTaskManager {
                                                                                                                               invoker,
                                                                                                                               self,
                                                                                                                               stateWriter,
+                                                                                                                              stateReader,
                                                                                                                               leaderManager);
         var fsm = Fsm.fsm("scheduled-task", self.id(), initialStateFactory);
         var ctx = ctxHolder.get();
@@ -82,8 +87,9 @@ public interface ScheduledTaskManager {
                                                               SliceInvoker invoker,
                                                               NodeId self,
                                                               Consumer<KVCommand<AetherKey>> stateWriter,
+                                                              Function<ScheduledTaskStateKey, Option<ScheduledTaskStateValue>> stateReader,
                                                               LeaderManager leaderManager) {
-        var ctx = new Context(fsm, registry, invoker, self, stateWriter, leaderManager);
+        var ctx = new Context(fsm, registry, invoker, self, stateWriter, stateReader, leaderManager);
 
         ctxHolder.set(ctx);
 
@@ -96,8 +102,10 @@ public interface ScheduledTaskManager {
         final SliceInvoker invoker;
         final NodeId self;
         final Consumer<KVCommand<AetherKey>> stateWriter;
+        final Function<ScheduledTaskStateKey, Option<ScheduledTaskStateValue>> stateReader;
         final LeaderManager leaderManager;
         final Map<ScheduledTaskKey, ScheduledFuture<?>> activeTimers = new ConcurrentHashMap<>();
+        final Set<ScheduledTaskKey> inFlight = ConcurrentHashMap.newKeySet();
         final AtomicLong quorumSequence = new AtomicLong(0);
         final Dormant dormant;
         final Following following;
@@ -109,12 +117,14 @@ public interface ScheduledTaskManager {
                 SliceInvoker invoker,
                 NodeId self,
                 Consumer<KVCommand<AetherKey>> stateWriter,
+                Function<ScheduledTaskStateKey, Option<ScheduledTaskStateValue>> stateReader,
                 LeaderManager leaderManager) {
             this.fsm = fsm;
             this.registry = registry;
             this.invoker = invoker;
             this.self = self;
             this.stateWriter = stateWriter;
+            this.stateReader = stateReader;
             this.leaderManager = leaderManager;
             this.dormant = new Dormant(this);
             this.following = new Following(this);
@@ -294,10 +304,40 @@ public interface ScheduledTaskManager {
                                                 ScheduledTaskKey key,
                                                 ScheduledTask task,
                                                 TimeSpan interval) {
-            var future = SharedScheduler.scheduleAtFixedRate(() -> executeTask(ctx, task), interval);
+            var future = SharedScheduler.scheduleAtFixedRate(() -> fireFixedRate(ctx, key, task, interval), interval);
 
             replaceTimer(ctx, key, future);
             log.info("Started scheduled task {} with interval {}", key, task.interval());
+        }
+
+        /// Fixed-rate ticks are wall-clock driven ([SharedScheduler#scheduleAtFixedRate] does not wait
+        /// for the prior invocation to settle), so a slow invocation can still be running when the next
+        /// tick fires. `ctx.inFlight` is an atomic try-claim guard: a tick that finds the key already
+        /// claimed skips this fire (recording the skip in state) instead of running concurrently with
+        /// the in-progress invocation.
+        private static void fireFixedRate(Context ctx, ScheduledTaskKey key, ScheduledTask task, TimeSpan interval) {
+            if (!ctx.inFlight.add(key)) {
+                recordSkippedOverlap(ctx, task);
+
+                return;
+            }
+
+            LongSupplier nextFireAt = () -> System.currentTimeMillis() + interval.millis();
+
+            executeTask(ctx, task, nextFireAt).onResultRun(() -> ctx.inFlight.remove(key));
+        }
+
+        private static void recordSkippedOverlap(Context ctx, ScheduledTask task) {
+            var key = ScheduledTaskStateKey.scheduledTaskStateKey(task.configSection(),
+                                                                  task.artifact(),
+                                                                  task.methodName());
+            var prior = ctx.stateReader.apply(key);
+            var value = ScheduledTaskStateValue.skippedOverlapState(prior, System.currentTimeMillis());
+
+            ctx.stateWriter.accept(new KVCommand.Put<>(key, value));
+            log.warn("Scheduled task {}.{} skipped fire: previous execution still in flight",
+                     task.configSection(),
+                     task.methodName().name());
         }
 
         private static void startCronTimer(Context ctx, ScheduledTaskKey key, ScheduledTask task) {
@@ -331,48 +371,81 @@ public interface ScheduledTaskManager {
             log.info("Scheduled cron task {} next fire in {}ms", key, delay.millis());
         }
 
+        /// Cron re-schedules only AFTER the invocation settles (via [Promise#onResultRun]) — one-shot
+        /// timers cannot overlap themselves by construction, so cron needs no `inFlight` guard, only
+        /// this ordering fix (was: reschedule immediately after launch, racing a slow invocation against
+        /// its own next fire).
         private static void executeCronTask(Context ctx,
                                             ScheduledTaskKey key,
                                             ScheduledTask task,
                                             CronExpression cron) {
-            executeTask(ctx, task);
-            if (ctx.activeTimers.containsKey(key)) {
-                scheduleNextCronFire(ctx, key, task, cron);
-            }
+            LongSupplier nextFireAt = () -> nextCronFireAt(cron);
+
+            executeTask(ctx, task, nextFireAt).onResultRun(() -> {
+                if (ctx.activeTimers.containsKey(key)) {
+                    scheduleNextCronFire(ctx, key, task, cron);
+                }
+            });
         }
 
-        private static void executeTask(Context ctx, ScheduledTask task) {
-            ctx.invoker.invoke(task.artifact(),
-                               task.methodName(),
-                               Unit.unit())
-                       .onSuccess(_ -> writeSuccessState(ctx, task))
-                       .onFailure(cause -> handleTaskFailure(ctx,
-                                                             task,
-                                                             cause.message()));
+        /// Computed lazily, AFTER invoke settles: computing this eagerly (before invoke) would report
+        /// the WRONG next match whenever the invocation runs longer than the interval between cron
+        /// matches. `0` on parse failure mirrors the pre-existing warn-only defense-in-depth fallback in
+        /// [#startCronTimer] — activation-time validation ([NodeDeploymentState]) is the real gate.
+        private static long nextCronFireAt(CronExpression cron) {
+            var now = Instant.now();
+
+            return cron.delayUntilNext(now)
+                       .map(delay -> now.toEpochMilli() + delay.millis())
+                       .or(0L);
         }
 
-        private static void handleTaskFailure(Context ctx, ScheduledTask task, String message) {
+        private static Promise<Unit> executeTask(Context ctx, ScheduledTask task, LongSupplier nextFireAtSupplier) {
+            return ctx.invoker.invoke(task.artifact(),
+                                      task.methodName(),
+                                      Unit.unit())
+                              .onSuccess(_ -> writeSuccessState(ctx,
+                                                                task,
+                                                                nextFireAtSupplier.getAsLong()))
+                              .onFailure(cause -> handleTaskFailure(ctx,
+                                                                    task,
+                                                                    cause.message(),
+                                                                    nextFireAtSupplier.getAsLong()));
+        }
+
+        private static void handleTaskFailure(Context ctx, ScheduledTask task, String message, long nextFireAt) {
             log.warn("Scheduled task {}.{} failed: {}",
                      task.configSection(),
                      task.methodName().name(),
                      message);
-            writeFailureState(ctx, task, message);
+            writeFailureState(ctx, task, message, nextFireAt);
         }
 
-        private static void writeSuccessState(Context ctx, ScheduledTask task) {
+        private static void writeSuccessState(Context ctx, ScheduledTask task, long nextFireAt) {
             var key = ScheduledTaskStateKey.scheduledTaskStateKey(task.configSection(),
                                                                   task.artifact(),
                                                                   task.methodName());
-            var value = ScheduledTaskStateValue.successState(0, 0);
+            var prior = ctx.stateReader.apply(key);
+            var priorTotal = prior.map(ScheduledTaskStateValue::totalExecutions).or(0);
+            var priorSkipped = prior.map(ScheduledTaskStateValue::skippedOverlaps).or(0);
+            var value = ScheduledTaskStateValue.successState(nextFireAt, priorTotal + 1, priorSkipped);
 
             ctx.stateWriter.accept(new KVCommand.Put<>(key, value));
         }
 
-        private static void writeFailureState(Context ctx, ScheduledTask task, String message) {
+        private static void writeFailureState(Context ctx, ScheduledTask task, String message, long nextFireAt) {
             var key = ScheduledTaskStateKey.scheduledTaskStateKey(task.configSection(),
                                                                   task.artifact(),
                                                                   task.methodName());
-            var value = ScheduledTaskStateValue.failureState(0, 1, 0, message);
+            var prior = ctx.stateReader.apply(key);
+            var priorFailures = prior.map(ScheduledTaskStateValue::consecutiveFailures).or(0);
+            var priorTotal = prior.map(ScheduledTaskStateValue::totalExecutions).or(0);
+            var priorSkipped = prior.map(ScheduledTaskStateValue::skippedOverlaps).or(0);
+            var value = ScheduledTaskStateValue.failureState(nextFireAt,
+                                                             priorFailures + 1,
+                                                             priorTotal,
+                                                             priorSkipped,
+                                                             message);
 
             ctx.stateWriter.accept(new KVCommand.Put<>(key, value));
         }

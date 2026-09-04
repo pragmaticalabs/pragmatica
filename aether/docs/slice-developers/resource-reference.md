@@ -1263,12 +1263,26 @@ The runtime tracks execution metrics for each scheduled task:
 | Metric | Description |
 |--------|-------------|
 | `lastExecutionAt` | Epoch millis of the most recent execution |
-| `nextFireAt` | Epoch millis of the next scheduled fire (cron tasks) |
-| `consecutiveFailures` | Number of consecutive failed executions (resets on success) |
+| `nextFireAt` | Epoch millis of the next scheduled fire — computed for both interval and cron tasks [verified: `ScheduledTaskManagerTest` — `fireFixedRate`/`fireCron` write a real `nextFireAt` on every fire, not a placeholder] |
+| `consecutiveFailures` | Number of consecutive failed executions; resets to `0` on the next success |
 | `totalExecutions` | Lifetime execution count |
+| `skippedOverlaps` | Count of fires skipped because the previous run of the same task was still in flight — fixed-rate tasks only; see Overlap Protection below |
 | `lastFailureMessage` | Error message from the most recent failure |
 
-Execution state is written to the KV-Store after each execution (fire-and-forget). Query via `GET /api/scheduled-tasks/{config}/{artifact}/{method}/state`.
+Execution state is written to the KV-Store after each execution via a read-modify-write against the prior state entry (fire-and-forget write, but the counters themselves are accumulated, not overwritten) [verified: `aether/aether-invoke/.../ScheduledTaskManagerTest.java` — `FireBehavior` nested class]. Query via `GET /api/scheduled-tasks/{config}/{artifact}/{method}/state`.
+
+### Overlap Protection
+
+- **Fixed-rate (`interval`) tasks skip a fire while the previous run of the same task is still executing**, rather than allowing concurrent overlapping runs. A skipped fire increments `skippedOverlaps` and does not touch `totalExecutions` or `consecutiveFailures` [verified: `ScheduledTaskManagerTest#fixedRate_overlappingFire_recordsSkipInsteadOfDoubleExecution`].
+- **Cron tasks re-schedule after the previous execution completes**, not after the fire is launched — so a slow execution delays the next cron fire rather than launching two runs concurrently; there is nothing to skip and `skippedOverlaps` never increments for cron tasks.
+- This is a fixed default (skip, not queue or run concurrently); there is no per-task configuration knob.
+
+### Schedule Validation
+
+The `interval`/`cron` string is **node-local configuration** (`ScheduleConfig`, resolved per node from its own config document), not something the blueprint DSL parser can see — blueprint validation happens strictly earlier and has no access to per-node config. The earliest point an invalid interval/cron string can be rejected is therefore **slice activation**, not blueprint validation.
+
+An invalid string (fails `CronExpression.parse` or `ScheduledTaskManager.IntervalParser.parse`) fails activation for that scheduled task before any KV write happens — the malformed schedule is never registered. The failure is observable the same way any other activation failure is: it surfaces as a WARNING-severity `DeploymentFailed` event (via the existing `ClusterEventAggregator.handleDeploymentFailed` path) naming the task, the offending string, and the parser's error message — no separate plumbing was added for this
+[verified: `NodeDeploymentStateScheduledTaskValidationTest`].
 
 ### Method Constraints
 

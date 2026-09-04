@@ -2497,6 +2497,7 @@ public interface AetherNode extends ManageableNode {
                                                                              sliceInvoker,
                                                                              config.self(),
                                                                              command -> clusterNode.apply(List.of(command)),
+                                                                             scheduledTaskStateRegistry::stateFor,
                                                                              clusterNode.leaderManager());
 
         resourceProviderSetup.spiProvider()

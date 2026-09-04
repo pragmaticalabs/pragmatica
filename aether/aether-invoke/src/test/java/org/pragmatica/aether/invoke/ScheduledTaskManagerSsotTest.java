@@ -49,6 +49,7 @@ class ScheduledTaskManagerSsotTest {
                                                              new StubSliceInvoker(new CopyOnWriteArrayList<>(), Option.none()),
                                                              self,
                                                              new CopyOnWriteArrayList<KVCommand<AetherKey>>()::add,
+                                                             _ -> Option.none(),
                                                              leaderManager);
     }
 

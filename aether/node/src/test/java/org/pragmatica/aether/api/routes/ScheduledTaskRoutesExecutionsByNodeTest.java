@@ -115,7 +115,7 @@ class ScheduledTaskRoutesExecutionsByNodeTest {
                                                                         artifact(ARTIFACT),
                                                                         new MethodName(METHOD));
             var executionAt = System.currentTimeMillis();
-            stateRegistry.put(stateKey, new ScheduledTaskStateValue(executionAt, 0, 0, 7, "", executionAt));
+            stateRegistry.put(stateKey, new ScheduledTaskStateValue(executionAt, 0, 0, 7, "", executionAt, 0));
 
             var routes = buildRoutes();
 

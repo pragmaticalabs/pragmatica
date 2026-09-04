@@ -4178,7 +4178,8 @@ List all registered scheduled tasks with active timer count and execution state.
       "lastExecutionAt": 1710345600000,
       "nextFireAt": 1710345900000,
       "consecutiveFailures": 0,
-      "totalExecutions": 42
+      "totalExecutions": 42,
+      "skippedOverlaps": 0
     }
   ],
   "activeTimers": 1
@@ -4256,6 +4257,7 @@ Get detailed execution state for a specific scheduled task.
   "nextFireAt": 1710345900000,
   "consecutiveFailures": 0,
   "totalExecutions": 42,
+  "skippedOverlaps": 0,
   "lastFailureMessage": "",
   "updatedAt": 1710345600000
 }

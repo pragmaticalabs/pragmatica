@@ -147,7 +147,8 @@ public final class ScheduledTaskRoutes implements RouteSource {
                              int consecutiveFailures,
                              int totalExecutions,
                              String lastFailureMessage,
-                             long updatedAt) {}
+                             long updatedAt,
+                             int skippedOverlaps) {}
 
     @Override
     public Stream<Route<?>> routes() {
@@ -312,7 +313,8 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                                                         ScheduledTaskInjectRequest req,
                                                                         long previousExecutionMs) {
         var priorTotal = priorState.map(ScheduledTaskStateValue::totalExecutions).or(0);
-        var value = ScheduledTaskStateValue.successState(0, priorTotal + 1);
+        var priorSkipped = priorState.map(ScheduledTaskStateValue::skippedOverlaps).or(0);
+        var value = ScheduledTaskStateValue.successState(0, priorTotal + 1, priorSkipped);
         KVCommand<AetherKey> command = new KVCommand.Put<>(stateKey, value);
 
         return nodeSupplier.get()
@@ -329,7 +331,8 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                         Cause cause) {
         var priorTotal = priorState.map(ScheduledTaskStateValue::totalExecutions).or(0);
         var priorFailures = priorState.map(ScheduledTaskStateValue::consecutiveFailures).or(0);
-        var value = ScheduledTaskStateValue.failureState(0, priorFailures + 1, priorTotal, cause.message());
+        var priorSkipped = priorState.map(ScheduledTaskStateValue::skippedOverlaps).or(0);
+        var value = ScheduledTaskStateValue.failureState(0, priorFailures + 1, priorTotal, priorSkipped, cause.message());
         KVCommand<AetherKey> command = new KVCommand.Put<>(stateKey, value);
 
         nodeSupplier.get().apply(List.of(command));
@@ -492,11 +495,12 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                                                                  state.consecutiveFailures(),
                                                                                  state.totalExecutions(),
                                                                                  state.lastFailureMessage(),
-                                                                                 state.updatedAt())));
+                                                                                 state.updatedAt(),
+                                                                                 state.skippedOverlaps())));
     }
 
     private static TaskStateResponse emptyStateResponse(String configSection, String artifactStr, String methodStr) {
-        return new TaskStateResponse(configSection, artifactStr, methodStr, 0, 0, 0, 0, "", 0);
+        return new TaskStateResponse(configSection, artifactStr, methodStr, 0, 0, 0, 0, "", 0, 0);
     }
 
     /// P-NEW-H (2026-05-21): Surfaces per-node execution attribution for a scheduled task.

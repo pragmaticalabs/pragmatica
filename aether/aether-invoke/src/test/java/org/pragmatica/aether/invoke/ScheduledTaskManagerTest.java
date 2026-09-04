@@ -14,6 +14,8 @@ import org.pragmatica.aether.slice.ExecutionMode;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskStateKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskStateValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
@@ -28,19 +30,26 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.type.TypeToken;
+import org.pragmatica.lang.utils.SharedScheduler;
 
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 class ScheduledTaskManagerTest {
     private ScheduledTaskRegistry registry;
     private StubSliceInvoker stubInvoker;
+    private CopyOnWriteArrayList<InvocationRecord> invocations;
     private ScheduledTaskManager manager;
     private NodeId self;
     private Artifact artifact;
     private MethodName method;
     private CopyOnWriteArrayList<KVCommand<AetherKey>> stateWrites;
+    private ConcurrentHashMap<ScheduledTaskStateKey, ScheduledTaskStateValue> stateMap;
     private TestLeaderManager leaderManager;
 
     record InvocationRecord(Artifact artifact, MethodName method, Object message) {}
@@ -48,13 +57,30 @@ class ScheduledTaskManagerTest {
     @BeforeEach
     void setUp() {
         registry = ScheduledTaskRegistry.scheduledTaskRegistry();
-        stubInvoker = new StubSliceInvoker(new CopyOnWriteArrayList<>(), Option.none());
+        invocations = new CopyOnWriteArrayList<>();
+        stubInvoker = new StubSliceInvoker(invocations, Option.none());
         self = new NodeId("node-self");
         artifact = Artifact.artifact("org.example:my-slice:1.0.0").unwrap();
         method = MethodName.methodName("cleanup").unwrap();
         stateWrites = new CopyOnWriteArrayList<>();
+        stateMap = new ConcurrentHashMap<>();
         leaderManager = new TestLeaderManager(self);
-        manager = ScheduledTaskManager.scheduledTaskManager(registry, stubInvoker, self, stateWrites::add, leaderManager);
+
+        Consumer<KVCommand<AetherKey>> stateWriter = command -> {
+            stateWrites.add(command);
+            if (command instanceof KVCommand.Put<AetherKey, ?> put
+                && put.key() instanceof ScheduledTaskStateKey stateKey
+                && put.value() instanceof ScheduledTaskStateValue stateValue) {
+                stateMap.put(stateKey, stateValue);
+            }
+        };
+
+        manager = ScheduledTaskManager.scheduledTaskManager(registry,
+                                                            stubInvoker,
+                                                            self,
+                                                            stateWriter,
+                                                            key -> Option.option(stateMap.get(key)),
+                                                            leaderManager);
     }
 
     @AfterEach
@@ -309,6 +335,111 @@ class ScheduledTaskManagerTest {
         }
     }
 
+    /// Exercises the REAL fixed-rate timer through [SharedScheduler] end to end — no
+    /// internal `TaskOps` hook is used. `"1s"` is [IntervalParser]'s minimum granularity, so
+    /// these tests run on real wall-clock ticks; [#awaitTrue] polls the SAME `stateMap` that
+    /// production code writes to, giving a genuine happens-before edge (`ConcurrentHashMap`'s
+    /// documented put-then-get guarantee) instead of racing on an unrelated field.
+    @Nested
+    class FireBehavior {
+        @Test
+        void fixedRate_twoFires_accumulatesTotalExecutions() {
+            putTask("cache", artifact, method, self, "1s", ExecutionMode.ALL);
+            establishQuorum();
+
+            var key = ScheduledTaskStateKey.scheduledTaskStateKey("cache", artifact, method);
+            awaitTrue(() -> stateFor(key).map(v -> v.totalExecutions() >= 2).or(false), 4000);
+            manager.stop(); // freeze — no further tick can land between detection and assertion
+
+            var state = stateFor(key).unwrap();
+            assertThat(state.totalExecutions()).isEqualTo(2);
+            assertThat(state.consecutiveFailures()).isZero();
+            assertThat(state.nextFireAt()).isGreaterThan(0L);
+        }
+
+        @Test
+        void fixedRate_failThenSucceed_consecutiveFailuresTracksThenResets() {
+            Cause boom = () -> "boom";
+            stubInvoker.setFailureCause(Option.some(boom));
+
+            putTask("cache", artifact, method, self, "1s", ExecutionMode.ALL);
+            establishQuorum();
+
+            var key = ScheduledTaskStateKey.scheduledTaskStateKey("cache", artifact, method);
+            awaitTrue(() -> stateFor(key).map(v -> v.consecutiveFailures() >= 1).or(false), 4000);
+
+            var afterFailure = stateFor(key).unwrap();
+            assertThat(afterFailure.consecutiveFailures()).isEqualTo(1);
+            assertThat(afterFailure.totalExecutions()).isZero();
+            assertThat(afterFailure.lastFailureMessage()).isEqualTo("boom");
+
+            stubInvoker.setFailureCause(Option.none());
+
+            awaitTrue(() -> stateFor(key).map(v -> v.consecutiveFailures() == 0).or(false), 4000);
+            manager.stop();
+
+            var afterSuccess = stateFor(key).unwrap();
+            assertThat(afterSuccess.consecutiveFailures()).isZero();
+            assertThat(afterSuccess.totalExecutions()).isEqualTo(1);
+        }
+
+        @Test
+        void fixedRate_overlappingFire_recordsSkipInsteadOfDoubleExecution() {
+            var gate = Promise.<Unit>promise();
+            stubInvoker.holdNextInvocation(gate);
+
+            putTask("cache", artifact, method, self, "1s", ExecutionMode.ALL);
+            establishQuorum();
+
+            // First tick (~1s) blocks on `gate`: invoked, but never settles until released —
+            // this keeps ctx.inFlight claimed for the key past the second tick.
+            awaitTrue(() -> invocations.size() >= 1, 3000);
+
+            var key = ScheduledTaskStateKey.scheduledTaskStateKey("cache", artifact, method);
+
+            // Second tick (~2s) must find the key still in-flight: recorded as a skip, no
+            // second invoke.
+            awaitTrue(() -> stateFor(key).map(v -> v.skippedOverlaps() >= 1).or(false), 3000);
+
+            assertThat(invocations).as("overlap must be skipped, not executed").hasSize(1);
+            assertThat(stateFor(key).unwrap().skippedOverlaps()).isEqualTo(1);
+            assertThat(stateFor(key).unwrap().totalExecutions())
+                    .as("the blocked invocation has not settled yet")
+                    .isZero();
+
+            gate.succeed(Unit.unit());
+
+            awaitTrue(() -> stateFor(key).map(v -> v.totalExecutions() >= 1).or(false), 3000);
+            manager.stop();
+
+            var finalState = stateFor(key).unwrap();
+            assertThat(finalState.totalExecutions()).isEqualTo(1);
+            assertThat(finalState.skippedOverlaps()).isEqualTo(1);
+            assertThat(invocations).hasSize(1);
+        }
+
+        private Option<ScheduledTaskStateValue> stateFor(ScheduledTaskStateKey key) {
+            return Option.option(stateMap.get(key));
+        }
+
+        private void awaitTrue(BooleanSupplier condition, long timeoutMs) {
+            var deadline = System.currentTimeMillis() + timeoutMs;
+
+            while (!condition.getAsBoolean()) {
+                if (System.currentTimeMillis() > deadline) {
+                    throw new AssertionError("Condition not satisfied within " + timeoutMs + "ms");
+                }
+
+                try {
+                    Thread.sleep(20);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new RuntimeException(e);
+                }
+            }
+        }
+    }
+
     private void putPausedTask(String configSection, Artifact artifact, MethodName method,
                                NodeId node, String interval, ExecutionMode executionMode) {
         var key = ScheduledTaskKey.scheduledTaskKey(configSection, artifact, method);
@@ -326,26 +457,46 @@ class ScheduledTaskManagerTest {
     }
 
     /// Minimal stub implementing only the invoke methods used by ScheduledTaskManager.
+    /// `failureCause` is mutable (fail-then-succeed sequencing) and `pendingGate` is a
+    /// one-shot hook: when set, the NEXT `invoke()` call returns that exact (unresolved)
+    /// `Promise` instead of an already-resolved one, letting a test hold an invocation
+    /// "in flight" across a subsequent timer tick to exercise overlap detection.
     static final class StubSliceInvoker implements SliceInvoker {
         private final CopyOnWriteArrayList<InvocationRecord> invocations;
-        private final Option<Cause> failureCause;
+        private final AtomicReference<Option<Cause>> failureCause;
+        private final AtomicReference<Promise<Unit>> pendingGate = new AtomicReference<>();
 
         public StubSliceInvoker(CopyOnWriteArrayList<InvocationRecord> invocations, Option<Cause> failureCause) {
             this.invocations = invocations;
-            this.failureCause = failureCause;
+            this.failureCause = new AtomicReference<>(failureCause);
+        }
+
+        void setFailureCause(Option<Cause> cause) {
+            failureCause.set(cause);
+        }
+
+        void holdNextInvocation(Promise<Unit> gate) {
+            pendingGate.set(gate);
         }
 
         @Override
         public Promise<Unit> invoke(Artifact slice, MethodName method, Object request) {
             invocations.add(new InvocationRecord(slice, method, request));
-            return failureCause.fold(Promise::unitPromise, Cause::promise);
+
+            var gate = pendingGate.getAndSet(null);
+
+            if (gate != null) {
+                return gate;
+            }
+
+            return failureCause.get().fold(Promise::unitPromise, Cause::promise);
         }
 
         @Override
         @SuppressWarnings("unchecked")
         public <R> Promise<R> invoke(Artifact slice, MethodName method, Object request, TypeToken<R> responseType) {
             invocations.add(new InvocationRecord(slice, method, request));
-            return failureCause.fold(() -> (Promise<R>) Promise.unitPromise(), Cause::promise);
+            return failureCause.get().fold(() -> (Promise<R>) Promise.unitPromise(), Cause::promise);
         }
 
         // --- Unused methods — minimal stubs for compilation ---

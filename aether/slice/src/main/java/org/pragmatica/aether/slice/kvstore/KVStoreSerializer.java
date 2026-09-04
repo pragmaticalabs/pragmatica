@@ -452,7 +452,7 @@ public final class KVStoreSerializer {
     }
 
     private static String serializeScheduledTaskState(ScheduledTaskStateValue v) {
-        return v.lastExecutionAt() + PIPE + v.nextFireAt() + PIPE + v.consecutiveFailures() + PIPE + v.totalExecutions() + PIPE + v.lastFailureMessage() + PIPE + v.updatedAt();
+        return v.lastExecutionAt() + PIPE + v.nextFireAt() + PIPE + v.consecutiveFailures() + PIPE + v.totalExecutions() + PIPE + v.lastFailureMessage() + PIPE + v.updatedAt() + PIPE + v.skippedOverlaps();
     }
 
     private static String serializeVersionRouting(VersionRoutingValue v) {
@@ -937,12 +937,20 @@ public final class KVStoreSerializer {
                                                                                                                       val)));
     }
 
+    /// Tolerates two wire forms, disambiguated by field count — the standard trailing-field
+    /// backward-compat pattern (no envelope bump, spec §7), same precedent as
+    /// [#parseProvisioningSlotEntry]: 6-field LEGACY form (pre-#273, no `skippedOverlaps`, defaults to
+    /// `0`) and 7-field CURRENT form (trailing `skippedOverlaps`).
     private static Result<Map.Entry<AetherKey, AetherValue>> parseScheduledTaskStateEntry(String identity, String raw) {
         var parts = raw.split("\\|", -1);
 
-        if (parts.length != 6) {
-            return parseFailure("scheduled-task-state value requires 6 fields, got " + parts.length);
+        if (parts.length != 6 && parts.length != 7) {
+            return parseFailure("scheduled-task-state value requires 6 or 7 fields, got " + parts.length);
         }
+
+        var skippedOverlaps = parts.length == 7
+                              ? Integer.parseInt(parts[6])
+                              : 0;
 
         return ScheduledTaskStateKey.scheduledTaskStateKey("scheduled-task-state/" + identity).map(key -> entry(key,
                                                                                                                 new ScheduledTaskStateValue(Long.parseLong(parts[0]),
@@ -950,7 +958,8 @@ public final class KVStoreSerializer {
                                                                                                                                             Integer.parseInt(parts[2]),
                                                                                                                                             Integer.parseInt(parts[3]),
                                                                                                                                             parts[4],
-                                                                                                                                            Long.parseLong(parts[5]))));
+                                                                                                                                            Long.parseLong(parts[5]),
+                                                                                                                                            skippedOverlaps)));
     }
 
     /// Deserializes a provisioning-slot value. Tolerates THREE wire forms, disambiguated by field

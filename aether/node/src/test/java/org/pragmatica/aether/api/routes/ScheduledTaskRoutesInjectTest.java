@@ -116,7 +116,7 @@ class ScheduledTaskRoutesInjectTest {
                                                                    artifact(ARTIFACT),
                                                                    new MethodName(METHOD));
             var priorTimestamp = System.currentTimeMillis() - 5_000;
-            stateRegistry.put(key, new ScheduledTaskStateValue(priorTimestamp, 0, 0, 7, "", priorTimestamp));
+            stateRegistry.put(key, new ScheduledTaskStateValue(priorTimestamp, 0, 0, 7, "", priorTimestamp, 0));
 
             var routes = routesWithDevMode(true);
 
