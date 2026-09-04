@@ -9,6 +9,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -194,6 +195,134 @@ class BlueprintPublishOwnershipTest {
         }
     }
 
+    /// #759 review: `DeploymentOutcomeKey` is written only at the four terminal FSM transitions and
+    /// was never cleared when a NEW deployment of the same blueprint id started. `BlueprintId` wraps
+    /// the artifact, so a retry reuses the key, and `BlueprintService.outcome(id)` — the outcome-first
+    /// status route's read path — kept reporting the PREVIOUS attempt's terminal outcome while the new
+    /// attempt was actively converging. `buildAllCommands` now bundles a `Remove` of this key into the
+    /// SAME consensus batch as the `AppBlueprintKey` Put that starts the new attempt.
+    ///
+    /// Round 2 review widened the scope: `storeBlueprintWithKey` (DSL `publish`) and `removeFromStore`
+    /// (`delete`) write/remove `AppBlueprintKey` on their OWN single-command batches, bypassing
+    /// `buildAllCommands` entirely — so the same stale-outcome gap was still open on both live paths.
+    /// Both now bundle the same `DeploymentOutcomeKey` Remove into their own batch. [[AtomicityPin]]
+    /// below pins the batch-boundary property directly for all three paths.
+    @Nested
+    class OutcomeClearedAtPublish {
+        @Test
+        void publishFromArtifact_clearsStaleOutcome_fromPriorFailedAttempt_ofSameBlueprintId() {
+            seedFailedOutcome(OWNER);
+
+            publish(OWNER_COORDS, withoutMigrations(OWNER_COORDS)).onFailure(BlueprintPublishOwnershipTest::failOnUnexpectedFailure);
+
+            assertThat(recordedOutcome().isEmpty())
+                    .as("a fresh publish of a previously FAILED id must clear the stale outcome — outcome(id) "
+                        + "must be empty until the NEW attempt's own terminal write, never carry the PREVIOUS "
+                        + "attempt's result forward")
+                    .isTrue();
+        }
+
+        @Test
+        void publishFromArtifact_leavesNoOutcome_whenIdNeverHadOne() {
+            publish(OWNER_COORDS, withoutMigrations(OWNER_COORDS)).onFailure(BlueprintPublishOwnershipTest::failOnUnexpectedFailure);
+
+            assertThat(recordedOutcome().isEmpty()).as("a first-ever publish has no prior outcome to clear; the "
+                                                        + "Remove of an absent key is a no-op")
+                                                    .isTrue();
+        }
+
+        /// #759 review round 2, BLOCKING 1: `publish(String dsl)` — the live path behind
+        /// `SliceRoutes.handleBlueprint` — went through `storeBlueprintWithKey`, a single-command
+        /// batch touching only `AppBlueprintKey`, bypassing `buildAllCommands` and its Remove
+        /// entirely.
+        @Test
+        void publishDsl_clearsStaleOutcome_fromPriorFailedAttempt_ofSameBlueprintId() {
+            seedFailedOutcome(OWNER);
+
+            publishDsl(OWNER_COORDS).onFailure(BlueprintPublishOwnershipTest::failOnUnexpectedFailure);
+
+            assertThat(recordedOutcome().isEmpty())
+                    .as("a DSL republish of a previously FAILED id must clear the stale outcome too — the "
+                        + "SliceRoutes.handleBlueprint live path must give the same guarantee "
+                        + "publishFromArtifact already does")
+                    .isTrue();
+        }
+
+        /// #759 review round 2, BLOCKING 2: `delete(id)` went through `removeFromStore`, a
+        /// single-command batch removing only `AppBlueprintKey` — the outcome record was never
+        /// cleared and orphaned permanently, since no later write to the deleted id would ever touch
+        /// it again.
+        @Test
+        void delete_clearsStaleOutcome_fromPriorFailedAttempt() {
+            seedFailedOutcome(OWNER);
+
+            BlueprintService.blueprintService(cluster, store, repository())
+                            .delete(OWNER)
+                            .await();
+
+            assertThat(recordedOutcome().isEmpty())
+                    .as("deleting a blueprint id must clear its outcome record too — an orphaned "
+                        + "terminal record must not survive the blueprint id it described")
+                    .isTrue();
+        }
+
+        private Option<AetherValue> recordedOutcome() {
+            return store.get(AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(OWNER));
+        }
+    }
+
+    /// #759 review round 2, BLOCKING 3: pins that each fix lands its `AppBlueprintKey`
+    /// write/remove and its `DeploymentOutcomeKey` Remove in ONE recorded consensus batch — the
+    /// property the outcome-first status route depends on (at any instant, in flight XOR terminal,
+    /// never both). Every assertion in [[OutcomeClearedAtPublish]] is effect-based (checks the FINAL
+    /// state of the store) and would stay green even if a fix were split into two separate
+    /// `cluster.apply` calls; these tests check the batch boundary directly, mirroring
+    /// `ClusterDeploymentStateTransactionalTest.restorePreviousBlueprint_recordsRolledBackOutcomeAtomicallyWithRestore`.
+    @Nested
+    class AtomicityPin {
+        @Test
+        void publishFromArtifact_putsBlueprintAndClearsOutcome_inOneBatch() {
+            seedFailedOutcome(OWNER);
+
+            publish(OWNER_COORDS, withoutMigrations(OWNER_COORDS)).onFailure(BlueprintPublishOwnershipTest::failOnUnexpectedFailure);
+
+            assertThat(landedInSameBatch(AppBlueprintKey.appBlueprintKey(OWNER),
+                                         AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(OWNER)))
+                    .as("buildAllCommands's AppBlueprintKey Put and its DeploymentOutcomeKey Remove "
+                        + "must land in the SAME cluster.apply batch, not merely both somewhere in "
+                        + "this node's apply history")
+                    .isTrue();
+        }
+
+        @Test
+        void publishDsl_putsBlueprintAndClearsOutcome_inOneBatch() {
+            seedFailedOutcome(OWNER);
+
+            publishDsl(OWNER_COORDS).onFailure(BlueprintPublishOwnershipTest::failOnUnexpectedFailure);
+
+            assertThat(landedInSameBatch(AppBlueprintKey.appBlueprintKey(OWNER),
+                                         AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(OWNER)))
+                    .as("storeBlueprintWithKey's Put and its DeploymentOutcomeKey Remove must land in "
+                        + "the SAME batch")
+                    .isTrue();
+        }
+
+        @Test
+        void delete_removesBlueprintAndClearsOutcome_inOneBatch() {
+            seedFailedOutcome(OWNER);
+
+            BlueprintService.blueprintService(cluster, store, repository())
+                            .delete(OWNER)
+                            .await();
+
+            assertThat(landedInSameBatch(AppBlueprintKey.appBlueprintKey(OWNER),
+                                         AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(OWNER)))
+                    .as("removeFromStore's AppBlueprintKey Remove and its DeploymentOutcomeKey Remove "
+                        + "must land in the SAME batch")
+                    .isTrue();
+        }
+    }
+
     // --- helpers ---
 
     /// The cause must reach the caller UNWRAPPED. `ProblemResponses.resolveStatus` keys the response
@@ -217,6 +346,35 @@ class BlueprintPublishOwnershipTest {
         return BlueprintService.blueprintService(cluster, store, repository(), artifactStore(blueprintJar))
                                .publishFromArtifact(coords + ":blueprint")
                                .await();
+    }
+
+    /// #759 review round 2: the DSL `publish(String)` path (`SliceRoutes.handleBlueprint`) parses
+    /// this TOML directly — no jar, no `ArtifactStore` — but still resolves the declared slice
+    /// through `repository()`, same as [#publish].
+    private Result<ExpandedBlueprint> publishDsl(String blueprintId) {
+        var dsl = "id = \"" + blueprintId + "\"\n" + SLICE_STANZA;
+
+        return BlueprintService.blueprintService(cluster, store, repository())
+                               .publish(dsl)
+                               .await();
+    }
+
+    /// #759 review round 2, BLOCKING 3: true only when SOME recorded `cluster.apply` batch contains
+    /// both keys — proves the two commands committed atomically in one consensus round, not merely
+    /// both somewhere across this node's apply history (which two separate `apply` calls would also
+    /// satisfy).
+    private boolean landedInSameBatch(AetherKey keyA, AetherKey keyB) {
+        return cluster.batches
+                      .stream()
+                      .anyMatch(batch -> batch.stream().anyMatch(c -> c.key().equals(keyA))
+                                       && batch.stream().anyMatch(c -> c.key().equals(keyB)));
+    }
+
+    private void seedFailedOutcome(BlueprintId id) {
+        store.processCommand(new KVCommand.Put<>(AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(id),
+                                                  AetherValue.DeploymentOutcomeValue.failed(List.of("orders-api"),
+                                                                                            "prior attempt failed",
+                                                                                            1L)));
     }
 
     private void seedSchemaOwnedBy(BlueprintId owner) {
@@ -346,7 +504,19 @@ class BlueprintPublishOwnershipTest {
         };
     }
 
-    private record TestClusterNode(TestKVStore store) implements ClusterNode<KVCommand<AetherKey>> {
+    private static final class TestClusterNode implements ClusterNode<KVCommand<AetherKey>> {
+        private final TestKVStore store;
+        // #759 review round 2, BLOCKING 3: tracks each apply() call's batch verbatim (mirrors
+        // ClusterDeploymentStateTransactionalTest's RecordingClusterNode) so a test can pin that a
+        // Put and a Remove landed in the SAME consensus batch, not merely both somewhere in this
+        // node's history — splitting the fix into two separate apply() calls would leave every
+        // effect-based assertion in OutcomeClearedAtPublish green while breaking atomicity.
+        final List<List<KVCommand<AetherKey>>> batches = new ArrayList<>();
+
+        TestClusterNode(TestKVStore store) {
+            this.store = store;
+        }
+
         @Override
         public NodeId self() {
             return NodeId.nodeId("test-node").unwrap();
@@ -370,6 +540,8 @@ class BlueprintPublishOwnershipTest {
         @Override
         @SuppressWarnings("unchecked")
         public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
+            batches.add(List.copyOf(commands));
+
             return Promise.success(commands.stream()
                                            .map(command -> (R) store.processCommand(command))
                                            .toList());
