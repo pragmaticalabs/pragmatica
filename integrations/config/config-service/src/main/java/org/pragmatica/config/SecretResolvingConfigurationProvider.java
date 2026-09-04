@@ -161,6 +161,14 @@ final class SecretResolvingConfigurationProvider implements ConfigurationProvide
         return resolvedValues.keySet();
     }
 
+    /// Delegates unchanged: this decorator resolves `${secrets:...}` VALUES, one-for-one over
+    /// `delegate.asMap()`'s existing keys — it never adds, drops, or renames a key, so
+    /// `delegate.staticKeys()` names the same static subset here as it does on the delegate.
+    @Override
+    public Set<String> staticKeys() {
+        return delegate.staticKeys();
+    }
+
     @Override
     public Map<String, String> asMap() {
         return new LinkedHashMap<>(resolvedValues);

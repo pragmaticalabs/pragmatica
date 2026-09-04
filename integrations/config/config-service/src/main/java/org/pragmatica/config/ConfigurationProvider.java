@@ -2,8 +2,10 @@ package org.pragmatica.config;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -51,6 +53,26 @@ public interface ConfigurationProvider extends ConfigSource {
     ///
     /// @return List of configuration sources
     List<ConfigSource> sources();
+
+    /// Keys sourced from static, file-backed configuration only — a TOML file
+    /// ([TomlConfigSource]) or a slice's own intrinsic `resources.toml` ([IntrinsicConfigProvider])
+    /// — excluding environment variables, system properties, and any mutable runtime overlay (the
+    /// operator KV store, [DynamicConfigurationProvider]).
+    ///
+    /// Exists for [StrictKeys] validation ([ProviderBasedConfigService]): an environment variable,
+    /// system property, or KV entry that happens to land at `<section>.<one segment>` must never
+    /// fail a bind the file alone would have accepted — none of those layers wrote the section
+    /// that declares the annotated record (#738 review finding). A composite built through
+    /// [LayeredConfigProvider] or [NamedConfigProvider] unions this recursively through nested
+    /// layers; [DynamicConfigurationProvider] excludes its own overlay entirely;
+    /// [SecretResolvingConfigurationProvider] delegates unchanged (it resolves values, not keys).
+    ///
+    /// Default: same as [#keys()] — a provider that is itself a single static layer (a bare
+    /// [#builder()] result with no environment/system-property source added, or
+    /// [IntrinsicConfigProvider]) has nothing dynamic to exclude.
+    default Set<String> staticKeys() {
+        return keys();
+    }
 
     /// Short, operator-facing layer label used for attribution in composites.
     ///
@@ -197,6 +219,37 @@ final class LayeredConfigurationProvider implements ConfigurationProvider {
     @Override
     public Set<String> keys() {
         return mergedValues.keySet();
+    }
+
+    /// Allowlists [TomlConfigSource] by type — the one genuinely file-backed source a
+    /// builder-composed provider can carry — from the union of `sources`' own [ConfigSource#keys()].
+    /// Deliberately reads the raw per-source key sets rather than `mergedValues.keySet()`: the
+    /// merged map has already lost which layer contributed which key.
+    ///
+    /// Allowlist, not denylist: an earlier version excluded [EnvironmentConfigSource] and
+    /// [SystemPropertyConfigSource] by name, so any OTHER `ConfigSource` type — present or, worse,
+    /// added later — defaulted to "static" and was checked, silently reopening the #738 hole for a
+    /// dynamic source nobody had named yet. A [MapConfigSource] (in-memory defaults, or any
+    /// programmatic/dynamic layer built on it) is excluded here for the same reason it would be
+    /// excluded if written tomorrow: it is not file-backed, and this method's job is to name the
+    /// ones that are (#738 review finding, round 2).
+    @Override
+    public Set<String> staticKeys() {
+        var result = new LinkedHashSet<String>();
+
+        for (var source : sources) {
+            if (!isStaticSource(source)) {
+                continue;
+            }
+
+            result.addAll(source.keys());
+        }
+
+        return Collections.unmodifiableSet(result);
+    }
+
+    private static boolean isStaticSource(ConfigSource source) {
+        return source instanceof TomlConfigSource;
     }
 
     @Override

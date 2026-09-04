@@ -9,15 +9,19 @@ import java.lang.reflect.RecordComponent;
 import java.lang.reflect.Type;
 import java.time.Duration;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.parse.Text;
@@ -28,6 +32,7 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
+import static org.pragmatica.lang.Result.unitResult;
 
 
 /// ConfigService implementation that delegates to a ConfigurationProvider.
@@ -112,13 +117,99 @@ public final class ProviderBasedConfigService implements ConfigService {
             var types = extractComponentTypes(components);
             Constructor<T> constructor = configClass.getDeclaredConstructor(types);
 
-            return collectComponentArgs(section, components, configClass).flatMap(args -> invokeFactoryOrConstructor(configClass,
-                                                                                                                     constructor,
-                                                                                                                     types,
-                                                                                                                     args));
+            return strictKeyCheck(section, configClass, components).flatMap(_ -> collectComponentArgs(section,
+                                                                                                      components,
+                                                                                                      configClass))
+                                 .flatMap(args -> invokeFactoryOrConstructor(configClass, constructor, types, args));
         } catch (ReflectiveOperationException e) {
             return ConfigError.parseFailed(section, e).result();
         }
+    }
+
+    /// Opt-in ([StrictKeys]) rejection of keys the annotated record does not declare. Scoped to
+    /// exactly one path segment past the section prefix, so a nested sub-section (e.g. a consumer
+    /// group table owned by the dashed-by-convention stream parser) is never inspected here.
+    ///
+    /// Scoped to [ConfigurationProvider#staticKeys()] rather than the full merged
+    /// [ConfigurationProvider#keys()]: an environment variable, system property, or KV-overlay
+    /// entry landing at `<section>.<one segment>` must never fail a bind the file alone would have
+    /// accepted, since none of those layers wrote the section that declares this record (#738
+    /// review finding).
+    ///
+    /// A quoted TOML key with a literal dot (e.g. `"a.b" = 1`) is indistinguishable, once
+    /// flattened, from a nested sub-table (`[section.a]` / `b = 1`) — [TomlConfigSource]'s
+    /// flattening step throws that distinction away before it reaches this class or any
+    /// [ConfigurationProvider]. Such a key is therefore never flagged as unknown here, by the same
+    /// `indexOf('.') < 0` scoping that protects genuine nested sub-sections; see the class Javadoc
+    /// on `org.pragmatica.aether.resource.TopicConfig` for the operator-facing statement of this
+    /// limit.
+    ///
+    /// Reports every unknown key in the section in one error, not just the first.
+    private Result<Unit> strictKeyCheck(String section, Class<?> configClass, RecordComponent[] components) {
+        if (!configClass.isAnnotationPresent(StrictKeys.class)) {
+            return unitResult();
+        }
+
+        var known = Arrays.stream(components).map(c -> toSnakeCase(c.getName())).collect(Collectors.toSet());
+        var prefix = section + ".";
+        var unknownKeys = provider.staticKeys()
+                                  .stream()
+                                  .filter(k -> k.startsWith(prefix))
+                                  .map(k -> k.substring(prefix.length()))
+                                  .filter(k -> k.indexOf('.') < 0)
+                                  .filter(k -> !known.contains(k))
+                                  .sorted()
+                                  .toList();
+
+        if (unknownKeys.isEmpty()) {
+            return unitResult();
+        }
+
+        var suggestions = unknownKeys.stream().collect(Collectors.toMap(k -> k, k -> nearestKey(k, known)));
+
+        return ConfigError.unknownKey(section, unknownKeys, suggestions).<Unit> result();
+    }
+
+    private static final int MIN_SUGGESTION_DISTANCE = 3;
+
+    /// Nearest known key by Levenshtein distance, omitted (empty string) beyond a bound of
+    /// `max(3, unknown.length() / 2)` — otherwise a typo bearing no real resemblance to any
+    /// component (e.g. `zzzzzzzzzzqqqq`) still names the argmin of an unbounded search, which
+    /// reads as a real suggestion rather than the noise it is (#738 review finding).
+    private static String nearestKey(String unknown, Set<String> known) {
+        var threshold = Math.max(MIN_SUGGESTION_DISTANCE, unknown.length() / 2);
+
+        return known.stream()
+                    .map(k -> Map.entry(k,
+                                        levenshtein(unknown, k)))
+                    .min(Comparator.comparingInt(Map.Entry::getValue))
+                    .filter(e -> e.getValue() <= threshold)
+                    .map(Map.Entry::getKey)
+                    .orElse("");
+    }
+
+    private static int levenshtein(String a, String b) {
+        var dp = new int[a.length() + 1][b.length() + 1];
+
+        for (int i = 0; i <= a.length(); i++) {
+            dp[i][0] = i;
+        }
+
+        for (int j = 0; j <= b.length(); j++) {
+            dp[0][j] = j;
+        }
+
+        for (int i = 1; i <= a.length(); i++) {
+            for (int j = 1; j <= b.length(); j++) {
+                var cost = a.charAt(i - 1) == b.charAt(j - 1)
+                           ? 0
+                           : 1;
+
+                dp[i][j] = Math.min(Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1), dp[i - 1][j - 1] + cost);
+            }
+        }
+
+        return dp[a.length()][b.length()];
     }
 
     private static Class<?>[] extractComponentTypes(RecordComponent[] components) {
@@ -415,8 +506,8 @@ public final class ProviderBasedConfigService implements ConfigService {
 
     private static boolean isStringListType(Type genericType) {
         return genericType instanceof ParameterizedType paramType
-            && paramType.getActualTypeArguments().length == 1
-            && paramType.getActualTypeArguments()[0] == String.class;
+               && paramType.getActualTypeArguments().length == 1
+               && paramType.getActualTypeArguments() [0] == String.class;
     }
 
     private Option<Result<Object>> lookupBackoffStrategy(String fullKey, Class<?> type) {
@@ -466,9 +557,7 @@ public final class ProviderBasedConfigService implements ConfigService {
     // comma-joined-scalar convention (e.g. HetznerEnvironmentIntegrationFactory#ssh_key_ids).
     // Absent key defaults to an empty list, matching collectMapValue's zero-matches behavior.
     private Result<Object> collectListValue(String fullKey) {
-        return success(provider.getString(fullKey)
-                               .map(ProviderBasedConfigService::splitCommaList)
-                               .or(List.of()));
+        return success(provider.getString(fullKey).map(ProviderBasedConfigService::splitCommaList).or(List.of()));
     }
 
     private static List<String> splitCommaList(String raw) {
@@ -505,8 +594,10 @@ public final class ProviderBasedConfigService implements ConfigService {
     }
 
     private Result<Object> exponentialBackoffStrategy(String fullKey) {
-        var initialDelay = optionalIoTimeSpan(fullKey + ".initial_delay", org.pragmatica.lang.io.TimeSpan.timeSpan(100).millis());
-        var maxDelay = optionalIoTimeSpan(fullKey + ".max_delay", org.pragmatica.lang.io.TimeSpan.timeSpan(10).seconds());
+        var initialDelay = optionalIoTimeSpan(fullKey + ".initial_delay",
+                                              org.pragmatica.lang.io.TimeSpan.timeSpan(100).millis());
+        var maxDelay = optionalIoTimeSpan(fullKey + ".max_delay",
+                                          org.pragmatica.lang.io.TimeSpan.timeSpan(10).seconds());
         var factor = optionalDouble(fullKey + ".factor", 2.0);
         var withJitter = optionalBoolean(fullKey + ".with_jitter", false);
 
@@ -520,11 +611,10 @@ public final class ProviderBasedConfigService implements ConfigService {
     private Result<Object> linearBackoffStrategy(String fullKey) {
         return Result.all(requiredIoTimeSpan(fullKey + ".initial_delay"),
                           requiredIoTimeSpan(fullKey + ".increment"),
-                          requiredIoTimeSpan(fullKey + ".max_delay"))
-                     .map((initialDelay, increment, maxDelay) -> BackoffStrategy.linear()
-                                                                                .initialDelay(initialDelay)
-                                                                                .increment(increment)
-                                                                                .maxDelay(maxDelay));
+                          requiredIoTimeSpan(fullKey + ".max_delay")).map((initialDelay, increment, maxDelay) -> BackoffStrategy.linear()
+                                                                                                                                .initialDelay(initialDelay)
+                                                                                                                                .increment(increment)
+                                                                                                                                .maxDelay(maxDelay));
     }
 
     private Result<org.pragmatica.lang.io.TimeSpan> requiredIoTimeSpan(String fullKey) {
@@ -533,18 +623,23 @@ public final class ProviderBasedConfigService implements ConfigService {
                        .toResult(ConfigError.sectionNotFound(fullKey));
     }
 
-    private org.pragmatica.lang.io.TimeSpan optionalIoTimeSpan(String fullKey, org.pragmatica.lang.io.TimeSpan fallback) {
+    private org.pragmatica.lang.io.TimeSpan optionalIoTimeSpan(String fullKey,
+                                                               org.pragmatica.lang.io.TimeSpan fallback) {
         return provider.getString(fullKey)
                        .flatMap(ProviderBasedConfigService::parseIoTimeSpan)
                        .or(fallback);
     }
 
     private double optionalDouble(String fullKey, double fallback) {
-        return provider.getString(fullKey).flatMap(ProviderBasedConfigService::safeParseDouble).or(fallback);
+        return provider.getString(fullKey)
+                       .flatMap(ProviderBasedConfigService::safeParseDouble)
+                       .or(fallback);
     }
 
     private boolean optionalBoolean(String fullKey, boolean fallback) {
-        return provider.getString(fullKey).map(Boolean::parseBoolean).or(fallback);
+        return provider.getString(fullKey)
+                       .map(Boolean::parseBoolean)
+                       .or(fallback);
     }
 
     // --- DEFAULT field lookup ---

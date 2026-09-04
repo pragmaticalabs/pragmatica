@@ -124,6 +124,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   still emits `"...is not in FAILED state (currently <STATUS>)..."`, pinned by two integration
   scripts and a unit test, now ending `"— retry applies to FAILED or PENDING migrations only"`.
 
+### Fixed (2026-09-03 — #738: topic sections silently ignored dashed/misspelled keys)
+- **A misspelled or dashed key in a topic's `resources.toml` section is now rejected at parse,
+  naming the nearest correctly-spelled key** — most commonly `min-sync-replicas` where
+  `min_sync_replicas` was meant. Previously the reflective config binder
+  (`ProviderBasedConfigService.bindToClass`, the class every production config caller actually
+  binds through — a separate, unreachable `TomlConfigService` carries the same shape but has zero
+  production callers) resolved any key it did not recognize to `Option.none()`/a component
+  default, making a typo byte-indistinguishable from the key never having been written. The real
+  fail-open is on the **ephemeral** path, not a durability-tier mis-selection: `durability` alone
+  picks the tier (`TopicConfig.topicConfig`), dash-typo-immune. `TopicConfig.declaredStreamKeys()`
+  only sees a stream knob as declared through its typed `Option` field, so a dashed
+  `min-sync-replicas` resolved to `none()` and stayed invisible to it — `rejectInertKeys()` then
+  found nothing declared and never raised the loud #576 rejection an ephemeral topic carrying a
+  (mistyped) durable-tier knob is supposed to get. The operator's likely-durable declaration was
+  silently discarded with zero signal, on an otherwise-successful ephemeral bind.
+- **New opt-in `@StrictKeys` annotation**, applied to `TopicConfig` only — every other config
+  record bound by `ProviderBasedConfigService` (four production callers:
+  `NodeDeploymentState.java:284`, `ConfigSectionPreflightValidator.java:60`, `AetherNode.java:5869`,
+  `SpiResourceProvider.java:362`) is unannotated and binds exactly as before; the existing
+  `SimpleConfig` test fixture — reused, not new — with an added unrecognized key proves this.
+  [verified: integrations/config/config-service/src/test/java/org/pragmatica/config/ProviderBasedConfigServiceTest.java (StrictKeysScoping.config_nonAnnotatedRecord_ignoresUnrecognizedKey_exactlyAsBeforeTheHook)]
+- **Scoped to exactly the keys the annotated record binds, and to the static/file-backed
+  configuration layer only**: a nested sub-section under the same topic (e.g. a consumer group
+  table, owned by the dashed-by-convention `StreamConfigParser`) is never inspected by this check,
+  however it is spelled — and neither is an environment variable, system property, or KV-overlay
+  entry landing at the same path, since none of those layers wrote the section this record
+  declares (#738 review finding). `provider.keys()` (every layer merged) was the original,
+  too-broad scope; the check now reads the new `ConfigurationProvider.staticKeys()`.
+  [verified: aether/resource/api/src/test/java/org/pragmatica/aether/resource/TopicConfigTest.java (tomlBinding_rejectsDashedTopicLevelKey_evenWithNestedConsumerSubsectionPresent, tomlBinding_ignoresSystemPropertyKeyAtTopicSection_neverFailsStrictBind)]
+- Nearest-key suggestion via a small self-contained Levenshtein-distance helper (no new
+  dependency), bounded to `max(3, key length / 2)` so an unrelated key gets no suggestion at all
+  rather than an unbounded argmin, and every unrecognized key in a section is reported together,
+  not just the first. Operator docs (`aether/docs/slice-developers/resource-reference.md`) and the
+  durable-pubsub spec (`aether/docs/specs/durable-pubsub-spec.md` §3) now state the guarantee and
+  cite it.
+  [verified: aether/resource/api/src/test/java/org/pragmatica/aether/resource/TopicConfigTest.java]
+
 ### Fixed (2026-09-03 — #769: `database.async_url` operator override was ignored by slice stores while the log claimed it was applied)
 - **`DatabaseConnectorConfig.effectiveHost()`/`effectivePort()`/`effectiveDatabase()` gave the
   discrete `host`/`port`/`database` fields unconditional precedence over a configured URL**,
