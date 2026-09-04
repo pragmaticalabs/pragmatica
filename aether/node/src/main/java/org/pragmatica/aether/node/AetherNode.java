@@ -12,6 +12,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Collection;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
@@ -1491,7 +1492,13 @@ public interface AetherNode extends ManageableNode {
         // pre-existing plaintext used to boot successfully anyway (BLOCKING #1's root cause).
         // `defaultArtifactStorage` is retired as dead code; there is no longer a legitimate reason
         // for "artifacts" to be absent here.
-        var artifactStorage = storageSetups.get("artifacts").instance();
+        //
+        // #253 review round 2 NOTE: `Objects.requireNonNull` turns a violated invariant into a named
+        // failure pointing at THIS comment's reasoning, instead of a bare NPE at `.instance()` that
+        // gives a future reader no hint the absence was ever supposed to be impossible.
+        var artifactStorage = Objects.requireNonNull(storageSetups.get("artifacts"),
+                                                      "storageSetups missing \"artifacts\" after createAll succeeded -- invariant violated")
+                                     .instance();
         var artifactStore = ArtifactStore.artifactStore(dhtClient, artifactStorage);
         var repositoryFactory = RepositoryFactory.repositoryFactory(artifactStore);
         var repositories = repositoryFactory.createAll(config.sliceConfig());
