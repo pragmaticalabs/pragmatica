@@ -323,21 +323,42 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// discard defect for both call sites at once. A missing [#cursorStore] (no persistence configured)
     /// has nothing to commit and nothing to fail, so it resolves the fallback unit promise rather than
     /// going through [#onCursorCommitFailure].
+    ///
+    /// #654 round 2: cleared OPTIMISTICALLY at the start of the attempt, not on the outer promise's
+    /// success — a store composed of sub-stages (e.g. the node's cluster-aware store) can settle this
+    /// promise successfully while still recovering an inner failure (see
+    /// [ConsumerCursorStore#lastRecoveredFailure]), and [#recordIfRecovered] runs from the same
+    /// `.onSuccess` that would otherwise have cleared it, so clearing there would erase what it just
+    /// recorded.
     private Promise<Unit> observedCommit(ConsumerKey key, ConsumerState state) {
-        return cursorStore.map(store -> store.commit(key.groupId(),
-                                                     key.streamName(),
-                                                     key.partition(),
-                                                     state.cursor())
-                                             .onSuccess(_ -> state.clearCursorCommitFailure())
-                                             .onFailure(cause -> onCursorCommitFailure(key, state, cause)))
+        return cursorStore.map(store -> {
+                              state.clearCursorCommitFailure();
+                              return store.commit(key.groupId(),
+                                                  key.streamName(),
+                                                  key.partition(),
+                                                  state.cursor())
+                                         .onSuccess(_ -> recordIfRecovered(key, state, store))
+                                         .onFailure(cause -> onCursorCommitFailure(key, state, cause));
+                          })
                           .or(Promise.unitPromise());
+    }
+
+    /// #654 round 2: `commit(...)` settled successfully, but the store may have recovered a sub-stage
+    /// failure (e.g. a consensus checkpoint publish) rather than let it fail the outer promise — poll
+    /// for it right after resolution and fold it into the same surface a local-commit failure uses.
+    private void recordIfRecovered(ConsumerKey key, ConsumerState state, ConsumerCursorStore store) {
+        store.lastRecoveredFailure(key.groupId(), key.streamName(), key.partition())
+             .onPresent(detail -> {
+                 cursorCommitFailureCount.incrementAndGet();
+                 state.recordCursorCommitFailure("checkpoint publish: " + detail);
+             });
     }
 
     private void onCursorCommitFailure(ConsumerKey key, ConsumerState state, Cause cause) {
         cursorCommitFailureCount.incrementAndGet();
-        state.recordCursorCommitFailure(cause.message());
+        state.recordCursorCommitFailure("local commit: " + cause.message());
         LOG.log(System.Logger.Level.ERROR,
-                "Cursor commit failed for consumer group {0} on stream {1} partition {2}: {3}",
+                "Cursor commit (local) failed for consumer group {0} on stream {1} partition {2}: {3}",
                 key.groupId(),
                 key.streamName(),
                 key.partition(),
