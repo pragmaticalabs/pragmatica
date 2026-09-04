@@ -164,11 +164,17 @@ class EncryptingStorageTierTest {
         }
 
         @Test
-        void wrapLocalDisk_succeeds_onFreshEmptyDirectory_andWritesMarker() {
+        void wrapLocalDisk_succeeds_onFreshEmptyDirectory_andWritesMarker() throws Exception {
             EncryptingStorageTier.wrapLocalDisk(freshDiskTier(), tempDir, singleKeyRing("key-1"))
                                   .onFailure(c -> fail("wrap on an empty directory must succeed: " + c.message()));
 
-            assertThat(Files.exists(tempDir.resolve(EncryptingStorageTier.MARKER_FILE_NAME))).isTrue();
+            var markerPath = tempDir.resolve(EncryptingStorageTier.MARKER_FILE_NAME);
+
+            assertThat(Files.exists(markerPath)).isTrue();
+            // #253 BLOCKING #3: the marker persists the ACTIVE KEY ID, not empty bytes -- this is what
+            // lets a later reverse-direction refusal name which key the operator needs, instead of the
+            // "<unknown -- marker predates key-id persistence>" fallback.
+            assertThat(new String(Files.readAllBytes(markerPath), StandardCharsets.UTF_8)).isEqualTo("key-1");
         }
 
         @Test
@@ -182,6 +188,49 @@ class EncryptingStorageTierTest {
 
             EncryptingStorageTier.wrapLocalDisk(disk, tempDir, singleKeyRing("key-1"))
                                   .onFailure(c -> fail("wrap with the marker already present must succeed: " + c.message()));
+        }
+    }
+
+    /// #253 BLOCKING #3 (2026-09-04 ruling): direct unit coverage of
+    /// [EncryptingStorageTier#refuseIfEncryptedWithoutKeyring] -- the reverse-direction guard, called
+    /// from the no-keyring branch of tier assembly. `StorageFactoryEncryptionTest` (`aether/node`)
+    /// covers the same guard wired through real `StorageFactory`/`AetherConfig` boot paths; these pin
+    /// the primitive itself, including the pre-key-id-persistence fallback string, at the unit level.
+    @Nested
+    class ReverseDirectionGuard {
+
+        @Test
+        void refuseIfEncryptedWithoutKeyring_succeeds_whenNoMarkerPresent() {
+            EncryptingStorageTier.refuseIfEncryptedWithoutKeyring(tempDir, "some-instance")
+                                  .onFailure(c -> fail("a directory with no marker must not be refused: " + c.message()));
+        }
+
+        @Test
+        void refuseIfEncryptedWithoutKeyring_fails_namingInstanceAndActiveKeyId_whenMarkerPresent() {
+            EncryptingStorageTier.wrapLocalDisk(freshDiskTier(), tempDir, singleKeyRing("key-1"))
+                                  .onFailure(c -> fail("seeding the marker failed: " + c.message()));
+
+            EncryptingStorageTier.refuseIfEncryptedWithoutKeyring(tempDir, "vault")
+                                  .onSuccessRun(() -> fail("a directory that was previously encrypted must refuse a plain reboot"))
+                                  .onFailure(cause -> {
+                                      assertThat(cause).isInstanceOf(EncryptionError.EncryptedTierRequiresKeyring.class);
+                                      var typed = (EncryptionError.EncryptedTierRequiresKeyring) cause;
+                                      assertThat(typed.instanceName()).isEqualTo("vault");
+                                      assertThat(typed.keyId()).isEqualTo("key-1");
+                                  });
+        }
+
+        @Test
+        void refuseIfEncryptedWithoutKeyring_fails_withUnknownKeyId_whenMarkerPredatesKeyIdPersistence() throws Exception {
+            // an empty marker file, as `writeMarker` would have produced before it started persisting
+            // the active key id -- the fallback string this asserts is the only way an operator with an
+            // old marker on disk learns anything at all from this refusal.
+            Files.createFile(tempDir.resolve(EncryptingStorageTier.MARKER_FILE_NAME));
+
+            EncryptingStorageTier.refuseIfEncryptedWithoutKeyring(tempDir, "vault")
+                                  .onSuccessRun(() -> fail("a directory carrying even an empty marker must refuse a plain reboot"))
+                                  .onFailure(cause -> assertThat(((EncryptionError.EncryptedTierRequiresKeyring) cause).keyId())
+                                                     .isEqualTo("<unknown -- marker predates key-id persistence>"));
         }
     }
 
@@ -207,6 +256,39 @@ class EncryptingStorageTierTest {
             tier.get(id).await()
                 .onSuccess(_ -> fail("a key-id swapped to a DIFFERENT ring key -- even one sharing the same secret -- "
                                      + "must fail: the key id is authenticated data, not merely a lookup token"))
+                .onFailure(cause -> assertThat(cause).isInstanceOf(EncryptionError.DecryptionFailed.class));
+        }
+
+        /// #253 SHOULD-FIX #4: the block's own id is folded into the AAD (see class Javadoc), so
+        /// moving one block's stored bytes onto a DIFFERENT block's on-disk path -- both encrypted
+        /// under the identical key, with an otherwise byte-identical header -- must not decrypt as
+        /// the target block's plaintext. Header-only AAD (magic+version+keyId) would authenticate
+        /// this swap silently; block-id AAD does not. Distinct from the key-id-swap test above: this
+        /// attack never touches the header bytes at all, only the file each set of bytes is read
+        /// back through.
+        @Test
+        void blockSwap_ciphertextMovedToAnotherBlocksOnDiskPath_failsAuthentication() throws Exception {
+            var keyring = singleKeyRing("key-1");
+            var tier = EncryptingStorageTier.wrapLocalDisk(freshDiskTier(), tempDir, keyring)
+                                             .fold(c -> { fail("wrap failed: " + c.message()); return null; }, t -> t);
+            var contentA = "block-A-distinct-content-253".getBytes(StandardCharsets.UTF_8);
+            var contentB = "block-B-distinct-content-253".getBytes(StandardCharsets.UTF_8);
+            var idA = blockIdOf(contentA);
+            var idB = blockIdOf(contentB);
+
+            tier.put(idA, contentA).await()
+                .onFailure(c -> fail("put A failed: " + c.message()));
+
+            var framedA = Files.readAllBytes(rawBlockPath(idA));
+            var pathB = rawBlockPath(idB);
+
+            Files.createDirectories(pathB.getParent());
+            Files.write(pathB, framedA);
+
+            tier.get(idB).await()
+                .onSuccess(_ -> fail("ciphertext relocated from block A's on-disk path to block B's must not "
+                                     + "decrypt as block B's plaintext -- the block id is authenticated data, "
+                                     + "not merely a lookup key"))
                 .onFailure(cause -> assertThat(cause).isInstanceOf(EncryptionError.DecryptionFailed.class));
         }
 
@@ -240,6 +322,100 @@ class EncryptingStorageTierTest {
             System.arraycopy(toBytes, 0, out, EncryptingStorageTier.HEADER_FIXED_LEN, toBytes.length);
 
             return out;
+        }
+    }
+
+    /// #253 SHOULD-FIX #5 and the NOTE item: [EncryptingStorageTier#parseHeader]'s three failure
+    /// classifications on a malformed or unsupported wire format, pinned directly against
+    /// hand-assembled framed bytes rather than through a legitimate `put`.
+    @Nested
+    class WireFormatValidation {
+
+        @Test
+        void get_blockWithMismatchedVersionByte_fails_withUnsupportedVersion_namingBothVersions() throws Exception {
+            var tier = EncryptingStorageTier.wrapLocalDisk(freshDiskTier(), tempDir, singleKeyRing("key-1"))
+                                             .fold(c -> { fail("wrap failed: " + c.message()); return null; }, t -> t);
+            var id = blockIdOf(CONTENT);
+
+            tier.put(id, CONTENT).await()
+                .onFailure(c -> fail("put failed: " + c.message()));
+
+            var path = rawBlockPath(id);
+            var framed = Files.readAllBytes(path);
+            var bumpedVersion = (byte) (EncryptingStorageTier.VERSION + 1);
+
+            framed[EncryptingStorageTier.MAGIC.length] = bumpedVersion;
+            Files.write(path, framed);
+
+            tier.get(id).await()
+                .onSuccess(_ -> fail("a version byte that doesn't match the reader's supported version must fail "
+                                     + "closed, not be silently (mis)decrypted as the current format"))
+                .onFailure(cause -> {
+                    assertThat(cause).isInstanceOf(EncryptionError.UnsupportedVersion.class);
+
+                    var unsupported = (EncryptionError.UnsupportedVersion) cause;
+
+                    assertThat(unsupported.blockId()).isEqualTo(id.hexString());
+                    assertThat(unsupported.actualVersion()).isEqualTo(bumpedVersion & 0xFF);
+                    assertThat(unsupported.expectedVersion()).isEqualTo(EncryptingStorageTier.VERSION & 0xFF);
+                });
+        }
+
+        /// The classification boundary the NOTE item calls for: magic present but too short to carry
+        /// even the fixed header is CORRUPTION ([EncryptionError.MalformedHeader]), never
+        /// [EncryptionError.LegacyPlaintextBlock] -- that classification is reserved for a block with
+        /// no magic at all (see [LegacyPlaintextDetection]).
+        @Test
+        void get_blockTruncatedRightAfterMagic_fails_withMalformedHeader_neverLegacyPlaintext() {
+            var disk = freshDiskTier();
+            var id = blockIdOf(CONTENT);
+            // MAGIC plus one stray byte -- starts with MAGIC, but shorter than HEADER_FIXED_LEN, so it
+            // cannot carry the version/key-id-length fields at all.
+            var truncated = java.util.Arrays.copyOf(EncryptingStorageTier.MAGIC, EncryptingStorageTier.MAGIC.length + 1);
+
+            disk.put(id, truncated).await()
+                .onFailure(c -> fail("raw put failed: " + c.message()));
+
+            var tier = EncryptingStorageTier.wrap(disk, singleKeyRing("key-1"));
+
+            tier.get(id).await()
+                .onSuccess(_ -> fail("a block starting with MAGIC but too short to carry the fixed header is "
+                                     + "corruption, not a legacy plaintext write"))
+                .onFailure(cause -> {
+                    assertThat(cause).as("magic present but header incomplete must classify as MalformedHeader, "
+                                        + "never as LegacyPlaintextBlock")
+                                     .isInstanceOf(EncryptionError.MalformedHeader.class)
+                                     .isNotInstanceOf(EncryptionError.LegacyPlaintextBlock.class);
+                    assertThat(cause.message()).contains(id.hexString());
+                });
+        }
+
+        @Test
+        void get_blockTruncatedBeforeNonceAndCiphertext_fails_withMalformedHeader() {
+            var disk = freshDiskTier();
+            var id = blockIdOf(CONTENT);
+            var keyIdBytes = "key-1".getBytes(StandardCharsets.UTF_8);
+            // a syntactically valid fixed header plus key id, but NOTHING after it -- no nonce, no
+            // ciphertext at all.
+            var header = new byte[EncryptingStorageTier.HEADER_FIXED_LEN + keyIdBytes.length];
+
+            System.arraycopy(EncryptingStorageTier.MAGIC, 0, header, 0, EncryptingStorageTier.MAGIC.length);
+            header[EncryptingStorageTier.MAGIC.length] = EncryptingStorageTier.VERSION;
+            header[EncryptingStorageTier.MAGIC.length + 1] = (byte) ((keyIdBytes.length >> 8) & 0xFF);
+            header[EncryptingStorageTier.MAGIC.length + 2] = (byte) (keyIdBytes.length & 0xFF);
+            System.arraycopy(keyIdBytes, 0, header, EncryptingStorageTier.HEADER_FIXED_LEN, keyIdBytes.length);
+
+            disk.put(id, header).await()
+                .onFailure(c -> fail("raw put failed: " + c.message()));
+
+            var tier = EncryptingStorageTier.wrap(disk, singleKeyRing("key-1"));
+
+            tier.get(id).await()
+                .onSuccess(_ -> fail("a header naming a valid key id but carrying no nonce/ciphertext at all is corruption"))
+                .onFailure(cause -> {
+                    assertThat(cause).isInstanceOf(EncryptionError.MalformedHeader.class);
+                    assertThat(cause.message()).contains(id.hexString());
+                });
         }
     }
 }

@@ -113,7 +113,13 @@ class BlockEncryptorTest {
 
             BlockEncryptor.aesGcm(shortKey, KEY_ID)
                           .onSuccess(_ -> fail("Should fail with invalid key length"))
-                          .onFailure(cause -> assertThat(cause).isInstanceOf(EncryptionError.InvalidKeyLength.class));
+                          .onFailure(cause -> {
+                              assertThat(cause).isInstanceOf(EncryptionError.InvalidKeyLength.class);
+                              // #253 SHOULD-FIX #7: the failure must name the key id an operator needs
+                              // to act on, not just report a byte-length mismatch in the abstract.
+                              assertThat(cause.message()).as("InvalidKeyLength must name the key id")
+                                                         .contains(KEY_ID);
+                          });
         }
 
         @Test
