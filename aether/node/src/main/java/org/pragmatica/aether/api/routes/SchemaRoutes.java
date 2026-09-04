@@ -289,7 +289,12 @@ public final class SchemaRoutes implements RouteSource {
     /// inert. Now: confirm the record exists (404), confirm this node is the leader (409 —
     /// condition 2), delegate to the real orchestrator SYNCHRONOUSLY, then report what actually
     /// happened by re-reading KV (condition 3) rather than echoing the request back.
-    private Promise<SchemaMigrateResponse> undoToVersion(String datasource, int targetVersion) {
+    ///
+    /// Package-visible so the undo contract can be exercised directly against a REAL
+    /// `SchemaOrchestratorServiceInstance` (matching [#baselineDatasource]'s precedent): review
+    /// round 1 BLOCKING 1 found every existing undo test substituting a stub orchestrator, so
+    /// nothing failed when this method's delegation to the real manager was reverted to a stub.
+    Promise<SchemaMigrateResponse> undoToVersion(String datasource, int targetVersion) {
         return lookupSchemaVersion(datasource).flatMap(_ -> requireLeader(datasource, "undo"))
                                   .flatMap(_ -> nodeSupplier.get()
                                                             .schemaOrchestrator()
@@ -327,6 +332,13 @@ public final class SchemaRoutes implements RouteSource {
     /// which `ProblemResponses` cannot distinguish from a genuine server fault and answers 500 for.
     /// This uses the [HttpStatusAware]-typed [SchemaRouteError.SchemaNotLeader] (409) instead, so
     /// the caller can tell "retry the leader" from "the cluster broke".
+    ///
+    /// review round 1 SHOULD-FIX 5: this check is itself check-then-act, undisclosed until now.
+    /// `node.isLeader()` is read once, here; the manager call it guards runs afterward with no
+    /// re-check, so leadership can change between this read and that call's completion. Same
+    /// missing-compare-and-set shape as #766's lock race, one layer up at the leader gate rather
+    /// than at `acquireLock`'s KV lock — tracked under #766 rather than separately (see
+    /// management-api.md's `acquireLock` callout).
     private Promise<Unit> requireLeader(String datasource, String operation) {
         var node = nodeSupplier.get();
 

@@ -585,6 +585,144 @@ class SchemaRouteStatusTest {
 
             assertThat(causeFrom(ManagementRoute.SCHEMA_BASELINE, "version", "5")).isEqualTo(SchemaError.BaselineConflict.baselineConflict(DATASOURCE, 3));
         }
+
+        /// #543/#832 review round 1 SHOULD-FIX 4: the fence/lock conflict path built an ad hoc,
+        /// untyped `Cause` instead of this variant, so a lock conflict answered 500 despite
+        /// `LockAcquisitionFailed` already existing and already being `HttpStatusAware` —
+        /// `SchemaOrchestratorService#acquireLock` now raises it directly, so this is genuinely
+        /// production-reachable through undo/baseline's shared lock-acquisition step.
+        @Test
+        void undoRoute_respondsConflict_whenMigrationLockIsHeld() {
+            routes = SchemaRoutes.schemaRoutes(() -> nodeOverWithOrchestrator(store,
+                                                                              orchestratorFailingUndo(SchemaError.LockAcquisitionFailed.lockAcquisitionFailed(DATASOURCE))));
+            seed(SchemaStatus.COMPLETED);
+
+            assertThat(statusFor(ManagementRoute.SCHEMA_UNDO, "targetVersion", "2")).as("a concurrent attempt holding the lock is a conflict, not a server fault")
+                      .isEqualTo(HttpStatus.CONFLICT);
+        }
+
+        @Test
+        void undoRoute_propagatesCauseUnwrapped_whenMigrationLockIsHeld() {
+            routes = SchemaRoutes.schemaRoutes(() -> nodeOverWithOrchestrator(store,
+                                                                              orchestratorFailingUndo(SchemaError.LockAcquisitionFailed.lockAcquisitionFailed(DATASOURCE))));
+            seed(SchemaStatus.COMPLETED);
+
+            assertThat(causeFrom(ManagementRoute.SCHEMA_UNDO, "targetVersion", "2")).isEqualTo(SchemaError.LockAcquisitionFailed.lockAcquisitionFailed(DATASOURCE));
+        }
+
+        /// #543/#832 review round 1 SHOULD-FIX 4: production-reachable through undo/baseline's own
+        /// `resolveMigrationScripts` (distinct from forward migrate's `resolveAndParseMigrations`,
+        /// which raises the same variant on its own, separate path) — a schema version record that
+        /// declares a migration set but carries no artifact coordinates.
+        @Test
+        void undoRoute_respondsUnprocessable_whenMigrationArtifactIsUnresolved() {
+            routes = SchemaRoutes.schemaRoutes(() -> nodeOverWithOrchestrator(store,
+                                                                              orchestratorFailingUndo(SchemaError.MigrationArtifactUnresolved.migrationArtifactUnresolved(DATASOURCE, 2, "V002__add_index.sql"))));
+            seed(SchemaStatus.COMPLETED);
+
+            assertThat(statusFor(ManagementRoute.SCHEMA_UNDO, "targetVersion", "2")).as("missing artifact coordinates on a record that declares migrations is a content problem, not a server fault")
+                      .isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+        }
+
+        @Test
+        void undoRoute_propagatesCauseUnwrapped_whenMigrationArtifactIsUnresolved() {
+            routes = SchemaRoutes.schemaRoutes(() -> nodeOverWithOrchestrator(store,
+                                                                              orchestratorFailingUndo(SchemaError.MigrationArtifactUnresolved.migrationArtifactUnresolved(DATASOURCE, 2, "V002__add_index.sql"))));
+            seed(SchemaStatus.COMPLETED);
+
+            assertThat(causeFrom(ManagementRoute.SCHEMA_UNDO, "targetVersion", "2")).isEqualTo(SchemaError.MigrationArtifactUnresolved.migrationArtifactUnresolved(DATASOURCE, 2, "V002__add_index.sql"));
+        }
+
+        /// #543/#832 review round 1 SHOULD-FIX 4: production-reachable through the same
+        /// `resolveMigrationScripts` chain — the resolved artifact holds no scripts for a datasource
+        /// that declared them (republished coordinates, or a fallback resolving a different jar).
+        @Test
+        void undoRoute_respondsUnprocessable_whenMigrationSetIsUnavailable() {
+            routes = SchemaRoutes.schemaRoutes(() -> nodeOverWithOrchestrator(store,
+                                                                              orchestratorFailingUndo(SchemaError.MigrationSetUnavailable.migrationSetUnavailable(DATASOURCE, COORDS, 2))));
+            seed(SchemaStatus.COMPLETED);
+
+            assertThat(statusFor(ManagementRoute.SCHEMA_UNDO, "targetVersion", "2")).as("a resolved artifact missing the declared scripts is a content problem, not a server fault")
+                      .isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+        }
+
+        @Test
+        void undoRoute_propagatesCauseUnwrapped_whenMigrationSetIsUnavailable() {
+            routes = SchemaRoutes.schemaRoutes(() -> nodeOverWithOrchestrator(store,
+                                                                              orchestratorFailingUndo(SchemaError.MigrationSetUnavailable.migrationSetUnavailable(DATASOURCE, COORDS, 2))));
+            seed(SchemaStatus.COMPLETED);
+
+            assertThat(causeFrom(ManagementRoute.SCHEMA_UNDO, "targetVersion", "2")).isEqualTo(SchemaError.MigrationSetUnavailable.migrationSetUnavailable(DATASOURCE, COORDS, 2));
+        }
+
+        /// #543/#832 review round 1 SHOULD-FIX 4: production-reachable through `AetherSchemaManager`'s
+        /// `parseAll` — undo and baseline each parse their resolved scripts through the same
+        /// filename-format check migrate uses (`ParsedMigration`), so a malformed script name fails
+        /// identically here.
+        @Test
+        void undoRoute_respondsUnprocessable_whenMigrationFilenameIsMalformed() {
+            routes = SchemaRoutes.schemaRoutes(() -> nodeOverWithOrchestrator(store,
+                                                                              orchestratorFailingUndo(SchemaError.InvalidMigrationFormat.invalidMigrationFormat("XYZ__bad.sql", "unknown prefix 'XYZ', expected V/R/U/B"))));
+            seed(SchemaStatus.COMPLETED);
+
+            assertThat(statusFor(ManagementRoute.SCHEMA_UNDO, "targetVersion", "2")).as("a malformed migration filename is a content problem, not a server fault")
+                      .isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+        }
+
+        @Test
+        void undoRoute_propagatesCauseUnwrapped_whenMigrationFilenameIsMalformed() {
+            routes = SchemaRoutes.schemaRoutes(() -> nodeOverWithOrchestrator(store,
+                                                                              orchestratorFailingUndo(SchemaError.InvalidMigrationFormat.invalidMigrationFormat("XYZ__bad.sql", "unknown prefix 'XYZ', expected V/R/U/B"))));
+            seed(SchemaStatus.COMPLETED);
+
+            assertThat(causeFrom(ManagementRoute.SCHEMA_UNDO, "targetVersion", "2")).isEqualTo(SchemaError.InvalidMigrationFormat.invalidMigrationFormat("XYZ__bad.sql", "unknown prefix 'XYZ', expected V/R/U/B"));
+        }
+
+        /// #543/#832 review round 1 SHOULD-FIX 4: `MigrationFailed` and `DatasourceUnreachable` are
+        /// NOT constructed anywhere in this repository's production code as of this review round —
+        /// `classifyFailure` below references both in `instanceof` branches that are themselves dead,
+        /// and the only apparent `MigrationFailed` construction site resolves to the unrelated,
+        /// same-named `SchemaEvent.MigrationFailed`. These two tests prove the mapping funnel is
+        /// correct in advance of either ever being wired up to a real raise site; they are NOT
+        /// evidence either is currently reachable through any route. Disclosed to the #543/#832
+        /// review as a scope gap — a follow-up ticket should either wire these in or retire them.
+        @Test
+        void undoRoute_respondsUnprocessable_whenMigrationHasFailed() {
+            routes = SchemaRoutes.schemaRoutes(() -> nodeOverWithOrchestrator(store,
+                                                                              orchestratorFailingUndo(SchemaError.MigrationFailed.migrationFailed(DATASOURCE, 2, "constraint violation"))));
+            seed(SchemaStatus.COMPLETED);
+
+            assertThat(statusFor(ManagementRoute.SCHEMA_UNDO, "targetVersion", "2")).as("a failed migration script is a content problem, not a server fault — not currently raised by production code (see class note above)")
+                      .isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+        }
+
+        @Test
+        void undoRoute_propagatesCauseUnwrapped_whenMigrationHasFailed() {
+            routes = SchemaRoutes.schemaRoutes(() -> nodeOverWithOrchestrator(store,
+                                                                              orchestratorFailingUndo(SchemaError.MigrationFailed.migrationFailed(DATASOURCE, 2, "constraint violation"))));
+            seed(SchemaStatus.COMPLETED);
+
+            assertThat(causeFrom(ManagementRoute.SCHEMA_UNDO, "targetVersion", "2")).isEqualTo(SchemaError.MigrationFailed.migrationFailed(DATASOURCE, 2, "constraint violation"));
+        }
+
+        @Test
+        void undoRoute_respondsServiceUnavailable_whenDatasourceIsUnreachable() {
+            routes = SchemaRoutes.schemaRoutes(() -> nodeOverWithOrchestrator(store,
+                                                                              orchestratorFailingUndo(SchemaError.DatasourceUnreachable.datasourceUnreachable(DATASOURCE, "connection refused"))));
+            seed(SchemaStatus.COMPLETED);
+
+            assertThat(statusFor(ManagementRoute.SCHEMA_UNDO, "targetVersion", "2")).as("an infrastructure fault named as such is a 503 — not currently raised by production code (see class note above)")
+                      .isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+        }
+
+        @Test
+        void undoRoute_propagatesCauseUnwrapped_whenDatasourceIsUnreachable() {
+            routes = SchemaRoutes.schemaRoutes(() -> nodeOverWithOrchestrator(store,
+                                                                              orchestratorFailingUndo(SchemaError.DatasourceUnreachable.datasourceUnreachable(DATASOURCE, "connection refused"))));
+            seed(SchemaStatus.COMPLETED);
+
+            assertThat(causeFrom(ManagementRoute.SCHEMA_UNDO, "targetVersion", "2")).isEqualTo(SchemaError.DatasourceUnreachable.datasourceUnreachable(DATASOURCE, "connection refused"));
+        }
     }
 
     // --- assertions ---

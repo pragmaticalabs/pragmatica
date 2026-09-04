@@ -34,7 +34,11 @@ public sealed interface SchemaError extends Cause {
         }
     }
 
-    record MigrationFailed(String datasource, int version, String detail) implements SchemaError {
+    /// #543/#832 review round 1 SHOULD-FIX 4: surfaces as HTTP 422 — `classifyFailure` (below)
+    /// already marks this PERMANENT, meaning the SAME migration script fails identically on retry
+    /// (a syntax error, a constraint violation, content the artifact's author controls), not an
+    /// infrastructure fault a retry could ride out. Recovery: publish a corrected blueprint revision.
+    record MigrationFailed(String datasource, int version, String detail) implements SchemaError, HttpStatusAware {
         public static MigrationFailed migrationFailed(String datasource, int version, String detail) {
             return new MigrationFailed(datasource, version, detail);
         }
@@ -43,9 +47,18 @@ public sealed interface SchemaError extends Cause {
         public String message() {
             return "Migration failed for datasource '" + datasource + "' at version " + version + ": " + detail;
         }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.UNPROCESSABLE_ENTITY;
+        }
     }
 
-    record DatasourceUnreachable(String datasource, String detail) implements SchemaError {
+    /// #543/#832 review round 1 SHOULD-FIX 4: surfaces as HTTP 503 — an infrastructure fault named
+    /// as such, not a request problem. `classifyFailure` (below) already marks this TRANSIENT: the
+    /// same request against the same artifact succeeds once the datasource is reachable again.
+    /// Recovery: no action on the request itself — retry once connectivity/the datasource recovers.
+    record DatasourceUnreachable(String datasource, String detail) implements SchemaError, HttpStatusAware {
         public static DatasourceUnreachable datasourceUnreachable(String datasource, String detail) {
             return new DatasourceUnreachable(datasource, detail);
         }
@@ -54,9 +67,22 @@ public sealed interface SchemaError extends Cause {
         public String message() {
             return "Datasource unreachable: '" + datasource + "' — " + detail;
         }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.SERVICE_UNAVAILABLE;
+        }
     }
 
-    record LockAcquisitionFailed(String datasource) implements SchemaError {
+    /// #543/#832 review round 1 SHOULD-FIX 4: surfaces as HTTP 409 — a conflict with an in-flight
+    /// operation (a concurrent attempt already holds [SchemaOrchestratorServiceInstance]'s in-process
+    /// fence, or the cluster-wide KV migration lock), not a malformed request. Previously constructed
+    /// ONLY conceptually — the fence's own short-circuit built an ad hoc, un-typed `Cause` instead of
+    /// this variant, so a lock conflict answered 500 despite this exact type already existing (and
+    /// already being classified `TRANSIENT` by `classifyFailure` below, which was consequently dead
+    /// code on that path). Recovery: no operator action — the fence/lock releases when the in-flight
+    /// attempt finishes; retry the request once it does.
+    record LockAcquisitionFailed(String datasource) implements SchemaError, HttpStatusAware {
         public static LockAcquisitionFailed lockAcquisitionFailed(String datasource) {
             return new LockAcquisitionFailed(datasource);
         }
@@ -64,6 +90,11 @@ public sealed interface SchemaError extends Cause {
         @Override
         public String message() {
             return "Failed to acquire migration lock for datasource '" + datasource + "'";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
         }
     }
 
@@ -115,7 +146,12 @@ public sealed interface SchemaError extends Cause {
     /// The schema version record declares a migration set but carries no blueprint artifact
     /// coordinates, so the declared scripts cannot be located. Permanent: nothing about a retry
     /// changes the recorded coordinates.
-    record MigrationArtifactUnresolved(String datasource, int declaredVersion, String declaredMigration) implements SchemaError {
+    ///
+    /// #543/#832 review round 1 SHOULD-FIX 4: surfaces as HTTP 422 — `classifyFailure` (below)
+    /// already marks this PERMANENT; the fix is republishing a blueprint carrying the coordinates,
+    /// not retrying the same request. Recovery: publish a blueprint revision recording the schema
+    /// version's artifact coordinates, or re-run baseline against the datasource's actual state.
+    record MigrationArtifactUnresolved(String datasource, int declaredVersion, String declaredMigration) implements SchemaError, HttpStatusAware {
         public static MigrationArtifactUnresolved migrationArtifactUnresolved(String datasource,
                                                                               int declaredVersion,
                                                                               String declaredMigration) {
@@ -130,12 +166,22 @@ public sealed interface SchemaError extends Cause {
                  + "') but its schema version record carries no blueprint artifact coordinates"
                  + " — the declared migrations were NOT applied";
         }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.UNPROCESSABLE_ENTITY;
+        }
     }
 
     /// The blueprint artifact resolved from the recorded coordinates contains no migration scripts
     /// for a datasource that declared them, meaning the resolved artifact is not the one the deploy
     /// declared against. Permanent: a retry resolves the same coordinates.
-    record MigrationSetUnavailable(String datasource, String artifactCoords, int declaredVersion) implements SchemaError {
+    ///
+    /// #543/#832 review round 1 SHOULD-FIX 4: surfaces as HTTP 422 — `classifyFailure` (below)
+    /// already marks this PERMANENT; the resolved artifact itself, not cluster state, is what's
+    /// wrong. Recovery: publish a blueprint revision whose artifact actually carries the declared
+    /// migration scripts.
+    record MigrationSetUnavailable(String datasource, String artifactCoords, int declaredVersion) implements SchemaError, HttpStatusAware {
         public static MigrationSetUnavailable migrationSetUnavailable(String datasource,
                                                                       String artifactCoords,
                                                                       int declaredVersion) {
@@ -150,9 +196,18 @@ public sealed interface SchemaError extends Cause {
                  + "' contains no migration scripts for it"
                  + " — the declared migrations were NOT applied";
         }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.UNPROCESSABLE_ENTITY;
+        }
     }
 
-    record InvalidMigrationFormat(String filename, String detail) implements SchemaError {
+    /// #543/#832 review round 1 SHOULD-FIX 4: surfaces as HTTP 422 — a malformed migration script
+    /// filename is a content problem in the published artifact, not a cluster-state conflict or an
+    /// infrastructure fault; the same artifact fails identically on retry. Recovery: publish a
+    /// blueprint revision with a correctly named script (`V<n>__*.sql` / `U<n>__*.sql`).
+    record InvalidMigrationFormat(String filename, String detail) implements SchemaError, HttpStatusAware {
         public static InvalidMigrationFormat invalidMigrationFormat(String filename, String detail) {
             return new InvalidMigrationFormat(filename, detail);
         }
@@ -160,6 +215,11 @@ public sealed interface SchemaError extends Cause {
         @Override
         public String message() {
             return "Invalid migration filename '" + filename + "': " + detail;
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.UNPROCESSABLE_ENTITY;
         }
     }
 
@@ -231,6 +291,46 @@ public sealed interface SchemaError extends Cause {
         @Override
         public HttpStatus httpStatus() {
             return HttpStatus.CONFLICT;
+        }
+    }
+
+    /// #543/#832 review round 1 BLOCKING 3: `SchemaOrchestratorService.provisionAndRun` bounds the
+    /// undo manager call with `SchemaPolicy#migrationTimeout` (the same bound migrate's own
+    /// `resolveAndParseMigrations` uses) — this is what a caller sees when that bound is hit. 504,
+    /// not 500: the request was accepted and dispatched, the manager simply never reported completion
+    /// within the bound. Recovery: the datasource's schema version record is left `FAILED` (never
+    /// silently unchanged, never `COMPLETED`) — a fresh undo call, `aether schema retry`, or a
+    /// redeploy can re-attempt it once whatever wedged the connector or the down-script is cleared.
+    record UndoTimedOut(String datasource, int targetVersion) implements SchemaError, HttpStatusAware {
+        public static UndoTimedOut undoTimedOut(String datasource, int targetVersion) {
+            return new UndoTimedOut(datasource, targetVersion);
+        }
+
+        @Override
+        public String message() {
+            return "Undo timed out for datasource '" + datasource + "' targeting version " + targetVersion;
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.GATEWAY_TIMEOUT;
+        }
+    }
+
+    /// See [UndoTimedOut] — the baseline analogue, same bound, same recovery path.
+    record BaselineTimedOut(String datasource, int version) implements SchemaError, HttpStatusAware {
+        public static BaselineTimedOut baselineTimedOut(String datasource, int version) {
+            return new BaselineTimedOut(datasource, version);
+        }
+
+        @Override
+        public String message() {
+            return "Baseline timed out for datasource '" + datasource + "' at version " + version;
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.GATEWAY_TIMEOUT;
         }
     }
 }

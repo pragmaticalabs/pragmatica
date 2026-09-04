@@ -210,7 +210,7 @@ class SchemaOrchestratorRetrySingleFlightTest {
             orchestrator.migrateIfNeeded(DATASOURCE)
                         .await()
                         .onSuccess(_ -> Assertions.fail("Expected attempt 2 to fail — the fence is held by attempt 1"))
-                        .onFailure(cause -> assertThat(cause.message()).contains("lock held"));
+                        .onFailure(cause -> assertThat(cause).isInstanceOf(SchemaError.LockAcquisitionFailed.class));
 
             // Discriminating check: pre-fix, attempt 2's failure above tore down attempt 1's fence, so
             // attempt 3 would acquire it again and invoke migrate() a SECOND time here — concurrently
@@ -218,7 +218,7 @@ class SchemaOrchestratorRetrySingleFlightTest {
             orchestrator.migrateIfNeeded(DATASOURCE)
                         .await()
                         .onSuccess(_ -> Assertions.fail("Expected attempt 3 to fail too — attempt 1's fence must still be held"))
-                        .onFailure(cause -> assertThat(cause.message()).contains("lock held"));
+                        .onFailure(cause -> assertThat(cause).isInstanceOf(SchemaError.LockAcquisitionFailed.class));
 
             assertThat(manager.invocations).as("migrate() must not run before attempt 1's own write completes").isEmpty();
 

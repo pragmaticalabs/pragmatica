@@ -4450,6 +4450,16 @@ A target version with no matching undo script in the artifact, or one whose scri
 longer matches its recorded checksum, is rejected rather than silently no-op'd — see
 `UndoNotAvailable` / `ChecksumMismatch` in the status-code table.
 
+> **Not sticky across a republish.** The deployment contract is declarative — the artifact's
+> declared version wins on every publish — so an undo is an operator intervention performed
+> between deploys, not a persistent state change. Republishing (or redeploying) a blueprint that
+> declares a version higher than the undo target re-arms migration at that declared version and
+> migrates forward from the live (now-rolled-back) record: rows removed by the undo are
+> re-applied from scratch, with nothing comparing the live record to the request first. To keep
+> the undo, deploy a blueprint that declares the lower version instead of republishing the higher
+> one — or accept the re-migration. A guard that refuses (or requires `force` for) a publish that
+> would do this is tracked separately in #834, not implemented here.
+
 ### POST /api/v1/schema/retry/{datasource}
 
 Retries a schema migration by resetting status to `PENDING` and clearing the attempt counter. This
@@ -4495,6 +4505,12 @@ undo to the target version instead, or baseline at (or above) the existing versi
 `version` is optional and defaults to `1` when absent; a present-but-non-integer value is rejected
 with `400 Bad Request`.
 
+> **Likewise not sticky across a republish**, for the same declarative-contract reason as undo
+> above: the artifact's declared version wins on every publish. A republish (or redeploy) that
+> declares a version different from the one baseline established resumes forward migration from
+> the live record rather than treating baseline's version as pinned — see the undo section above
+> for the operator's correct sequence and #834.
+
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `version` | int | no | Version to baseline at (defaults to `1` when absent; a non-integer value is a `400`) |
@@ -4522,13 +4538,30 @@ with `400 Bad Request`.
 > | `undo` against a target version with no matching `U<version>__*.sql` script in the artifact (#543) | `422 Unprocessable Entity` | ``Undo script not available for datasource '<name>' at version <version>`` — publish a blueprint revision carrying the missing script, or choose a target version the artifact can actually undo to |
 > | `undo` against a version whose recorded checksum no longer matches the script content (#543) | `422 Unprocessable Entity` | ``Checksum mismatch for datasource '<name>' at version <version>: expected <expected> but found <actual>`` — the migration script was edited after being applied; restore its original content, or baseline past the drifted version |
 > | `baseline` against a datasource with versioned migrations already applied past the requested version (#543) | `409 Conflict` | ``Baseline conflict for datasource '<name>': versioned migrations already applied up to version <existingVersion>`` — undo to the target version instead, or baseline at (or above) `<existingVersion>` |
+> | A concurrent attempt already holds the in-process fence or the cluster-wide migration lock for the datasource (#543) | `409 Conflict` | ``Failed to acquire migration lock for datasource '<name>'`` — no operator action; retry once the in-flight attempt finishes and releases the lock |
+> | The schema version record declares a migration set but carries no artifact coordinates (#543) | `422 Unprocessable Entity` | ``Migration artifact unresolved for datasource '<name>' at version <version>: <declaredMigration>`` — publish a blueprint revision recording the artifact coordinates, or re-run baseline against the datasource's actual state |
+> | The resolved artifact holds no migration scripts for a datasource that declared them (#543) | `422 Unprocessable Entity` | ``Migration set unavailable for datasource '<name>' from artifact '<coords>' at version <version>`` — publish a blueprint revision whose artifact actually carries the declared migration scripts |
+> | A resolved migration script's filename does not match the `V\|R\|U\|B<n>__*.sql` convention (#543) | `422 Unprocessable Entity` | ``Invalid migration filename '<filename>': <detail>`` — publish a blueprint revision with a correctly named script |
+> | The physical database behind the datasource is already claimed by another blueprint's migrations (`aether_schema_owner`) | `409 Conflict` | ``Blueprint '<rejected>' rejected — the physical database behind datasource '<name>' is already migrated by blueprint '<currentOwner>' ... `` — point this blueprint's datasource config at a different physical database, or consolidate both blueprints' migrations into the owning one |
+> | `undo`/`baseline` do not report completion before `SchemaPolicy#migrationTimeout` elapses (#543) | `504 Gateway Timeout` | ``Undo timed out for datasource '<name>' targeting version <version>`` / ``Baseline timed out for datasource '<name>' at version <version>`` — the fence and lock are released on timeout; a fresh call, `aether schema retry`, or a redeploy can re-attempt once whatever wedged the connector or script is cleared |
 > | `?version=` / `?targetVersion=` present but not an integer | `400 Bad Request` | ``Invalid '<parameter>' parameter: '<value>' is not an integer`` |
 >
 > An **absent** `version`/`targetVersion` is not an error — it takes the documented default
 > (`1` for baseline, `0` for undo). `undo` and `baseline` map every orchestrator failure above
-> through `HttpStatusAware`; only a genuinely unmapped failure remains a `500` (#543 replaced the
-> prior behavior, under which neither route ever reached the orchestrator, so no orchestrator
-> failure had ever surfaced through them before).
+> through `HttpStatusAware` (#543 replaced the prior behavior, under which neither route ever
+> reached the orchestrator, so no orchestrator failure had ever surfaced through them before).
+> **Two `SchemaError` variants — `MigrationFailed` and `DatasourceUnreachable` — are typed and
+> `HttpStatusAware` (422 and 503 respectively) but have no construction site anywhere in this
+> repository's current code, so they cannot yet surface through any route; a genuinely unmapped
+> failure, or either of these two should one day be wired up, still answers `500`.
+> [design intent — unverified]**
+>
+> **A thirteenth variant, `DatasourceOwnershipConflict`, is deliberately absent from this table** —
+> it is a publish-time blueprint-validation check (compares datasource *names* across blueprints,
+> not one of these six routes' own failure modes) and is documented instead alongside blueprint
+> publish. Its migration-time companion `PhysicalDatasourceOwnershipConflict` (which compares the
+> underlying physical database and IS reachable from `migrate`/`undo`/`baseline` alike, via the
+> shared ownership claim) is in the table above.
 
 > **Known limitation — `acquireLock`'s cross-node lock check is not atomic (#766, not fixed by
 > #543).** Both `undo` and `baseline` share `SchemaOrchestratorService.acquireLock` with `migrate`.
@@ -4540,6 +4573,13 @@ with `400 Bad Request`.
 > `FAILED`). Recovery when it happens: `aether schema retry` after the false-`FAILED` record is
 > observed. The fix needs an atomic compare-and-set on the lock key rather than read-then-write;
 > tracked in #766, not addressed here.
+>
+> The leader check above `undo`/`baseline` is also check-then-act, undisclosed until now:
+> `requireLeader` reads `node.isLeader()` once and lets the manager call proceed with no re-check,
+> so leadership can change between that read and the call's completion. Same
+> missing-compare-and-set shape as the lock race above, one layer up at the route's leader gate —
+> tracked under #766 alongside the lock race rather than separately, since a real compare-and-set
+> primitive is the natural fix for both.
 
 ---
 

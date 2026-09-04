@@ -164,6 +164,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     @Override
     public Promise<Unit> undoTo(String datasourceName, int targetVersion) {
         return executeUndoOrBaseline(datasourceName,
+                                     targetVersion,
                                      "undo",
                                      (connector, scripts, owner) -> schemaManager.undo(datasourceName,
                                                                                        targetVersion,
@@ -181,6 +182,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     @Override
     public Promise<Unit> baseline(String datasourceName, int version) {
         return executeUndoOrBaseline(datasourceName,
+                                     version,
                                      "baseline",
                                      (connector, scripts, owner) -> schemaManager.baseline(datasourceName,
                                                                                            version,
@@ -207,6 +209,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     /// operations to the leader ([SchemaRouteError.SchemaNotLeader]) rather than by widening this
     /// fence into a distributed lock.
     private Promise<Unit> executeUndoOrBaseline(String datasourceName,
+                                                int requestedVersion,
                                                 String operation,
                                                 Fn3<Promise<AetherSchemaManager.SchemaResult>, SqlConnector, List<MigrationEntry>, BlueprintId> terminalOp) {
         var versionKey = SchemaVersionKey.schemaVersionKey(datasourceName);
@@ -214,7 +217,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
         return kvStore.get(versionKey)
                       .filter(SchemaOrchestratorServiceInstance::isSchemaVersionValue)
                       .map(SchemaVersionValue.class::cast)
-                      .map(value -> runUndoOrBaseline(datasourceName, operation, value, terminalOp))
+                      .map(value -> runUndoOrBaseline(datasourceName, requestedVersion, operation, value, terminalOp))
                       .or(() -> schemaRecordVanished(datasourceName, operation));
     }
 
@@ -231,6 +234,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     }
 
     private Promise<Unit> runUndoOrBaseline(String datasourceName,
+                                            int requestedVersion,
                                             String operation,
                                             SchemaVersionValue value,
                                             Fn3<Promise<AetherSchemaManager.SchemaResult>, SqlConnector, List<MigrationEntry>, BlueprintId> terminalOp) {
@@ -239,7 +243,11 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
         return acquireLock(datasourceName, attemptToken).flatMap(_ -> resolveMigrationScripts(datasourceName, value).flatMap(scripts -> provisionAndRun(datasourceName,
                                                                                                                                                         scripts,
                                                                                                                                                         value.owningBlueprint(),
-                                                                                                                                                        terminalOp))
+                                                                                                                                                        terminalOp).mapError(cause -> handleUndoOrBaselineTimeout(datasourceName,
+                                                                                                                                                                                                                  requestedVersion,
+                                                                                                                                                                                                                  operation,
+                                                                                                                                                                                                                  value,
+                                                                                                                                                                                                                  cause)))
                                                                                              .flatMap(result -> recordOutcome(datasourceName,
                                                                                                                               operation,
                                                                                                                               value,
@@ -250,12 +258,61 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                                                                                                                                       result)));
     }
 
+    /// #543/#832 review round 1 BLOCKING 3: `provisionAndRun`'s manager call had no bound, unlike
+    /// migrate's own [#runMigration] (`resolveAndParseMigrations(...).timeout(...)`, same placement
+    /// rationale — as close to the low-level `schemaManager.undo`/`.baseline` call as this call site
+    /// allows, before any further `.flatMap`/`.mapError` is chained onto it, per `Promise.timeout()`'s
+    /// own placement warning). A wedged connection or a runaway down/baseline script previously held
+    /// [#inFlightMigrations]'s fence AND the KV migration lock forever: the KV lock's own TTL expires,
+    /// but nothing releases the in-process fence, because [#finalizeAttempt] — the only release site —
+    /// never runs while the promise it is chained onto never settles.
     private Promise<AetherSchemaManager.SchemaResult> provisionAndRun(String datasourceName,
                                                                       List<MigrationEntry> scripts,
                                                                       BlueprintId owner,
                                                                       Fn3<Promise<AetherSchemaManager.SchemaResult>, SqlConnector, List<MigrationEntry>, BlueprintId> terminalOp) {
         return provisionConnector(datasourceName).flatMap(connector -> terminalOp.apply(connector, scripts, owner)
+                                                                                 .timeout(schemaManager.policy()
+                                                                                                       .migrationTimeout())
                                                                                  .onResultRun(() -> releaseConnectorSilently(datasourceName)));
+    }
+
+    /// Converts a manager-call timeout into a named, `HttpStatusAware` terminal failure. Every OTHER
+    /// failure reaching this point (a genuine [SchemaError] the manager itself raised, or a
+    /// [#provisionConnector] failure) passes through unchanged — those already carry their own status
+    /// and their own KV disposition is the caller's concern, not a timeout-specific one.
+    ///
+    /// On timeout, [#finalizeAttempt] already releases both the fence and the KV lock
+    /// unconditionally once THIS failed promise settles — no additional release code is needed here,
+    /// only making the promise settle at all (via [#provisionAndRun]'s new timeout bound) was missing.
+    /// What IS missing without this method: nothing else records that the attempt failed, so the
+    /// existing KV record would sit at whatever status it held before the call (typically `COMPLETED`
+    /// from a PRIOR operation) with no sign this one ever ran or failed. Writing `FAILED` here —
+    /// fire-and-forget via `updateStatus`, the same DEPENDENT-vs-INDEPENDENT split
+    /// [#handleMigrationFailure] uses for its own status write, since the chain's own failure must not
+    /// wait on this write to become observable to the caller — gives the operator a named cause
+    /// (`UndoTimedOut`/`BaselineTimedOut`, 504 through the route) instead of a bare 500, and a `FAILED`
+    /// record that a retried undo/baseline or a redeploy can move past.
+    private Cause handleUndoOrBaselineTimeout(String datasourceName,
+                                              int requestedVersion,
+                                              String operation,
+                                              SchemaVersionValue value,
+                                              Cause cause) {
+        if (! (cause instanceof CoreError.Timeout)) {
+            return cause;
+        }
+
+        log.error("Schema {} for '{}' targeting version {} timed out — releasing lock and marking FAILED",
+                  operation,
+                  datasourceName,
+                  requestedVersion);
+        updateStatus(datasourceName, value, SchemaStatus.FAILED).onFailure(c -> log.error("Failed to record FAILED status for '{}' after {} timeout: {}",
+                                                                                          datasourceName,
+                                                                                          operation,
+                                                                                          c.message()));
+
+        return "undo".equals(operation)
+               ? SchemaError.UndoTimedOut.undoTimedOut(datasourceName, requestedVersion)
+               : SchemaError.BaselineTimedOut.baselineTimedOut(datasourceName, requestedVersion);
     }
 
     /// #543 condition 3: writes `result.currentVersion()` — the value [AetherSchemaManager]
@@ -565,8 +622,6 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                                                              c.message()));
     }
 
-    private static final Cause LOCK_HELD = Causes.cause("Schema migration lock held — skipping duplicate");
-
     private final ConcurrentHashMap<String, Object> inFlightMigrations = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, ScheduledFuture<?>> scheduledRetries = new ConcurrentHashMap<>();
 
@@ -588,7 +643,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     /// would risk tearing down a fresh attempt's fence if that cleanup ever ran late.
     private Promise<Unit> acquireLock(String datasourceName, Object attemptToken) {
         if (inFlightMigrations.putIfAbsent(datasourceName, attemptToken) != null) {
-            return LOCK_HELD.promise();
+            return SchemaError.LockAcquisitionFailed.lockAcquisitionFailed(datasourceName).promise();
         }
 
         cancelScheduledRetry(datasourceName);
@@ -597,7 +652,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
         if (isLockHeld(lockKey)) {
             inFlightMigrations.remove(datasourceName, attemptToken);
 
-            return LOCK_HELD.promise();
+            return SchemaError.LockAcquisitionFailed.lockAcquisitionFailed(datasourceName).promise();
         }
 
         var lockValue = SchemaMigrationLockValue.schemaMigrationLockValue(datasourceName, self, LOCK_TTL_MS);

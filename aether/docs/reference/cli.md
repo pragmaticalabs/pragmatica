@@ -1514,6 +1514,14 @@ version fails with `409 Conflict` (``Baseline conflict for datasource '<name>': 
 migrations already applied up to version <existingVersion>``) — undo to the target version instead,
 or baseline at (or above) the existing version.
 
+`undo` (and, for the same declarative-contract reason, `baseline`) is not sticky across a
+republish: the artifact's declared version wins on every publish, so republishing (or
+redeploying) a blueprint that declares a version higher than the undo target re-arms migration
+and re-applies from scratch whatever rows the undo removed — nothing compares the live record to
+the request first. To keep an undo, deploy a blueprint that declares the lower version instead of
+republishing the higher one, or accept the re-migration. A guard that refuses (or requires
+`force` for) such a publish is tracked separately in #834, not implemented here.
+
 `migrate` similarly refuses (#760 review BLOCKING 1) when the record is `COMPLETED` **and** the
 owning blueprint has at least one slice instance already `ACTIVE` — re-arming to `MIGRATING` would
 hold the next slice reaching `LOADED` (scale-up, rolling redeploy, a rejoining node) with no
