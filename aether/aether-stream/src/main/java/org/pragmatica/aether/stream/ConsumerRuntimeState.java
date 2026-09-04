@@ -62,8 +62,11 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private final ScheduledFuture<?> idleConsumerChecker;
     /// #654: node-wide count of cursor commits (final flush or periodic checkpoint) that resolved
-    /// with a failure or never settled at all. Survives a consumer's removal from [#consumers] at
-    /// detach, which a per-consumer-only field could not. Exposed via [#cursorCommitFailureCount].
+    /// with a failure or never settled at all ([#reportIfUnsettled]). An event count, not a
+    /// deduplicated-incident count: a final commit unresolved at the shutdown bound that later also
+    /// resolves with a genuine failure is counted twice, deliberately (see [#reportIfUnsettled]).
+    /// Survives a consumer's removal from [#consumers] at detach, which a per-consumer-only field could
+    /// not. Exposed via [#cursorCommitFailureCount].
     private final AtomicLong cursorCommitFailureCount = new AtomicLong(0);
 
     ConsumerRuntimeState(StreamPartitionManager partitionManager, DeadLetterHandler dlHandler) {
@@ -200,28 +203,58 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// #654: batches every consumer's final cursor commit into one bounded wait so a slow or wedged
     /// consensus write cannot hold node stop past [#CURSOR_COMMIT_SHUTDOWN_BOUND] — this runs inside
     /// the #488 ordering window, while [#partitionManager] and the cursor store are still alive.
-    /// Each commit's [#observedCommit] handlers are attached BEFORE batching, so a commit that only
-    /// resolves after the bound is still logged and counted: [Promise#await(TimeSpan)] leaves an
-    /// unresolved promise running rather than cancelling it, and `onSuccess`/`onFailure` return the
-    /// same promise instance, so batching for the bound changes nothing about when those handlers fire.
+    /// Each commit's [#observedCommit] handlers are attached BEFORE batching, so a commit that resolves
+    /// after the bound still reaches its own [#onCursorCommitFailure] / [#recordIfRecovered] path when
+    /// it settles — but that is not enough on its own: the documented contract ([#close]'s own javadoc,
+    /// `management-api.md`'s redelivery paragraph) says a commit that has not settled within the bound
+    /// counts as failed for THIS shutdown even if it later succeeds, and a plain success carries no
+    /// failure for those handlers to observe, so a merely SLOW commit would otherwise go uncounted
+    /// forever. [#reportIfUnsettled] closes that gap: right when the bound expires, every commit still
+    /// unresolved at that instant is marked directly, independent of how it eventually resolves.
     @TerminalOperation
     private void awaitFinalCursorCommits() {
-        var commits = new ArrayList<Promise<Unit>>(consumers.size());
+        var pending = new ArrayList<PendingCommit>(consumers.size());
 
-        consumers.forEach((key, state) -> commits.add(flushCursorForKey(key, state)));
-        if (commits.isEmpty()) {
+        consumers.forEach((key, state) -> pending.add(new PendingCommit(key, state, flushCursorForKey(key, state))));
+        if (pending.isEmpty()) {
             return;
         }
 
-        Promise.allOf(commits)
+        Promise.allOf(pending.stream().map(PendingCommit::commit).toList())
                .await(CURSOR_COMMIT_SHUTDOWN_BOUND)
-               .onFailure(cause -> LOG.log(System.Logger.Level.WARNING,
-                                           "{0} cursor commit(s) did not settle within the {1}ms shutdown bound ({2}); "
-                                          + "node stop is continuing, late results are still logged and counted",
-                                           commits.size(),
-                                           CURSOR_COMMIT_SHUTDOWN_BOUND.millis(),
-                                           cause.message()));
+               .onFailure(_ -> pending.forEach(this::reportIfUnsettled));
     }
+
+    /// #654 round 2: a commit still unresolved the instant [#awaitFinalCursorCommits]'s bound expires
+    /// is marked failed right here, mirroring [#onCursorCommitFailure]'s surface (counter, per-partition
+    /// detail, ERROR log) but for "gave up waiting" rather than an observed failure cause.
+    /// [ConsumerState#recordCursorCommitFailure] is only ever cleared OPTIMISTICALLY at the START of the
+    /// NEXT commit attempt ([#observedCommit]), and there is no next attempt once this consumer is torn
+    /// down at close, so a later success on this same promise cannot clear or roll back what is recorded
+    /// here — the node is stopping, and the operator's signal is that the cursor was not durably
+    /// confirmed before stop. A commit marked here that goes on to resolve with a genuine failure is
+    /// counted a second time through [#onCursorCommitFailure]'s own handler: a deliberate simplification,
+    /// since [#cursorCommitFailureCount] is an event count, not a deduplicated-incident count, and a
+    /// doubly-bad commit is not a case worth extra bookkeeping to under-count.
+    private void reportIfUnsettled(PendingCommit pending) {
+        if (pending.commit().isResolved()) {
+            return;
+        }
+
+        cursorCommitFailureCount.incrementAndGet();
+        pending.state().recordCursorCommitFailure("unsettled at shutdown bound");
+        LOG.log(System.Logger.Level.ERROR,
+                "Cursor commit unsettled at the {0}ms shutdown bound for consumer group {1} on stream {2} partition {3}",
+                CURSOR_COMMIT_SHUTDOWN_BOUND.millis(),
+                pending.key().groupId(),
+                pending.key().streamName(),
+                pending.key().partition());
+    }
+
+    /// #654 round 2: pairs a final commit's promise with the key/state [#reportIfUnsettled] needs to log
+    /// and record against — [#awaitFinalCursorCommits] batches by promise alone ([Promise#allOf(Collection)]),
+    /// so this is the association that would otherwise be lost.
+    private record PendingCommit(ConsumerKey key, ConsumerState state, Promise<Unit> commit) {}
 
     private void reapIdleConsumers() {
         reapIdleConsumers(System.currentTimeMillis());
@@ -332,14 +365,15 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// recorded.
     private Promise<Unit> observedCommit(ConsumerKey key, ConsumerState state) {
         return cursorStore.map(store -> {
-                              state.clearCursorCommitFailure();
-                              return store.commit(key.groupId(),
-                                                  key.streamName(),
-                                                  key.partition(),
-                                                  state.cursor())
-                                         .onSuccess(_ -> recordIfRecovered(key, state, store))
-                                         .onFailure(cause -> onCursorCommitFailure(key, state, cause));
-                          })
+                                   state.clearCursorCommitFailure();
+
+                                   return store.commit(key.groupId(),
+                                                       key.streamName(),
+                                                       key.partition(),
+                                                       state.cursor())
+                                               .onSuccess(_ -> recordIfRecovered(key, state, store))
+                                               .onFailure(cause -> onCursorCommitFailure(key, state, cause));
+                               })
                           .or(Promise.unitPromise());
     }
 
@@ -347,11 +381,13 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// failure (e.g. a consensus checkpoint publish) rather than let it fail the outer promise — poll
     /// for it right after resolution and fold it into the same surface a local-commit failure uses.
     private void recordIfRecovered(ConsumerKey key, ConsumerState state, ConsumerCursorStore store) {
-        store.lastRecoveredFailure(key.groupId(), key.streamName(), key.partition())
+        store.lastRecoveredFailure(key.groupId(),
+                                   key.streamName(),
+                                   key.partition())
              .onPresent(detail -> {
-                 cursorCommitFailureCount.incrementAndGet();
-                 state.recordCursorCommitFailure("checkpoint publish: " + detail);
-             });
+                            cursorCommitFailureCount.incrementAndGet();
+                            state.recordCursorCommitFailure("checkpoint publish: " + detail);
+                        });
     }
 
     private void onCursorCommitFailure(ConsumerKey key, ConsumerState state, Cause cause) {
