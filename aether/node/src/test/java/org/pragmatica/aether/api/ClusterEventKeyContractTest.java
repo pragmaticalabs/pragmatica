@@ -11,8 +11,6 @@ import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Map;
 
-import org.junit.jupiter.api.Test;
-
 import org.pragmatica.aether.api.ClusterEvent.Severity;
 import org.pragmatica.aether.api.ManagementApiResponses.ClusterEventView;
 import org.pragmatica.consensus.NodeId;
@@ -21,7 +19,10 @@ import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
+import org.junit.jupiter.api.Test;
+
 import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// Pins the wire contract behind #304 (node-mode live events never key correctly): the server's
 /// `ClusterEventView` has always carried its HLC time under `at` — never `timestamp` — per its own
@@ -39,6 +40,7 @@ class ClusterEventKeyContractTest {
             if (in == null) {
                 return Result.failure(Causes.cause("Dashboard resource not found on classpath: " + path));
             }
+
             return Result.success(new String(in.readAllBytes(), StandardCharsets.UTF_8));
         } catch (IOException e) {
             return Result.failure(Causes.fromThrowable(e));
@@ -49,17 +51,17 @@ class ClusterEventKeyContractTest {
     void clusterEventView_serializesAtField_neverTimestamp() {
         var at = new HlcTimestamp(HlcTimestamp.pack(1_756_800_000_000L, 0), new NodeId("node-1"));
         var view = new ClusterEventView("NODE_FAILED", at, Severity.WARNING, "node-1 failed", Map.of());
-
         var written = MAPPER.writeAsString(view);
 
         assertThat(written.isSuccess()).as("ClusterEventView must serialize").isTrue();
-
         written.onSuccess(json -> {
             var parsed = MAPPER.readTree(json);
 
             parsed.onSuccess(tree -> {
-                assertThat(tree.has("at")).as("the HLC time field is named 'at' on the wire").isTrue();
-                assertThat(tree.has("timestamp")).as("'timestamp' has never been a field of this shape").isFalse();
+                assertThat(tree.has("at")).as("the HLC time field is named 'at' on the wire")
+                          .isTrue();
+                assertThat(tree.has("timestamp")).as("'timestamp' has never been a field of this shape")
+                          .isFalse();
             });
             assertThat(parsed.isSuccess()).isTrue();
         });
@@ -70,8 +72,8 @@ class ClusterEventKeyContractTest {
     @Test
     void clusterEventView_recordComponents_nameTheTimeFieldAt_notTimestamp() {
         var componentNames = Arrays.stream(ClusterEventView.class.getRecordComponents())
-                                    .map(RecordComponent::getName)
-                                    .toList();
+                                   .map(RecordComponent::getName)
+                                   .toList();
 
         assertThat(componentNames).contains("at").doesNotContain("timestamp");
     }
@@ -83,24 +85,22 @@ class ClusterEventKeyContractTest {
     void eventsJs_computesKeyFromAtOrTimestamp_notTimestampAlone() {
         var eventsJs = resource("/dashboard/js/stores/events.js").unwrap();
 
-        assertThat(eventsJs)
-                .as("events.js must expose an eventKey/eventMillis helper reading either time field")
-                .contains("eventKey")
-                .contains("eventMillis")
-                .as("the old timestamp-only dedup check must be gone")
-                .doesNotContain("e.timestamp === event.timestamp && e.type === event.type");
+        assertThat(eventsJs).as("events.js must expose an eventKey/eventMillis helper reading either time field")
+                  .contains("eventKey")
+                  .contains("eventMillis")
+                  .as("the old timestamp-only dedup check must be gone")
+                  .doesNotContain("e.timestamp === event.timestamp && e.type === event.type");
     }
 
     @Test
     void indexHtml_usesEventKeyHelper_andNeverReadsEventTimestampDirectly() {
         var indexHtml = resource("/dashboard/index.html").unwrap();
 
-        assertThat(indexHtml)
-                .as("the event list key must go through the store's key helper")
-                .contains(":key=\"$store.events.eventKey(event)\"")
-                .as("the event time display must go through the store's millis helper")
-                .contains("formatTime($store.events.eventMillis(event))")
-                .as("no template binding may read the nonexistent 'event.timestamp' field directly")
-                .doesNotContain("event.timestamp");
+        assertThat(indexHtml).as("the event list key must go through the store's key helper")
+                  .contains(":key=\"$store.events.eventKey(event)\"")
+                  .as("the event time display must go through the store's millis helper")
+                  .contains("formatTime($store.events.eventMillis(event))")
+                  .as("no template binding may read the nonexistent 'event.timestamp' field directly")
+                  .doesNotContain("event.timestamp");
     }
 }

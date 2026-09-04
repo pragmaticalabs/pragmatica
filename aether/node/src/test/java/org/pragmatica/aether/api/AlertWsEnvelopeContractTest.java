@@ -9,9 +9,6 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.function.BiConsumer;
 
-import org.junit.jupiter.api.Test;
-import org.mockito.Mockito;
-
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AlertThresholdKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -23,9 +20,13 @@ import org.pragmatica.lang.NullReturn;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
+import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+
 
 /// Pins the wire contract behind #292 (live alerts never render): the WS envelope
 /// `AlertManager.buildAlertMessage` produces is `{"type":"ALERT","timestamp":…,"data":{…}}` — the
@@ -55,12 +56,17 @@ class AlertWsEnvelopeContractTest {
         var kvStore = (KVStore<AetherKey, AetherValue>) Mockito.mock(KVStore.class);
 
         Mockito.doAnswer(invocation -> {
-                    BiConsumer<AlertThresholdKey, AlertThresholdValue> consumer = invocation.getArgument(2);
-                    consumer.accept(new AlertThresholdKey(metric), AlertThresholdValue.alertThresholdValue(metric, warning, critical));
-                    return null;
-                })
-                .when(kvStore)
-                .forEach(eq(AlertThresholdKey.class), eq(AlertThresholdValue.class), any());
+                             BiConsumer<AlertThresholdKey, AlertThresholdValue> consumer = invocation.getArgument(2);
+
+                             consumer.accept(new AlertThresholdKey(metric),
+                                             AlertThresholdValue.alertThresholdValue(metric, warning, critical));
+
+                             return null;
+                         })
+               .when(kvStore)
+               .forEach(eq(AlertThresholdKey.class),
+                        eq(AlertThresholdValue.class),
+                        any());
 
         return AlertManager.readOnly(kvStore);
     }
@@ -70,6 +76,7 @@ class AlertWsEnvelopeContractTest {
             if (in == null) {
                 return Result.failure(Causes.cause("Dashboard resource not found on classpath: " + path));
             }
+
             return Result.success(new String(in.readAllBytes(), StandardCharsets.UTF_8));
         } catch (IOException e) {
             return Result.failure(Causes.fromThrowable(e));
@@ -79,24 +86,21 @@ class AlertWsEnvelopeContractTest {
     @Test
     void checkThreshold_valueAboveCritical_returnsEnvelopeWithTopLevelTypeAndUnwrappedData() {
         var manager = managerWithThreshold("cpu.usage", 0.7, 0.9);
-
-        var json = manager.checkThreshold("cpu.usage", new NodeId("node-1"), 0.95)
-                          .or("");
+        var json = manager.checkThreshold("cpu.usage", new NodeId("node-1"), 0.95).or("");
 
         assertThat(json).as("a value above the critical threshold must produce an alert message").isNotEmpty();
-
         var parsed = MAPPER.readTree(json);
 
         assertThat(parsed.isSuccess()).as("alert message must be valid JSON").isTrue();
-
         parsed.onSuccess(tree -> {
-            assertThat(tree.has("type")).as("discriminator must live at the top level").isTrue();
+            assertThat(tree.has("type")).as("discriminator must live at the top level")
+                      .isTrue();
             assertThat(tree.get("type").asString()).isEqualTo("ALERT");
             assertThat(tree.has("data")).isTrue();
-
             var data = tree.get("data");
 
-            assertThat(data.has("type")).as("'type' must never be duplicated inside 'data'").isFalse();
+            assertThat(data.has("type")).as("'type' must never be duplicated inside 'data'")
+                      .isFalse();
             assertThat(data.get("metric").asString()).isEqualTo("cpu.usage");
             assertThat(data.get("nodeId").asString()).isEqualTo("node-1");
             assertThat(data.get("severity").asString()).isEqualTo("CRITICAL");
@@ -106,9 +110,7 @@ class AlertWsEnvelopeContractTest {
     @Test
     void checkThreshold_valueBelowWarning_returnsEmpty() {
         var manager = managerWithThreshold("cpu.usage", 0.7, 0.9);
-
-        var json = manager.checkThreshold("cpu.usage", new NodeId("node-1"), 0.1)
-                          .or("");
+        var json = manager.checkThreshold("cpu.usage", new NodeId("node-1"), 0.1).or("");
 
         assertThat(json).as("a value below every threshold must trigger no alert").isEmpty();
     }
@@ -119,11 +121,10 @@ class AlertWsEnvelopeContractTest {
     void appJs_dispatchesWholeEnvelopeToAlertsStore_notUnwrappedPayload() {
         var appJs = resource("/dashboard/js/app.js").unwrap();
 
-        assertThat(appJs)
-                .as("app.js must pass the whole ALERT/ALERT_RESOLVED envelope to the alerts store")
-                .contains("Alpine.store('alerts').updateFromWs(data);")
-                .as("the old unwrap-before-dispatch must be gone")
-                .doesNotContain("Alpine.store('alerts').updateFromWs(data.data || data);");
+        assertThat(appJs).as("app.js must pass the whole ALERT/ALERT_RESOLVED envelope to the alerts store")
+                  .contains("Alpine.store('alerts').updateFromWs(data);")
+                  .as("the old unwrap-before-dispatch must be gone")
+                  .doesNotContain("Alpine.store('alerts').updateFromWs(data.data || data);");
     }
 
     /// #292 fix, "alerts included in the poll fallback" (CTO scope ruling): the alerts store must be
@@ -142,13 +143,11 @@ class AlertWsEnvelopeContractTest {
 
         assertThat(start).as("startPolling() must exist in app.js").isNotNegative();
         assertThat(end).as("pollStatus() must follow startPolling() so its body is boundable").isGreaterThan(start);
-
         var startPollingBody = appJs.substring(start, end);
 
-        assertThat(startPollingBody)
-                .as("alerts must be refreshed from the REPEATING poll timer inside startPolling(), not only "
-                    + "once from loadInitialData()")
-                .contains("Alpine.store('alerts').refresh()");
+        assertThat(startPollingBody).as("alerts must be refreshed from the REPEATING poll timer inside startPolling(), not only "
+                                       + "once from loadInitialData()")
+                  .contains("Alpine.store('alerts').refresh()");
     }
 
     /// #292 fix, half 2: `alerts.js` must read the discriminator off the still-wrapped envelope
@@ -159,10 +158,9 @@ class AlertWsEnvelopeContractTest {
     void alertsJs_readsDiscriminatorOnTheEnvelope_notOnTheUnwrappedPayload() {
         var alertsJs = resource("/dashboard/js/stores/alerts.js").unwrap();
 
-        assertThat(alertsJs)
-                .as("alerts.js must check the envelope-level discriminator")
-                .contains("envelope.type === 'ALERT'")
-                .as("the old payload-level check must be gone")
-                .doesNotContain("data.type === 'ALERT'");
+        assertThat(alertsJs).as("alerts.js must check the envelope-level discriminator")
+                  .contains("envelope.type === 'ALERT'")
+                  .as("the old payload-level check must be gone")
+                  .doesNotContain("data.type === 'ALERT'");
     }
 }

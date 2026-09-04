@@ -9,12 +9,13 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.regex.Pattern;
 
-import org.junit.jupiter.api.Test;
-
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
+import org.junit.jupiter.api.Test;
+
 import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// Pins the client-side polling gate behind #294 (polling is not gated to health): every poll to a
 /// server the operator's health check has already marked unhealthy should back off, and a 404 from an
@@ -45,6 +46,7 @@ class DashboardPollingGateContractTest {
             if (in == null) {
                 return Result.failure(Causes.cause("Dashboard resource not found on classpath: " + path));
             }
+
             return Result.success(new String(in.readAllBytes(), StandardCharsets.UTF_8));
         } catch (IOException e) {
             return Result.failure(Causes.fromThrowable(e));
@@ -53,29 +55,27 @@ class DashboardPollingGateContractTest {
 
     private static int occurrences(String haystack, String needle) {
         return (int) Pattern.compile(Pattern.quote(needle))
-                             .matcher(haystack)
-                             .results()
-                             .count();
+                            .matcher(haystack)
+                            .results()
+                            .count();
     }
 
     @Test
     void restClient_probesHealthEndpoint_semanticallyNotByLiteralDegradedString() {
         var appJs = resource("/dashboard/js/app.js").unwrap();
 
-        assertThat(appJs)
-                .as("app.js must add a dedicated health probe against the endpoint Forge actually serves")
-                .contains("RestClient.get('/health')")
-                .as("the gate must key on the semantic 'not healthy', not a nonexistent literal 'degraded' string")
-                .contains("health.status !== 'healthy'");
+        assertThat(appJs).as("app.js must add a dedicated health probe against the endpoint Forge actually serves")
+                  .contains("RestClient.get('/health')")
+                  .as("the gate must key on the semantic 'not healthy', not a nonexistent literal 'degraded' string")
+                  .contains("health.status !== 'healthy'");
     }
 
     @Test
     void appJs_pollingTimers_skipWhenClusterDegraded() {
         var appJs = resource("/dashboard/js/app.js").unwrap();
 
-        assertThat(appJs)
-                .as("the primary and secondary poll timers must both check the degraded gate")
-                .contains("Alpine.store('cluster').degraded");
+        assertThat(appJs).as("the primary and secondary poll timers must both check the degraded gate")
+                  .contains("Alpine.store('cluster').degraded");
     }
 
     @Test
@@ -89,9 +89,8 @@ class DashboardPollingGateContractTest {
     void clusterJs_declaresDegradedFlag_defaultingFalse() {
         var clusterJs = resource("/dashboard/js/stores/cluster.js").unwrap();
 
-        assertThat(clusterJs)
-                .as("a fresh dashboard load must never fabricate a degraded verdict before the first health probe returns")
-                .contains("degraded: false,");
+        assertThat(clusterJs).as("a fresh dashboard load must never fabricate a degraded verdict before the first health probe returns")
+                  .contains("degraded: false,");
     }
 
     /// The 404-suppression half of #294: a poll against an endpoint the server has no route for
@@ -102,18 +101,15 @@ class DashboardPollingGateContractTest {
     void restClientJs_suppressesRepeat404Toasts_logsInstead() {
         var restClientJs = resource("/dashboard/js/lib/rest-client.js").unwrap();
 
-        assertThat(restClientJs)
-                .as("a 404 must be special-cased")
-                .contains("status === 404")
-                .as("a 404 must be logged, not silently dropped")
-                .contains("console.warn(");
-
+        assertThat(restClientJs).as("a 404 must be special-cased")
+                  .contains("status === 404")
+                  .as("a 404 must be logged, not silently dropped")
+                  .contains("console.warn(");
         var notificationsShowCount = occurrences(restClientJs, "Notifications.show(");
 
-        assertThat(notificationsShowCount)
-                .as("exactly one of the 4 non-catch failure-status call sites collapses into the shared "
-                    + "404-aware reporter; the 4 .catch network-error sites are untouched, so the count "
-                    + "must drop from 8 to 5, never to 0 (every non-404 failure must still toast)")
-                .isEqualTo(5);
+        assertThat(notificationsShowCount).as("exactly one of the 4 non-catch failure-status call sites collapses into the shared "
+                                             + "404-aware reporter; the 4 .catch network-error sites are untouched, so the count "
+                                             + "must drop from 8 to 5, never to 0 (every non-404 failure must still toast)")
+                  .isEqualTo(5);
     }
 }
