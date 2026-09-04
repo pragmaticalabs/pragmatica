@@ -2410,6 +2410,32 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             return new KVCommand.Put<>(key, value);
         }
 
+        /// #809: bundles the failed blueprint's OWN `AppBlueprintKey` removal into this SAME batch,
+        /// after `bpCommand` and before `outcomeCommand`. Ordering is load-bearing, not cosmetic —
+        /// [KVStore#process] applies a batch's commands via a strictly sequential (non-parallel)
+        /// stream, and [org.pragmatica.messaging.MessageRouter#route] plus [Fsm#dispatch] are both
+        /// synchronous, so the resulting KV-watch notification for `bpCommand`'s Put is fully
+        /// handled by `handleAppBlueprintChange` — re-owning every artifact in `previous`'s load
+        /// order to `previous.id()` in the `blueprints` map — before this Remove's notification
+        /// reaches `handleAppBlueprintRemoval`. That handler filters `blueprints` by CURRENT owner
+        /// at the time it fires, so any artifact `previous` shares with the failed `inflight`
+        /// blueprint is already re-owned and left untouched; only an artifact that existed solely
+        /// under the failed `inflight` blueprint (net-new in the failed deploy, absent from
+        /// `previous`) is still owned by `inflight.id()` and gets correctly deallocated as rollback
+        /// cleanup. Reversing the order would let `handleAppBlueprintRemoval` fire while shared
+        /// artifacts are still owned by `inflight.id()`, wrongly deallocating the very slices being
+        /// restored. [mechanism: KVStore.process (sequential Stream.map, no parallel()) +
+        /// MessageRouter.route (synchronous) + Fsm.dispatch (synchronous state.handle) + this list's
+        /// order]
+        ///
+        /// The re-owning step this ordering depends on is itself conditional: `handleAppBlueprintChange`
+        /// early-returns before touching `blueprints` when `hasConflictingOwnership` reports a
+        /// conflict, compared on blueprint BASE — so a `previous` of a DIFFERENT base than `inflight`
+        /// would not be re-owned, and the Remove below would deallocate the shared slices instead of
+        /// leaving them untouched. `previous` and `inflight` share a base by construction (`previous`
+        /// is `inflight`'s own captured prior version of the SAME blueprint), so this does not arise
+        /// on the path that reaches this method today — noted because the safety this method leans on
+        /// is conditional, not unconditional.
         private void restorePreviousBlueprint(InFlightBlueprint inflight, ExpandedBlueprint previous, String cause) {
             restoringBlueprints.add(previous.id());
             log.info("ALL_OR_NOTHING: Restoring previous blueprint {} with {} slices",
@@ -2418,10 +2444,11 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             var bpKey = AppBlueprintKey.appBlueprintKey(previous.id());
             var bpValue = AppBlueprintValue.appBlueprintValue(previous);
             var bpCommand = new KVCommand.Put<AetherKey, AetherValue>(bpKey, bpValue);
+            var removeCommand = new KVCommand.Remove<AetherKey>(AppBlueprintKey.appBlueprintKey(inflight.id()));
             var outcomeCommand = rolledBackOutcomeCommand(inflight, cause);
 
             ctx.cluster()
-               .apply(List.of(bpCommand, outcomeCommand))
+               .apply(List.of(bpCommand, removeCommand, outcomeCommand))
                .onSuccess(_ -> SharedScheduler.schedule(() -> restoringBlueprints.remove(previous.id()),
                                                         timeSpan(5).seconds()))
                .onFailure(restoreFailure -> handleBlueprintRestoreFailure(previous.id(),

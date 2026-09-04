@@ -69,6 +69,61 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `Remove` line dropped, green restored.
   [verified: aether/aether-deployment/src/test/java/org/pragmatica/aether/deployment/cluster/BlueprintPublishOwnershipTest.java]
 
+### Fixed (2026-09-04 — #809: restore-rollback left the failed blueprint's `AppBlueprintKey` in KV with its stale pre-failure value)
+- **`restorePreviousBlueprint` now removes the failed blueprint's OWN `AppBlueprintKey`
+  (`inflight.id()`) in the SAME consensus batch as the previous-blueprint Put and the
+  `ROLLED_BACK` outcome Put**, so all three land atomically. Previously only the no-previous
+  rollback path (`unloadBlueprintSlices`) cleaned up its own `AppBlueprintKey`; the
+  previous-exists path restored `previous`'s value but never removed `inflight`'s own key, leaving
+  it in KV forever with the value it held right before the deploy that failed.
+- **Command order inside the batch is load-bearing**: the previous-blueprint Put is listed before
+  the new Remove. `KVStore#process` applies a batch's commands via a strictly sequential
+  (non-parallel) stream, and `MessageRouter#route` / `Fsm#dispatch` are both synchronous, so the
+  Put's KV-watch notification — and `handleAppBlueprintChange`'s re-owning of every artifact in
+  `previous`'s load order to `previous.id()` — fully completes before the Remove's notification
+  reaches `handleAppBlueprintRemoval`. That handler filters the FSM's own `blueprints` map by
+  current owner at the time it fires: any artifact `previous` shares with the failed blueprint is
+  already re-owned and left untouched, while an artifact that existed only under the failed
+  (net-new, never in `previous`) blueprint is still owned by `inflight.id()` and is correctly
+  deallocated as rollback cleanup — a gap the missing Remove left unaddressed until now.
+  [mechanism: `KVStore.process` (sequential `Stream.map`) + `MessageRouter.route` (synchronous) +
+  `Fsm.dispatch` (synchronous `state.handle`) + the batch's list order]
+- No change to the no-previous rollback path (`unloadBlueprintSlices`/`failedOutcomeCommand`),
+  which already bundled its own `AppBlueprintKey` removal correctly.
+- **`handleAppBlueprintRemoval` is now reachable from the restore path for the first time** — before
+  this fix its Remove never fired here, since the key was never removed. Two of its pre-existing
+  behaviors, unchanged in this fix, are newly observable as a SIDE EFFECT of a restore-rollback:
+  a restore now also submits `SliceTargetKey` Removes for any net-new artifact (present only in the
+  failed blueprint, absent from `previous`) and schedules a reconcile five seconds out, exactly as
+  it already does for every other blueprint removal; and, if an artifact this handler would touch
+  has an active rolling update, it early-returns entirely — the KV `AppBlueprintKey` Remove has
+  already committed, but that handler does none of its own in-memory cleanup (no `blueprints.remove`,
+  no deallocation, no `SliceTargetKey` Remove) for the artifacts it would have touched. This
+  early-return is pre-existing behavior of `handleAppBlueprintRemoval`, not new logic — it is simply
+  reachable from a restore-rollback for the first time.
+- **Consumer audit of `AppBlueprintKey`** — every reader was checked against `inflight.id()`'s
+  stale entry; none require it to keep existing, and two were silently returning wrong answers
+  because of it, now corrected as a side effect with no code changes of their own:
+  - `handleAppBlueprintRemoval` (the FSM's own `blueprints`/ownership map) is the one consumer
+    whose *timing* mattered — addressed by the Put-before-Remove ordering above, and pinned by a
+    test that replays the emitted batch through the real handlers in the batch's own order (so a
+    swap of the two commands turns it red, unlike every other test in this suite, which merely
+    inspects the recorded batch and stays green either way).
+  - `BlueprintService.get(id)` reads `AppBlueprintKey` directly: before this fix,
+    `get(inflight.id())` after a restore-rollback returned the STALE pre-failure blueprint as if
+    it were still live; it now correctly returns empty.
+  - `BlueprintService.list()` iterates all `AppBlueprintKey` entries: before this fix, a
+    rolled-back blueprint stayed in the listing forever, indistinguishable from a real deployed
+    blueprint; it is now correctly excluded.
+  - `DeploymentManagerImpl.start(blueprintId, ...)` → `resolveBlueprint`/`lookupBlueprint` reads
+    the same key with a bounded 5s retry before reporting `blueprintNotFound`: before this fix, a
+    caller re-running `start` with a blueprint id that had just been rolled back could resolve the
+    stale entry as a valid basis for a new deployment; it now correctly falls through to
+    `blueprintNotFound` after the retry budget, with no change needed to that method.
+  - `BlueprintService.outcome(id)` reads the separate `DeploymentOutcomeKey` and is unaffected.
+  - Nothing found — in these readers, reconciliation, or elsewhere — that depends on the stale
+    entry's continued presence for correctness.
+
 ### Fixed (2026-09-04 — #715: Forge/Ember clusters admitted nodes from foreign local processes)
 - **Every `EmberCluster` instance (and therefore every `ForgeServer`, built directly on it) derived
   its cluster QUIC/SWIM identity from one hardcoded literal secret, shared by every process on the
