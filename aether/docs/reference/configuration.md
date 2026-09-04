@@ -247,13 +247,17 @@ missing entirely. If the node's environment has no `SecretsProvider` at all whil
 
 **Coverage.** Encrypts block payloads (`get`/`put`) on `LocalDiskTier` and `DhtStorageTier` for any
 instance with `encrypted = true`, and on the `streams` instance's segment-block tiers when
-`streams_encrypted = true`. Does **not** cover: `MemoryTier` (in-process, never touches disk);
-metadata/refs/snapshot files (`MetadataStore`/`SnapshotManager`) for any instance, `streams`
-included; the auto-synthesized default `artifacts` instance used when no explicit
-`[storage.artifacts]` section is configured (hardcoded never-encrypted — configure the section
-explicitly with `encrypted = true` to cover it); the `content` storage instance (provisioned via a
-separate code path that does not currently accept a keyring at all — tracked as the same structural
-gap as `content`'s exclusion from demotion/GC, #783).
+`streams_encrypted = true`. The auto-synthesized default `artifacts` instance (created when no
+explicit `[storage.artifacts]` section is configured) tracks node-wide keyring presence: it is
+encrypted whenever `[storage.encryption]` is configured with a resolvable keyring, plaintext
+otherwise — an explicit `[storage.artifacts]` section is only needed to opt out or to fine-tune
+other settings, not merely to get coverage. Does **not** cover: `MemoryTier` (in-process, never
+touches disk); metadata/refs/snapshot files (`MetadataStore`/`SnapshotManager`) for any instance,
+`streams` included; the `streams` instance's write-ahead log (`walPath`, #634-3) — a separate
+directory from the segment-block tiers that `streams_encrypted` gates, and never wrapped in
+`EncryptingStorageTier`; the `content` storage instance (provisioned via a separate code path that
+does not currently accept a keyring at all — tracked as the same structural gap as `content`'s
+exclusion from demotion/GC, #783).
 
 **Not the same as `[streams.X].encryption-key-id`.** That per-stream blueprint key is unrelated and
 was already found structurally inert and rejected at validation (`#576`, 2026-08-27) —
@@ -269,6 +273,13 @@ than 4 bytes, or a non-matching magic) is treated as **legacy plaintext**: enabl
 local-disk directory that already holds unmarked block files is refused at boot; a DHT tier has no
 directory to scan and instead fails closed per block on read. A block whose header names a key id
 absent from the configured keyring fails with `UnknownKeyId` rather than a truncated read.
+
+**Nonce bound.** Each block's 12-byte (96-bit) nonce is drawn from `SecureRandom`, not a counter.
+NIST SP 800-38D caps random-96-bit-nonce AES-GCM at 2³² encryptions under one key before nonce
+collision risk becomes significant; a single collision under the same key is a full break, not a
+graceful degradation. Rotate `active_key_id` well before any one instance approaches that many
+encrypted blocks — see `security-subsystem-spec.md` §5.4/§5.7 for the full analysis and the
+misuse-resistant-AEAD follow-up this motivates.
 
 **Key rotation.** Add a new `keys.<id>` entry, flip `active_key_id`; every prior key remains
 resolvable for existing blocks. Re-encrypting already-written blocks under the new active key
