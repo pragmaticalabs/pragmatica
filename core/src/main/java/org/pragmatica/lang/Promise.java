@@ -641,6 +641,15 @@ public sealed interface Promise<T> permits PromiseImpl {
     /// deliberately does not delegate to the general-purpose [#async(TimeSpan,Consumer)] -- that overload is
     /// also used to arm a delayed action on an ALREADY-resolved promise (e.g. cache-entry TTL eviction), where
     /// cancel-on-resolution would fire immediately and defeat the delay outright.
+    ///
+    /// **#838 review round 1: behavior change.** This method returns a *derived* promise (via [#withResult])
+    /// rather than `this` — needed so the cancellation above observes resolution without itself being the
+    /// resolution. The scheduled failure resolves the ORIGINAL promise (`this`); the derived promise returned
+    /// here is resolved from that, inline, on the same thread that resolved the original -- including when
+    /// that thread is [AsyncExecutor#timeoutScheduler]'s own platform thread on the timeout-fired path. Any
+    /// caller relying on `promise.timeout(t) == promise` (identity, not value) will observe a different
+    /// object than before; a repo-wide sweep found no call site doing this, but it is a genuine change in
+    /// what this method returns, not merely an implementation detail.
     default Promise<T> timeout(TimeSpan timeout) {
         var future = AsyncExecutor.INSTANCE.runAsync(timeout,
                                                        () -> fail(new CoreError.Timeout("Promise timed out after " + timeout.millis() + "ms")));
@@ -3154,6 +3163,14 @@ enum AsyncExecutor {
     // offloaded -- see #749 condition-1 analysis), so a continuation that blocks on that thread would
     // stall every OTHER pending timeout sharing a single-threaded scheduler. Four lanes bound that blast
     // radius to "more than four timeouts blocked concurrently", not "any one blocked timeout".
+    //
+    // #838 review round 1: this deliberately does NOT reuse org.pragmatica.lang.utils.VirtualThreadScheduler
+    // (whose own class doc states the opposite principle: timekeeping submits to virtual threads, never
+    // runs a task body inline). The two designs solve different problems -- VirtualThreadScheduler
+    // decouples timing from arbitrary task execution; this pool's job is narrower, to fire the timeout
+    // ITSELF without depending on carrier availability, which is exactly the dependency
+    // VirtualThreadScheduler's own submit-to-virtual-thread step would reintroduce. See
+    // VirtualThreadScheduler's class doc for the full reconciliation of both designs' trade-offs.
     private static final int TIMEOUT_SCHEDULER_THREADS = 4;
     private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
     // ScheduledThreadPoolExecutor (not the ScheduledExecutorService interface) so setRemoveOnCancelPolicy
