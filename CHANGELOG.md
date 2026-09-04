@@ -6,6 +6,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc4] - Unreleased
 
+### Fixed (2026-09-04 — #715: Forge/Ember clusters admitted nodes from foreign local processes)
+- **Every `EmberCluster` instance (and therefore every `ForgeServer`, built directly on it) derived
+  its cluster QUIC/SWIM identity from one hardcoded literal secret, shared by every process on the
+  machine.** `EmberCluster.buildForgeQuicTls` built its `TlsConfig`/CA from that literal, and
+  `createNode` passed `Option.empty()` for `AetherNodeConfig.certificateProvider`, so SWIM gossip
+  encryption fell back to `GossipEncryptor.none()` (plaintext, unauthenticated) for every Ember/Forge
+  node. Consequence: any process on the machine — no key needed, since gossip encryption was off
+  entirely — could SWIM-gossip into another process's cluster, and any process holding the literal
+  could QUIC-join it, up to triggering an OVERPROVISION drain of a live cluster's core from outside it.
+- **Each `EmberCluster` instance now derives a fresh, unique `SecureRandom` cluster secret at
+  construction**, threaded into both the QUIC `TlsConfig`/CA (`buildForgeQuicTls`) and the
+  `certificateProvider` wired into every constructed node's `AetherNodeConfig`. No new admission-check
+  code was added — both mechanisms already existed and needed only a real, per-instance identity to
+  become effective:
+  [mechanism: QUIC — `ClientAuth.REQUIRE` + per-instance CA, unchanged verification code; a client
+  whose certificate doesn't chain to this instance's CA is TLS-rejected at handshake]
+  [mechanism: SWIM — AES-GCM AEAD decrypt-failure → log+drop, unchanged verification code; a gossip
+  datagram not encrypted under this instance's derived key fails tag verification and is discarded
+  before reaching membership state]
+  Neither guarantee is "secure" in general terms — both are exactly as strong as
+  `SelfSignedCertificateProvider`'s HKDF derivation, which this fix does not touch.
+- **`EmberCluster.withClusterSecret(byte[])` is the only sanctioned way for two separately-created
+  `EmberCluster`/`ForgeServer` instances to join one cluster** — pass the same secret bytes to both
+  before calling `start()`. A repo-wide grep found no existing harness, Forge scenario, or multi-JVM
+  test that relies on cross-instance/cross-process joining today; no caller relied on the literal,
+  one stale comment in `ClusterTestTls` was corrected.
+  [mechanism: `EmberCluster.createNode` is the sole Ember/Forge construction site, so this is the
+  only choke point either mechanism needs]
+- Startup-time regression check for the newly-activated `CertificateRenewalScheduler`
+  (dormant while `certificateProvider` was `Option.empty()`): 3-node Ember cluster start, same
+  test/machine, before vs. after — 17.88s avg (3 runs) vs. 17.55s avg (3 runs), no regression.
+  [mechanism: manual wall-clock A/B, 3 runs per side, same machine and test, pre-fix commit vs.
+  post-fix commit — not an automated/CI-enforced measurement, and no cited test measures time]
+
 ### Fixed (2026-09-03 — #737: CursorStore leaked one block per commit; the refcount meant to reclaim it had zero readers)
 - **Every cursor commit leaked its superseded block.** `CursorStore.commit` replaced a cursor's ref with
   `put` + `createRef`, which points the ref at the new block but never decrements whatever it replaced.
