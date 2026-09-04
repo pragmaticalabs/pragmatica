@@ -20,7 +20,17 @@ import static org.pragmatica.lang.Result.success;
 
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"})
 public final class ClusterBootstrapConfigValidator {
-    private static final Pattern SEMVER_PATTERN = Pattern.compile("^\\d+\\.\\d+\\.\\d+$");
+    /// #585: full semver 2.0.0 grammar (semver.org), not a bare `X.Y.Z` triplet — pre-release
+    /// (`-rc3`, `-alpha.1`) and build metadata (`+build.5`) are valid semver and CL-02 must accept
+    /// them; the project's own current version string (`1.0.0-rc3`/`1.0.0-rc4`) was being rejected
+    /// at bootstrap VALIDATE. Still rejects what semver rejects: leading zeros in numeric
+    /// identifiers (`1.0.0-01`), empty identifiers (`1.0.0-`), and characters outside
+    /// `[0-9A-Za-z-]` (`1.0.0-rc_4`).
+    private static final Pattern SEMVER_PATTERN =
+        Pattern.compile("^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)"
+                       + "(?:-((?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*)"
+                       + "(?:\\.(?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?"
+                       + "(?:\\+([0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*))?$");
 
     private static final Pattern CIDR_PATTERN = Pattern.compile("^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}/\\d{1,2}$");
 
@@ -105,7 +115,9 @@ public final class ClusterBootstrapConfigValidator {
 
     private static void validateClusterVersion(String version, List<String> errors) {
         if (!SEMVER_PATTERN.matcher(version).matches()) {
-            errors.add("CL-02: Cluster version '" + version + "' must be valid semver X.Y.Z");
+            errors.add("CL-02: Cluster version '" + version + "' must be valid semver 2.0.0 —"
+                      + " MAJOR.MINOR.PATCH (no leading zeros), with an optional -pre-release"
+                      + " (e.g. '-rc3', '-alpha.1') and/or +build metadata (e.g. '+build.5')");
         }
     }
 

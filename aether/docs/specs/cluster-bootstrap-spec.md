@@ -169,7 +169,7 @@ include = ["path/to/fragment.toml", ...]
 | Field     | Type   | Required | Constraints                                   | Default |
 |-----------|--------|----------|-----------------------------------------------|---------|
 | `name`    | string | Yes      | Lowercase, hyphens only, max 63 chars, must start with letter, must match `^[a-z][a-z0-9-]{0,62}$` | -- |
-| `version` | string | Yes      | Valid semver (X.Y.Z)                          | --      |
+| `version` | string | Yes      | Valid semver 2.0.0 (`MAJOR.MINOR.PATCH`, optional `-pre-release`/`+build`) | -- |
 
 ### 3.3 `[cluster.core]` -- Core Node Topology
 
@@ -1168,7 +1168,7 @@ The `CloudProvider` SPI in §11.1 is a **new, higher-level** interface specifica
 | ID     | Check                                                                 | Severity |
 |--------|-----------------------------------------------------------------------|----------|
 | CL-01  | Cluster name matches `^[a-z][a-z0-9-]{0,62}$`                         | Error    |
-| CL-02  | Version is valid semver                                               | Error    |
+| CL-02  | Version is valid semver 2.0.0 (`MAJOR.MINOR.PATCH`, optional `-pre-release` and `+build` metadata) | Error |
 | CL-04  | Derived core count odd and >= 3                                       | Error    |
 | CL-06  | All referenced profiles exist                                         | Error    |
 | CL-07  | At least one `[source.X.core]` sub-table across all sources           | Error    |

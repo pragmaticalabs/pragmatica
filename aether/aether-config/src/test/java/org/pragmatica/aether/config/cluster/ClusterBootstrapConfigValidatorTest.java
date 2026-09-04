@@ -149,13 +149,60 @@ class ClusterBootstrapConfigValidatorTest {
 
         @Test
         void validate_invalidVersion_returnsError() {
-            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "not-semver").unwrap(),
-                                                defaultCoreTopology(), validForgeConfig().sources(),
-                                                Map.of(), infrastructureConfig(NetworkingType.MANUAL),
-                                                defaultOperationsConfig());
-            validate(config)
+            validate(configWithVersion("not-semver"))
                 .onSuccess(v -> Assertions.fail("Expected failure"))
                 .onFailure(cause -> assertThat(cause.message()).contains("CL-02"));
+        }
+
+        // #585: CL-02 rejected valid semver pre-release/build-metadata versions, including the
+        // project's own "1.0.0-rc3"/"1.0.0-rc4" strings — an operator pasting the real Aether
+        // version into `[cluster] version` got refused at bootstrap VALIDATE.
+        @Test
+        void validate_semverPreReleaseVersion_succeeds() {
+            validate(configWithVersion("1.0.0-rc3"))
+                .onFailure(cause -> Assertions.fail(cause.message()));
+            validate(configWithVersion("1.0.0-rc4"))
+                .onFailure(cause -> Assertions.fail(cause.message()));
+        }
+
+        @Test
+        void validate_semverPreReleaseWithBuildMetadata_succeeds() {
+            validate(configWithVersion("1.0.0-rc4+meta"))
+                .onFailure(cause -> Assertions.fail(cause.message()));
+        }
+
+        @Test
+        void validate_semverDottedPreReleaseIdentifiers_succeeds() {
+            validate(configWithVersion("1.0.0-alpha.1"))
+                .onFailure(cause -> Assertions.fail(cause.message()));
+        }
+
+        @Test
+        void validate_semverTrailingDashNoIdentifier_returnsError() {
+            validate(configWithVersion("1.0.0-"))
+                .onSuccess(v -> Assertions.fail("Expected failure"))
+                .onFailure(cause -> assertThat(cause.message()).contains("CL-02"));
+        }
+
+        @Test
+        void validate_semverLeadingZeroInPreReleaseNumericIdentifier_returnsError() {
+            validate(configWithVersion("1.0.0-01"))
+                .onSuccess(v -> Assertions.fail("Expected failure"))
+                .onFailure(cause -> assertThat(cause.message()).contains("CL-02"));
+        }
+
+        @Test
+        void validate_semverInvalidCharacterInPreRelease_returnsError() {
+            validate(configWithVersion("1.0.0-rc_4"))
+                .onSuccess(v -> Assertions.fail("Expected failure"))
+                .onFailure(cause -> assertThat(cause.message()).contains("CL-02"));
+        }
+
+        private static ClusterBootstrapConfig configWithVersion(String version) {
+            return clusterBootstrapConfig("1.0.0", clusterIdentity("test", version).unwrap(),
+                                          defaultCoreTopology(), validForgeConfig().sources(),
+                                          Map.of(), infrastructureConfig(NetworkingType.MANUAL),
+                                          defaultOperationsConfig());
         }
 
         @Test
