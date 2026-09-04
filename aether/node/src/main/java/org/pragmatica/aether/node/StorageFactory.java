@@ -413,8 +413,19 @@ public final class StorageFactory {
 
         return LocalDiskTier.localDiskTier(diskPath,
                                            config.diskMaxBytes())
-                            .fold(cause -> handleDiskTierUnavailable(name, cause, memoryTier, dhtClient, dhtKeyPrefix, keyring),
-                                  disk -> buildTierList(name, memoryTier, disk, diskPath, dhtClient, dhtKeyPrefix, keyring));
+                            .fold(cause -> handleDiskTierUnavailable(name,
+                                                                     cause,
+                                                                     memoryTier,
+                                                                     dhtClient,
+                                                                     dhtKeyPrefix,
+                                                                     keyring),
+                                  disk -> buildTierList(name,
+                                                        memoryTier,
+                                                        disk,
+                                                        diskPath,
+                                                        dhtClient,
+                                                        dhtKeyPrefix,
+                                                        keyring));
     }
 
     /// Builds (from `dhtClient`/`dhtKeyPrefix`) and wraps the DHT tier under `keyring` when present
@@ -436,13 +447,13 @@ public final class StorageFactory {
                                                                String dhtKeyPrefix,
                                                                Option<EncryptionKeyring> keyring) {
         return dhtClient.fold(() -> Result.success(Option.<StorageTier> empty()),
-                             client -> {
-                                 var dht = DhtStorageTier.dhtStorageTier(client, dhtKeyPrefix);
+                              client -> {
+                                  var dht = DhtStorageTier.dhtStorageTier(client, dhtKeyPrefix);
 
-                                 return keyring.fold(() -> Result.success(Option.some((StorageTier) dht)),
-                                                    ring -> writeDhtMarker(client, dhtKeyPrefix, ring).map(_ -> Option.some((StorageTier) EncryptingStorageTier.wrap(dht,
-                                                                                                                                                                    ring))));
-                             });
+                                  return keyring.fold(() -> Result.success(Option.some((StorageTier) dht)),
+                                                      ring -> writeDhtMarker(client, dhtKeyPrefix, ring).map(_ -> Option.some((StorageTier) EncryptingStorageTier.wrap(dht,
+                                                                                                                                                                       ring))));
+                              });
     }
 
     private static Result<Unit> writeDhtMarker(DHTClient client, String dhtKeyPrefix, EncryptionKeyring ring) {
@@ -461,12 +472,12 @@ public final class StorageFactory {
                                                                    String dhtKeyPrefix,
                                                                    String instanceName) {
         return dhtClient.fold(() -> Result.success(unit()),
-                             client -> client.get(dhtKeyPrefix + "/" + EncryptingStorageTier.MARKER_FILE_NAME)
-                                             .flatMap(marker -> marker.fold(() -> Promise.success(unit()),
-                                                                            bytes -> Promise.failure(new EncryptionError.EncryptedTierRequiresKeyring(instanceName,
+                              client -> client.get(dhtKeyPrefix + "/" + EncryptingStorageTier.MARKER_FILE_NAME)
+                                              .flatMap(marker -> marker.fold(() -> Promise.success(unit()),
+                                                                             bytes -> Promise.failure(new EncryptionError.EncryptedTierRequiresKeyring(instanceName,
                                                                                                                                                        new String(bytes,
                                                                                                                                                                   StandardCharsets.UTF_8)))))
-                                             .await(DHT_MARKER_TIMEOUT));
+                                              .await(DHT_MARKER_TIMEOUT));
     }
 
     private static Result<List<StorageTier>> handleDiskTierUnavailable(String name,
@@ -476,13 +487,12 @@ public final class StorageFactory {
                                                                        String dhtKeyPrefix,
                                                                        Option<EncryptionKeyring> keyring) {
         log.warn("Disk tier for '{}' unavailable: {}, using memory + DHT fallback", name, cause.message());
-
         var dhtResult = maybeEncryptDht(dhtClient, dhtKeyPrefix, keyring);
 
         return keyring.fold(() -> refuseIfDhtEncryptedWithoutKeyring(dhtClient, dhtKeyPrefix, name).flatMap(_ -> dhtResult),
                             _ -> dhtResult)
                       .map(dht -> dht.map(t -> List.<StorageTier> of(memoryTier, t))
-                                    .or(List.of(memoryTier)));
+                                     .or(List.of(memoryTier)));
     }
 
     /// #253 BLOCKING #3 (2026-09-04 ruling): the no-keyring branch used to return the bare, unwrapped
@@ -505,13 +515,19 @@ public final class StorageFactory {
         var dhtResult = maybeEncryptDht(dhtClient, dhtKeyPrefix, keyring);
 
         return keyring.fold(() -> EncryptingStorageTier.refuseIfEncryptedWithoutKeyring(diskPath, name)
-                                                       .flatMap(_ -> refuseIfDhtEncryptedWithoutKeyring(dhtClient, dhtKeyPrefix, name))
+                                                       .flatMap(_ -> refuseIfDhtEncryptedWithoutKeyring(dhtClient,
+                                                                                                        dhtKeyPrefix,
+                                                                                                        name))
                                                        .flatMap(_ -> dhtResult)
-                                                       .map(dht -> dht.map(t -> List.<StorageTier> of(memoryTier, diskTier, t))
-                                                                     .or(List.of(memoryTier, diskTier))),
-                            ring -> EncryptingStorageTier.wrapLocalDisk(diskTier, diskPath, ring)
-                                                         .flatMap(encDisk -> dhtResult.map(dht -> dht.map(t -> List.<StorageTier> of(memoryTier, encDisk, t))
-                                                                                                     .or(List.of(memoryTier, encDisk)))));
+                                                       .map(dht -> dht.map(t -> List.<StorageTier> of(memoryTier,
+                                                                                                      diskTier,
+                                                                                                      t))
+                                                                      .or(List.of(memoryTier, diskTier))),
+                            ring -> EncryptingStorageTier.wrapLocalDisk(diskTier, diskPath, ring).flatMap(encDisk -> dhtResult.map(dht -> dht.map(t -> List.<StorageTier> of(memoryTier,
+                                                                                                                                                                             encDisk,
+                                                                                                                                                                             t))
+                                                                                                                                             .or(List.of(memoryTier,
+                                                                                                                                                         encDisk)))));
     }
 
     private static StorageSetup assembleSetup(String name,

@@ -1497,7 +1497,7 @@ public interface AetherNode extends ManageableNode {
         // failure pointing at THIS comment's reasoning, instead of a bare NPE at `.instance()` that
         // gives a future reader no hint the absence was ever supposed to be impossible.
         var artifactStorage = Objects.requireNonNull(storageSetups.get("artifacts"),
-                                                      "storageSetups missing \"artifacts\" after createAll succeeded -- invariant violated")
+                                                     "storageSetups missing \"artifacts\" after createAll succeeded -- invariant violated")
                                      .instance();
         var artifactStore = ArtifactStore.artifactStore(dhtClient, artifactStorage);
         var repositoryFactory = RepositoryFactory.repositoryFactory(artifactStore);
