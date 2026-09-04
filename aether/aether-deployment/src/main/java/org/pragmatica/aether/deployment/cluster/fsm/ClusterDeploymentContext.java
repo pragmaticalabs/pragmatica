@@ -69,10 +69,19 @@ public final class ClusterDeploymentContext {
     /// as a second, lower-latency signal alongside the committed `GovernorAnnouncementValue` roster —
     /// a fresh worker is present here the instant SWIM observes it, closing the up-to-one-reannounce-
     /// interval gap during which a live worker can be absent from every committed announcement.
-    /// Late-wired (same idiom as `communityLiveness`); defaults to an empty set so pre-#731-round-3
-    /// call sites and tests keep the old committed-announcement-only sweep behaviour until
-    /// `AetherNode` supplies the real `MembershipFsm`-backed view.
-    private volatile Supplier<Set<NodeId>> localAliveMembersSupplier = Set::of;
+    /// Late-wired (same idiom as `communityLiveness`).
+    ///
+    /// #731 round 4 (review re-check): unlike `CommunityLivenessView.unwired()` — whose `_ -> false`
+    /// answer IS the safe answer for every input — an empty `Set::of()` local view is the WRONG safe
+    /// default for this supplier: `sweepDeadRestoredWorkers`'s `!observed.contains && !local.contains`
+    /// degenerates to the observed-only check the round-3 dual signal exists to strengthen, silently
+    /// restoring the up-to-one-reannounce-interval lag bug on any leader where `AetherNode` has not
+    /// yet run its wiring (deleting that one wiring call left every test green). `UNWIRED_MARKER` lets
+    /// [#localAliveMembersWired] tell "never wired" from "wired but currently empty" by identity, so
+    /// the sweep can fail SAFE (skip entirely; see [ClusterDeploymentState#sweepDeadRestoredWorkers])
+    /// instead of silently falling back to the weaker check.
+    private static final Supplier<Set<NodeId>> UNWIRED_MARKER = Set::of;
+    private volatile Supplier<Set<NodeId>> localAliveMembersSupplier = UNWIRED_MARKER;
     private final ClusterDeploymentState dormant;
     private final ClusterDeploymentState stopped;
 
@@ -328,8 +337,17 @@ public final class ClusterDeploymentContext {
         return localAliveMembersSupplier;
     }
 
-    /// Inject the local alive-member supplier. The pre-wiring default is `Set::of`; pass that
-    /// explicitly to restore it rather than clearing.
+    /// #731 round 4: true once [#setLocalAliveMembersSupplier] has been called at least once — false
+    /// means `AetherNode` (or a test) has not wired the real `MembershipFsm`-backed view yet, and
+    /// `sweepDeadRestoredWorkers` must fail SAFE (remove nothing) rather than treat the still-default
+    /// empty set as "confirmed absent everywhere locally".
+    public boolean localAliveMembersWired() {
+        return localAliveMembersSupplier != UNWIRED_MARKER;
+    }
+
+    /// Inject the local alive-member supplier. There is no supported way to revert to "unwired" once
+    /// this has been called — the #731 round-4 safe default only protects the window before
+    /// `AetherNode` wires the real view; a caller past that point owns keeping the supplier live.
     @Contract
     public void setLocalAliveMembersSupplier(Supplier<Set<NodeId>> supplier) {
         localAliveMembersSupplier = supplier;

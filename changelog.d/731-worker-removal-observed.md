@@ -72,15 +72,23 @@
   used elsewhere in this FSM, just not previously threaded into this sweep). A worker is removed only
   when it is absent from BOTH the committed announcement AND this local view; a fresh live worker is
   present locally within SWIM detection time even before its first reannouncement, and a genuinely
-  dead worker is absent from both within that same detection time. The sweep also now re-runs on
-  every committed `GovernorAnnouncementKey` Put (new `ClusterDeploymentManager.onGovernorAnnouncementPut`
-  / `GovernorAnnouncementPutReceived`), not only from the pre-existing one-shot 2s
-  `deferredTopologyRecheck` timer, which stays in place unchanged for its other unconditional cleanup
-  and `reconcile()` calls.
+  dead worker is absent from both within that same detection time.
   [mechanism: `ClusterDeploymentState.sweepDeadRestoredWorkers` (dual-signal filter),
   `MembershipFsm.dhtRoutableMembers`, `GovernorAnnouncerRecord.onSelfElected`/`tickReannounce`
   (`aether/node/src/main/java/org/pragmatica/aether/worker/governor/GovernorAnnouncer.java:138-244`)]
   [verified: `ClusterDeploymentStateWorkerRemovalTest#leaderActivation_restoredWorkerAbsentFromAnnouncementButPresentInLocalSwimView_isKept`]
+
+- **Round 3: the sweep also now re-runs on every committed governor reannouncement, not only from the
+  pre-existing one-shot 2s deferred recheck.** New `ClusterDeploymentManager.onGovernorAnnouncementPut`
+  handles `GovernorAnnouncementPutReceived` and re-invokes the sweep on every committed
+  `GovernorAnnouncementKey` Put, dispatched through `KVNotificationRouter`'s existing per-key listener
+  list — appended, not displacing the pre-existing `ownershipEpochHighWater` listener on the same key
+  — rather than only from the pre-existing one-shot 2s `deferredTopologyRecheck` timer, which stays in
+  place unchanged for its other unconditional cleanup and `reconcile()` calls. This shortens the
+  worst-case removal delay to the dual-signal detection time above on every reannounce, not only once
+  at Active entry. No test exercises this dispatch directly; its failure mode is silent non-firing,
+  which only widens the window back to the pre-existing 2s deferred-recheck bound — the safe direction.
+  [mechanism: `ClusterDeploymentManager.onGovernorAnnouncementPut`, `KVNotificationRouter` dispatch]
 
 - **This fix shares its liveness source with, but remains a distinct mechanism from, the
   operator-visible `/api/workers` roster.** `WorkerRoutes` (`GET /api/workers`) and the dead-worker

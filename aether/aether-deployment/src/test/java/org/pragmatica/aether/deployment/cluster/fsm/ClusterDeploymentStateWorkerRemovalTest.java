@@ -266,6 +266,10 @@ class ClusterDeploymentStateWorkerRemovalTest {
             // left at its default `unwired()` (never absent for anyone) — the exact cold-leader,
             // no-pong-history condition the pong-based source used to misread as "keep".
             announceCommunityMembership(List.of(SELF));
+            // Wired to a non-empty view that does NOT contain deadWorker (not the untested
+            // ClusterDeploymentContext default), so this assertion pins the dual-signal AND against a
+            // working supplier and cannot pass merely because localAliveMembersSupplier was never wired.
+            activeState().ctx().setLocalAliveMembersSupplier(() -> Set.of(SELF));
 
             activeState().rebuildStateFromKVStore();
 
@@ -290,6 +294,34 @@ class ClusterDeploymentStateWorkerRemovalTest {
                     .as("#731: a removed worker's ActivationDirectiveKey is gone, so a later activation's "
                         + "restore-from-KVStore must not bring it back")
                     .doesNotContain(deadWorker);
+        }
+
+        /// #731 round 4 (review re-check): the pre-fix default (`Set::of`, empty) failed UNSAFE — an
+        /// unwired supplier made every restored worker read as "absent from the local view too",
+        /// silently degenerating the dual-signal AND back to the round-2 observed-only check (deleting
+        /// `AetherNode`'s one production wiring call left every pre-round-4 test in this class green).
+        /// Deliberately leaves `localAliveMembersSupplier` at its `ClusterDeploymentContext` default —
+        /// the one difference from `leaderActivation_restoredWorkerAbsentFromCommunityMembership_isRemoved`
+        /// above, which wires it — to pin that an unwired supplier now fails SAFE instead.
+        @Test
+        void leaderActivation_localAliveMembersSupplierNeverWired_sweepFailsSafeRemovesNothing() {
+            var deadWorker = new NodeId("node-worker-never-wired");
+            var directiveKey = ActivationDirectiveKey.activationDirectiveKey(deadWorker);
+
+            kvStore.put(directiveKey, ActivationDirectiveValue.worker(COMMUNITY_ID, ""));
+            // Converged community membership that does not include deadWorker — same "removed" trigger
+            // as the wired test above, but localAliveMembersSupplier is left unwired here.
+            announceCommunityMembership(List.of(SELF));
+
+            activeState().rebuildStateFromKVStore();
+
+            assertThat(activeState().workerNodes())
+                    .as("#731 round 4: an unwired localAliveMembersSupplier must disable the sweep "
+                        + "entirely (fail safe) rather than run it against the empty default")
+                    .contains(deadWorker);
+            assertThat(kvStore.get(directiveKey))
+                    .as("fail-safe sweep must not touch the unremoved worker's KV footprint either")
+                    .isNotEqualTo(Option.empty());
         }
 
         @Test
@@ -352,6 +384,11 @@ class ClusterDeploymentStateWorkerRemovalTest {
             // include deadWorker. `deferredTopologyRecheck` (the 2s-scheduled retry from onEntry) is
             // invoked directly here in place of waiting out the real delay.
             announceCommunityMembership(List.of(SELF));
+            // #731 round 4: localAliveMembersSupplier now fails safe (removes nothing) when never
+            // wired, so this "removes" assertion needs a real, non-empty view not containing
+            // deadWorker — production wires this before Active is reachable (AetherNode); this test
+            // stands in for that wiring the same way FIX 3's removal test above does.
+            activeState().ctx().setLocalAliveMembersSupplier(() -> Set.of(SELF));
             activeState().deferredTopologyRecheckForTest();
 
             assertThat(activeState().workerNodes())
@@ -388,10 +425,10 @@ class ClusterDeploymentStateWorkerRemovalTest {
             assertThat(kvStore.get(directiveKey))
                     .as("kept worker's ActivationDirectiveKey survives")
                     .isNotEqualTo(Option.empty());
-            // The symmetric "absent from BOTH signals -> removed" case needs no separate test: every
-            // other sweep test above never wires localAliveMembersSupplier, so it keeps the
-            // ClusterDeploymentContext default (Set::of, empty) — leaderActivation_restoredWorkerAbsent
-            // FromCommunityMembership_isRemoved already exercises removal under that default.
+            // The symmetric "absent from BOTH signals -> removed" case is pinned by
+            // leaderActivation_restoredWorkerAbsentFromCommunityMembership_isRemoved, which wires a
+            // non-empty localAliveMembersSupplier not containing the dead worker — proving the AND
+            // against a working supplier, not merely against the untested empty default.
         }
     }
 

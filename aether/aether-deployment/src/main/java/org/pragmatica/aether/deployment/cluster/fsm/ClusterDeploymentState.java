@@ -267,6 +267,10 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             log.info("Node {} became leader, activating cluster deployment manager with {} known nodes",
                      ctx.self(),
                      activeNodes().size());
+            if (!ctx.localAliveMembersWired()) {
+                log.warn("localAliveMembersSupplier not wired: #731 dead-restored-worker sweep is disabled "
+                         + "(fails safe — removes nothing) until AetherNode supplies the MembershipFsm-backed view");
+            }
             rebuildStateFromKVStore();
             reconcile();
             startReconcileTimer();
@@ -757,10 +761,20 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// `GovernorAnnouncementKey` Put (`handleGovernorAnnouncementPut`) and once more from the
         /// one-shot `deferredTopologyRecheck`, scheduled 2s into `Active.onEntry()`, so a sweep that
         /// no-ops here because governor state had not yet converged still runs once it has.
+        ///
+        /// #731 round 4 (review re-check): if `ctx.localAliveMembersSupplier()` has never been wired
+        /// (`AetherNode` sets it once, before Active is reachable — see `ClusterDeploymentContext`),
+        /// this sweep no-ops entirely rather than run with the still-default empty local view, which
+        /// would silently degenerate the dual-signal AND back to the observed-only check round 3
+        /// exists to strengthen. `Active.onEntry()` logs one WARN for this case.
         private void sweepDeadRestoredWorkers() {
             var observedMembers = observedCommunityMembers();
 
             if (observedMembers.isEmpty()) {
+                return;
+            }
+
+            if (!ctx.localAliveMembersWired()) {
                 return;
             }
 
@@ -792,8 +806,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                         GovernorAnnouncementValue.class,
                         (_, value) -> {
                             if (!value.dissolved()) {
-                            members.addAll(value.members());
-                        }
+                                members.addAll(value.members());
+                            }
                         });
 
             return members;
