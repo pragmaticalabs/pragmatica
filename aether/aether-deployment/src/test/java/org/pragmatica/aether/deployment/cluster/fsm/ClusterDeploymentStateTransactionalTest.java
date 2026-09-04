@@ -284,6 +284,55 @@ class ClusterDeploymentStateTransactionalTest {
                     .findFirst();
             assertThat(atomicBatch).isPresent();
         }
+
+        // #809: the failed blueprint's OWN AppBlueprintKey (inflight.id()) must be removed in the
+        // SAME consensus batch as the previous-blueprint Put and the ROLLED_BACK outcome, so a
+        // reader of that key never observes the stale pre-failure value after a restore-rollback
+        // lands. Mutation-probed: red with the Remove dropped from restorePreviousBlueprint's batch
+        // (the exact #809 defect), green restored.
+        @Test
+        void restorePreviousBlueprint_removesFailedBlueprintKeyAtomicallyWithRestoreAndOutcome() {
+            var prior = blueprint("app", V1, "slice-a");
+            var failing = blueprint("app", V2, "slice-a");
+            var inflight = ClusterDeploymentState.Active.InFlightBlueprint.inFlightBlueprint(failing.id(),
+                                                                                             failing,
+                                                                                             Option.some(prior));
+
+            activeState().restorePreviousBlueprintForTest(inflight, prior, "boom: disk full");
+
+            var priorKey = AppBlueprintKey.appBlueprintKey(prior.id());
+            var failedKey = AppBlueprintKey.appBlueprintKey(failing.id());
+            var outcomeKey = DeploymentOutcomeKey.deploymentOutcomeKey(failing.id());
+
+            // get(inflight.id()) becomes empty: the failed blueprint's own key is removed.
+            var removedFailedKey = cluster.commands
+                    .stream()
+                    .anyMatch(c -> c instanceof KVCommand.Remove<AetherKey> && c.key().equals(failedKey));
+            assertThat(removedFailedKey).isTrue();
+
+            // get(previous.id()) is the restored value.
+            var restoredPriorPut = cluster.commands
+                    .stream()
+                    .filter(c -> c instanceof KVCommand.Put<AetherKey, ?> && c.key().equals(priorKey))
+                    .findFirst();
+            assertThat(restoredPriorPut).isPresent();
+
+            var restoredValue = (AppBlueprintValue) ((KVCommand.Put<?, ?>) restoredPriorPut.get()).value();
+            assertThat(restoredValue.blueprint()).isEqualTo(prior);
+
+            // outcome(inflight.id()) is ROLLED_BACK — and all three land in ONE atomic batch, so a
+            // reader never observes any one of the three without the other two.
+            var atomicBatch = cluster.batches
+                    .stream()
+                    .filter(batch -> batch.stream().anyMatch(c -> c.key().equals(priorKey)
+                                                                   && c instanceof KVCommand.Put<AetherKey, ?>)
+                                     && batch.stream().anyMatch(c -> c.key().equals(failedKey)
+                                                                      && c instanceof KVCommand.Remove<AetherKey>)
+                                     && batch.stream().anyMatch(c -> c.key().equals(outcomeKey)
+                                                                      && c instanceof KVCommand.Put<AetherKey, ?>))
+                    .findFirst();
+            assertThat(atomicBatch).isPresent();
+        }
     }
 
     @Nested
