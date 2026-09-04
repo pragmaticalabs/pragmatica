@@ -149,11 +149,12 @@ class StreamConsumerRuntimeClusterCursorTest {
 
     /// #654 round 2: the count reaches 1 IMMEDIATELY when `close()` returns — the bound expiring with
     /// `pending` still unresolved is what counts it, not the later `pending.fail(...)`.
-    /// #654 round 3: a commit already marked this way that goes on to resolve with a genuine failure is
-    /// the SAME incident, not a second one — [ConsumerRuntimeState#recordIfRecovered] skips its own
-    /// counter increment once [ConsumerState#wasUnsettledAtShutdownBound] is set, so the count stays at
-    /// 1 even after the late failure lands; the `succeed`-after-bound test below pins the no-rollback
-    /// guarantee for a late SUCCESS.
+    /// #654 round 4: a commit already reported this way that goes on to resolve with a genuine failure
+    /// is the SAME incident, not a second one — [ConsumerRuntimeState#reportCommitOutcome] CASes a
+    /// token minted per commit; whichever of the bound-expiry report or the later failure wins that CAS
+    /// owns the one increment, and the loser logs at WARNING, not ERROR, so the count stays at 1 even
+    /// after the late failure lands. The `succeed`-after-bound test below pins the no-rollback guarantee
+    /// for a late SUCCESS.
     @Test
     void close_countsUnsettledCommit_whenConsensusPublishNeverSettlesWithinBound() throws InterruptedException {
         Promise<Unit> pending = Promise.promise();
@@ -177,9 +178,14 @@ class StreamConsumerRuntimeClusterCursorTest {
                   .describedAs("unresolved at the shutdown bound counts as failed for THIS shutdown immediately, before the promise ever resolves")
                   .isEqualTo(1L);
 
-        pending.fail(CheckpointRejected.INSTANCE);
-        Thread.sleep(200);
+        var lateResolution = new CountDownLatch(1);
 
+        pending.onResult(_ -> lateResolution.countDown());
+        pending.fail(CheckpointRejected.INSTANCE);
+
+        assertThat(lateResolution.await(2, TimeUnit.SECONDS))
+                .describedAs("the late failure handler must actually run before the counter assertion means anything")
+                .isTrue();
         assertThat(runtime.cursorCommitFailureCount())
                 .describedAs("the promise later resolving with a genuine failure is the same incident already counted at the bound, not a second one")
                 .isEqualTo(1L);
@@ -213,9 +219,14 @@ class StreamConsumerRuntimeClusterCursorTest {
                   .describedAs("unresolved at the shutdown bound counts as failed for THIS shutdown immediately, before the promise ever resolves")
                   .isEqualTo(1L);
 
-        pending.succeed(Unit.unit());
-        Thread.sleep(200);
+        var lateResolution = new CountDownLatch(1);
 
+        pending.onResult(_ -> lateResolution.countDown());
+        pending.succeed(Unit.unit());
+
+        assertThat(lateResolution.await(2, TimeUnit.SECONDS))
+                .describedAs("the late success handler must actually run before the counter assertion means anything")
+                .isTrue();
         assertThat(runtime.cursorCommitFailureCount())
                 .describedAs("a later success must not decrement or clear a commit already marked unsettled at the shutdown bound — the node was already stopping without durable confirmation")
                 .isEqualTo(1L);

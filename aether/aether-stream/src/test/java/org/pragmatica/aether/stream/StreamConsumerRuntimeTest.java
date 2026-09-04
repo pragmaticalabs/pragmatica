@@ -495,6 +495,30 @@ class StreamConsumerRuntimeTest {
             };
         }
 
+        /// #654 round 4 (D1 regression): a periodic checkpoint commit and a final close-time commit
+        /// for the same `(group, stream, partition)` key are two DISTINCT calls into `commit(...)`, so
+        /// this hands back a different promise per call instead of [#committing]'s single fixed one —
+        /// the shape D1 needed to reproduce two commits sharing one [ConsumerRuntimeState.ConsumerState].
+        private static ConsumerCursorStore committingSequence(List<Promise<Unit>> commitResults, CountDownLatch commitsIssued) {
+            var index = new AtomicInteger(0);
+
+            return new ConsumerCursorStore() {
+                @Override
+                public Promise<Unit> commit(String consumerGroup, String streamName, int partition, long offset) {
+                    var i = Math.min(index.getAndIncrement(), commitResults.size() - 1);
+
+                    commitsIssued.countDown();
+
+                    return commitResults.get(i);
+                }
+
+                @Override
+                public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition) {
+                    return Promise.success(none());
+                }
+            };
+        }
+
         @Test
         void close_countsFailure_whenFinalCommitFailsSynchronously_andDoesNotWaitOutTheBound() throws Exception {
             createTestStream("orders");
@@ -523,12 +547,13 @@ class StreamConsumerRuntimeTest {
         /// that a commit still unresolved when the shutdown bound expires counts as failed for THIS
         /// shutdown immediately — not only if/when it eventually resolves. The count therefore reaches
         /// 1 the instant `close()` returns, before `pending` is ever settled.
-        /// #654 round 3: a commit already marked unsettled at the bound that goes on to resolve with a
-        /// genuine failure is the SAME incident, not a second one —
-        /// [ConsumerRuntimeState#onCursorCommitFailure] skips its own counter increment once
-        /// [ConsumerState#wasUnsettledAtShutdownBound] is set, so the count stays at 1 even after the
-        /// late failure lands; the no-rollback guarantee for a late SUCCESS is pinned by the
-        /// `succeed`-after-bound test below.
+        /// #654 round 4: a commit already reported at the bound that later resolves with a genuine
+        /// failure is the SAME incident, not a second one — [ConsumerRuntimeState#reportCommitOutcome]
+        /// CASes a token minted per commit ([ConsumerRuntimeState.TrackedCommit#reported]); whichever of
+        /// the bound-expiry report or the later failure wins that CAS owns the one increment, and the
+        /// loser logs at WARNING ("late resolution of an already-reported cursor commit"), not ERROR, so
+        /// the count stays at 1 even after the late failure lands. The no-rollback guarantee for a late
+        /// SUCCESS is pinned by the `succeed`-after-bound test below.
         @Test
         void close_countsUnsettledCommit_whenFinalCommitNeverSettlesWithinBound() throws InterruptedException {
             createTestStream("orders");
@@ -553,9 +578,14 @@ class StreamConsumerRuntimeTest {
                       .describedAs("unresolved at the shutdown bound counts as failed for THIS shutdown immediately, before the promise ever resolves")
                       .isEqualTo(1L);
 
-            pending.fail(StreamError.General.BUFFER_EMPTY);
-            Thread.sleep(200);
+            var lateResolution = new CountDownLatch(1);
 
+            pending.onResult(_ -> lateResolution.countDown());
+            pending.fail(StreamError.General.BUFFER_EMPTY);
+
+            assertThat(lateResolution.await(2, TimeUnit.SECONDS))
+                      .describedAs("the late failure handler must actually run before the counter assertion means anything")
+                      .isTrue();
             assertThat(observedRuntime.cursorCommitFailureCount())
                       .describedAs("the promise later resolving with a genuine failure is the same incident already counted at the bound, not a second one")
                       .isEqualTo(1L);
@@ -592,9 +622,14 @@ class StreamConsumerRuntimeTest {
                       .describedAs("unresolved at the shutdown bound counts as failed for THIS shutdown immediately, before the promise ever resolves")
                       .isEqualTo(1L);
 
-            pending.succeed(Unit.unit());
-            Thread.sleep(200);
+            var lateResolution = new CountDownLatch(1);
 
+            pending.onResult(_ -> lateResolution.countDown());
+            pending.succeed(Unit.unit());
+
+            assertThat(lateResolution.await(2, TimeUnit.SECONDS))
+                      .describedAs("the late success handler must actually run before the counter assertion means anything")
+                      .isTrue();
             assertThat(observedRuntime.cursorCommitFailureCount())
                       .describedAs("a later success must not decrement or clear a commit already marked unsettled at the shutdown bound — the node was already stopping without durable confirmation")
                       .isEqualTo(1L);
@@ -689,6 +724,61 @@ class StreamConsumerRuntimeTest {
             } finally {
                 observedRuntime.close();
             }
+        }
+
+        /// #654 round 4 (D1 regression): `checkpointIfNeeded` and `close()`'s `flushCursorForKey` can
+        /// each issue their own commit for the SAME consumer inside one `close()` — the periodic one is
+        /// still in flight when the final one is issued, and nothing drains it (`closed` only stops new
+        /// poll cycles). Before round 4 both shared ONE per-consumer dedup flag, so only the FIRST of
+        /// the two to be reported ever incremented the counter and the other's later resolution logged
+        /// ERROR without incrementing — one incident silently discarded. Round 4 gives each commit its
+        /// own [ConsumerRuntimeState.TrackedCommit#reported] token: the bound must count both.
+        @Test
+        void close_countsBothUnsettledCommits_whenPeriodicAndFinalCommitShareOneConsumer() throws InterruptedException {
+            createTestStream("orders");
+            Promise<Unit> periodicPending = Promise.promise();
+            Promise<Unit> finalPending = Promise.promise();
+            var commitsIssued = new CountDownLatch(1);
+            var store = committingSequence(List.of(periodicPending, finalPending), commitsIssued);
+            var observedRuntime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);
+            var config = ConsumerConfig.consumerConfig("group-1", 1, ProcessingMode.ORDERED, ErrorStrategy.RETRY, 10L, 3, "");
+            var delivered = new CountDownLatch(1);
+
+            observedRuntime.subscribe("orders",
+                                      0,
+                                      config,
+                                      (offset, payload, ts) -> {
+                                          delivered.countDown();
+
+                                          return Promise.unitPromise();
+                                      });
+            // The 10ms checkpoint interval elapses before the first event, so the very first successful
+            // delivery already trips checkpointIfNeeded's time-based branch, putting the PERIODIC commit
+            // in flight before close() issues the second, final commit for the same key.
+            Thread.sleep(50);
+            manager.publishLocal("orders", 0, "event-1".getBytes(UTF_8), 1000L);
+            assertThat(delivered.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(commitsIssued.await(2, TimeUnit.SECONDS))
+                      .describedAs("the periodic checkpoint commit must be in flight before close() issues the final commit for the same key")
+                      .isTrue();
+
+            observedRuntime.close();
+
+            assertThat(observedRuntime.cursorCommitFailureCount())
+                      .describedAs("two distinct unsettled commits for one consumer at the bound must count as two incidents, not one")
+                      .isEqualTo(2L);
+
+            var lateResolution = new CountDownLatch(1);
+
+            periodicPending.onResult(_ -> lateResolution.countDown());
+            periodicPending.fail(StreamError.General.BUFFER_EMPTY);
+
+            assertThat(lateResolution.await(2, TimeUnit.SECONDS))
+                      .describedAs("the periodic commit's late failure handler must actually run before the counter assertion means anything")
+                      .isTrue();
+            assertThat(observedRuntime.cursorCommitFailureCount())
+                      .describedAs("the periodic commit's token already won at the bound; its later genuine failure must not add a second increment")
+                      .isEqualTo(2L);
         }
     }
 
