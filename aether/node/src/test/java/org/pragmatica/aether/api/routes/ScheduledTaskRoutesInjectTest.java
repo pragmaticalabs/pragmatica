@@ -182,8 +182,8 @@ class ScheduledTaskRoutesInjectTest {
     /// advancing counters, permanently invisible on every Management API surface, because those
     /// surfaces now filter the unscoped key out. `injectStateKeyFor` closes this by mirroring
     /// `ScheduledTaskManager.TaskOps#stateKeyFor`: ALL-mode scoped by this node, SINGLE-mode
-    /// unchanged (still races the leader's automatic fire/`/trigger` on that key — a documented
-    /// TOCTOU caveat, not addressed here).
+    /// unchanged (still races the leader's automatic fire on that key — `/trigger` writes no state
+    /// entry, so it is not a racer here — a documented TOCTOU caveat, not addressed here).
     @Nested
     class KeyScoping {
 

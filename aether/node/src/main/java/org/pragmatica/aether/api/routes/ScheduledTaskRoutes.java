@@ -328,8 +328,9 @@ public final class ScheduledTaskRoutes implements RouteSource {
     /// scoped by this node, same as an automatic fire, so the write is visible on the per-node
     /// aggregation (#841) instead of landing on the unscoped key every ALL-mode read surface
     /// now filters out. SINGLE-mode keeps the pre-#841 unscoped key unchanged — it still races
-    /// the leader's automatic fire and `/trigger` on that same key (no `tryClaim`/`release`
-    /// guard here), a documented TOCTOU caveat, not fixed by this change.
+    /// the leader's automatic fire on that same key (no `tryClaim`/`release` guard here; `/trigger`
+    /// writes no state entry at all, so it is not a racer on this key), a documented TOCTOU caveat,
+    /// not fixed by this change.
     private ScheduledTaskStateKey injectStateKeyFor(ScheduledTask task) {
         return task.executionMode() == ExecutionMode.ALL
                ? ScheduledTaskStateKey.scheduledTaskStateKey(task.configSection(),
