@@ -39,9 +39,14 @@
 - **Legacy plaintext is refused, never silently accepted.** Enabling encryption over a local-disk
   tier whose directory already holds block files with no `.encryption-enabled` marker aborts boot
   (`EnablingOverExistingPlaintext`) rather than starting to write ciphertext alongside unreadable
-  plaintext; a DHT tier has no directory to scan and instead fails closed per block on read
-  (`LegacyPlaintextBlock`) rather than returning raw bytes. A block whose header names a key id
-  absent from the node's keyring fails with `UnknownKeyId` — never a truncated or garbled read.
+  plaintext; a DHT tier has no directory to scan for that forward-direction check, so an unmarked
+  plaintext block on the DHT tier is instead caught per block on read (`LegacyPlaintextBlock`)
+  rather than returning raw bytes. The DHT tier does still have its own boot-time guard, in the
+  opposite direction: both local-disk and DHT tiers write the same marker the first time encryption
+  is enabled over them, and disabling encryption (or omitting the keyring) over a tier already
+  marked encrypted is refused at boot (`EncryptedTierRequiresKeyring`), the same as for local disk.
+  A block whose header names a key id absent from the node's keyring fails with `UnknownKeyId` —
+  never a truncated or garbled read.
   **Limitation, not shipped here:** there is no migration path from an existing plaintext tier to
   an encrypted one; enabling encryption is new-instance/fresh-data only for rc4.
 - **Key rotation:** add a key, flip `active_key_id`; every prior key stays in `keys` and remains

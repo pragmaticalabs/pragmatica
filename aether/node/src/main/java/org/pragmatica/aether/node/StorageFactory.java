@@ -480,6 +480,7 @@ public final class StorageFactory {
                                               .await(DHT_MARKER_TIMEOUT));
     }
 
+    /// #253 review round 4 note (2026-09-04): `maybeEncryptDht` is hoisted above `keyring.fold` here, unlike [#buildTierList] -- safe only because this path has no preceding disk-side guard to race against, and an empty keyring writes no marker.
     private static Result<List<StorageTier>> handleDiskTierUnavailable(String name,
                                                                        Cause cause,
                                                                        MemoryTier memoryTier,
