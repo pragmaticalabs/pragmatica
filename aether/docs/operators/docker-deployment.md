@@ -90,7 +90,7 @@ services:
       MANAGEMENT_PORT: "8080"
       CLUSTER_PEERS: "node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090"
       AETHER_CLUSTER_NAME: "aether-dev"
-      AETHER_CLUSTER_SECRET: "change-me-dev-secret"
+      AETHER_CLUSTER_SECRET: "${AETHER_CLUSTER_SECRET:?export AETHER_CLUSTER_SECRET before docker-compose up}"
       JAVA_OPTS: "-Xmx256m -XX:+UseZGC"
     ports:
       - "8080:8080"
@@ -235,7 +235,7 @@ fallback for `tls.cluster_secret`):
 services:
   aether-node-1:
     environment:
-      AETHER_CLUSTER_SECRET: "change-me-dev-secret"
+      AETHER_CLUSTER_SECRET: "${AETHER_CLUSTER_SECRET:?export AETHER_CLUSTER_SECRET before docker-compose up}"
     volumes:
       - ./aether.toml:/config/aether.toml:ro
       - ./certs:/config/certs:ro

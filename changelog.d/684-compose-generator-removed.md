@@ -1,0 +1,3 @@
+### Removed (2026-09-04 — #684: dead `DockerComposeGenerator` deleted rather than patched)
+- **`DockerComposeGenerator.java` and its test are deleted.** It baked a literal `AETHER_CLUSTER_SECRET: "<value>"` into a separate docker-compose renderer with zero production callers — patching it would not have closed any path a real deployment used, since `aether cluster scaffold` renders through `DockerComposeTemplate` instead [mechanism: repo-wide grep confirmed no caller outside the class's own test].
+- **Fan-out confirmed within own test and docs mentions only** — a repo-wide grep plus a root reactor compile with no `-pl` both pass with the class removed [verified: root reactor compile, `env -u HCLOUD_TOKEN mvn -q -DskipTests compile`].

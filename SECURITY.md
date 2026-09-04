@@ -96,18 +96,44 @@ authorization_role = "OPERATOR"   # ADMIN | OPERATOR | VIEWER
 change configuration; `VIEWER` is read-only. Keys can also be supplied via the `AETHER_API_KEYS`
 environment variable at startup.
 
-### `cluster_secret` hygiene — a known gap
+### `cluster_secret` hygiene
 
 `cluster_secret` seeds the cluster's derived CA (mTLS) and, per the on-disk file, is chmod-600'd
-when written by the CLI. **However**, the Docker Compose generator currently writes it as a plain
-environment variable in the generated compose file
-(`AETHER_CLUSTER_SECRET: "<value>"`) [mechanism: `DockerComposeGenerator.java` — the value is visible
-via `docker inspect` on any host that can reach the Docker socket]. This is a known, tracked residual
-(internally referenced as #684, which also covers the generator-class sweep so this doesn't recur
-elsewhere — distinct from the now-closed #287, which hardened a different code path: cloud-init
-user-data/argv and `aether.toml` file permissions). If you generate a Compose deployment, treat
-the resulting `docker-compose.yml` and the Docker daemon's inspect API as secret-bearing, and control
-access accordingly, exactly as you would a file containing the secret in the clear.
+when written by the CLI. The `aether cluster scaffold` compose template
+(`DockerComposeTemplate.java`) and the shipped reference file (`aether/docker/docker-compose.yml`)
+both emit `AETHER_CLUSTER_SECRET` as a `${AETHER_CLUSTER_SECRET:?...}` shell-substitution
+reference, never a literal [mechanism: `DockerComposeTemplate.appendCommon`] — the generated
+compose file itself carries no secret value, so a copy of it in git, in a backup, or on disk is not
+secret-bearing on its own (#684, distinct from #287, which closed only the on-disk `aether.toml`
+permission hygiene — chmod 600, via `SecureFiles.writeSecure`/`restrictToOwner`. A related exposure
+of the same secret named in #287's own discussion — `docker run -e AETHER_CLUSTER_SECRET=...` and
+inline-JVM-env-on-the-SSH-command-line, on live bootstrap/redeploy paths in
+`BootstrapPhaseDeploy.java` — was not addressed by that closure and remains open; it is a distinct
+code path from the generated-file vector #684 closes). The `DockerComposeGenerator`
+class, which used to bake a literal `AETHER_CLUSTER_SECRET: "<value>"` into a separate,
+never-wired code path, has been deleted rather than fixed — it had zero production callers, so
+patching it would not have closed anything a real deployment used.
+
+**What this does not close.** Once `docker compose up` resolves the reference, the running
+container's environment carries the actual secret value like any env-var-delivered secret, and
+remains visible via `docker inspect` (or `/proc`) on any host that can reach the Docker socket.
+This is unchanged by #684 and is inherent to env-var secret delivery generally, not specific to
+Aether's compose path — treat any host that can run `docker inspect` against a cluster container as
+able to read `cluster_secret`, and scope Docker socket access accordingly.
+
+**Migrating a compose file generated before this fix.** A `docker-compose.yml` produced by
+`aether cluster scaffold` before #684 has the literal value baked in under
+`AETHER_CLUSTER_SECRET: "change-me-cluster-secret"` (or whatever you edited it to). To migrate:
+note the actual secret value you are running with, `export AETHER_CLUSTER_SECRET=<that value>` in
+the shell that runs `docker compose up` (or put it in a git-ignored `.env` file next to the compose
+file), then either regenerate the file with `aether cluster scaffold` and reapply your local edits,
+or hand-edit the `AETHER_CLUSTER_SECRET:` line to
+`"${AETHER_CLUSTER_SECRET:?export AETHER_CLUSTER_SECRET before docker-compose up}"`. The
+regenerated or hand-edited file carries no secret value of its own, but that does **not** make it
+safe to commit outright — confirm every literal was replaced with the `${...}` reference form
+first, and never commit the exported value itself. If the old file with the literal value was ever
+committed or otherwise left where it could have been read, rotating `cluster_secret` is the only
+way to invalidate that exposure; deleting the file does not undo a leak into git or shell history.
 
 Separately: the daily-rotated gossip key described above is itself HKDF-derived from
 `cluster_secret`, so rotating `cluster_secret` does not immediately revoke gossip decryption for
