@@ -20,10 +20,46 @@ public sealed interface EncryptionError extends Cause {
         }
     }
 
-    record InvalidKeyLength(int actual, int expected) implements EncryptionError {
+    /// #253 SHOULD-FIX #7: every other resolution/decryption failure in this hierarchy names the key
+    /// id involved; this one didn't, though the caller (`AesGcmBlockEncryptor.aesGcmBlockEncryptor`)
+    /// always has it in scope.
+    record InvalidKeyLength(String keyId, int actual, int expected) implements EncryptionError {
         @Override
         public String message() {
-            return "Invalid key length: " + actual + " bytes, expected " + expected;
+            return "Invalid key length for key id '" + keyId + "': " + actual + " bytes, expected " + expected;
+        }
+    }
+
+    /// #253 SHOULD-FIX #5: the framed header's VERSION byte doesn't match this build's
+    /// [EncryptingStorageTier#VERSION]. Written since the first cut of the wire format but never
+    /// read until this fix. Recovery: run the build that wrote this version, or migrate the block
+    /// (tracked separately -- #253 ships detection, not migration).
+    record UnsupportedVersion(String blockId, int actualVersion, int expectedVersion) implements EncryptionError {
+        @Override
+        public String message() {
+            return "Block " + blockId
+                 + " has encryption format version " + actualVersion
+                 + ", this build only supports version " + expectedVersion;
+        }
+    }
+
+    /// #253 BLOCKING #3 (2026-09-04 ruling): `instanceName`'s local-disk directory carries the
+    /// `.encryption-enabled` marker -- it holds, or held, ciphertext written under `keyId` -- but
+    /// this boot supplies no keyring for it (`encrypted = false`, or `[storage.encryption]` absent
+    /// entirely). The marker means "blocks here are encrypted"; returning the bare, unwrapped tier
+    /// would hand back `AEC1...` framed bytes as plaintext on every read, and a `put` during this
+    /// disabled window writes real plaintext that a later re-enable's legacy-plaintext guard cannot
+    /// tell apart from the ciphertext already there (the marker already exists, so that guard
+    /// short-circuits straight past it). Recovery: set `encrypted = true` (or `streams_encrypted =
+    /// true`) and keep `keyId` resolvable in `[storage.encryption.keys]`, or migrate the directory
+    /// to a fresh, unmarked one (tracked separately -- #831).
+    record EncryptedTierRequiresKeyring(String instanceName, String keyId) implements EncryptionError {
+        @Override
+        public String message() {
+            return "Storage instance '" + instanceName
+                 + "' was encrypted under key id '" + keyId
+                 + "' but no encryption keyring is configured for it now: set encrypted = true and keep key id '" + keyId
+                 + "' in [storage.encryption.keys], or migrate to a fresh directory (#831)";
         }
     }
 
@@ -69,8 +105,9 @@ public sealed interface EncryptionError extends Cause {
     record EnablingOverExistingPlaintext(String path, long existingBlockCount) implements EncryptionError {
         @Override
         public String message() {
-            return "Refusing to enable encryption at " + path + ": " + existingBlockCount
-                   + " existing block(s) with no encryption marker -- tier may hold plaintext data";
+            return "Refusing to enable encryption at " + path
+                 + ": " + existingBlockCount
+                 + " existing block(s) with no encryption marker -- tier may hold plaintext data";
         }
     }
 }

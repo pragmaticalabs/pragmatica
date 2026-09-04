@@ -33,7 +33,7 @@ final class AesGcmBlockEncryptor implements BlockEncryptor {
 
     static Result<BlockEncryptor> aesGcmBlockEncryptor(byte[] key, String keyId) {
         if (key.length != REQUIRED_KEY_LENGTH) {
-            return new EncryptionError.InvalidKeyLength(key.length, REQUIRED_KEY_LENGTH).result();
+            return new EncryptionError.InvalidKeyLength(keyId, key.length, REQUIRED_KEY_LENGTH).result();
         }
 
         return Result.success(new AesGcmBlockEncryptor(key, keyId));
@@ -69,7 +69,7 @@ final class AesGcmBlockEncryptor implements BlockEncryptor {
 
     private Result<EncryptedData> performEncryption(byte[] data, byte[] iv, byte[] aad) {
         return doCipher(EncryptionError.EncryptionFailed::new, Cipher.ENCRYPT_MODE, data, iv, aad).map(ciphertext -> toEncryptedData(ciphertext,
-                                                                                                                                      iv));
+                                                                                                                                     iv));
     }
 
     private EncryptedData toEncryptedData(byte[] ciphertext, byte[] iv) {
