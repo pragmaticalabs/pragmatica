@@ -33,6 +33,7 @@ import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.MembershipConfigBinding;
 import org.pragmatica.aether.config.StreamingConfig;
 import org.pragmatica.aether.config.StorageConfig;
+import org.pragmatica.aether.config.StorageEncryptionConfig;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.aether.config.Environment;
 import org.pragmatica.aether.config.SliceConfig;
@@ -127,7 +128,8 @@ public record Main(String[] args) {
                                      // enforceClusterNamePresent() above already aborted the boot if this
                                      // were missing or malformed, so the value is present and validated.
                                      .withClusterName(resolveClusterName())
-                                     .withAutoHeal(resolveAutoHeal(aetherConfig));
+                                     .withAutoHeal(resolveAutoHeal(aetherConfig))
+                                     .withStorageEncryption(resolveStorageEncryption(aetherConfig));
 
         enforceWalDurabilityBootable(config);
         // Review catch (#634 batch): assembly failures — the routed-type codec guard included — get
@@ -373,6 +375,10 @@ public record Main(String[] args) {
         return aetherConfig.map(AetherConfig::storage)
                            .filter(m -> !m.isEmpty())
                            .or(Map.of());
+    }
+
+    private static Option<StorageEncryptionConfig> resolveStorageEncryption(Option<AetherConfig> aetherConfig) {
+        return aetherConfig.flatMap(AetherConfig::storageEncryption);
     }
 
     private static Option<BackupConfig> resolveBackup(Option<AetherConfig> aetherConfig) {

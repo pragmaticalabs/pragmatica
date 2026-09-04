@@ -31,19 +31,22 @@ public final class ConfigLoader {
     public static Result<AetherConfig> load(Path path) {
         return TomlParser.parseFile(path)
                          .flatMap(ConfigLoader::fromDocument)
-                         .flatMap(ConfigValidator::validate);
+                         .flatMap(ConfigValidator::validate)
+                         .flatMap(StorageEncryptionConfigValidator::validate);
     }
 
     public static Result<AetherConfig> loadFromString(String content) {
         return TomlParser.parse(content)
                          .flatMap(ConfigLoader::fromDocument)
-                         .flatMap(ConfigValidator::validate);
+                         .flatMap(ConfigValidator::validate)
+                         .flatMap(StorageEncryptionConfigValidator::validate);
     }
 
     public static Result<AetherConfig> loadWithOverrides(Path path, Map<String, String> overrides) {
         return TomlParser.parseFile(path)
                          .flatMap(doc -> fromDocumentWithOverrides(doc, overrides))
-                         .flatMap(ConfigValidator::validate);
+                         .flatMap(ConfigValidator::validate)
+                         .flatMap(StorageEncryptionConfigValidator::validate);
     }
 
     public static AetherConfig aetherConfig(Environment env) {
@@ -114,6 +117,7 @@ public final class ConfigLoader {
         populateDhtReplicationConfig(doc, builder);
         populateTimeoutsConfig(doc, builder);
         populateStorageConfig(doc, builder);
+        populateStorageEncryptionConfig(doc, builder);
         populateCloudConfig(doc, builder);
         populateEndpointsConfig(doc, builder);
         populateStreamingConfig(doc, builder);
@@ -445,8 +449,11 @@ public final class ConfigLoader {
         for (var sectionName : doc.sectionNames()) {
             if (sectionName.startsWith("storage.")) {
                 var instanceName = sectionName.substring("storage.".length());
-
-                if (!instanceName.isEmpty()) {
+                // #253: `[storage.encryption]` (and its `[storage.encryption.keys]` sub-table) is the
+                // global keyring section, not a per-instance `[storage.<name>]` one -- excluded here so
+                // it is never misread as a storage instance literally named "encryption". Parsed
+                // separately by `populateStorageEncryptionConfig`.
+                if (!instanceName.isEmpty() && !instanceName.equals("encryption") && !instanceName.startsWith("encryption.")) {
                     instances.put(instanceName, storageFromSection(doc, sectionName));
                 }
             }
@@ -455,6 +462,23 @@ public final class ConfigLoader {
         if (!instances.isEmpty()) {
             builder.storage(Map.copyOf(instances));
         }
+    }
+
+    /// #253: the global `[storage.encryption]` keyring -- `active_key_id` + `streams_encrypted`, plus
+    /// the `[storage.encryption.keys]` sub-table (key id -> `${secrets:<path>}` reference, read via
+    /// `getSection` the same way `[cloud.credentials]` etc. are, but WITHOUT `resolveEnvVars`: these
+    /// values are secret REFERENCES resolved later, at boot, through `SecretsProvider` -- not `${env:...}`
+    /// substitutions resolved here). Absent section -> builder is left untouched (`Option.none()` default).
+    private static void populateStorageEncryptionConfig(TomlDocument doc, AetherConfig.Builder builder) {
+        if (!doc.hasSection("storage.encryption")) {
+            return;
+        }
+
+        var activeKeyId = doc.getString("storage.encryption", "active_key_id").or("");
+        var streamsEncrypted = doc.getBoolean("storage.encryption", "streams_encrypted").or(false);
+        var keys = doc.getSection("storage.encryption.keys");
+
+        builder.storageEncryption(StorageEncryptionConfig.storageEncryptionConfig(keys, activeKeyId, streamsEncrypted));
     }
 
     private static StorageConfig storageFromSection(TomlDocument doc, String sectionName) {
@@ -468,6 +492,9 @@ public final class ConfigLoader {
         // #634-3: the stream WAL's base dir as a first-class storage key (read from the `streams`
         // instance; empty = derive the pre-#634-3 sibling path, so absent keys change nothing).
         var walPath = doc.getString(sectionName, "wal_path").or("");
+        // #253: per-instance opt-in into encryption; requires [storage.encryption] to carry a keyring
+        // (enforced by StorageEncryptionConfigValidator, not here).
+        var encrypted = doc.getBoolean(sectionName, "encrypted").or(false);
 
         return StorageConfig.storageConfig(memoryMaxBytes,
                                            diskMaxBytes,
@@ -476,7 +503,8 @@ public final class ConfigLoader {
                                            mutationThreshold,
                                            snapshotInterval,
                                            retentionCount,
-                                           walPath);
+                                           walPath,
+                                           encrypted);
     }
 
     private static void populateEndpointsConfig(TomlDocument doc, AetherConfig.Builder builder) {

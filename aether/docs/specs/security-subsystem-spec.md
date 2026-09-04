@@ -506,8 +506,27 @@ interface KeyProvider {                              // modeled on K8s KMS v2 / 
 > external KMS never releases the KEK) and the credential-less invariant. *Separate native vs
 > federation interfaces* — forces call sites to branch on backend.
 
-### 5.3 Wire `BlockEncryptor` to `KeyProvider` (fix #253)
+### 5.3 Wire `BlockEncryptor` to `KeyProvider` (stream/segment path — #253 did NOT close this; see update)
 
+> **2026-09-04 update — #253 shipped a narrower mechanism than this section specifies; the gap named
+> below is UNCHANGED and still open.** #253 resolved as: `EncryptingStorageTier` wraps the generic
+> `StorageTier` framework (`LocalDiskTier`/`DhtStorageTier`, used by the `artifacts`/`streams`
+> `StorageInstance`s created via `StorageFactory.createAll`/`createOne`), keyed by a static
+> `EncryptionKeyring` resolved once at boot from `${secrets:<path>}` references through the existing
+> `SecretsProvider` SPI (`StorageEncryption.resolveKeyring`) — no `KeyProvider`, no `generateDataKey`,
+> no per-segment `WrappedKey` in a header, no KEK/DEK wrapping tier. This satisfies the owner ruling
+> that #253 ride the existing secrets SPI (Vault/#119 deferred) and gives boot-time keyring resolution,
+> versioned+authenticated per-block headers (AES-GCM AAD), and loud boot/read failure on any
+> unresolvable or legacy-plaintext block — but it does **not** touch the specific gap this section
+> targets: `SegmentReader.java:43` and the `AetherNode.java:2537` call site still construct with
+> `none()`, so the stream/segment payload pipeline (distinct from the generic storage-tier block path
+> #253 wraps) remains **unencrypted, exactly as described below**. Key rotation here also has no
+> re-encryption-on-rotate step (old keys stay resolvable for reads) rather than this section's rewrap-
+> without-rewrite model. See `CHANGELOG.md` (#253 entry, 2026-09-04) and
+> [`configuration.md`](../reference/configuration.md#storage-encryption-configuration-253) for what
+> actually shipped; treat the `KeyProvider`/`WrappedKey` design below as still-open future work, not
+> superseded.
+>
 > **Decision.** Keep `BlockEncryptor` as the DEK/AEAD layer and feed it from `KeyProvider`. At
 > segment/tier creation the storage sink calls `generateDataKey`, stores the `WrappedKey` in the
 > segment header, and encrypts with the plaintext DEK; on read it `unwrap`s via the header. `keyId`

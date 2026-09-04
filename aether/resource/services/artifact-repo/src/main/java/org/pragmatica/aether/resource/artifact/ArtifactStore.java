@@ -619,10 +619,11 @@ class ArtifactStoreImpl implements ArtifactStore {
     }
 
     /// Per-chunk variant of `dhtPutWithRetry` for the deploy fan-out. The artifact
-    /// `storage` instance's durable tier is the DHT (see `StorageFactory.defaultArtifactStorage`),
-    /// so `storage.put` propagates the same transient `PeerUnreachable`/`QuorumNotReached`
-    /// failures as direct `dht.put`. Chunk writes are content-addressed (BlockId is
-    /// the chunk's hash), so retrying is idempotent at the storage layer.
+    /// `storage` instance's durable tier is the DHT (see `StorageFactory.createAll`'s synthesized
+    /// default `artifacts` instance), so `storage.put` propagates the same transient
+    /// `PeerUnreachable`/`QuorumNotReached` failures as direct `dht.put`. Chunk writes are
+    /// content-addressed (BlockId is the chunk's hash), so retrying is idempotent at the storage
+    /// layer.
     private Promise<BlockId> storagePutWithRetry(byte[] chunk) {
         return storagePutWithRetry(chunk, 0);
     }

@@ -4,21 +4,29 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
-import java.util.LinkedHashMap;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 import org.pragmatica.aether.config.StorageConfig;
 import org.pragmatica.aether.storage.DhtStorageTier;
 import org.pragmatica.dht.DHTClient;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.parse.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.storage.DemotionConfig;
 import org.pragmatica.storage.DemotionManager;
+import org.pragmatica.storage.EncryptingStorageTier;
+import org.pragmatica.storage.EncryptionError;
+import org.pragmatica.storage.EncryptionKeyring;
 import org.pragmatica.storage.GarbageCollectorConfig;
 import org.pragmatica.storage.LocalDiskTier;
 import org.pragmatica.storage.MemoryTier;
@@ -35,6 +43,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Unit.unit;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 public final class StorageFactory {
@@ -51,6 +60,13 @@ public final class StorageFactory {
     private static final int STREAM_SNAPSHOT_MUTATION_THRESHOLD = 100;
     private static final long STREAM_SNAPSHOT_INTERVAL_MILLIS = 30_000L;
     private static final int STREAM_SNAPSHOT_RETENTION_COUNT = 5;
+    /// #253 SHOULD-FIX #1 (2026-09-04 ruling): bounds the DHT marker put/get that
+    /// [#maybeEncryptDht]/[#refuseIfDhtEncryptedWithoutKeyring] perform at boot -- otherwise fully
+    /// synchronous, boot-time code bridging into `DHTClient`'s `Promise`-based API. Same rationale
+    /// and value as `StorageEncryption.RESOLUTION_TIMEOUT`: a hung round-trip must fail boot, not
+    /// hang it. Named `org.pragmatica.lang.io.TimeSpan` in full because this file already imports
+    /// the unrelated `org.pragmatica.lang.parse.TimeSpan` under the simple name.
+    private static final org.pragmatica.lang.io.TimeSpan DHT_MARKER_TIMEOUT = timeSpan(30).seconds();
 
     private StorageFactory() {}
 
@@ -171,52 +187,72 @@ public final class StorageFactory {
                                                    Math.max(a.lastRunMs(), b.lastRunMs()));
     }
 
-    static Map<String, StorageSetup> createAll(Map<String, StorageConfig> configs,
-                                               String nodeId,
-                                               Option<DHTClient> dhtClient) {
-        var result = new LinkedHashMap<String, StorageSetup>();
+    /// #253 BLOCKING #1 (2026-09-04 ruling): a configured instance that fails to create is a boot
+    /// failure -- the old log-and-drop here (paired with `AetherNode`'s "artifacts" substitution
+    /// fallback) let a `wrapLocalDisk` refusal boot the node anyway on a hardcoded, unencrypted
+    /// memory+DHT instance. Every entry -- explicit `[storage.X]` config AND the synthesized
+    /// default `artifacts` instance below -- goes through the SAME `Result`-returning path and is
+    /// combined with [Result#firstFailureOf], mirroring the single-failure-aborts pattern this
+    /// class already uses for `streamStorageResult`-shaped callers: the first failure aborts
+    /// `createAll` outright, naming the instance (via `createOne`'s wrapping) and the underlying
+    /// cause, rather than silently dropping that one instance and continuing.
+    static Result<Map<String, StorageSetup>> createAll(Map<String, StorageConfig> configs,
+                                                       String nodeId,
+                                                       Option<DHTClient> dhtClient,
+                                                       Option<EncryptionKeyring> keyring) {
+        var results = new ArrayList<Result<StorageSetup>>();
 
-        configs.forEach((name, config) -> createOne(name, config, nodeId, dhtClient).onSuccess(setup -> result.put(name,
-                                                                                                                   setup))
-                                                   .onFailure(cause -> log.error("Failed to create storage '{}': {}",
-                                                                                 name,
-                                                                                 cause.message())));
+        configs.forEach((name, config) -> results.add(createOne(name, config, nodeId, dhtClient, keyring)));
         // Every node carries an `artifacts` storage instance — operators expect it without
         // having to opt-in via `[storage.artifacts]` in aether.toml. If explicit config wasn't
         // provided, synthesize one using `StorageConfig.storageConfig()` defaults; explicit
         // config still wins via the loop above. `createOne` reuses the same code path
         // (`handleDiskTierUnavailable` falls back to memory+DHT when the default disk path
-        // isn't mountable, e.g. inside the aether-node container).
-        if (!result.containsKey(ARTIFACTS_NAME)) {
-            createOne(ARTIFACTS_NAME,
-                      StorageConfig.storageConfig(),
-                      nodeId,
-                      dhtClient).onSuccess(setup -> result.put(ARTIFACTS_NAME, setup))
-                     .onFailure(cause -> log.error("Failed to create default '{}' storage: {}",
-                                                   ARTIFACTS_NAME,
-                                                   cause.message()));
+        // isn't mountable, e.g. inside the aether-node container). #253 ruling (2026-09-04): an
+        // operator who turns on `[storage.encryption]` must not have this auto-created instance
+        // silently stay plaintext merely because it has no explicit `[storage.artifacts]`
+        // section -- the synthesized config's `encrypted` flag now tracks keyring presence, same
+        // outcome as an explicit `encrypted = true` section -- and if IT fails to create, that is
+        // a boot failure exactly like an explicit instance's, not a silently-dropped default.
+        if (!configs.containsKey(ARTIFACTS_NAME)) {
+            results.add(createOne(ARTIFACTS_NAME,
+                                  defaultArtifactsConfig(keyring.isPresent()),
+                                  nodeId,
+                                  dhtClient,
+                                  keyring));
         }
 
-        return Map.copyOf(result);
+        return Result.firstFailureOf(results).map(setups -> setups.stream()
+                                                                  .collect(Collectors.toMap(StorageSetup::name,
+                                                                                            Function.identity())));
+    }
+
+    /// #253: `StorageConfig.storageConfig()`'s defaults with `encrypted` overridden to track
+    /// node-wide keyring presence, for the synthesized default `artifacts` instance in
+    /// [#createAll] -- see the ruling note there.
+    private static StorageConfig defaultArtifactsConfig(boolean encrypted) {
+        var defaults = StorageConfig.storageConfig();
+
+        return new StorageConfig(defaults.memoryMaxBytes(),
+                                 defaults.diskMaxBytes(),
+                                 defaults.diskPath(),
+                                 defaults.snapshotPath(),
+                                 defaults.snapshotMutationThreshold(),
+                                 defaults.snapshotMaxInterval(),
+                                 defaults.snapshotRetentionCount(),
+                                 defaults.walPath(),
+                                 encrypted);
     }
 
     private static final String ARTIFACTS_NAME = "artifacts";
 
-    static StorageInstance defaultArtifactStorage(Option<DHTClient> dhtClient) {
-        var memoryTier = MemoryTier.memoryTier(DEFAULT_MEMORY_BYTES);
-
-        return dhtClient.map(client -> DhtStorageTier.dhtStorageTier(client, "artifact-blocks"))
-                        .map(dht -> StorageInstance.storageInstance("artifacts",
-                                                                    List.of(memoryTier, dht)))
-                        .or(StorageInstance.storageInstance("artifacts",
-                                                            List.of(memoryTier)));
-    }
-
     /// Default `StorageInstance` backing slice-facing `ContentStore` resources (#251). Registered as
     /// the SPI `StorageInstance` extension so `ContentStoreFactory.provision(config, context)` can
     /// resolve a tiered store — without this, ContentStore provisioning fails at runtime with
-    /// "requires ProvisioningContext with StorageInstance extension". Mirrors `defaultArtifactStorage`:
-    /// memory cache tier over a DHT durable tier (memory-only when no DHT client is wired).
+    /// "requires ProvisioningContext with StorageInstance extension". Memory cache tier over a DHT
+    /// durable tier (memory-only when no DHT client is wired) -- the same shape `createAll`'s
+    /// synthesized default `artifacts` instance uses, but `content` has no config-driven,
+    /// keyring-aware path (#783: architecturally unencryptable under #253, tracked separately).
     static StorageInstance defaultContentStorage(Option<DHTClient> dhtClient) {
         var memoryTier = MemoryTier.memoryTier(DEFAULT_MEMORY_BYTES);
 
@@ -239,6 +275,57 @@ public final class StorageFactory {
         var tiers = buildStreamTiers(dhtClient, streamDataDir.resolve("segments"));
 
         return assembleStreamSetup(tiers, streamDataDir.resolve("snapshots"), nodeId);
+    }
+
+    /// #253 — encrypted counterpart to the three-arg overload above. Streams has no per-instance
+    /// `StorageConfig#encrypted()` of its own to consult (`[storage.encryption] streams_encrypted`
+    /// is a dedicated top-level flag) so the caller resolves that decision and hands this method
+    /// `Option.empty()` when streams isn't encrypted -- in which case this delegates to the plain
+    /// overload unchanged. When a keyring IS supplied, this can FAIL where the plain overload
+    /// cannot: `EncryptingStorageTier#wrapLocalDisk` refuses rather than silently leaving data
+    /// unencrypted when the segments dir already holds unmarked plaintext blocks from a prior
+    /// unencrypted boot.
+    ///
+    /// #253 BLOCKING #3 extension (2026-09-04, beyond the two call sites the review cited): the
+    /// no-keyring branch has the identical reverse-direction gap as `buildTierList` -- a prior
+    /// encrypted boot's `.encryption-enabled` marker under `<streamDataDir>/segments` went
+    /// unchecked, so disabling `streams_encrypted` (or dropping `[storage.encryption]`) would
+    /// silently hand back framed ciphertext as plaintext through `buildStreamTiers`' bare disk
+    /// tier. Same guard, same architecture as the per-instance path.
+    static Result<StorageSetup> defaultStreamStorage(Option<DHTClient> dhtClient,
+                                                     Path streamDataDir,
+                                                     String nodeId,
+                                                     Option<EncryptionKeyring> keyring) {
+        return keyring.fold(() -> EncryptingStorageTier.refuseIfEncryptedWithoutKeyring(streamDataDir.resolve("segments"),
+                                                                                        STREAMS_NAME)
+                                                       .map(_ -> defaultStreamStorage(dhtClient, streamDataDir, nodeId)),
+                            ring -> buildEncryptedStreamTiers(dhtClient, streamDataDir.resolve("segments"), ring).map(tiers -> assembleStreamSetup(tiers,
+                                                                                                                                                   streamDataDir.resolve("snapshots"),
+                                                                                                                                                   nodeId)));
+    }
+
+    private static Result<List<StorageTier>> buildEncryptedStreamTiers(Option<DHTClient> dhtClient,
+                                                                       Path segmentsDir,
+                                                                       EncryptionKeyring keyring) {
+        var memoryTier = MemoryTier.memoryTier(STREAM_MEMORY_BYTES);
+        var dhtTier = dhtClient.map(client -> DhtStorageTier.dhtStorageTier(client, "stream-segments"))
+                               .map(dht -> EncryptingStorageTier.wrap(dht, keyring));
+
+        return LocalDiskTier.localDiskTier(segmentsDir, STREAM_DISK_BYTES).fold(cause -> {
+                                                                                    log.warn("Disk tier for 'streams' unavailable: {}, using memory + DHT fallback",
+                                                                                             cause.message());
+
+                                                                                    return Result.success(dhtTier.map(dht -> List.<StorageTier> of(memoryTier,
+                                                                                                                                                   dht))
+                                                                                                                 .or(List.of(memoryTier)));
+                                                                                },
+                                                                                disk -> EncryptingStorageTier.wrapLocalDisk(disk,
+                                                                                                                            segmentsDir,
+                                                                                                                            keyring).map(encDisk -> dhtTier.map(dht -> List.<StorageTier> of(memoryTier,
+                                                                                                                                                                                             encDisk,
+                                                                                                                                                                                             dht))
+                                                                                                                                                           .or(List.of(memoryTier,
+                                                                                                                                                                       encDisk))));
     }
 
     private static List<StorageTier> buildStreamTiers(Option<DHTClient> dhtClient, Path segmentsDir) {
@@ -299,36 +386,159 @@ public final class StorageFactory {
     private static Result<StorageSetup> createOne(String name,
                                                   StorageConfig config,
                                                   String nodeId,
-                                                  Option<DHTClient> dhtClient) {
-        return buildTiers(name, config, dhtClient).map(tiers -> assembleSetup(name, tiers, config, nodeId));
+                                                  Option<DHTClient> dhtClient,
+                                                  Option<EncryptionKeyring> keyring) {
+        // #253 — the per-instance `[storage.<name>] encrypted` flag (not the presence of `keyring`
+        // itself) decides whether THIS instance gets wrapped; other instances may share the same
+        // node-wide keyring while staying plaintext.
+        var effectiveKeyring = config.encrypted()
+                               ? keyring
+                               : Option.<EncryptionKeyring> empty();
+        // #253 BLOCKING #1: name the failing instance in the cause itself (not just in a log line)
+        // so `createAll`'s aggregate failure -- and whatever aborts boot on it -- can report which
+        // instance failed and why without re-deriving it from call-site context.
+        return buildTiers(name, config, dhtClient, effectiveKeyring).mapError(cause -> Causes.cause("Failed to create storage '" + name
+                                                                                                   + "': " + cause.message(),
+                                                                                                    Option.some(cause)))
+                         .map(tiers -> assembleSetup(name, tiers, config, nodeId));
     }
 
     private static Result<List<StorageTier>> buildTiers(String name,
                                                         StorageConfig config,
-                                                        Option<DHTClient> dhtClient) {
+                                                        Option<DHTClient> dhtClient,
+                                                        Option<EncryptionKeyring> keyring) {
         var memoryTier = MemoryTier.memoryTier(config.memoryMaxBytes());
-        var dhtTier = dhtClient.map(client -> DhtStorageTier.dhtStorageTier(client, name + "-blocks"));
+        var dhtKeyPrefix = name + "-blocks";
+        var diskPath = Path.of(config.diskPath());
 
-        return LocalDiskTier.localDiskTier(Path.of(config.diskPath()),
+        return LocalDiskTier.localDiskTier(diskPath,
                                            config.diskMaxBytes())
-                            .fold(cause -> handleDiskTierUnavailable(name, cause, memoryTier, dhtTier),
-                                  disk -> buildTierList(memoryTier, disk, dhtTier));
+                            .fold(cause -> handleDiskTierUnavailable(name,
+                                                                     cause,
+                                                                     memoryTier,
+                                                                     dhtClient,
+                                                                     dhtKeyPrefix,
+                                                                     keyring),
+                                  disk -> buildTierList(name,
+                                                        memoryTier,
+                                                        disk,
+                                                        diskPath,
+                                                        dhtClient,
+                                                        dhtKeyPrefix,
+                                                        keyring));
     }
 
+    /// Builds (from `dhtClient`/`dhtKeyPrefix`) and wraps the DHT tier under `keyring` when present
+    /// -- shared between the disk-available and disk-unavailable paths so a keyring's coverage
+    /// doesn't silently shrink to "disk only" when the disk tier degrades to the memory+DHT
+    /// fallback.
+    ///
+    /// #253 SHOULD-FIX #1 (2026-09-04 ruling): the encrypting branch also writes the per-instance
+    /// DHT marker (same [EncryptingStorageTier#MARKER_FILE_NAME] key name as the disk marker, under
+    /// this namespace's `dhtKeyPrefix`) mirroring [EncryptingStorageTier#wrapLocalDisk] -- so a LATER
+    /// boot with the disk tier absent/wiped and no keyring can be refused by
+    /// [#refuseIfDhtEncryptedWithoutKeyring] instead of this method silently handing back the bare
+    /// DHT tier. Unlike the disk marker, the write here is unconditional (idempotent put on every
+    /// encrypting boot, not a first-enable-only write guarded by an empty-directory check): the DHT
+    /// has no directory to scan for pre-existing plaintext, so there is no "empty vs already-has-
+    /// blocks" branch to gate on, and re-asserting the marker keeps it current with the latest
+    /// active key id.
+    private static Result<Option<StorageTier>> maybeEncryptDht(Option<DHTClient> dhtClient,
+                                                               String dhtKeyPrefix,
+                                                               Option<EncryptionKeyring> keyring) {
+        return dhtClient.fold(() -> Result.success(Option.<StorageTier> empty()),
+                              client -> {
+                                  var dht = DhtStorageTier.dhtStorageTier(client, dhtKeyPrefix);
+
+                                  return keyring.fold(() -> Result.success(Option.some((StorageTier) dht)),
+                                                      ring -> writeDhtMarker(client, dhtKeyPrefix, ring).map(_ -> Option.some((StorageTier) EncryptingStorageTier.wrap(dht,
+                                                                                                                                                                       ring))));
+                              });
+    }
+
+    private static Result<Unit> writeDhtMarker(DHTClient client, String dhtKeyPrefix, EncryptionKeyring ring) {
+        return client.put(dhtKeyPrefix + "/" + EncryptingStorageTier.MARKER_FILE_NAME,
+                          ring.activeKeyId().getBytes(StandardCharsets.UTF_8))
+                     .await(DHT_MARKER_TIMEOUT);
+    }
+
+    /// #253 SHOULD-FIX #1 (2026-09-04 ruling): the DHT-namespace reverse direction of
+    /// [#maybeEncryptDht]'s marker write, mirroring
+    /// [EncryptingStorageTier#refuseIfEncryptedWithoutKeyring] for local disk. An absent marker
+    /// means this DHT namespace was never encrypted and a bare tier is legitimate; its presence
+    /// means blocks under `dhtKeyPrefix` are ciphertext, and a bare tier over them would silently
+    /// hand back framed `AEC1...` bytes as content on every read.
+    private static Result<Unit> refuseIfDhtEncryptedWithoutKeyring(Option<DHTClient> dhtClient,
+                                                                   String dhtKeyPrefix,
+                                                                   String instanceName) {
+        return dhtClient.fold(() -> Result.success(unit()),
+                              client -> client.get(dhtKeyPrefix + "/" + EncryptingStorageTier.MARKER_FILE_NAME)
+                                              .flatMap(marker -> marker.fold(() -> Promise.success(unit()),
+                                                                             bytes -> Promise.failure(new EncryptionError.EncryptedTierRequiresKeyring(instanceName,
+                                                                                                                                                       new String(bytes,
+                                                                                                                                                                  StandardCharsets.UTF_8)))))
+                                              .await(DHT_MARKER_TIMEOUT));
+    }
+
+    /// #253 review round 4 note (2026-09-04): `maybeEncryptDht` is hoisted above `keyring.fold` here, unlike [#buildTierList] -- safe only because this path has no preceding disk-side guard to race against, and an empty keyring writes no marker.
     private static Result<List<StorageTier>> handleDiskTierUnavailable(String name,
                                                                        Cause cause,
                                                                        MemoryTier memoryTier,
-                                                                       Option<DhtStorageTier> dhtTier) {
+                                                                       Option<DHTClient> dhtClient,
+                                                                       String dhtKeyPrefix,
+                                                                       Option<EncryptionKeyring> keyring) {
         log.warn("Disk tier for '{}' unavailable: {}, using memory + DHT fallback", name, cause.message());
+        var dhtResult = maybeEncryptDht(dhtClient, dhtKeyPrefix, keyring);
 
-        return Result.success(dhtTier.map(dht -> List.<StorageTier> of(memoryTier, dht)).or(List.of(memoryTier)));
+        return keyring.fold(() -> refuseIfDhtEncryptedWithoutKeyring(dhtClient, dhtKeyPrefix, name).flatMap(_ -> dhtResult),
+                            _ -> dhtResult)
+                      .map(dht -> dht.map(t -> List.<StorageTier> of(memoryTier, t))
+                                     .or(List.of(memoryTier)));
     }
 
-    private static Result<List<StorageTier>> buildTierList(MemoryTier memoryTier,
-                                                           StorageTier diskTier,
-                                                           Option<DhtStorageTier> dhtTier) {
-        return Result.success(dhtTier.map(dht -> List.<StorageTier> of(memoryTier, diskTier, dht))
-                                     .or(List.of(memoryTier, diskTier)));
+    /// #253 BLOCKING #3 (2026-09-04 ruling): the no-keyring branch used to return the bare, unwrapped
+    /// `diskTier` unconditionally -- silently handing back framed `AEC1...` bytes as plaintext on
+    /// every read if `diskPath` was previously encrypted (marker present) and this boot supplies no
+    /// keyring for it (`encrypted = false`, or `[storage.encryption]` removed entirely). Checks
+    /// [EncryptingStorageTier#refuseIfEncryptedWithoutKeyring] first and fails the instance rather
+    /// than reaching the bare-tier branch.
+    ///
+    /// #253 SHOULD-FIX #1 (2026-09-04 ruling): same guard extended to the DHT tier via
+    /// [#refuseIfDhtEncryptedWithoutKeyring] -- the disk-side check alone left the DHT tier's own
+    /// marker unchecked when disk happened to be present too.
+    ///
+    /// #253 review round 3 SHOULD-FIX (2026-09-04 ruling): [#maybeEncryptDht] (and the marker write
+    /// inside it) is called from WITHIN each branch below, after that branch's disk-side guard has
+    /// already succeeded -- never hoisted above `keyring.fold` as an eagerly-evaluated `var`. The
+    /// eager form used to stamp the DHT namespace's `.encryption-enabled` marker before
+    /// [EncryptingStorageTier#wrapLocalDisk]'s legacy-plaintext scan ran, so a boot refused by that
+    /// scan still left a marker behind with no ciphertext ever written under it -- and backing out to
+    /// `encrypted = false` then tripped [#refuseIfDhtEncryptedWithoutKeyring] on a namespace that was
+    /// never actually encrypted, locking the operator out until the key was restored or the marker
+    /// deleted by hand.
+    private static Result<List<StorageTier>> buildTierList(String name,
+                                                           MemoryTier memoryTier,
+                                                           LocalDiskTier diskTier,
+                                                           Path diskPath,
+                                                           Option<DHTClient> dhtClient,
+                                                           String dhtKeyPrefix,
+                                                           Option<EncryptionKeyring> keyring) {
+        return keyring.fold(() -> EncryptingStorageTier.refuseIfEncryptedWithoutKeyring(diskPath, name)
+                                                       .flatMap(_ -> refuseIfDhtEncryptedWithoutKeyring(dhtClient,
+                                                                                                        dhtKeyPrefix,
+                                                                                                        name))
+                                                       .flatMap(_ -> maybeEncryptDht(dhtClient, dhtKeyPrefix, keyring))
+                                                       .map(dht -> dht.map(t -> List.<StorageTier> of(memoryTier,
+                                                                                                      diskTier,
+                                                                                                      t))
+                                                                      .or(List.of(memoryTier, diskTier))),
+                            ring -> EncryptingStorageTier.wrapLocalDisk(diskTier, diskPath, ring).flatMap(encDisk -> maybeEncryptDht(dhtClient,
+                                                                                                                                     dhtKeyPrefix,
+                                                                                                                                     keyring).map(dht -> dht.map(t -> List.<StorageTier> of(memoryTier,
+                                                                                                                                                                                            encDisk,
+                                                                                                                                                                                            t))
+                                                                                                                                                            .or(List.of(memoryTier,
+                                                                                                                                                                        encDisk)))));
     }
 
     private static StorageSetup assembleSetup(String name,
