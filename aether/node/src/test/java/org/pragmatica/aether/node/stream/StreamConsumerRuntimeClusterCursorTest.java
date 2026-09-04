@@ -147,8 +147,15 @@ class StreamConsumerRuntimeClusterCursorTest {
         }
     }
 
+    /// #654 round 2: the count reaches 1 IMMEDIATELY when `close()` returns — the bound expiring with
+    /// `pending` still unresolved is what counts it, not the later `pending.fail(...)`. A commit already
+    /// marked this way that goes on to resolve with a genuine failure is a second, distinct event on the
+    /// same node-wide counter: a deliberate simplification (the counter counts events, not deduplicated
+    /// incidents), not a decrement/reset case — the `succeed`-after-bound test below is the guarantee
+    /// that actually matters (no rollback), so this test only needs to show the count does not go
+    /// backwards or vanish once the late failure arrives.
     @Test
-    void close_boundsTheWait_whenConsensusPublishNeverSettles_thenCountsALateRecoveredFailure() throws InterruptedException {
+    void close_countsUnsettledCommit_whenConsensusPublishNeverSettlesWithinBound() throws InterruptedException {
         Promise<Unit> pending = Promise.promise();
         var store = clusterStoreWith(pending);
         var runtime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);
@@ -166,14 +173,51 @@ class StreamConsumerRuntimeClusterCursorTest {
 
         assertThat(elapsedMs).describedAs("a wedged consensus publish must not hold node stop past the #654 shutdown bound")
                   .isBetween(4500L, 9000L);
-        assertThat(runtime.cursorCommitFailureCount()).describedAs("an unresolved publish has nothing to count yet")
-                  .isZero();
+        assertThat(runtime.cursorCommitFailureCount())
+                  .describedAs("unresolved at the shutdown bound counts as failed for THIS shutdown immediately, before the promise ever resolves")
+                  .isEqualTo(1L);
 
         pending.fail(CheckpointRejected.INSTANCE);
 
-        awaitCount(runtime::cursorCommitFailureCount, 1L);
+        awaitCount(runtime::cursorCommitFailureCount, 2L);
         assertThat(runtime.cursorCommitFailureCount())
-                .describedAs("a publish that recovers after the bound is still logged and counted, same as a local-commit failure would be")
+                .describedAs("the promise later resolving with a genuine failure is counted again, on top of the bound-expiry mark, not instead of it")
+                .isEqualTo(2L);
+    }
+
+    /// #654 round 2: the ruling's actual guarantee — a commit marked unsettled at the shutdown bound
+    /// must stay counted even when it turns out, after the fact, that the write succeeded. A plain
+    /// success carries no failure for [ConsumerRuntimeState#onCursorCommitFailure] /
+    /// [ConsumerRuntimeState#recordIfRecovered] to observe, so without the bound-expiry mark this commit
+    /// would never be counted at all despite genuinely overrunning the shutdown bound.
+    @Test
+    void close_countsUnsettledCommit_evenWhenConsensusPublishLaterSucceeds() throws InterruptedException {
+        Promise<Unit> pending = Promise.promise();
+        var store = clusterStoreWith(pending);
+        var runtime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);
+
+        runtime.subscribe("orders",
+                          0,
+                          ConsumerConfig.consumerConfig(GROUP),
+                          (offset, payload, ts) -> Promise.unitPromise());
+
+        var start = System.nanoTime();
+
+        runtime.close();
+
+        var elapsedMs = (System.nanoTime() - start) / 1_000_000;
+
+        assertThat(elapsedMs).describedAs("a wedged consensus publish must not hold node stop past the #654 shutdown bound")
+                  .isBetween(4500L, 9000L);
+        assertThat(runtime.cursorCommitFailureCount())
+                  .describedAs("unresolved at the shutdown bound counts as failed for THIS shutdown immediately, before the promise ever resolves")
+                  .isEqualTo(1L);
+
+        pending.succeed(Unit.unit());
+        Thread.sleep(200);
+
+        assertThat(runtime.cursorCommitFailureCount())
+                .describedAs("a later success must not decrement or clear a commit already marked unsettled at the shutdown bound — the node was already stopping without durable confirmation")
                 .isEqualTo(1L);
     }
 
