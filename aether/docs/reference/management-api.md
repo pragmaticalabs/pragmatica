@@ -452,7 +452,7 @@ the original design intent.
 
 `DEPLOYMENT_FAILED` is emitted **once per (artifact, node) pair** whose deployment attempt failed — `ClusterEventAggregator.handleDeploymentFailed` fires on each node-artifact KV transition to `FAILED`, so a blueprint spread across N nodes that fails deterministically on all of them produces N separate events, each with its own `nodeId` in `details.nodeId` and the failure text in `details.reason`. Because `cluster-events` is a single replicated stream, all N events are visible from `GET /api/v1/events` on **any** node, not only the one that failed.
 
-This matters because none of the other deploy-facing surfaces show it: `POST /api/v1/blueprints` only reports `"status": "applied"` on **acceptance**, before deployment is attempted, and is never updated with the outcome. Under the default `ALL_OR_NOTHING` mode (see [02-deployment.md](../architecture/02-deployment.md#deployment-atomicity)), a deterministic slice-load failure rolls back the entire blueprint and removes the deployment-map entry for that artifact — so `GET /api/v1/slices/status` and `GET /api/v1/blueprints/status/{id}` go back to showing **nothing** for it, not a FAILED status. **`GET /api/v1/events` is the only surface that shows why a blueprint that was accepted never converges** — poll it, filtering for `DEPLOYMENT_FAILED`, when a deploy stays PENDING past its expected time. See the [Failure Almanac](failure-almanac.md#per-node-deployment-failure-under-all_or_nothing-rollback) for the worked example and operator playbook.
+This matters because most deploy-facing surfaces don't show it immediately: `POST /api/v1/blueprints` only reports `"status": "applied"` on **acceptance**, before deployment is attempted, and is never updated with the outcome. Under the default `ALL_OR_NOTHING` mode (see [02-deployment.md](../architecture/02-deployment.md#deployment-atomicity)), a deterministic slice-load failure rolls back the entire blueprint and removes the blueprint's key from the KV store outright (`ClusterDeploymentState.unloadBlueprintSlices`) — so `GET /api/v1/slices/status` shows nothing for the artifact, but the terminal `FAILED`/`ROLLED_BACK` outcome recorded at the same time survives that removal (#759 Phase 2 — see `SliceRoutes.handleGetBlueprintStatus`): `GET /api/v1/blueprints/status/{id}` answers `200` with `overallStatus` `FAILED` or `ROLLED_BACK`, `cause`, and `failingSlices`, not `404`. `404 BLUEPRINT_NOT_FOUND` now means only that neither a terminal outcome nor a live KV entry exists for that id. **`GET /api/v1/events` remains the per-node timeline of why a blueprint failed** — the query parameters (`sinceEpoch`/`sinceSeq`) are cursor-based, not artifact-based, so "filtering for `DEPLOYMENT_FAILED`" means fetching the feed and matching `details.artifact` yourself; the aggregator retains at most 10,000 events cluster-wide (`ClusterEventAggregator.MAX_RETAINED_EVENTS`), not per-artifact, so an individual event can roll off under high event volume before an operator looks — the durable outcome summary at `statusUrl` does not expire the same way. See the [Failure Almanac](failure-almanac.md#per-node-deployment-failure-under-all_or_nothing-rollback) for the worked example and operator playbook.
 
 **Severity Levels:** `INFO`, `WARNING`, `CRITICAL`
 
@@ -742,11 +742,14 @@ Publish (apply) a blueprint definition. The request body is the raw blueprint YA
 {
   "status": "applied",
   "blueprint": "my-blueprint",
-  "slices": 3
+  "targetInstances": 3,
+  "activeInstances": 0,
+  "failedInstances": 0,
+  "statusUrl": "/api/v1/blueprints/status/my-blueprint"
 }
 ```
 
-> **`"applied"` means accepted, not deployed.** This response is written before allocation runs, and it is never updated with the outcome. Poll [`GET /api/v1/blueprints/status/{id}`](#get-apiv1blueprintsstatusid) for progress; if a blueprint stays `PENDING` past its expected time, check [`GET /api/v1/events`](#get-apiv1events) for `DEPLOYMENT_FAILED` — under the default `ALL_OR_NOTHING` mode a failure rolls back the whole blueprint, so the status endpoints go back to showing nothing rather than a FAILED slice, and the event feed is the only place the reason (`details.reason`) appears.
+> **`"applied"` means accepted, not deployed.** This response is written before allocation runs, and it is never updated with the outcome. `targetInstances`/`activeInstances`/`failedInstances` are a live snapshot of the deployment map taken at response time — typically all-zero for a fresh publish, since nothing has had time to activate yet. `statusUrl` points directly at [`GET /api/v1/blueprints/status/{id}`](#get-apiv1blueprintsstatusid); poll it for progress. If a blueprint stays `PENDING` past its expected time, fetch [`GET /api/v1/events`](#get-apiv1events) and match `details.artifact` yourself for `DEPLOYMENT_FAILED` to see the per-node failure reason (`details.reason`) and when it happened — under the default `ALL_OR_NOTHING` mode a failure rolls back the whole blueprint and removes it from the KV store entirely, but `statusUrl` now answers with the durable terminal outcome (`FAILED`/`ROLLED_BACK`, `cause`, `failingSlices`) rather than `404` (#759 Phase 2); the event feed is still the timeline of what happened on which node, not a replacement for that summary.
 
 ### GET /api/v1/blueprints
 
@@ -793,7 +796,7 @@ is counted from the same replicated deployment map that backs
 `GET /api/v1/slices/status`, so the two endpoints cannot disagree about whether a
 deployment finished.
 
-**Response:**
+**Response — deployed (happy path):**
 ```json
 {
   "id": "my-blueprint",
@@ -803,13 +806,99 @@ deployment finished.
       "artifact": "org.example:my-slice:1.0.0",
       "targetInstances": 3,
       "activeInstances": 3,
+      "failedInstances": 0,
       "status": "DEPLOYED"
     }
-  ]
+  ],
+  "cause": "",
+  "failingSlices": [],
+  "timestampMs": 0
 }
 ```
 
-Status values: `PENDING`, `DEPLOYING`, `DEPLOYED`, `SCALING_DOWN`. Overall: `DEPLOYED`, `PENDING`, `IN_PROGRESS`, `PARTIAL`.
+`cause`, `failingSlices`, and `timestampMs` are present on every response, not only a failing one
+`[mechanism: BlueprintStatusResponse is a record — Java records serialize every component, so
+these three fields can never be omitted; the happy-path construction site supplies the degenerate
+defaults shown above rather than leaving them out]`. Treat a present-but-empty `cause`/
+`failingSlices` and a `timestampMs` of `0` as "no terminal failure recorded," not as missing data.
+
+**Response — terminal failure (blueprint removed from the KV store):**
+```json
+{
+  "id": "org.example:my-app:1.0.0",
+  "overallStatus": "FAILED",
+  "slices": [],
+  "cause": "instance allocation failed: insufficient capacity for org.example:my-slice:1.0.0",
+  "failingSlices": ["org.example:my-slice:1.0.0"],
+  "timestampMs": 1735689600000
+}
+```
+
+Once a blueprint's key leaves the KV store entirely — `ALL_OR_NOTHING` rollback only — the deployment
+map has nothing left to report per-slice, so `slices` is empty. This is the durable terminal outcome
+instead: `overallStatus` is `FAILED` or `ROLLED_BACK`, `cause` is the human-readable failure reason,
+`failingSlices` lists the full artifact coordinates (`group:artifact:version`, never a bare slice id)
+of every slice that failed, and `timestampMs` is the epoch-millis time the outcome was recorded. Before
+this outcome key existed, the same request answered `404` with no way to learn what happened
+`[mechanism: exercised by `BlueprintDeployStatusTest` and `BlueprintStatusAggregationTest`
+against the real route handler; no live multi-node failure-injection run — #759]`.
+
+**Response — terminal failure, blueprint still live (`BEST_EFFORT`, or a restored blueprint with a
+lingering outcome):**
+```json
+{
+  "id": "org.example:my-app:1.0.0",
+  "overallStatus": "PARTIAL",
+  "slices": [
+    {
+      "artifact": "org.example:my-slice:1.0.0",
+      "targetInstances": 2,
+      "activeInstances": 1,
+      "failedInstances": 1,
+      "status": "FAILED"
+    },
+    {
+      "artifact": "org.example:other-slice:1.0.0",
+      "targetInstances": 3,
+      "activeInstances": 3,
+      "failedInstances": 0,
+      "status": "DEPLOYED"
+    }
+  ],
+  "cause": "instance allocation failed: insufficient capacity for org.example:my-slice:1.0.0",
+  "failingSlices": ["org.example:my-slice:1.0.0"],
+  "timestampMs": 1735689600000
+}
+```
+`BEST_EFFORT` records a terminal outcome for the failed slice without removing the blueprint's KV
+entry, so siblings keep serving; a restored blueprint can likewise stay fully healthy while an outcome
+from the original failed deploy lingers, because nothing later clears a terminal record for a
+blueprint id that stays live. Either way `slices` is NOT empty here — it carries the same live
+per-slice detail as the happy path, alongside the outcome's `cause`/`failingSlices`/`timestampMs`.
+`overallStatus` is always `PARTIAL` in this shape, even on the rare case where every instance is
+currently `ACTIVE`, so a caller always knows to check `cause` rather than assume a bare `DEPLOYED`
+`[mechanism: `SliceRoutes.resolveTerminalOutcomeStatus` consults the live blueprint before choosing
+between this shape and the empty-`slices` shape above; pinned by `BlueprintStatusAggregationTest`
+(`statusRoute_blueprintLiveAndHealthyWithLingeringRolledBackOutcome_reportsPartialWithLiveSliceCounts`,
+`statusRoute_blueprintLiveWithTerminalFailure_bestEffort_reportsPartialWithSliceCounts`) — unit-level,
+no live multi-node failure-injection run — #759]`. Recovery: a `BEST_EFFORT` `PARTIAL` clears by
+redeploying the failed slice; a lingering restore-time outcome clears the next time that blueprint id
+is redeployed or deleted.
+
+Per-slice status values: `PENDING`, `DEPLOYING`, `DEPLOYED`, `SCALING_DOWN`, `FAILED`. Overall: `DEPLOYED`, `PENDING`, `IN_PROGRESS`, `PARTIAL`, `FAILED`, `ROLLED_BACK`.
+
+`failedInstances` counts `SliceState.FAILED` entries still present in the deployment map for that
+slice's artifact (e.g. a `BEST_EFFORT` deploy, or a query landing before `ALL_OR_NOTHING` rollback
+cleanup removes the entry). Whenever it is non-zero the slice's `status` is `FAILED` regardless of
+`activeInstances`. `overallStatus` is `FAILED` only when **every** slice is `FAILED` (or the
+blueprint itself is gone entirely with a terminal `FAILED` outcome — see above); a mix of `FAILED`
+and non-`FAILED` slices reports `PARTIAL` instead — under `ALL_OR_NOTHING` that mix is transient
+(rollback moves it on to `ROLLED_BACK`), under `BEST_EFFORT` it can be the durable state siblings
+keep serving through. Recovery is the same as the `PARTIAL` shape above: redeploy the failed
+slice(s). `[mechanism: `SliceRoutes.computeOverallStatus`; pinned through the real route by
+`BlueprintStatusAggregationTest#statusRoute_reportsPartial_whenOneSliceFailedAndSiblingFullyDeployed`
+(mix → `PARTIAL`) and `#statusRoute_reportsFailed_whenEverySliceHasFailed` (every slice failed →
+`FAILED`) — #759 review round 4]`.
 
 ### DELETE /api/v1/blueprints/{id}
 
@@ -837,11 +926,43 @@ Deploy a blueprint from an artifact in the cluster's artifact repository.
 **Response:**
 ```json
 {
-  "status": "deployed",
+  "status": "pending",
   "blueprint": "org.example:my-app:1.0.0",
-  "slices": 5
+  "targetInstances": 5,
+  "activeInstances": 0,
+  "failedInstances": 0,
+  "statusUrl": "/api/v1/blueprints/status/org.example%3Amy-app%3A1.0.0"
 }
 ```
+
+#759 — `status` is earned off the deployment map at response time, not assumed from a successful
+publish; deployment is asynchronous, so **`pending` is the normal, expected response for a
+first-time deploy** — no node has had a chance to activate a slice yet. Three honest outcomes,
+checked in this priority order:
+
+- **`degraded`** — at least one target instance is already `FAILED` in the deployment map.
+  Reachable on `BEST_EFFORT` deploys, or a redeploy onto an artifact with a lingering failure that
+  raced `ClusterDeploymentState`'s `ALL_OR_NOTHING` rollback cleanup.
+- **`deployed`** — every declared target instance is already observed `ACTIVE`. Only realistic for
+  an idempotent redeploy of an already fully-healthy artifact set.
+- **`pending`** — the default: at least one target instance has not yet activated, which is every
+  first-time deploy of a fresh artifact.
+
+`targetInstances`/`activeInstances`/`failedInstances` are the same live snapshot used to derive
+`status`. `statusUrl` (`{id}` percent-encoded, since blueprint ids are artifact-shaped) always
+points at [`GET /api/v1/blueprints/status/{id}`](#get-apiv1blueprintsstatusid) — this is the endpoint
+the CLI's `aether blueprints deploy --wait` polls (`DeploymentWait`) until it reports `DEPLOYED`.
+Under the default `ALL_OR_NOTHING` mode a deterministic failure rolls back the whole blueprint and
+removes its KV entry outright, so the `deployed`/`degraded`/`pending` status this call derived from
+the deployment map disappears along with it — but the terminal `FAILED`/`ROLLED_BACK` outcome
+recorded at the same time survives that removal, and `statusUrl` now answers `200` with that
+outcome (`overallStatus`, `cause`, `failingSlices`) instead of `404` (#759 Phase 2). `--wait` itself
+still only treats `DEPLOYED` as complete — a rolled-back deployment exits with `TIMEOUT` by design
+(see `DeploymentWait`'s own header), not by reading the failure — so a caller that needs the reason
+either polls `statusUrl` directly after `--wait` gives up, or watches
+[`GET /api/events`](#get-apievents) for `DEPLOYMENT_FAILED`, matched against `details.artifact`
+yourself (see the `DEPLOYMENT_FAILED` discussion above), which gives the per-node timeline that
+`statusUrl`'s summary does not.
 
 #### Single-migrator gate (409 Conflict)
 
@@ -900,6 +1021,22 @@ content in the body). Same body shape as `POST /api/v1/blueprints/deploy`, and s
 
 CLI: `aether blueprints publish <group:artifact:version>` appends the
 `:blueprint` qualifier automatically when constructing the body.
+
+**Response:**
+```json
+{
+  "status": "published",
+  "blueprint": "org.example:my-app:1.0.0",
+  "targetInstances": 5,
+  "activeInstances": 0,
+  "failedInstances": 0,
+  "statusUrl": "/api/v1/blueprints/status/org.example%3Amy-app%3A1.0.0"
+}
+```
+
+`status` is always the fixed literal `published` — a register-only publish never activates the
+blueprint, so `activeInstances`/`failedInstances` are typically all-zero until a later
+`POST /api/v1/blueprints/deploy` actually targets this artifact.
 
 ### POST /api/v1/blueprints/validate
 

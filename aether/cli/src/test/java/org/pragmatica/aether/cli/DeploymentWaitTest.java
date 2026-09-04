@@ -27,8 +27,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class DeploymentWaitTest {
     private static final String BLUEPRINT_COORDS = "org.example:hello:1.0.0-SNAPSHOT";
 
+    /// #759 review (m) — matches the live `BlueprintResponse` shape
+    /// (`ManagementApiResponses.java`): `targetInstances`/`activeInstances`/`failedInstances`
+    /// plus `statusUrl`, not the retired `slices` count.
     private static final String DEPLOY_RESPONSE = """
-            {"status":"deployed","blueprint":"org.example:hello:1.0.0-SNAPSHOT","slices":1}""";
+            {"status":"pending","blueprint":"org.example:hello:1.0.0-SNAPSHOT","targetInstances":3,\
+            "activeInstances":0,"failedInstances":0,"statusUrl":"/api/v1/blueprints/status/org.example%3Ahello%3A1.0.0-SNAPSHOT"}""";
 
     private static final String COMPLETED_BLUEPRINT_STATUS = """
             {"id":"org.example:hello:1.0.0-SNAPSHOT",
@@ -66,7 +70,8 @@ class DeploymentWaitTest {
 
         @Test
         void blueprintId_responseWithoutBlueprintField_returnsEmpty() {
-            assertTrue(DeploymentWait.blueprintId("{\"status\":\"deployed\",\"slices\":1}").isEmpty());
+            assertTrue(DeploymentWait.blueprintId("{\"status\":\"deployed\",\"targetInstances\":1,\"activeInstances\":1,\"failedInstances\":0}")
+                                     .isEmpty());
         }
 
         @Test

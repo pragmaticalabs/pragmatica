@@ -144,7 +144,52 @@ public sealed interface ManagementApiResponses {
 
     record ScaleResponse(String status, String artifact, int instances) {}
 
-    record BlueprintResponse(String status, String blueprint, int slices) {}
+    /// #759 review (C1, C2) — this response is a PUBLISH-TIME SNAPSHOT: `SliceRoutes.deployStatus`
+    /// computes it the instant `publishFromArtifact` commits the blueprint, before any node has
+    /// attempted to load a slice [mechanism: `SliceRoutes.java:233-244`]. `pending` (zero
+    /// `activeInstances`, zero `failedInstances`) is therefore the NORMAL first answer for a fresh
+    /// deploy, not a rare or degraded case — `degraded`/`deployed` are reachable here only on a
+    /// redeploy of an already-active artifact set, or under `BEST_EFFORT` where a prior partial
+    /// failure is still visible in `deploymentMap()`. `targetInstances` / `activeInstances` /
+    /// `failedInstances` let an operator tell total outage from healthy without a follow-up call.
+    /// Callers that need the terminal outcome MUST poll `statusUrl` [mechanism: the CLI's
+    /// `aether/cli/.../DeploymentWait.java:32-40,52-67` implements exactly this poll-until-terminal
+    /// loop, driven from `AetherCli.java:2261-2268,2273-2275`].
+    ///
+    /// `statusUrl` always points at `GET /api/v1/blueprints/status/{id}`, and — as of #759 Phase 2 —
+    /// that endpoint IS durable across a rollback: under the default `ALL_OR_NOTHING` atomicity, a
+    /// deterministic failure triggers `unloadBlueprintSlices`, which removes the blueprint's
+    /// `AppBlueprintKey` from the KV store entirely [mechanism: `ClusterDeploymentState.java:2139-2158`],
+    /// but the terminal `FAILED`/`ROLLED_BACK` `DeploymentOutcomeValue` written at the same time survives
+    /// that removal and is what `statusUrl` now reads first — see `SliceRoutes.handleGetBlueprintStatus`.
+    /// A `statusUrl` GET issued after rollback therefore answers `200` with `overallStatus` `FAILED` or
+    /// `ROLLED_BACK`, `cause`, and `failingSlices`, `slices = []` (nothing left to report per-slice once
+    /// `AppBlueprintKey` is gone), not `404`; `404 BLUEPRINT_NOT_FOUND` now means only "never reached a
+    /// terminal outcome and nothing live in the KV store either" (never attempted, still in flight, or
+    /// crash-orphaned — see `BlueprintService.outcome`).
+    ///
+    /// #759 review round 3 BLOCKING 3: the `slices = []` degenerate shape above is specific to
+    /// `ALL_OR_NOTHING`, where the failing rollback removes `AppBlueprintKey` outright. Under
+    /// `BEST_EFFORT`, a deterministic slice failure records the same kind of terminal outcome
+    /// (`ClusterDeploymentState.recordBestEffortFailureOutcome`) WITHOUT removing `AppBlueprintKey` —
+    /// siblings keep serving. A `statusUrl` GET against a still-live blueprint with a terminal outcome
+    /// therefore answers `200` `PARTIAL`, with real `slices` per-instance counts alongside the same
+    /// `cause`/`failingSlices`/`timestampMs` — never the degenerate `slices = []` shape, and never a
+    /// bare `FAILED`/`ROLLED_BACK` that discards what is still running. The `DeploymentFailed` event
+    /// on `GET /api/events` remains the timeline of when and what failed
+    /// [mechanism: `ClusterEventAggregator.java:881-885` — `details.artifact` names the failed
+    /// artifact; `MAX_RETAINED_EVENTS = 10_000` (`:139`) bounds retention for the whole
+    /// cluster-event stream, not per-artifact; `StatusRoutes.java:114-115` — the route accepts
+    /// only `sinceEpoch`/`sinceSeq`, no server-side artifact filter, so a caller must fetch and
+    /// filter client-side on `details.artifact`]; `statusUrl`'s outcome record is the durable summary,
+    /// not a replacement for the timeline. See `aether/docs/reference/management-api.md`
+    /// `POST /api/blueprints/deploy`.
+    record BlueprintResponse(String status,
+                             String blueprint,
+                             int targetInstances,
+                             int activeInstances,
+                             int failedInstances,
+                             String statusUrl) {}
 
     record BlueprintListResponse(List<BlueprintSummary> blueprints) {}
 
@@ -154,9 +199,31 @@ public sealed interface ManagementApiResponses {
 
     record BlueprintSliceInfo(String artifact, int instances, boolean isDependency, List<String> dependencies) {}
 
-    record BlueprintStatusResponse(String id, String overallStatus, List<BlueprintSliceStatus> slices) {}
+    /// #759 Phase 2 — `overallStatus` carries `"FAILED"`/`"ROLLED_BACK"` from
+    /// `BlueprintService.outcome(id)` when a terminal failure outcome exists, taking priority over
+    /// whatever `get(id)` currently holds (including a stale non-empty value left by rollback). In
+    /// that case `slices` is the true degenerate empty list — outcome-sourced responses do not carry
+    /// live per-slice detail — and `cause`/`failingSlices`/`timestampMs` are populated from the
+    /// outcome record. For every other response (`SUCCEEDED` outcome or no outcome at all, `get(id)`
+    /// present), `slices` carries the live snapshot as before and `cause`/`failingSlices` are the
+    /// degenerate empty-string/empty-list, `timestampMs` is `0` — never fabricated. See
+    /// `SliceRoutes.handleGetBlueprintStatus`.
+    record BlueprintStatusResponse(String id,
+                                   String overallStatus,
+                                   List<BlueprintSliceStatus> slices,
+                                   String cause,
+                                   List<String> failingSlices,
+                                   long timestampMs) {}
 
-    record BlueprintSliceStatus(String artifact, int targetInstances, int activeInstances, String status) {}
+    /// #759 — `failedInstances` surfaces `SliceState.FAILED` entries still present in
+    /// `deploymentMap()` at response time (e.g. `BEST_EFFORT` deploys, or a query that lands before
+    /// `ALL_OR_NOTHING` rollback cleanup runs); `status` folds it in as `"FAILED"`, taking priority
+    /// over the target/active comparison. See `SliceRoutes.determineSliceDeploymentStatus`.
+    record BlueprintSliceStatus(String artifact,
+                                int targetInstances,
+                                int activeInstances,
+                                int failedInstances,
+                                String status) {}
 
     record BlueprintDeleteResponse(String status, String id) {}
 

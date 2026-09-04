@@ -705,6 +705,81 @@ class ClusterDeploymentStateTransactionalTest {
         }
     }
 
+    /// #759 review (M2) — the rollback sequence that #759's `BlueprintResponse` doc comment
+    /// (`ManagementApiResponses.java`) and `management-api.md` now describe: a deterministic,
+    /// fatal slice failure under `ALL_OR_NOTHING` removes the blueprint's KV entry outright
+    /// (`unloadBlueprintSlices`, `ClusterDeploymentState.java:2139-2158`), rather than recording a
+    /// FAILED status anyone can read back. No test previously drove this sequence end to end.
+    ///
+    /// This only covers the half of the sequence owned by THIS module — the FAILED `NodeArtifact`
+    /// Put through the `AppBlueprintKey` Remove command. The other half is a different module's HTTP
+    /// layer: **#759 Phase 2 has since landed** (`SliceRoutes.routeBlueprintStatusByOutcome`,
+    /// `aether/node`) and reads the durable `DeploymentOutcomeValue` this rollback sequence also
+    /// writes, ahead of the (now-removed) live `AppBlueprintKey` — so a real status read after THIS
+    /// exact sequence answers `200` `FAILED`/`ROLLED_BACK` with `cause`/`failingSlices`, not `404`
+    /// (`BlueprintStatusAggregationTest#statusRoute_outcomeFailed_returns200Failed`,
+    /// `#statusRoute_outcomeRolledBack_returns200RolledBack`). `404
+    /// BLUEPRINT_NOT_FOUND` (`BlueprintStatusAggregationTest#statusRoute_blueprintAbsentFromKvAndNoOutcome_returns404BlueprintNotFound`)
+    /// is now the DIFFERENT, narrower case of no outcome ever having been recorded for the id at all —
+    /// not the general shape of this test's rollback sequence, as an earlier version of this comment
+    /// claimed before Phase 2 landed.
+    @Nested
+    class RollbackSequence {
+        @Test
+        void deterministicFatalFailure_freshDeploy_removesAppBlueprintKeyFromKv() {
+            var expanded = blueprint("app", V1, "slice-a");
+            var sliceArtifact = artifact("slice-a", V1);
+
+            harness.dispatch(new AppBlueprintPutReceived(appBlueprintPut(expanded)));
+            assertThat(cluster.putKeys()).as("initial publish tracks the blueprint in-flight, not yet rolled back")
+                                         .doesNotContain(AppBlueprintKey.appBlueprintKey(expanded.id()));
+
+            harness.dispatch(new NodeArtifactPutReceived(fatalFailurePut(SELF, sliceArtifact, "boom")));
+
+            var blueprintKey = AppBlueprintKey.appBlueprintKey(expanded.id());
+            assertThat(cluster.removeKeys()).as("#759 C2 — deterministic failure under ALL_OR_NOTHING "
+                                                 + "removes the blueprint's KV entry outright, it does not "
+                                                 + "record a durable FAILED status")
+                                            .contains(blueprintKey);
+            assertThat(cluster.removeKeys()).contains(SliceTargetKey.sliceTargetKey(sliceArtifact.base()));
+        }
+
+        @Test
+        void deterministicFatalFailure_nonFatalOrTransient_doesNotRollback() {
+            var expanded = blueprint("app", V1, "slice-a");
+            var sliceArtifact = artifact("slice-a", V1);
+
+            harness.dispatch(new AppBlueprintPutReceived(appBlueprintPut(expanded)));
+            harness.dispatch(new NodeArtifactPutReceived(transientFailurePut(SELF, sliceArtifact, "retry me")));
+
+            assertThat(cluster.removeKeys()).as("a transient (non-fatal) failure retries in place; "
+                                               + "it must not trigger the ALL_OR_NOTHING rollback")
+                                            .doesNotContain(AppBlueprintKey.appBlueprintKey(expanded.id()));
+        }
+    }
+
+    private static ValuePut<AppBlueprintKey, AppBlueprintValue> appBlueprintPut(ExpandedBlueprint expanded) {
+        var key = AppBlueprintKey.appBlueprintKey(expanded.id());
+        var value = AppBlueprintValue.appBlueprintValue(expanded);
+        return new ValuePut<>(new KVCommand.Put<>(key, value), Option.none());
+    }
+
+    private static ValuePut<NodeArtifactKey, NodeArtifactValue> fatalFailurePut(NodeId nodeId,
+                                                                                Artifact artifact,
+                                                                                String reason) {
+        var key = NodeArtifactKey.nodeArtifactKey(nodeId, artifact);
+        var value = new NodeArtifactValue(SliceState.FAILED, Option.option(reason), true, 0, List.of(), 0L);
+        return new ValuePut<>(new KVCommand.Put<>(key, value), Option.none());
+    }
+
+    private static ValuePut<NodeArtifactKey, NodeArtifactValue> transientFailurePut(NodeId nodeId,
+                                                                                    Artifact artifact,
+                                                                                    String reason) {
+        var key = NodeArtifactKey.nodeArtifactKey(nodeId, artifact);
+        var value = new NodeArtifactValue(SliceState.FAILED, Option.option(reason), false, 0, List.of(), 0L);
+        return new ValuePut<>(new KVCommand.Put<>(key, value), Option.none());
+    }
+
     // --- test fixtures (mirrors ClusterDeploymentStateActiveTest) ---
 
     private static SchemaOrchestratorService stubSchemaOrchestrator() {
@@ -806,6 +881,18 @@ class ClusterDeploymentStateTransactionalTest {
             synchronized (commands) {
                 return commands.stream()
                                .filter(c -> c instanceof KVCommand.Put<AetherKey, ?>)
+                               .map(KVCommand::key)
+                               .toList();
+            }
+        }
+
+        /// #759 review (M2) — the rollback-sequence test needs to see `KVCommand.Remove`, not
+        /// just `Put`: `unloadBlueprintSlices` rolls back by REMOVING the `AppBlueprintKey`, it
+        /// never Puts a FAILED status anywhere.
+        List<AetherKey> removeKeys() {
+            synchronized (commands) {
+                return commands.stream()
+                               .filter(c -> c instanceof KVCommand.Remove<AetherKey>)
                                .map(KVCommand::key)
                                .toList();
             }

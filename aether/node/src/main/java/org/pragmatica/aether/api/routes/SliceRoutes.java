@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -26,6 +28,8 @@ import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeStatus;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.topology.SliceTopology;
 import org.pragmatica.aether.slice.topology.TopologyGraph;
@@ -212,18 +216,22 @@ public final class SliceRoutes implements RouteSource {
         return nodeSupplier.get()
                            .blueprintService()
                            .publish(body)
-                           .withSuccess(this::pushSecurityOverrides)
-                           .map(expanded -> new BlueprintResponse("applied",
-                                                                  expanded.id().asString(),
-                                                                  expanded.loadOrder().size()))
-                           .onSuccess(r -> auditAndEmitBlueprintDeployed(r.blueprint(),
-                                                                         r.slices()))
+                           .withSuccess(this::onBlueprintActivated)
+                           .map(expanded -> blueprintResponse("applied", expanded))
                            .onFailure(cause -> log.warn("Blueprint publish failed: {}",
                                                         cause.message()));
     }
 
     private static final Cause MISSING_ARTIFACT_COORDS = Causes.cause("Missing 'artifact' field");
 
+    /// #759 — "deployed" must mean every declared instance is verified ACTIVE at response time, not
+    /// merely that the publish command committed. `deployStatus` reads `deploymentMap()` to name three
+    /// honest outcomes: `degraded` for an already-FAILED instance (reachable for BEST_EFFORT deploys
+    /// and for redeploys onto an artifact with a lingering failure — under the default ALL_OR_NOTHING
+    /// atomicity a fresh deterministic failure usually loses the race to
+    /// `ClusterDeploymentState.rollbackBlueprintForArtifact`'s cleanup before this check runs),
+    /// `pending` for the common case where nothing has activated yet, and `deployed` only once every
+    /// target instance is already observed ACTIVE.
     private Promise<BlueprintResponse> handleBlueprintDeploy(BlueprintDeployRequest request) {
         return Option.option(request.artifact())
                      .toResult(MISSING_ARTIFACT_COORDS)
@@ -231,12 +239,8 @@ public final class SliceRoutes implements RouteSource {
                      .flatMap(coords -> nodeSupplier.get()
                                                     .blueprintService()
                                                     .publishFromArtifact(coords))
-                     .withSuccess(this::pushSecurityOverrides)
-                     .map(expanded -> new BlueprintResponse("deployed",
-                                                            expanded.id().asString(),
-                                                            expanded.loadOrder().size()))
-                     .onSuccess(r -> auditAndEmitBlueprintDeployed(r.blueprint(),
-                                                                   r.slices()))
+                     .withSuccess(this::onBlueprintActivated)
+                     .map(this::deployBlueprintResponse)
                      .onFailure(cause -> log.warn("Blueprint artifact deploy failed: {}",
                                                   cause.message()));
     }
@@ -248,9 +252,7 @@ public final class SliceRoutes implements RouteSource {
                      .flatMap(coords -> nodeSupplier.get()
                                                     .blueprintService()
                                                     .publishFromArtifact(coords, true))
-                     .map(expanded -> new BlueprintResponse("published",
-                                                            expanded.id().asString(),
-                                                            expanded.loadOrder().size()))
+                     .map(expanded -> blueprintResponse("published", expanded))
                      .onSuccess(r -> log.info("Blueprint {} published (register-only — not activated)",
                                               r.blueprint()))
                      .onFailure(cause -> log.warn("Blueprint artifact publish failed: {}",
@@ -262,6 +264,77 @@ public final class SliceRoutes implements RouteSource {
                     .appHttpServer()
                     .httpRoutePublisher()
                     .onPresent(pub -> pub.updateSecurityOverrides(expanded.securityOverrides()));
+    }
+
+    private void onBlueprintActivated(ExpandedBlueprint expanded) {
+        pushSecurityOverrides(expanded);
+        auditAndEmitBlueprintDeployed(expanded.id().asString(),
+                                      expanded.loadOrder().size());
+    }
+
+    private record InstanceCounts(int target, int active, int failed) {}
+
+    private InstanceCounts instanceCounts(ExpandedBlueprint expanded) {
+        var node = nodeSupplier.get();
+        var target = expanded.loadOrder().stream().mapToInt(ResolvedSlice::instances).sum();
+        var active = expanded.loadOrder()
+                             .stream()
+                             .mapToInt(slice -> countInstancesInState(node,
+                                                                      slice.artifact(),
+                                                                      SliceState.ACTIVE))
+                             .sum();
+        var failed = expanded.loadOrder()
+                             .stream()
+                             .mapToInt(slice -> countInstancesInState(node,
+                                                                      slice.artifact(),
+                                                                      SliceState.FAILED))
+                             .sum();
+
+        return new InstanceCounts(target, active, failed);
+    }
+
+    private BlueprintResponse blueprintResponse(String status, ExpandedBlueprint expanded) {
+        var counts = instanceCounts(expanded);
+        var id = expanded.id().asString();
+
+        return new BlueprintResponse(status,
+                                     id,
+                                     counts.target(),
+                                     counts.active(),
+                                     counts.failed(),
+                                     blueprintStatusUrl(id));
+    }
+
+    private BlueprintResponse deployBlueprintResponse(ExpandedBlueprint expanded) {
+        var counts = instanceCounts(expanded);
+        var id = expanded.id().asString();
+
+        return new BlueprintResponse(deployStatus(counts),
+                                     id,
+                                     counts.target(),
+                                     counts.active(),
+                                     counts.failed(),
+                                     blueprintStatusUrl(id));
+    }
+
+    private static String deployStatus(InstanceCounts counts) {
+        if (counts.failed() > 0) {
+            return "degraded";
+        }
+
+        return counts.target() > 0 && counts.active() >= counts.target()
+               ? "deployed"
+               : "pending";
+    }
+
+    /// #759 review — the prefix is derived from the registered [ManagementRoute#BLUEPRINT_STATUS]
+    /// route rather than duplicated as a literal, so this URL can never drift from the path the
+    /// server actually serves (a hardcoded `/api/blueprints/status/` here 404'd against the real
+    /// `/api/v1/blueprints/status/` route). `id` is artifact-shaped (`group:artifact:version`), so
+    /// its colons must still be percent-encoded to sit in a path segment; see
+    /// `aether/docs/reference/management-api.md`.
+    private static String blueprintStatusUrl(String id) {
+        return ManagementRoute.BLUEPRINT_STATUS.prefix() + "/" + URLEncoder.encode(id, StandardCharsets.UTF_8);
     }
 
     private BlueprintListResponse buildBlueprintListResponse() {
@@ -308,14 +381,89 @@ public final class SliceRoutes implements RouteSource {
                                       deps);
     }
 
+    /// #759 Phase 2 — `outcome(id)` is consulted UNCONDITIONALLY, before `get(id)`. A terminal
+    /// `FAILED`/`ROLLED_BACK` outcome is authoritative UNLESS the blueprint is still live: `get(id)`
+    /// is re-Put fresh in the same batch as any republish/restore (`BlueprintService.buildAllCommands`,
+    /// `restorePreviousBlueprint`), so a present `get(id)` is current, not stale — it is `outcome(id)`
+    /// that can be left stale-yet-permanent, since nothing later clears a terminal record for a
+    /// blueprint id that stays live and healthy (`BlueprintService.outcome`'s "Scope — one documented
+    /// exception" paragraph). #759 review round 3 BLOCKING 3: when the blueprint IS live (`get(id)`
+    /// present) and a terminal outcome also exists — the `BEST_EFFORT` case
+    /// (`ClusterDeploymentState.recordBestEffortFailureOutcome` writes the outcome without touching
+    /// `AppBlueprintKey`) and the `ALL_OR_NOTHING`-restore case alike — the route aggregates the LIVE
+    /// per-slice state and reports `PARTIAL` with the outcome's `cause`/`failingSlices`/`timestampMs`
+    /// attached, rather than discarding `slices` to `List.of()`. Only when the blueprint is NOT live
+    /// (`get(id)` absent — rolled back or deleted) does a terminal outcome answer with the degenerate
+    /// `slices = List.of()` response below. When the outcome is `SUCCEEDED` or absent
+    /// (`Option.none()` — never deployed, still in flight, or orphaned; see `BlueprintService.outcome`
+    /// for why those three are indistinguishable here) the route falls back to the pre-existing
+    /// `get(id)`-based logic: present → 200 with live slice detail (unchanged), empty → 404
+    /// `BLUEPRINT_NOT_FOUND`.
     private Promise<BlueprintStatusResponse> handleGetBlueprintStatus(String id) {
         return BlueprintId.blueprintId(id)
                           .async()
-                          .flatMap(blueprintId -> nodeSupplier.get()
-                                                              .blueprintService()
-                                                              .get(blueprintId)
-                                                              .async(BLUEPRINT_NOT_FOUND))
-                          .map(this::toBlueprintStatusResponse);
+                          .flatMap(this::routeBlueprintStatusByOutcome);
+    }
+
+    private Promise<BlueprintStatusResponse> routeBlueprintStatusByOutcome(BlueprintId blueprintId) {
+        return nodeSupplier.get()
+                           .blueprintService()
+                           .outcome(blueprintId)
+                           .filter(SliceRoutes::isTerminalFailureOutcome)
+                           .fold(() -> handleGetBlueprintStatusFromStore(blueprintId),
+                                 outcome -> resolveTerminalOutcomeStatus(blueprintId, outcome));
+    }
+
+    private static boolean isTerminalFailureOutcome(DeploymentOutcomeValue outcome) {
+        return outcome.status() == DeploymentOutcomeStatus.FAILED || outcome.status() == DeploymentOutcomeStatus.ROLLED_BACK;
+    }
+
+    /// #759 review round 3 BLOCKING 3: a terminal outcome next to a STILL-LIVE blueprint (BEST_EFFORT
+    /// partial failure, or a restored-and-healthy blueprint with a lingering ROLLED_BACK/FAILED record)
+    /// must not discard the live per-slice detail this PR added — consult `get(blueprintId)` before
+    /// deciding which response shape applies.
+    private Promise<BlueprintStatusResponse> resolveTerminalOutcomeStatus(BlueprintId blueprintId,
+                                                                          DeploymentOutcomeValue outcome) {
+        return nodeSupplier.get()
+                           .blueprintService()
+                           .get(blueprintId)
+                           .fold(() -> Promise.success(toBlueprintStatusResponse(blueprintId, outcome)),
+                                 blueprint -> Promise.success(toLiveStatusWithOutcome(blueprint, outcome)));
+    }
+
+    private Promise<BlueprintStatusResponse> handleGetBlueprintStatusFromStore(BlueprintId blueprintId) {
+        return nodeSupplier.get()
+                           .blueprintService()
+                           .get(blueprintId)
+                           .async(BLUEPRINT_NOT_FOUND)
+                           .map(this::toBlueprintStatusResponse);
+    }
+
+    private BlueprintStatusResponse toBlueprintStatusResponse(BlueprintId blueprintId, DeploymentOutcomeValue outcome) {
+        return new BlueprintStatusResponse(blueprintId.asString(),
+                                           outcome.status().name(),
+                                           List.of(),
+                                           outcome.cause(),
+                                           outcome.failingSlices(),
+                                           outcome.timestampMs());
+    }
+
+    /// #759 review round 3 BLOCKING 3: the blueprint is live (siblings may still be serving) while a
+    /// terminal outcome also exists — neither side alone tells the whole story, so `overallStatus` is
+    /// hardcoded `PARTIAL` (not re-derived via `computeOverallStatus`) to signal "consult both `get()`
+    /// and `outcome()`, not just one", even on the rare fully-healthy-restore case where live
+    /// aggregation alone would otherwise read `DEPLOYED`.
+    private BlueprintStatusResponse toLiveStatusWithOutcome(ExpandedBlueprint blueprint,
+                                                            DeploymentOutcomeValue outcome) {
+        var node = nodeSupplier.get();
+        var sliceStatuses = blueprint.loadOrder().stream().map(slice -> computeSliceStatus(node, slice)).toList();
+
+        return new BlueprintStatusResponse(blueprint.id().asString(),
+                                           "PARTIAL",
+                                           sliceStatuses,
+                                           outcome.cause(),
+                                           outcome.failingSlices(),
+                                           outcome.timestampMs());
     }
 
     private BlueprintStatusResponse toBlueprintStatusResponse(ExpandedBlueprint blueprint) {
@@ -325,29 +473,43 @@ public final class SliceRoutes implements RouteSource {
 
         return new BlueprintStatusResponse(blueprint.id().asString(),
                                            overallStatus,
-                                           sliceStatuses);
+                                           sliceStatuses,
+                                           "",
+                                           List.of(),
+                                           0L);
     }
 
+    /// #759 — reads `SliceState.FAILED` alongside `ACTIVE` so a slice with failed instances still
+    /// present in `deploymentMap()` (e.g. a `BEST_EFFORT` deploy, or a query landing before
+    /// `ALL_OR_NOTHING` rollback cleanup removes the entry) is reported `FAILED` instead of silently
+    /// folded into `PENDING`/`DEPLOYING`.
     private BlueprintSliceStatus computeSliceStatus(ManageableNode node, ResolvedSlice slice) {
         var artifact = slice.artifact();
         var targetInstances = slice.instances();
         var activeInstances = countActiveInstances(node, artifact);
-        var status = determineSliceDeploymentStatus(targetInstances, activeInstances);
+        var failedInstances = countInstancesInState(node, artifact, SliceState.FAILED);
+        var status = determineSliceDeploymentStatus(targetInstances, activeInstances, failedInstances);
 
-        return new BlueprintSliceStatus(artifact.asString(), targetInstances, activeInstances, status);
+        return new BlueprintSliceStatus(artifact.asString(), targetInstances, activeInstances, failedInstances, status);
     }
 
     private int countActiveInstances(ManageableNode node, Artifact artifact) {
+        return countInstancesInState(node, artifact, SliceState.ACTIVE);
+    }
+
+    private static int countInstancesInState(ManageableNode node, Artifact artifact, SliceState state) {
         return (int) node.deploymentMap()
                          .byArtifact(artifact)
                          .values()
                          .stream()
-                         .filter(state -> state == SliceState.ACTIVE)
+                         .filter(s -> s == state)
                          .count();
     }
 
-    private String determineSliceDeploymentStatus(int target, int active) {
-        if (active == 0) {
+    private String determineSliceDeploymentStatus(int target, int active, int failed) {
+        if (failed > 0) {
+            return "FAILED";
+        } else if (active == 0) {
             return "PENDING";
         } else if (active < target) {
             return "DEPLOYING";
@@ -358,13 +520,29 @@ public final class SliceRoutes implements RouteSource {
         }
     }
 
+    /// #759 review round 4 — `FAILED` overall only when EVERY live slice has failed (or the blueprint
+    /// is gone entirely with a terminal `FAILED` outcome, a separate non-live path handled by
+    /// `toBlueprintStatusResponse(BlueprintId, DeploymentOutcomeValue)`). A mix of `FAILED` and
+    /// non-`FAILED` slices is `PARTIAL` in both atomicity modes: under `ALL_OR_NOTHING` the mix is
+    /// transient (rollback moves it on to `ROLLED_BACK`); under `BEST_EFFORT` it can be the durable
+    /// state siblings keep serving through. Before this fix, one `FAILED` slice among otherwise
+    /// `DEPLOYED` siblings reported overall `FAILED` here, then flipped to `PARTIAL` the moment
+    /// `ClusterDeploymentState.recordBestEffortFailureOutcome` landed (`toLiveStatusWithOutcome`
+    /// hardcodes `PARTIAL`) — a poller would see the status "improve" with nothing actually changed
+    /// on the ground.
     private String computeOverallStatus(List<BlueprintSliceStatus> sliceStatuses) {
+        var hasFailed = sliceStatuses.stream().anyMatch(s -> "FAILED".equals(s.status()));
+        var allFailed = !sliceStatuses.isEmpty() && sliceStatuses.stream().allMatch(s -> "FAILED".equals(s.status()));
         var hasPending = sliceStatuses.stream().anyMatch(s -> "PENDING".equals(s.status()));
         var hasDeploying = sliceStatuses.stream().anyMatch(s -> "DEPLOYING".equals(s.status()));
         var hasScalingDown = sliceStatuses.stream().anyMatch(s -> "SCALING_DOWN".equals(s.status()));
         var allDeployed = sliceStatuses.stream().allMatch(s -> "DEPLOYED".equals(s.status()));
 
-        if (allDeployed) {
+        if (allFailed) {
+            return "FAILED";
+        } else if (hasFailed) {
+            return "PARTIAL";
+        } else if (allDeployed) {
             return "DEPLOYED";
         } else if (hasPending) {
             return "PENDING";
