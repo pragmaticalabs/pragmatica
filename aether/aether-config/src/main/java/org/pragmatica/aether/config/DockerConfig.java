@@ -12,7 +12,7 @@ import static org.pragmatica.lang.Result.success;
 public record DockerConfig(String network, String image) {
     public static final String DEFAULT_NETWORK = "aether-network";
     /// Default node image for management-generated Docker artifacts. Uses the published
-    /// `ghcr.io/pragmaticalabs` namespace (matching `DockerComposeGenerator` /
+    /// `ghcr.io/pragmaticalabs` namespace (matching `DockerComposeTemplate` /
     /// `ClusterConfigGenerator.IMAGE_PREFIX`) and pins the project version rather than a
     /// floating `:latest`. The rest of the codebase versions images at runtime via
     /// `config.cluster().version()`; this low-level module has no compile-time version source,
