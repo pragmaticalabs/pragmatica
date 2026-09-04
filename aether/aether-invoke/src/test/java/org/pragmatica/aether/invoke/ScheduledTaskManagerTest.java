@@ -10,6 +10,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.invoke.ScheduledTaskManager.ScheduledTaskManagerAdapter;
 import org.pragmatica.aether.slice.ExecutionMode;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -421,22 +422,79 @@ class ScheduledTaskManagerTest {
         private Option<ScheduledTaskStateValue> stateFor(ScheduledTaskStateKey key) {
             return Option.option(stateMap.get(key));
         }
+    }
 
-        private void awaitTrue(BooleanSupplier condition, long timeoutMs) {
-            var deadline = System.currentTimeMillis() + timeoutMs;
+    /// Pins #273 review item 1: `ScheduledTaskManager.tryClaim`/`release` is the SAME
+    /// `ctx.inFlight` guard `TaskOps` uses for automatic fires, so a manual trigger
+    /// (`ScheduledTaskRoutes#invokeAndBuildResult`) can never run concurrently with one.
+    @Nested
+    class TriggerGuard {
+        @Test
+        void tryClaim_fixedRateInFlight_refusesClaimUntilReleased() {
+            var gate = Promise.<Unit>promise();
+            stubInvoker.holdNextInvocation(gate);
 
-            while (!condition.getAsBoolean()) {
-                if (System.currentTimeMillis() > deadline) {
-                    throw new AssertionError("Condition not satisfied within " + timeoutMs + "ms");
-                }
+            putTask("cache", artifact, method, self, "1s", ExecutionMode.ALL);
+            establishQuorum();
 
-                try {
-                    Thread.sleep(20);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw new RuntimeException(e);
-                }
-            }
+            var key = ScheduledTaskKey.scheduledTaskKey("cache", artifact, method);
+            var ctx = ((ScheduledTaskManagerAdapter) manager).ctx();
+
+            // First tick (~1s) blocks on `gate`: ctx.inFlight is claimed for the key and stays
+            // claimed until the gate is released.
+            awaitTrue(() -> invocations.size() >= 1, 3000);
+
+            assertThat(manager.tryClaim(key))
+                    .as("an automatic fire is in flight — a manual trigger must be refused")
+                    .isFalse();
+
+            gate.succeed(Unit.unit());
+
+            awaitTrue(() -> ! ctx.inFlight.contains(key), 3000);
+            manager.stop(); // freeze — no further tick can land between release and the assertion below
+
+            assertThat(manager.tryClaim(key))
+                    .as("the automatic fire settled and released its claim")
+                    .isTrue();
+            manager.release(key);
+        }
+
+        @Test
+        void tryClaim_cronInFlight_refusesClaimUntilReleased() {
+            var adapter = (ScheduledTaskManagerAdapter) manager;
+            var ctx = adapter.ctx();
+            var key = ScheduledTaskKey.scheduledTaskKey("cache", artifact, method);
+            var task = new ScheduledTaskRegistry.ScheduledTask("cache",
+                                                               artifact,
+                                                               method,
+                                                               self,
+                                                               "",
+                                                               "0 * * * *",
+                                                               ExecutionMode.ALL,
+                                                               false);
+            var cron = CronExpression.parse(task.cron()).unwrap();
+
+            var gate = Promise.<Unit>promise();
+            stubInvoker.holdNextInvocation(gate);
+
+            // Drives the widened TaskOps.executeCronTask directly — cron's minute-granularity
+            // delayUntilNext makes waiting on a real timer tick impractically slow for a unit
+            // test. The task/timer is never registered, so releasing the gate below settles the
+            // invocation without arming a real next-fire timer.
+            ScheduledTaskManager.TaskOps.executeCronTask(ctx, key, task, cron);
+
+            assertThat(manager.tryClaim(key))
+                    .as("a cron fire is in flight — a manual trigger must be refused")
+                    .isFalse();
+
+            gate.succeed(Unit.unit());
+
+            awaitTrue(() -> ! ctx.inFlight.contains(key), 3000);
+
+            assertThat(manager.tryClaim(key))
+                    .as("the cron fire settled and released its claim")
+                    .isTrue();
+            manager.release(key);
         }
     }
 
@@ -454,6 +512,23 @@ class ScheduledTaskManagerTest {
         var value = ScheduledTaskValue.cronTask(node, cron, executionMode);
         var put = new KVCommand.Put<>(key, value);
         registry.onScheduledTaskPut(new ValuePut<>(put, Option.none()));
+    }
+
+    private void awaitTrue(BooleanSupplier condition, long timeoutMs) {
+        var deadline = System.currentTimeMillis() + timeoutMs;
+
+        while (!condition.getAsBoolean()) {
+            if (System.currentTimeMillis() > deadline) {
+                throw new AssertionError("Condition not satisfied within " + timeoutMs + "ms");
+            }
+
+            try {
+                Thread.sleep(20);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException(e);
+            }
+        }
     }
 
     /// Minimal stub implementing only the invoke methods used by ScheduledTaskManager.

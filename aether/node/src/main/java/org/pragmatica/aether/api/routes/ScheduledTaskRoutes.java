@@ -36,6 +36,8 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
@@ -118,6 +120,13 @@ public final class ScheduledTaskRoutes implements RouteSource {
 
     Promise<FilteredTasksResponse> buildFilteredResponseForTest(String configSection) {
         return buildFilteredResponse(configSection);
+    }
+
+    /// Package-private accessor mirroring `handleInjectForTest`: lets unit tests drive the
+    /// manual-trigger path (including the `tryClaim` conflict guard, #273 review item 1)
+    /// without standing up the HTTP routing layer.
+    Promise<TaskActionResult> triggerForTest(String configSection, String artifactStr, String methodStr) {
+        return triggerTask(configSection, artifactStr, methodStr);
     }
 
     record TaskSummary(String configSection,
@@ -411,9 +420,16 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                                            String configSection,
                                                            String artifactStr,
                                                            String methodStr) {
+        var key = ScheduledTaskKey.scheduledTaskKey(task.configSection(), task.artifact(), task.methodName());
+
+        if (!manager.tryClaim(key)) {
+            return new TriggerConflict(configSection, artifactStr, methodStr).promise();
+        }
+
         return invoker.invoke(task.artifact(),
                               task.methodName(),
                               Unit.unit())
+                      .onResultRun(() -> manager.release(key))
                       .map(_ -> new TaskActionResult(true, configSection, artifactStr, methodStr, "triggered"));
     }
 
@@ -573,6 +589,27 @@ public final class ScheduledTaskRoutes implements RouteSource {
                 return "scheduled-tasks inject for artifact=" + artifact
                      + " must run on a node hosting the slice; retry against node " + hostingNodeId;
             }
+        }
+    }
+
+    /// 409 — `triggerTask` (POST .../trigger) found the task's `ScheduledTaskManager.tryClaim`
+    /// already held: an automatic fire (fixed-rate tick or cron) is currently in flight for this
+    /// task, or another manual trigger call raced ahead of this one and claimed first. Refusing
+    /// the manual fire and reporting it honestly is preferable to letting it run concurrently with
+    /// the in-progress execution and silently double-counting `totalExecutions` (#273 review, item 1).
+    private record TriggerConflict(String configSection, String artifact, String method) implements Cause, HttpStatusAware {
+        @Override
+        public String message() {
+            return "Scheduled task " + configSection
+                 + "/" + artifact
+                 + "." + method
+                 + " has a run already in flight — refusing the manual trigger to avoid a concurrent"
+                 + " double execution; retry once the in-progress run completes";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
         }
     }
 }

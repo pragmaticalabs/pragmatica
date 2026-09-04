@@ -192,6 +192,8 @@ class ScheduledTaskRoutesExecutionsByNodeTest {
             @Override public void onQuorumStateChange(ClusterStateNotification notification) {}
             @Override public int activeTimerCount() { return 0; }
             @Override public void stop() {}
+            @Override public boolean tryClaim(org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey key) { return true; }
+            @Override public void release(org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey key) {}
         };
     }
 

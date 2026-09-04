@@ -57,6 +57,15 @@ public interface ScheduledTaskManager {
 
     int activeTimerCount();
     void stop();
+    /// Atomic try-claim against the SAME in-flight guard `TaskOps` uses for automatic fires
+    /// (fixed-rate ticks and cron), so a manual trigger and an automatic fire can never run
+    /// concurrently for the same task (#273 review, item 1). Returns `false` when the key is
+    /// already claimed — by an automatic fire in progress, or by a manual trigger that claimed
+    /// first. A caller that claims MUST call [#release] exactly once, after its invocation
+    /// settles, regardless of outcome.
+    boolean tryClaim(ScheduledTaskKey key);
+    /// Releases a claim taken via [#tryClaim].
+    void release(ScheduledTaskKey key);
 
     static ScheduledTaskManager scheduledTaskManager(ScheduledTaskRegistry registry,
                                                      SliceInvoker invoker,
@@ -372,16 +381,27 @@ public interface ScheduledTaskManager {
         }
 
         /// Cron re-schedules only AFTER the invocation settles (via [Promise#onResultRun]) — one-shot
-        /// timers cannot overlap themselves by construction, so cron needs no `inFlight` guard, only
-        /// this ordering fix (was: reschedule immediately after launch, racing a slow invocation against
-        /// its own next fire).
-        private static void executeCronTask(Context ctx,
-                                            ScheduledTaskKey key,
-                                            ScheduledTask task,
-                                            CronExpression cron) {
+        /// timers cannot overlap THEMSELVES by construction, so cron never raced its own next fire.
+        /// It CAN still overlap a manual trigger on the same key (`ScheduledTaskRoutes#triggerTask`),
+        /// so this claims/releases `ctx.inFlight` too — the same guard `fireFixedRate` uses — purely so
+        /// that guard is accurate for cron tasks: a claim taken here is visible to [#tryClaim], and a
+        /// claim taken by a manual trigger is visible here. A skip re-arms immediately (cron has no
+        /// other trigger to resume it) and is recorded the same way an overlapping fixed-rate tick is.
+        /// Package-private (not `private`) so `ScheduledTaskManagerTest` can drive it directly with a
+        /// real `Context` and `CronExpression` — cron's minute-granularity `delayUntilNext` makes
+        /// waiting on a real timer tick impractically slow for a unit test.
+        static void executeCronTask(Context ctx, ScheduledTaskKey key, ScheduledTask task, CronExpression cron) {
+            if (!ctx.inFlight.add(key)) {
+                recordSkippedOverlap(ctx, task);
+                scheduleNextCronFire(ctx, key, task, cron);
+
+                return;
+            }
+
             LongSupplier nextFireAt = () -> nextCronFireAt(cron);
 
             executeTask(ctx, task, nextFireAt).onResultRun(() -> {
+                ctx.inFlight.remove(key);
                 if (ctx.activeTimers.containsKey(key)) {
                     scheduleNextCronFire(ctx, key, task, cron);
                 }
@@ -499,6 +519,16 @@ public interface ScheduledTaskManager {
         @Override
         public int activeTimerCount() {
             return ctx.activeTimers.size();
+        }
+
+        @Override
+        public boolean tryClaim(ScheduledTaskKey key) {
+            return ctx.inFlight.add(key);
+        }
+
+        @Override
+        public void release(ScheduledTaskKey key) {
+            ctx.inFlight.remove(key);
         }
 
         @Override
