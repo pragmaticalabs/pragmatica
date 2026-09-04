@@ -1603,6 +1603,12 @@ owns it — reads are forwarded to the owner whenever those differ — and is co
 node, so one call answers "who consumes partition 3". `unassignedPartitions` is the gap worth alerting
 on: partitions no node can consume because the declaring slice is `ACTIVE` nowhere.
 
+A `diagnostic` naming more than one artifact for a single entry means two different artifacts declared
+the same stream and consumer group (#545) — neither is consuming until the group is renamed or one of
+the declarations is removed. This is unrelated to `aether blueprints status`: that command reports
+slice deployment health, not stream registrations, and shows nothing for a #545 collision — a slice can
+be fully deployed while its declarative consumer sits idle on one.
+
 See [Management API — Declarative Stream Consumers](management-api.md#declarative-stream-consumers).
 
 ### `aether streams publish <name-or-address> <message> [--partition N]`
