@@ -88,6 +88,39 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
+    /// Durable terminal outcome of a blueprint's deployment attempt. One record per blueprint id —
+    /// a later {@link org.pragmatica.cluster.state.kvstore.KVCommand.Put} at the same key overwrites
+    /// the previous outcome, so the store holds exactly the latest outcome per blueprint id, never a
+    /// history. Unlike {@link AppBlueprintKey}, this key is never removed on rollback: it is the
+    /// record of what happened to the rollback, not part of the blueprint's active configuration.
+    record DeploymentOutcomeKey(BlueprintId blueprintId) implements AetherKey {
+        private static final String PREFIX = "deployment-outcome/";
+
+        @Override
+        public String asString() {
+            return PREFIX + blueprintId.asString();
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static Result<DeploymentOutcomeKey> deploymentOutcomeKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return DEPLOYMENT_OUTCOME_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            var blueprintIdPart = key.substring(PREFIX.length());
+
+            return BlueprintId.blueprintId(blueprintIdPart).map(DeploymentOutcomeKey::new);
+        }
+
+        public static DeploymentOutcomeKey deploymentOutcomeKey(BlueprintId blueprintId) {
+            return new DeploymentOutcomeKey(blueprintId);
+        }
+    }
+
     record SliceNodeKey(Artifact artifact, NodeId nodeId) implements AetherKey {
         public boolean isForNode(NodeId nodeId) {
             return this.nodeId.equals(nodeId);
@@ -1138,6 +1171,8 @@ public sealed interface AetherKey extends StructuredKey {
     Fn1<Cause, String> SLICE_TARGET_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid slice-target key format: %s");
 
     Fn1<Cause, String> APP_BLUEPRINT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid app-blueprint key format: %s");
+
+    Fn1<Cause, String> DEPLOYMENT_OUTCOME_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid deployment-outcome key format: %s");
 
     Fn1<Cause, String> SLICE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid slice key format: %s");
     Fn1<Cause, String> ENDPOINT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid endpoint key format: %s");

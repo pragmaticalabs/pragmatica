@@ -6,6 +6,7 @@ package org.pragmatica.aether.deployment.schema;
 
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ScheduledFuture;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.AuditLog;
@@ -39,8 +40,10 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Verify;
+import org.pragmatica.lang.io.CoreError;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageRouter;
@@ -169,22 +172,62 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
         return value instanceof SchemaVersionValue;
     }
 
+    // #760/#724 review BLOCKING 2: cleanup runs via `replaceResult` (DEPENDENT), not
+    // `onFailure`/`onResultRun` (INDEPENDENT — dispatched onto AsyncExecutor, not ordered before
+    // this promise's result reaches a caller). The in-flight fence must be cleared, and a failed
+    // attempt's lock released, before a caller reacting to this promise's outcome (a manual
+    // retry route, in particular) can observe it.
+    //
+    // #760/#724 review round 2 item c: `finalizeAttempt` is nested INSIDE `acquireLock`'s success
+    // branch, not chained after the whole flow. A second dispatch that arrives while a first
+    // attempt is genuinely in flight has its own `acquireLock` fail fast (the fence add returns
+    // `false`) — with `replaceResult` wrapping the ENTIRE chain, that failure used to still run
+    // `finalizeAttempt`, unconditionally removing the FIRST attempt's fence entry and, because the
+    // result was a failure, releasing the FIRST attempt's still-held KV lock out from under it.
+    // Nesting means `finalizeAttempt` runs only for the attempt whose OWN `acquireLock` succeeded —
+    // no owner token needed, the call-site scoping is the ownership proof.
     private Promise<Unit> executeMigrationFlow(String datasourceName, SchemaVersionValue value) {
-        return acquireLock(datasourceName).flatMap(_ -> runMigration(datasourceName, value))
-                          .flatMap(_ -> releaseLock(datasourceName))
-                          .onFailure(_ -> releaseLockSilently(datasourceName))
-                          .onResultRun(() -> inFlightMigrations.remove(datasourceName));
+        var attemptToken = new Object();
+
+        return acquireLock(datasourceName, attemptToken).flatMap(_ -> runMigration(datasourceName, value).flatMap(_ -> releaseLock(datasourceName))
+                                                                                  .replaceResult(result -> finalizeAttempt(datasourceName,
+                                                                                                                           attemptToken,
+                                                                                                                           result)));
     }
 
+    private Result<Unit> finalizeAttempt(String datasourceName, Object attemptToken, Result<Unit> result) {
+        inFlightMigrations.remove(datasourceName, attemptToken);
+        if (result.isFailure()) {
+            releaseLockSilently(datasourceName);
+        }
+
+        return result;
+    }
+
+    // #760/#724 review BLOCKING 2: uses `mapError` (DEPENDENT), not `onFailure` (INDEPENDENT —
+    // dispatched onto AsyncExecutor, explicitly NOT ordered before the promise's resolution
+    // reaches `.await()` or any downstream caller). `handleMigrationFailure` registers the retry
+    // (`scheduledRetries.put`); that registration must complete before this failure becomes
+    // observable, or a caller that reacts immediately (a manual retry) can run
+    // `cancelScheduledRetry` before the put lands, orphaning an uncancelled timer that later
+    // fires a redundant, uncoordinated migration attempt.
+    // #760/#724 review round 2 item c: `.timeout()` is placed directly on `resolveAndParseMigrations`'s
+    // returned promise, before any further `.flatMap` is chained onto it — per `Promise.timeout()`'s
+    // own placement warning, a forced failure only protects transformations chained AFTER the call,
+    // so it must sit as close to the low-level operation (`schemaManager.migrate`, reached inside
+    // `resolveAndParseMigrations`) as this call site allows. Without a bound, a wedged connection or a
+    // runaway script holds the migration lock and the in-flight fence indefinitely, and no external
+    // caller (manual retry, rebuild recovery) can ever get back in.
     private Promise<Unit> runMigration(String datasourceName, SchemaVersionValue value) {
         var startTime = System.currentTimeMillis();
 
         emitMigrationStarted(datasourceName, value);
 
         return updateStatus(datasourceName, value, SchemaStatus.MIGRATING).flatMap(_ -> resolveAndParseMigrations(datasourceName,
-                                                                                                                  value))
+                                                                                                                  value).timeout(schemaManager.policy()
+                                                                                                                                              .migrationTimeout()))
                            .flatMap(_ -> markCompleted(datasourceName, value, startTime))
-                           .onFailure(cause -> handleMigrationFailure(datasourceName, value, cause));
+                           .mapError(cause -> handleMigrationFailure(datasourceName, value, cause));
     }
 
     private void emitMigrationStarted(String datasourceName, SchemaVersionValue value) {
@@ -210,7 +253,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                                                                             self)));
     }
 
-    private void handleMigrationFailure(String datasourceName, SchemaVersionValue value, Cause cause) {
+    private Cause handleMigrationFailure(String datasourceName, SchemaVersionValue value, Cause cause) {
         var classification = classifyFailure(cause);
         var attemptNumber = value.attemptCount() + 1;
         var artifactCoords = Option.option(value.artifactCoords()).or("");
@@ -220,6 +263,8 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
         } else {
             emitPermanentFailure(datasourceName, value, cause, classification, attemptNumber, artifactCoords);
         }
+
+        return cause;
     }
 
     private void scheduleRetry(String datasourceName,
@@ -258,7 +303,9 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
         updateStatusWithAttempt(datasourceName, value, SchemaStatus.PENDING, attemptNumber).onFailure(c -> log.error("Failed to update retry status for '{}': {}",
                                                                                                                      datasourceName,
                                                                                                                      c.message()));
-        SharedScheduler.schedule(() -> migrateIfNeeded(datasourceName), timeSpan(nextRetryMs).millis());
+        var future = SharedScheduler.schedule(() -> migrateIfNeeded(datasourceName), timeSpan(nextRetryMs).millis());
+
+        scheduledRetries.put(datasourceName, future);
     }
 
     private void emitPermanentFailure(String datasourceName,
@@ -315,6 +362,14 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
         if (cause instanceof SchemaError.MigrationSetUnavailable) {
             return FailureClassification.PERMANENT;
         }
+        // #760/#724 review round 2 item c: a timed-out attempt (Promise.timeout() on
+        // resolveAndParseMigrations, bounded by SchemaPolicy#migrationTimeout) is classified explicitly
+        // rather than left to the UNKNOWN fallthrough below — both already skip retry and reach
+        // emitPermanentFailure/SchemaStatus.FAILED, but naming it PERMANENT here makes the timeout path
+        // directly unit-testable and self-documenting instead of relying on fallthrough behavior.
+        if (cause instanceof CoreError.Timeout) {
+            return FailureClassification.PERMANENT;
+        }
 
         return FailureClassification.UNKNOWN;
     }
@@ -337,26 +392,66 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
 
     private static final Cause LOCK_HELD = Causes.cause("Schema migration lock held — skipping duplicate");
 
-    private final java.util.Set<String> inFlightMigrations = ConcurrentHashMap.newKeySet();
+    private final ConcurrentHashMap<String, Object> inFlightMigrations = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, ScheduledFuture<?>> scheduledRetries = new ConcurrentHashMap<>();
 
-    private Promise<Unit> acquireLock(String datasourceName) {
-        if (!inFlightMigrations.add(datasourceName)) {
+    /// Single-flight fence across BOTH dispatch paths (the backoff timer in [#scheduleRetry] and any
+    /// external re-dispatch — manual retry route, rebuild recovery). `inFlightMigrations` alone only
+    /// covers the window an attempt is actually running; once a failed attempt releases it, a stale,
+    /// already-scheduled backoff timer and a fresh external dispatch can both later acquire it in
+    /// sequence, redundantly re-running the same migration scripts (#760/#724 review, BLOCKING 2).
+    /// Cancelling only AFTER the fence is claimed — not on every call — matters: `scheduleRetry`'s own
+    /// KV status write can re-enter here while attempt N is still fenced, and that re-entrant call must
+    /// fail fast on the fence without ever touching the retry it is itself part of.
+    ///
+    /// #760/#724 review round 3 BLOCKING 1: `inFlightMigrations` maps to a per-attempt token, not a
+    /// bare presence marker, so every release (`finalizeAttempt`, the `isLockHeld` short-circuit below,
+    /// and [#releaseFenceOnLockFailure]) is a `remove(key, token)` compare-and-remove — an attempt can
+    /// only ever clear the ONE fence entry it itself claimed, never a later attempt's. That matters here
+    /// specifically because the lock Put below is now bounded by a timeout: a lock write that fails or
+    /// never settles must still release the fence, and doing so unconditionally (bare `remove(key)`)
+    /// would risk tearing down a fresh attempt's fence if that cleanup ever ran late.
+    private Promise<Unit> acquireLock(String datasourceName, Object attemptToken) {
+        if (inFlightMigrations.putIfAbsent(datasourceName, attemptToken) != null) {
             return LOCK_HELD.promise();
         }
 
+        cancelScheduledRetry(datasourceName);
         var lockKey = SchemaMigrationLockKey.schemaMigrationLockKey(datasourceName);
 
         if (isLockHeld(lockKey)) {
-            inFlightMigrations.remove(datasourceName);
+            inFlightMigrations.remove(datasourceName, attemptToken);
 
             return LOCK_HELD.promise();
         }
 
         var lockValue = SchemaMigrationLockValue.schemaMigrationLockValue(datasourceName, self, LOCK_TTL_MS);
         KVCommand<AetherKey> command = new Put<>(lockKey, lockValue);
-
+        // #760/#724 review round 3 BLOCKING 1: bounded the same way as the migration itself
+        // (schemaManager.policy().migrationTimeout(), read once per attempt) — before this, a lock Put
+        // that failed or never settled left `inFlightMigrations` claimed forever, since `finalizeAttempt`
+        // (the only release site) is nested inside THIS call's success branch and never runs on its
+        // failure. `mapError` is used, not `onFailure`/`onResultRun`, for the same DEPENDENT-ordering
+        // reason as `handleMigrationFailure` above: an immediate external retry reacting to this
+        // failure must see the fence already released, not race an async cleanup callback.
         return cluster.apply(List.of(command))
-                      .mapToUnit();
+                      .timeout(schemaManager.policy().migrationTimeout())
+                      .mapToUnit()
+                      .mapError(cause -> releaseFenceOnLockFailure(datasourceName, attemptToken, cause));
+    }
+
+    private Cause releaseFenceOnLockFailure(String datasourceName, Object attemptToken, Cause cause) {
+        inFlightMigrations.remove(datasourceName, attemptToken);
+
+        return cause;
+    }
+
+    private void cancelScheduledRetry(String datasourceName) {
+        Option.option(scheduledRetries.remove(datasourceName)).onPresent(SchemaOrchestratorServiceInstance::cancelFuture);
+    }
+
+    private static void cancelFuture(ScheduledFuture<?> future) {
+        future.cancel(false);
     }
 
     private boolean isLockHeld(SchemaMigrationLockKey lockKey) {

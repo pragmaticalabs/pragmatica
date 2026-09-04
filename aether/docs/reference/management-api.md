@@ -4283,10 +4283,18 @@ section. That is why a publish claiming a datasource another blueprint already m
 at deploy time (see [`POST /api/v1/blueprints/deploy`](#post-apiv1blueprintsdeploy)) rather than
 namespaced per blueprint.
 
-Recovery from a `FAILED` hold: `POST /api/v1/schema/retry/{datasource}` (`FAILED` -> `PENDING` ->
-`COMPLETED`), `POST /api/v1/schema/baseline/{datasource}?version=N` (-> `COMPLETED`), or redeploy the
-owning blueprint. The leader also emits a `SCHEMA_ACTIVATION_BLOCKED` audit entry naming the
-datasource, the owning blueprint, and the held slices when it observes a `FAILED` record.
+Recovery from a `FAILED` **or `PENDING`** hold: `POST /api/v1/schema/retry/{datasource}` (`FAILED`
+or `PENDING` -> `PENDING` -> `COMPLETED`; #724 widened the guard to accept a datasource already
+`PENDING` — a migration that never dispatched has no other lever short of retry or a redeploy),
+`POST /api/v1/schema/baseline/{datasource}?version=N` (-> `COMPLETED`), or redeploy the owning
+blueprint. The leader also emits a `SCHEMA_ACTIVATION_BLOCKED` audit entry naming the datasource,
+the owning blueprint, and the held slices when it observes a `FAILED` record. The currently held
+slices for any blocking record are also visible on demand via `heldSlices` on
+[`GET /api/v1/schema/status/{datasource}`](#get-apiv1schemastatusdatasource) (#760) — no need to wait
+for the audit entry or read DEBUG logs. **Log cadence:** the node log emits one `WARN` when a
+slice first enters (or its blocking record changes) a schema hold and one `WARN` when the hold
+clears; re-observations of an unchanged hold log at `DEBUG`, so a long-running hold does not
+repeat the `WARN` on every re-evaluation tick.
 
 ### GET /api/v1/schema/status
 
@@ -4301,7 +4309,8 @@ Returns schema migration status for all datasources.
       "currentVersion": 3,
       "lastMigration": "V003__add_index.sql",
       "status": "COMPLETED",
-      "owningBlueprint": "org.example:my-app:1.0.0"
+      "owningBlueprint": "org.example:my-app:1.0.0",
+      "heldSlices": []
     }
   ]
 }
@@ -4314,6 +4323,7 @@ Returns schema migration status for all datasources.
 | `lastMigration` | string | Filename of the last migration recorded |
 | `status` | string | `PENDING`, `MIGRATING`, `COMPLETED`, `FAILED` |
 | `owningBlueprint` | string | Blueprint id (`group:artifact:version`) that declared the migrations. Whose slices this record holds while `status` is not `COMPLETED` |
+| `heldSlices` | string[] | Slices owned by this record's blueprint that are currently sitting in `LOADED` state and being held back from `ACTIVE` by a blocking `status` (#760). Requires BOTH a blocking status (`PENDING`, `MIGRATING`, or `FAILED`) AND at least one owned slice in `LOADED`; empty when `status` is `COMPLETED`, and equally empty under a blocking status if no owned slice is currently `LOADED` (e.g. already `ACTIVE`, or not yet loaded) `[mechanism: ClusterDeploymentState.blocksSliceActivation]` |
 
 ### GET /api/v1/schema/status/{datasource}
 
@@ -4326,7 +4336,21 @@ Returns schema status for a specific datasource.
   "currentVersion": 3,
   "lastMigration": "V003__add_index.sql",
   "status": "COMPLETED",
-  "owningBlueprint": "org.example:my-app:1.0.0"
+  "owningBlueprint": "org.example:my-app:1.0.0",
+  "heldSlices": []
+}
+```
+
+While a migration is blocking activation, `heldSlices` names the affected slices directly:
+
+```json
+{
+  "datasource": "orders_db",
+  "currentVersion": 2,
+  "lastMigration": "V002__add_column.sql",
+  "status": "FAILED",
+  "owningBlueprint": "org.example:my-app:1.0.0",
+  "heldSlices": ["order-writer", "order-reader"]
 }
 ```
 
@@ -4342,11 +4366,53 @@ Returns migration history for a datasource (placeholder -- currently returns the
 Triggers manual schema migration for a datasource. Sets status to `MIGRATING`. Preserves the
 existing record's artifact coordinates and owning blueprint.
 
-**Response:**
+**Refused with `409 Conflict` (#760 review BLOCKING 1)** when the record is `COMPLETED` **and**
+the owning blueprint has at least one slice instance already `ACTIVE`. Re-arming a COMPLETED
+record to `MIGRATING` has no orchestrator effect by itself — only a `PENDING` record's KV `Put`
+dispatches an actual migration run — but `MIGRATING` is itself a blocking status with no automatic
+clearing path, so the next slice instance to reach `LOADED` (scale-up, rolling redeploy, a
+rejoining node) would be held indefinitely on a record the operator just re-armed. A COMPLETED
+record with **zero** live ACTIVE slices is unaffected and still goes through. Recovery: `baseline`
+or `undo` first if a genuine re-migration is intended.
+
+**Also refused with `409 Conflict` (#760/#724 review round 2 item l)** when the record is already
+`PENDING`: a fresh `PENDING` `Put` is what dispatches a migration run, so re-arming an already-`PENDING`
+record to `MIGRATING` has no dispatch effect of its own — it neither adds nor replaces any in-flight
+tracking (a `PENDING` record can otherwise sit with zero in-flight tracking at all, which is exactly
+the stuck state #724 fixed) — and would strand the record with no automatic clearing path. Recovery:
+`POST /api/v1/schema/retry/{datasource}` accepts `PENDING` immediately: `writeRetryStatus` re-triggers
+dispatch, not only once the record has since failed — the `409` body's "or use retry if it has since
+failed" below describes the common case, not a precondition retry actually enforces. Dispatch itself
+requires this node's deployment FSM to be the elected leader and `Active` (the consensus Put that
+`writeRetryStatus` writes is only ever consumed by that state's handler); given that, it still
+no-ops when either guard `SchemaOrchestratorService.acquireLock` checks is already held — the local
+per-JVM fence (`inFlightMigrations`) or the cross-node consensus lock — so a retry racing an
+in-progress attempt for the same datasource returns `LOCK_HELD` rather than starting a second run.
+`migrate` itself does not re-trigger dispatch `[mechanism: SchemaRoutes.guardReactivation switches on
+the observed status before any orchestrator effect and returns SchemaAlreadyPending for PENDING
+without writing MIGRATING]`.
+
+**Response (success):**
 ```json
 {
   "success": true,
   "message": "Migration triggered for orders_db"
+}
+```
+
+**Response (409 — blueprint already serving):**
+```json
+{
+  "status": 409,
+  "detail": "Schema for datasource 'orders_db' is already COMPLETED and serving 3 active slice instances — re-triggering migration would hold the next slice to activate with no automatic recovery; baseline or undo first if a re-migration is genuinely intended"
+}
+```
+
+**Response (409 — already PENDING):**
+```json
+{
+  "status": 409,
+  "detail": "Schema for datasource 'orders_db' already has a migration PENDING — re-arming to MIGRATING has no dispatch effect of its own and would strand the record with no automatic clearing path; wait for the pending migration to dispatch, or use retry if it has since failed"
 }
 ```
 
@@ -4372,13 +4438,14 @@ slices are withheld from activation.
 
 ### POST /api/v1/schema/retry/{datasource}
 
-Retries a failed schema migration by resetting status from `FAILED` to `PENDING` and clearing the
-attempt counter. This is the primary operator recovery from a `FAILED` activation hold: the
-migration runs again, and reaching `COMPLETED` releases the owning blueprint's slices.
+Retries a schema migration by resetting status to `PENDING` and clearing the attempt counter. This
+is the primary operator recovery from a `FAILED` activation hold, and (#724) also the only lever
+for a datasource stuck `PENDING` with a migration that never dispatched — either way the migration
+runs again, and reaching `COMPLETED` releases the owning blueprint's slices.
 
-Only works when the datasource is in `FAILED` state; when it is in any other state the call fails
-with `409 Conflict` and
-``Schema for datasource '<name>' is not in FAILED state (currently <STATUS>) — retry only applies to failed migrations``
+Works when the datasource is in `FAILED` **or `PENDING`** state; `MIGRATING` (a runner is already
+in flight) and `COMPLETED` (nothing marked it failed) are refused with `409 Conflict` and
+``Schema for datasource '<name>' is not in FAILED state (currently <STATUS>) — retry applies to FAILED or PENDING migrations only``
 (the observed status is named, so the refusal explains itself without a second call).
 
 **Response:**
@@ -4422,7 +4489,9 @@ with `400 Bad Request`.
 > | Condition | Status | `detail` |
 > |-----------|--------|----------|
 > | Datasource has no schema record (every route that reads one) | `404 Not Found` | ``Schema status not found for datasource '<name>'`` |
-> | `retry` against a datasource that is not `FAILED` | `409 Conflict` | ``Schema for datasource '<name>' is not in FAILED state (currently <STATUS>) — retry only applies to failed migrations`` |
+> | `retry` against a datasource that is not `FAILED` or `PENDING` | `409 Conflict` | ``Schema for datasource '<name>' is not in FAILED state (currently <STATUS>) — retry applies to FAILED or PENDING migrations only`` |
+> | `migrate` against a COMPLETED record whose owning blueprint has ≥1 live ACTIVE slice | `409 Conflict` | ``Schema for datasource '<name>' is already COMPLETED and serving <N> active slice instance(s) — re-triggering migration would hold the next slice to activate with no automatic recovery; baseline or undo first if a re-migration is genuinely intended`` |
+> | `migrate` against a record that is already `PENDING` | `409 Conflict` | ``Schema for datasource '<name>' already has a migration PENDING — re-arming to MIGRATING has no dispatch effect of its own and would strand the record with no automatic clearing path; wait for the pending migration to dispatch, or use retry if it has since failed`` |
 > | `?version=` / `?targetVersion=` present but not an integer | `400 Bad Request` | ``Invalid '<parameter>' parameter: '<value>' is not an integer`` |
 >
 > An **absent** `version`/`targetVersion` is not an error — it takes the documented default

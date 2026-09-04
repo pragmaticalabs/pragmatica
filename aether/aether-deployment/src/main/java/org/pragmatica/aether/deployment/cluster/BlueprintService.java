@@ -74,6 +74,33 @@ public interface BlueprintService {
     /// the new version is immediately activated.
     Promise<ExpandedBlueprint> publishFromArtifact(String artifactCoords, boolean registerOnly);
     Option<ExpandedBlueprint> get(BlueprintId id);
+    /// Durable terminal outcome of `id`'s last deployment attempt (#759 review, BLOCKING 3). Bounded
+    /// to exactly one record per blueprint id: the FSM writes via `KVCommand.Put` at
+    /// `AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(id)`, and a Put at the same key overwrites
+    /// the prior value, so the store holds only the latest outcome — cardinality is the number of
+    /// distinct blueprint ids ever deployed, not the number of attempts. Survives
+    /// `unloadBlueprintSlices`'s ALL_OR_NOTHING rollback, which removes only `AppBlueprintKey`, never
+    /// this key — the intended read path for the node's blueprint-status route after a rollback
+    /// leaves `get(id)` empty while this stays populated.
+    ///
+    /// #760/#724 review round 2 item i: `Option.empty()` conflates four distinct situations a caller
+    /// (e.g. the blueprint-status API route) cannot tell apart from this return value alone:
+    ///
+    ///   1. **Never deployed** — `id` has never been published/deployed; no attempt was ever made.
+    ///   2. **In flight, progressing normally** — a deployment is underway right now and has not yet
+    ///      reached a terminal transition; an outcome will land once it does.
+    ///   3. **Orphaned by a crash** — the FSM host crashed before issuing the terminal
+    ///      `submitBatch`/`apply` call, so no `DeploymentOutcomeKey` entry was ever written; nothing
+    ///      further will happen without operator intervention (e.g. a redeploy), but the record looks
+    ///      identical to case 2.
+    ///   4. **Stuck, never resolving** — no crash occurred, but the FSM is waiting on an event (e.g. a
+    ///      `NodeArtifactPutReceived`) that never arrives, so it never reaches a terminal transition
+    ///      either; also indistinguishable from case 2 by this method alone.
+    ///
+    /// A caller needing to tell "will complete soon" (case 2) apart from "permanently stuck, needs
+    /// intervention" (cases 3-4) must consult additional state — e.g. `get(id)`'s presence plus how
+    /// long the blueprint has been in that state — `outcome()` alone cannot make that distinction.
+    Option<AetherValue.DeploymentOutcomeValue> outcome(BlueprintId id);
     List<ExpandedBlueprint> list();
     Promise<Unit> delete(BlueprintId id);
     Result<Blueprint> validate(String dsl);
@@ -228,6 +255,13 @@ class BlueprintServiceInstance implements BlueprintService {
     public Option<ExpandedBlueprint> get(BlueprintId id) {
         return store.get(AetherKey.AppBlueprintKey.appBlueprintKey(id))
                     .flatMap(this::extractBlueprint);
+    }
+
+    @Override
+    public Option<AetherValue.DeploymentOutcomeValue> outcome(BlueprintId id) {
+        return store.get(AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(id))
+                    .filter(AetherValue.DeploymentOutcomeValue.class::isInstance)
+                    .map(AetherValue.DeploymentOutcomeValue.class::cast);
     }
 
     @Override
