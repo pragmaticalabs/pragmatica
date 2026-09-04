@@ -4,6 +4,9 @@ document.addEventListener('alpine:init', function() {
         leaderId: '',
         targetClusterSize: 0,
         healthy: true,
+        // #294: never fabricate a degraded verdict before the first /health probe returns —
+        // only app.js's checkHealth() flips this, and only when a response actually reports status.
+        degraded: false,
         uptimeSeconds: 0,
         controllerConfig: null,
         ttmStatus: 'DISABLED',

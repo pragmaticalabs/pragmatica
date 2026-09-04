@@ -28,6 +28,24 @@ window.Notifications = {
 };
 
 window.RestClient = {
+    // #294: an endpoint the server has no route for (Forge stand-ins, or a dashboard path not yet
+    // migrated to /api/v1 — #300) 404s on every poll tick. Toasting that every 2-3s is just noise;
+    // log it once per method+path instead. Every OTHER failure status still toasts every time — this
+    // is a narrow carve-out for one status code, not general failure suppression.
+    _warned404: {},
+
+    _reportFailure: function(method, path, status) {
+        if (status === 404) {
+            var key = method + ' ' + path;
+            if (!this._warned404[key]) {
+                this._warned404[key] = true;
+                console.warn('[RestClient] ' + key + ' -> 404 (endpoint not implemented by this server; further 404s on this endpoint are suppressed)');
+            }
+            return;
+        }
+        Notifications.show(method + ' ' + path + ' failed: ' + status, 'error');
+    },
+
     // #293/G7: API key is read from sessionStorage (set by the auth overlay) or a cookie — never the
     // URL, since keys in URLs leak into access logs, proxies and browser history. Always sent as the
     // X-API-Key header.
@@ -47,7 +65,7 @@ window.RestClient = {
         return fetch(path, { headers: self.getHeaders() }).then(function(response) {
             if (response.status === 401) { self.handleUnauthorized(); return null; }
             if (!response.ok) {
-                Notifications.show('GET ' + path + ' failed: ' + response.status, 'error');
+                self._reportFailure('GET', path, response.status);
                 return null;
             }
             return response.json();
@@ -74,7 +92,7 @@ window.RestClient = {
         return fetch(path, opts).then(function(response) {
             if (response.status === 401) { self.handleUnauthorized(); return null; }
             if (!response.ok) {
-                Notifications.show('POST ' + path + ' failed: ' + response.status, 'error');
+                self._reportFailure('POST', path, response.status);
                 return null;
             }
             return response.text().then(function(text) {
@@ -95,7 +113,7 @@ window.RestClient = {
         };
         return fetch(path, opts).then(function(response) {
             if (!response.ok) {
-                Notifications.show('PUT ' + path + ' failed: ' + response.status, 'error');
+                self._reportFailure('PUT', path, response.status);
             }
             return response.ok;
         }).catch(function(e) {
@@ -112,7 +130,7 @@ window.RestClient = {
         var self = this;
         return fetch(path, { method: 'DELETE', headers: self.getHeaders() }).then(function(response) {
             if (!response.ok) {
-                Notifications.show('DELETE ' + path + ' failed: ' + response.status, 'error');
+                self._reportFailure('DELETE', path, response.status);
             }
             return response.ok;
         }).catch(function(e) {

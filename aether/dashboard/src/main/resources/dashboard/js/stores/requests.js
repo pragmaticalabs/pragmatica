@@ -55,6 +55,9 @@ document.addEventListener('alpine:init', function() {
             var self = this;
             this.refreshAll();
             this.refreshTimer = setInterval(function() {
+                // #294: skip this tick while the cluster health probe reports not-healthy — don't
+                // hammer a degraded/unreachable backend every 3s.
+                if (Alpine.store('cluster').degraded) return;
                 self.refreshAll();
             }, 3000);
         },

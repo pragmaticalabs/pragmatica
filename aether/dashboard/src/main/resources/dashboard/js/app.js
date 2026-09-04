@@ -146,13 +146,19 @@ document.addEventListener('alpine:init', function() {
                 // Always poll REST for full state (loadTargets, slices, etc.)
                 // WS provides incremental metrics but REST has the complete picture
                 this.pollTimer = setInterval(function() {
+                    // #294: health is probed on every tick, ungated, so the gate itself can detect
+                    // recovery — every OTHER poll below is skipped while the cluster is degraded.
+                    self.checkHealth();
+                    if (Alpine.store('cluster').degraded) return;
                     self.pollStatus();
                     Alpine.store('events').refresh();
+                    Alpine.store('alerts').refresh();
                 }, 2000);
 
                 // Secondary stores: poll at lower frequency as fallback
                 // for when WS misses INITIAL_STATE or drops connection
                 this.secondaryPollTimer = setInterval(function() {
+                    if (Alpine.store('cluster').degraded) return;
                     Alpine.store('topology').refresh();
                     Alpine.store('desiredTopology').refresh();
                     Alpine.store('governors').refresh();
@@ -164,6 +170,26 @@ document.addEventListener('alpine:init', function() {
                     Alpine.store('deployments').refreshRoutes();
                     Alpine.store('schema').refresh();
                 }, 10000);
+            },
+
+            async checkHealth() {
+                // #294: bare '/health' matches what Forge actually serves and what this dashboard is
+                // demonstrably run against today; the real node's Management API has already migrated
+                // to '/api/v1/health' in code (ManagementRoute, #300) without a corresponding dashboard
+                // update — a pre-existing, systemic, tracked mismatch across every dashboard endpoint,
+                // not something this ticket fixes. Against an already-migrated node this probe 404s
+                // like every other call here does today.
+                //
+                // 'degraded' is keyed on the semantic `status !== 'healthy'`, not a literal 'degraded'
+                // wire value — none exists. The real node's HealthResponse.status is only ever
+                // "healthy"/"unhealthy"; Forge's is hardcoded to always "healthy" and can never signal
+                // degradation, an honest limit on this gate against Forge.
+                var health = await RestClient.get('/health');
+                if (health && health.status) {
+                    Alpine.store('cluster').degraded = health.status !== 'healthy';
+                }
+                // A missing/unreachable health endpoint leaves `degraded` at its last known value —
+                // never fabricate a health verdict from a failed probe.
             },
 
             async pollStatus() {
