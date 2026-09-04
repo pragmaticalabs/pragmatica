@@ -346,7 +346,7 @@ class BlueprintServiceTest {
 
         /// Leg (a): must go RED if #818's `Remove` of the stale outcome (`BlueprintService.java`'s
         /// `storeBlueprintWithKey`/`buildAllCommands`) is reverted — without it, the FAILED outcome
-        /// seeded below survives the republish and the route reports FAILED instead of IN_PROGRESS.
+        /// seeded below survives the republish and the route reports PARTIAL instead of IN_PROGRESS.
         @Test
         void statusRoute_publishAfterPriorFailure_outcomeCleared_reportsInProgressNotFailed() {
             seedFailedOutcome(liveStore, REDEPLOY_ID);

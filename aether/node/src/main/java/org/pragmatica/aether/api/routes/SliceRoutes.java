@@ -520,17 +520,28 @@ public final class SliceRoutes implements RouteSource {
         }
     }
 
-    /// #759 — `FAILED` takes priority over every other bucket, mirroring `deployStatus`'s
-    /// failed-first precedence for the deploy response.
+    /// #759 review round 4 — `FAILED` overall only when EVERY live slice has failed (or the blueprint
+    /// is gone entirely with a terminal `FAILED` outcome, a separate non-live path handled by
+    /// `toBlueprintStatusResponse(BlueprintId, DeploymentOutcomeValue)`). A mix of `FAILED` and
+    /// non-`FAILED` slices is `PARTIAL` in both atomicity modes: under `ALL_OR_NOTHING` the mix is
+    /// transient (rollback moves it on to `ROLLED_BACK`); under `BEST_EFFORT` it can be the durable
+    /// state siblings keep serving through. Before this fix, one `FAILED` slice among otherwise
+    /// `DEPLOYED` siblings reported overall `FAILED` here, then flipped to `PARTIAL` the moment
+    /// `ClusterDeploymentState.recordBestEffortFailureOutcome` landed (`toLiveStatusWithOutcome`
+    /// hardcodes `PARTIAL`) — a poller would see the status "improve" with nothing actually changed
+    /// on the ground.
     private String computeOverallStatus(List<BlueprintSliceStatus> sliceStatuses) {
         var hasFailed = sliceStatuses.stream().anyMatch(s -> "FAILED".equals(s.status()));
+        var allFailed = !sliceStatuses.isEmpty() && sliceStatuses.stream().allMatch(s -> "FAILED".equals(s.status()));
         var hasPending = sliceStatuses.stream().anyMatch(s -> "PENDING".equals(s.status()));
         var hasDeploying = sliceStatuses.stream().anyMatch(s -> "DEPLOYING".equals(s.status()));
         var hasScalingDown = sliceStatuses.stream().anyMatch(s -> "SCALING_DOWN".equals(s.status()));
         var allDeployed = sliceStatuses.stream().allMatch(s -> "DEPLOYED".equals(s.status()));
 
-        if (hasFailed) {
+        if (allFailed) {
             return "FAILED";
+        } else if (hasFailed) {
+            return "PARTIAL";
         } else if (allDeployed) {
             return "DEPLOYED";
         } else if (hasPending) {

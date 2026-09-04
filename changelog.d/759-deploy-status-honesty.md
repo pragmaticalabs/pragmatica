@@ -8,10 +8,25 @@
   was replaced by `targetInstances`/`activeInstances`/`failedInstances` on `/deploy`, `/publish`, and
   the status endpoint's per-slice entries, for consistent instance counts across all three. The status
   endpoint reports `FAILED` honestly: a slice with a `SliceState.FAILED` instance still present in the
-  deployment map is reported `FAILED` rather than folded into `PENDING`/`DEPLOYING`, and `overallStatus`
-  is `FAILED` ahead of every other bucket if any slice is.
+  deployment map is reported `FAILED` rather than folded into `PENDING`/`DEPLOYING`. `overallStatus`'s
+  aggregation rule across the live slice set is documented in its own bullet below.
   [mechanism: status is derived directly from `deploymentMap()` by construction; pinned in-process by
   `BlueprintDeployStatusTest`, `BlueprintStatusAggregationTest` — unit-level, not a live multi-node run]
+
+- **`overallStatus` is `FAILED` only when every live slice has failed, not when any single slice
+  has — a mix of `FAILED` and non-`FAILED` slices reports `PARTIAL` instead, in both atomicity
+  modes.** Before this fix, one `FAILED` slice among otherwise `DEPLOYED` siblings reported overall
+  `FAILED` here, then flipped to `PARTIAL` the moment `ClusterDeploymentState.recordBestEffortFailureOutcome`
+  landed (the hardcoded-`PARTIAL` path in the next bullet) — a poller watching that transition saw the
+  status "improve" with nothing actually changed on the ground. Under `ALL_OR_NOTHING` a `FAILED`/
+  non-`FAILED` mix is transient (rollback moves it on to `ROLLED_BACK`); under `BEST_EFFORT` it can be
+  the durable state siblings keep serving through. Operator recovery is the same either way: redeploy
+  the failed slice(s).
+  [mechanism: `SliceRoutes.computeOverallStatus`; pinned through the real route by
+  `BlueprintStatusAggregationTest#statusRoute_reportsPartial_whenOneSliceFailedAndSiblingFullyDeployed`
+  (mix → `PARTIAL`) and `#statusRoute_reportsFailed_whenEverySliceHasFailed` (every slice failed →
+  `FAILED`) — fixture-built tests through the real route, not the live `RedeployAfterPriorFailureTests`
+  legs below, which pin outcome-clearing rather than this aggregation rule]
 
 - **The status route now consults `BlueprintService.outcome(id)` unconditionally, before `get(id)`, so
   a terminal `FAILED`/`ROLLED_BACK` outcome is authoritative for a blueprint that is NOT live** — absent

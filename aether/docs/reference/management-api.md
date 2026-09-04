@@ -890,8 +890,15 @@ Per-slice status values: `PENDING`, `DEPLOYING`, `DEPLOYED`, `SCALING_DOWN`, `FA
 `failedInstances` counts `SliceState.FAILED` entries still present in the deployment map for that
 slice's artifact (e.g. a `BEST_EFFORT` deploy, or a query landing before `ALL_OR_NOTHING` rollback
 cleanup removes the entry). Whenever it is non-zero the slice's `status` is `FAILED` regardless of
-`activeInstances`, and `overallStatus` is `FAILED` if **any** slice is `FAILED` — this takes
-priority over every other bucket, mirroring `POST /api/v1/blueprints/deploy`'s `degraded` precedence.
+`activeInstances`. `overallStatus` is `FAILED` only when **every** slice is `FAILED` (or the
+blueprint itself is gone entirely with a terminal `FAILED` outcome — see above); a mix of `FAILED`
+and non-`FAILED` slices reports `PARTIAL` instead — under `ALL_OR_NOTHING` that mix is transient
+(rollback moves it on to `ROLLED_BACK`), under `BEST_EFFORT` it can be the durable state siblings
+keep serving through. Recovery is the same as the `PARTIAL` shape above: redeploy the failed
+slice(s). `[mechanism: `SliceRoutes.computeOverallStatus`; pinned through the real route by
+`BlueprintStatusAggregationTest#statusRoute_reportsPartial_whenOneSliceFailedAndSiblingFullyDeployed`
+(mix → `PARTIAL`) and `#statusRoute_reportsFailed_whenEverySliceHasFailed` (every slice failed →
+`FAILED`) — #759 review round 4]`.
 
 ### DELETE /api/v1/blueprints/{id}
 

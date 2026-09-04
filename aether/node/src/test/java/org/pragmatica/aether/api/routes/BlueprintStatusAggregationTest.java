@@ -124,14 +124,41 @@ class BlueprintStatusAggregationTest {
         assertThat(sliceStatus(response, SLICE_B)).isEqualTo(new BlueprintSliceStatus(SLICE_B.asString(), 3, 0, 0, "PENDING"));
     }
 
+    /// #759 review round 4 — renamed from `...reportsFailed_evenWhenTheSiblingSliceIsFullyDeployed`:
+    /// `computeOverallStatus` used to give `FAILED` priority the moment ANY slice failed, so a poller
+    /// watching `ClusterDeploymentState.recordBestEffortFailureOutcome` land would see this exact slice
+    /// mix flip from `FAILED` (this method's live-aggregation path, pre-outcome) to `PARTIAL`
+    /// (`toLiveStatusWithOutcome`'s hardcoded value, post-outcome) with nothing having actually
+    /// improved. `FAILED` overall is now reserved for "every live slice has failed" — see
+    /// [#statusRoute_reportsFailed_whenEverySliceHasFailed] for that edge — and this mix matches what
+    /// the outcome-carrying path already reports for the identical slice shape in
+    /// [#statusRoute_blueprintLiveWithTerminalFailure_bestEffort_reportsPartialWithSliceCounts].
     @Test
-    void statusRoute_reportsFailed_evenWhenTheSiblingSliceIsFullyDeployed() {
+    void statusRoute_reportsPartial_whenOneSliceFailedAndSiblingFullyDeployed() {
         var response = statusWith(Map.of(SLICE_A, Map.of(NODE_1, SliceState.ACTIVE, NODE_2, SliceState.FAILED),
                                          SLICE_B, Map.of(NODE_3, SliceState.ACTIVE, NODE_4, SliceState.ACTIVE, NODE_5, SliceState.ACTIVE)));
 
-        assertThat(response.overallStatus()).as("a FAILED slice must dominate a fully-deployed sibling, never be averaged away").isEqualTo("FAILED");
+        assertThat(response.overallStatus()).as("a FAILED slice next to a fully-deployed sibling is PARTIAL, not "
+                                                 + "FAILED — FAILED overall is reserved for every slice failing")
+                                             .isEqualTo("PARTIAL");
         assertThat(sliceStatus(response, SLICE_A)).isEqualTo(new BlueprintSliceStatus(SLICE_A.asString(), 2, 1, 1, "FAILED"));
         assertThat(sliceStatus(response, SLICE_B)).isEqualTo(new BlueprintSliceStatus(SLICE_B.asString(), 3, 3, 0, "DEPLOYED"));
+    }
+
+    /// #759 review round 4 — the other edge of the corrected rule: `FAILED` overall requires EVERY live
+    /// slice to have failed, not just one. No prior test drove more-than-one-slice-all-FAILED through
+    /// the real route; every existing FAILED-outcome test instead exercises the terminal-outcome path
+    /// (`outcome()` present), which returns `outcome.status().name()` directly and is untouched by this
+    /// fix.
+    @Test
+    void statusRoute_reportsFailed_whenEverySliceHasFailed() {
+        var response = statusWith(Map.of(SLICE_A, Map.of(NODE_1, SliceState.FAILED, NODE_2, SliceState.FAILED),
+                                         SLICE_B, Map.of(NODE_3, SliceState.FAILED, NODE_4, SliceState.FAILED, NODE_5, SliceState.FAILED)));
+
+        assertThat(response.overallStatus()).as("every live slice failed — the one case FAILED overall still applies")
+                                             .isEqualTo("FAILED");
+        assertThat(sliceStatus(response, SLICE_A)).isEqualTo(new BlueprintSliceStatus(SLICE_A.asString(), 2, 0, 2, "FAILED"));
+        assertThat(sliceStatus(response, SLICE_B)).isEqualTo(new BlueprintSliceStatus(SLICE_B.asString(), 3, 0, 3, "FAILED"));
     }
 
     @Test
