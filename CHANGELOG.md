@@ -6,79 +6,102 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc4] - Unreleased
 
-### Fixed (2026-09-04 — #253: `BlockEncryptor` had no production key source; storage tiers were never encrypted at rest)
-- **No production code path ever constructed a real `BlockEncryptor`.** The stream-segment pipeline
-  (`StorageSegmentSink`/`SegmentReader`) defaults to `Option.empty()`, and the generic
-  `StorageTier`/`StorageInstance` framework `StorageFactory` builds for `artifacts`, `content`, any
-  `[storage.<name>]` instance, and `streams`' own block tiers had no encryption hook at all. Owner
-  ruling (`know: a9d238140`): ship at-rest encryption via the *existing* `SecretsProvider` SPI
-  (Vault/#119 stays deferred) — a keyring of named keys, one active key id for new writes, any key
-  readable for old blocks, boot refuses an encrypted tier whose key can't be resolved.
-- **New `[storage.encryption]` keyring**, resolved once at boot through the live `SecretsProvider`
-  (bounded by a 30s timeout so a wedged secrets backend can't hang boot indefinitely), before any
-  storage tier is constructed:
-  ```toml
-  [storage.encryption]
-  active_key_id = "k1"
-  streams_encrypted = false        # opts the built-in `streams` instance's segment-block tiers in
+### Fixed (2026-09-04 — #759 review: a redeployed or deleted blueprint id kept reporting a stale terminal outcome from a prior attempt)
+- **A retry of a previously FAILED/ROLLED_BACK blueprint id read as still-failed until its own
+  terminal write landed.** `DeploymentOutcomeKey` is written only at the four terminal FSM
+  transitions and was never cleared when a new deployment of the same id started —
+  `BlueprintId` wraps the artifact, so a retry reuses the key, and the (now outcome-first)
+  blueprint-status route reported the prior attempt's `FAILED`/`ROLLED_BACK` outcome while the
+  live redeploy was actively converging, a false-negative on deployment health with no code path
+  that would ever clear it on its own.
+- **`BlueprintService.buildAllCommands` bundles a `KVCommand.Remove` of the publishing id's
+  `DeploymentOutcomeKey` into the SAME consensus batch as the `AppBlueprintKey` Put that starts the
+  new attempt** — covers `publishFromArtifact`. The two land atomically, so `outcome(id)` is: *at
+  any instant, either the blueprint is in flight with no outcome, or terminal with exactly one
+  record for the current attempt — never in flight while reporting a previous attempt's result.*
+- **Round 2: the same gap existed on two more live paths that write or remove `AppBlueprintKey`
+  without going through `buildAllCommands`.** DSL `publish(String)` (`SliceRoutes.handleBlueprint`)
+  went through `storeBlueprintWithKey`, and `delete(id)` through `removeFromStore` — both applied a
+  single-command batch touching only `AppBlueprintKey`, so a DSL republish left a prior
+  FAILED/ROLLED_BACK outcome in place until the new attempt's own terminal write, and a `delete`'s
+  orphaned outcome record never cleared at all (nothing ever writes that id's `AppBlueprintKey`
+  again to trigger it). Both methods now bundle the same `DeploymentOutcomeKey` Remove into their
+  own batch, so the guarantee above now holds for all three ways `AppBlueprintKey` changes on a
+  live path: `publishFromArtifact`, DSL `publish`, and `delete`. [mechanism: same-batch
+  `cluster.apply` in `buildAllCommands`, `storeBlueprintWithKey`, `removeFromStore` — all commands
+  passed to one `apply(...)` call commit together or not at all]
+- **One documented exception, out of scope for this fix: `ClusterDeploymentState.restorePreviousBlueprint`.**
+  An ALL_OR_NOTHING rollback with a previous blueprint re-Puts `previous.id()`'s `AppBlueprintKey`
+  (making it live again) in the same batch as a ROLLED_BACK outcome Put keyed by `inflight.id()` —
+  the FAILING id, not `previous.id()`. `previous.id()`'s own `DeploymentOutcomeKey` is untouched,
+  and `restoringBlueprints` suppresses `previous.id()`'s normal in-flight FSM tracking while the
+  restore is pending, so no later terminal write ever supersedes whatever `outcome(previous.id())`
+  already held from an earlier attempt of that id. A restored blueprint can therefore be live and
+  serving while `outcome(previous.id())` still reports a stale, unrelated terminal record; recovery
+  is the same shape as the pre-existing crash-orphaned/stuck cases documented on this method —
+  consult `get(previous.id())`'s presence, not `outcome()` alone. [mechanism:
+  `ClusterDeploymentState.restorePreviousBlueprint` / `rolledBackOutcomeCommand` keys the outcome
+  Put on `inflight.id()`, never `previous.id()`; `restoringBlueprints` gates the two in-flight-
+  tracking checks that would otherwise produce a new terminal write for `previous.id()`]
+- No operator action is needed for the three covered paths — a publish or a delete of `id` clears
+  its own stale outcome automatically. (Corrects the round-1 wording above, which claimed this held
+  for every publish before `delete` was covered and before the `restorePreviousBlueprint` exception
+  was documented.)
+- **No ordering dependency, unlike the `AppBlueprintKey` Put/Remove pair #809 hardens** —
+  `DeploymentOutcomeKey` has no FSM event-dispatch handler wired to it (no
+  `DeploymentOutcomePutReceived`/`RemoveReceived` case exists), so this Remove's position in the
+  batch relative to the blueprint Put/Remove is not load-bearing; nothing subscribes to either
+  notification. `DeploymentOutcomeValue` is not fenced (`EpochBearing`/`LeaderValue`), so the
+  witnessless `Remove(key)` form is admitted unconditionally by the KV applier.
+- A new test pins the atomicity property directly on the recorded consensus batch, not just its
+  eventual effect: the `AppBlueprintKey` write/remove and the `DeploymentOutcomeKey` Remove must
+  land in ONE `cluster.apply` call — red if the fix were (hypothetically) split into two separate
+  calls, a shape every existing effect-based assertion would still pass.
+- Javadoc on `BlueprintService.outcome(BlueprintId id)` states the in-flight-XOR-terminal guarantee
+  scoped to the three covered paths, and documents the `restorePreviousBlueprint` exception above;
+  it does not resolve the pre-existing crash-orphaned/stuck ambiguity documented there (#760/#724
+  review round 2 item i) — it only ensures the in-flight case is never confused with a stale
+  terminal record from an earlier attempt of the same id.
+- Pinning tests in `BlueprintPublishOwnershipTest.OutcomeClearedAtPublish` drive the real
+  `publishFromArtifact`, DSL `publish`, and `delete` paths against a seeded FAILED outcome for the
+  same blueprint id, asserting `outcome(id)` is empty after each; a no-prior-outcome control case;
+  and a same-batch assertion pinning atomicity for each path. Mutation-probed: red with each
+  `Remove` line dropped, green restored.
+  [verified: aether/aether-deployment/src/test/java/org/pragmatica/aether/deployment/cluster/BlueprintPublishOwnershipTest.java]
 
-  [storage.encryption.keys]
-  k1 = "${secrets:storage-key-v1}"
-  k0 = "${secrets:storage-key-v0}"  # retired key, kept resolvable for reads only
-  ```
-  Each value is Base64-encoded AES-256 key material, resolved via the node's `SecretsProvider`
-  (never inlined). Per-instance opt-in is `[storage.<name>] encrypted = true` (default false);
-  `streams` has no `StorageConfig` of its own, so it uses the dedicated `streams_encrypted` flag
-  instead. `StorageEncryptionConfigValidator` catches shape errors at config load — empty keyring,
-  `active_key_id` absent from `keys`, a value not matching `${secrets:<path>}`, or `encrypted`/
-  `streams_encrypted` requested with no `[storage.encryption]` section at all — before boot ever
-  tries to resolve a secret.
-- **New `EncryptingStorageTier`** (`integrations/storage`) wraps `LocalDiskTier`/`DhtStorageTier`
-  transparently to `StorageInstance` — demotion, GC, and reads/writes all go through the unchanged
-  `StorageTier.get/put` contract. Wire format is versioned and AES-GCM-authenticated:
-  `MAGIC("AEC1") | VERSION | KEY_ID_LEN | KEY_ID | NONCE(12B) | CIPHERTEXT+TAG`, with everything
-  before the nonce passed as AAD — editing the header, or swapping in a different (even validly
-  encrypted) key id, fails decryption closed rather than silently decrypting under the wrong key.
-- **Boot fails loudly, naming the key id, never the secret value**, when any configured key can't be
-  resolved (malformed `${secrets:...}` reference, provider failure, bad Base64, wrong decoded
-  length), when `active_key_id` isn't present in the resolved keys, or when `[storage.encryption]`
-  is present but the node's environment has no `SecretsProvider` at all
-  (`NoSecretsProviderForStorageEncryption`).
-- **Legacy plaintext is refused, never silently accepted.** Enabling encryption over a local-disk
-  tier whose directory already holds block files with no `.encryption-enabled` marker aborts boot
-  (`EnablingOverExistingPlaintext`) rather than starting to write ciphertext alongside unreadable
-  plaintext; a DHT tier has no directory to scan and instead fails closed per block on read
-  (`LegacyPlaintextBlock`) rather than returning raw bytes. A block whose header names a key id
-  absent from the node's keyring fails with `UnknownKeyId` — never a truncated or garbled read.
-  **Limitation, not shipped here:** there is no migration path from an existing plaintext tier to
-  an encrypted one; enabling encryption is new-instance/fresh-data only for rc4.
-- **Key rotation:** add a key, flip `active_key_id`; every prior key stays in `keys` and remains
-  readable. Re-encrypting existing blocks under the new active key (including on demote/promote) is
-  an explicit follow-up, not part of this fix.
-- **What is NOT covered, verified against the actual boot wiring:**
-  - `MemoryTier` — in-process only, never touches disk, deliberately never wrapped.
-  - Metadata/refs/snapshot files (`MetadataStore`, `SnapshotManager`) for every instance including
-    `streams` — these bypass `StorageTier` entirely and are written directly; only block payloads
-    reached via `get`/`put` are encrypted.
-  - The **synthesized default `artifacts` instance** (used only when no explicit
-    `[storage.artifacts]` section is configured) is hardcoded to never encrypt, regardless of
-    `[storage.encryption]`. An operator who explicitly configures `[storage.artifacts] encrypted =
-    true` gets it encrypted normally through the same path as any other named instance.
-  - The **`content` storage instance is architecturally unencryptable under this fix**: `AetherNode`
-    always provisions it via `StorageFactory.defaultContentStorage`, a separate, keyring-less
-    factory method that never routes through the config/keyring-aware `createAll`/`createOne` path
-    — the same reason `content` already sits outside `storageSetups` for demotion/GC (#783). Not
-    fixed here; flagged as the same underlying structural gap #783 tracks, not a new local patch.
-  - `[streams.X].encryption-key-id` (the per-stream blueprint key) is unrelated to
-    `streams_encrypted` above and remains the dead/rejected config `#576` already found inert
-    (2026-08-27) — `StorageSegmentSink`'s own segment pipeline still has no encryptor wired to it.
-    This fix does not change that; the two "streams encryption" surfaces name different mechanisms.
-  [mechanism: `EncryptingStorageTier` AES-256-GCM, AAD over the versioned header, key resolved once
-  at boot via `SecretsProvider` — `EncryptingStorageTierTest`, `EncryptionKeyringTest`,
-  `BlockEncryptorTest` (`integrations/storage`); `StorageEncryptionConfigTest` (`aether/aether-config`);
-  `StorageEncryptionTest`, `StorageFactoryEncryptionTest`, `AetherNodeStorageEncryptionBootTest`
-  (`aether/node`) — all mutation-probed: each production hunk was reverted, its named test confirmed
-  red, then the file restored and the full suite reconfirmed green]
+### Fixed (2026-09-04 — #715: Forge/Ember clusters admitted nodes from foreign local processes)
+- **Every `EmberCluster` instance (and therefore every `ForgeServer`, built directly on it) derived
+  its cluster QUIC/SWIM identity from one hardcoded literal secret, shared by every process on the
+  machine.** `EmberCluster.buildForgeQuicTls` built its `TlsConfig`/CA from that literal, and
+  `createNode` passed `Option.empty()` for `AetherNodeConfig.certificateProvider`, so SWIM gossip
+  encryption fell back to `GossipEncryptor.none()` (plaintext, unauthenticated) for every Ember/Forge
+  node. Consequence: any process on the machine — no key needed, since gossip encryption was off
+  entirely — could SWIM-gossip into another process's cluster, and any process holding the literal
+  could QUIC-join it, up to triggering an OVERPROVISION drain of a live cluster's core from outside it.
+- **Each `EmberCluster` instance now derives a fresh, unique `SecureRandom` cluster secret at
+  construction**, threaded into both the QUIC `TlsConfig`/CA (`buildForgeQuicTls`) and the
+  `certificateProvider` wired into every constructed node's `AetherNodeConfig`. No new admission-check
+  code was added — both mechanisms already existed and needed only a real, per-instance identity to
+  become effective:
+  [mechanism: QUIC — `ClientAuth.REQUIRE` + per-instance CA, unchanged verification code; a client
+  whose certificate doesn't chain to this instance's CA is TLS-rejected at handshake]
+  [mechanism: SWIM — AES-GCM AEAD decrypt-failure → log+drop, unchanged verification code; a gossip
+  datagram not encrypted under this instance's derived key fails tag verification and is discarded
+  before reaching membership state]
+  Neither guarantee is "secure" in general terms — both are exactly as strong as
+  `SelfSignedCertificateProvider`'s HKDF derivation, which this fix does not touch.
+- **`EmberCluster.withClusterSecret(byte[])` is the only sanctioned way for two separately-created
+  `EmberCluster`/`ForgeServer` instances to join one cluster** — pass the same secret bytes to both
+  before calling `start()`. A repo-wide grep found no existing harness, Forge scenario, or multi-JVM
+  test that relies on cross-instance/cross-process joining today; no caller relied on the literal,
+  one stale comment in `ClusterTestTls` was corrected.
+  [mechanism: `EmberCluster.createNode` is the sole Ember/Forge construction site, so this is the
+  only choke point either mechanism needs]
+- Startup-time regression check for the newly-activated `CertificateRenewalScheduler`
+  (dormant while `certificateProvider` was `Option.empty()`): 3-node Ember cluster start, same
+  test/machine, before vs. after — 17.88s avg (3 runs) vs. 17.55s avg (3 runs), no regression.
+  [mechanism: manual wall-clock A/B, 3 runs per side, same machine and test, pre-fix commit vs.
+  post-fix commit — not an automated/CI-enforced measurement, and no cited test measures time]
 
 ### Fixed (2026-09-03 — #737: CursorStore leaked one block per commit; the refcount meant to reclaim it had zero readers)
 - **Every cursor commit leaked its superseded block.** `CursorStore.commit` replaced a cursor's ref with
@@ -163,6 +186,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **The refusal message keeps its scripted-client substring.** `SchemaRouteError.SchemaNotFailed`
   still emits `"...is not in FAILED state (currently <STATUS>)..."`, pinned by two integration
   scripts and a unit test, now ending `"— retry applies to FAILED or PENDING migrations only"`.
+
+### Fixed (2026-09-03 — #738: topic sections silently ignored dashed/misspelled keys)
+- **A misspelled or dashed key in a topic's `resources.toml` section is now rejected at parse,
+  naming the nearest correctly-spelled key** — most commonly `min-sync-replicas` where
+  `min_sync_replicas` was meant. Previously the reflective config binder
+  (`ProviderBasedConfigService.bindToClass`, the class every production config caller actually
+  binds through — a separate, unreachable `TomlConfigService` carries the same shape but has zero
+  production callers) resolved any key it did not recognize to `Option.none()`/a component
+  default, making a typo byte-indistinguishable from the key never having been written. The real
+  fail-open is on the **ephemeral** path, not a durability-tier mis-selection: `durability` alone
+  picks the tier (`TopicConfig.topicConfig`), dash-typo-immune. `TopicConfig.declaredStreamKeys()`
+  only sees a stream knob as declared through its typed `Option` field, so a dashed
+  `min-sync-replicas` resolved to `none()` and stayed invisible to it — `rejectInertKeys()` then
+  found nothing declared and never raised the loud #576 rejection an ephemeral topic carrying a
+  (mistyped) durable-tier knob is supposed to get. The operator's likely-durable declaration was
+  silently discarded with zero signal, on an otherwise-successful ephemeral bind.
+- **New opt-in `@StrictKeys` annotation**, applied to `TopicConfig` only — every other config
+  record bound by `ProviderBasedConfigService` (four production callers:
+  `NodeDeploymentState.java:284`, `ConfigSectionPreflightValidator.java:60`, `AetherNode.java:5869`,
+  `SpiResourceProvider.java:362`) is unannotated and binds exactly as before; the existing
+  `SimpleConfig` test fixture — reused, not new — with an added unrecognized key proves this.
+  [verified: integrations/config/config-service/src/test/java/org/pragmatica/config/ProviderBasedConfigServiceTest.java (StrictKeysScoping.config_nonAnnotatedRecord_ignoresUnrecognizedKey_exactlyAsBeforeTheHook)]
+- **Scoped to exactly the keys the annotated record binds, and to the static/file-backed
+  configuration layer only**: a nested sub-section under the same topic (e.g. a consumer group
+  table, owned by the dashed-by-convention `StreamConfigParser`) is never inspected by this check,
+  however it is spelled — and neither is an environment variable, system property, or KV-overlay
+  entry landing at the same path, since none of those layers wrote the section this record
+  declares (#738 review finding). `provider.keys()` (every layer merged) was the original,
+  too-broad scope; the check now reads the new `ConfigurationProvider.staticKeys()`.
+  [verified: aether/resource/api/src/test/java/org/pragmatica/aether/resource/TopicConfigTest.java (tomlBinding_rejectsDashedTopicLevelKey_evenWithNestedConsumerSubsectionPresent, tomlBinding_ignoresSystemPropertyKeyAtTopicSection_neverFailsStrictBind)]
+- Nearest-key suggestion via a small self-contained Levenshtein-distance helper (no new
+  dependency), bounded to `max(3, key length / 2)` so an unrelated key gets no suggestion at all
+  rather than an unbounded argmin, and every unrecognized key in a section is reported together,
+  not just the first. Operator docs (`aether/docs/slice-developers/resource-reference.md`) and the
+  durable-pubsub spec (`aether/docs/specs/durable-pubsub-spec.md` §3) now state the guarantee and
+  cite it.
+  [verified: aether/resource/api/src/test/java/org/pragmatica/aether/resource/TopicConfigTest.java]
 
 ### Fixed (2026-09-03 — #769: `database.async_url` operator override was ignored by slice stores while the log claimed it was applied)
 - **`DatabaseConnectorConfig.effectiveHost()`/`effectivePort()`/`effectiveDatabase()` gave the
