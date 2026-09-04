@@ -15,6 +15,7 @@ import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.invoke.InvocationHandler;
 import org.pragmatica.aether.invoke.SliceInvoker;
 import org.pragmatica.aether.node.stream.StreamConsumerRegistry.ConsumerDeclaration;
@@ -272,15 +273,27 @@ public interface StreamConsumerManager {
         @Contract
         @Override
         public void reconcile() {
-            var desired = allDeclarations().stream().flatMap(declaration -> desiredFor(declaration).stream()).toList();
+            var declarations = allDeclarations();
+            var collisions = collidingGroups(declarations);
+            var desired = declarations.stream().flatMap(declaration -> desiredFor(declaration, collisions).stream()).toList();
 
             desired.forEach(this::subscribeIfAbsent);
             dropStale(desired);
         }
 
         /// Subscriptions this node SHOULD hold for one declaration, plus the loud reporting for the
-        /// ways a declaration can end up consuming nothing.
-        private List<SubscriptionKey> desiredFor(ConsumerDeclaration declaration) {
+        /// ways a declaration can end up consuming nothing. A `(stream, group)` claimed by more than
+        /// one ARTIFACT BASE (#545) short-circuits here: neither side subscribes, and the diagnosis
+        /// names every base involved. Two VERSIONS of the SAME base sharing a group is the intended
+        /// blue-green collapse (see `TopicGroupDeclarationSource`) and is never flagged as a collision.
+        private List<SubscriptionKey> desiredFor(ConsumerDeclaration declaration,
+                                                 Map<ConsumerGroupKey, List<ArtifactBase>> collisions) {
+            var colliding = Option.option(collisions.get(ConsumerGroupKey.of(declaration)));
+
+            if (colliding.isPresent()) {
+                return declineColliding(declaration, colliding.unwrap());
+            }
+
             var assignments = assignmentsFor(declaration);
             var bridge = invocationHandler.localSlice(declaration.artifact());
 
@@ -289,6 +302,35 @@ public interface StreamConsumerManager {
             return bridge.isPresent()
                    ? subscriptionKeys(declaration, minePartitions(assignments))
                    : unsubscribeAndDropAll(declaration);
+        }
+
+        private List<SubscriptionKey> declineColliding(ConsumerDeclaration declaration, List<ArtifactBase> bases) {
+            recordDiagnosis(declaration, collisionDiagnosis(declaration, bases));
+
+            return unsubscribeAndDropAll(declaration);
+        }
+
+        /// Declarations sharing one `(stream, group)` across more than one ARTIFACT BASE — the real
+        /// #545 defect (`SubscriptionKey`/`ConsumerKey` correctly omit the artifact; this is the
+        /// declaration-level check that keeps that key from ever being asked to serve two different
+        /// artifacts). Keyed on `base()`, not the full version-carrying `Artifact`: two VERSIONS of one
+        /// base legitimately collapse to one group during an upgrade window and must not be flagged.
+        private static Map<ConsumerGroupKey, List<ArtifactBase>> collidingGroups(List<ConsumerDeclaration> declarations) {
+            return declarations.stream()
+                               .collect(Collectors.groupingBy(ConsumerGroupKey::of))
+                               .entrySet()
+                               .stream()
+                               .map(entry -> Map.entry(entry.getKey(), distinctBases(entry.getValue())))
+                               .filter(entry -> entry.getValue().size() > 1)
+                               .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+        }
+
+        private static List<ArtifactBase> distinctBases(List<ConsumerDeclaration> declarations) {
+            return declarations.stream()
+                               .map(declaration -> declaration.artifact().base())
+                               .distinct()
+                               .sorted(Comparator.comparing(ArtifactBase::asString))
+                               .toList();
         }
 
         /// The full partition→consumer map for a declaration, computed from the two mirrored inputs.
@@ -403,6 +445,32 @@ public interface StreamConsumerManager {
                                        deploymentPending(declaration));
         }
 
+        /// #545: bypasses `Diagnosis.diagnosis`'s message derivation entirely — there is no assignment
+        /// computation to report on here, only the named cross-artifact collision.
+        private static Diagnosis collisionDiagnosis(ConsumerDeclaration declaration, List<ArtifactBase> bases) {
+            return new Diagnosis(declaration.artifact(),
+                                 declaration.methodName().name(),
+                                 declaration.streamName(),
+                                 false,
+                                 Option.none(),
+                                 declaration.eventType(),
+                                 List.of(),
+                                 List.of(),
+                                 List.of(),
+                                 false,
+                                 Option.some(collisionMessage(declaration, bases)));
+        }
+
+        private static String collisionMessage(ConsumerDeclaration declaration, List<ArtifactBase> bases) {
+            return "consumer group '" + declaration.consumerGroup()
+                 + "' on stream " + declaration.streamName()
+                 + " is declared by " + bases.size() + " different artifacts ("
+                 + bases.stream().map(ArtifactBase::asString).collect(Collectors.joining(", "))
+                 + ") — sharing one consumer group across different artifacts is not supported in this"
+                 + " release; none of them is consuming until the collision is resolved (rename the"
+                 + " group or remove one of the conflicting declarations)";
+        }
+
         private static List<SubscriptionKey> subscriptionKeys(ConsumerDeclaration declaration, List<Integer> mine) {
             return mine.stream()
                        .map(partition -> new SubscriptionKey(declaration.streamName(),
@@ -455,14 +523,33 @@ public interface StreamConsumerManager {
                          .toList();
         }
 
+        /// The ONE key->declaration resolution point. Never `findFirst()` across ARTIFACT BASES: a
+        /// match spanning more than one base is the #545 collision and is refused outright — logged,
+        /// resolved to `none` — rather than picked arbitrarily. A match spanning VERSIONS of a single
+        /// base is the intended blue-green collapse and picking either is correct: the group's cursor
+        /// belongs to the group, not the version.
         private Option<ConsumerDeclaration> declarationFor(SubscriptionKey key) {
-            return allDeclarations().stream()
-                                  .filter(declaration -> declaration.streamName()
-                                                                    .equals(key.streamName()) && declaration.consumerGroup()
-                                                                                                            .equals(key.consumerGroup()))
-                                  .findFirst()
-                                  .map(Option::some)
-                                  .orElseGet(Option::none);
+            var matches = allDeclarations().stream()
+                                          .filter(declaration -> declaration.streamName()
+                                                                            .equals(key.streamName()) && declaration.consumerGroup()
+                                                                                                                    .equals(key.consumerGroup()))
+                                          .toList();
+            var bases = distinctBases(matches);
+
+            if (bases.size() > 1) {
+                log.error("Declarative stream consumer group '{}' on stream {} is declared by {} different artifacts ({}) — refusing to resolve arbitrarily",
+                          key.consumerGroup(),
+                          key.streamName(),
+                          bases.size(),
+                          bases.stream().map(ArtifactBase::asString).collect(Collectors.joining(", ")));
+
+                return Option.none();
+            }
+
+            return matches.stream()
+                          .findFirst()
+                          .map(Option::some)
+                          .orElseGet(Option::none);
         }
 
         private void attach(SubscriptionKey key, ConsumerDeclaration declaration) {
@@ -665,6 +752,17 @@ public interface StreamConsumerManager {
 
     record SubscriptionKey(String streamName, int partition, String consumerGroup) {}
 
+    /// The #545 cross-artifact collision identity — deliberately NOT partition-scoped and NOT
+    /// artifact-scoped, unlike `SubscriptionKey`/`ConsumerKey`. Those two answer "which physical
+    /// consumer serializes reads for this group"; this one answers "which DIFFERENT artifacts are
+    /// fighting over that same group", which the physical key can never see because it is not
+    /// supposed to know about the artifact at all.
+    record ConsumerGroupKey(String streamName, String consumerGroup) {
+        static ConsumerGroupKey of(ConsumerDeclaration declaration) {
+            return new ConsumerGroupKey(declaration.streamName(), declaration.consumerGroup());
+        }
+    }
+
     /// Why a declaration is (or is not) consuming, as this node computes it. Compared by value so the
     /// loud log fires on TRANSITIONS only — a 5-second reconcile tick must not spam a warning forever.
     ///
@@ -765,6 +863,12 @@ public interface StreamConsumerManager {
                          methodName,
                          forwardedPartitions,
                          streamName);
+
+                return;
+            }
+
+            if (message.isPresent()) {
+                message.onPresent(text -> log.error("Declarative stream consumer {}.{}: {}", artifact, methodName, text));
 
                 return;
             }

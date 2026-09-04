@@ -125,6 +125,21 @@ class StreamConsumerManagerTest {
                                                            self);
     }
 
+    /// A seam for #545's re-resolution race: `reconcile()` and `declarationFor` each re-read
+    /// declarations independently, and a REAL registry answers both reads identically within one
+    /// synchronous call, so the ambiguity branch cannot be driven from a real registry. A mock that
+    /// answers the two reads DIFFERENTLY reproduces the only interleaving in which it matters.
+    private StreamConsumerManager managerWithRegistry(StreamConsumerRegistry customRegistry) {
+        return StreamConsumerManager.streamConsumerManager(customRegistry,
+                                                           runtime,
+                                                           invoker,
+                                                           invocationHandler,
+                                                           FrameworkCodecs.frameworkCodecs(),
+                                                           ownership,
+                                                           placement,
+                                                           SELF);
+    }
+
     private void declare(String eventType, boolean batchMode) {
         var key = StreamRegistrationKey.streamRegistrationKey(STREAM, CONFIG_SECTION, ARTIFACT, METHOD);
         var value = StreamRegistrationValue.streamRegistrationValue(SELF, GROUP, batchMode, eventType);
@@ -571,6 +586,94 @@ class StreamConsumerManagerTest {
             assertThat(manager.statuses()).singleElement()
                       .satisfies(status -> assertThat(status.eventTypePublishable()).describedAs("this node cannot know, and must not invent an answer")
                                                      .isEqualTo(Option.none()));
+        }
+    }
+
+    /// #545: two DIFFERENT ARTIFACTS declaring the same `(stream, group)` collide — `SubscriptionKey`
+    /// and `ConsumerKey` are deliberately artifact-free, so nothing downstream can tell them apart, and
+    /// the historical `declarationFor` `findFirst()` picked a winner arbitrarily. Two VERSIONS of the
+    /// SAME artifact sharing a group is the opposite case: the intended blue-green collapse, and must
+    /// keep working exactly as before.
+    @Nested
+    class GroupCollisions {
+        private static final Artifact OTHER_ARTIFACT = Artifact.artifact("org.example:payments:1.0.0").unwrap();
+
+        private void declare(Artifact artifact, String eventType, boolean batchMode) {
+            var key = StreamRegistrationKey.streamRegistrationKey(STREAM, CONFIG_SECTION, artifact, METHOD);
+            var value = StreamRegistrationValue.streamRegistrationValue(SELF, GROUP, batchMode, eventType);
+
+            registry.onStreamRegistrationPut(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none()));
+        }
+
+        @Test
+        void reconcile_subscribesNeitherSide_whenTwoArtifactsShareOneGroup() {
+            declare(ARTIFACT, "java.lang.String", false);
+            declare(OTHER_ARTIFACT, "java.lang.String", false);
+            deploySliceLocally();
+            when(invocationHandler.localSlice(OTHER_ARTIFACT)).thenReturn(Option.some(new StubBridge(Option.none())));
+            ownership.ownedBySelf(0, 1, 2, 3);
+            manager().reconcile();
+            assertThat(runtime.subscribedPartitions()).describedAs("neither colliding artifact may consume — an arbitrary winner was the #545 defect, not a feature to preserve for either side")
+                      .isEmpty();
+        }
+
+        @Test
+        void statuses_nameBothArtifactsStreamAndGroup_whenTheyCollide() {
+            declare(ARTIFACT, "java.lang.String", false);
+            declare(OTHER_ARTIFACT, "java.lang.String", false);
+            var manager = manager();
+
+            manager.reconcile();
+            assertThat(manager.statuses()).hasSize(2)
+                      .allSatisfy(status -> assertThat(status.diagnostic().or("")).describedAs("an operator reading EITHER artifact's status must see both names, the stream and the group — not just its own")
+                                                     .contains(ARTIFACT.base().asString())
+                                                     .contains(OTHER_ARTIFACT.base().asString())
+                                                     .contains(STREAM)
+                                                     .contains(GROUP));
+        }
+
+        @Test
+        void reconcile_doesNotFlagCollision_whenTwoVersionsOfOneArtifactShareTheGroup() {
+            var upgraded = Artifact.artifact("org.example:orders:1.1.0").unwrap();
+
+            declare(ARTIFACT, "java.lang.String", false);
+            declare(upgraded, "java.lang.String", false);
+            deploySliceLocally();
+            when(invocationHandler.localSlice(upgraded)).thenReturn(Option.some(new StubBridge(Option.none())));
+            ownership.ownedBySelf(0, 1, 2, 3);
+            var manager = manager();
+
+            manager.reconcile();
+            assertThat(manager.statuses()).hasSize(2)
+                      .allSatisfy(status -> assertThat(status.diagnostic()).describedAs("two VERSIONS of one artifact sharing a group is the intended blue-green collapse (see TopicGroupDeclarationSource), not a collision")
+                                                     .isEqualTo(Option.none()));
+            assertThat(runtime.subscribedPartitions()).describedAs("the shared group keeps consuming across the upgrade window — the collision guard must not treat it as a fault")
+                      .containsExactlyInAnyOrder(0, 1, 2, 3);
+        }
+
+        /// `reconcile()`'s own guard already keeps a colliding declaration's key out of `desired`, so a
+        /// REAL registry can never drive `declarationFor` into an ambiguous match: both reads it takes
+        /// — the one `reconcile()` uses to build `desired` and the one it makes internally to resolve a
+        /// key back to a declaration — see the same snapshot. The only way the ambiguity branch is
+        /// reachable at all is a THIRD declaration landing between those two reads (a KV notification
+        /// racing a `reconcile()` in flight); a mock registry answering the two reads differently is
+        /// the only way to reproduce that interleaving synchronously. Proves the branch is not dead
+        /// code: it is what keeps that race from picking a side.
+        @Test
+        void declarationFor_refusesToPickAWinner_whenACollisionAppearsBetweenTheTwoDeclarationReads() {
+            var declarationA = new StreamConsumerRegistry.ConsumerDeclaration(STREAM, CONFIG_SECTION, ARTIFACT, METHOD, GROUP, false, "java.lang.String");
+            var declarationB = new StreamConsumerRegistry.ConsumerDeclaration(STREAM, CONFIG_SECTION, OTHER_ARTIFACT, METHOD, GROUP, false, "java.lang.String");
+            var raceyRegistry = mock(StreamConsumerRegistry.class);
+
+            when(raceyRegistry.allDeclarations()).thenReturn(List.of(declarationA))
+                                                 .thenReturn(List.of(declarationA, declarationB));
+            deploySliceLocally();
+            ownership.ownedBySelf(0, 1, 2, 3);
+
+            managerWithRegistry(raceyRegistry).reconcile();
+
+            assertThat(runtime.subscribedPartitions()).describedAs("the collision surfaced only on re-resolution — `declarationFor` must still refuse to pick a side, never fall back to the first match")
+                      .isEmpty();
         }
     }
 
