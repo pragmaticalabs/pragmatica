@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.IntConsumer;
 
 import org.mockito.Mockito;
 
@@ -55,8 +56,15 @@ class MainShutdownTest {
 
             var flushed = new AtomicBoolean(false);
             var haltedWith = new AtomicInteger(-1);
+            // #838 review round 1: pin the ORDER, not just that both eventually happened -- the halt
+            // seam itself asserts flushed is already set at the moment it fires, so a regression that
+            // halts before (or without) flushing fails here even if both flags end up true afterward.
+            IntConsumer haltFn = code -> {
+                assertTrue(flushed.get(), "halt must fire strictly after the flush completes");
+                haltedWith.set(code);
+            };
 
-            Main.shutdownNode(node, timeSpan(200).millis(), () -> flushed.set(true), haltedWith::set);
+            Main.shutdownNode(node, timeSpan(200).millis(), () -> flushed.set(true), haltFn);
 
             assertTrue(flushed.get(), "log flush must run BEFORE halt -- halt() runs no appender flush of its own");
             assertEquals(Main.SHUTDOWN_TIMEOUT_EXIT_CODE, haltedWith.get(),
