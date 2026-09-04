@@ -65,6 +65,7 @@ public final class ClusterDeploymentContext {
     /// the deployment context, and every existing call site (production and test) keeps the
     /// pre-#590 behaviour until `AetherNode` supplies the real view.
     private volatile CommunityLivenessView communityLiveness = CommunityLivenessView.unwired();
+
     /// #731 round 3: the leader's own local SWIM-derived alive view, read by `sweepDeadRestoredWorkers`
     /// as a second, lower-latency signal alongside the committed `GovernorAnnouncementValue` roster —
     /// a fresh worker is present here the instant SWIM observes it, closing the up-to-one-reannounce-
@@ -81,6 +82,7 @@ public final class ClusterDeploymentContext {
     /// the sweep can fail SAFE (skip entirely; see [ClusterDeploymentState#sweepDeadRestoredWorkers])
     /// instead of silently falling back to the weaker check.
     private static final Supplier<Set<NodeId>> UNWIRED_MARKER = Set::of;
+
     private volatile Supplier<Set<NodeId>> localAliveMembersSupplier = UNWIRED_MARKER;
     private final ClusterDeploymentState dormant;
     private final ClusterDeploymentState stopped;

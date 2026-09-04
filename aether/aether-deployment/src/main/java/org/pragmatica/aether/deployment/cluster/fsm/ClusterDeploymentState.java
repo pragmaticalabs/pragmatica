@@ -269,8 +269,9 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                      activeNodes().size());
             if (!ctx.localAliveMembersWired()) {
                 log.warn("localAliveMembersSupplier not wired: #731 dead-restored-worker sweep is disabled "
-                         + "(fails safe — removes nothing) until AetherNode supplies the MembershipFsm-backed view");
+                        + "(fails safe — removes nothing) until AetherNode supplies the MembershipFsm-backed view");
             }
+
             rebuildStateFromKVStore();
             reconcile();
             startReconcileTimer();
@@ -804,13 +805,20 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             ctx.kvStore()
                .forEach(GovernorAnnouncementKey.class,
                         GovernorAnnouncementValue.class,
-                        (_, value) -> {
-                            if (!value.dissolved()) {
-                                members.addAll(value.members());
-                            }
-                        });
+                        (_, value) -> addIfNotDissolved(members, value));
 
             return members;
+        }
+
+        // Extracted out of the `forEach` lambda above (rather than an inline `if`) because
+        // `jbct:format` collapses an `if` nested inside a lambda that is itself the trailing
+        // argument of a multi-line fluent call to a shallower, misleading indentation — R5 in
+        // the #731 round-3 review — and re-applies that same collapse on every future format
+        // pass. A named helper has no lambda-in-fluent-call nesting for the formatter to mis-indent.
+        private static void addIfNotDissolved(Set<NodeId> members, GovernorAnnouncementValue value) {
+            if (!value.dissolved()) {
+                members.addAll(value.members());
+            }
         }
 
         private void restoreAppBlueprint(AppBlueprintValue appBlueprintValue) {
