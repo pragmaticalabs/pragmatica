@@ -192,6 +192,86 @@ graph TB
 - Throughput and latency per slice method
 - Success/failure rates
 
+### Alert Delivery
+
+Alerts reach the dashboard two ways, and both must agree on the wire shape:
+
+- **WebSocket push.** `AlertManager` broadcasts `{"type":"ALERT","data":{...}}` (or
+  `ALERT_RESOLVED`) over `/ws/dashboard` — the discriminator lives at the top level only,
+  never duplicated inside `data`. The client dispatches the whole envelope to the alerts
+  store and reads `type` there, not on an already-unwrapped payload.
+- **REST poll fallback.** The alerts store is also refreshed from the same gated
+  2-second poll timer that drives cluster status and events, so a missed or dropped WS
+  message self-heals within one poll cycle rather than leaving the panel stale until the
+  next alert fires.
+
+### Live Event Feed
+
+`ClusterEventView` carries its Hybrid Logical Clock time under `at` (packed
+physical-ms/counter), never `timestamp` — the dashboard's event dedup/display key is
+computed from whichever time field the payload actually carries (`at` for node-mode
+events, `timestamp` for Forge-mode events), never assumed to be one or the other.
+
+### Polling Behavior Under Degraded Health
+
+Every dashboard poll timer (status, events, alerts, requests, topology, schema, and the
+rest of the secondary-store refreshes) is gated on a client-side `degraded` flag, checked
+on every tick. The gate tracks three states, not two — `healthy`, `degraded`, and
+`unknown` — because a probe that fails to answer at all is a materially different claim
+from a probe that answers and reports trouble:
+
+- The gate is refreshed by an ungated health probe that runs on every primary-timer tick
+  regardless of the current gate state, so the dashboard can detect recovery as well as
+  degradation. `degraded` is keyed semantically on `status !== 'healthy'` — there is no
+  literal `"degraded"` wire value in either health shape.
+- **The probe tries `GET /api/v1/health` first, falling back to bare `GET /health`.** The
+  versioned path is the only health route the real node's Management API serves — bare
+  `/health` does not exist there at all (only `/api/v1/health`, `/health/live`, and
+  `/health/ready`, see [management-api.md](../reference/management-api.md)). Bare `/health`
+  remains as the fallback because it's what Forge actually serves; Forge's own
+  `HealthResponse` is hardcoded to always report `"healthy"` and can never signal
+  degradation, an honest limit on this gate's real-world triggerability against Forge.
+  Probing versioned-first (rather than bare-only, the original cut of this fix) is what
+  makes the gate actually engage against a real node — bare-only meant every probe 404'd
+  there and the gate silently never left its default. The probe itself
+  (`RestClient.probeHealth()`) is a dedicated method distinct from the shared
+  `RestClient.get()`: it reports reachability separately from the parsed body, and never
+  toasts on any outcome.
+- **A probe that answers, but with no usable health payload — a 404 on both paths — fails
+  open to `healthy`, never to `degraded`.** The server is reachable, it just doesn't
+  implement a health route here; that is not evidence of trouble.
+- **A probe that fails to answer at all on BOTH paths (connection refused, timeout — a
+  fetch-level exception, not an HTTP response) is `unknown`, a state distinct from both
+  `healthy` and `degraded`.** Collapsing "unreachable" into the same fail-open as "reachable,
+  no route" was tried first and found to be a BLOCKING defect: `RestClient.get()`'s shared
+  error handling returns an identical `null` for a 404 and for a network exception, so a
+  total backend outage looked exactly like a harmless missing route, the gate cleared, and
+  every other poller resumed hammering the dead backend every 2-3s with network-error
+  toasts the 404 suppression never covered — reintroducing this document's own toast-storm
+  problem in the worst case, an outage. `unknown` fixes this by construction: the pure
+  `decideHealthState()` function's unreachable branch returns `{unknown: true}` with no
+  `degraded` key at all, so a prior `degraded = true` verdict is never overwritten by an
+  outage — a total outage on top of a known-degraded cluster must not read back as healthy.
+  `unknown` clears the moment either probe answers anything, even a 404. While unknown,
+  every poll timer (all three in this document, plus `checkHealth()` itself) backs off to a
+  shared slow 10s retry cadence via `cluster.unknownRetryDue()`, instead of continuing to
+  retry every 2-3s. `RestClient` routes every network-exception `.catch()` through
+  `_reportNetworkFailure()`, which suppresses the toast (warning once instead, mirroring the
+  404 handling below) for as long as `healthUnknown` stays true; a genuine, isolated network
+  blip while the server is otherwise known-reachable still toasts normally, since the
+  suppression is conditioned on cluster state, not on the error itself.
+- **A 404 from an endpoint the server has no route for is logged once per endpoint, not
+  toasted on every tick.** Every other failure status (5xx, or a network error while the
+  server is otherwise known-reachable) still toasts on every occurrence — this is a narrow
+  carve-out for the specific, expected case of polling an endpoint the target server
+  doesn't implement, not general failure suppression.
+
+**Known gap, out of scope here (tracked in #300):** the dashboard and Forge speak the
+unversioned `/api/...` convention throughout, while the real node's Management API has
+already migrated most routes to `/api/v1/...` (`ManagementRoute`). The health probe above
+now bridges this for `/health` specifically; every other dashboard REST call still needs
+updating to close the gap fully.
+
 ## E2E Testing
 
 Testing is split across three layers:

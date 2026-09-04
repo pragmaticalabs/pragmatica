@@ -59,6 +59,7 @@ API specifications, CLI commands, and configuration options.
 - [Feature Catalog](reference/feature-catalog.md) — complete feature inventory with status tracking
 - [Known Limitations & Current Scope](reference/known-limitations.md) — single source of truth for current scope and deliberate boundaries
 - [Failure Almanac](reference/failure-almanac.md) — operator catalog of every known failure mode: symptoms, surfaces, recovery budgets
+- [Node Operations](reference/node-operations.md) — node process exit codes and shutdown-bound behavior
 - [Guarantees](reference/guarantees.md) — authoritative per-operation consistency/durability/delivery guarantees
 - [Slice API](reference/slice-api.md) — `@Slice` annotation, manifests, Maven plugin
 - [Management API](reference/management-api.md) — HTTP API for cluster management

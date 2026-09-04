@@ -163,6 +163,12 @@ public interface ClusterDeploymentManager {
     @MessageReceiver
     void onSchemaVersionPut(ValuePut<SchemaVersionKey, SchemaVersionValue> valuePut);
 
+    /// #543 — `SchemaRoutes` needs to call `undoTo`/`baseline` directly rather than writing a status
+    /// record and hoping a reconciler tick acts on it; this is a plain accessor onto the same
+    /// orchestrator instance every static factory method below already threads to
+    /// `ClusterDeploymentContext`, not a new contract.
+    SchemaOrchestratorService schemaOrchestrator();
+
     /// #731 round 3: re-runs the dead-worker sweep as soon as a governor's reannouncement commits,
     /// instead of relying solely on the one-shot `deferredTopologyRecheck` timer to catch a worker
     /// that was absent from every roster only transiently.
@@ -573,6 +579,11 @@ public interface ClusterDeploymentManager {
         @Override
         public void onSchemaVersionPut(ValuePut<SchemaVersionKey, SchemaVersionValue> valuePut) {
             ctx.dispatch(new SchemaVersionPutReceived(valuePut));
+        }
+
+        @Override
+        public SchemaOrchestratorService schemaOrchestrator() {
+            return ctx.schemaOrchestrator();
         }
 
         @Contract

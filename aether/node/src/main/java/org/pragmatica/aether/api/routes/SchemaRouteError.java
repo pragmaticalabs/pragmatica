@@ -5,9 +5,11 @@
 package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 
 
 /// Failure causes raised by [SchemaRoutes], each projecting itself onto the HTTP status its
@@ -155,6 +157,36 @@ public sealed interface SchemaRouteError extends Cause, HttpStatusAware {
         @Override
         public HttpStatus httpStatus() {
             return HttpStatus.BAD_REQUEST;
+        }
+    }
+
+    /// 409 — `/undo` and `/baseline` (#543) mutate the datasource's DB state directly and rely on
+    /// `SchemaOrchestratorServiceInstance`'s single-flight fence to keep a single migration in
+    /// flight at a time. That fence is an in-process `ConcurrentHashMap`, not a KV-transactional
+    /// lock (#543 condition 2) — it serializes calls made through it on ONE node, and does nothing
+    /// for a second node reading and writing the same schema row concurrently. Leader-binding
+    /// closes that gap the same way AB-test mutations already rely on exactly one node ever running
+    /// the operation at a time, without needing a distributed lock of its own. A non-leader node
+    /// refuses outright (409, not attempted-then-rolled-back) and names the current leader, when
+    /// known, so the operator's retry has somewhere to go.
+    record SchemaNotLeader(String datasource, String operation, Option<NodeId> currentLeader) implements SchemaRouteError {
+        public static SchemaNotLeader schemaNotLeader(String datasource,
+                                                      String operation,
+                                                      Option<NodeId> currentLeader) {
+            return new SchemaNotLeader(datasource, operation, currentLeader);
+        }
+
+        @Override
+        public String message() {
+            return "Schema " + operation
+                 + " for datasource '" + datasource
+                 + "' requires the leader node" + currentLeader.map(id -> " — current leader: " + id.id())
+                                                               .or("");
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
         }
     }
 }

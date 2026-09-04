@@ -594,12 +594,29 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
-    record ScheduledTaskStateKey(String configSection, Artifact artifact, MethodName methodName) implements AetherKey {
+    /// `node` is `Option.none()` for SINGLE-mode tasks (one leader-owned counter, cluster-wide)
+    /// and for any ALL-mode row written before #841 — both share the pre-#841 wire shape
+    /// byte-for-byte, since [#scheduledTaskStateKey(String,Artifact,MethodName)] never changes.
+    /// ALL-mode tasks (#841) are scoped to the executing node via
+    /// [#scheduledTaskStateKey(String,Artifact,MethodName,NodeId)] so concurrent executions of the
+    /// same task on different nodes never share-and-clobber one counter row. The node segment is a
+    /// literal `node/<id>/` marker right after [#PREFIX] — the same disambiguation `ConfigKey`
+    /// uses for its own node scope — rather than a trailing segment, because
+    /// [#scheduledTaskStateKey(String)] already finds the artifact/method boundary by last-slash
+    /// search and a trailing node segment would collide with that search. Consequence: a
+    /// pre-upgrade global row (`node` absent) can never parse into the node-scoped shape, so the
+    /// new per-node aggregation scan — which filters on `node().isPresent()` — can never misread
+    /// it as a node's row.
+    record ScheduledTaskStateKey(String configSection, Artifact artifact, MethodName methodName, Option<NodeId> node) implements AetherKey {
         private static final String PREFIX = "scheduled-task-state/";
+        private static final String NODE_PREFIX = PREFIX + "node/";
 
         @Override
         public String asString() {
-            return PREFIX + configSection + "/" + artifact.asString() + "/" + methodName.name();
+            var suffix = configSection + "/" + artifact.asString() + "/" + methodName.name();
+
+            return node.fold(() -> PREFIX + suffix,
+                             nodeId -> NODE_PREFIX + nodeId.id() + "/" + suffix);
         }
 
         @Override
@@ -610,19 +627,49 @@ public sealed interface AetherKey extends StructuredKey {
         public static ScheduledTaskStateKey scheduledTaskStateKey(String configSection,
                                                                   Artifact artifact,
                                                                   MethodName methodName) {
-            return new ScheduledTaskStateKey(configSection, artifact, methodName);
+            return new ScheduledTaskStateKey(configSection, artifact, methodName, Option.none());
+        }
+
+        public static ScheduledTaskStateKey scheduledTaskStateKey(String configSection,
+                                                                  Artifact artifact,
+                                                                  MethodName methodName,
+                                                                  NodeId node) {
+            return new ScheduledTaskStateKey(configSection, artifact, methodName, Option.some(node));
         }
 
         public static Result<ScheduledTaskStateKey> scheduledTaskStateKey(String key) {
+            if (key.startsWith(NODE_PREFIX)) {
+                var rest = key.substring(NODE_PREFIX.length());
+                var slashIndex = rest.indexOf('/');
+
+                if (slashIndex == -1) {
+                    return SCHEDULED_TASK_STATE_KEY_FORMAT_ERROR.apply(key).result();
+                }
+
+                var nodeIdPart = rest.substring(0, slashIndex);
+                var tail = rest.substring(slashIndex + 1);
+
+                return NodeId.nodeId(nodeIdPart).flatMap(nodeId -> parseSectionArtifactMethod(tail,
+                                                                                              key,
+                                                                                              Option.some(nodeId)));
+            }
+
             if (!key.startsWith(PREFIX)) {
                 return SCHEDULED_TASK_STATE_KEY_FORMAT_ERROR.apply(key).result();
             }
 
-            var content = key.substring(PREFIX.length());
+            return parseSectionArtifactMethod(key.substring(PREFIX.length()),
+                                              key,
+                                              Option.none());
+        }
+
+        private static Result<ScheduledTaskStateKey> parseSectionArtifactMethod(String content,
+                                                                                String originalKey,
+                                                                                Option<NodeId> node) {
             var firstSlash = content.indexOf('/');
 
             if (firstSlash == -1) {
-                return SCHEDULED_TASK_STATE_KEY_FORMAT_ERROR.apply(key).result();
+                return SCHEDULED_TASK_STATE_KEY_FORMAT_ERROR.apply(originalKey).result();
             }
 
             var configSection = content.substring(0, firstSlash);
@@ -630,19 +677,19 @@ public sealed interface AetherKey extends StructuredKey {
             var lastSlash = rest.lastIndexOf('/');
 
             if (lastSlash == -1) {
-                return SCHEDULED_TASK_STATE_KEY_FORMAT_ERROR.apply(key).result();
+                return SCHEDULED_TASK_STATE_KEY_FORMAT_ERROR.apply(originalKey).result();
             }
 
             var artifactPart = rest.substring(0, lastSlash);
             var methodPart = rest.substring(lastSlash + 1);
 
             if (configSection.isEmpty() || methodPart.isEmpty()) {
-                return SCHEDULED_TASK_STATE_KEY_FORMAT_ERROR.apply(key).result();
+                return SCHEDULED_TASK_STATE_KEY_FORMAT_ERROR.apply(originalKey).result();
             }
 
             return Result.all(Artifact.artifact(artifactPart),
                               MethodName.methodName(methodPart))
-                         .map((artifact, method) -> new ScheduledTaskStateKey(configSection, artifact, method));
+                         .map((artifact, method) -> new ScheduledTaskStateKey(configSection, artifact, method, node));
         }
     }
 

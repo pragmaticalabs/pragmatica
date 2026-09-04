@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
@@ -15,14 +16,20 @@ import org.pragmatica.aether.invoke.SliceInvoker;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.ExecutionMode;
 import org.pragmatica.aether.slice.MethodName;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskStateKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskStateValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskValue;
+import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
+import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.serialization.Deserializer;
+import org.pragmatica.serialization.Serializer;
 
 import java.lang.reflect.Proxy;
 import java.util.ArrayList;
@@ -173,6 +180,8 @@ class ScheduledTaskRoutesOrderingTest {
             @Override public void onQuorumStateChange(org.pragmatica.consensus.topology.ClusterStateNotification notification) {}
             @Override public int activeTimerCount() { return 0; }
             @Override public void stop() {}
+            @Override public boolean tryClaim(org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey key) { return true; }
+            @Override public void release(org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey key) {}
         };
     }
 
@@ -194,12 +203,34 @@ class ScheduledTaskRoutesOrderingTest {
             });
     }
 
+    /// #841: `toSummary`/`buildFilteredResponse` now call `nodeSupplier.get().kvStore()`
+    /// unconditionally for every ALL-mode task (this suite's tasks are all `ExecutionMode.ALL`) to
+    /// aggregate per-node state. An empty store makes that scan a no-op — `aggregateAllModeState`
+    /// falls back to the same zeroed summary this suite already asserted before #841, so the
+    /// ordering assertions this file exists for are unaffected.
     private static ManageableNode nodeProxy() {
+        var emptyStore = new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
+
         return (ManageableNode) Proxy.newProxyInstance(
             ManageableNode.class.getClassLoader(),
             new Class[]{ManageableNode.class},
-            (_, method, _) -> {
-                throw new UnsupportedOperationException("Not implemented in test proxy: " + method.getName());
+            (_, method, _) -> switch (method.getName()) {
+                case "kvStore" -> emptyStore;
+                default -> throw new UnsupportedOperationException("Not implemented in test proxy: " + method.getName());
             });
+    }
+
+    private static Serializer stubSerializer() {
+        return new Serializer() {
+            @Override public <T> void write(ByteBuf byteBuf, T object) {}
+        };
+    }
+
+    private static Deserializer stubDeserializer() {
+        return new Deserializer() {
+            @Override public <T> T read(ByteBuf byteBuf) {
+                return null;
+            }
+        };
     }
 }

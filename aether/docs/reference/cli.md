@@ -1439,9 +1439,9 @@ aether schema baseline <datasource> -v <version>
 | `status [datasource]` | Show schema status (all or specific) |
 | `history <datasource>` | Show migration history |
 | `migrate <datasource>` | Trigger manual migration (refused with `409` if the record is COMPLETED and already serving, or already PENDING) |
-| `undo <datasource> -v N` | Undo to target version |
+| `undo <datasource> -v N` | Undo to target version — leader-only (`409` on a follower); `422` if the version has no undo script or fails its checksum |
 | `retry <datasource>` | Retry a failed migration (clears the activation hold) |
-| `baseline <datasource> -v N` | Baseline at version |
+| `baseline <datasource> -v N` | Baseline at version — leader-only (`409` on a follower or on applied history past the target version) |
 
 #### `aether schema status` output
 
@@ -1497,6 +1497,30 @@ status it actually observed. `baseline` requires an
 existing record — it inherits that record's owning blueprint rather than inventing one, so
 baselining a datasource that has never been published fails with `404 Not Found` and
 ``Schema status not found for datasource '<name>'``.
+
+`undo` and `baseline` both require this node to be the cluster leader (#543) — a non-leader node
+refuses immediately with `409 Conflict` and ``Schema <operation> for datasource '<name>' requires
+the leader node — current leader: <id>`` (leader suffix omitted when unknown), rather than
+attempting the write and rolling back; the orchestrator's own single-flight fence is in-process
+only and does not protect a schema row from a second node mutating it concurrently. Both then
+delegate to the schema orchestrator's real `undoTo` / `baseline` operation and report its own
+re-read of the outcome — status is always `COMPLETED` on success, never a bare `PENDING` (the prior
+`undo` implementation wrote `PENDING` and reported success without ever running the undo script,
+which silently held the owning blueprint's slices instead of undoing anything). `undo` against a
+target version with no matching `U<version>__*.sql` script, or one whose checksum no longer
+matches the script content, fails with `422 Unprocessable Entity` rather than a generic `500`.
+`baseline` against a datasource with versioned migrations already applied past the requested
+version fails with `409 Conflict` (``Baseline conflict for datasource '<name>': versioned
+migrations already applied up to version <existingVersion>``) — undo to the target version instead,
+or baseline at (or above) the existing version.
+
+`undo` (and, for the same declarative-contract reason, `baseline`) is not sticky across a
+republish: the artifact's declared version wins on every publish, so republishing (or
+redeploying) a blueprint that declares a version higher than the undo target re-arms migration
+and re-applies from scratch whatever rows the undo removed — nothing compares the live record to
+the request first. To keep an undo, deploy a blueprint that declares the lower version instead of
+republishing the higher one, or accept the re-migration. A guard that refuses (or requires
+`force` for) such a publish is tracked separately in #834, not implemented here.
 
 `migrate` similarly refuses (#760 review BLOCKING 1) when the record is `COMPLETED` **and** the
 owning blueprint has at least one slice instance already `ACTIVE` — re-arming to `MIGRATING` would
@@ -1603,17 +1627,30 @@ owns it — reads are forwarded to the owner whenever those differ — and is co
 node, so one call answers "who consumes partition 3". `unassignedPartitions` is the gap worth alerting
 on: partitions no node can consume because the declaring slice is `ACTIVE` nowhere.
 
+A `diagnostic` naming more than one artifact for a single entry means two different artifacts declared
+the same stream and consumer group (#545) — neither is consuming until the group is renamed or one of
+the declarations is removed. This is unrelated to `aether blueprints status`: that command reports
+slice deployment health, not stream registrations, and shows nothing for a #545 collision — a slice can
+be fully deployed while its declarative consumer sits idle on one.
+
 See [Management API — Declarative Stream Consumers](management-api.md#declarative-stream-consumers).
 
-### `aether streams publish <name-or-address> <message>`
+### `aether streams publish <name-or-address> <message> [--partition N]`
 
 Publish a text message to a stream. The message is base64-encoded automatically. Bare name
 defaults to `system:<name>:1.0.0`; a `namespace:stream:version` address targets any stream.
 Wraps `POST /api/v1/streams/{namespace}/{stream}/{version}/publish`.
 
+`--partition N` targets a specific partition; omitted, it defaults to **partition 0** (unchanged
+behavior). This command does no key-based routing — Management-API publish writes untyped bytes
+with no event to extract an `@PartitionKey` from (unlike an app publish, #507), so `--partition`
+is a direct, deliberate target choice, not a routing key. Naming a partition outside the stream's
+declared range fails with `400 Bad Request` naming the valid range.
+
 ```bash
 aether streams publish my-events "Hello, world!"
 aether streams publish orders:order-events:1.0.0 "Hello, world!"
+aether streams publish my-events "Hello, world!" --partition 2
 ```
 
 ### `aether streams read <name-or-address> <partition>`

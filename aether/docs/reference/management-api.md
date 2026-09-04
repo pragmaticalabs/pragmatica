@@ -4188,12 +4188,16 @@ List all registered scheduled tasks with active timer count and execution state.
       "lastExecutionAt": 1710345600000,
       "nextFireAt": 1710345900000,
       "consecutiveFailures": 0,
-      "totalExecutions": 42
+      "totalExecutions": 42,
+      "skippedOverlaps": 0
     }
   ],
   "activeTimers": 1
 }
 ```
+
+For an `execution_mode = "all"` task, `lastExecutionAt`/`nextFireAt`/`consecutiveFailures`/`totalExecutions` are aggregated across every node's own execution row rather than read from a single shared entry (`totalExecutions` summed, `consecutiveFailures`/`lastExecutionAt` max, `nextFireAt` min). A `single`-mode task's fields still come from the one node that ever executes it
+[mechanism: `ScheduledTaskRoutes.toSummary` branches on `ExecutionMode.ALL` into `aggregateAllModeState`/`combineNodeStates`, the same per-node scan `executions-by-node` uses; pinned by `ScheduledTaskRoutesAllModeAggregationTest.java#ListSummary` — component-level against a real `KVStore`, not a live multi-node run].
 
 ### GET /api/v1/scheduled-tasks/{section}
 
@@ -4252,6 +4256,9 @@ Manually trigger a scheduled task immediately, regardless of its schedule or pau
 }
 ```
 
+**409 Conflict** — the task has a run already in flight (an automatic fixed-rate/cron fire, or another manual trigger that claimed first). The manual fire is refused rather than run concurrently with the in-progress execution, to avoid double-counting `totalExecutions`; retry once the in-progress run completes
+[mechanism: `ScheduledTaskManager.tryClaim`/`release` guard the manual-trigger path; pinned by `aether/node/src/test/java/org/pragmatica/aether/api/routes/ScheduledTaskRoutesTriggerTest.java#ConflictGuard` and `aether/aether-invoke/.../ScheduledTaskManagerTest.java#TriggerGuard` — component-level against the real guard, not a live multi-node run].
+
 ### GET /api/v1/scheduled-tasks/state/{section}/{artifact}/{methodName}
 
 Get detailed execution state for a specific scheduled task.
@@ -4266,10 +4273,16 @@ Get detailed execution state for a specific scheduled task.
   "nextFireAt": 1710345900000,
   "consecutiveFailures": 0,
   "totalExecutions": 42,
+  "skippedOverlaps": 0,
   "lastFailureMessage": "",
   "updatedAt": 1710345600000
 }
 ```
+
+Same ALL-mode aggregation as the tasks-list summary above: for an `execution_mode = "all"` task every field is combined across each node's own row rather than read from a single shared entry. `lastFailureMessage`/`updatedAt` are not summable across nodes, so they are taken together from whichever per-node row has the higher `updatedAt`
+[mechanism: `ScheduledTaskRoutes.buildStateResponse` branches on `ExecutionMode.ALL` into `aggregateAllModeState`/`combineNodeStates`; pinned by `ScheduledTaskRoutesAllModeAggregationTest.java#SingleTaskState` — component-level against a real `KVStore`, not a live multi-node run].
+
+Both aggregate surfaces above (list summary and this single-task state) expose only the combined totals per task, never a per-node list field — the per-node breakdown lives exclusively on `GET /api/v1/scheduled-tasks/executions-by-node/{section}/{artifact}/{methodName}` below.
 
 ### POST /api/v1/scheduled-tasks/inject
 
@@ -4303,6 +4316,11 @@ All three fields are required. The `(section, artifact, method)` triple identifi
 
 `previousExecutionMs` is `0` when no prior state entry exists; otherwise it equals the `lastExecutionAt` value visible via `/api/v1/scheduled-tasks/state/{section}/{artifact}/{methodName}` immediately before the injection. `currentExecutionMs > previousExecutionMs` is guaranteed on success — tests may assert strict monotonic advancement without polling.
 
+**Keying for `execution_mode = "all"` tasks (fixed in this PR):** `/inject` now keys its state write by `ctx.self()` for an `all`-mode task, exactly mirroring the automatic path, so the write lands on this node's own row and is immediately visible on the tasks-list summary, single-task state, and `executions-by-node` endpoints — no longer an orphaned write
+[mechanism: `ScheduledTaskRoutes.injectStateKeyFor` branches on `task.executionMode()` the same way `ScheduledTaskManager.TaskOps#stateKeyFor` does for the automatic path; pinned by `ScheduledTaskRoutesInjectTest.java#KeyScoping.inject_onAllModeTask_advancesStateVisibleOnStateEndpoint` — component-level against a real `KVStore`, not a live multi-node run].
+
+**Remaining caveat for `execution_mode = "single"` tasks:** `/inject` still writes the same unscoped state entry the leader's automatic fire uses, with no `tryClaim`/`release` guard around the read-modify-write — a concurrent writer to that same entry between the read and the write is silently lost (`/trigger` writes no state entry at all, so it is not a racer on this key). This TOCTOU gap is unchanged by the keying fix above and remains an accepted limitation of a dev/test-only route, not a defect to work around at call time.
+
 ### GET /api/v1/scheduled-tasks/executions-by-node/{section}/{artifact}/{methodName}
 
 Surface per-node execution attribution for a scheduled task. Used by `TC-08-F3` to distinguish SINGLE-mode tasks (exactly one node executes per fire) from ALL-mode tasks (every cluster member executes per fire).
@@ -4321,7 +4339,11 @@ Surface per-node execution attribution for a scheduled task. Used by `TC-08-F3` 
 }
 ```
 
-`executions` is empty when the task has no prior state. Otherwise each entry pairs a `nodeId` with the number of executions attributed to it and the millisecond epoch of the most recent execution. **RC1 limitation:** the current implementation reports the task's `registeredBy` node as the sole executor (count = `totalExecutions`, lastExecutionMs = `lastExecutionAt`). A follow-up tracks adding per-node execution counters to the KV state so ALL-mode tasks can produce true per-node breakdowns. Tests should currently assert on cumulative totals via this endpoint or via `/api/v1/scheduled-tasks/state/{section}/{artifact}/{methodName}`.
+`executions` is empty when the task has no prior state. Otherwise each entry pairs a `nodeId` with the number of executions attributed to it and the millisecond epoch of the most recent execution, sorted ascending by `nodeId`. As of #841 this is a real per-node breakdown, not an attribution stub: each entry comes from that node's own `ScheduledTaskStateKey`-scoped KV row, populated by scanning the live `KVStore` for state entries carrying a node component — a SINGLE-mode task therefore reports exactly the one node that has ever executed it, and an ALL-mode task reports one row per quorum member that has fired it independently
+[mechanism: `ScheduledTaskRoutes.buildExecutionsByNode` scans the live `KVStore` by key type; pinned by `aether/node/src/test/java/org/pragmatica/aether/api/routes/ScheduledTaskRoutesExecutionsByNodeTest.java#MultipleNodes` and `#WithState` — component-level against a real `KVStore`, not a live multi-node run].
+
+**Rolling-upgrade note:** a pre-#841 state entry (no node component) is excluded from this scan rather than misread as belonging to a node, so an ALL-mode task's per-node counts restart at zero after upgrading rather than continuing from the old shared total
+[mechanism: the scan filters on `key.node().isPresent()` and task identity; pinned by `ScheduledTaskRoutesExecutionsByNodeTest.java#InvalidEntriesExcluded` — component-level, not a live multi-node run].
 
 ---
 
@@ -4570,11 +4592,21 @@ without writing MIGRATING]`.
 
 ### POST /api/v1/schema/undo/{datasource}?targetVersion=N
 
-Undoes migrations to the specified target version. Sets status to `PENDING` at the target version.
-Preserves the existing record's artifact coordinates and owning blueprint.
+Delegates to the schema orchestrator's real `undoTo` operation, which runs the target version's
+`U<version>__*.sql` undo script against the datasource. (#543: the prior implementation wrote a
+bare `PENDING` status and reported success without ever invoking the orchestrator — since
+`PENDING` is a **blocking** status, every "undo" silently withheld the owning blueprint's slices
+from activation instead of undoing anything.)
 
-Note that `PENDING` is a **blocking** status: while the undo is outstanding, the owning blueprint's
-slices are withheld from activation.
+Requires this node to be the cluster leader. A non-leader node refuses outright with
+`409 Conflict` rather than attempting the write and rolling back, because the orchestrator's
+single-flight fence is in-process only and does not protect a schema row from a second node
+mutating it concurrently — see the leader-binding row in the status-code table below.
+
+On success the response reflects a re-read of what the orchestrator actually did: status is
+`COMPLETED` (undo is a completed operation on the artifact, never `PENDING`), and the reported
+version is the artifact's real current version afterward, not the version requested. Preserves the
+existing record's artifact coordinates and owning blueprint.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -4584,9 +4616,23 @@ slices are withheld from activation.
 ```json
 {
   "success": true,
-  "message": "Undo to version 2 initiated for orders_db"
+  "message": "Undo complete for 'orders_db' — now at version 2 (COMPLETED)"
 }
 ```
+
+A target version with no matching undo script in the artifact, or one whose script content no
+longer matches its recorded checksum, is rejected rather than silently no-op'd — see
+`UndoNotAvailable` / `ChecksumMismatch` in the status-code table.
+
+> **Not sticky across a republish.** The deployment contract is declarative — the artifact's
+> declared version wins on every publish — so an undo is an operator intervention performed
+> between deploys, not a persistent state change. Republishing (or redeploying) a blueprint that
+> declares a version higher than the undo target re-arms migration at that declared version and
+> migrates forward from the live (now-rolled-back) record: rows removed by the undo are
+> re-applied from scratch, with nothing comparing the live record to the request first. To keep
+> the undo, deploy a blueprint that declares the lower version instead of republishing the higher
+> one — or accept the re-migration. A guard that refuses (or requires `force` for) a publish that
+> would do this is tracked separately in #834, not implemented here.
 
 ### POST /api/v1/schema/retry/{datasource}
 
@@ -4610,16 +4656,34 @@ in flight) and `COMPLETED` (nothing marked it failed) are refused with `409 Conf
 
 ### POST /api/v1/schema/baseline/{datasource}?version=N
 
-Baselines a datasource at the specified version (marks V001..V{N} as applied without executing).
-Sets status to `COMPLETED`, which releases any activation hold on the owning blueprint's slices.
+Delegates to the schema orchestrator's real `baseline` operation, which records V001..V{N} as
+applied without executing them. (#543: the prior implementation wrote a fabricated `COMPLETED`
+status directly, with zero database interaction.)
+
+Requires this node to be the cluster leader, for the same reason and with the same
+`409 Conflict` refusal as `undo` above.
+
+Sets status to `COMPLETED` on success, which releases any activation hold on the owning
+blueprint's slices; the reported version is the orchestrator's own re-read, not the requested one.
 
 The existing record's artifact coordinates and owning blueprint are **inherited**, not rewritten.
 A datasource with **no existing schema record cannot be baselined** — the call fails with
 `404 Not Found` and ``Schema status not found for datasource '<name>'`` rather than fabricating an
 unowned record. Publish (or deploy) the owning blueprint first so the record exists.
 
+A datasource with versioned migrations already applied past the requested baseline version cannot
+be baselined either — that would silently disagree with the database's actual applied history;
+undo to the target version instead, or baseline at (or above) the existing version — see
+`BaselineConflict` in the status-code table.
+
 `version` is optional and defaults to `1` when absent; a present-but-non-integer value is rejected
 with `400 Bad Request`.
+
+> **Likewise not sticky across a republish**, for the same declarative-contract reason as undo
+> above: the artifact's declared version wins on every publish. A republish (or redeploy) that
+> declares a version different from the one baseline established resumes forward migration from
+> the live record rather than treating baseline's version as pinned — see the undo section above
+> for the operator's correct sequence and #834.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -4629,7 +4693,7 @@ with `400 Bad Request`.
 ```json
 {
   "success": true,
-  "message": "Baselined orders_db at version 3"
+  "message": "Baseline complete for 'orders_db' — now at version 3 (COMPLETED)"
 }
 ```
 
@@ -4641,13 +4705,55 @@ with `400 Bad Request`.
 > | Condition | Status | `detail` |
 > |-----------|--------|----------|
 > | Datasource has no schema record (every route that reads one) | `404 Not Found` | ``Schema status not found for datasource '<name>'`` |
+> | `undo` or `baseline` issued against a non-leader node (#543) | `409 Conflict` | ``Schema <operation> for datasource '<name>' requires the leader node — current leader: <id>`` (leader suffix omitted when unknown) — retry against the named leader |
 > | `retry` against a datasource that is not `FAILED` or `PENDING` | `409 Conflict` | ``Schema for datasource '<name>' is not in FAILED state (currently <STATUS>) — retry applies to FAILED or PENDING migrations only`` |
 > | `migrate` against a COMPLETED record whose owning blueprint has ≥1 live ACTIVE slice | `409 Conflict` | ``Schema for datasource '<name>' is already COMPLETED and serving <N> active slice instance(s) — re-triggering migration would hold the next slice to activate with no automatic recovery; baseline or undo first if a re-migration is genuinely intended`` |
 > | `migrate` against a record that is already `PENDING` | `409 Conflict` | ``Schema for datasource '<name>' already has a migration PENDING — re-arming to MIGRATING has no dispatch effect of its own and would strand the record with no automatic clearing path; wait for the pending migration to dispatch, or use retry if it has since failed`` |
+> | `undo` against a target version with no matching `U<version>__*.sql` script in the artifact (#543) | `422 Unprocessable Entity` | ``Undo script not available for datasource '<name>' at version <version>`` — publish a blueprint revision carrying the missing script, or choose a target version the artifact can actually undo to |
+> | `undo` against a version whose recorded checksum no longer matches the script content (#543) | `422 Unprocessable Entity` | ``Checksum mismatch for datasource '<name>' at version <version>: expected <expected> but found <actual>`` — the migration script was edited after being applied; restore its original content, or baseline past the drifted version |
+> | `baseline` against a datasource with versioned migrations already applied past the requested version (#543) | `409 Conflict` | ``Baseline conflict for datasource '<name>': versioned migrations already applied up to version <existingVersion>`` — undo to the target version instead, or baseline at (or above) `<existingVersion>` |
+> | A concurrent attempt already holds the in-process fence or the cluster-wide migration lock for the datasource (#543) | `409 Conflict` | ``Failed to acquire migration lock for datasource '<name>'`` — no operator action; retry once the in-flight attempt finishes and releases the lock |
+> | The schema version record declares a migration set but carries no artifact coordinates (#543) | `422 Unprocessable Entity` | ``Migration artifact unresolved for datasource '<name>' at version <version>: <declaredMigration>`` — publish a blueprint revision recording the artifact coordinates, or re-run baseline against the datasource's actual state |
+> | The resolved artifact holds no migration scripts for a datasource that declared them (#543) | `422 Unprocessable Entity` | ``Migration set unavailable for datasource '<name>' from artifact '<coords>' at version <version>`` — publish a blueprint revision whose artifact actually carries the declared migration scripts |
+> | A resolved migration script's filename does not match the `V\|R\|U\|B<n>__*.sql` convention (#543) | `422 Unprocessable Entity` | ``Invalid migration filename '<filename>': <detail>`` — publish a blueprint revision with a correctly named script |
+> | The physical database behind the datasource is already claimed by another blueprint's migrations (`aether_schema_owner`) | `409 Conflict` | ``Blueprint '<rejected>' rejected — the physical database behind datasource '<name>' is already migrated by blueprint '<currentOwner>' ... `` — point this blueprint's datasource config at a different physical database, or consolidate both blueprints' migrations into the owning one |
+> | `undo`/`baseline` do not report completion before `SchemaPolicy#migrationTimeout` elapses (#543) | `504 Gateway Timeout` | ``Undo timed out for datasource '<name>' targeting version <version>`` / ``Baseline timed out for datasource '<name>' at version <version>`` — the fence and lock are released on timeout; a fresh call, `aether schema retry`, or a redeploy can re-attempt once whatever wedged the connector or script is cleared |
 > | `?version=` / `?targetVersion=` present but not an integer | `400 Bad Request` | ``Invalid '<parameter>' parameter: '<value>' is not an integer`` |
 >
 > An **absent** `version`/`targetVersion` is not an error — it takes the documented default
-> (`1` for baseline, `0` for undo). Any other failure on these routes remains a `500`.
+> (`1` for baseline, `0` for undo). `undo` and `baseline` map every orchestrator failure above
+> through `HttpStatusAware` (#543 replaced the prior behavior, under which neither route ever
+> reached the orchestrator, so no orchestrator failure had ever surfaced through them before).
+> **Two `SchemaError` variants — `MigrationFailed` and `DatasourceUnreachable` — are typed and
+> `HttpStatusAware` (422 and 503 respectively) but have no construction site anywhere in this
+> repository's current code, so they cannot yet surface through any route; a genuinely unmapped
+> failure, or either of these two should one day be wired up, still answers `500`.
+> [design intent — unverified]**
+>
+> **A thirteenth variant, `DatasourceOwnershipConflict`, is deliberately absent from this table** —
+> it is a publish-time blueprint-validation check (compares datasource *names* across blueprints,
+> not one of these six routes' own failure modes) and is documented instead alongside blueprint
+> publish. Its migration-time companion `PhysicalDatasourceOwnershipConflict` (which compares the
+> underlying physical database and IS reachable from `migrate`/`undo`/`baseline` alike, via the
+> shared ownership claim) is in the table above.
+
+> **Known limitation — `acquireLock`'s cross-node lock check is not atomic (#766, not fixed by
+> #543).** Both `undo` and `baseline` share `SchemaOrchestratorService.acquireLock` with `migrate`.
+> Its cross-node lock (`SchemaMigrationLockKey`) is read (`isLockHeld`) and then written
+> (`Put<SchemaMigrationLockValue>`) as two separate steps, not an atomic compare-and-set; two
+> concurrent dispatches can both observe the lock free before either writes it. #766 reproduced
+> this live on a 5-node Forge run (two dispatches within two seconds, the second reaching
+> `aether_schema_history` and failing on a duplicate-key constraint, which marked the datasource
+> `FAILED`). Recovery when it happens: `aether schema retry` after the false-`FAILED` record is
+> observed. The fix needs an atomic compare-and-set on the lock key rather than read-then-write;
+> tracked in #766, not addressed here.
+>
+> The leader check above `undo`/`baseline` is also check-then-act, undisclosed until now:
+> `requireLeader` reads `node.isLeader()` once and lets the manager call proceed with no re-check,
+> so leadership can change between that read and the call's completion. Same
+> missing-compare-and-set shape as the lock race above, one layer up at the route's leader gate —
+> tracked under #766 alongside the lock race rather than separately, since a real compare-and-set
+> primitive is the natural fix for both.
 
 ---
 
@@ -4981,6 +5087,8 @@ What this node knows about declarative `[streams.X]` consumers — slice methods
 
 **Guarantee.** At-least-once delivery per partition, conditional on the slice being `ACTIVE` on at least one live node. Duplicates arise from redelivery after a handler failure under `RETRY`, from the reconcile-tick window during an ownership or placement change (old and new assignee may both deliver), and from resuming at the last checkpoint (≤1000 events or ≤30s of progress) rather than the last delivered offset after an ungraceful move — a graceful detach flushes the exact cursor. Not effectively-once: there is no fencing token on delivery, and two transiently-divergent assignment views can both deliver and both write the cursor, last write winning.
 
+**Cross-artifact group collision (#545).** `SubscriptionKey`/`ConsumerKey` are `(stream, partition, consumer group)` — deliberately WITHOUT the artifact, because that is the correct identity for "which physical consumer serializes reads for this group." Two DIFFERENT artifacts declaring the same `(stream, consumer group)` therefore collide at that key: sharing one group across different artifacts is not supported in this release, and neither declaration consumes until the collision is resolved (rename the group, or remove one of the conflicting declarations). `diagnostic` on BOTH colliding entries names every artifact involved, the stream, and the group — this endpoint is the only place that names it. Two VERSIONS of the SAME artifact sharing a group is NOT this case — that is the intended blue-green upgrade collapse, and consumption continues uninterrupted through it. **`GET /api/v1/blueprints/status/{id}` carries no hint of this collision**: a slice can be fully `DEPLOYED` while its declarative consumer sits idle on one, since the collision is a stream-registration fact, not a slice-instance fact.
+
 **Response:**
 ```json
 {
@@ -5031,7 +5139,7 @@ What this node knows about declarative `[streams.X]` consumers — slice methods
 | `consumers[].assignedPartitions` | Live subscriptions on this node: `partition`, `committedOffset` (next offset to read — one past the last delivered), `stalled` |
 | `consumers[].unassignedPartitions` | **The loud gap:** partitions no node can consume because the slice is `ACTIVE` nowhere. Absent when there is no gap. It is NOT a gap for this node to lack the slice — since #535 the owner need not host it. During a deploy the same emptiness is reported as "not being consumed YET" in `diagnostic` rather than as a gap |
 | `consumers[].partitionAssignments` | Full partition→node map: `consumerNode` (who consumes it), `ownerNode` (who owns it). Reads are forwarded whenever they differ. Either is `null` during the bootstrap window; `consumerNode` is also `null` when nothing can consume |
-| `consumers[].diagnostic` | Operator-facing explanation of whichever condition applies; empty when the consumer is healthy and reading locally |
+| `consumers[].diagnostic` | Operator-facing explanation of whichever condition applies — including a #545 cross-artifact group collision, which names every colliding artifact, the stream, and the group on BOTH entries; empty when the consumer is healthy and reading locally |
 
 An empty `consumers` list means no slice in the cluster declares a `[streams.X]` consumer — the honest answer; rows are never fabricated.
 
@@ -5276,6 +5384,28 @@ POST /api/v1/streams/{namespace}/{stream}/{version}/publish-batch
 
 **Auth:** OPERATOR_AND_ABOVE. Publishes one event (or a batch). **Writes to `system:*` streams
 are rejected with `405 Method Not Allowed`** — see below.
+
+Body: `{"data": "<base64>", "partition": <int>}`. `partition` is optional; omitted, it defaults
+to **partition 0** (unchanged pre-#524 behavior). **This path does no key-based routing** — unlike
+an app publish (#507), which extracts `@PartitionKey` from a typed event, Management-API publish
+writes untyped bytes with no event class to read a key from, so an explicit `partition` here is
+the operator naming a target directly. A `partition` outside `[0, partitionCount)` for the stream
+is rejected with `400 Bad Request`, naming the valid range — never a silent write to partition 0,
+never `500`. `[mechanism: ManagementServerError.InvalidPartition, ProblemResponses HttpStatusAware
+dispatch]`
+
+When the stream's partition count cannot be determined — the auto-create guard could not
+materialize the stream locally (capacity exhausted, or `STRONG` consistency requiring AHSE
+storage) — the request is rejected with `409 Conflict`, naming the stream and the underlying
+cause, rather than validated against a guessed count. `[mechanism: ManagementServerError.StreamUnavailable,
+ProblemResponses HttpStatusAware dispatch]`
+
+**Batch publish is not atomic.** `publish-batch` validates and writes each item independently and
+concurrently; when one item names an out-of-range `partition`, items before it (and possibly after
+it) may already be durably written before the batch call fails. The response on failure names only
+the first invalid item — it does not report which of the other items committed. `[mechanism:
+publishMany fires every item concurrently via Promise.allOf with no short-circuit, then
+Result.allOf surfaces only the first Result failure]`
 
 ### Delete Stream Version
 

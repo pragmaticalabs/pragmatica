@@ -14,6 +14,7 @@ import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.aether.config.StorageConfig;
+import org.pragmatica.aether.config.StorageEncryptionConfig;
 import org.pragmatica.aether.config.StreamingConfig;
 import org.pragmatica.aether.config.WorkerConfig;
 import org.pragmatica.aether.config.SliceConfig;
@@ -76,7 +77,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                Option<MembershipConfig> membership,
                                StreamingConfig streaming,
                                ClusterFormationConfig clusterFormation,
-                               Option<ClusterName> clusterName) {
+                               Option<ClusterName> clusterName,
+                               Option<StorageEncryptionConfig> storageEncryption) {
     /// Cluster-wide deployment defaults. `canaryEvaluationInterval` / `defaultCanaryStages` drive
     /// progressive rollout; `communitySizing` is the leader's per-community target size and viability
     /// floor (worker-membership-spec §3.3 / §4.1) read by the cluster deployment FSM. A test/dev
@@ -138,6 +140,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                         membership,
                                         streaming,
                                         clusterFormation,
+                                        Option.empty(),
                                         Option.empty());
         };
     }
@@ -188,7 +191,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     membership,
                                     streaming,
                                     clusterFormation,
-                                    clusterName);
+                                    clusterName,
+                                    storageEncryption);
     }
 
     public AetherNodeConfig withClusterName(Option<ClusterName> clusterName) {
@@ -221,7 +225,46 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     membership,
                                     streaming,
                                     clusterFormation,
-                                    clusterName);
+                                    clusterName,
+                                    storageEncryption);
+    }
+
+    /// #253 — the `[storage.encryption]` keyring, when configured. Same post-build shape as
+    /// [#withAutoHeal] / [#withClusterName]: optional and late-bound, so `Main` stamps it after
+    /// `build()` rather than forcing every caller of the staged builder through a stage it has no
+    /// opinion about. Defaults to [Option#empty()] in [#builder()] — encryption is opt-in.
+    public AetherNodeConfig withStorageEncryption(Option<StorageEncryptionConfig> storageEncryption) {
+        return new AetherNodeConfig(topology,
+                                    protocol,
+                                    sliceAction,
+                                    sliceConfig,
+                                    managementPort,
+                                    artifactRepo,
+                                    cache,
+                                    tls,
+                                    quicTls,
+                                    ttm,
+                                    rollback,
+                                    appHttp,
+                                    controllerConfig,
+                                    configProvider,
+                                    environment,
+                                    autoHeal,
+                                    observability,
+                                    atomicity,
+                                    activationGated,
+                                    timeouts,
+                                    certificateProvider,
+                                    workerConfig,
+                                    deploymentDefaults,
+                                    managementHttpProtocol,
+                                    storageConfig,
+                                    backupConfig,
+                                    membership,
+                                    streaming,
+                                    clusterFormation,
+                                    clusterName,
+                                    storageEncryption);
     }
 
     public interface SelfStage {

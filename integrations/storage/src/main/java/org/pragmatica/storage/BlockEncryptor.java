@@ -12,6 +12,25 @@ public interface BlockEncryptor {
     /// Decrypt the given ciphertext using the provided encryption parameters.
     Result<byte[]> decrypt(byte[] encryptedData, EncryptionParams params);
 
+    /// Encrypt with additional authenticated data (AAD): `aad` is bound into the authentication
+    /// tag but not itself encrypted, so a caller who stores `aad` alongside the ciphertext (e.g. a
+    /// block-framing header) gets tamper-evidence on that header for free -- edit one byte of `aad`
+    /// and [#decrypt(byte[], EncryptionParams, byte[])] fails authentication. Default delegates to
+    /// [#encrypt(byte[])] and ignores `aad`, for encryptors (e.g. [NoOpEncryptor]) that don't
+    /// support AAD; #253's [AesGcmBlockEncryptor] overrides both AAD-aware methods to make them the
+    /// real crypto path.
+    default Result<EncryptedData> encrypt(byte[] data, byte[] aad) {
+        return encrypt(data);
+    }
+
+    /// AAD-aware counterpart to [#decrypt(byte[], EncryptionParams)] -- see
+    /// [#encrypt(byte[], byte[])]. `aad` must be byte-for-byte identical to what was passed to
+    /// `encrypt`, or authentication fails. Default delegates to [#decrypt(byte[], EncryptionParams)]
+    /// and ignores `aad`.
+    default Result<byte[]> decrypt(byte[] encryptedData, EncryptionParams params, byte[] aad) {
+        return decrypt(encryptedData, params);
+    }
+
     /// Encrypted data with its associated encryption parameters.
     record EncryptedData(byte[] ciphertext, EncryptionParams params) {
         /// Defensive copy of mutable byte array.

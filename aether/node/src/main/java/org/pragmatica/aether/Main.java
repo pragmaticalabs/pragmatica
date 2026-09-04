@@ -6,7 +6,9 @@ package org.pragmatica.aether;
 
 import java.net.InetAddress;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.lang.management.ManagementFactory;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -14,8 +16,10 @@ import java.util.List;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.Map;
+import java.util.function.IntConsumer;
 import java.util.regex.Pattern;
 import java.util.stream.IntStream;
+import java.util.concurrent.TimeUnit;
 
 import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.config.ClusterConfig;
@@ -29,6 +33,7 @@ import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.MembershipConfigBinding;
 import org.pragmatica.aether.config.StreamingConfig;
 import org.pragmatica.aether.config.StorageConfig;
+import org.pragmatica.aether.config.StorageEncryptionConfig;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.aether.config.Environment;
 import org.pragmatica.aether.config.SliceConfig;
@@ -51,12 +56,16 @@ import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.net.tcp.security.CertificateProvider;
 import org.pragmatica.net.tcp.security.SelfSignedCertificateProvider;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.swim.NettySwimTransport;
 
+import com.sun.management.HotSpotDiagnosticMXBean;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.core.LoggerContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -119,7 +128,8 @@ public record Main(String[] args) {
                                      // enforceClusterNamePresent() above already aborted the boot if this
                                      // were missing or malformed, so the value is present and validated.
                                      .withClusterName(resolveClusterName())
-                                     .withAutoHeal(resolveAutoHeal(aetherConfig));
+                                     .withAutoHeal(resolveAutoHeal(aetherConfig))
+                                     .withStorageEncryption(resolveStorageEncryption(aetherConfig));
 
         enforceWalDurabilityBootable(config);
         // Review catch (#634 batch): assembly failures — the routed-type codec guard included — get
@@ -367,6 +377,10 @@ public record Main(String[] args) {
                            .or(Map.of());
     }
 
+    private static Option<StorageEncryptionConfig> resolveStorageEncryption(Option<AetherConfig> aetherConfig) {
+        return aetherConfig.flatMap(AetherConfig::storageEncryption);
+    }
+
     private static Option<BackupConfig> resolveBackup(Option<AetherConfig> aetherConfig) {
         return aetherConfig.map(AetherConfig::backup)
                            .filter(BackupConfig::enabled)
@@ -500,14 +514,108 @@ public record Main(String[] args) {
                  cfg.node().heap());
     }
 
+    /// #749: a shutdown hook with no bound at all parks forever if `node.stop()` never settles. 30s is
+    /// generous relative to `EmberCluster`'s 10s-per-node test bound (this covers ONE node, not N in
+    /// parallel) while still failing the container's stop/restart grace period loudly instead of silently.
+    private static final TimeSpan SHUTDOWN_TIMEOUT = TimeSpan.timeSpan(30).seconds();
+    /// #838 review round 1, BLOCKING 1 (owner-confirmed): `System.exit()` from inside a shutdown hook
+    /// DEADLOCKS -- `Shutdown.exit()` blocks on the `Shutdown` class monitor already held by the thread
+    /// running `runHooks()`, which is the very thread executing this hook, so it joins itself. Proven by
+    /// the reviewer: hung past 2 minutes, ignored SIGTERM, needed SIGKILL. `Runtime.getRuntime().halt(int)`
+    /// bypasses that machinery entirely -- the same pattern already used by the drain-completed self-exit
+    /// at `AetherNode.java:415,437` -- at the cost of running no further shutdown hooks and no appender
+    /// flush of its own, so both are done explicitly and synchronously immediately before the halt.
+    ///
+    /// Exit code 3 = shutdown did not complete within [#SHUTDOWN_TIMEOUT]; documented at
+    /// `aether/docs/reference/node-operations.md#exit-codes`. Code 2 is already owned by the
+    /// drain-completed self-exit in `AetherNode`/`DrainProcedure`; reusing it here would have been a
+    /// second, independent bug stacked on top of the deadlock. Which call inside `node.stop()` actually
+    /// blocked is UNKNOWN (#749 acceptance item 1) -- the thread dump below is what will eventually answer
+    /// that from a real occurrence, not a diagnosis made here.
+    static final int SHUTDOWN_TIMEOUT_EXIT_CODE = 3;
+    /// #838 review round 1: bound on [#flushLogs] so a wedged appender (blocking async queue,
+    /// unreachable network sink) cannot re-introduce the unbounded hang the halt seam below exists
+    /// to remove. Generous relative to typical flush latency, small relative to [#SHUTDOWN_TIMEOUT]
+    /// so it cannot itself consume the process's shutdown budget.
+    private static final TimeSpan FLUSH_TIMEOUT = TimeSpan.timeSpan(5).seconds();
+
     private void registerShutdownHook(AetherNode node) {
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> shutdownNode(node)));
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> shutdownNode(node,
+                                                                           SHUTDOWN_TIMEOUT,
+                                                                           Main::flushLogs,
+                                                                           Runtime.getRuntime()::halt)));
     }
 
-    private void shutdownNode(AetherNode node) {
+    /// Synchronous flush of the log4j2 context, bounded by [#FLUSH_TIMEOUT] -- halt() performs no
+    /// appender flush of its own, so anything not flushed here is lost with the process. #838 review
+    /// round 1: [LogManager#shutdown()] has no timeout of its own; [LoggerContext#stop(long,TimeUnit)]
+    /// does, and is used instead so a wedged appender bounds the flush rather than hanging it.
+    private static void flushLogs() {
+        var ctx = (LoggerContext) LogManager.getContext(false);
+
+        ctx.stop(FLUSH_TIMEOUT.millis(), TimeUnit.MILLISECONDS);
+    }
+
+    /// Package-private and parameterized (timeout / log-flush / halt as injected seams) so the expiry
+    /// path is unit-testable without pinning a real 30s clock or touching the shared log4j2 context in
+    /// the surefire fork. Production wiring is [#registerShutdownHook].
+    static void shutdownNode(AetherNode node, TimeSpan timeout, Runnable flushLogs, IntConsumer haltFn) {
         log.info("Shutdown requested, stopping node...");
-        node.stop().await();
+        var stopping = node.stop();
+        var result = stopping.await(timeout);
+
+        if (!stopping.isResolved()) {
+            log.error("Node did not stop within {}; halting with code {} (shutdown timeout -- see "
+                     + "aether/docs/reference/node-operations.md#exit-codes). Thread dump follows.",
+                      timeout,
+                      SHUTDOWN_TIMEOUT_EXIT_CODE);
+            dumpThreads();
+            // #838 review round 1: halt is in `finally` so a throwing flushLogs.run() cannot preempt
+            // it and restore the unbounded hang this method exists to remove -- flushLogs itself is
+            // bounded (see its doc), so this can delay the halt by at most FLUSH_TIMEOUT, never hang it.
+            try {
+                flushLogs.run();
+            } finally {
+                haltFn.accept(SHUTDOWN_TIMEOUT_EXIT_CODE);
+            }
+
+            return;
+        }
+
+        result.onFailure(cause -> log.error("Node stop() completed with failure: {}", cause.message()));
         log.info("Node stopped");
+    }
+
+    /// Best-effort diagnostic: a failed dump is logged and never blocks the halt it was meant to explain.
+    private static void dumpThreads() {
+        captureThreadDump().onSuccess(lines -> lines.forEach(line -> log.error("{}", line)))
+                         .onFailure(cause -> log.error("Failed to capture shutdown-timeout thread dump: {}",
+                                                       cause.message()));
+    }
+
+    /// #838 review round 1, SHOULD-FIX: [ThreadMXBean#dumpAllThreads] omits virtual threads -- exactly the
+    /// kind of thread a hung `node.stop()` is likely blocked on, since the async offloads it waits on run
+    /// on them. [HotSpotDiagnosticMXBean#dumpThreads] includes virtual threads; it writes a pre-formatted
+    /// dump to a file rather than returning `ThreadInfo[]`, and refuses to overwrite an existing file, so
+    /// a fresh path is created and deleted around each call regardless of outcome.
+    ///
+    /// #838 review round 1, JBCT-EX-01: returns [Result] rather than throwing -- a checked [IOException]
+    /// on this best-effort diagnostic path must not propagate past [#dumpThreads], which logs-and-continues
+    /// on either outcome rather than branching on a caught exception.
+    static Result<List<String>> captureThreadDump() {
+        return Result.lift(() -> {
+            var dumpPath = Files.createTempFile("aether-thread-dump-", ".txt");
+
+            Files.delete(dumpPath);  // dumpThreads(String, ...) refuses to write over an existing file
+            try {
+                ManagementFactory.getPlatformMXBean(HotSpotDiagnosticMXBean.class).dumpThreads(dumpPath.toString(),
+                                                                                               HotSpotDiagnosticMXBean.ThreadDumpFormat.TEXT_PLAIN);
+
+                return Files.readAllLines(dumpPath, StandardCharsets.UTF_8);
+            } finally {
+                Files.deleteIfExists(dumpPath);
+            }
+        });
     }
 
     private void startNodeAndWait(AetherNode node, NodeId nodeId) {

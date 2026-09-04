@@ -31,7 +31,8 @@ public record AetherConfig(ClusterConfig cluster,
                            Option<CloudConfig> cloud,
                            Map<String, EndpointConfig> endpoints,
                            StreamingConfig streaming,
-                           Option<MembershipConfigBinding> membership) {
+                           Option<MembershipConfigBinding> membership,
+                           Option<StorageEncryptionConfig> storageEncryption) {
     public static Result<AetherConfig> aetherConfig(ClusterConfig cluster,
                                                     NodeConfig node,
                                                     Option<TlsConfig> tls,
@@ -58,6 +59,7 @@ public record AetherConfig(ClusterConfig cluster,
                                         none(),
                                         Map.of(),
                                         StreamingConfig.streamingConfig(),
+                                        none(),
                                         none()));
     }
 
@@ -104,7 +106,8 @@ public record AetherConfig(ClusterConfig cluster,
                                 cloud,
                                 endpoints,
                                 streaming,
-                                membership);
+                                membership,
+                                storageEncryption);
     }
 
     public AetherConfig withEndpoints(Map<String, EndpointConfig> endpoints) {
@@ -123,7 +126,8 @@ public record AetherConfig(ClusterConfig cluster,
                                 cloud,
                                 endpoints,
                                 streaming,
-                                membership);
+                                membership,
+                                storageEncryption);
     }
 
     public AetherConfig withCloud(CloudConfig cloud) {
@@ -142,7 +146,8 @@ public record AetherConfig(ClusterConfig cluster,
                                 some(cloud),
                                 endpoints,
                                 streaming,
-                                membership);
+                                membership,
+                                storageEncryption);
     }
 
     public AetherConfig withStreaming(StreamingConfig streaming) {
@@ -161,7 +166,8 @@ public record AetherConfig(ClusterConfig cluster,
                                 cloud,
                                 endpoints,
                                 streaming,
-                                membership);
+                                membership,
+                                storageEncryption);
     }
 
     public AetherConfig withMembership(MembershipConfigBinding membership) {
@@ -180,7 +186,28 @@ public record AetherConfig(ClusterConfig cluster,
                                 cloud,
                                 endpoints,
                                 streaming,
-                                some(membership));
+                                some(membership),
+                                storageEncryption);
+    }
+
+    public AetherConfig withStorageEncryption(StorageEncryptionConfig storageEncryption) {
+        return new AetherConfig(cluster,
+                                node,
+                                tls,
+                                docker,
+                                kubernetes,
+                                ttm,
+                                slice,
+                                appHttp,
+                                backup,
+                                dhtReplication,
+                                timeouts,
+                                storage,
+                                cloud,
+                                endpoints,
+                                streaming,
+                                membership,
+                                some(storageEncryption));
     }
 
     public static Builder builder() {
@@ -228,6 +255,7 @@ public record AetherConfig(ClusterConfig cluster,
         private Map<String, EndpointConfig> endpointsConfig;
         private StreamingConfig streamingConfig;
         private MembershipConfigBinding membershipConfig;
+        private StorageEncryptionConfig storageEncryptionConfig;
 
         @SuppressWarnings("JBCT-NAM-01")
         public Builder withEnvironment(Environment environment) {
@@ -363,6 +391,12 @@ public record AetherConfig(ClusterConfig cluster,
             return this;
         }
 
+        public Builder storageEncryption(StorageEncryptionConfig storageEncryptionConfig) {
+            this.storageEncryptionConfig = storageEncryptionConfig;
+
+            return this;
+        }
+
         public AetherConfig build() {
             var base = AetherConfig.aetherConfig(environment);
             var clusterConfig = applyClusterOverrides(base.cluster());
@@ -397,8 +431,9 @@ public record AetherConfig(ClusterConfig cluster,
                          : withStorage.withEndpoints(finalEndpoints);
             var withStreaming = option(streamingConfig).map(withEp::withStreaming).or(withEp);
             var withCloudConfig = option(cloudConfig).fold(() -> withStreaming, withStreaming::withCloud);
+            var withMembership = option(membershipConfig).fold(() -> withCloudConfig, withCloudConfig::withMembership);
 
-            return option(membershipConfig).fold(() -> withCloudConfig, withCloudConfig::withMembership);
+            return option(storageEncryptionConfig).fold(() -> withMembership, withMembership::withStorageEncryption);
         }
 
         private ClusterConfig applyClusterOverrides(ClusterConfig base) {
