@@ -1442,10 +1442,21 @@ public interface AetherNode extends ManageableNode {
         var aetherMaps = AetherMaps.aetherMaps(dhtClient.scoped(DHTConfig.FULL));
         var cacheDhtClient = dhtClient.scoped(config.cache());
         var dhtClientOption = Option.<DHTClient> some(dhtClient);
-        var baseStorageSetups = StorageFactory.createAll(config.storageConfig(),
-                                                         config.self().id(),
-                                                         dhtClientOption,
-                                                         storageKeyring);
+        // #253 BLOCKING #1 (2026-09-04 ruling): a configured storage instance that fails to create
+        // is a boot failure -- `createAll` now returns `Result` and this aborts naming the instance
+        // and the cause, the same way `streamStorageResult`'s failure is propagated below, rather
+        // than silently dropping that one instance (the old behavior) and letting boot continue on
+        // whatever was left, e.g. a `wrapLocalDisk` refusal over plaintext artifacts.
+        var baseStorageSetupsResult = StorageFactory.createAll(config.storageConfig(),
+                                                               config.self().id(),
+                                                               dhtClientOption,
+                                                               storageKeyring);
+
+        if (baseStorageSetupsResult.isFailure()) {
+            return baseStorageSetupsResult.map(ignored -> null);
+        }
+
+        var baseStorageSetups = baseStorageSetupsResult.fold(_ -> null, setups -> setups);
         // Stream storage is a first-class, disk-backed snapshot-capable StorageSetup (memory -> disk
         // -> DHT) keyed under "streams". It is built here (not via `createAll`, which is config-map
         // driven) so it can be folded into `storageSetups` — a later snapshot scheduler iterates that
@@ -1470,9 +1481,17 @@ public interface AetherNode extends ManageableNode {
 
         var streamStorageSetup = streamStorageResult.fold(_ -> null, setup -> setup);
         var storageSetups = withStreamSetup(baseStorageSetups, streamStorageSetup);
-        var artifactStorage = Option.option(storageSetups.get("artifacts"))
-                                    .map(StorageFactory.StorageSetup::instance)
-                                    .or(StorageFactory.defaultArtifactStorage(dhtClientOption));
+        // #253 BLOCKING #1 (2026-09-04 ruling): `createAll`'s postcondition on success is that
+        // "artifacts" is ALWAYS present in `baseStorageSetups` -- either the operator's
+        // `[storage.artifacts]` config or the synthesized default, and either one failing now
+        // aborts boot at the `baseStorageSetupsResult` guard above, before this line is ever
+        // reached. The old `.or(StorageFactory.defaultArtifactStorage(...))` fallback substituted a
+        // second, independently-built, always-unencrypted instance whenever "artifacts" happened to
+        // be missing from the map -- which is exactly how a `wrapLocalDisk` refusal over
+        // pre-existing plaintext used to boot successfully anyway (BLOCKING #1's root cause).
+        // `defaultArtifactStorage` is retired as dead code; there is no longer a legitimate reason
+        // for "artifacts" to be absent here.
+        var artifactStorage = storageSetups.get("artifacts").instance();
         var artifactStore = ArtifactStore.artifactStore(dhtClient, artifactStorage);
         var repositoryFactory = RepositoryFactory.repositoryFactory(artifactStore);
         var repositories = repositoryFactory.createAll(config.sliceConfig());
