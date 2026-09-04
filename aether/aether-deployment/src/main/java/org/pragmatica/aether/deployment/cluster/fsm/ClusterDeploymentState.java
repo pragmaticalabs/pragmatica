@@ -2427,6 +2427,15 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// restored. [mechanism: KVStore.process (sequential Stream.map, no parallel()) +
         /// MessageRouter.route (synchronous) + Fsm.dispatch (synchronous state.handle) + this list's
         /// order]
+        ///
+        /// The re-owning step this ordering depends on is itself conditional: `handleAppBlueprintChange`
+        /// early-returns before touching `blueprints` when `hasConflictingOwnership` reports a
+        /// conflict, compared on blueprint BASE — so a `previous` of a DIFFERENT base than `inflight`
+        /// would not be re-owned, and the Remove below would deallocate the shared slices instead of
+        /// leaving them untouched. `previous` and `inflight` share a base by construction (`previous`
+        /// is `inflight`'s own captured prior version of the SAME blueprint), so this does not arise
+        /// on the path that reaches this method today — noted because the safety this method leans on
+        /// is conditional, not unconditional.
         private void restorePreviousBlueprint(InFlightBlueprint inflight, ExpandedBlueprint previous, String cause) {
             restoringBlueprints.add(previous.id());
             log.info("ALL_OR_NOTHING: Restoring previous blueprint {} with {} slices",

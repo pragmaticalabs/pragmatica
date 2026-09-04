@@ -25,6 +25,7 @@ import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.Bluepri
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Activate;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.AppBlueprintPutReceived;
+import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.AppBlueprintRemoveReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.NodeArtifactPutReceived;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.SliceState;
@@ -46,6 +47,7 @@ import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -148,6 +150,25 @@ class ClusterDeploymentStateTransactionalTest {
         var id = blueprintId(name, version);
         var slice = ResolvedSlice.resolvedSlice(artifact(sliceName, version), 3, false).unwrap();
         return ExpandedBlueprint.expandedBlueprint(id, List.of(slice));
+    }
+
+    /// #809 review: replays one command from an ACTUALLY EMITTED batch through the real FSM entry
+    /// point (`harness.dispatch`) — the same one a live KV-watch notification uses — instead of
+    /// calling `handleAppBlueprintChange`/`handleAppBlueprintRemoval` directly. `RecordingClusterNode`
+    /// only records `apply()` calls, it never applies them, so this is what makes a test sensitive
+    /// to two commands in a batch trading places; every other assertion in this file stays green
+    /// either way.
+    private void replayThroughRealHandlers(KVCommand<AetherKey> command) {
+        if (command instanceof KVCommand.Put<AetherKey, ?> put && put.key() instanceof AppBlueprintKey appKey) {
+            harness.dispatch(new AppBlueprintPutReceived(new ValuePut<>(new KVCommand.Put<>(appKey, (AppBlueprintValue) put.value()),
+                                                                        Option.none())));
+            return;
+        }
+
+        if (command instanceof KVCommand.Remove<AetherKey> remove && remove.key() instanceof AppBlueprintKey appKey) {
+            harness.dispatch(new AppBlueprintRemoveReceived(new ValueRemove<>(new KVCommand.Remove<>(appKey, remove.witness()),
+                                                                              Option.none())));
+        }
     }
 
     @Nested
@@ -332,6 +353,79 @@ class ClusterDeploymentStateTransactionalTest {
                                                                       && c instanceof KVCommand.Put<AetherKey, ?>))
                     .findFirst();
             assertThat(atomicBatch).isPresent();
+        }
+
+        // #809 review round: the ordering (Put(previous) before Remove(inflight)) is load-bearing,
+        // not cosmetic — but RecordingClusterNode only RECORDS commands/batches, it never APPLIES
+        // them, so every assertion above stays green even if the two commands traded places. This
+        // test closes that gap: it replays the actual emitted batch through the real production
+        // handlers (harness.dispatch, the same entry point a live KV-watch notification uses) IN
+        // THE BATCH'S OWN RECORDED ORDER, then asserts the mechanism's actual payoff — a slice
+        // SHARED between the failed and restored blueprints must survive (no SliceTargetKey
+        // Remove), while a slice that existed ONLY under the failed blueprint (net-new, absent
+        // from `prior`) must be deallocated as rollback cleanup (SliceTargetKey Remove emitted).
+        // Mutation-probed: swapping Put(previous) and Remove(inflight) in restorePreviousBlueprint's
+        // batch list turns this red — handleAppBlueprintRemoval then fires while the shared slice is
+        // still owned by the failed id and wrongly deallocates it — "[a slice shared with the
+        // restored blueprint must NOT be deallocated] Expecting value to be false but was true".
+        @Test
+        void restorePreviousBlueprint_replayedInEmittedOrder_deallocatesOnlyNetNewSlice() {
+            var sharedArtifact = artifact("shared", V1);
+            var netNewArtifact = artifact("netnew", V2);
+
+            var prior = ExpandedBlueprint.expandedBlueprint(blueprintId("app", V1),
+                                                             List.of(ResolvedSlice.resolvedSlice(sharedArtifact, 3, false)
+                                                                                  .unwrap()));
+            var failing = ExpandedBlueprint.expandedBlueprint(blueprintId("app", V2),
+                                                               List.of(ResolvedSlice.resolvedSlice(sharedArtifact, 3, false)
+                                                                                    .unwrap(),
+                                                                       ResolvedSlice.resolvedSlice(netNewArtifact, 3, false)
+                                                                                    .unwrap()));
+            var inflight = ClusterDeploymentState.Active.InFlightBlueprint.inFlightBlueprint(failing.id(),
+                                                                                             failing,
+                                                                                             Option.some(prior));
+
+            // Seed the FSM's own ownership map as it would be right after the failed deploy
+            // activated both slices: shared AND net-new, both currently owned by the failed id.
+            activeState().blueprints().put(sharedArtifact,
+                                           Blueprint.blueprint(sharedArtifact, 3, 1, Option.some(failing.id()), false));
+            activeState().blueprints().put(netNewArtifact,
+                                           Blueprint.blueprint(netNewArtifact, 3, 1, Option.some(failing.id()), false));
+
+            activeState().restorePreviousBlueprintForTest(inflight, prior, "boom: disk full");
+
+            var priorKey = AppBlueprintKey.appBlueprintKey(prior.id());
+            var failedKey = AppBlueprintKey.appBlueprintKey(failing.id());
+            var outcomeKey = DeploymentOutcomeKey.deploymentOutcomeKey(failing.id());
+
+            var emittedBatch = cluster.batches
+                    .stream()
+                    .filter(batch -> batch.stream().anyMatch(c -> c.key().equals(priorKey))
+                                     && batch.stream().anyMatch(c -> c.key().equals(failedKey))
+                                     && batch.stream().anyMatch(c -> c.key().equals(outcomeKey)))
+                    .findFirst();
+            assertThat(emittedBatch).isPresent();
+
+            // Replay each command in the batch's OWN recorded order through the real production
+            // entry point — proves the ordering instead of assuming it.
+            for (var command : emittedBatch.get()) {
+                replayThroughRealHandlers(command);
+            }
+
+            var sharedSliceTargetKey = SliceTargetKey.sliceTargetKey(sharedArtifact.base());
+            var netNewSliceTargetKey = SliceTargetKey.sliceTargetKey(netNewArtifact.base());
+
+            var sharedSliceRemoved = cluster.commands
+                    .stream()
+                    .anyMatch(c -> c instanceof KVCommand.Remove<AetherKey> && c.key().equals(sharedSliceTargetKey));
+            var netNewSliceRemoved = cluster.commands
+                    .stream()
+                    .anyMatch(c -> c instanceof KVCommand.Remove<AetherKey> && c.key().equals(netNewSliceTargetKey));
+
+            assertThat(sharedSliceRemoved).as("a slice shared with the restored blueprint must NOT be deallocated")
+                                          .isFalse();
+            assertThat(netNewSliceRemoved).as("a slice that existed only under the failed blueprint must be deallocated")
+                                          .isTrue();
         }
     }
 

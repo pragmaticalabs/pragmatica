@@ -27,11 +27,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `Fsm.dispatch` (synchronous `state.handle`) + the batch's list order]
 - No change to the no-previous rollback path (`unloadBlueprintSlices`/`failedOutcomeCommand`),
   which already bundled its own `AppBlueprintKey` removal correctly.
+- **`handleAppBlueprintRemoval` is now reachable from the restore path for the first time** — before
+  this fix its Remove never fired here, since the key was never removed. Two of its pre-existing
+  behaviors, unchanged in this fix, are newly observable as a SIDE EFFECT of a restore-rollback:
+  a restore now also submits `SliceTargetKey` Removes for any net-new artifact (present only in the
+  failed blueprint, absent from `previous`) and schedules a reconcile five seconds out, exactly as
+  it already does for every other blueprint removal; and, if an artifact this handler would touch
+  has an active rolling update, it early-returns entirely — the KV `AppBlueprintKey` Remove has
+  already committed, but that handler does none of its own in-memory cleanup (no `blueprints.remove`,
+  no deallocation, no `SliceTargetKey` Remove) for the artifacts it would have touched. This
+  early-return is pre-existing behavior of `handleAppBlueprintRemoval`, not new logic — it is simply
+  reachable from a restore-rollback for the first time.
 - **Consumer audit of `AppBlueprintKey`** — every reader was checked against `inflight.id()`'s
   stale entry; none require it to keep existing, and two were silently returning wrong answers
   because of it, now corrected as a side effect with no code changes of their own:
   - `handleAppBlueprintRemoval` (the FSM's own `blueprints`/ownership map) is the one consumer
-    whose *timing* mattered — addressed by the Put-before-Remove ordering above.
+    whose *timing* mattered — addressed by the Put-before-Remove ordering above, and pinned by a
+    test that replays the emitted batch through the real handlers in the batch's own order (so a
+    swap of the two commands turns it red, unlike every other test in this suite, which merely
+    inspects the recorded batch and stays green either way).
   - `BlueprintService.get(id)` reads `AppBlueprintKey` directly: before this fix,
     `get(inflight.id())` after a restore-rollback returned the STALE pre-failure blueprint as if
     it were still live; it now correctly returns empty.
