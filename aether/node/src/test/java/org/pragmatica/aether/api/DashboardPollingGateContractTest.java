@@ -216,9 +216,11 @@ class DashboardPollingGateContractTest {
         assertThat(appJs).as("the primary and secondary poll timers must both check the degraded gate")
                   .contains("cluster.degraded) return;");
         assertThat(occurrences(appJs,
-                               "cluster.healthUnknown && !cluster.unknownRetryDue()) return;")).as("both app.js poll timers (primary, which also gates checkHealth() itself so a total "
-                                                                                                  + "outage doesn't retry every 2s either, and secondary) must back off to the shared slow "
-                                                                                                  + "retry while health is unknown, distinct from the degraded skip above")
+                               "cluster.healthUnknown && !cluster.unknownRetryDue()) return;")).as("the DATA-poll halves of both app.js timers (primary's post-checkHealth batch, and "
+                                                                                                  + "secondary in full) must back off to the shared slow retry while health is unknown, "
+                                                                                                  + "distinct from the degraded skip above. The primary timer's checkHealth() call itself "
+                                                                                                  + "is gated separately, by its own dedicated throttle (#846 SHOULD-FIX) — see "
+                                                                                                  + "appJs_checkHealthCall_gatedByDedicatedThrottle_notSharedUnknownRetryDue below")
                   .isEqualTo(2);
     }
 
@@ -228,7 +230,9 @@ class DashboardPollingGateContractTest {
 
         assertThat(requestsJs).contains("cluster.degraded) return;")
                   .as("requests.js's own 3s timer must back off to the same shared unknownRetryDue() throttle "
-                     + "as app.js's timers, coordinated through cluster state rather than its own private clock")
+                     + "as app.js's DATA-poll timers, coordinated through cluster state rather than its own "
+                     + "private clock. This is the data-poll throttle only — distinct from app.js's dedicated "
+                     + "health re-probe throttle (healthProbeRetryDue())")
                   .contains("cluster.healthUnknown && !cluster.unknownRetryDue()) return;");
     }
 
@@ -249,15 +253,113 @@ class DashboardPollingGateContractTest {
         assertThat(clusterJs).as("healthUnknown must default false — a fresh load is neither known-degraded "
                                 + "nor known-unreachable until the first probe returns")
                   .contains("healthUnknown: false,");
-        assertThat(methodStart).as("unknownRetryDue() must exist as the shared throttle every poller reads")
+        assertThat(methodStart).as("unknownRetryDue() must exist as the shared throttle the DATA-poll timers "
+                                  + "read (secondary timer, requests.js, and the primary timer's post-checkHealth "
+                                  + "batch) — NOT the health re-probe itself, which has its own dedicated throttle; "
+                                  + "see clusterJs_healthProbeRetryDue_isDistinctFrom_unknownRetryDue_backedBySeparateFields below")
                   .isNotNegative();
         var body = clusterJs.substring(methodStart, methodEnd);
 
         assertThat(body).as("the retry cadence during an outage must be the 10s the ruling specifies, and it "
-                           + "must be a shared, mutated timestamp so every timer agrees on when the next attempt "
-                           + "is due instead of each retrying independently")
+                           + "must be a shared, mutated timestamp so every DATA-poll timer agrees on when the "
+                           + "next attempt is due instead of each retrying independently")
                   .contains(">= 10000")
                   .contains("_lastUnknownRetryAt = now;");
+    }
+
+    /// #846 SHOULD-FIX (round three): unknownRetryDue() used to be the ONLY throttle, shared by all
+    /// three poll timers for two different jobs — gating the primary timer's checkHealth() recovery
+    /// re-probe, and gating the other two timers' (plus the primary timer's own post-checkHealth
+    /// batch) data polls. Being a read-and-consume throttle (checking AND updating the timestamp in
+    /// one call), whichever timer's tick called it FIRST in a ~10s window won the slot; the others,
+    /// including possibly the primary timer's own checkHealth() gate, saw the slot already consumed
+    /// and skipped their turn. When that starved checkHealth() specifically, the health re-probe that
+    /// is the ONLY path back to `healthy` silently didn't run that cycle, pushing recovery detection
+    /// past the intended 10s bound by an amount that depended on interval drift between the timers.
+    /// The fix: healthProbeRetryDue(), a second throttle backed by its own field, read and consumed
+    /// ONLY by the primary timer's checkHealth() gate — never by the data-poll timers, so it cannot be
+    /// starved by their ticks. This test pins the two throttles as structurally distinct fields, not
+    /// merely distinct method names that might still share one timestamp underneath.
+    @Test
+    void clusterJs_healthProbeRetryDue_isDistinctFrom_unknownRetryDue_backedBySeparateFields() {
+        var clusterJs = resource("/dashboard/js/stores/cluster.js").unwrap();
+
+        assertThat(clusterJs).as("the two throttles must be backed by two separately-declared timestamp "
+                                + "fields, not one shared field read by two differently-named methods — a "
+                                + "shared field would still let one throttle's consumption silently affect "
+                                + "the other's due-ness, which is exactly the bug being fixed")
+                  .contains("_lastUnknownRetryAt: 0,")
+                  .contains("_lastHealthProbeRetryAt: 0,");
+
+        var unknownStart = clusterJs.indexOf("unknownRetryDue() {");
+        var unknownEnd = clusterJs.indexOf("},", unknownStart);
+        var healthProbeStart = clusterJs.indexOf("healthProbeRetryDue() {");
+        var healthProbeEnd = clusterJs.indexOf("},", healthProbeStart);
+
+        assertThat(unknownStart).as("unknownRetryDue() must exist").isNotNegative();
+        assertThat(healthProbeStart).as("healthProbeRetryDue() must exist as a genuinely separate method, "
+                                       + "not a renamed unknownRetryDue()").isNotNegative();
+        assertThat(healthProbeStart).as("the two methods must be textually distinct declarations")
+                  .isNotEqualTo(unknownStart);
+
+        var unknownBody = clusterJs.substring(unknownStart, unknownEnd);
+        var healthProbeBody = clusterJs.substring(healthProbeStart, healthProbeEnd);
+
+        assertThat(unknownBody).as("unknownRetryDue() must read/consume ONLY its own field — never the health "
+                                  + "re-probe's field, or a data poll's tick could silently steal the health "
+                                  + "re-probe's slot the same way the pre-fix shared throttle did")
+                  .contains("_lastUnknownRetryAt")
+                  .doesNotContain("_lastHealthProbeRetryAt");
+        assertThat(healthProbeBody).as("healthProbeRetryDue() must read/consume ONLY its own field — never the "
+                                      + "data-poll throttle's field. This is the load-bearing property: two "
+                                      + "differently-named methods sharing one field would reproduce the exact "
+                                      + "starvation this fix removes")
+                  .contains("_lastHealthProbeRetryAt")
+                  .doesNotContain("_lastUnknownRetryAt");
+
+        var requestsJs = resource("/dashboard/js/stores/requests.js").unwrap();
+        assertThat(requestsJs).as("the health re-probe throttle is exclusive to app.js's primary timer — it "
+                                 + "must never leak into requests.js's data-poll gate, or that data poller "
+                                 + "would start starving the health re-probe again from a different call site")
+                  .doesNotContain("healthProbeRetryDue");
+    }
+
+    /// Pins the call-site half of the same #846 SHOULD-FIX: it is not enough for the two throttles to
+    /// exist as distinct fields (previous test) — checkHealth() must actually be wired to the new one.
+    @Test
+    void appJs_checkHealthCall_gatedByDedicatedThrottle_notSharedUnknownRetryDue() {
+        var appJs = resource("/dashboard/js/app.js").unwrap();
+        var pollTimerStart = appJs.indexOf("this.pollTimer = setInterval(function() {");
+        var pollTimerEnd = appJs.indexOf("}, 2000);", pollTimerStart);
+
+        assertThat(pollTimerStart).as("the primary poll timer must exist").isNotNegative();
+        assertThat(pollTimerEnd).as("the primary poll timer's body must be boundable").isGreaterThan(pollTimerStart);
+
+        var body = appJs.substring(pollTimerStart, pollTimerEnd);
+        var checkHealthCallIndex = body.indexOf("self.checkHealth();");
+        var healthProbeGateIndex = body.indexOf("cluster.healthProbeRetryDue()");
+        var dataPollGateIndex = body.indexOf("cluster.healthUnknown && !cluster.unknownRetryDue()) return;");
+
+        assertThat(checkHealthCallIndex).as("checkHealth() must be called from the primary timer").isNotNegative();
+        assertThat(healthProbeGateIndex).as("checkHealth() must be gated by the dedicated healthProbeRetryDue() "
+                                           + "throttle, never left reading the data-poll timers' shared "
+                                           + "unknownRetryDue() — sharing it was the #846 SHOULD-FIX: whichever "
+                                           + "timer's tick consumed the shared, read-and-consume throttle first "
+                                           + "in a window won the slot, and when it wasn't this one, checkHealth() "
+                                           + "silently skipped an entire cycle, pushing recovery detection past "
+                                           + "the intended 10s bound by an amount that depended on interval drift")
+                  .isNotNegative();
+        assertThat(healthProbeGateIndex).as("the healthProbeRetryDue() gate must run BEFORE the checkHealth() call")
+                  .isLessThan(checkHealthCallIndex);
+        assertThat(dataPollGateIndex).as("the data-poll gate (unknownRetryDue()) must run AFTER the checkHealth() "
+                                        + "call, guarding only pollStatus()/events/alerts below it — never the "
+                                        + "health re-probe above it, which is the whole point of the split")
+                  .isGreaterThan(checkHealthCallIndex);
+        assertThat(occurrences(appJs, "cluster.healthProbeRetryDue()")).as("exactly one call site in the whole "
+                                                                          + "file — the primary timer's checkHealth() gate. If the secondary timer or "
+                                                                          + "requests.js ever called this too, it would reintroduce exactly the "
+                                                                          + "starvation this throttle exists to prevent")
+                  .isEqualTo(1);
     }
 
     /// The 404-suppression half of #294: a poll against an endpoint the server has no route for
