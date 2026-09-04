@@ -1973,8 +1973,9 @@ mistyped source name would become a real provisioning target. Add the pair to th
 
 Scaling a cluster with no stored config (e.g. right after a `docker compose down -v` volume wipe and
 fresh bootstrap — #335) is refused the same way, not created from the scale request: a `--count`
-alone has none of the cluster name, version, or deployment settings a config needs. The error names
-the actual recovery:
+alone has no source but the operator for the version or deployment settings a config needs (cluster
+name is the one exception the node already knows in-process, but the route has no way to read it).
+The error names the actual recovery:
 
 ```
 No cluster configuration stored. A scale request cannot create one — it carries only
