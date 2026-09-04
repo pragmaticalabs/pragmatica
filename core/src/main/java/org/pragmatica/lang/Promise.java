@@ -22,6 +22,9 @@ import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
@@ -631,10 +634,35 @@ public sealed interface Promise<T> permits PromiseImpl {
     ///             .map(this::transformationStep1)     // <-- This transformation will see Timeout error and will be skipped
     ///             .flatMap(this::transformationStep3);// <-- This transformation will see Timeout error and will be skipped
     /// ```
+    ///
+    /// The scheduled failure task is cancelled as soon as the promise resolves by any other means (success,
+    /// application failure, or the timeout itself firing), so early completion does not leave a dead task
+    /// queued in the scheduler for the remainder of the timeout window. #749/#750 follow-up: this method
+    /// deliberately does not delegate to the general-purpose [#async(TimeSpan,Consumer)] -- that overload is
+    /// also used to arm a delayed action on an ALREADY-resolved promise (e.g. cache-entry TTL eviction), where
+    /// cancel-on-resolution would fire immediately and defeat the delay outright.
+    ///
+    /// **#838 review round 1: behavior change.** This method returns a *derived* promise (via [#withResult])
+    /// rather than `this` — needed so the cancellation above observes resolution without itself being the
+    /// resolution. The scheduled failure resolves the ORIGINAL promise (`this`); the derived promise returned
+    /// here is resolved from that, inline, on the same thread that resolved the original -- including when
+    /// that thread is [AsyncExecutor#timeoutScheduler]'s own platform thread on the timeout-fired path. Any
+    /// caller relying on `promise.timeout(t) == promise` (identity, not value) will observe a different
+    /// object than before; a repo-wide sweep found no call site doing this, but it is a genuine change in
+    /// what this method returns, not merely an implementation detail.
+    ///
+    /// A call site that discards the returned derived promise (e.g. `promise.timeout(t);` used as a bare
+    /// statement, as `HttpForwarder` does) still keeps its timeout today, because the scheduled failure
+    /// targets `this` -- the ORIGINAL promise -- not the value returned here. Retargeting that failure to
+    /// the derived promise in a future change would silently disarm every such call site with no
+    /// compile-time signal; grep for `.timeout(` used as a statement before making that change.
     default Promise<T> timeout(TimeSpan timeout) {
-        return async(timeout,
-                     promise -> promise.fail(new CoreError.Timeout("Promise timed out after " + timeout.millis() + "ms")));
+        var future = AsyncExecutor.INSTANCE.runAsync(timeout,
+                                                       () -> fail(new CoreError.Timeout("Promise timed out after " + timeout.millis() + "ms")));
+
+        return withResult(_ -> future.cancel(false));
     }
+
 
     /// **[Resolution]**
     /// Cancel the promise.
@@ -3127,7 +3155,47 @@ public sealed interface Promise<T> permits PromiseImpl {
 
 enum AsyncExecutor {
     INSTANCE;
+
+    // #749/#750: .timeout()'s delayed-failure task used to share this pool's virtual-thread carriers with
+    // every other .async() offload in the codebase. A timeout is exactly the guard relied on when the
+    // system is under load -- and CPU-bound work pinning every carrier is a form of load -- so a timeout
+    // that must win a carrier to fire is not actually bounded. This scheduler is dedicated SOLELY to
+    // runAsync(TimeSpan, Runnable): platform threads, scheduled by the OS rather than the JVM's
+    // virtual-thread carrier pool, so they cannot be starved by virtual-thread carrier exhaustion.
+    // General .async() offload work (runAsync(Runnable)) is unchanged and still runs on `executor`.
+    //
+    // Sized at a small fixed pool rather than one thread: firing a timeout resolves its promise inline
+    // on this scheduler's own thread (Promise.allOf's aggregation runs inline via CompletionMap, not
+    // offloaded -- see #749 condition-1 analysis), so a continuation that blocks on that thread would
+    // stall every OTHER pending timeout sharing a single-threaded scheduler. Four lanes bound that blast
+    // radius to "more than four timeouts blocked concurrently", not "any one blocked timeout".
+    //
+    // #838 review round 1: this deliberately does NOT reuse org.pragmatica.lang.utils.VirtualThreadScheduler
+    // (whose own class doc states the opposite principle: timekeeping submits to virtual threads, never
+    // runs a task body inline). The two designs solve different problems -- VirtualThreadScheduler
+    // decouples timing from arbitrary task execution; this pool's job is narrower, to fire the timeout
+    // ITSELF without depending on carrier availability, which is exactly the dependency
+    // VirtualThreadScheduler's own submit-to-virtual-thread step would reintroduce. See
+    // VirtualThreadScheduler's class doc for the full reconciliation of both designs' trade-offs.
+    private static final int TIMEOUT_SCHEDULER_THREADS = 4;
     private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+    // ScheduledThreadPoolExecutor (not the ScheduledExecutorService interface) so setRemoveOnCancelPolicy
+    // is reachable: without it, a cancelled task's slot in the internal DelayedWorkQueue is reclaimed only
+    // when its delay elapses, not at cancel() time. .timeout() (below) cancels its scheduled fail task the
+    // moment the promise resolves by any other means -- with the policy off, that cancellation would be a
+    // logical no-op as far as the queue is concerned, and a server minting thousands of 30s-timeout promises
+    // per second would still accumulate thousands of dead-but-queued entries (each holding a closure and a
+    // ContextPropagation snapshot) for up to the full timeout duration. #749/#750 follow-up.
+    private final ScheduledThreadPoolExecutor timeoutScheduler = createTimeoutScheduler();
+
+    private static ScheduledThreadPoolExecutor createTimeoutScheduler() {
+        var pool = new ScheduledThreadPoolExecutor(TIMEOUT_SCHEDULER_THREADS,
+                                                     Thread.ofPlatform().name("promise-timeout-scheduler-", 0).daemon(true).factory());
+        pool.setRemoveOnCancelPolicy(true);
+
+        return pool;
+    }
+
     @Contract
     void runAsync(Runnable runnable) {
         var snapshot = ContextPropagation.INSTANCE.capture();
@@ -3135,19 +3203,19 @@ enum AsyncExecutor {
         executor.submit(() -> ContextPropagation.INSTANCE.runWith(snapshot, runnable));
     }
     @Contract
-    void runAsync(TimeSpan delay, Runnable runnable) {
+    ScheduledFuture<?> runAsync(TimeSpan delay, Runnable runnable) {
         var snapshot = ContextPropagation.INSTANCE.capture();
 
-        executor.submit(() -> ContextPropagation.INSTANCE.runWith(snapshot,
-                                                                  () -> {
-                                                                      try {
-                                                                      Thread.sleep(delay.duration());
-                                                                  } catch (InterruptedException e) {
-                                                                      Thread.currentThread().interrupt();
-                                                                  }
+        return timeoutScheduler.schedule(() -> ContextPropagation.INSTANCE.runWith(snapshot, runnable),
+                                          delay.nanos(), TimeUnit.NANOSECONDS);
+    }
 
-                                                                      runnable.run();
-                                                                  }));
+    // Test-only observability: number of tasks still sitting in the scheduler's delay queue. With
+    // setRemoveOnCancelPolicy(true) above, a cancelled task is purged from this count synchronously,
+    // on the cancelling thread -- no polling needed to observe the effect of an early promise resolution.
+    @Contract
+    int pendingTimeoutCount() {
+        return timeoutScheduler.getQueue().size();
     }
 }
 
