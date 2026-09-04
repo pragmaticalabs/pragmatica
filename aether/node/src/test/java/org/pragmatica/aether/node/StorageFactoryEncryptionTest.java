@@ -45,6 +45,12 @@ import static org.pragmatica.lang.Unit.unit;
 /// `EncryptingStorageTierTest` in `integrations/storage`; those helpers are private to that class in
 /// another module's test tree, so they are rewritten rather than reused -- the same duplication
 /// precedent `StorageMaintenanceWiringTest`'s `InMemoryDHTClient` already records.
+///
+/// #253 BLOCKING #1 (2026-09-04 ruling): `createAll` now returns `Result<Map<String, StorageSetup>>`
+/// instead of a plain `Map` -- every call site below that expects success unwraps the `Result`
+/// (mirroring how `defaultStreamStorage`'s four-arg overload was already tested), and
+/// [#createAll_fails_whenDiskAlreadyHoldsPlaintextAndEncryptionRequested] replaces the old
+/// `createAll_omitsInstance_...` test that pinned the pre-ruling drop-and-continue behaviour.
 class StorageFactoryEncryptionTest {
 
     private static final byte[] PLAINTEXT = "storage-factory-plaintext-block-253".getBytes(StandardCharsets.UTF_8);
@@ -123,13 +129,18 @@ class StorageFactoryEncryptionTest {
                           .isEqualTo(PLAINTEXT);
     }
 
+    private static Map<String, StorageFactory.StorageSetup> createAllOrFail(Map<String, StorageConfig> configs,
+                                                                             Option<DHTClient> dhtClient,
+                                                                             Option<EncryptionKeyring> keyring) {
+        return StorageFactory.createAll(configs, NODE_ID, dhtClient, keyring)
+                              .onFailure(cause -> fail("createAll must succeed: " + cause.message()))
+                              .unwrap();
+    }
+
     @Test
     void createAll_encryptsDiskTier_whenInstanceConfigEncryptedAndKeyringPresent() throws IOException {
         var diskDir = tempDir.resolve("vault-disk");
-        var setups = StorageFactory.createAll(Map.of(INSTANCE, storageConfigAt(diskDir, true)),
-                                               NODE_ID,
-                                               Option.none(),
-                                               Option.some(singleKeyRing("key-1")));
+        var setups = createAllOrFail(Map.of(INSTANCE, storageConfigAt(diskDir, true)), Option.none(), Option.some(singleKeyRing("key-1")));
 
         assertThat(setups).containsKey(INSTANCE);
 
@@ -146,10 +157,7 @@ class StorageFactoryEncryptionTest {
     @Test
     void createAll_leavesDiskTierPlaintext_whenInstanceConfigNotEncrypted_evenWithKeyringPresent() throws IOException {
         var diskDir = tempDir.resolve("vault-disk-plain");
-        var setups = StorageFactory.createAll(Map.of(INSTANCE, storageConfigAt(diskDir, false)),
-                                               NODE_ID,
-                                               Option.none(),
-                                               Option.some(singleKeyRing("key-1")));
+        var setups = createAllOrFail(Map.of(INSTANCE, storageConfigAt(diskDir, false)), Option.none(), Option.some(singleKeyRing("key-1")));
 
         assertThat(setups).containsKey(INSTANCE);
 
@@ -176,10 +184,7 @@ class StorageFactoryEncryptionTest {
     @Test
     void createAll_synthesizedDefaultArtifacts_isEncrypted_whenKeyringPresent() {
         var dhtClient = new InMemoryDHTClient();
-        var setups = StorageFactory.createAll(Map.of(),
-                                               NODE_ID,
-                                               Option.some(dhtClient),
-                                               Option.some(singleKeyRing("key-1")));
+        var setups = createAllOrFail(Map.of(), Option.some(dhtClient), Option.some(singleKeyRing("key-1")));
 
         assertThat(setups).containsKey(ARTIFACTS);
 
@@ -200,7 +205,7 @@ class StorageFactoryEncryptionTest {
     @Test
     void createAll_synthesizedDefaultArtifacts_staysPlaintext_whenKeyringAbsent() {
         var dhtClient = new InMemoryDHTClient();
-        var setups = StorageFactory.createAll(Map.of(), NODE_ID, Option.some(dhtClient), Option.none());
+        var setups = createAllOrFail(Map.of(), Option.some(dhtClient), Option.none());
 
         assertThat(setups).containsKey(ARTIFACTS);
 
@@ -213,25 +218,67 @@ class StorageFactoryEncryptionTest {
         stored.onPresent(raw -> assertPlaintextAtRest(raw, "the synthesized 'artifacts' DHT tier"));
     }
 
-    /// `createAll` returns a plain `Map`, not a `Result`: a per-instance construction failure is
-    /// logged and the instance is simply absent. Enabling encryption over a directory that already
-    /// holds unmarked plaintext is such a failure (`EncryptingStorageTier#wrapLocalDisk` refuses
-    /// rather than writing ciphertext alongside unreadable plaintext), so absence from the map IS
-    /// the observable refusal.
+    /// #253 BLOCKING #1 (2026-09-04 ruling): replaces the pre-ruling `createAll_omitsInstance_...`
+    /// test. `createAll` now returns `Result` and a per-instance construction failure -- enabling
+    /// encryption over a directory that already holds unmarked plaintext, exactly like
+    /// `EncryptingStorageTier#wrapLocalDisk`'s refusal -- aborts the WHOLE call rather than silently
+    /// dropping just that one instance from the map and letting boot continue on whatever was left
+    /// (the old behaviour, and BLOCKING #1's root cause paired with `AetherNode`'s now-removed
+    /// `defaultArtifactStorage` fallback). `createOne` wraps the failure with the instance name via
+    /// `mapError`, so the top-level cause names "vault" and its `source()` carries the original
+    /// `EncryptionError.EnablingOverExistingPlaintext` unwrapped underneath.
     @Test
-    void createAll_omitsInstance_whenDiskAlreadyHoldsPlaintextAndEncryptionRequested() {
+    void createAll_fails_whenDiskAlreadyHoldsPlaintextAndEncryptionRequested() {
         var diskDir = tempDir.resolve("vault-legacy-disk");
 
         seedRawPlaintextBlock(diskDir);
 
-        var setups = StorageFactory.createAll(Map.of(INSTANCE, storageConfigAt(diskDir, true)),
-                                               NODE_ID,
-                                               Option.none(),
-                                               Option.some(singleKeyRing("key-1")));
+        var result = StorageFactory.createAll(Map.of(INSTANCE, storageConfigAt(diskDir, true)),
+                                              NODE_ID,
+                                              Option.none(),
+                                              Option.some(singleKeyRing("key-1")));
 
-        assertThat(setups).as("an instance whose encryption enablement was refused must not be silently "
-                              + "created unencrypted -- it must be absent")
-                          .doesNotContainKey(INSTANCE);
+        assertThat(result.isFailure()).as("an instance whose encryption enablement was refused must fail the "
+                                          + "whole boot, not be silently dropped from the map")
+                                      .isTrue();
+        result.onFailure(cause -> {
+            assertThat(cause.message()).as("the aggregate failure must name the failing instance")
+                                       .contains(INSTANCE);
+            assertThat(cause.source().isPresent()).as("the original refusal cause must be reachable underneath the "
+                                                       + "instance-name wrapping")
+                                                  .isTrue();
+            assertThat(cause.source().unwrap()).isInstanceOf(EncryptionError.EnablingOverExistingPlaintext.class);
+        });
+    }
+
+    /// #253 BLOCKING #3 (2026-09-04 ruling): the reverse direction of the test above, through
+    /// `StorageFactory` with real config rather than `EncryptingStorageTier` in isolation. Seeds the
+    /// marker the way a real encrypted boot would (enable encryption, write a block through it), then
+    /// reboots the SAME directory with `encrypted = false` -- the gap `buildTierList`'s no-keyring
+    /// branch used to have: it returned the bare, unwrapped disk tier unconditionally, silently
+    /// handing back framed `AEC1...` ciphertext as if it were the instance's plaintext content on
+    /// every subsequent read. `createOne` wraps
+    /// `EncryptingStorageTier#refuseIfEncryptedWithoutKeyring`'s refusal the same way it wraps
+    /// `wrapLocalDisk`'s, so this failure also names the instance with the original
+    /// `EncryptionError.EncryptedTierRequiresKeyring` reachable underneath.
+    @Test
+    void createAll_fails_whenDiskCarriesEncryptionMarker_andNoKeyringSuppliedForInstance() {
+        var diskDir = tempDir.resolve("vault-was-encrypted");
+        var seeded = createAllOrFail(Map.of(INSTANCE, storageConfigAt(diskDir, true)), Option.none(), Option.some(singleKeyRing("key-1")));
+
+        writeThrough(seeded.get(INSTANCE));
+
+        var result = StorageFactory.createAll(Map.of(INSTANCE, storageConfigAt(diskDir, false)), NODE_ID, Option.none(), Option.none());
+
+        assertThat(result.isFailure()).as("booting a previously-encrypted disk directory with no keyring for this "
+                                          + "instance must fail closed, not silently return the bare tier over "
+                                          + "existing ciphertext")
+                                      .isTrue();
+        result.onFailure(cause -> {
+            assertThat(cause.message()).contains(INSTANCE);
+            assertThat(cause.source().isPresent()).isTrue();
+            assertThat(cause.source().unwrap()).isInstanceOf(EncryptionError.EncryptedTierRequiresKeyring.class);
+        });
     }
 
     /// Mutation target: the `keyring.fold(() -> Result.success(defaultStreamStorage(...)), ...)`
@@ -279,16 +326,35 @@ class StorageFactoryEncryptionTest {
                        .onFailure(cause -> assertThat(cause).isInstanceOf(EncryptionError.EnablingOverExistingPlaintext.class));
     }
 
+    /// #253 BLOCKING #3 extension (2026-09-04, beyond the two call sites the review cited -- see
+    /// `StorageFactory.defaultStreamStorage`'s Javadoc): the streams segments directory has the
+    /// identical reverse-direction gap as the per-instance disk path above. Unlike `createAll`, the
+    /// refusal here is NOT wrapped with instance-name context (`defaultStreamStorage`'s no-keyring
+    /// branch propagates `refuseIfEncryptedWithoutKeyring`'s `Result` directly), so the cause IS the
+    /// `EncryptionError.EncryptedTierRequiresKeyring` itself, not a wrapper around it.
+    @Test
+    void defaultStreamStorage_fails_whenSegmentsDirCarriesEncryptionMarker_andNoKeyringSupplied() {
+        var streamDataDir = tempDir.resolve("streams-was-encrypted");
+        var seeded = StorageFactory.defaultStreamStorage(Option.none(), streamDataDir, NODE_ID, Option.some(singleKeyRing("key-1")))
+                                    .onFailure(cause -> fail("seeding the encrypted streams marker failed: " + cause.message()))
+                                    .unwrap();
+
+        writeThrough(seeded);
+
+        StorageFactory.defaultStreamStorage(Option.none(), streamDataDir, NODE_ID, Option.none())
+                      .onSuccess(_ -> fail("booting streams with a marker present and no keyring must fail closed"))
+                      .onFailure(cause -> assertThat(cause).isInstanceOf(EncryptionError.EncryptedTierRequiresKeyring.class));
+    }
+
     /// The design calls for a decorator over the LocalDisk AND DHT tiers; tests 1-2 only cover disk.
     /// This pins the DHT half: the block's durable copy (the DHT tier is last, hence the durable
     /// tier, when a client is present) must be ciphertext in the backing store.
     @Test
     void createAll_encryptsDhtTier_whenInstanceConfigEncryptedAndKeyringPresent() {
         var dhtClient = new InMemoryDHTClient();
-        var setups = StorageFactory.createAll(Map.of(INSTANCE, storageConfigAt(tempDir.resolve("vault-dht-disk"), true)),
-                                               NODE_ID,
-                                               Option.some(dhtClient),
-                                               Option.some(singleKeyRing("key-1")));
+        var setups = createAllOrFail(Map.of(INSTANCE, storageConfigAt(tempDir.resolve("vault-dht-disk"), true)),
+                                     Option.some(dhtClient),
+                                     Option.some(singleKeyRing("key-1")));
 
         assertThat(setups).containsKey(INSTANCE);
 
@@ -307,10 +373,9 @@ class StorageFactoryEncryptionTest {
     @Test
     void createAll_leavesDhtTierPlaintext_whenInstanceConfigNotEncrypted_evenWithKeyringPresent() {
         var dhtClient = new InMemoryDHTClient();
-        var setups = StorageFactory.createAll(Map.of(INSTANCE, storageConfigAt(tempDir.resolve("vault-dht-plain"), false)),
-                                               NODE_ID,
-                                               Option.some(dhtClient),
-                                               Option.some(singleKeyRing("key-1")));
+        var setups = createAllOrFail(Map.of(INSTANCE, storageConfigAt(tempDir.resolve("vault-dht-plain"), false)),
+                                     Option.some(dhtClient),
+                                     Option.some(singleKeyRing("key-1")));
 
         assertThat(setups).containsKey(INSTANCE);
 
