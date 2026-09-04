@@ -11,7 +11,6 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.metrics.consensus.RabiaMetrics;
 import org.pragmatica.aether.metrics.eventloop.EventLoopMetrics;
 import org.pragmatica.aether.metrics.gc.GCMetrics;
-import org.pragmatica.aether.metrics.network.NetworkMetrics;
 
 import java.util.Map;
 
@@ -26,7 +25,7 @@ class DerivedMetricsCalculatorTest {
                                            long totalInvocations, long failedInvocations,
                                            double avgLatencyMs) {
         return new ComprehensiveSnapshot(timestamp, cpu, heapUsed, heapMax,
-            GCMetrics.EMPTY, EventLoopMetrics.EMPTY, NetworkMetrics.EMPTY, RabiaMetrics.EMPTY,
+            GCMetrics.EMPTY, EventLoopMetrics.EMPTY, RabiaMetrics.EMPTY,
             totalInvocations, totalInvocations - failedInvocations, failedInvocations,
             avgLatencyMs, Map.of());
     }

@@ -18,8 +18,6 @@ import org.pragmatica.aether.metrics.eventloop.EventLoopMetricsCollector;
 import org.pragmatica.aether.metrics.gc.GCMetrics;
 import org.pragmatica.aether.metrics.gc.GCMetricsCollector;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
-import org.pragmatica.aether.metrics.network.NetworkMetrics;
-import org.pragmatica.aether.metrics.network.NetworkMetricsHandler;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -38,7 +36,6 @@ public final class ComprehensiveSnapshotCollector {
 
     private final GCMetricsCollector gcCollector;
     private final EventLoopMetricsCollector eventLoopCollector;
-    private final NetworkMetricsHandler networkHandler;
     private final RabiaMetricsCollector rabiaCollector;
     private final InvocationMetricsCollector invocationCollector;
     private final MinuteAggregator minuteAggregator;
@@ -52,14 +49,12 @@ public final class ComprehensiveSnapshotCollector {
 
     private ComprehensiveSnapshotCollector(GCMetricsCollector gcCollector,
                                            EventLoopMetricsCollector eventLoopCollector,
-                                           NetworkMetricsHandler networkHandler,
                                            RabiaMetricsCollector rabiaCollector,
                                            InvocationMetricsCollector invocationCollector,
                                            MinuteAggregator minuteAggregator,
                                            DerivedMetricsCalculator derivedCalculator) {
         this.gcCollector = gcCollector;
         this.eventLoopCollector = eventLoopCollector;
-        this.networkHandler = networkHandler;
         this.rabiaCollector = rabiaCollector;
         this.invocationCollector = invocationCollector;
         this.minuteAggregator = minuteAggregator;
@@ -70,14 +65,12 @@ public final class ComprehensiveSnapshotCollector {
 
     public static ComprehensiveSnapshotCollector comprehensiveSnapshotCollector(GCMetricsCollector gcCollector,
                                                                                 EventLoopMetricsCollector eventLoopCollector,
-                                                                                NetworkMetricsHandler networkHandler,
                                                                                 RabiaMetricsCollector rabiaCollector,
                                                                                 InvocationMetricsCollector invocationCollector,
                                                                                 MinuteAggregator minuteAggregator,
                                                                                 DerivedMetricsCalculator derivedCalculator) {
         return new ComprehensiveSnapshotCollector(gcCollector,
                                                   eventLoopCollector,
-                                                  networkHandler,
                                                   rabiaCollector,
                                                   invocationCollector,
                                                   minuteAggregator,
@@ -86,13 +79,11 @@ public final class ComprehensiveSnapshotCollector {
 
     public static ComprehensiveSnapshotCollector comprehensiveSnapshotCollector(GCMetricsCollector gcCollector,
                                                                                 EventLoopMetricsCollector eventLoopCollector,
-                                                                                NetworkMetricsHandler networkHandler,
                                                                                 RabiaMetricsCollector rabiaCollector,
                                                                                 InvocationMetricsCollector invocationCollector,
                                                                                 MinuteAggregator minuteAggregator) {
         return new ComprehensiveSnapshotCollector(gcCollector,
                                                   eventLoopCollector,
-                                                  networkHandler,
                                                   rabiaCollector,
                                                   invocationCollector,
                                                   minuteAggregator,
@@ -166,7 +157,6 @@ public final class ComprehensiveSnapshotCollector {
         var heapUsage = memoryMxBean.getHeapMemoryUsage();
         GCMetrics gc = gcCollector.snapshot();
         EventLoopMetrics eventLoop = eventLoopCollector.snapshot();
-        NetworkMetrics network = networkHandler.snapshot();
         RabiaMetrics consensus = rabiaCollector.snapshot();
         var invocationSnapshots = invocationCollector.snapshot();
         long totalInvocations = 0;
@@ -193,7 +183,6 @@ public final class ComprehensiveSnapshotCollector {
                                          heapUsage.getMax(),
                                          gc,
                                          eventLoop,
-                                         network,
                                          consensus,
                                          totalInvocations,
                                          successfulInvocations,

@@ -285,6 +285,26 @@ class QuicClusterNetworkStreamZombieTest {
                 var aId = new NodeId("aaa-dialer");
                 awaitTrue(() -> nodeB.connectedPeers().contains(aId), "B accepts A");
 
+                // #726: the Hello handshake itself (CONTROL-lane preamble + Hello, both directions)
+                // is hooked, so the payload-byte counters are already positive from the handshake
+                // ALONE — strictly before any application-level write (the keepalive beacon below).
+                // Proves the claim covers handshake bytes, not just post-handshake app traffic.
+                // Awaited rather than asserted synchronously: each increment happens on its owning
+                // node's QUIC event-loop thread, not the test thread, same reasoning as the
+                // receive-side awaits further down. This is a genuine mutation probe, not just a
+                // liveness check: liveNetwork() stretches this test's pingInterval to 30s (see its
+                // javadoc), so the automatic keepalive scheduler cannot fire within AWAIT_TIMEOUT
+                // (10s) and cannot contaminate these counters — a revert of any of the nine #726
+                // hooks makes the corresponding awaitTrue below time out and fail for real.
+                awaitTrue(() -> nodeA.quicMetrics().bytesSentCount() > 0,
+                          "#726: the dialer's CONTROL preamble + Hello writes count before any app write");
+                awaitTrue(() -> nodeA.quicMetrics().bytesReceivedCount() > 0,
+                          "#726: the dialer's receipt of the acceptor's Hello response counts before any app write");
+                awaitTrue(() -> nodeB.quicMetrics().bytesSentCount() > 0,
+                          "#726: the acceptor's Hello-response write counts before any app write");
+                awaitTrue(() -> nodeB.quicMetrics().bytesReceivedCount() > 0,
+                          "#726: the acceptor's receipt of the dialer's CONTROL preamble + Hello counts before any app write");
+
                 // The transport keepalive scheduler writes a CONTROL-lane beacon to every CONNECTED
                 // peer each pingInterval (via writeToStream), exercising the acceptor's lane table on
                 // both sides. Give it a couple of cadences to drive real writes, then assert neither
@@ -301,6 +321,26 @@ class QuicClusterNetworkStreamZombieTest {
                 assertThat(nodeB.quicMetrics().streamZombieEvictionCount())
                     .as("a live handshake never strands the acceptor with an unhealable lane")
                     .isZero();
+                // #726: the keepalive beacon is a real CONTROL-lane write/read on a live two-node
+                // pipeline — proves the payload-byte counters move at BOTH lane boundaries (send:
+                // QuicClusterNetwork#writeIfWritable, receive: QuicLaneDataHandler#channelRead0),
+                // for BOTH the dialer and the acceptor (the two directions share one handler class).
+                // The send-side counter increments synchronously on the calling thread inside
+                // writeIfWritable/rawBackpressuredWrite, so it is already positive once keepaliveTick()
+                // returns. The receive-side counter only increments once the OTHER node's real QUIC
+                // event loop has scheduled and run channelRead0 for the inbound frame — under
+                // concurrent reactor load that can take longer than "immediately", so it is awaited
+                // like every other cross-node convergence in this test, not asserted synchronously.
+                assertThat(nodeA.quicMetrics().bytesSentCount())
+                    .as("#726: the dialer's keepalive write increments its payload-byte send counter")
+                    .isPositive();
+                awaitTrue(() -> nodeB.quicMetrics().bytesReceivedCount() > 0,
+                          "#726: the acceptor's receipt of the dialer's frame increments its payload-byte receive counter");
+                assertThat(nodeB.quicMetrics().bytesSentCount())
+                    .as("#726: the acceptor's own keepalive write increments its payload-byte send counter")
+                    .isPositive();
+                awaitTrue(() -> nodeA.quicMetrics().bytesReceivedCount() > 0,
+                          "#726: the dialer's receipt of the acceptor's frame increments its payload-byte receive counter");
             } finally {
                 nodeA.stop().await(AWAIT_TIMEOUT);
                 nodeB.stop().await(AWAIT_TIMEOUT);
@@ -392,7 +432,15 @@ class QuicClusterNetworkStreamZombieTest {
     private QuicClusterNetwork liveNetwork(NodeId nodeId, SliceCodec codec, QuicSslContext serverSsl, QuicSslContext clientSsl) {
         var address = NodeAddress.nodeAddress("127.0.0.1", 19995).fold(_ -> fail("bad address"), a -> a);
         var selfInfo = NodeInfo.nodeInfo(nodeId, address);
-        var network = new QuicClusterNetwork(stubTopology(selfInfo), codec, codec,
+        // #726: pingInterval is stretched to 30s (vs. the 1s every other helper in this file uses)
+        // solely so the automatic keepalive scheduler that QuicClusterNetwork#startOnPort starts
+        // internally cannot fire within AWAIT_TIMEOUT (10s). Without this, the scheduler's own
+        // pre-existing byte-counter hooks (QuicClusterNetwork#writeIfWritable, QuicLaneDataHandler)
+        // can independently satisfy "counter > 0" before the test's explicit keepaliveTick() calls
+        // run, making the handshake-phase assertions below pass even with the nine #726 hooks
+        // reverted. `network()` below never calls startOnPort, so its own 1s stub is inert and
+        // unaffected by this change.
+        var network = new QuicClusterNetwork(stubTopology(selfInfo, TimeSpan.timeSpan(30).seconds()), codec, codec,
                                              MessageRouter.mutable(), serverSsl, clientSsl);
         network.startOnPort(0).await(AWAIT_TIMEOUT).onFailure(cause -> fail("start failed: " + cause.message()));
         return network;
@@ -420,6 +468,10 @@ class QuicClusterNetworkStreamZombieTest {
     }
 
     private static TopologyObserver stubTopology(NodeInfo self) {
+        return stubTopology(self, TimeSpan.timeSpan(1).seconds());
+    }
+
+    private static TopologyObserver stubTopology(NodeInfo self, TimeSpan pingInterval) {
         return new TopologyObserver() {
             @Override public NodeInfo self() {return self;}
             @Override public Option<NodeInfo> get(NodeId id) {return id.equals(self.id()) ? Option.some(self) : Option.empty();}
@@ -427,7 +479,7 @@ class QuicClusterNetworkStreamZombieTest {
             @Override public Option<NodeId> reverseLookup(SocketAddress socketAddress) {return Option.empty();}
             @Override public Promise<Unit> start() {return Promise.unitPromise();}
             @Override public Promise<Unit> stop() {return Promise.unitPromise();}
-            @Override public TimeSpan pingInterval() {return TimeSpan.timeSpan(1).seconds();}
+            @Override public TimeSpan pingInterval() {return pingInterval;}
             @Override public TimeSpan helloTimeout() {return TimeSpan.timeSpan(5).seconds();}
             @Override public Option<TlsConfig> tls() {return Option.empty();}
             @Override public Option<NodeState> getState(NodeId id) {return Option.empty();}

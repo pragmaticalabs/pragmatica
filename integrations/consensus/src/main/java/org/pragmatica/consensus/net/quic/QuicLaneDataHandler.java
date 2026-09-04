@@ -40,6 +40,7 @@ final class QuicLaneDataHandler extends SimpleChannelInboundHandler<ByteBuf> {
     private final NodeId peerId;
     private final StreamType lane;
     private final Deserializer deserializer;
+    private final QuicTransportMetrics quicMetrics;
     private final MessageReceiver messageReceiver;
     private final Logger log;
     private final Runnable onWritable;
@@ -47,11 +48,13 @@ final class QuicLaneDataHandler extends SimpleChannelInboundHandler<ByteBuf> {
     QuicLaneDataHandler(NodeId peerId,
                         StreamType lane,
                         Deserializer deserializer,
+                        QuicTransportMetrics quicMetrics,
                         MessageReceiver messageReceiver,
                         Logger log) {
         this(peerId,
              lane,
              deserializer,
+             quicMetrics,
              messageReceiver,
              log,
              () -> {});
@@ -60,12 +63,14 @@ final class QuicLaneDataHandler extends SimpleChannelInboundHandler<ByteBuf> {
     QuicLaneDataHandler(NodeId peerId,
                         StreamType lane,
                         Deserializer deserializer,
+                        QuicTransportMetrics quicMetrics,
                         MessageReceiver messageReceiver,
                         Logger log,
                         Runnable onWritable) {
         this.peerId = peerId;
         this.lane = lane;
         this.deserializer = deserializer;
+        this.quicMetrics = quicMetrics;
         this.messageReceiver = messageReceiver;
         this.log = log;
         this.onWritable = onWritable;
@@ -78,6 +83,9 @@ final class QuicLaneDataHandler extends SimpleChannelInboundHandler<ByteBuf> {
         var bytes = new byte[buf.readableBytes()];
 
         buf.readBytes(bytes);
+        // #726: PAYLOAD bytes at the lane boundary — after the pipeline has already stripped
+        // QUIC/TLS overhead, before deserialization. Not a wire-byte or bandwidth figure.
+        quicMetrics.onBytesReceived(bytes.length);
         try {
             var message = deserializer.decode(bytes);
 

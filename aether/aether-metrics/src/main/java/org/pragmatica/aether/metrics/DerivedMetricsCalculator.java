@@ -83,7 +83,6 @@ public final class DerivedMetricsCalculator {
                                      percentiles.p99,
                                      eventLoopSaturation,
                                      totals.sumHeapUsage / n,
-                                     rates.backpressureRate,
                                      trends.cpuTrend,
                                      trends.latencyTrend,
                                      trends.errorTrend);
@@ -97,33 +96,25 @@ public final class DerivedMetricsCalculator {
     }
 
     private Totals accumulateTotals(List<ComprehensiveSnapshot> sampleList) {
-        long totalInvocations = 0, totalFailed = 0, totalGc = 0, totalBackpressure = 0;
+        long totalInvocations = 0, totalFailed = 0, totalGc = 0;
         double sumLatency = 0, sumHeapUsage = 0, sumEventLoopLag = 0;
 
         for (var sample : sampleList) {
             totalInvocations += sample.totalInvocations();
             totalFailed += sample.failedInvocations();
             totalGc += sample.gc().totalGcCount();
-            totalBackpressure += sample.network().backpressureEvents();
             sumLatency += sample.avgLatencyMs();
             sumHeapUsage += sample.heapUsage();
             sumEventLoopLag += sample.eventLoop().lagNanos();
         }
 
-        return new Totals(totalInvocations,
-                          totalFailed,
-                          totalGc,
-                          totalBackpressure,
-                          sumLatency,
-                          sumHeapUsage,
-                          sumEventLoopLag);
+        return new Totals(totalInvocations, totalFailed, totalGc, sumLatency, sumHeapUsage, sumEventLoopLag);
     }
 
     private Rates calculateRates(Totals totals, double windowSeconds, int n) {
         return new Rates(totals.totalInvocations / windowSeconds,
                          totals.totalFailed / windowSeconds,
-                         totals.totalGc / windowSeconds,
-                         totals.totalBackpressure / windowSeconds);
+                         totals.totalGc / windowSeconds);
     }
 
     private Percentiles calculatePercentiles(List<ComprehensiveSnapshot> sampleList) {
@@ -193,12 +184,11 @@ public final class DerivedMetricsCalculator {
     private record Totals(long totalInvocations,
                           long totalFailed,
                           long totalGc,
-                          long totalBackpressure,
                           double sumLatency,
                           double sumHeapUsage,
                           double sumEventLoopLag) {}
 
-    private record Rates(double requestRate, double errorRate, double gcRate, double backpressureRate) {}
+    private record Rates(double requestRate, double errorRate, double gcRate) {}
 
     private record Percentiles(double p50, double p95, double p99) {}
 

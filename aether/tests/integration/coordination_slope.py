@@ -7,10 +7,15 @@ and emits the slope table.
 WHAT THIS MEASURES, AND WHAT IT DOES NOT
   Measures : QUIC protocol-message rate per CORE NODE (quic_messages_sent_total +
              quic_messages_received_total, differenced over a window), plus cpu.usage / heap.used.
-  Does NOT : bytes (no byte counter reaches the wire — NetworkMetrics lives only inside
-             ComprehensiveSnapshot, which the HTTP DTO drops, see #674); per-peer attribution
-             (the counters are node-level totals); consensus-specific load (decisions/proposals
-             are collected but never serialised, also #674).
+  Does NOT : sample bytes — this script does not read them, not because they are unreachable.
+             `quic_bytes_sent_total` / `quic_bytes_received_total` (#726) DO reach the wire, over
+             the same transport-gauge path as the message counters above; they count PAYLOAD bytes
+             at the lane boundary (the serialized frame handed to/decoded from the channel, after
+             QUIC framing/TLS overhead/retransmits are stripped — never a bandwidth figure). A
+             future revision could sample them the same way it samples quic_messages_*_total.
+             Still missing: per-peer attribution (the counters are node-level totals);
+             consensus-specific load (decisions/proposals are collected but never serialised,
+             also #674).
 
   The deliverable is therefore a WORKER-COUNT slope for the shipping topology, not a
   community-count slope. That distinction is the whole point of the #591 re-scope — do not let a

@@ -127,6 +127,12 @@ public interface ObservabilityRegistry {
             registerTransportGauge("quic_handshake_failures_total", "Failed QUIC handshakes", metricsSupplier);
             registerTransportGauge("quic_messages_sent_total", "Messages sent over QUIC", metricsSupplier);
             registerTransportGauge("quic_messages_received_total", "Messages received over QUIC", metricsSupplier);
+            registerTransportGauge("quic_bytes_sent_total",
+                                   "#726: QUIC payload bytes sent at the lane boundary — not a wire-byte or bandwidth figure",
+                                   metricsSupplier);
+            registerTransportGauge("quic_bytes_received_total",
+                                   "#726: QUIC payload bytes received at the lane boundary — not a wire-byte or bandwidth figure",
+                                   metricsSupplier);
             registerTransportGauge("quic_write_failures_total", "QUIC write failures", metricsSupplier);
             registerTransportGauge("quic_backpressure_drops_total", "QUIC backpressure drops", metricsSupplier);
 

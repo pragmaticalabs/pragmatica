@@ -164,7 +164,7 @@ class QuicClusterAdmissionTest {
 
     private int startServer(QuicSslContext serverSsl) {
         server = QuicClusterServer.quicClusterServer(SERVER_NODE, SERVER_ADDRESS, Map.of(), codec, codec,
-                                                     serverSsl, Option.empty(), (_, _, _) -> {}, (_, _) -> {});
+                                                     QuicTransportMetrics.quicTransportMetrics(), serverSsl, Option.empty(), (_, _, _) -> {}, (_, _) -> {});
         server.start(0)
               .await(AWAIT_TIMEOUT)
               .onFailure(cause -> fail("server start: " + cause.message()));
@@ -174,7 +174,7 @@ class QuicClusterAdmissionTest {
 
     private boolean connects(QuicSslContext clientSsl, int port) {
         client = QuicClusterClient.quicClusterClient(CLIENT_NODE, CLIENT_ADDRESS, Map.of(), codec, codec,
-                                                     clientSsl, Option.empty(), (_, _) -> {});
+                                                     QuicTransportMetrics.quicTransportMetrics(), clientSsl, Option.empty(), (_, _) -> {});
 
         return client.connect(SERVER_NODE, new InetSocketAddress("127.0.0.1", port))
                      .await(AWAIT_TIMEOUT)

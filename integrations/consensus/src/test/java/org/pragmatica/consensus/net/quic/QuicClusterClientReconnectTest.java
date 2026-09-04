@@ -169,7 +169,7 @@ class QuicClusterClientReconnectTest {
         var serverSsl = QuicTlsProvider.serverContext(ClusterTestTls.clusterTls("test-server"))
                                        .fold(_ -> fail("server SSL failed"), ssl -> ssl);
         server = QuicClusterServer.quicClusterServer(
-            SERVER_NODE, SERVER_ADDRESS, Map.of(), codec, codec, serverSsl, Option.empty(),
+            SERVER_NODE, SERVER_ADDRESS, Map.of(), codec, codec, QuicTransportMetrics.quicTransportMetrics(), serverSsl, Option.empty(),
             (_, _, _) -> {}, (_, _) -> {}
         );
         server.start(0).await(AWAIT_TIMEOUT)
@@ -180,7 +180,7 @@ class QuicClusterClientReconnectTest {
         var clientSsl = QuicTlsProvider.clientContext(ClusterTestTls.clusterTls("test-client"))
                                        .fold(_ -> fail("client SSL failed"), ssl -> ssl);
         return QuicClusterClient.quicClusterClient(
-            CLIENT_NODE, CLIENT_ADDRESS, Map.of(), codec, codec, clientSsl, Option.empty(),
+            CLIENT_NODE, CLIENT_ADDRESS, Map.of(), codec, codec, QuicTransportMetrics.quicTransportMetrics(), clientSsl, Option.empty(),
             (_, _) -> {}
         );
     }

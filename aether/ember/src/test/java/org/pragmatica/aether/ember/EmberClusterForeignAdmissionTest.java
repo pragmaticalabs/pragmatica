@@ -18,6 +18,7 @@ import org.pragmatica.consensus.net.NetCodecs;
 import org.pragmatica.consensus.net.quic.QuicClusterClient;
 import org.pragmatica.consensus.net.quic.QuicClusterServer;
 import org.pragmatica.consensus.net.quic.QuicTlsProvider;
+import org.pragmatica.consensus.net.quic.QuicTransportMetrics;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.NodeAddress;
@@ -141,7 +142,7 @@ class EmberClusterForeignAdmissionTest {
         var serverSsl = serverSsl(serverTls);
 
         server = QuicClusterServer.quicClusterServer(serverNode, SERVER_ADDRESS, Map.of(), codec, codec,
-                                                     serverSsl, Option.empty(), (_, _, _) -> {}, (_, _) -> {});
+                                                     QuicTransportMetrics.quicTransportMetrics(), serverSsl, Option.empty(), (_, _, _) -> {}, (_, _) -> {});
         server.start(0)
               .await(AWAIT_TIMEOUT)
               .onFailure(cause -> fail("server start: " + cause.message()));
@@ -153,7 +154,7 @@ class EmberClusterForeignAdmissionTest {
         var clientSsl = clientSsl(clientTls);
 
         client = QuicClusterClient.quicClusterClient(CLIENT_NODE, CLIENT_ADDRESS, Map.of(), codec, codec,
-                                                     clientSsl, Option.empty(), (_, _) -> {});
+                                                     QuicTransportMetrics.quicTransportMetrics(), clientSsl, Option.empty(), (_, _) -> {});
 
         var admitted = client.connect(serverNode, new InetSocketAddress("127.0.0.1", port))
                              .await(AWAIT_TIMEOUT)
@@ -196,7 +197,7 @@ class EmberClusterForeignAdmissionTest {
         var serverSsl = serverSsl(serverTls);
 
         server = QuicClusterServer.quicClusterServer(serverNode, SERVER_ADDRESS, Map.of(), codec, codec,
-                                                     serverSsl, Option.empty(), (_, _, _) -> {}, (_, _) -> {});
+                                                     QuicTransportMetrics.quicTransportMetrics(), serverSsl, Option.empty(), (_, _, _) -> {}, (_, _) -> {});
         server.start(0)
               .await(AWAIT_TIMEOUT)
               .onFailure(cause -> fail("server start: " + cause.message()));
@@ -208,7 +209,7 @@ class EmberClusterForeignAdmissionTest {
         var clientSsl = clientSsl(clientTls);
 
         client = QuicClusterClient.quicClusterClient(CLIENT_NODE, CLIENT_ADDRESS, Map.of(), codec, codec,
-                                                     clientSsl, Option.empty(), (_, _) -> {});
+                                                     QuicTransportMetrics.quicTransportMetrics(), clientSsl, Option.empty(), (_, _) -> {});
 
         var admitted = client.connect(serverNode, new InetSocketAddress("127.0.0.1", port))
                              .await(AWAIT_TIMEOUT)

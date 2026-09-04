@@ -11,7 +11,6 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.metrics.consensus.RabiaMetrics;
 import org.pragmatica.aether.metrics.eventloop.EventLoopMetrics;
 import org.pragmatica.aether.metrics.gc.GCMetrics;
-import org.pragmatica.aether.metrics.network.NetworkMetrics;
 
 import java.util.Map;
 
@@ -23,7 +22,7 @@ class MinuteAggregatorTest {
 
     private ComprehensiveSnapshot snapshot(long timestamp, double cpu, double avgLatencyMs) {
         return new ComprehensiveSnapshot(timestamp, cpu, 100L, 1000L,
-            GCMetrics.EMPTY, EventLoopMetrics.EMPTY, NetworkMetrics.EMPTY, RabiaMetrics.EMPTY,
+            GCMetrics.EMPTY, EventLoopMetrics.EMPTY, RabiaMetrics.EMPTY,
             10, 9, 1, avgLatencyMs, Map.of());
     }
 

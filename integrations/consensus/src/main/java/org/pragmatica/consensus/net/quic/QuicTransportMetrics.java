@@ -49,6 +49,14 @@ public final class QuicTransportMetrics {
     /// drop, not just the rate-limited WARNs, so ops see true drop volume (the invisibility of this class
     /// hid the #467/#457 self-send drops for months).
     private final LongAdder dropToUnknownPeer = new LongAdder();
+    /// #726: PAYLOAD bytes handed to the channel on send — the serialized frame passed to
+    /// `writeAndFlush`, before QUIC adds framing, TLS encryption overhead, or retransmits. Not a
+    /// wire-byte or bandwidth figure; do not treat it as one.
+    private final LongAdder bytesSent = new LongAdder();
+    /// #726: PAYLOAD bytes decoded from the buffer on receive — the frame read out of the QUIC
+    /// stream lane after the pipeline has already stripped QUIC/TLS overhead. Symmetric with
+    /// [#bytesSent] on the same honesty boundary.
+    private final LongAdder bytesReceived = new LongAdder();
 
     private QuicTransportMetrics() {}
 
@@ -138,6 +146,21 @@ public final class QuicTransportMetrics {
         dropToUnknownPeer.increment();
     }
 
+    /// #726: records PAYLOAD bytes handed to the channel on send, at the lane boundary — before
+    /// QUIC framing, TLS overhead, or retransmits. Never call the resulting counter "bandwidth".
+    @Contract
+    public void onBytesSent(long byteCount) {
+        bytesSent.add(byteCount);
+    }
+
+    /// #726: records PAYLOAD bytes decoded from the buffer on receive, at the lane boundary —
+    /// after the pipeline has already stripped QUIC/TLS overhead. Never call the resulting
+    /// counter "bandwidth".
+    @Contract
+    public void onBytesReceived(long byteCount) {
+        bytesReceived.add(byteCount);
+    }
+
     // --- Snapshot ---
     /// Returns a snapshot of all QUIC transport metrics as a map
     /// suitable for JSON serialization and Prometheus exposition.
@@ -158,6 +181,10 @@ public final class QuicTransportMetrics {
         metrics.put("quic_stream_zombie_lazy_opens_total", streamZombieLazyOpens.sum());
         metrics.put("quic_stream_zombie_evictions_total", streamZombieEvictions.sum());
         metrics.put("quic_drop_to_unknown_peer_total", dropToUnknownPeer.sum());
+        // #726: payload bytes at the lane boundary (no QUIC framing/TLS overhead/retransmits) —
+        // not a wire-byte or bandwidth figure.
+        metrics.put("quic_bytes_sent_total", bytesSent.sum());
+        metrics.put("quic_bytes_received_total", bytesReceived.sum());
 
         return Map.copyOf(metrics);
     }
@@ -212,5 +239,17 @@ public final class QuicTransportMetrics {
 
     public long dropToUnknownPeerCount() {
         return dropToUnknownPeer.sum();
+    }
+
+    /// #726: PAYLOAD bytes handed to the channel on send, cumulative. See [#onBytesSent] for the
+    /// exact boundary this counts at.
+    public long bytesSentCount() {
+        return bytesSent.sum();
+    }
+
+    /// #726: PAYLOAD bytes decoded from the buffer on receive, cumulative. See [#onBytesReceived]
+    /// for the exact boundary this counts at.
+    public long bytesReceivedCount() {
+        return bytesReceived.sum();
     }
 }

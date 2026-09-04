@@ -99,6 +99,7 @@ public sealed interface QuicClusterServer {
     /// @param selfLabels        this node's metadata labels
     /// @param serializer        message serializer
     /// @param deserializer      message deserializer
+    /// @param quicMetrics       transport metrics sink (payload byte/message counters; #726)
     /// @param sslContext        QUIC server SSL context (TLS 1.3)
     /// @param sharedEventLoop   optional shared event loop group
     /// @param connectionHandler callback invoked when a peer completes Hello handshake
@@ -108,6 +109,7 @@ public sealed interface QuicClusterServer {
                                                Map<String, String> selfLabels,
                                                Serializer serializer,
                                                Deserializer deserializer,
+                                               QuicTransportMetrics quicMetrics,
                                                QuicSslContext sslContext,
                                                Option<EventLoopGroup> sharedEventLoop,
                                                PeerConnectionHandler connectionHandler,
@@ -117,6 +119,7 @@ public sealed interface QuicClusterServer {
                                              selfLabels,
                                              serializer,
                                              deserializer,
+                                             quicMetrics,
                                              sslContext,
                                              sharedEventLoop,
                                              connectionHandler,
@@ -166,6 +169,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
     private final Map<String, String> selfLabels;
     private final Serializer serializer;
     private final Deserializer deserializer;
+    private final QuicTransportMetrics quicMetrics;
     private final QuicSslContext sslContext;
     private final Option<EventLoopGroup> sharedEventLoop;
     private final PeerConnectionHandler connectionHandler;
@@ -179,6 +183,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
                               Map<String, String> selfLabels,
                               Serializer serializer,
                               Deserializer deserializer,
+                              QuicTransportMetrics quicMetrics,
                               QuicSslContext sslContext,
                               Option<EventLoopGroup> sharedEventLoop,
                               PeerConnectionHandler connectionHandler,
@@ -188,6 +193,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
         this.selfLabels = Map.copyOf(selfLabels);
         this.serializer = serializer;
         this.deserializer = deserializer;
+        this.quicMetrics = quicMetrics;
         this.sslContext = sslContext;
         this.sharedEventLoop = sharedEventLoop;
         this.connectionHandler = connectionHandler;
@@ -357,6 +363,11 @@ final class QuicClusterServerInstance implements QuicClusterServer {
         @Override
         @Contract
         protected void channelRead0(ChannelHandlerContext ctx, ByteBuf buf) {
+            // #726: PAYLOAD bytes at the lane boundary — one channelRead0 invocation is exactly
+            // one length-prefixed frame, so this covers BOTH the 1-byte lane preamble
+            // (AWAITING_PREAMBLE) and the Hello frame (AWAITING_HELLO) without needing a hook in
+            // each branch. Read before either handler consumes the buffer.
+            quicMetrics.onBytesReceived(buf.readableBytes());
             switch (phase) {
                 case AWAITING_PREAMBLE -> handlePreamble(ctx, buf);
                 case AWAITING_HELLO -> handleHello(ctx, buf);
@@ -444,6 +455,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
                         new QuicLaneDataHandler(peerConnection.peerId(),
                                                 lane,
                                                 deserializer,
+                                                quicMetrics,
                                                 messageReceiver,
                                                 log));
             log.debug("Attached {} lane stream from peer {}", lane, peerConnection.peerId());
@@ -489,6 +501,8 @@ final class QuicClusterServerInstance implements QuicClusterServer {
             var helloBytes = serializer.encode(new NetworkMessage.Hello(selfId, selfAddress, selfLabels));
 
             ctx.writeAndFlush(Unpooled.wrappedBuffer(helloBytes));
+            // #726: PAYLOAD bytes at the lane boundary — same honesty boundary as every other write.
+            quicMetrics.onBytesSent(helloBytes.length);
         }
 
         private void registerPeerConnection(ChannelHandlerContext ctx, NetworkMessage.Hello hello) {
@@ -512,6 +526,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
                         new QuicLaneDataHandler(hello.sender(),
                                                 StreamType.CONTROL,
                                                 deserializer,
+                                                quicMetrics,
                                                 messageReceiver,
                                                 log));
             log.info("QUIC Hello handshake complete with peer {} (address={})", hello.sender(), hello.address());
@@ -549,7 +564,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
                     ch.pipeline()
                       .addLast(new io.netty.handler.codec.LengthFieldBasedFrameDecoder(MAX_FRAME_LENGTH, 0, 4, 0, 4))
                       .addLast(new io.netty.handler.codec.LengthFieldPrepender(4))
-                      .addLast(new QuicLaneDataHandler(peerNodeId, lane, deserializer, messageReceiver, log));
+                      .addLast(new QuicLaneDataHandler(peerNodeId, lane, deserializer, quicMetrics, messageReceiver, log));
                 }
             };
 
@@ -571,8 +586,11 @@ final class QuicClusterServerInstance implements QuicClusterServer {
             }
 
             var streamChannel = (QuicStreamChannel) future.getNow();
+            var preamble = new byte[]{(byte) lane.streamIndex()};
 
-            streamChannel.writeAndFlush(Unpooled.wrappedBuffer(new byte[]{(byte) lane.streamIndex()}));
+            streamChannel.writeAndFlush(Unpooled.wrappedBuffer(preamble));
+            // #726: PAYLOAD bytes at the lane boundary — acceptor-side lazy-reopen preamble.
+            quicMetrics.onBytesSent(preamble.length);
             peerConnection.registerStream(lane, streamChannel);
             log.info("Lazily (re)opened {} lane to peer {} — stream-zombie healed without re-dial", lane, peerNodeId);
             onResult.accept(option(streamChannel));
