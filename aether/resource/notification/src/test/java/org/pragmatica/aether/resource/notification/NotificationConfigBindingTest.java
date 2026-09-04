@@ -77,7 +77,15 @@ class NotificationConfigBindingTest {
         assertThat(smtp.auth().unwrap().password()).isEqualTo("s3cret");
 
         assertThat(config.httpConfig().isEmpty()).isTrue();
-        assertThat(config.effectiveRetryConfig().maxAttempts()).isEqualTo(5);
+
+        // `retry_config` supplies only `max_attempts`; the other three fields come from
+        // `RetryConfig.DEFAULT` via `effectiveRetryConfig()` — pinned explicitly per review, since
+        // asserting only `maxAttempts()` above does not exercise the default-fallback path at all.
+        var retry = config.effectiveRetryConfig();
+        assertThat(retry.maxAttempts()).isEqualTo(5);
+        assertThat(retry.initialDelay().millis()).isEqualTo(RetryConfig.DEFAULT.initialDelay().millis());
+        assertThat(retry.maxDelay().millis()).isEqualTo(RetryConfig.DEFAULT.maxDelay().millis());
+        assertThat(retry.backoffMultiplier()).isEqualTo(RetryConfig.DEFAULT.backoffMultiplier());
     }
 
     /// Pins the binder-mechanism gap discovered while writing the test above (not part of
