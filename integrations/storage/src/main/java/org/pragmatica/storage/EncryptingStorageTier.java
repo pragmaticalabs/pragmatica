@@ -50,19 +50,32 @@ import static org.pragmatica.storage.EncryptionParams.encryptionParams;
 /// directory already holds block files with no `.encryption-enabled` marker (see its Javadoc); the
 /// REVERSE direction -- booting the same tier with `encrypted = false`, or no keyring at all, while
 /// that marker is still present -- is refused by [#refuseIfEncryptedWithoutKeyring] instead of
-/// silently returning the bare, unwrapped tier. The DHT tier has no local directory to scan for
-/// either direction and relies solely on the per-read legacy/version/AAD checks above.
+/// silently returning the bare, unwrapped tier. The DHT tier has no local directory to scan, so the
+/// FORWARD direction (enabling encryption over pre-existing DHT plaintext) still relies solely on
+/// the per-read legacy/version/AAD checks above; but the REVERSE direction is now covered too --
+/// `StorageFactory` (`aether/node`) mirrors [#MARKER_FILE_NAME] as a per-instance DHT key under the
+/// tier's key prefix and refuses boot the same way, since this module has no dependency on the DHT
+/// client to do so itself.
 public final class EncryptingStorageTier implements StorageTier {
     static final byte[] MAGIC = {0x41, 0x45, 0x43, 0x31};
 
     static final byte VERSION = 1;
     static final int HEADER_FIXED_LEN = MAGIC.length + 1 + 2;  // magic + version + keyIdLen
     static final int NONCE_LEN = 12;
-    /// Marker file written at the root of a local-disk tier's directory the first time encryption
-    /// is enabled over it, so a later boot can tell "empty/fresh directory, safe to enable" apart
-    /// from "encryption was enabled here before, this IS the encrypted tier" without re-scanning.
-    /// Filename starts with `.` so it can never collide with a two-hex-char shard directory name.
-    static final String MARKER_FILE_NAME = ".encryption-enabled";
+    /// Marker written the first time encryption is enabled over a tier, so a later boot can tell
+    /// "empty/fresh, safe to enable" apart from "encryption was enabled here before, this IS the
+    /// encrypted tier" without re-scanning. For a local-disk tier this is a FILE at the directory
+    /// root ([#wrapLocalDisk], [#refuseIfEncryptedWithoutKeyring]); `StorageFactory` (`aether/node`)
+    /// reuses this same literal as a DHT key (`dhtKeyPrefix + "/" + MARKER_FILE_NAME`) for the
+    /// equivalent DHT-side marker, so the two surfaces share one name even though this module has no
+    /// dependency on the DHT client. `public` for that reuse. Starts with `.` so the disk form can
+    /// never collide with a two-hex-char shard directory name; the DHT form cannot collide with a
+    /// real block key either -- both share the same `<prefix>/<suffix>` shape (`DhtStorageTier`,
+    /// `aether/aether-storage` -- out of this module's dependency graph, named here only for
+    /// context), but a real block key's suffix is always a 64-character lowercase-hex block id,
+    /// which `.encryption-enabled` can never equal (wrong length, and `.`/`n`/`r`/`y` aren't hex
+    /// digits).
+    public static final String MARKER_FILE_NAME = ".encryption-enabled";
 
     private final StorageTier delegate;
     private final EncryptionKeyring keyring;

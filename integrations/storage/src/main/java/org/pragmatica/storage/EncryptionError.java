@@ -43,23 +43,25 @@ public sealed interface EncryptionError extends Cause {
         }
     }
 
-    /// #253 BLOCKING #3 (2026-09-04 ruling): `instanceName`'s local-disk directory carries the
-    /// `.encryption-enabled` marker -- it holds, or held, ciphertext written under `keyId` -- but
-    /// this boot supplies no keyring for it (`encrypted = false`, or `[storage.encryption]` absent
-    /// entirely). The marker means "blocks here are encrypted"; returning the bare, unwrapped tier
-    /// would hand back `AEC1...` framed bytes as plaintext on every read, and a `put` during this
-    /// disabled window writes real plaintext that a later re-enable's legacy-plaintext guard cannot
-    /// tell apart from the ciphertext already there (the marker already exists, so that guard
-    /// short-circuits straight past it). Recovery: set `encrypted = true` (or `streams_encrypted =
-    /// true`) and keep `keyId` resolvable in `[storage.encryption.keys]`, or migrate the directory
-    /// to a fresh, unmarked one (tracked separately -- #831).
+    /// #253 BLOCKING #3 (2026-09-04 ruling), extended by SHOULD-FIX #1 (2026-09-04 ruling):
+    /// `instanceName` carries the `.encryption-enabled` marker -- either as a file at the root of its
+    /// local-disk tier's directory, or as a key under its DHT tier's `<name>-blocks` namespace -- so
+    /// it holds, or held, ciphertext written under `keyId`; but this boot supplies no keyring for it
+    /// (`encrypted = false`, or `[storage.encryption]` absent entirely). The marker means "blocks
+    /// here are encrypted"; returning the bare, unwrapped tier would hand back `AEC1...` framed bytes
+    /// as plaintext on every read, and a `put` during this disabled window writes real plaintext that
+    /// a later re-enable's legacy-plaintext guard cannot tell apart from the ciphertext already there
+    /// (the marker already exists, so that guard short-circuits straight past it). Recovery: set
+    /// `encrypted = true` (or `streams_encrypted = true`) and keep `keyId` resolvable in
+    /// `[storage.encryption.keys]`, or migrate to a fresh, unmarked directory or DHT namespace
+    /// (tracked separately -- #831).
     record EncryptedTierRequiresKeyring(String instanceName, String keyId) implements EncryptionError {
         @Override
         public String message() {
             return "Storage instance '" + instanceName
                  + "' was encrypted under key id '" + keyId
                  + "' but no encryption keyring is configured for it now: set encrypted = true and keep key id '" + keyId
-                 + "' in [storage.encryption.keys], or migrate to a fresh directory (#831)";
+                 + "' in [storage.encryption.keys], or migrate to a fresh directory or DHT namespace (#831)";
         }
     }
 
