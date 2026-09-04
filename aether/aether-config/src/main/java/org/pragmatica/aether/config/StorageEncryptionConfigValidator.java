@@ -8,9 +8,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Pattern;
 
-import static org.pragmatica.lang.Result.success;
-
 import org.pragmatica.lang.Result;
+
+import static org.pragmatica.lang.Result.success;
 
 
 /// #253: structural/syntactic validation of `[storage.encryption]` -- confirms the KEYRING SHAPE is
@@ -38,6 +38,7 @@ public final class StorageEncryptionConfigValidator {
     private static void encryptionSectionErrors(StorageEncryptionConfig enc, List<String> errors) {
         if (enc.keys().isEmpty()) {
             errors.add("storage.encryption.keys must not be empty when [storage.encryption] is present");
+
             return;
         }
 
@@ -51,8 +52,7 @@ public final class StorageEncryptionConfigValidator {
 
     private static void secretRefErrors(String keyId, String ref, List<String> errors) {
         if (!SECRET_REF.matcher(ref).matches()) {
-            errors.add("storage.encryption.keys." + keyId
-                      + " must be a '${secrets:<path>}' reference. Got: " + ref);
+            errors.add("storage.encryption.keys." + keyId + " must be a '${secrets:<path>}' reference. Got: " + ref);
         }
     }
 
@@ -62,9 +62,7 @@ public final class StorageEncryptionConfigValidator {
     /// instead of a late, less specific failure.
     private static void missingSectionErrors(AetherConfig config, List<String> errors) {
         var anyInstanceEncrypted = config.storage().values().stream().anyMatch(StorageConfig::encrypted);
-        var streamsEncrypted = config.storageEncryption()
-                                     .map(StorageEncryptionConfig::streamsEncrypted)
-                                     .or(false);
+        var streamsEncrypted = config.storageEncryption().map(StorageEncryptionConfig::streamsEncrypted).or(false);
 
         if ((anyInstanceEncrypted || streamsEncrypted) && config.storageEncryption().isEmpty()) {
             errors.add("storage encryption requested (an instance has encrypted = true, or "

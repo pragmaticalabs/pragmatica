@@ -30,8 +30,8 @@ public record StorageEncryptionConfig(Map<String, String> keys, String activeKey
     }
 
     public static StorageEncryptionConfig storageEncryptionConfig(Map<String, String> keys,
-                                                                   String activeKeyId,
-                                                                   boolean streamsEncrypted) {
+                                                                  String activeKeyId,
+                                                                  boolean streamsEncrypted) {
         return new StorageEncryptionConfig(keys, activeKeyId, streamsEncrypted);
     }
 

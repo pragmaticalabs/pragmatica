@@ -449,7 +449,6 @@ public final class ConfigLoader {
         for (var sectionName : doc.sectionNames()) {
             if (sectionName.startsWith("storage.")) {
                 var instanceName = sectionName.substring("storage.".length());
-
                 // #253: `[storage.encryption]` (and its `[storage.encryption.keys]` sub-table) is the
                 // global keyring section, not a per-instance `[storage.<name>]` one -- excluded here so
                 // it is never misread as a storage instance literally named "encryption". Parsed
