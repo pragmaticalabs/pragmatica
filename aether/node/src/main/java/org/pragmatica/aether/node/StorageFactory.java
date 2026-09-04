@@ -189,12 +189,14 @@ public final class StorageFactory {
         // provided, synthesize one using `StorageConfig.storageConfig()` defaults; explicit
         // config still wins via the loop above. `createOne` reuses the same code path
         // (`handleDiskTierUnavailable` falls back to memory+DHT when the default disk path
-        // isn't mountable, e.g. inside the aether-node container). The synthesized default is
-        // never encrypted -- `StorageConfig.storageConfig()`'s no-arg default has `encrypted()`
-        // false, and `createOne` only applies `keyring` when the per-instance config asks for it.
+        // isn't mountable, e.g. inside the aether-node container). #253 ruling (2026-09-04): an
+        // operator who turns on `[storage.encryption]` must not have this auto-created instance
+        // silently stay plaintext merely because it has no explicit `[storage.artifacts]`
+        // section -- the synthesized config's `encrypted` flag now tracks keyring presence, same
+        // outcome as an explicit `encrypted = true` section.
         if (!result.containsKey(ARTIFACTS_NAME)) {
             createOne(ARTIFACTS_NAME,
-                      StorageConfig.storageConfig(),
+                      defaultArtifactsConfig(keyring.isPresent()),
                       nodeId,
                       dhtClient,
                       keyring).onSuccess(setup -> result.put(ARTIFACTS_NAME, setup))
@@ -204,6 +206,23 @@ public final class StorageFactory {
         }
 
         return Map.copyOf(result);
+    }
+
+    /// #253: `StorageConfig.storageConfig()`'s defaults with `encrypted` overridden to track
+    /// node-wide keyring presence, for the synthesized default `artifacts` instance in
+    /// [#createAll] -- see the ruling note there.
+    private static StorageConfig defaultArtifactsConfig(boolean encrypted) {
+        var defaults = StorageConfig.storageConfig();
+
+        return new StorageConfig(defaults.memoryMaxBytes(),
+                                 defaults.diskMaxBytes(),
+                                 defaults.diskPath(),
+                                 defaults.snapshotPath(),
+                                 defaults.snapshotMutationThreshold(),
+                                 defaults.snapshotMaxInterval(),
+                                 defaults.snapshotRetentionCount(),
+                                 defaults.walPath(),
+                                 encrypted);
     }
 
     private static final String ARTIFACTS_NAME = "artifacts";

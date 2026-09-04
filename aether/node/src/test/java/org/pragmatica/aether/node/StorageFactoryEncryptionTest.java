@@ -158,24 +158,49 @@ class StorageFactoryEncryptionTest {
         assertPlaintextAtRest(Files.readAllBytes(rawBlockPath(diskDir, blockId)), "the disk tier");
     }
 
-    /// The synthesized default `artifacts` instance (no `[storage.artifacts]` in config) must stay
-    /// plaintext even when the node carries a keyring, because `StorageConfig.storageConfig()`'s
-    /// default has `encrypted() == false`.
+    /// #253 ruling (2026-09-04): an operator who turns on `[storage.encryption]` must not have the
+    /// auto-created default `artifacts` instance (no explicit `[storage.artifacts]` section) silently
+    /// stay plaintext -- `defaultArtifactsConfig` now carries `encrypted = keyring.isPresent()`, the
+    /// same outcome as an explicit `encrypted = true` section. This replaces the pre-ruling behaviour
+    /// (see the plaintext-when-absent counterpart below), which is now the anti-regression pin for the
+    /// OPPOSITE gate: mere keyring PRESENCE must still cover this instance.
     ///
     /// Deliberately asserted on the DHT tier rather than the disk tier: the synthesized default's
     /// `diskPath` is the fixed absolute `/data/aether/storage`, which is not creatable in a test
     /// sandbox, so `handleDiskTierUnavailable` degrades this instance to memory+DHT and there is no
     /// file to read. That degraded path is precisely where the coverage matters -- `maybeEncryptDht`
     /// applies the keyring on BOTH the disk-available and disk-unavailable branches, so an
-    /// encryption gate removed from `createOne` shows up here as ciphertext in the DHT store
-    /// regardless of whether the default disk path happens to be writable on the host.
+    /// encryption gate removed from `createOne` (or from `defaultArtifactsConfig`) shows up here as
+    /// plaintext in the DHT store regardless of whether the default disk path happens to be writable
+    /// on the host.
     @Test
-    void createAll_synthesizedDefaultArtifacts_isNeverEncrypted_evenWithKeyringPresent() {
+    void createAll_synthesizedDefaultArtifacts_isEncrypted_whenKeyringPresent() {
         var dhtClient = new InMemoryDHTClient();
         var setups = StorageFactory.createAll(Map.of(),
                                                NODE_ID,
                                                Option.some(dhtClient),
                                                Option.some(singleKeyRing("key-1")));
+
+        assertThat(setups).containsKey(ARTIFACTS);
+
+        var blockId = writeThrough(setups.get(ARTIFACTS));
+        var stored = dhtClient.rawValue("artifacts-blocks", blockId);
+
+        assertThat(stored.isPresent()).as("the DHT tier is always present when a client is supplied, on both "
+                                          + "the disk-available and the degraded memory+DHT path")
+                                      .isTrue();
+        stored.onPresent(raw -> assertCiphertextAtRest(raw, "the synthesized 'artifacts' DHT tier"));
+    }
+
+    /// The exact inverse of the test above, same shape as
+    /// `createAll_leavesDiskTierPlaintext_whenInstanceConfigNotEncrypted_evenWithKeyringPresent`:
+    /// with no keyring supplied at all, `defaultArtifactsConfig(false)` must still delegate to plain,
+    /// unencrypted storage -- there is no keyring to gate on, so `createOne`'s effective keyring is
+    /// empty regardless of the `encrypted` flag's value.
+    @Test
+    void createAll_synthesizedDefaultArtifacts_staysPlaintext_whenKeyringAbsent() {
+        var dhtClient = new InMemoryDHTClient();
+        var setups = StorageFactory.createAll(Map.of(), NODE_ID, Option.some(dhtClient), Option.none());
 
         assertThat(setups).containsKey(ARTIFACTS);
 
