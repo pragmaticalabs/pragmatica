@@ -130,6 +130,26 @@ class ScheduledTaskRoutesAllModeAggregationTest {
         }
 
         @Test
+        void buildTasksResponse_allModeTaskWithGlobalShapedKeyPresent_excludesGlobalKeyFromAggregation() {
+            seedTwoNodeState();
+            // Pre-#841 global-shaped row for this same task identity (no node component). Must
+            // never be misread as a third node's row by aggregateAllModeState's scan — values
+            // chosen so inclusion would visibly corrupt every combined field below.
+            seed(ScheduledTaskStateKey.scheduledTaskStateKey(SECTION, artifact(ARTIFACT), new MethodName(METHOD)),
+                 new ScheduledTaskStateValue(9_999_999L, 1L, 999, 9_999, "stale-global", 9_999_999L, 999));
+            var routes = buildRoutes();
+
+            ScheduledTasksResponse response = routes.buildTasksResponseForTest();
+
+            assertThat(response.tasks()).hasSize(1);
+            var summary = response.tasks().getFirst();
+            assertThat(summary.totalExecutions()).isEqualTo(12);
+            assertThat(summary.consecutiveFailures()).isEqualTo(5);
+            assertThat(summary.lastExecutionAt()).isEqualTo(2_000L);
+            assertThat(summary.nextFireAt()).isEqualTo(50L);
+        }
+
+        @Test
         void buildTasksResponse_allModeTaskNoNodeStateYet_reportsZeroed() {
             var routes = buildRoutes();
 
@@ -165,6 +185,29 @@ class ScheduledTaskRoutesAllModeAggregationTest {
             assertThat(response.skippedOverlaps()).isEqualTo(3);
             // lastFailureMessage/updatedAt: taken together from the row with the highest
             // updatedAt (node-a, 2000) — never an arbitrary pairing of one field from each row.
+            assertThat(response.lastFailureMessage()).isEqualTo("fail-a");
+            assertThat(response.updatedAt()).isEqualTo(2_000L);
+        }
+
+        @Test
+        void getTaskState_allModeTaskWithGlobalShapedKeyPresent_excludesGlobalKeyFromAggregation() {
+            seedTwoNodeState();
+            // Pre-#841 global-shaped row for this same task identity — see the ListSummary
+            // sibling test above for why the values are chosen this way.
+            seed(ScheduledTaskStateKey.scheduledTaskStateKey(SECTION, artifact(ARTIFACT), new MethodName(METHOD)),
+                 new ScheduledTaskStateValue(9_999_999L, 1L, 999, 9_999, "stale-global", 9_999_999L, 999));
+            var routes = buildRoutes();
+
+            TaskStateResponse response = routes.getTaskStateForTest(SECTION, ARTIFACT, METHOD)
+                                                .onFailure(cause -> fail("Must succeed: " + cause.message()))
+                                                .await()
+                                                .or((TaskStateResponse) null);
+
+            assertThat(response).isNotNull();
+            assertThat(response.totalExecutions()).isEqualTo(12);
+            assertThat(response.consecutiveFailures()).isEqualTo(5);
+            assertThat(response.lastExecutionAt()).isEqualTo(2_000L);
+            assertThat(response.nextFireAt()).isEqualTo(50L);
             assertThat(response.lastFailureMessage()).isEqualTo("fail-a");
             assertThat(response.updatedAt()).isEqualTo(2_000L);
         }
