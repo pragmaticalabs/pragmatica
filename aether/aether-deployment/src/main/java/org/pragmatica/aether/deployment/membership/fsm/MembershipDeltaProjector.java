@@ -110,6 +110,7 @@ public final class MembershipDeltaProjector {
     private final Supplier<HlcTimestamp> hlcSupplier;
     private final Consumer<MembershipDecision> decisionSink;
     private final Consumer<WorkerJoinDecision> workerJoinSink;
+    private final Consumer<WorkerLeaveDecision> workerLeaveSink;
     private final Consumer<NodeId> pruneDeparted;
     private final Consumer<Runnable> drainExecutor;
     private final NttTimerScheduler retryScheduler;
@@ -138,6 +139,7 @@ public final class MembershipDeltaProjector {
                                      Supplier<HlcTimestamp> hlcSupplier,
                                      Consumer<MembershipDecision> decisionSink,
                                      Consumer<WorkerJoinDecision> workerJoinSink,
+                                     Consumer<WorkerLeaveDecision> workerLeaveSink,
                                      Consumer<NodeId> pruneDeparted,
                                      Consumer<Runnable> drainExecutor,
                                      NttTimerScheduler retryScheduler) {
@@ -146,6 +148,7 @@ public final class MembershipDeltaProjector {
         this.hlcSupplier = hlcSupplier;
         this.decisionSink = decisionSink;
         this.workerJoinSink = workerJoinSink;
+        this.workerLeaveSink = workerLeaveSink;
         this.pruneDeparted = pruneDeparted;
         this.drainExecutor = drainExecutor;
         this.retryScheduler = retryScheduler;
@@ -158,20 +161,23 @@ public final class MembershipDeltaProjector {
     /// routes onto the node-local shared bus (`MessageRouter::route`); `pruneDeparted` is
     /// `TopologyObserver::pruneDeparted`. `workerJoinSink` routes the non-core
     /// [`WorkerJoinDecision`] channel (#728) onto that same bus, where the cluster deployment FSM
-    /// consumes it for role assignment and community minting. Each drain burst runs on a
-    /// short-lived virtual thread, off every FSM per-member monitor; the flush retry rides the
-    /// shared scheduler.
+    /// consumes it for role assignment and community minting; `workerLeaveSink` is its symmetric
+    /// counterpart (#731), routing [`WorkerLeaveDecision`] so the FSM reclaims a departed worker's
+    /// allocation-pool slot and KV footprint. Each drain burst runs on a short-lived virtual
+    /// thread, off every FSM per-member monitor; the flush retry rides the shared scheduler.
     public static MembershipDeltaProjector membershipDeltaProjector(BooleanSupplier inQuorum,
                                                                     LongSupplier logIndexSupplier,
                                                                     Supplier<HlcTimestamp> hlcSupplier,
                                                                     Consumer<MembershipDecision> decisionSink,
                                                                     Consumer<WorkerJoinDecision> workerJoinSink,
+                                                                    Consumer<WorkerLeaveDecision> workerLeaveSink,
                                                                     Consumer<NodeId> pruneDeparted) {
         return membershipDeltaProjector(inQuorum,
                                         logIndexSupplier,
                                         hlcSupplier,
                                         decisionSink,
                                         workerJoinSink,
+                                        workerLeaveSink,
                                         pruneDeparted,
                                         Thread::startVirtualThread,
                                         SharedScheduler::schedule);
@@ -184,6 +190,7 @@ public final class MembershipDeltaProjector {
                                                                     Supplier<HlcTimestamp> hlcSupplier,
                                                                     Consumer<MembershipDecision> decisionSink,
                                                                     Consumer<WorkerJoinDecision> workerJoinSink,
+                                                                    Consumer<WorkerLeaveDecision> workerLeaveSink,
                                                                     Consumer<NodeId> pruneDeparted,
                                                                     Consumer<Runnable> drainExecutor,
                                                                     NttTimerScheduler retryScheduler) {
@@ -192,6 +199,7 @@ public final class MembershipDeltaProjector {
                                             hlcSupplier,
                                             decisionSink,
                                             workerJoinSink,
+                                            workerLeaveSink,
                                             pruneDeparted,
                                             drainExecutor,
                                             retryScheduler);
@@ -336,24 +344,32 @@ public final class MembershipDeltaProjector {
         emitJoin(edge.node());
     }
 
-    /// REMOVED: a never-announced member emits nothing (worker, or never JOINED as core —
-    /// the tangential consideration's projector-side mirror); an announced member emits
-    /// `NodeRemoved` + prunes.
+    /// REMOVED: a never-announced, never-worker member emits nothing (never JOINED at all — the
+    /// tangential consideration's projector-side mirror); a departed worker emits
+    /// [`WorkerLeaveDecision`] (#731, symmetric to [`#emitWorkerJoin`]); an announced core member
+    /// emits `NodeRemoved` + prunes.
     ///
-    /// The worker baseline is pruned unconditionally first (#728). It MUST be, independently of
-    /// whether anything is emitted: `announcedWorkers` is a once-only guard, so a worker that
-    /// departed while still recorded there would be silently swallowed on rejoin and never
-    /// re-assigned a role — the same class of silent non-participation #728 itself was. Removal
-    /// is keyed on the baselines rather than on the role at death, so this stays correct across a
-    /// role relabel, and pruning a node that was never a worker is a no-op.
+    /// The worker baseline is consulted (and pruned) unconditionally first (#728, extended #731).
+    /// It MUST be, independently of whether anything is emitted: `announcedWorkers` is a once-only
+    /// guard, so a worker that departed while still recorded there would be silently swallowed on
+    /// rejoin and never re-assigned a role — the same class of silent non-participation #728 itself
+    /// was. Removal is keyed on the baselines rather than on the role at death, so this stays
+    /// correct across a role relabel, and pruning a node that was never a worker is a no-op. A node
+    /// is a member of at most one baseline (`processJoined` branches strictly on
+    /// `MemberDescriptor.isCoreRole`), so the two arms below are mutually exclusive.
     @Contract
     private void processRemoved(NodeId node) {
-        announcedWorkers.remove(node);
-        if (!announced.contains(node)) {
+        var wasWorker = announcedWorkers.remove(node);
+
+        if (announced.contains(node)) {
+            emitRemoval(node);
+
             return;
         }
 
-        emitRemoval(node);
+        if (wasWorker) {
+            emitWorkerLeave(node);
+        }
     }
 
     /// The non-core arm of [`#processJoined`] (#728). Deliberately does NOT touch [`#announced`]
@@ -371,6 +387,20 @@ public final class MembershipDeltaProjector {
 
         log.debug("Membership delta: WorkerJoined {} (role={}, stampedAt={})", edge.node(), edge.role(), stampedAt);
         workerJoinSink.accept(WorkerJoinDecision.workerJoinDecision(edge.node(), edge.role(), stampedAt));
+    }
+
+    /// The non-core arm of [`#processRemoved`] (#731), symmetric to [`#emitWorkerJoin`].
+    /// Deliberately does NOT touch [`#announced`] or `announcedView`: the core baseline was never
+    /// touched by this worker's presence either, so its absence must not touch it. No idempotence
+    /// guard is needed here the way [`#emitWorkerJoin`] needs `announcedWorkers.add` — the caller
+    /// already consumed the once-only `announcedWorkers.remove` guard before calling this, so a
+    /// second REMOVED edge for the same node finds `wasWorker` false and never reaches here.
+    @Contract
+    private void emitWorkerLeave(NodeId node) {
+        var stampedAt = hlcSupplier.get();
+
+        log.debug("Membership delta: WorkerLeft {} (stampedAt={})", node, stampedAt);
+        workerLeaveSink.accept(WorkerLeaveDecision.workerLeaveDecision(node, stampedAt));
     }
 
     @Contract

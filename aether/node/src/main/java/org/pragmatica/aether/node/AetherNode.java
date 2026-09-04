@@ -70,6 +70,7 @@ import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipTransitionRecord;
 import org.pragmatica.aether.deployment.membership.fsm.PeerTarget;
 import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
+import org.pragmatica.aether.deployment.membership.fsm.WorkerLeaveDecision;
 import org.pragmatica.aether.deployment.membership.ntt.DrainProcedure;
 import org.pragmatica.aether.deployment.membership.ntt.LeaderReconciler;
 import org.pragmatica.aether.deployment.membership.ntt.QuorumCoConfirmation;
@@ -2967,6 +2968,7 @@ public interface AetherNode extends ManageableNode {
                                                                                          hlcClock::now,
                                                                                          delegateRouter::route,
                                                                                          delegateRouter::route,
+                                                                                         delegateRouter::route,
                                                                                          topologyObserver::pruneDeparted);
 
         membershipFsm.onMembershipDelta(membershipDeltaProjector::onDelta);
@@ -5590,6 +5592,11 @@ public interface AetherNode extends ManageableNode {
         // topology stream), so without this route assignNodeRole is unreachable for exactly the
         // nodes that need a community — they reach FSM Member and are never assigned a role.
         entries.add(MessageRouter.Entry.route(WorkerJoinDecision.class, clusterDeploymentManager::onWorkerJoin));
+        // #731: the non-core leave channel, symmetric to the join route above — a departed
+        // worker's REMOVED edge never reaches MembershipDecision either, so without this route
+        // handleNodeRemoval is unreachable for a dead worker and its allocation-pool slot and KV
+        // footprint (SliceNodeKey/NodeArtifactKey/NodeRoutesKey) linger forever.
+        entries.add(MessageRouter.Entry.route(WorkerLeaveDecision.class, clusterDeploymentManager::onWorkerLeave));
         // RC1 Step 2: route the new lifecycle-projection variants into CDM so the
         // dropped `onNodeLifecyclePut` listener's work (drain eviction, etc.) is
         // covered through the single canonical MembershipDecision channel.

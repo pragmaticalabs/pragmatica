@@ -47,6 +47,7 @@ class MembershipDeltaProjectorTest {
 
     private final List<MembershipDecision> decisions = new ArrayList<>();
     private final List<WorkerJoinDecision> workerJoins = new ArrayList<>();
+    private final List<WorkerLeaveDecision> workerLeaves = new ArrayList<>();
     private final List<NodeId> pruned = new ArrayList<>();
     private final AtomicBoolean quorate = new AtomicBoolean(true);
     private final AtomicLong logIndex = new AtomicLong(42L);
@@ -57,6 +58,7 @@ class MembershipDeltaProjectorTest {
     void setUp() {
         decisions.clear();
         workerJoins.clear();
+        workerLeaves.clear();
         pruned.clear();
         quorate.set(true);
         logIndex.set(42L);
@@ -66,6 +68,7 @@ class MembershipDeltaProjectorTest {
                                              () -> HLC,
                                              decisions::add,
                                              workerJoins::add,
+                                             workerLeaves::add,
                                              pruned::add,
                                              Runnable::run,
                                              retryScheduler);
@@ -104,6 +107,9 @@ class MembershipDeltaProjectorTest {
             assertThat(decisions.getLast().stampedAt()).isEqualTo(HLC);
             assertThat(pruned).containsExactly(A);
             assertThat(projector.announcedCoreMembers()).isEmpty();
+            assertThat(workerLeaves)
+                .as("#731: a CORE removal must never travel on the worker-leave channel")
+                .isEmpty();
         }
 
         @Test
@@ -176,10 +182,12 @@ class MembershipDeltaProjectorTest {
                 .hasSize(1);
         }
 
-        /// The worker baseline MUST be pruned on removal even though removal emits nothing on
-        /// either channel. Without the prune, a worker that departs stays in the once-only guard
-        /// forever and its rejoin is silently swallowed — never re-assigned a role. That is the
-        /// same silent non-participation #728 was, reintroduced by the fix's own dedup set.
+        /// The worker baseline MUST be pruned on removal — a departed worker's leave is now
+        /// observable (#731), but the once-only guard prune below is what makes rejoin possible
+        /// regardless of whether anything is emitted. Without the prune, a worker that departs
+        /// stays in the once-only guard forever and its rejoin is silently swallowed — never
+        /// re-assigned a role. That is the same silent non-participation #728 was, reintroduced by
+        /// the fix's own dedup set.
         @Test
         void workerRejoinAfterRemoval_emitsAgain_becauseTheWorkerBaselineIsPruned() {
             projector.onDelta(joined(W, "worker"));
@@ -189,15 +197,56 @@ class MembershipDeltaProjectorTest {
             assertThat(workerJoins)
                 .as("a departed worker must be re-assignable on rejoin")
                 .hasSize(2);
+            assertThat(workerLeaves)
+                .as("#731: the intervening departure must still be observed exactly once")
+                .hasSize(1);
+            assertThat(workerLeaves.getFirst().nodeId()).isEqualTo(W);
         }
 
+        /// #731 regression: the defect was that a departed worker's REMOVED edge emitted NOTHING
+        /// ANYWHERE, so `handleNodeRemoval` was unreachable for it and its allocation-pool slot
+        /// and KV footprint (`workerNodes`/`SliceNodeKey`/`NodeArtifactKey`/`NodeRoutesKey`)
+        /// lingered forever. The core-channel emptiness below is the Wave-2 invariant, unaffected
+        /// by this fix; the worker-leave emission is the bug.
         @Test
-        void workerRemoval_neverAnnounced_emitsNothing() {
+        void workerRemoval_emitsOnWorkerLeaveChannelOnly_coreArmUntouched() {
             projector.onDelta(joined(W, "worker"));
             projector.onDelta(removed(W, "worker"));
 
-            assertThat(decisions).isEmpty();
-            assertThat(pruned).isEmpty();
+            assertThat(decisions)
+                .as("a worker departure must never travel on the core MembershipDecision stream")
+                .isEmpty();
+            assertThat(pruned)
+                .as("core-only prune (TopologyObserver::pruneDeparted) must not run for a worker")
+                .isEmpty();
+            assertThat(workerLeaves)
+                .as("#731: the worker leave must still be emitted — on its own channel")
+                .hasSize(1);
+            assertThat(workerLeaves.getFirst().nodeId()).isEqualTo(W);
+            assertThat(workerLeaves.getFirst().stampedAt()).isEqualTo(HLC);
+        }
+
+        @Test
+        void workerLeave_reachesTheNodeRemovalChannel_ratherThanBeingDropped() {
+            projector.onDelta(joined(W, "worker"));
+            projector.onDelta(removed(W, "worker"));
+
+            assertThat(workerLeaves).extracting(WorkerLeaveDecision::nodeId).containsExactly(W);
+        }
+
+        /// Symmetric to [`#workerJoin_repeated_emitsExactlyOnce`]: the once-only guard is
+        /// `announcedWorkers.remove`, consumed by the FIRST REMOVED edge, so a structurally
+        /// impossible (per the FSM's `everJoined`) duplicate REMOVED edge for the same worker
+        /// still can't double-emit.
+        @Test
+        void workerRemoval_duplicateEdge_emitsLeaveOnce() {
+            projector.onDelta(joined(W, "worker"));
+            projector.onDelta(removed(W, "worker"));
+            projector.onDelta(removed(W, "worker"));
+
+            assertThat(workerLeaves)
+                .as("the worker-leave channel mirrors the core arm's exactly-once guard")
+                .hasSize(1);
         }
 
         /// The worker channel is emitted from the drain path, so it inherits the quorum gate.

@@ -27,11 +27,13 @@ import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Slic
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.SliceTargetRemoveReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.MembershipDecisionReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.WorkerJoinReceived;
+import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.WorkerLeaveReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.SelfShutdownReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.VersionRoutingPutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.VersionRoutingRemoveReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentState;
 import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
+import org.pragmatica.aether.deployment.membership.fsm.WorkerLeaveDecision;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -120,6 +122,12 @@ public interface ClusterDeploymentManager {
     @Contract
     @MessageReceiver
     void onWorkerJoin(WorkerJoinDecision decision);
+
+    /// The non-core leave channel (#731), symmetric to [`#onWorkerJoin`] — a departed worker's
+    /// REMOVED edge never travels on the core `MembershipDecision` stream either.
+    @Contract
+    @MessageReceiver
+    void onWorkerLeave(WorkerLeaveDecision decision);
 
     @Contract
     @MessageReceiver
@@ -554,6 +562,12 @@ public interface ClusterDeploymentManager {
         @Override
         public void onWorkerJoin(WorkerJoinDecision decision) {
             ctx.dispatch(new WorkerJoinReceived(decision));
+        }
+
+        @Contract
+        @Override
+        public void onWorkerLeave(WorkerLeaveDecision decision) {
+            ctx.dispatch(new WorkerLeaveReceived(decision));
         }
 
         @Contract

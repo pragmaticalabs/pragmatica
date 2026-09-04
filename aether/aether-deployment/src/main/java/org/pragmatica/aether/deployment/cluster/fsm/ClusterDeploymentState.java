@@ -23,6 +23,7 @@ import org.pragmatica.aether.deployment.AuditLog;
 import org.pragmatica.aether.deployment.cluster.AllocationPool;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
+import org.pragmatica.aether.deployment.membership.fsm.WorkerLeaveDecision;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.Blueprint;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.ReconciliationAdjustment;
@@ -42,6 +43,7 @@ import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Self
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.VersionRoutingPutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.VersionRoutingRemoveReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.WorkerJoinReceived;
+import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.WorkerLeaveReceived;
 import org.pragmatica.aether.deployment.schema.SchemaEvent.ActivationBlocked;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.DeploymentFailed;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.DeploymentStarted;
@@ -298,6 +300,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                                                                                                                  tx);
                 case MembershipDecisionReceived(MembershipDecision decision) -> handleMembershipDecision(decision, tx);
                 case WorkerJoinReceived(WorkerJoinDecision decision) -> handleWorkerJoin(decision, tx);
+                case WorkerLeaveReceived(WorkerLeaveDecision decision) -> handleWorkerLeave(decision, tx);
                 case SelfShutdownReceived(TransportObservation.SelfShutdown selfShutdown) -> handleSelfShutdown(selfShutdown,
                                                                                                                 tx);
                 case ActivationDirectivePutReceived(ValuePut<ActivationDirectiveKey, ActivationDirectiveValue> valuePut) -> handleActivationDirectivePut(valuePut,
@@ -382,6 +385,22 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         private void processWorkerJoin(WorkerJoinDecision decision) {
             log.info("Received worker join: {} (role={})", decision.nodeId(), decision.role());
             assignNodeRole(decision.nodeId());
+        }
+
+        /// The non-core leave channel (#731), symmetric to [`#handleWorkerJoin`]. Routed straight
+        /// to the same [`#handleNodeRemoval`] a CORE `NodeRemoved`/`NodeDecommissioned`/self-shutdown
+        /// already uses — no new cleanup logic, because a worker's KV footprint
+        /// (`SliceNodeKey`/`NodeArtifactKey`/`NodeRoutesKey`) and its `workerNodes` allocation-pool
+        /// entry are written and keyed identically to a core node's. `reconcile()` afterward is what
+        /// re-places the departed worker's slice instances onto the remaining pool.
+        private void handleWorkerLeave(WorkerLeaveDecision decision,
+                                       TransitionRequest<ClusterDeploymentState, ClusterFsmEvent> tx) {
+            tx.handle(() -> processWorkerLeave(decision));
+        }
+
+        private void processWorkerLeave(WorkerLeaveDecision decision) {
+            log.info("Received worker leave: {}", decision.nodeId());
+            handleNodeRemoval(decision.nodeId()).onSuccess(_ -> reconcile());
         }
 
         private void handleSelfShutdown(TransportObservation.SelfShutdown selfShutdown,

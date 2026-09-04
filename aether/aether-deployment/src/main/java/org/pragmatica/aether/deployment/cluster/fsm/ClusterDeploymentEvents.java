@@ -17,6 +17,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.VersionRoutingValue;
 import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
+import org.pragmatica.aether.deployment.membership.fsm.WorkerLeaveDecision;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
@@ -47,6 +48,12 @@ public interface ClusterDeploymentEvents extends ClusterFsmEvent {
     /// Separate from [`MembershipDecisionReceived`] because `MembershipDecision` is the core
     /// topology stream and a worker must never travel on it.
     record WorkerJoinReceived(WorkerJoinDecision decision) implements ClusterDeploymentEvents {}
+
+    /// The non-core leave channel (#731), symmetric to [`WorkerJoinReceived`] — a departed worker's
+    /// REMOVED edge never reaches `MembershipDecisionReceived` (workers never enter the core
+    /// baseline), so without this arm `handleNodeRemoval` was unreachable for a dead worker and its
+    /// allocation-pool slot and KV footprint lingered forever.
+    record WorkerLeaveReceived(WorkerLeaveDecision decision) implements ClusterDeploymentEvents {}
 
     record SelfShutdownReceived(TransportObservation.SelfShutdown selfShutdown) implements ClusterDeploymentEvents {}
 
