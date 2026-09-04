@@ -50,7 +50,13 @@ class PromiseAllOfCarrierStarvationTest {
         var busySpinHoldMillis = 3000L;
         var boundMillis = 2000L; // must stay well under busySpinHoldMillis to discriminate fixed vs. starved
 
-        var carriers = Math.max(Runtime.getRuntime().availableProcessors(), 8);
+        // The real carrier ceiling is whichever is SMALLER: the explicit -Djdk.virtualThreadScheduler.parallelism
+        // pin (pom.xml's vthread.argLine sets it to 8 for every surefire fork) or the host's actual CPU count.
+        // A host with more than 8 CPUs still only has 8 carriers once the property pins it -- taking `max`
+        // against availableProcessors() (the prior bug) overcounts the ceiling on such hosts, so `started`
+        // (sized to the overcounted `carriers`) can never be fully counted down.
+        var configuredParallelism = Integer.getInteger("jdk.virtualThreadScheduler.parallelism", Integer.MAX_VALUE);
+        var carriers = Math.min(configuredParallelism, Runtime.getRuntime().availableProcessors());
         var saturators = carriers + 4; // guarantee every carrier is pinned regardless of scheduling order
 
         var stop = new AtomicBoolean(false);
@@ -75,11 +81,14 @@ class PromiseAllOfCarrierStarvationTest {
             gate.succeed(unit());
         });
 
-        assertThat(started.await(5, TimeUnit.SECONDS))
-            .as("all %d carriers must be pinned by a running saturator before the timed section begins", carriers)
-            .isTrue();
-
         try {
+            // Inside the try/finally: if the carrier count is ever wrong again, this assertion's failure
+            // must still release the saturators below rather than pinning every carrier for the rest of
+            // the surefire fork (the prior bug -- this assertion used to sit before the try).
+            assertThat(started.await(5, TimeUnit.SECONDS))
+                .as("all %d carriers must be pinned by a running saturator before the timed section begins", carriers)
+                .isTrue();
+
             var nodeStops = IntStream.range(0, nodeCount)
                                       .mapToObj(_ -> Promise.<Unit>promise())
                                       .map(p -> p.timeout(perNodeTimeout))
