@@ -274,6 +274,17 @@ local-disk directory that already holds unmarked block files is refused at boot;
 directory to scan and instead fails closed per block on read. A block whose header names a key id
 absent from the configured keyring fails with `UnknownKeyId` rather than a truncated read.
 
+**Reverse-direction refusal.** The legacy-plaintext checks above guard *enabling* encryption over
+existing plaintext; boot also refuses the opposite move — *disabling* encryption (or omitting
+`[storage.encryption]` entirely) over a tier that already holds ciphertext. Both local-disk and DHT
+tiers write a `.encryption-enabled` marker the first time encryption is enabled over them (a file at
+the disk directory's root; a key under the DHT tier's `<name>-blocks` namespace). If that marker is
+present at boot and no keyring resolves for the instance, boot fails with
+`EncryptedTierRequiresKeyring` naming the instance and the key id blocks were last written under,
+instead of silently handing back framed `AEC1...` bytes as if they were plaintext content on every
+read. Recovery: restore `[storage.encryption]` with that key id still resolvable in
+`[storage.encryption.keys]`, or migrate to a fresh, unmarked directory or DHT namespace (`#831`).
+
 **Nonce bound.** Each block's 12-byte (96-bit) nonce is drawn from `SecureRandom`, not a counter.
 NIST SP 800-38D caps random-96-bit-nonce AES-GCM at 2³² encryptions under one key before nonce
 collision risk becomes significant; a single collision under the same key is a full break, not a
