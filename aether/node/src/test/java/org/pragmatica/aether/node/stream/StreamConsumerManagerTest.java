@@ -713,17 +713,22 @@ class StreamConsumerManagerTest {
         /// Review of #844, finding 2: `unsubscribeAllFor` used to filter `active` by consumer group
         /// alone, so a collision on ONE stream could sweep an unrelated, non-colliding subscription on
         /// a DIFFERENT stream that merely happens to reuse the same group string. `RecordingRuntime` is
-        /// keyed by (stream, partition) precisely so this cross-stream leak is observable: `invoices`
-        /// never collides (its `ConsumerGroupKey` is `("invoices", GROUP)`, distinct from `("orders",
-        /// GROUP)`) and must stay fully subscribed while `orders`'s two colliding artifacts both drop.
+        /// keyed by (stream, partition) precisely so this is observable at all: `invoices` never
+        /// collides (its `ConsumerGroupKey` is `("invoices", GROUP)`, distinct from `("orders", GROUP)`).
         ///
-        /// MUST be two reconcile() calls, not one: `unsubscribeAllFor` fires as a side effect INSIDE
-        /// `desiredFor`'s evaluation, before `desired.forEach(subscribeIfAbsent)` ever runs — so on a
-        /// single reconcile() call `active` is still empty when the sweep happens and a group-only
-        /// filter finds nothing to over-detach regardless of the fix. The leak only exists once
-        /// `invoices` is ALREADY active from a prior round and a fresh collision on `orders` re-enters
-        /// `unsubscribeAllFor` against a now-populated `active` map — confirmed by mutation probe: the
-        /// single-call shape passed unchanged against the reverted, unscoped filter.
+        /// Two reconcile() calls, not one: `unsubscribeAllFor` fires INSIDE `desiredFor`'s evaluation,
+        /// before `subscribeIfAbsent` ever runs, so the sweep needs `invoices` ALREADY active from a
+        /// prior round to have anything to hit.
+        ///
+        /// Final membership is NOT the pinning assertion — a mutation probe proved this the hard way.
+        /// `attach()` uses `active.putIfAbsent`, so even a same-pass detach of `invoices` self-heals
+        /// silently: `invoices`'s declaration is still non-colliding and still in `desired`, so
+        /// `subscribeIfAbsent` re-subscribes it before `reconcile()` returns, and `subscribedPartitions`
+        /// looks identical either way. What actually differs is `subscribeCalls`: a group-only filter
+        /// detaches and then transparently RE-subscribes `invoices` — a spurious `unsubscribe`/
+        /// `subscribe` round trip a real runtime would feel as a graceful cursor flush plus a fresh
+        /// resume, wasted work with a resume-window gap, not permanent data loss. The stream-scoped
+        /// filter never touches `invoices` at all: zero new subscribe calls.
         @Test
         void reconcile_leavesAnUnrelatedStreamAlone_whenItsGroupNameCollidesOnlyOnAnotherStream() {
             var otherStream = "invoices";
@@ -745,6 +750,7 @@ class StreamConsumerManagerTest {
                       .containsExactlyInAnyOrder(0, 1, 2, 3);
             assertThat(runtime.subscribedPartitions(otherStream)).describedAs("invoices' sole declarant, reusing the same group NAME on a different stream, also consumes normally and is now ACTIVE")
                       .containsExactlyInAnyOrder(0, 1, 2, 3);
+            var subscribeCallsBeforeCollision = runtime.subscribeCalls;
 
             declare(OTHER_ARTIFACT, "java.lang.String", false);
             when(invocationHandler.localSlice(OTHER_ARTIFACT)).thenReturn(Option.some(new StubBridge(Option.none())));
@@ -752,8 +758,10 @@ class StreamConsumerManagerTest {
 
             assertThat(runtime.subscribedPartitions(STREAM)).describedAs("both colliding artifacts on `orders` must be retracted")
                       .isEmpty();
-            assertThat(runtime.subscribedPartitions(otherStream)).describedAs("`invoices` reused the SAME group name but never collided — a group-only filter in `unsubscribeAllFor` would incorrectly sweep its already-active subscription too")
+            assertThat(runtime.subscribedPartitions(otherStream)).describedAs("membership alone doesn't distinguish the fix from the bug — attach()'s putIfAbsent self-heals a same-pass detach")
                       .containsExactlyInAnyOrder(0, 1, 2, 3);
+            assertThat(runtime.subscribeCalls).describedAs("the actual symptom: a group-only filter detaches `invoices` mid-pass and then transparently re-subscribes it since it is still desired — a spurious unsubscribe+resubscribe a real runtime would feel as a needless cursor flush and resume. A stream-scoped filter never touches `invoices`: zero new subscribe calls since before the collision")
+                      .isEqualTo(subscribeCallsBeforeCollision);
         }
     }
 

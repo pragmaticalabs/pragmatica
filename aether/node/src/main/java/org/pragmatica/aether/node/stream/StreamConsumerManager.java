@@ -658,8 +658,11 @@ public interface StreamConsumerManager {
 
         /// #545: scoped by BOTH stream and group — group alone over-detaches when two unrelated
         /// streams happen to reuse the same consumer group string, since [SubscriptionKey] carries
-        /// the stream but this lookup used to ignore it. A collision on one stream must never retract
-        /// a healthy subscription on a different stream that merely shares the group name.
+        /// the stream but this lookup used to ignore it. `attach()`'s `putIfAbsent` check means a
+        /// same-pass over-detach of a still-desired declaration self-heals before `reconcile()`
+        /// returns — the final membership was never wrong — but it cost a spurious unsubscribe then
+        /// resubscribe round trip on a stream that never collided: a needless graceful cursor flush
+        /// and fresh resume on every unrelated reconcile tick that happens to share a group name.
         private void unsubscribeAllFor(ConsumerDeclaration declaration) {
             active.keySet()
                   .stream()

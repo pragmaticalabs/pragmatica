@@ -38,13 +38,17 @@
   which also asserts the partitions stay actively subscribed, not merely undiagnosed — component-level,
   not a live multi-node run]
 
-- **The collision retraction itself was over-broad: it could detach a healthy, non-colliding
-  subscription on a DIFFERENT stream that merely reused the same consumer group string.**
+- **The collision retraction itself was over-broad: it could detach and silently re-attach a healthy,
+  non-colliding subscription on a DIFFERENT stream that merely reused the same consumer group string.**
   `unsubscribeAllFor` matched active subscriptions by `consumerGroup` alone; two unrelated streams
   sharing a group name is legal (collision detection is already keyed by `(streamName,
-  consumerGroup)`), so a collision retraction on one stream must not sweep the other's subscription
-  just because the group string matches.
+  consumerGroup)`). The final subscribed-partition set was never wrong — `attach()`'s
+  `putIfAbsent` check silently re-subscribes anything still desired within the same `reconcile()`
+  pass — so the user-visible cost was a spurious detach-then-resubscribe round trip on the unrelated
+  stream: a needless graceful cursor flush and fresh resume, not a stuck-unsubscribed or lost-data
+  state.
   [mechanism: `StreamConsumerManager.unsubscribeAllFor` now filters by `streamName` and
   `consumerGroup` together; pinned by
-  `StreamConsumerManagerTest$GroupCollisions#reconcile_leavesAnUnrelatedStreamAlone_whenItsGroupNameCollidesOnlyOnAnotherStream`
-  — component-level, not a live multi-node run]
+  `StreamConsumerManagerTest$GroupCollisions#reconcile_leavesAnUnrelatedStreamAlone_whenItsGroupNameCollidesOnlyOnAnotherStream`,
+  which asserts on `subscribeCalls` rather than final membership, since membership alone cannot
+  distinguish the fix from the bug — component-level, not a live multi-node run]
