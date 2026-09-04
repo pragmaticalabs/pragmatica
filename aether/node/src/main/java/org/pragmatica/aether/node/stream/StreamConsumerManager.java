@@ -275,7 +275,9 @@ public interface StreamConsumerManager {
         public void reconcile() {
             var declarations = allDeclarations();
             var collisions = collidingGroups(declarations);
-            var desired = declarations.stream().flatMap(declaration -> desiredFor(declaration, collisions).stream()).toList();
+            var desired = declarations.stream()
+                                      .flatMap(declaration -> desiredFor(declaration, collisions).stream())
+                                      .toList();
 
             desired.forEach(this::subscribeIfAbsent);
             dropStale(desired);
@@ -320,14 +322,17 @@ public interface StreamConsumerManager {
                                .collect(Collectors.groupingBy(ConsumerGroupKey::of))
                                .entrySet()
                                .stream()
-                               .map(entry -> Map.entry(entry.getKey(), distinctBases(entry.getValue())))
-                               .filter(entry -> entry.getValue().size() > 1)
+                               .map(entry -> Map.entry(entry.getKey(),
+                                                       distinctBases(entry.getValue())))
+                               .filter(entry -> entry.getValue()
+                                                     .size() > 1)
                                .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
         }
 
         private static List<ArtifactBase> distinctBases(List<ConsumerDeclaration> declarations) {
             return declarations.stream()
-                               .map(declaration -> declaration.artifact().base())
+                               .map(declaration -> declaration.artifact()
+                                                              .base())
                                .distinct()
                                .sorted(Comparator.comparing(ArtifactBase::asString))
                                .toList();
@@ -464,8 +469,10 @@ public interface StreamConsumerManager {
         private static String collisionMessage(ConsumerDeclaration declaration, List<ArtifactBase> bases) {
             return "consumer group '" + declaration.consumerGroup()
                  + "' on stream " + declaration.streamName()
-                 + " is declared by " + bases.size() + " different artifacts ("
-                 + bases.stream().map(ArtifactBase::asString).collect(Collectors.joining(", "))
+                 + " is declared by " + bases.size()
+                 + " different artifacts (" + bases.stream()
+                                                   .map(ArtifactBase::asString)
+                                                   .collect(Collectors.joining(", "))
                  + ") — sharing one consumer group across different artifacts is not supported in this"
                  + " release; none of them is consuming until the collision is resolved (rename the"
                  + " group or remove one of the conflicting declarations)";
@@ -530,10 +537,10 @@ public interface StreamConsumerManager {
         /// belongs to the group, not the version.
         private Option<ConsumerDeclaration> declarationFor(SubscriptionKey key) {
             var matches = allDeclarations().stream()
-                                          .filter(declaration -> declaration.streamName()
-                                                                            .equals(key.streamName()) && declaration.consumerGroup()
-                                                                                                                    .equals(key.consumerGroup()))
-                                          .toList();
+                                         .filter(declaration -> declaration.streamName()
+                                                                           .equals(key.streamName()) && declaration.consumerGroup()
+                                                                                                                   .equals(key.consumerGroup()))
+                                         .toList();
             var bases = distinctBases(matches);
 
             if (bases.size() > 1) {
