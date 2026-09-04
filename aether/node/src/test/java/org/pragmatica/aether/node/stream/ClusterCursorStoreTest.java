@@ -186,7 +186,10 @@ class ClusterCursorStoreTest {
         }
 
         /// A separate (group, stream, partition) key must not see another key's recovered failure — the
-        /// map is keyed by the full checkpoint identity, not a single shared slot.
+        /// map is keyed by the full checkpoint identity, not a single shared slot. Pinned against BOTH
+        /// keys in the same assertion: checking only the sibling key passes vacuously if the primary
+        /// key's failure was never recorded at all (caught by mutation probe on #654 round 2 — deleting
+        /// the `recoveredFailures.put(...)` call left this test green).
         @Test
         void lastRecoveredFailure_isScopedPerKey() {
             var store = ClusterCursorStore.clusterCursorStore(recordingLocal(new AtomicReference<>()),
@@ -195,6 +198,9 @@ class ClusterCursorStoreTest {
 
             store.commit(GROUP, STREAM, PARTITION, 5L).await();
 
+            assertThat(store.lastRecoveredFailure(GROUP, STREAM, PARTITION))
+                    .describedAs("the committed key must actually carry the recorded failure")
+                    .isEqualTo(Option.some(CheckpointRejected.INSTANCE.message()));
             assertThat(store.lastRecoveredFailure(GROUP, STREAM, PARTITION + 1))
                     .describedAs("a different partition's key must read empty")
                     .isEqualTo(Option.none());
