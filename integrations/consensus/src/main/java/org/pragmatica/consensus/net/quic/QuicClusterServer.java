@@ -363,6 +363,11 @@ final class QuicClusterServerInstance implements QuicClusterServer {
         @Override
         @Contract
         protected void channelRead0(ChannelHandlerContext ctx, ByteBuf buf) {
+            // #726: PAYLOAD bytes at the lane boundary — one channelRead0 invocation is exactly
+            // one length-prefixed frame, so this covers BOTH the 1-byte lane preamble
+            // (AWAITING_PREAMBLE) and the Hello frame (AWAITING_HELLO) without needing a hook in
+            // each branch. Read before either handler consumes the buffer.
+            quicMetrics.onBytesReceived(buf.readableBytes());
             switch (phase) {
                 case AWAITING_PREAMBLE -> handlePreamble(ctx, buf);
                 case AWAITING_HELLO -> handleHello(ctx, buf);
@@ -496,6 +501,8 @@ final class QuicClusterServerInstance implements QuicClusterServer {
             var helloBytes = serializer.encode(new NetworkMessage.Hello(selfId, selfAddress, selfLabels));
 
             ctx.writeAndFlush(Unpooled.wrappedBuffer(helloBytes));
+            // #726: PAYLOAD bytes at the lane boundary — same honesty boundary as every other write.
+            quicMetrics.onBytesSent(helloBytes.length);
         }
 
         private void registerPeerConnection(ChannelHandlerContext ctx, NetworkMessage.Hello hello) {
@@ -579,8 +586,11 @@ final class QuicClusterServerInstance implements QuicClusterServer {
             }
 
             var streamChannel = (QuicStreamChannel) future.getNow();
+            var preamble = new byte[]{(byte) lane.streamIndex()};
 
-            streamChannel.writeAndFlush(Unpooled.wrappedBuffer(new byte[]{(byte) lane.streamIndex()}));
+            streamChannel.writeAndFlush(Unpooled.wrappedBuffer(preamble));
+            // #726: PAYLOAD bytes at the lane boundary — acceptor-side lazy-reopen preamble.
+            quicMetrics.onBytesSent(preamble.length);
             peerConnection.registerStream(lane, streamChannel);
             log.info("Lazily (re)opened {} lane to peer {} — stream-zombie healed without re-dial", lane, peerNodeId);
             onResult.accept(option(streamChannel));

@@ -393,10 +393,16 @@ final class QuicClusterClientInstance implements QuicClusterClient {
         // The handshake stream is now the CONTROL lane. Write the 1-byte lane preamble first
         // (its own framed message), then the Hello frame, so the acceptor attributes this
         // stream to CONTROL before reading the Hello.
-        streamChannel.writeAndFlush(Unpooled.wrappedBuffer(new byte[]{(byte) StreamType.CONTROL.streamIndex()}));
+        var preamble = new byte[]{(byte) StreamType.CONTROL.streamIndex()};
+
+        streamChannel.writeAndFlush(Unpooled.wrappedBuffer(preamble));
+        // #726: PAYLOAD bytes at the lane boundary — the handshake preamble is a real frame
+        // handed to the channel, same honesty boundary as every other write.
+        quicMetrics.onBytesSent(preamble.length);
         var helloBytes = serializer.encode(new NetworkMessage.Hello(selfId, selfAddress, selfLabels));
 
         streamChannel.writeAndFlush(Unpooled.wrappedBuffer(helloBytes));
+        quicMetrics.onBytesSent(helloBytes.length);
         log.debug("Sent CONTROL preamble + Hello to peer {} on stream", peerId);
     }
 
@@ -505,6 +511,10 @@ final class QuicClusterClientInstance implements QuicClusterClient {
             }
 
             helloReceived = true;
+            // #726: PAYLOAD bytes at the lane boundary — the Hello-response frame received on
+            // CONTROL before the pipeline hands off to QuicLaneDataHandler for ongoing traffic.
+            // Read before processHelloResponse touches the buffer, so it reflects the full frame.
+            quicMetrics.onBytesReceived(buf.readableBytes());
             processHelloResponse(ctx, buf);
         }
 
@@ -660,7 +670,11 @@ final class QuicClusterClientInstance implements QuicClusterClient {
             var streamChannel = (QuicStreamChannel) future.getNow();
             // Write this lane's 1-byte preamble (opener→acceptor, once) so the acceptor
             // attributes the inbound stream to its lane.
-            streamChannel.writeAndFlush(Unpooled.wrappedBuffer(new byte[]{(byte) lane.streamIndex()}));
+            var preamble = new byte[]{(byte) lane.streamIndex()};
+
+            streamChannel.writeAndFlush(Unpooled.wrappedBuffer(preamble));
+            // #726: PAYLOAD bytes at the lane boundary — the lane preamble is a real frame.
+            quicMetrics.onBytesSent(preamble.length);
             peerConnection.registerStream(lane, streamChannel);
             if (pending.decrementAndGet() == 0) {
                 log.info("All 8 lanes registered for peer {} — connection ready", peerNodeId);
@@ -711,8 +725,11 @@ final class QuicClusterClientInstance implements QuicClusterClient {
             }
 
             var streamChannel = (QuicStreamChannel) future.getNow();
+            var preamble = new byte[]{(byte) lane.streamIndex()};
 
-            streamChannel.writeAndFlush(Unpooled.wrappedBuffer(new byte[]{(byte) lane.streamIndex()}));
+            streamChannel.writeAndFlush(Unpooled.wrappedBuffer(preamble));
+            // #726: PAYLOAD bytes at the lane boundary — lazy-reopen preamble is a real frame too.
+            quicMetrics.onBytesSent(preamble.length);
             peerConnection.registerStream(lane, streamChannel);
             log.info("Lazily (re)opened {} lane to peer {} — stream-zombie healed without re-dial", lane, peerNodeId);
             onResult.accept(option(streamChannel));
