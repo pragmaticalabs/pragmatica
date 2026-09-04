@@ -47,20 +47,27 @@
 - **Key rotation:** add a key, flip `active_key_id`; every prior key stays in `keys` and remains
   readable. Re-encrypting existing blocks under the new active key (including on demote/promote) is
   an explicit follow-up, not part of this fix.
+- **The synthesized default `artifacts` instance now tracks the keyring**, matching an explicit
+  `[storage.artifacts] encrypted = true`: when `[storage.encryption]` is configured it is
+  encrypted through the same path as any other named instance; with no keyring it stays plaintext,
+  exactly as before. [verified: `StorageFactoryEncryptionTest#createAll_synthesizedDefaultArtifacts_isEncrypted_whenKeyringPresent`,
+  `#createAll_synthesizedDefaultArtifacts_staysPlaintext_whenKeyringAbsent`]
 - **What is NOT covered, verified against the actual boot wiring:**
   - `MemoryTier` — in-process only, never touches disk, deliberately never wrapped.
   - Metadata/refs/snapshot files (`MetadataStore`, `SnapshotManager`) for every instance including
     `streams` — these bypass `StorageTier` entirely and are written directly; only block payloads
     reached via `get`/`put` are encrypted.
-  - The **synthesized default `artifacts` instance** (used only when no explicit
-    `[storage.artifacts]` section is configured) is hardcoded to never encrypt, regardless of
-    `[storage.encryption]`. An operator who explicitly configures `[storage.artifacts] encrypted =
-    true` gets it encrypted normally through the same path as any other named instance.
   - The **`content` storage instance is architecturally unencryptable under this fix**: `AetherNode`
     always provisions it via `StorageFactory.defaultContentStorage`, a separate, keyring-less
     factory method that never routes through the config/keyring-aware `createAll`/`createOne` path
     — the same reason `content` already sits outside `storageSetups` for demotion/GC (#783). Not
     fixed here; flagged as the same underlying structural gap #783 tracks, not a new local patch.
+    **Now surfaced, not silent:** when a node-wide keyring is configured, boot logs one WARN naming
+    that the `content` instance is not covered, citing #783, so the gap is operator-visible instead
+    of only discoverable by reading source. [verified:
+    `AetherNodeContentStorageWarnBootTest#assembleNode_warnsOnContentStorageGap_whenKeyringConfigured`,
+    exercised through the real `AetherNode.aetherNode(...)` boot path, not an extracted helper;
+    `#assembleNode_staysSilentOnContentStorage_whenNoKeyringConfigured` pins the negative case]
   - `[streams.X].encryption-key-id` (the per-stream blueprint key) is unrelated to
     `streams_encrypted` above and remains the dead/rejected config `#576` already found inert
     (2026-08-27) — `StorageSegmentSink`'s own segment pipeline still has no encryptor wired to it.
@@ -68,6 +75,7 @@
   [mechanism: `EncryptingStorageTier` AES-256-GCM, AAD over the versioned header, key resolved once
   at boot via `SecretsProvider` — `EncryptingStorageTierTest`, `EncryptionKeyringTest`,
   `BlockEncryptorTest` (`integrations/storage`); `StorageEncryptionConfigTest` (`aether/aether-config`);
-  `StorageEncryptionTest`, `StorageFactoryEncryptionTest`, `AetherNodeStorageEncryptionBootTest`
-  (`aether/node`) — all mutation-probed: each production hunk was reverted, its named test confirmed
-  red, then the file restored and the full suite reconfirmed green]
+  `StorageEncryptionTest`, `StorageFactoryEncryptionTest`, `AetherNodeStorageEncryptionBootTest`,
+  `AetherNodeContentStorageWarnBootTest` (`aether/node`) — all mutation-probed: each production hunk
+  was reverted, its named test confirmed red, then the file restored and the full suite reconfirmed
+  green]
