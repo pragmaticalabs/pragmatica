@@ -1909,6 +1909,11 @@ The generated manifest:
 - Sets `aether.node-id=node-N` on each compose-fixed service
 - Uses `restart: "no"` per the CTM auto-heal contract (see `aether/docs/operators/deployment-recovery.md`)
 - Provisions a per-cluster bridge network `aether-<name>-network`
+- Emits `AETHER_CLUSTER_SECRET` as a required `${AETHER_CLUSTER_SECRET:?...}` shell reference, never
+  a literal — `export AETHER_CLUSTER_SECRET=<your-secret>` before `docker compose up` (#684). A file
+  generated before this fix instead has the value baked in as
+  `AETHER_CLUSTER_SECRET: "change-me-cluster-secret"`; see `SECURITY.md`'s `cluster_secret` hygiene
+  section for the migration steps and for what this fix does and does not close.
 
 See `aether/docs/operators/multi-cluster-deployment.md` for the full labeling model.
 

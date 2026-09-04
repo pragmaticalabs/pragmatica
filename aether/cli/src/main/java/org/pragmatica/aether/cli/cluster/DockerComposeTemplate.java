@@ -19,9 +19,13 @@ import org.pragmatica.lang.Contract;
 /// regardless of whether they were compose-deployed or CTM-spawned.
 ///
 /// Output is intentionally minimal: no PostgreSQL service, no LB sidecar, no env-var
-/// substitution. Operators copy the file, adjust for their environment (storage volumes,
-/// healthchecks, secrets), then run `docker compose up -d`. The label structure is the
-/// correct-by-construction part — the rest is operator preference.
+/// substitution — with one deliberate exception: `AETHER_CLUSTER_SECRET` is emitted as a
+/// `${AETHER_CLUSTER_SECRET:?...}` reference (see `aether/docker/docker-compose.yml` for the
+/// same convention), never a literal, so the generated file carries no secret value of its own
+/// (#684). Operators copy the file, adjust for their environment (storage volumes,
+/// healthchecks), export `AETHER_CLUSTER_SECRET` in the shell that runs `docker compose up -d`,
+/// then run it. The label structure is the correct-by-construction part — the rest is operator
+/// preference.
 final class DockerComposeTemplate {
     private DockerComposeTemplate() {}
 
@@ -58,6 +62,7 @@ final class DockerComposeTemplate {
         sb.append("# tooling enumerate ALL of this cluster's containers (compose-deployed + CTM-spawned)\n");
         sb.append("# unambiguously via `docker ps --filter label=aether.cluster=").append(clusterName).append("`.\n");
         sb.append("#\n");
+        sb.append("# export AETHER_CLUSTER_SECRET=<your-secret>    # required, no default is shipped\n");
         sb.append("# Usage: docker compose -f compose.yml up -d\n");
         sb.append("\n");
     }
@@ -76,7 +81,7 @@ final class DockerComposeTemplate {
         sb.append("    MANAGEMENT_PORT: \"8080\"\n");
         sb.append("    PEERS: \"").append(buildPeers(clusterName, nodes, clusterPort)).append("\"\n");
         sb.append("    CORE_MAX: \"").append(nodes).append("\"\n");
-        sb.append("    AETHER_CLUSTER_SECRET: \"change-me-cluster-secret\"\n");
+        sb.append("    AETHER_CLUSTER_SECRET: \"${AETHER_CLUSTER_SECRET:?export AETHER_CLUSTER_SECRET before docker-compose up}\"\n");
         sb.append("  # restart: \"no\" - Aether's CTM auto-heal owns failure recovery; do NOT enable container\n");
         sb.append("  # restart policies. See aether/docs/operator/deployment-recovery.md.\n");
         sb.append("  restart: \"no\"\n");
