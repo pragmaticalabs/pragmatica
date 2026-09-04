@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc4] - Unreleased
 
-### Fixed (2026-09-04 — #759 review: a redeployed blueprint id kept reporting its previous attempt's terminal outcome while the new attempt was converging)
+### Fixed (2026-09-04 — #759 review: a redeployed or deleted blueprint id kept reporting a stale terminal outcome from a prior attempt)
 - **A retry of a previously FAILED/ROLLED_BACK blueprint id read as still-failed until its own
   terminal write landed.** `DeploymentOutcomeKey` is written only at the four terminal FSM
   transitions and was never cleared when a new deployment of the same id started —
@@ -14,30 +14,59 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   blueprint-status route reported the prior attempt's `FAILED`/`ROLLED_BACK` outcome while the
   live redeploy was actively converging, a false-negative on deployment health with no code path
   that would ever clear it on its own.
-- **`BlueprintService.buildAllCommands` now bundles a `KVCommand.Remove` of the publishing id's
+- **`BlueprintService.buildAllCommands` bundles a `KVCommand.Remove` of the publishing id's
   `DeploymentOutcomeKey` into the SAME consensus batch as the `AppBlueprintKey` Put that starts the
-  new attempt.** The two land atomically, so `outcome(id)` is now: *at any instant, either the
-  blueprint is in flight with no outcome, or terminal with exactly one record for the current
-  attempt — never in flight while reporting a previous attempt's result.* No operator action
-  clears the stale state; every publish clears it for its own id, automatically, as the fix.
+  new attempt** — covers `publishFromArtifact`. The two land atomically, so `outcome(id)` is: *at
+  any instant, either the blueprint is in flight with no outcome, or terminal with exactly one
+  record for the current attempt — never in flight while reporting a previous attempt's result.*
+- **Round 2: the same gap existed on two more live paths that write or remove `AppBlueprintKey`
+  without going through `buildAllCommands`.** DSL `publish(String)` (`SliceRoutes.handleBlueprint`)
+  went through `storeBlueprintWithKey`, and `delete(id)` through `removeFromStore` — both applied a
+  single-command batch touching only `AppBlueprintKey`, so a DSL republish left a prior
+  FAILED/ROLLED_BACK outcome in place until the new attempt's own terminal write, and a `delete`'s
+  orphaned outcome record never cleared at all (nothing ever writes that id's `AppBlueprintKey`
+  again to trigger it). Both methods now bundle the same `DeploymentOutcomeKey` Remove into their
+  own batch, so the guarantee above now holds for all three ways `AppBlueprintKey` changes on a
+  live path: `publishFromArtifact`, DSL `publish`, and `delete`. [mechanism: same-batch
+  `cluster.apply` in `buildAllCommands`, `storeBlueprintWithKey`, `removeFromStore` — all commands
+  passed to one `apply(...)` call commit together or not at all]
+- **One documented exception, out of scope for this fix: `ClusterDeploymentState.restorePreviousBlueprint`.**
+  An ALL_OR_NOTHING rollback with a previous blueprint re-Puts `previous.id()`'s `AppBlueprintKey`
+  (making it live again) in the same batch as a ROLLED_BACK outcome Put keyed by `inflight.id()` —
+  the FAILING id, not `previous.id()`. `previous.id()`'s own `DeploymentOutcomeKey` is untouched,
+  and `restoringBlueprints` suppresses `previous.id()`'s normal in-flight FSM tracking while the
+  restore is pending, so no later terminal write ever supersedes whatever `outcome(previous.id())`
+  already held from an earlier attempt of that id. A restored blueprint can therefore be live and
+  serving while `outcome(previous.id())` still reports a stale, unrelated terminal record; recovery
+  is the same shape as the pre-existing crash-orphaned/stuck cases documented on this method —
+  consult `get(previous.id())`'s presence, not `outcome()` alone. [mechanism:
+  `ClusterDeploymentState.restorePreviousBlueprint` / `rolledBackOutcomeCommand` keys the outcome
+  Put on `inflight.id()`, never `previous.id()`; `restoringBlueprints` gates the two in-flight-
+  tracking checks that would otherwise produce a new terminal write for `previous.id()`]
+- No operator action is needed for the three covered paths — a publish or a delete of `id` clears
+  its own stale outcome automatically. (Corrects the round-1 wording above, which claimed this held
+  for every publish before `delete` was covered and before the `restorePreviousBlueprint` exception
+  was documented.)
 - **No ordering dependency, unlike the `AppBlueprintKey` Put/Remove pair #809 hardens** —
   `DeploymentOutcomeKey` has no FSM event-dispatch handler wired to it (no
   `DeploymentOutcomePutReceived`/`RemoveReceived` case exists), so this Remove's position in the
-  batch relative to the blueprint Put is not load-bearing; nothing subscribes to either
+  batch relative to the blueprint Put/Remove is not load-bearing; nothing subscribes to either
   notification. `DeploymentOutcomeValue` is not fenced (`EpochBearing`/`LeaderValue`), so the
   witnessless `Remove(key)` form is admitted unconditionally by the KV applier.
-- Javadoc on `BlueprintService.outcome(BlueprintId id)` states the new in-flight-XOR-terminal
-  guarantee directly; it does not resolve the pre-existing crash-orphaned/stuck ambiguity
-  documented there (#760/#724 review round 2 item i) — it only ensures the in-flight case is never
-  confused with a stale terminal record from an earlier attempt of the same id.
-  [mechanism: same consensus batch as the `AppBlueprintKey` Put — see `KVCommand`'s batch-apply
-  semantics; both commands commit together or not at all]
-- Pinning test `BlueprintPublishOwnershipTest.OutcomeClearedAtPublish` drives a real
-  `publishFromArtifact` through the actual command-building path against a seeded FAILED outcome for
-  the same blueprint id, asserting `outcome(id)` is empty after the new publish lands, plus a
-  no-prior-outcome control case. Mutation-probed: red with the `Remove` line dropped (`Expecting
-  value to be true but was false`), green restored — the control case stayed green under the same
-  mutation, as expected, since it has no prior outcome to clear.
+- A new test pins the atomicity property directly on the recorded consensus batch, not just its
+  eventual effect: the `AppBlueprintKey` write/remove and the `DeploymentOutcomeKey` Remove must
+  land in ONE `cluster.apply` call — red if the fix were (hypothetically) split into two separate
+  calls, a shape every existing effect-based assertion would still pass.
+- Javadoc on `BlueprintService.outcome(BlueprintId id)` states the in-flight-XOR-terminal guarantee
+  scoped to the three covered paths, and documents the `restorePreviousBlueprint` exception above;
+  it does not resolve the pre-existing crash-orphaned/stuck ambiguity documented there (#760/#724
+  review round 2 item i) — it only ensures the in-flight case is never confused with a stale
+  terminal record from an earlier attempt of the same id.
+- Pinning tests in `BlueprintPublishOwnershipTest.OutcomeClearedAtPublish` drive the real
+  `publishFromArtifact`, DSL `publish`, and `delete` paths against a seeded FAILED outcome for the
+  same blueprint id, asserting `outcome(id)` is empty after each; a no-prior-outcome control case;
+  and a same-batch assertion pinning atomicity for each path. Mutation-probed: red with each
+  `Remove` line dropped, green restored.
   [verified: aether/aether-deployment/src/test/java/org/pragmatica/aether/deployment/cluster/BlueprintPublishOwnershipTest.java]
 
 ### Fixed (2026-09-04 — #715: Forge/Ember clusters admitted nodes from foreign local processes)
