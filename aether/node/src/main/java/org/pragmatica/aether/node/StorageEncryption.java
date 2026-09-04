@@ -115,7 +115,7 @@ public final class StorageEncryption {
     public record MalformedSecretRef(String keyId, String ref) implements Cause {
         @Override
         public String message() {
-            return "storage.encryption.keys." + keyId + " is not a '${secrets:<path>}' reference: " + ref;
+            return "storage.encryption.keys." + keyId + " is not a '${secrets:<path>}' reference (inline value)";
         }
     }
 

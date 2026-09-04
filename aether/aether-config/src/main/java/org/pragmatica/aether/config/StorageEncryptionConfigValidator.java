@@ -52,7 +52,7 @@ public final class StorageEncryptionConfigValidator {
 
     private static void secretRefErrors(String keyId, String ref, List<String> errors) {
         if (!SECRET_REF.matcher(ref).matches()) {
-            errors.add("storage.encryption.keys." + keyId + " must be a '${secrets:<path>}' reference. Got: " + ref);
+            errors.add("storage.encryption.keys." + keyId + " must be a '${secrets:<path>}' reference (inline value)");
         }
     }
 
