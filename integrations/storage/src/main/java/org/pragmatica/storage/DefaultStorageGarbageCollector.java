@@ -58,10 +58,13 @@ final class DefaultStorageGarbageCollector implements StorageGarbageCollector {
 
         var now = System.currentTimeMillis();
         var cutoff = now - config.gracePeriodMs();
+        // #737 fix round 2: grace runs from orphanedAt (when refCount reached 0), not
+        // lastAccessedAt (when it was last read) -- the two diverge for a long-idle-but-still-
+        // referenced block, which must get a full grace period from the moment it is orphaned.
         var collected = metadataStore.listAllLifecycles()
                                      .stream()
                                      .filter(BlockLifecycle::isOrphaned)
-                                     .filter(lc -> lc.lastAccessedAt() <= cutoff)
+                                     .filter(lc -> lc.orphanedAt() <= cutoff)
                                      .limit(config.batchSize())
                                      .map(lc -> deleteBlock(lc.blockId()))
                                      .reduce(0, Integer::sum);

@@ -91,9 +91,9 @@ class DemotionManagerTest {
 
             // Force idA to have older createdAt
             metadataStore.computeLifecycle(idA, lc -> new BlockLifecycle(
-                lc.blockId(), lc.presentIn(), lc.refCount(), lc.lastAccessedAt(), 1000L, lc.accessCount()));
+                lc.blockId(), lc.presentIn(), lc.refCount(), lc.lastAccessedAt(), 1000L, lc.accessCount(), lc.orphanedAt()));
             metadataStore.computeLifecycle(idB, lc -> new BlockLifecycle(
-                lc.blockId(), lc.presentIn(), lc.refCount(), lc.lastAccessedAt(), 9999L, lc.accessCount()));
+                lc.blockId(), lc.presentIn(), lc.refCount(), lc.lastAccessedAt(), 9999L, lc.accessCount(), lc.orphanedAt()));
 
             // Batch size 1 so only the oldest is demoted.
             var config = demotionConfig(DemotionStrategy.AGE, 0.01, 0.009, 1);
@@ -114,7 +114,7 @@ class DemotionManagerTest {
 
             // Give idB more access count than idA
             metadataStore.computeLifecycle(idB, lc -> new BlockLifecycle(
-                lc.blockId(), lc.presentIn(), lc.refCount(), lc.lastAccessedAt(), lc.createdAt(), 100));
+                lc.blockId(), lc.presentIn(), lc.refCount(), lc.lastAccessedAt(), lc.createdAt(), 100, lc.orphanedAt()));
 
             var config = demotionConfig(DemotionStrategy.LFU, 0.01, 0.009, 1);
             var dm = demotionManager(List.of(memoryTier, diskTier), metadataStore, config);
@@ -138,9 +138,9 @@ class DemotionManagerTest {
 
             // Make idA least recently accessed
             metadataStore.computeLifecycle(idA, lc -> new BlockLifecycle(
-                lc.blockId(), lc.presentIn(), lc.refCount(), 1000L, lc.createdAt(), lc.accessCount()));
+                lc.blockId(), lc.presentIn(), lc.refCount(), 1000L, lc.createdAt(), lc.accessCount(), lc.orphanedAt()));
             metadataStore.computeLifecycle(idB, lc -> new BlockLifecycle(
-                lc.blockId(), lc.presentIn(), lc.refCount(), Long.MAX_VALUE, lc.createdAt(), lc.accessCount()));
+                lc.blockId(), lc.presentIn(), lc.refCount(), Long.MAX_VALUE, lc.createdAt(), lc.accessCount(), lc.orphanedAt()));
 
             var config = demotionConfig(DemotionStrategy.LRU, 0.01, 0.009, 1);
             var dm = demotionManager(List.of(memoryTier, diskTier), metadataStore, config);

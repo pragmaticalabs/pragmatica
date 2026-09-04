@@ -236,6 +236,8 @@ final class DefaultSnapshotManager implements SnapshotManager {
           .append(lc.createdAt())
           .append('|')
           .append(lc.accessCount())
+          .append('|')
+          .append(lc.orphanedAt())
           .append('\n');
     }
 
@@ -329,6 +331,14 @@ final class DefaultSnapshotManager implements SnapshotManager {
         var accessCount = parts.length > 5
                           ? Integer.parseInt(parts[5])
                           : 0;
+        // #737 fix round 2: a pre-round-2 snapshot carries no orphaning instant. Fall back to the
+        // same rule as the 6-arg blockLifecycle() factory -- lastAccessedAt for an orphaned entry,
+        // 0 (unorphaned) for a live one -- rather than duplicating it here.
+        if (parts.length > 6) {
+            var orphanedAt = Long.parseLong(parts[6]);
+
+            return BlockLifecycle.blockLifecycle(id, tiers, refCount, lastAccessed, created, accessCount, orphanedAt);
+        }
 
         return BlockLifecycle.blockLifecycle(id, tiers, refCount, lastAccessed, created, accessCount);
     }

@@ -125,6 +125,35 @@ class ProviderBasedConfigServiceTest {
         }
     }
 
+    /// #738 team-lead condition 2: the binder is shared by four other production callers
+    /// (`NodeDeploymentState`, `ConfigSectionPreflightValidator`, `AetherNode`,
+    /// `SpiResourceProvider`), none of whose config records opt into [StrictKeys]. This proves the
+    /// hook is a true no-op for a non-annotated class — `strictKeyCheck` short-circuits before it
+    /// even looks at `provider.staticKeys()` — so an unrecognized/dashed key at a non-opted-in
+    /// section keeps resolving the same way it did before this change: silently absent from the
+    /// bound record, no error. Reuses the pre-existing `SimpleConfig` fixture above, not a new one.
+    @Nested
+    class StrictKeysScoping {
+
+        @Test
+        void config_nonAnnotatedRecord_ignoresUnrecognizedKey_exactlyAsBeforeTheHook() {
+            var service = serviceFrom(Map.of(
+                "test.name", "myapp",
+                "test.port", "8080",
+                "test.enabled", "true",
+                "test.unrecognized-dashed-key", "whatever"
+            ));
+
+            var result = service.config("test", SimpleConfig.class);
+
+            assertThat(result.isSuccess()).isTrue();
+            var config = result.unwrap();
+            assertThat(config.name()).isEqualTo("myapp");
+            assertThat(config.port()).isEqualTo(8080);
+            assertThat(config.enabled()).isTrue();
+        }
+    }
+
     @Nested
     class DurationFieldBinding {
 

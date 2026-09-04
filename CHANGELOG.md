@@ -61,6 +61,101 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - Nothing found — in these readers, reconciliation, or elsewhere — that depends on the stale
     entry's continued presence for correctness.
 
+### Fixed (2026-09-04 — #715: Forge/Ember clusters admitted nodes from foreign local processes)
+- **Every `EmberCluster` instance (and therefore every `ForgeServer`, built directly on it) derived
+  its cluster QUIC/SWIM identity from one hardcoded literal secret, shared by every process on the
+  machine.** `EmberCluster.buildForgeQuicTls` built its `TlsConfig`/CA from that literal, and
+  `createNode` passed `Option.empty()` for `AetherNodeConfig.certificateProvider`, so SWIM gossip
+  encryption fell back to `GossipEncryptor.none()` (plaintext, unauthenticated) for every Ember/Forge
+  node. Consequence: any process on the machine — no key needed, since gossip encryption was off
+  entirely — could SWIM-gossip into another process's cluster, and any process holding the literal
+  could QUIC-join it, up to triggering an OVERPROVISION drain of a live cluster's core from outside it.
+- **Each `EmberCluster` instance now derives a fresh, unique `SecureRandom` cluster secret at
+  construction**, threaded into both the QUIC `TlsConfig`/CA (`buildForgeQuicTls`) and the
+  `certificateProvider` wired into every constructed node's `AetherNodeConfig`. No new admission-check
+  code was added — both mechanisms already existed and needed only a real, per-instance identity to
+  become effective:
+  [mechanism: QUIC — `ClientAuth.REQUIRE` + per-instance CA, unchanged verification code; a client
+  whose certificate doesn't chain to this instance's CA is TLS-rejected at handshake]
+  [mechanism: SWIM — AES-GCM AEAD decrypt-failure → log+drop, unchanged verification code; a gossip
+  datagram not encrypted under this instance's derived key fails tag verification and is discarded
+  before reaching membership state]
+  Neither guarantee is "secure" in general terms — both are exactly as strong as
+  `SelfSignedCertificateProvider`'s HKDF derivation, which this fix does not touch.
+- **`EmberCluster.withClusterSecret(byte[])` is the only sanctioned way for two separately-created
+  `EmberCluster`/`ForgeServer` instances to join one cluster** — pass the same secret bytes to both
+  before calling `start()`. A repo-wide grep found no existing harness, Forge scenario, or multi-JVM
+  test that relies on cross-instance/cross-process joining today; no caller relied on the literal,
+  one stale comment in `ClusterTestTls` was corrected.
+  [mechanism: `EmberCluster.createNode` is the sole Ember/Forge construction site, so this is the
+  only choke point either mechanism needs]
+- Startup-time regression check for the newly-activated `CertificateRenewalScheduler`
+  (dormant while `certificateProvider` was `Option.empty()`): 3-node Ember cluster start, same
+  test/machine, before vs. after — 17.88s avg (3 runs) vs. 17.55s avg (3 runs), no regression.
+  [mechanism: manual wall-clock A/B, 3 runs per side, same machine and test, pre-fix commit vs.
+  post-fix commit — not an automated/CI-enforced measurement, and no cited test measures time]
+
+### Fixed (2026-09-03 — #737: CursorStore leaked one block per commit; the refcount meant to reclaim it had zero readers)
+- **Every cursor commit leaked its superseded block.** `CursorStore.commit` replaced a cursor's ref with
+  `put` + `createRef`, which points the ref at the new block but never decrements whatever it replaced.
+  Cursor blocks are content-addressed (an 8-byte offset), so every consumer group parked at the same
+  offset shared one block — deleting "the old block" outright on replace would have deleted it out from
+  under every other cursor still pointing at it. `BlockLifecycle#isOrphaned` (refCount<=0) — the check
+  `DefaultStorageGarbageCollector` (#250) reads — had zero writers reaching it for cursor refs, so the
+  leak was permanent, not merely until the next GC pass.
+- **New `StorageInstance#replaceRef(name, content)`**: writes (or deduplicates) the block for
+  `content`, points `name` at it, and decrements whatever `name` previously pointed to — one
+  operation, never leaving `name` absent. The metadata pointer swap itself is atomic; the new
+  block's credit and the displaced block's decrement are only ordered, not atomic together — a
+  crash between them over-counts the displaced block (never decremented, stays live).
+  `MetadataStore#replaceRef(name, blockId)` backs the swap with a pure ref-pointer move (no
+  refcount side effect; callers own the counting).
+  [mechanism: `DefaultStorageInstance#replaceRef` composes the existing write path (`handlePut`, which
+  already credits the new block — +1 on a fresh write, +1 via dedup on an existing one) with a decrement
+  of whatever the swap displaces, applied only AFTER the swap, so the new block's credit is visible
+  before the old one's debit — pinned by `DefaultStorageInstanceReplaceRefOrderingTest`]
+- `CursorStore.commit` now calls `replaceRef` instead of `put` + `createRef`. The default `replaceRef` on
+  the `StorageInstance` interface still falls back to `put` + `createRef` for any implementor other than
+  `DefaultStorageInstance`, which has two independent counting defects: it leaks the superseded block
+  exactly as before (only `DefaultStorageInstance` reclaims it), and it double-counts the NEW block —
+  `put` already credits it (fresh write or dedup, +1), then `createRef` credits it again (+1), so it
+  sits at refCount 2 for one logical reference and never reaches zero even after an explicit
+  `deleteRef`.
+  [verified: aether/aether-stream/src/test/java/org/pragmatica/aether/stream/segment/CursorStoreTest.java
+  — `RefcountReclamation`: a repeated commit and a shared-content commit across two consumer groups both
+  leave the superseded block at refCount 0 and the live block at its correct count;
+  `GarbageCollectionIntegration#commit_thenCollectGarbage_reclaimsExactlySupersededBlocks`: three commits
+  to one cursor, then the production `StorageGarbageCollector#collectGarbage` (not a direct metadata-store
+  assertion) reclaims exactly the two superseded blocks, leaves the live one and `fetch` intact]
+- **GC grace period now runs from when a block was orphaned, not from when it was last read**
+  (fix round 2, same ticket). The original grace filter keyed on `lastAccessedAt`, which is set at
+  creation and only refreshed on a successful read — a block read once, held referenced for a long
+  time, and orphaned just now would already have a stale `lastAccessedAt` and skip the grace
+  entirely. `BlockLifecycle` gained a seventh field, `orphanedAt`: stamped with the current instant
+  only on the refCount transition from >0 to <=0, left unchanged by a redundant decrement at the
+  floor, and cleared back to 0 on resurrection (0 → 1+). On-disk/wire compatibility: existing
+  six-field snapshot and KV-Store records still parse — the 6-arg `BlockLifecycle` reconstruction
+  factory derives `orphanedAt` from `lastAccessedAt` for an already-orphaned legacy entry (0 for a
+  live one), so a pre-upgrade orphan becomes collectible once that borrowed timestamp clears the
+  grace period, and a live entry is unaffected.
+  [mechanism: `BlockLifecycle#withRefCountIncremented`/`withRefCountDecremented`
+  (`integrations/storage/src/main/java/org/pragmatica/storage/BlockLifecycle.java:90-111`) stamp/clear
+  `orphanedAt` only on the actual >0↔<=0 transition, never on a same-side no-op — pinned by
+  `BlockLifecycleTest#withRefCountDecremented_redundantAtFloor_doesNotRestartGraceClock` and
+  `#withRefCountIncremented_resurrection_clearsOrphanedAt`]
+  [verified: integrations/storage/src/test/java/org/pragmatica/storage/StorageGarbageCollectorTest.java
+  — `collectGarbage_orphanedNow_survivesEvenWithStaleLastAccessedAt`: a block backdated on
+  `lastAccessedAt` by 10x the grace period but orphaned just now still survives collection]
+- **Remaining exposure, unchanged by this fix**: a cursor block newly reaching refCount 0 is now
+  GC-reachable, which surfaces it to two known gaps in GC-eligible blocks generally: #801 (a
+  concurrent deduplicating `put` can resurrect a block between GC's orphan scan and its delete step,
+  since the two run with no lock held across the gap) and #802 (a block demoted to the DHT alone
+  drops out of every node's local GC candidate set once its private-tier lifecycle record is gone,
+  with no cluster-wide process owning its reclamation). Neither is fixed here. Two callers still
+  replace refs the old way and leak exactly as `CursorStore.commit` did before this fix —
+  `DefaultContentStore.java:55` and `StorageSegmentSink.java:62` both call `put` + `createRef` instead
+  of `replaceRef`; tracked separately by #812 (rc4), not fixed here.
+
 ### Fixed (2026-09-03 — #760: a schema hold produced one `WARN` per re-evaluation tick, not per hold)
 - **The hold WARN is event-driven, not tick-driven, and fired on every re-observation of an
   unchanged hold.** `tryActivateIfDependenciesReady` is reached from the slice's own LOAD, from
@@ -83,6 +178,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **The refusal message keeps its scripted-client substring.** `SchemaRouteError.SchemaNotFailed`
   still emits `"...is not in FAILED state (currently <STATUS>)..."`, pinned by two integration
   scripts and a unit test, now ending `"— retry applies to FAILED or PENDING migrations only"`.
+
+### Fixed (2026-09-03 — #738: topic sections silently ignored dashed/misspelled keys)
+- **A misspelled or dashed key in a topic's `resources.toml` section is now rejected at parse,
+  naming the nearest correctly-spelled key** — most commonly `min-sync-replicas` where
+  `min_sync_replicas` was meant. Previously the reflective config binder
+  (`ProviderBasedConfigService.bindToClass`, the class every production config caller actually
+  binds through — a separate, unreachable `TomlConfigService` carries the same shape but has zero
+  production callers) resolved any key it did not recognize to `Option.none()`/a component
+  default, making a typo byte-indistinguishable from the key never having been written. The real
+  fail-open is on the **ephemeral** path, not a durability-tier mis-selection: `durability` alone
+  picks the tier (`TopicConfig.topicConfig`), dash-typo-immune. `TopicConfig.declaredStreamKeys()`
+  only sees a stream knob as declared through its typed `Option` field, so a dashed
+  `min-sync-replicas` resolved to `none()` and stayed invisible to it — `rejectInertKeys()` then
+  found nothing declared and never raised the loud #576 rejection an ephemeral topic carrying a
+  (mistyped) durable-tier knob is supposed to get. The operator's likely-durable declaration was
+  silently discarded with zero signal, on an otherwise-successful ephemeral bind.
+- **New opt-in `@StrictKeys` annotation**, applied to `TopicConfig` only — every other config
+  record bound by `ProviderBasedConfigService` (four production callers:
+  `NodeDeploymentState.java:284`, `ConfigSectionPreflightValidator.java:60`, `AetherNode.java:5869`,
+  `SpiResourceProvider.java:362`) is unannotated and binds exactly as before; the existing
+  `SimpleConfig` test fixture — reused, not new — with an added unrecognized key proves this.
+  [verified: integrations/config/config-service/src/test/java/org/pragmatica/config/ProviderBasedConfigServiceTest.java (StrictKeysScoping.config_nonAnnotatedRecord_ignoresUnrecognizedKey_exactlyAsBeforeTheHook)]
+- **Scoped to exactly the keys the annotated record binds, and to the static/file-backed
+  configuration layer only**: a nested sub-section under the same topic (e.g. a consumer group
+  table, owned by the dashed-by-convention `StreamConfigParser`) is never inspected by this check,
+  however it is spelled — and neither is an environment variable, system property, or KV-overlay
+  entry landing at the same path, since none of those layers wrote the section this record
+  declares (#738 review finding). `provider.keys()` (every layer merged) was the original,
+  too-broad scope; the check now reads the new `ConfigurationProvider.staticKeys()`.
+  [verified: aether/resource/api/src/test/java/org/pragmatica/aether/resource/TopicConfigTest.java (tomlBinding_rejectsDashedTopicLevelKey_evenWithNestedConsumerSubsectionPresent, tomlBinding_ignoresSystemPropertyKeyAtTopicSection_neverFailsStrictBind)]
+- Nearest-key suggestion via a small self-contained Levenshtein-distance helper (no new
+  dependency), bounded to `max(3, key length / 2)` so an unrelated key gets no suggestion at all
+  rather than an unbounded argmin, and every unrecognized key in a section is reported together,
+  not just the first. Operator docs (`aether/docs/slice-developers/resource-reference.md`) and the
+  durable-pubsub spec (`aether/docs/specs/durable-pubsub-spec.md` §3) now state the guarantee and
+  cite it.
+  [verified: aether/resource/api/src/test/java/org/pragmatica/aether/resource/TopicConfigTest.java]
 
 ### Fixed (2026-09-03 — #769: `database.async_url` operator override was ignored by slice stores while the log claimed it was applied)
 - **`DatabaseConnectorConfig.effectiveHost()`/`effectivePort()`/`effectiveDatabase()` gave the

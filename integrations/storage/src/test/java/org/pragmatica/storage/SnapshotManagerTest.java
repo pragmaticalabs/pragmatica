@@ -329,6 +329,33 @@ class SnapshotManagerTest {
             assertThat(freshStore.resolveRef("beta").isPresent()).isTrue();
         }
 
+        /// #737 fix round 2: orphanedAt must survive a snapshot round-trip. Without this, a node
+        /// restart would silently reintroduce the original bug -- restored orphaned blocks would
+        /// fall back through the pre-round-2 6-arg factory (orphanedAt = lastAccessedAt), robbing
+        /// them of an accurate grace start exactly like the unfixed GC filter did.
+        @Test
+        void roundTrip_snapshotThenRestore_preservesOrphanedAt() {
+            var config = snapshotConfig(tempDir, 100, 600_000, 5, NODE_ID);
+            var manager = snapshotManager(store, config);
+
+            var idA = blockIdOf(CONTENT_A);
+            store.createLifecycle(BlockLifecycle.blockLifecycle(idA, TierLevel.MEMORY));
+            store.computeLifecycle(idA, BlockLifecycle::withRefCountDecremented);
+            var expectedOrphanedAt = store.getLifecycle(idA).unwrap().orphanedAt();
+
+            assertThat(expectedOrphanedAt).isNotZero();
+
+            manager.forceSnapshot();
+
+            var freshStore = inMemoryMetadataStore("restored-orphaned-at");
+            var freshManager = snapshotManager(freshStore, config);
+            var snap = freshManager.restoreFromLatest().unwrap();
+
+            freshStore.restoreLifecycles(snap.lifecycles());
+
+            assertThat(freshStore.getLifecycle(idA).unwrap().orphanedAt()).isEqualTo(expectedOrphanedAt);
+        }
+
         private long snapshotFileCount(Path dir) throws IOException {
             if (!Files.exists(dir)) {
                 return 0;
