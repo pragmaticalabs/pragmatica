@@ -6,22 +6,28 @@
   marked unhealthy.
   [verified: `DashboardPollingGateContractTest.appJs_pollingTimers_skipWhenClusterDegraded`,
   `DashboardPollingGateContractTest.requestsJs_pollingTimer_skipsWhenClusterDegraded`]
-- The gate is driven by a new, ungated health probe (`GET /health`, run on every primary-timer
-  tick so the dashboard can detect recovery, not only degradation) keyed semantically on
+- The gate is driven by a new, ungated health probe (run on every primary-timer tick so the
+  dashboard can detect recovery, not only degradation) keyed semantically on
   `status !== 'healthy'` — there is no literal `"degraded"` wire value in either health shape
-  this dashboard talks to. `degraded` defaults to `false` and is left at its last known value
-  on a missing/failed probe response; it is never fabricated from a failed fetch.
-  [verified: `DashboardPollingGateContractTest.restClient_probesHealthEndpoint_semanticallyNotByLiteralDegradedString`,
+  this dashboard talks to.
+  [verified: `DashboardPollingGateContractTest.restClient_probesVersionedHealthFirst_thenBareHealthFallback_semanticallyNotByLiteralDegradedString`,
   `DashboardPollingGateContractTest.clusterJs_declaresDegradedFlag_defaultingFalse`]
-- **Scope boundary, stated plainly:** the probe uses bare `/health`, not `/api/health` or
-  `/api/v1/health`. This is the path Forge's `StatusRoutes` actually serves and what this
-  dashboard is demonstrably run against today; the real node's Management API has no bare
-  `/health` route at all (only `/api/v1/health`, `/health/live`, `/health/ready`), so against a
-  real node this probe 404s like every other dashboard call does — see the versioning gap
-  below. Forge's own `HealthResponse` is hardcoded to always report `"healthy"` and can never
-  signal degradation, an honest limit on this gate's real-world triggerability against Forge.
-  [mechanism: `StatusRoutes.java` bare `/health` route vs. `ManagementServer`'s absence of one;
+- **Revised after first review:** the probe now tries `GET /api/v1/health` FIRST — the only
+  health route the real node's Management API serves, which has migrated ahead of this
+  dashboard (`ManagementRoute`, #300) — falling back to bare `GET /health`, what Forge actually
+  serves. The first cut probed bare `/health` only, which meant the gate silently never engaged
+  against a real node at all (every probe 404'd, `degraded` never left its default). Forge's own
+  `HealthResponse` is hardcoded to always report `"healthy"` and can never signal degradation, an
+  honest limit on this gate's real-world triggerability against Forge.
+  [mechanism: `StatusRoutes.java` bare `/health` route vs. `ManagementServer`'s `/api/v1/health`;
   Forge's `HealthResponse` construction is `new HealthResponse("healthy", ...)` unconditionally]
+- **Fail-open, also added after first review:** if BOTH the versioned and bare paths fail to
+  answer, `degraded` is explicitly set to `false`, never left to drift or fabricated as `true`.
+  Conflating "probe unreachable" with "reports degraded" would let a target that answers
+  neither health path permanently gate off every other poll with no path back — the very probe
+  meant to detect recovery would itself never succeed. The failure is warned once per session
+  (`console.warn`), not re-logged on every 2s tick.
+  [verified: `DashboardPollingGateContractTest.checkHealth_bothProbesFail_failsOpen_neverSetsDegradedTrue`]
 - A repeat 404 from an endpoint the target server has no route for is now logged once per
   method+path (`console.warn`) instead of toasting on every poll tick; every other failure
   status (5xx, network error) still toasts on every occurrence — a narrow carve-out for the

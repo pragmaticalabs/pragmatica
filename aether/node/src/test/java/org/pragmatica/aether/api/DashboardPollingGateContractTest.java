@@ -22,18 +22,21 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// endpoint the server does not implement should be logged once per endpoint rather than toasted on
 /// every tick.
 ///
-/// Two deliberate scope boundaries, both purely client-side (no production Java changed for this
-/// ticket) and both worth stating plainly rather than leaving implicit:
+/// Revised after #846 review: the first cut probed bare `/health` only, which is what Forge serves
+/// but NOT what the real node serves — the real node's Management API has migrated to `/api/v1/health`
+/// (`ManagementRoute`, per `aether/docs/specs/management-api-versioning-spec.md`, #300) with no bare
+/// `/health` route at all. Probing bare-only meant the gate silently never engaged against a real
+/// node; it always 404'd, `degraded` stayed at its default, and the health check was inert exactly
+/// where it mattered most. The probe now tries `/api/v1/health` FIRST, falling back to bare `/health`
+/// for Forge — but a fallback still means both can fail (a node ahead of migration but with a
+/// misbehaving proxy, or genuinely down). Two deliberate properties, both worth stating plainly:
 ///
-///   - **The health probe uses bare `/health`, not `/api/health` or `/api/v1/health`.** This
-///     dashboard, and Forge, have always spoken the unversioned `/api/...` convention; the real
-///     node's Management API has already migrated to an `/api/v1/...` prefix in code
-///     (`ManagementRoute`, per `aether/docs/specs/management-api-versioning-spec.md`, #300) without
-///     a corresponding dashboard update — a pre-existing, systemic, already-tracked mismatch that
-///     spans every dashboard endpoint, not just this one. Bare `/health` is what Forge's
-///     `StatusRoutes` actually serves and what this dashboard is demonstrably run against today; it
-///     is a deliberate, honest scope boundary, not an attempt to close the #300 gap. Against an
-///     already-migrated real node this probe 404s like every other dashboard call does today.
+///   - **A probe failure (both paths unreachable) fails OPEN to healthy, never wedges on
+///     `degraded = true`.** Unknown health is not the same claim as degraded health; treating the
+///     two as one would let a target that answers neither health path (e.g. a node's proxy dropping
+///     both, or a moment during startup) permanently gate off every other poll with no path back,
+///     since the very probe meant to detect recovery can never itself succeed. The failure is warned
+///     once per session, not re-logged on every 2s tick.
 ///   - **"Reports degraded" has no literal wire value to match.** The real node's `HealthResponse`
 ///     computes `status` as exactly `"healthy"` or `"unhealthy"` (`StatusRoutes.buildHealthResponse`)
 ///     — there is no `"degraded"` string anywhere in this API. Forge's own `HealthResponse` is
@@ -61,13 +64,40 @@ class DashboardPollingGateContractTest {
     }
 
     @Test
-    void restClient_probesHealthEndpoint_semanticallyNotByLiteralDegradedString() {
+    void restClient_probesVersionedHealthFirst_thenBareHealthFallback_semanticallyNotByLiteralDegradedString() {
         var appJs = resource("/dashboard/js/app.js").unwrap();
+        var versionedIndex = appJs.indexOf("RestClient.get('/api/v1/health')");
+        var bareIndex = appJs.indexOf("RestClient.get('/health')");
 
-        assertThat(appJs).as("app.js must add a dedicated health probe against the endpoint Forge actually serves")
-                  .contains("RestClient.get('/health')")
-                  .as("the gate must key on the semantic 'not healthy', not a nonexistent literal 'degraded' string")
+        assertThat(versionedIndex).as("the versioned path must be probed FIRST — it's the ONLY health route "
+                                     + "the real node serves (#300); probing bare-only never engages the gate "
+                                     + "against a real node at all")
+                  .isNotNegative();
+        assertThat(bareIndex).as("bare '/health' must remain as the fallback for what Forge actually serves")
+                  .isGreaterThan(versionedIndex);
+        assertThat(appJs).as("the gate must key on the semantic 'not healthy', not a nonexistent literal 'degraded' string")
                   .contains("health.status !== 'healthy'");
+    }
+
+    /// Correction after #846 review: a probe failure (both the versioned and bare health paths
+    /// unreachable — the case on any node ahead of #300's dashboard migration but behind #294's own
+    /// fix) must never set `degraded = true`. That would wedge every other poll behind a health
+    /// check that can never succeed. Unknown health fails OPEN to healthy, and the failure is
+    /// warned once — not re-toasted or re-logged on every 2s tick.
+    @Test
+    void checkHealth_bothProbesFail_failsOpen_neverSetsDegradedTrue() {
+        var appJs = resource("/dashboard/js/app.js").unwrap();
+        var start = appJs.indexOf("async checkHealth() {");
+        var end = appJs.indexOf("async pollStatus() {", start);
+
+        assertThat(start).as("checkHealth() must exist in app.js").isNotNegative();
+        assertThat(end).as("pollStatus() must follow checkHealth() so its body is boundable").isGreaterThan(start);
+        var checkHealthBody = appJs.substring(start, end);
+
+        assertThat(checkHealthBody).as("an unreachable/unanswered probe must fail OPEN to healthy, never wedge on degraded=true")
+                  .contains("Alpine.store('cluster').degraded = false;")
+                  .as("the fail-open branch must warn, but only once per session — not on every poll tick")
+                  .contains("_healthProbeUnreachableWarned");
     }
 
     @Test

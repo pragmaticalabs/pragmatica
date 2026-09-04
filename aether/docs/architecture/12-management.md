@@ -218,22 +218,25 @@ Every dashboard poll timer (status, events, alerts, requests, topology, schema, 
 rest of the secondary-store refreshes) is gated on a client-side `degraded` flag, checked
 on every tick:
 
-- The gate is refreshed by an ungated health probe (`GET /health`) that runs on every
-  primary-timer tick regardless of the current gate state, so the dashboard can detect
-  recovery as well as degradation. `degraded` is keyed semantically on
-  `status !== 'healthy'` — there is no literal `"degraded"` wire value in either health
-  shape. A missing or unreachable probe response leaves `degraded` at its last known
-  value; the dashboard never fabricates a health verdict from a failed fetch.
-- **`/health` is bare, not `/api/health` or `/api/v1/health`.** This is a deliberate,
-  narrow scope boundary, not a fix for the versioning gap below: it is the path Forge's
-  `StatusRoutes` actually serves, and what this dashboard is demonstrably run against
-  today. The real node's Management API has no bare `/health` route at all — only
-  `/api/v1/health`, `/health/live`, and `/health/ready` (see
-  [management-api.md](../reference/management-api.md)) — so against a real node this
-  probe 404s like every other dashboard call does today (see the versioning gap, below).
-  Forge's own `HealthResponse` is hardcoded to always report `"healthy"` and can never
-  signal degradation, an honest limit on this gate's real-world triggerability against
-  Forge.
+- The gate is refreshed by an ungated health probe that runs on every primary-timer tick
+  regardless of the current gate state, so the dashboard can detect recovery as well as
+  degradation. `degraded` is keyed semantically on `status !== 'healthy'` — there is no
+  literal `"degraded"` wire value in either health shape.
+- **The probe tries `GET /api/v1/health` first, falling back to bare `GET /health`.** The
+  versioned path is the only health route the real node's Management API serves — bare
+  `/health` does not exist there at all (only `/api/v1/health`, `/health/live`, and
+  `/health/ready`, see [management-api.md](../reference/management-api.md)). Bare `/health`
+  remains as the fallback because it's what Forge actually serves; Forge's own
+  `HealthResponse` is hardcoded to always report `"healthy"` and can never signal
+  degradation, an honest limit on this gate's real-world triggerability against Forge.
+  Probing versioned-first (rather than bare-only, the original cut of this fix) is what
+  makes the gate actually engage against a real node — bare-only meant every probe 404'd
+  there and the gate silently never left its default.
+- **A probe failure (neither path answers) fails open to healthy, never wedges on
+  `degraded = true`.** Unknown health is not the same claim as degraded health: treating
+  the two as one would let a target that answers neither health path permanently gate off
+  every other poll, since the very probe meant to detect recovery could never itself
+  succeed. The failure is warned once per session, not re-logged on every tick.
 - **A 404 from an endpoint the server has no route for is logged once per endpoint, not
   toasted on every tick.** Every other failure status (5xx, network error) still toasts
   on every occurrence — this is a narrow carve-out for the specific, expected case of
@@ -242,9 +245,9 @@ on every tick:
 
 **Known gap, out of scope here (tracked in #300):** the dashboard and Forge speak the
 unversioned `/api/...` convention throughout, while the real node's Management API has
-already migrated most routes to `/api/v1/...` (`ManagementRoute`). This predates and is
-independent of the polling-gate work above; closing it requires updating every dashboard
-REST call, not just the health probe.
+already migrated most routes to `/api/v1/...` (`ManagementRoute`). The health probe above
+now bridges this for `/health` specifically; every other dashboard REST call still needs
+updating to close the gap fully.
 
 ## E2E Testing
 

@@ -173,23 +173,35 @@ document.addEventListener('alpine:init', function() {
             },
 
             async checkHealth() {
-                // #294: bare '/health' matches what Forge actually serves and what this dashboard is
-                // demonstrably run against today; the real node's Management API has already migrated
-                // to '/api/v1/health' in code (ManagementRoute, #300) without a corresponding dashboard
-                // update — a pre-existing, systemic, tracked mismatch across every dashboard endpoint,
-                // not something this ticket fixes. Against an already-migrated node this probe 404s
-                // like every other call here does today.
+                // #294/#300: try the versioned path FIRST — it is the ONLY health path the real node's
+                // Management API serves (ManagementRoute has no bare '/health' route at all, per #300's
+                // path-versioning gap), then fall back to bare '/health', which is what Forge actually
+                // serves and has never migrated. Probing versioned-first is what makes this gate work
+                // against a real node, not just Forge; probing bare-only (the original #294 fix) meant
+                // the gate silently never engaged against a real node at all.
                 //
                 // 'degraded' is keyed on the semantic `status !== 'healthy'`, not a literal 'degraded'
                 // wire value — none exists. The real node's HealthResponse.status is only ever
                 // "healthy"/"unhealthy"; Forge's is hardcoded to always "healthy" and can never signal
                 // degradation, an honest limit on this gate against Forge.
-                var health = await RestClient.get('/health');
+                var health = await RestClient.get('/api/v1/health');
+                if (!health) {
+                    health = await RestClient.get('/health');
+                }
                 if (health && health.status) {
                     Alpine.store('cluster').degraded = health.status !== 'healthy';
+                    return;
                 }
-                // A missing/unreachable health endpoint leaves `degraded` at its last known value —
-                // never fabricate a health verdict from a failed probe.
+                // Fail-open: neither path answered (both 404, or the network call itself failed).
+                // This is UNKNOWN health, not degraded health — a probe failure must never set
+                // degraded=true, or any target that serves neither health path would wedge every
+                // OTHER poll behind a health check that can never succeed. Treat unknown as healthy
+                // and keep polling; warn once, not on every 2s tick.
+                Alpine.store('cluster').degraded = false;
+                if (!this._healthProbeUnreachableWarned) {
+                    this._healthProbeUnreachableWarned = true;
+                    console.warn('[Dashboard] health probe failed on both /api/v1/health and /health; treating as healthy (fail-open) and continuing to poll');
+                }
             },
 
             async pollStatus() {

@@ -4,8 +4,10 @@ document.addEventListener('alpine:init', function() {
         leaderId: '',
         targetClusterSize: 0,
         healthy: true,
-        // #294: never fabricate a degraded verdict before the first /health probe returns —
-        // only app.js's checkHealth() flips this, and only when a response actually reports status.
+        // #294: never fabricate a degraded verdict before the first health probe returns — only
+        // app.js's checkHealth() flips this, and it fails OPEN to false whenever a probe reports
+        // healthy OR whenever neither health path answers at all; only an explicit "unhealthy"
+        // status sets this true.
         degraded: false,
         uptimeSeconds: 0,
         controllerConfig: null,
