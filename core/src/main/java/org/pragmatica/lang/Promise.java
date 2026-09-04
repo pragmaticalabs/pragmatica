@@ -650,6 +650,12 @@ public sealed interface Promise<T> permits PromiseImpl {
     /// caller relying on `promise.timeout(t) == promise` (identity, not value) will observe a different
     /// object than before; a repo-wide sweep found no call site doing this, but it is a genuine change in
     /// what this method returns, not merely an implementation detail.
+    ///
+    /// A call site that discards the returned derived promise (e.g. `promise.timeout(t);` used as a bare
+    /// statement, as `HttpForwarder` does) still keeps its timeout today, because the scheduled failure
+    /// targets `this` -- the ORIGINAL promise -- not the value returned here. Retargeting that failure to
+    /// the derived promise in a future change would silently disarm every such call site with no
+    /// compile-time signal; grep for `.timeout(` used as a statement before making that change.
     default Promise<T> timeout(TimeSpan timeout) {
         var future = AsyncExecutor.INSTANCE.runAsync(timeout,
                                                        () -> fail(new CoreError.Timeout("Promise timed out after " + timeout.millis() + "ms")));
