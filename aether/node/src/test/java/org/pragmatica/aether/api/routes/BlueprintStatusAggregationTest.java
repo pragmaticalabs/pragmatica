@@ -44,6 +44,7 @@ import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.stream.StreamNamespacesService;
 import org.pragmatica.aether.stream.StreamPartitionManager;
@@ -150,21 +151,72 @@ class BlueprintStatusAggregationTest {
     /// `Option.none()` — and no prior test drove that path through the real route handler. The other
     /// half (that the rollback actually issues the KV `Remove`) is
     /// `ClusterDeploymentStateTransactionalTest.RollbackSequence` in `aether-deployment`; the two
-    /// together prove the sequence `management-api.md` now documents. **Until #759 Phase 2** lands a
-    /// durable terminal-outcome record for `handleGetBlueprintStatus` to read instead, `BLUEPRINT_NOT_FOUND`
-    /// is the correct, current answer here — Phase 2 is what must change this assertion, not a bug to fix now.
+    /// together prove the sequence `management-api.md` now documents.
+    ///
+    /// #759 Phase 2 renamed this from `...blueprintAbsentFromKv_returns404BlueprintNotFound`: `outcome()`
+    /// is now consulted unconditionally, so `404` here is conditioned on BOTH `get(id)` AND `outcome(id)`
+    /// being empty — "never reached a terminal outcome, and nothing live in the KV store either." The
+    /// three outcome-present cases that no longer land here (`FAILED`, `ROLLED_BACK`, `SUCCEEDED`-but-gone)
+    /// each have their own test below.
     @Test
-    void statusRoute_blueprintAbsentFromKv_returns404BlueprintNotFound() {
-        var route = statusRouteOver(notFoundBlueprintService(), deploymentMapOver(Map.of()));
+    void statusRoute_blueprintAbsentFromKvAndNoOutcome_returns404BlueprintNotFound() {
+        assertBlueprintNotFound(blueprintAbsentAndNoOutcomeService());
+    }
 
-        route.handler()
-             .handle(new StatusRequestContext(List.of(BLUEPRINT_ID.asString())))
-             .await()
-             .onSuccess(value -> fail("Expected BLUEPRINT_NOT_FOUND, got a response: " + value))
-             .onFailure(cause -> assertThat(cause.message()).as("SliceRoutes.BLUEPRINT_NOT_FOUND is what the "
-                                                                + "management-api.md rollback-sequence discussion "
-                                                                + "cites as the 404 source")
-                                                             .isEqualTo("Blueprint not found"));
+    /// #759 Phase 2 — a terminal `FAILED` outcome is read even when `get(id)` is empty (the normal
+    /// post-`ALL_OR_NOTHING`-rollback-with-no-previous-blueprint KV state), replacing the `404` that
+    /// [#statusRoute_blueprintAbsentFromKvAndNoOutcome_returns404BlueprintNotFound] used to return for
+    /// every empty-`get()` case before Phase 2 distinguished "never attempted" from "attempted and failed".
+    @Test
+    void statusRoute_outcomeFailed_returns200Failed() {
+        var outcome = DeploymentOutcomeValue.failed(List.of(SLICE_A.asString()), "svc-a never reached ACTIVE", 1_000L);
+        var response = statusResponseOver(blueprintServiceWith(Option.none(), Option.some(outcome)));
+
+        assertThat(response.overallStatus()).isEqualTo("FAILED");
+        assertThat(response.cause()).isEqualTo("svc-a never reached ACTIVE");
+        assertThat(response.failingSlices()).containsExactly(SLICE_A.asString());
+        assertThat(response.timestampMs()).isEqualTo(1_000L);
+    }
+
+    /// #759 Phase 2 — a terminal `ROLLED_BACK` outcome (a previous blueprint existed and was restored)
+    /// is reported distinctly from `FAILED`, per `DeploymentOutcomeStatus`'s own doc comment.
+    @Test
+    void statusRoute_outcomeRolledBack_returns200RolledBack() {
+        var outcome = DeploymentOutcomeValue.rolledBack(List.of(SLICE_B.asString()), "restored previous blueprint after svc-b failed", 2_000L);
+        var response = statusResponseOver(blueprintServiceWith(Option.none(), Option.some(outcome)));
+
+        assertThat(response.overallStatus()).isEqualTo("ROLLED_BACK");
+        assertThat(response.cause()).isEqualTo("restored previous blueprint after svc-b failed");
+        assertThat(response.failingSlices()).containsExactly(SLICE_B.asString());
+        assertThat(response.timestampMs()).isEqualTo(2_000L);
+    }
+
+    /// #759 Phase 2 — `SUCCEEDED` is not a terminal-failure status, so a `SUCCEEDED` outcome does not
+    /// shortcut the route: it falls through to the pre-existing `get(id)`-based logic exactly as
+    /// `Option.none()` does, and an empty `get(id)` (the blueprint was later deleted) still answers
+    /// `404 BLUEPRINT_NOT_FOUND` — succeeding once does not entitle a deleted blueprint to a permanent
+    /// `200`.
+    @Test
+    void statusRoute_outcomeSucceeded_returns404() {
+        var outcome = DeploymentOutcomeValue.succeeded(3_000L);
+        assertBlueprintNotFound(blueprintServiceWith(Option.none(), Option.some(outcome)));
+    }
+
+    /// #759 Phase 2 — the store-side defect where the with-previous rollback path never removes or
+    /// overwrites `AppBlueprintKey` (tracked separately for stream B, out of scope here) leaves `get(id)`
+    /// answering a stale non-empty [#EXPANDED] blueprint after a restore-rollback. This is exactly the
+    /// case the design guards against: a terminal `ROLLED_BACK` outcome must win regardless of what
+    /// `get(id)` holds, stale-and-non-empty included, rather than the route falling through to render
+    /// the stale blueprint's live slice detail as if nothing had failed.
+    @Test
+    void statusRoute_blueprintPresentStalePreFailure_outcomeRolledBack_returns200RolledBack() {
+        var outcome = DeploymentOutcomeValue.rolledBack(List.of(SLICE_A.asString()), "restored previous blueprint after svc-a failed", 4_000L);
+        var response = statusResponseOver(blueprintServiceWith(Option.some(EXPANDED), Option.some(outcome)));
+
+        assertThat(response.overallStatus()).as("ROLLED_BACK must win over a stale non-empty get() result").isEqualTo("ROLLED_BACK");
+        assertThat(response.cause()).isEqualTo("restored previous blueprint after svc-a failed");
+        assertThat(response.failingSlices()).containsExactly(SLICE_A.asString());
+        assertThat(response.timestampMs()).isEqualTo(4_000L);
     }
 
     // --- helpers ---
@@ -200,6 +252,30 @@ class BlueprintStatusAggregationTest {
         return routes.isEmpty() ? fail("BLUEPRINT_STATUS route not registered") : routes.getFirst();
     }
 
+    /// #759 Phase 2 — the `outcome()`-driven tests don't populate the `DeploymentMap` at all (the
+    /// terminal-failure branch never reads it), so an empty map is the correct fixture for every one
+    /// of them; only the pre-existing active/failed-instance tests need [#deploymentMapOver] populated.
+    private static BlueprintStatusResponse statusResponseOver(BlueprintService blueprintService) {
+        var holder = new AtomicReference<BlueprintStatusResponse>();
+        statusRouteOver(blueprintService, deploymentMapOver(Map.of())).handler()
+                             .handle(new StatusRequestContext(List.of(BLUEPRINT_ID.asString())))
+                             .await()
+                             .onSuccess(value -> holder.set((BlueprintStatusResponse) value))
+                             .onFailure(cause -> fail("Status lookup must succeed, got: " + cause.message()));
+        return holder.get();
+    }
+
+    private static void assertBlueprintNotFound(BlueprintService blueprintService) {
+        statusRouteOver(blueprintService, deploymentMapOver(Map.of())).handler()
+             .handle(new StatusRequestContext(List.of(BLUEPRINT_ID.asString())))
+             .await()
+             .onSuccess(value -> fail("Expected BLUEPRINT_NOT_FOUND, got a response: " + value))
+             .onFailure(cause -> assertThat(cause.message()).as("SliceRoutes.BLUEPRINT_NOT_FOUND is what the "
+                                                                + "management-api.md rollback-sequence discussion "
+                                                                + "cites as the 404 source")
+                                                             .isEqualTo("Blueprint not found"));
+    }
+
     private static DeploymentMap deploymentMapOver(Map<Artifact, Map<NodeId, SliceState>> deployed) {
         var map = DeploymentMap.deploymentMap();
         deployed.forEach((artifact, byNode) -> byNode.forEach((nodeId, state) -> map.onNodeArtifactPut(nodeArtifactPut(nodeId, artifact, state))));
@@ -213,28 +289,23 @@ class BlueprintStatusAggregationTest {
     }
 
     private static BlueprintService statusBlueprintService() {
-        return new BlueprintService() {
-            @Override
-            public Promise<ExpandedBlueprint> publish(String dsl) { return unsupported("publish"); }
-            @Override
-            public Promise<ExpandedBlueprint> publishFromArtifact(String artifactCoords) { return unsupported("publishFromArtifact"); }
-            @Override
-            public Promise<ExpandedBlueprint> publishFromArtifact(String artifactCoords, boolean registerOnly) { return unsupported("publishFromArtifact(registerOnly)"); }
-            @Override
-            public Option<ExpandedBlueprint> get(BlueprintId id) { return Option.some(EXPANDED); }
-            @Override
-            public List<ExpandedBlueprint> list() { return unsupported("list"); }
-            @Override
-            public Promise<Unit> delete(BlueprintId id) { return unsupported("delete"); }
-            @Override
-            public Result<Blueprint> validate(String dsl) { return unsupported("validate"); }
-        };
+        return blueprintServiceWith(Option.some(EXPANDED), Option.none());
     }
 
-    /// #759 review (M2) — the rollback-sequence not-found case: `get()` answers `Option.none()`,
-    /// matching the post-rollback KV state `unloadBlueprintSlices` leaves behind (see the `@Test`
-    /// this backs).
-    private static BlueprintService notFoundBlueprintService() {
+    /// #759 review (M2) / #759 Phase 2 — the rollback-sequence not-found case: `get()` answers
+    /// `Option.none()`, matching the post-rollback KV state `unloadBlueprintSlices` leaves behind, AND
+    /// `outcome()` answers `Option.none()` — "no attempt ever reached a terminal write" (see
+    /// `BlueprintService.outcome`'s four-case doc comment). This fixture now names the case it actually
+    /// covers: an outcome-carrying rollback is a different fixture entirely
+    /// ([#blueprintServiceWith] with a `Some` outcome), not this one.
+    private static BlueprintService blueprintAbsentAndNoOutcomeService() {
+        return blueprintServiceWith(Option.none(), Option.none());
+    }
+
+    /// #759 Phase 2 — shared `BlueprintService` fixture parameterized over the two accessors
+    /// `handleGetBlueprintStatus` actually reads, so each outcome/get() combination in the mapping
+    /// table gets its own one-line fixture instead of a hand-duplicated anonymous class per case.
+    private static BlueprintService blueprintServiceWith(Option<ExpandedBlueprint> getResult, Option<DeploymentOutcomeValue> outcomeResult) {
         return new BlueprintService() {
             @Override
             public Promise<ExpandedBlueprint> publish(String dsl) { return unsupported("publish"); }
@@ -243,7 +314,9 @@ class BlueprintStatusAggregationTest {
             @Override
             public Promise<ExpandedBlueprint> publishFromArtifact(String artifactCoords, boolean registerOnly) { return unsupported("publishFromArtifact(registerOnly)"); }
             @Override
-            public Option<ExpandedBlueprint> get(BlueprintId id) { return Option.none(); }
+            public Option<ExpandedBlueprint> get(BlueprintId id) { return getResult; }
+            @Override
+            public Option<DeploymentOutcomeValue> outcome(BlueprintId id) { return outcomeResult; }
             @Override
             public List<ExpandedBlueprint> list() { return unsupported("list"); }
             @Override
