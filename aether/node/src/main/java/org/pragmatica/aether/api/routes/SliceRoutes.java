@@ -28,6 +28,8 @@ import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeStatus;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.topology.SliceTopology;
 import org.pragmatica.aether.slice.topology.TopologyGraph;
@@ -376,14 +378,49 @@ public final class SliceRoutes implements RouteSource {
                                       deps);
     }
 
+    /// #759 Phase 2 — `outcome(id)` is consulted UNCONDITIONALLY, before `get(id)`. A terminal
+    /// `FAILED`/`ROLLED_BACK` outcome wins over whatever `get(id)` currently holds — including a
+    /// stale non-empty value the with-previous rollback path can leave behind (store-side defect
+    /// tracked separately for stream B, out of scope here) — because the durable outcome record is
+    /// authoritative regardless of what the live KV entry happens to contain. Only when the outcome
+    /// is `SUCCEEDED` or absent (`Option.none()` — never deployed, still in flight, or orphaned; see
+    /// `BlueprintService.outcome` for why those three are indistinguishable here) does the route fall
+    /// back to the pre-existing `get(id)`-based logic: present → 200 with live slice detail
+    /// (unchanged), empty → 404 `BLUEPRINT_NOT_FOUND`.
     private Promise<BlueprintStatusResponse> handleGetBlueprintStatus(String id) {
         return BlueprintId.blueprintId(id)
                           .async()
-                          .flatMap(blueprintId -> nodeSupplier.get()
-                                                              .blueprintService()
-                                                              .get(blueprintId)
-                                                              .async(BLUEPRINT_NOT_FOUND))
-                          .map(this::toBlueprintStatusResponse);
+                          .flatMap(this::routeBlueprintStatusByOutcome);
+    }
+
+    private Promise<BlueprintStatusResponse> routeBlueprintStatusByOutcome(BlueprintId blueprintId) {
+        return nodeSupplier.get()
+                           .blueprintService()
+                           .outcome(blueprintId)
+                           .filter(SliceRoutes::isTerminalFailureOutcome)
+                           .fold(() -> handleGetBlueprintStatusFromStore(blueprintId),
+                                 outcome -> Promise.success(toBlueprintStatusResponse(blueprintId, outcome)));
+    }
+
+    private static boolean isTerminalFailureOutcome(DeploymentOutcomeValue outcome) {
+        return outcome.status() == DeploymentOutcomeStatus.FAILED || outcome.status() == DeploymentOutcomeStatus.ROLLED_BACK;
+    }
+
+    private Promise<BlueprintStatusResponse> handleGetBlueprintStatusFromStore(BlueprintId blueprintId) {
+        return nodeSupplier.get()
+                           .blueprintService()
+                           .get(blueprintId)
+                           .async(BLUEPRINT_NOT_FOUND)
+                           .map(this::toBlueprintStatusResponse);
+    }
+
+    private BlueprintStatusResponse toBlueprintStatusResponse(BlueprintId blueprintId, DeploymentOutcomeValue outcome) {
+        return new BlueprintStatusResponse(blueprintId.asString(),
+                                           outcome.status().name(),
+                                           List.of(),
+                                           outcome.cause(),
+                                           outcome.failingSlices(),
+                                           outcome.timestampMs());
     }
 
     private BlueprintStatusResponse toBlueprintStatusResponse(ExpandedBlueprint blueprint) {
@@ -393,7 +430,10 @@ public final class SliceRoutes implements RouteSource {
 
         return new BlueprintStatusResponse(blueprint.id().asString(),
                                            overallStatus,
-                                           sliceStatuses);
+                                           sliceStatuses,
+                                           "",
+                                           List.of(),
+                                           0L);
     }
 
     /// #759 — reads `SliceState.FAILED` alongside `ACTIVE` so a slice with failed instances still

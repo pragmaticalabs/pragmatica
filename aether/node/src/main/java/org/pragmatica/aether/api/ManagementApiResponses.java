@@ -156,20 +156,24 @@ public sealed interface ManagementApiResponses {
     /// `aether/cli/.../DeploymentWait.java:32-40,52-67` implements exactly this poll-until-terminal
     /// loop, driven from `AetherCli.java:2261-2268,2273-2275`].
     ///
-    /// `statusUrl` always points at `GET /api/blueprints/status/{id}`, but — UNTIL #759 PHASE 2 —
-    /// that endpoint is not durable across a rollback: under the default `ALL_OR_NOTHING`
-    /// atomicity, a deterministic failure triggers `unloadBlueprintSlices`, which removes the
-    /// blueprint's `AppBlueprintKey` from the KV store entirely
-    /// [mechanism: `ClusterDeploymentState.java:2139-2158`], so a `statusUrl` GET issued after
-    /// rollback answers `404 BLUEPRINT_NOT_FOUND`, not `FAILED`. The only durable trace of the
-    /// failure is the `DeploymentFailed` event on `GET /api/events`
+    /// `statusUrl` always points at `GET /api/blueprints/status/{id}`, and — as of #759 Phase 2 —
+    /// that endpoint IS durable across a rollback: under the default `ALL_OR_NOTHING` atomicity, a
+    /// deterministic failure triggers `unloadBlueprintSlices`, which removes the blueprint's
+    /// `AppBlueprintKey` from the KV store entirely [mechanism: `ClusterDeploymentState.java:2139-2158`],
+    /// but the terminal `FAILED`/`ROLLED_BACK` `DeploymentOutcomeValue` written at the same time survives
+    /// that removal and is what `statusUrl` now reads first — see `SliceRoutes.handleGetBlueprintStatus`.
+    /// A `statusUrl` GET issued after rollback therefore answers `200` with `overallStatus` `FAILED` or
+    /// `ROLLED_BACK`, `cause`, and `failingSlices`, not `404`; `404 BLUEPRINT_NOT_FOUND` now means only
+    /// "never reached a terminal outcome and nothing live in the KV store either" (never attempted,
+    /// still in flight, or crash-orphaned — see `BlueprintService.outcome`). The `DeploymentFailed` event
+    /// on `GET /api/events` remains the timeline of when and what failed
     /// [mechanism: `ClusterEventAggregator.java:881-885` — `details.artifact` names the failed
     /// artifact; `MAX_RETAINED_EVENTS = 10_000` (`:139`) bounds retention for the whole
     /// cluster-event stream, not per-artifact; `StatusRoutes.java:114-115` — the route accepts
     /// only `sinceEpoch`/`sinceSeq`, no server-side artifact filter, so a caller must fetch and
-    /// filter client-side on `details.artifact`]. Phase 2 will make
-    /// `GET /api/blueprints/status/{id}` read a durable terminal-outcome record instead of
-    /// 404ing on it. See `aether/docs/reference/management-api.md` `POST /api/blueprints/deploy`.
+    /// filter client-side on `details.artifact`]; `statusUrl`'s outcome record is the durable summary,
+    /// not a replacement for the timeline. See `aether/docs/reference/management-api.md`
+    /// `POST /api/blueprints/deploy`.
     record BlueprintResponse(String status,
                              String blueprint,
                              int targetInstances,
@@ -185,7 +189,21 @@ public sealed interface ManagementApiResponses {
 
     record BlueprintSliceInfo(String artifact, int instances, boolean isDependency, List<String> dependencies) {}
 
-    record BlueprintStatusResponse(String id, String overallStatus, List<BlueprintSliceStatus> slices) {}
+    /// #759 Phase 2 — `overallStatus` carries `"FAILED"`/`"ROLLED_BACK"` from
+    /// `BlueprintService.outcome(id)` when a terminal failure outcome exists, taking priority over
+    /// whatever `get(id)` currently holds (including a stale non-empty value left by rollback). In
+    /// that case `slices` is the true degenerate empty list — outcome-sourced responses do not carry
+    /// live per-slice detail — and `cause`/`failingSlices`/`timestampMs` are populated from the
+    /// outcome record. For every other response (`SUCCEEDED` outcome or no outcome at all, `get(id)`
+    /// present), `slices` carries the live snapshot as before and `cause`/`failingSlices` are the
+    /// degenerate empty-string/empty-list, `timestampMs` is `0` — never fabricated. See
+    /// `SliceRoutes.handleGetBlueprintStatus`.
+    record BlueprintStatusResponse(String id,
+                                   String overallStatus,
+                                   List<BlueprintSliceStatus> slices,
+                                   String cause,
+                                   List<String> failingSlices,
+                                   long timestampMs) {}
 
     /// #759 — `failedInstances` surfaces `SliceState.FAILED` entries still present in
     /// `deploymentMap()` at response time (e.g. `BEST_EFFORT` deploys, or a query that lands before
