@@ -693,12 +693,52 @@ class StreamConsumerManagerTest {
             manager.reconcile();
             assertThat(runtime.subscribedPartitions()).describedAs("before the second artifact declares, the sole declarant consumes normally")
                       .containsExactlyInAnyOrder(0, 1, 2, 3);
+            assertThat(manager.statuses()).describedAs("before the collision, the sole declarant carries no diagnostic")
+                      .hasSize(1)
+                      .allSatisfy(status -> assertThat(status.diagnostic()).isEqualTo(Option.none()));
 
             declare(OTHER_ARTIFACT, "java.lang.String", false);
             when(invocationHandler.localSlice(OTHER_ARTIFACT)).thenReturn(Option.some(new StubBridge(Option.none())));
             manager.reconcile();
             assertThat(runtime.subscribedPartitions()).describedAs("the late collision must retract the already-active side too — a stale active subscription surviving would be a silent gap in the #545 fail-closed guarantee")
                       .isEmpty();
+            assertThat(manager.statuses()).describedAs("the transition must also surface the diagnostic on BOTH sides — the first artifact's prior clean status must not survive the retraction unexplained")
+                      .hasSize(2)
+                      .allSatisfy(status -> assertThat(status.diagnostic().or("")).contains(ARTIFACT.base().asString())
+                                                     .contains(OTHER_ARTIFACT.base().asString())
+                                                     .contains(STREAM)
+                                                     .contains(GROUP));
+        }
+
+        /// Review of #844, finding 2: `unsubscribeAllFor` used to filter `active` by consumer group
+        /// alone, so a collision on ONE stream could sweep an unrelated, non-colliding subscription on
+        /// a DIFFERENT stream that merely happens to reuse the same group string. `RecordingRuntime` is
+        /// keyed by (stream, partition) precisely so this cross-stream leak is observable: `invoices`
+        /// never collides (its `ConsumerGroupKey` is `("invoices", GROUP)`, distinct from `("orders",
+        /// GROUP)`) and must stay fully subscribed while `orders`'s two colliding artifacts both drop.
+        @Test
+        void reconcile_leavesAnUnrelatedStreamAlone_whenItsGroupNameCollidesOnlyOnAnotherStream() {
+            var otherStream = "invoices";
+            var otherConfigSection = "streams.invoices";
+            var otherStreamArtifact = Artifact.artifact("org.example:invoices:1.0.0").unwrap();
+
+            var otherKey = StreamRegistrationKey.streamRegistrationKey(otherStream, otherConfigSection, otherStreamArtifact, METHOD);
+            var otherValue = StreamRegistrationValue.streamRegistrationValue(SELF, GROUP, false, "java.lang.String");
+            registry.onStreamRegistrationPut(new ValuePut<>(new KVCommand.Put<>(otherKey, otherValue), Option.none()));
+            when(invocationHandler.localSlice(otherStreamArtifact)).thenReturn(Option.some(new StubBridge(Option.none())));
+
+            declare(ARTIFACT, "java.lang.String", false);
+            declare(OTHER_ARTIFACT, "java.lang.String", false);
+            deploySliceLocally();
+            when(invocationHandler.localSlice(OTHER_ARTIFACT)).thenReturn(Option.some(new StubBridge(Option.none())));
+            ownership.ownedBySelf(0, 1, 2, 3);
+
+            manager().reconcile();
+
+            assertThat(runtime.subscribedPartitions(STREAM)).describedAs("both colliding artifacts on `orders` must stay unsubscribed")
+                      .isEmpty();
+            assertThat(runtime.subscribedPartitions(otherStream)).describedAs("`invoices` reused the SAME group name but never collided — a group-only filter in `unsubscribeAllFor` would incorrectly sweep it too")
+                      .containsExactlyInAnyOrder(0, 1, 2, 3);
         }
     }
 
@@ -802,13 +842,27 @@ class StreamConsumerManagerTest {
     }
 
     /// Records subscribe/unsubscribe instead of running a delivery loop, so the assignment decision is
-    /// observable without a partition manager.
+    /// observable without a partition manager. Keyed by (stream, partition) rather than partition
+    /// alone — #545 review: a partition number is not unique across streams, and the over-detach bug
+    /// in `unsubscribeAllFor` (group matched, stream did not) can only be pinned by a double that keeps
+    /// two streams' subscriptions apart. Every existing test uses one stream, so `subscribedPartitions()`
+    /// (no-arg) stays behaviorally identical to the old partition-only map.
     private static final class RecordingRuntime implements StreamConsumerRuntime {
-        private final Map<Integer, String> subscriptions = new ConcurrentHashMap<>();
+        private record StreamPartition(String streamName, int partition) {}
+
+        private final Map<StreamPartition, String> subscriptions = new ConcurrentHashMap<>();
         private int subscribeCalls;
 
         List<Integer> subscribedPartitions() {
-            return List.copyOf(subscriptions.keySet());
+            return subscriptions.keySet().stream().map(StreamPartition::partition).distinct().toList();
+        }
+
+        List<Integer> subscribedPartitions(String streamName) {
+            return subscriptions.keySet()
+                                .stream()
+                                .filter(key -> key.streamName().equals(streamName))
+                                .map(StreamPartition::partition)
+                                .toList();
         }
 
         @Override
@@ -826,14 +880,14 @@ class StreamConsumerManagerTest {
                                       ConsumerCallback callback,
                                       IdlePolicy idlePolicy) {
             subscribeCalls++;
-            subscriptions.put(partition, config.groupId());
+            subscriptions.put(new StreamPartition(streamName, partition), config.groupId());
 
             return Result.unitResult();
         }
 
         @Override
         public Result<Unit> unsubscribe(String streamName, int partition, String consumerGroup) {
-            subscriptions.remove(partition);
+            subscriptions.remove(new StreamPartition(streamName, partition));
 
             return Result.unitResult();
         }
@@ -857,8 +911,8 @@ class StreamConsumerManagerTest {
         public List<SubscriptionSnapshot> subscriptions() {
             return subscriptions.entrySet()
                                 .stream()
-                                .map(entry -> new SubscriptionSnapshot(STREAM,
-                                                                       entry.getKey(),
+                                .map(entry -> new SubscriptionSnapshot(entry.getKey().streamName(),
+                                                                       entry.getKey().partition(),
                                                                        entry.getValue(),
                                                                        0L,
                                                                        false,

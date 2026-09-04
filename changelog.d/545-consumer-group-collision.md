@@ -37,3 +37,14 @@
   `StreamConsumerManagerTest$GroupCollisions#reconcile_doesNotFlagCollision_whenTwoVersionsOfOneArtifactShareTheGroup`,
   which also asserts the partitions stay actively subscribed, not merely undiagnosed — component-level,
   not a live multi-node run]
+
+- **The collision retraction itself was over-broad: it could detach a healthy, non-colliding
+  subscription on a DIFFERENT stream that merely reused the same consumer group string.**
+  `unsubscribeAllFor` matched active subscriptions by `consumerGroup` alone; two unrelated streams
+  sharing a group name is legal (collision detection is already keyed by `(streamName,
+  consumerGroup)`), so a collision retraction on one stream must not sweep the other's subscription
+  just because the group string matches.
+  [mechanism: `StreamConsumerManager.unsubscribeAllFor` now filters by `streamName` and
+  `consumerGroup` together; pinned by
+  `StreamConsumerManagerTest$GroupCollisions#reconcile_leavesAnUnrelatedStreamAlone_whenItsGroupNameCollidesOnlyOnAnotherStream`
+  — component-level, not a live multi-node run]

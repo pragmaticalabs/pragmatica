@@ -656,11 +656,17 @@ public interface StreamConsumerManager {
             active.keySet().stream().filter(key -> !desired.contains(key)).toList().forEach(this::detach);
         }
 
+        /// #545: scoped by BOTH stream and group — group alone over-detaches when two unrelated
+        /// streams happen to reuse the same consumer group string, since [SubscriptionKey] carries
+        /// the stream but this lookup used to ignore it. A collision on one stream must never retract
+        /// a healthy subscription on a different stream that merely shares the group name.
         private void unsubscribeAllFor(ConsumerDeclaration declaration) {
             active.keySet()
                   .stream()
-                  .filter(key -> key.consumerGroup()
-                                    .equals(declaration.consumerGroup()))
+                  .filter(key -> key.streamName()
+                                    .equals(declaration.streamName())
+                             && key.consumerGroup()
+                                   .equals(declaration.consumerGroup()))
                   .toList()
                   .forEach(this::detach);
         }
