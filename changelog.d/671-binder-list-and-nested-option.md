@@ -1,0 +1,4 @@
+### Fixed (2026-09-04 — #671: NotificationConfig doc/binder mismatches)
+
+- Documented TOML section names for notification sub-configs corrected: `smtp`/`http`/`retry` → `smtp_config`/`http_config`/`retry_config`, matching the binder's camelCase→snake_case section derivation [verified: aether/resource/notification/src/test/java/org/pragmatica/aether/resource/notification/NotificationConfigBindingTest.java#config_smtpBackend_bindsNestedSmtpAndRetryFromDocumentedToml]
+- Documented defaults for SMTP `port`/`tls_mode`/`connect_timeout`/`command_timeout` corrected to state these fields are currently required — `SmtpConfig` has no binder-readable `DEFAULT` instance, unlike `RetryConfig` [verified: aether/resource/notification/src/test/java/org/pragmatica/aether/resource/notification/NotificationConfigBindingTest.java#config_smtpBackend_omittedTimeoutFields_failsWithMisattributedSectionError]
