@@ -327,11 +327,14 @@ public final class SliceRoutes implements RouteSource {
                : "pending";
     }
 
-    /// #759 — `id` is artifact-shaped (`group:artifact:version`), so its colons must be
-    /// percent-encoded to sit in a path segment; see `GET /api/blueprints/status/{id}` in
+    /// #759 review — the prefix is derived from the registered [ManagementRoute#BLUEPRINT_STATUS]
+    /// route rather than duplicated as a literal, so this URL can never drift from the path the
+    /// server actually serves (a hardcoded `/api/blueprints/status/` here 404'd against the real
+    /// `/api/v1/blueprints/status/` route). `id` is artifact-shaped (`group:artifact:version`), so
+    /// its colons must still be percent-encoded to sit in a path segment; see
     /// `aether/docs/reference/management-api.md`.
     private static String blueprintStatusUrl(String id) {
-        return "/api/blueprints/status/" + URLEncoder.encode(id, StandardCharsets.UTF_8);
+        return ManagementRoute.BLUEPRINT_STATUS.prefix() + "/" + URLEncoder.encode(id, StandardCharsets.UTF_8);
     }
 
     private BlueprintListResponse buildBlueprintListResponse() {
