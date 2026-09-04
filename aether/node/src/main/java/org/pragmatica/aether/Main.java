@@ -4,11 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether;
 
+import java.io.IOException;
 import java.net.InetAddress;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.lang.management.ManagementFactory;
-import java.lang.management.ThreadInfo;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -16,8 +17,11 @@ import java.util.List;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.Map;
+import java.util.function.IntConsumer;
 import java.util.regex.Pattern;
 import java.util.stream.IntStream;
+
+import com.sun.management.HotSpotDiagnosticMXBean;
 
 import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.config.ClusterConfig;
@@ -508,25 +512,48 @@ public record Main(String[] args) {
     /// parallel) while still failing the container's stop/restart grace period loudly instead of silently.
     private static final TimeSpan SHUTDOWN_TIMEOUT = TimeSpan.timeSpan(30).seconds();
 
-    private void registerShutdownHook(AetherNode node) {
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> shutdownNode(node)));
-    }
-
-    /// Exit code 2 = shutdown did not complete within [#SHUTDOWN_TIMEOUT]; documented at
-    /// `aether/docs/reference/node-operations.md#exit-codes`. Which call inside `node.stop()` actually
+    /// #838 review round 1, BLOCKING 1 (owner-confirmed): `System.exit()` from inside a shutdown hook
+    /// DEADLOCKS -- `Shutdown.exit()` blocks on the `Shutdown` class monitor already held by the thread
+    /// running `runHooks()`, which is the very thread executing this hook, so it joins itself. Proven by
+    /// the reviewer: hung past 2 minutes, ignored SIGTERM, needed SIGKILL. `Runtime.getRuntime().halt(int)`
+    /// bypasses that machinery entirely -- the same pattern already used by the drain-completed self-exit
+    /// at `AetherNode.java:415,437` -- at the cost of running no further shutdown hooks and no appender
+    /// flush of its own, so both are done explicitly and synchronously immediately before the halt.
+    ///
+    /// Exit code 3 = shutdown did not complete within [#SHUTDOWN_TIMEOUT]; documented at
+    /// `aether/docs/reference/node-operations.md#exit-codes`. Code 2 is already owned by the
+    /// drain-completed self-exit in `AetherNode`/`DrainProcedure`; reusing it here would have been a
+    /// second, independent bug stacked on top of the deadlock. Which call inside `node.stop()` actually
     /// blocked is UNKNOWN (#749 acceptance item 1) -- the thread dump below is what will eventually answer
     /// that from a real occurrence, not a diagnosis made here.
-    private void shutdownNode(AetherNode node) {
+    static final int SHUTDOWN_TIMEOUT_EXIT_CODE = 3;
+
+    private void registerShutdownHook(AetherNode node) {
+        Runtime.getRuntime()
+               .addShutdownHook(new Thread(() -> shutdownNode(node, SHUTDOWN_TIMEOUT, Main::flushLogs, Runtime.getRuntime()::halt)));
+    }
+
+    /// Synchronous flush of the log4j2 context. Must run to completion before [Runtime#halt] -- halt()
+    /// performs no appender flush of its own, so anything not flushed here is lost with the process.
+    private static void flushLogs() {
+        org.apache.logging.log4j.LogManager.shutdown();
+    }
+
+    /// Package-private and parameterized (timeout / log-flush / halt as injected seams) so the expiry
+    /// path is unit-testable without pinning a real 30s clock or touching the shared log4j2 context in
+    /// the surefire fork. Production wiring is [#registerShutdownHook].
+    static void shutdownNode(AetherNode node, TimeSpan timeout, Runnable flushLogs, IntConsumer haltFn) {
         log.info("Shutdown requested, stopping node...");
         var stopping = node.stop();
-        var result = stopping.await(SHUTDOWN_TIMEOUT);
+        var result = stopping.await(timeout);
 
         if (!stopping.isResolved()) {
-            log.error("Node did not stop within {}; forcing exit with code 2 (shutdown timeout -- see "
+            log.error("Node did not stop within {}; halting with code {} (shutdown timeout -- see "
                      + "aether/docs/reference/node-operations.md#exit-codes). Thread dump follows.",
-                      SHUTDOWN_TIMEOUT);
+                      timeout, SHUTDOWN_TIMEOUT_EXIT_CODE);
             dumpThreads();
-            System.exit(2);
+            flushLogs.run();
+            haltFn.accept(SHUTDOWN_TIMEOUT_EXIT_CODE);
 
             return;
         }
@@ -536,40 +563,31 @@ public record Main(String[] args) {
     }
 
     /// Best-effort diagnostic: never let a failure to dump threads mask the timeout it was meant to explain.
-    private void dumpThreads() {
+    private static void dumpThreads() {
         try {
-            var infos = ManagementFactory.getThreadMXBean().dumpAllThreads(true, true);
-
-            for (var info : infos) {
-                log.error("{}", renderThread(info));
-            }
+            captureThreadDump().forEach(line -> log.error("{}", line));
         } catch (Throwable dumpFailure) {
             log.error("Failed to capture shutdown-timeout thread dump: {}", dumpFailure.toString());
         }
     }
 
-    private static String renderThread(ThreadInfo info) {
-        var sb = new StringBuilder(512);
+    /// #838 review round 1, SHOULD-FIX: [ThreadMXBean#dumpAllThreads] omits virtual threads -- exactly the
+    /// kind of thread a hung `node.stop()` is likely blocked on, since the async offloads it waits on run
+    /// on them. [HotSpotDiagnosticMXBean#dumpThreads] includes virtual threads; it writes a pre-formatted
+    /// dump to a file rather than returning `ThreadInfo[]`, and refuses to overwrite an existing file, so
+    /// a fresh path is created and deleted around each call regardless of outcome.
+    static List<String> captureThreadDump() throws IOException {
+        var dumpPath = Files.createTempFile("aether-thread-dump-", ".txt");
+        Files.delete(dumpPath); // dumpThreads(String, ...) refuses to write over an existing file
 
-        sb.append('"')
-          .append(info.getThreadName())
-          .append("\" #")
-          .append(info.getThreadId())
-          .append(' ')
-          .append(info.getThreadState());
-        if (info.getLockName() != null) {
-            sb.append(" on ").append(info.getLockName());
+        try {
+            ManagementFactory.getPlatformMXBean(HotSpotDiagnosticMXBean.class)
+                              .dumpThreads(dumpPath.toString(), HotSpotDiagnosticMXBean.ThreadDumpFormat.TEXT_PLAIN);
+
+            return Files.readAllLines(dumpPath, StandardCharsets.UTF_8);
+        } finally {
+            Files.deleteIfExists(dumpPath);
         }
-
-        if (info.getLockOwnerName() != null) {
-            sb.append(" owned by \"").append(info.getLockOwnerName()).append('"');
-        }
-
-        for (var frame : info.getStackTrace()) {
-            sb.append("\n\tat ").append(frame);
-        }
-
-        return sb.toString();
     }
 
     private void startNodeAndWait(AetherNode node, NodeId nodeId) {
