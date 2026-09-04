@@ -60,6 +60,7 @@ class StorageFactoryEncryptionTest {
     private static final String INSTANCE = "vault";
     private static final String NODE_ID = "node-1";
     private static final String ARTIFACTS = "artifacts";
+    private static final String CONTENT = "content";
 
     @TempDir
     Path tempDir;
@@ -217,6 +218,119 @@ class StorageFactoryEncryptionTest {
                                           + "the disk-available and the degraded memory+DHT path")
                                       .isTrue();
         stored.onPresent(raw -> assertPlaintextAtRest(raw, "the synthesized 'artifacts' DHT tier"));
+    }
+
+    /// #783 C1 (2026-09-04 ruling): `content`'s synthesized default `diskPath` must be a SIBLING of
+    /// wherever `artifacts` actually resolves, never the bare `StorageConfig.storageConfig()` default
+    /// -- `assembleSetup` reads `config.snapshotPath()`/tier `basePath` directly with no per-instance
+    /// subdirectory of its own, so two instances sharing a basePath would collide both their disk
+    /// blocks (files could be overwritten across instances -- block content is keyed only by hash,
+    /// not by owning instance) and `LocalDiskTier.calculateUsedBytes()`'s directory-walk accounting.
+    ///
+    /// Uses an EXPLICIT, writable `[storage.artifacts]` temp-dir config rather than leaving BOTH
+    /// `artifacts` and `content` to their bare defaults: `StorageConfig.storageConfig()`'s hardcoded
+    /// default (`/data/aether/storage`) is not creatable in a test sandbox, so a default-only setup
+    /// degrades both instances to memory+DHT via `handleDiskTierUnavailable` and there is no disk
+    /// write to inspect. `defaultContentConfig` derives from `configs.get("artifacts")` OR the same
+    /// hardcoded default via the identical `Option.option(...).or(defaults)` branch either way, so an
+    /// explicit config here exercises the exact same sibling-derivation code the bare-default case
+    /// would, while actually letting this test write real files and assert on them.
+    @Test
+    void createAll_synthesizedContent_usesSiblingDiskPath_distinctFromArtifacts() throws IOException {
+        var artifactsDir = tempDir.resolve("artifacts-explicit");
+        var setups = createAllOrFail(Map.of(ARTIFACTS, storageConfigAt(artifactsDir, false)), Option.none(), Option.none());
+
+        assertThat(setups).containsKeys(ARTIFACTS, CONTENT);
+
+        var artifactsBlockId = writeThrough(setups.get(ARTIFACTS));
+        var contentBlockId = writeThrough(setups.get(CONTENT));
+
+        var artifactsBlockPath = rawBlockPath(artifactsDir, artifactsBlockId);
+        var expectedContentBlocksDir = artifactsDir.resolveSibling(CONTENT).resolve("blocks");
+        var contentBlockPath = rawBlockPath(expectedContentBlocksDir, contentBlockId);
+
+        assertThat(Files.exists(artifactsBlockPath)).as("artifacts' block must land under its explicit diskPath")
+                                                     .isTrue();
+        assertThat(Files.exists(contentBlockPath)).as("content's synthesized default diskPath must be the SIBLING "
+                                                       + "'content/blocks' directory next to artifacts' own diskPath "
+                                                       + "(#783 C1), not the bare StorageConfig default")
+                                                   .isTrue();
+        assertThat(contentBlockPath).as("distinct basePaths: content's block file must not live anywhere under "
+                                        + "artifacts' own disk directory tree")
+                                    .isNotEqualTo(artifactsBlockPath);
+    }
+
+    /// #783 C2 (2026-09-04 ruling): the DHT tier's key prefix is `<instance name>-blocks`
+    /// (`StorageFactory.buildTiers`), unchanged by this fix -- so a block written under the OLD
+    /// keyring-less `defaultContentStorage`'s DHT namespace (`content-blocks`, seeded here raw,
+    /// bypassing the tier, exactly as that retired path would have left it) must still resolve
+    /// through the NEW synthesized `content` instance. If it didn't, every DHT-durable content block
+    /// written before this change would become permanently unreachable the moment a node upgrades.
+    @Test
+    void createAll_synthesizedContent_readsPreExistingBlock_underOldContentBlocksDhtPrefix() {
+        var dhtClient = new InMemoryDHTClient();
+        var legacyBlockId = BlockId.blockId(PLAINTEXT).unwrap();
+
+        dhtClient.put(CONTENT + "-blocks/" + legacyBlockId.hexString(), PLAINTEXT)
+                 .await()
+                 .onFailure(cause -> fail("seeding a raw legacy content block failed: " + cause.message()));
+
+        var setups = createAllOrFail(Map.of(), Option.some(dhtClient), Option.none());
+
+        assertThat(setups).containsKey(CONTENT);
+
+        setups.get(CONTENT)
+              .instance()
+              .get(legacyBlockId)
+              .await()
+              .onFailure(cause -> fail("a block written under the OLD 'content-blocks' DHT prefix must still be "
+                                       + "reachable through the NEW synthesized 'content' instance (#783 C2): "
+                                       + cause.message()))
+              .onSuccess(opt -> {
+                  assertThat(opt.isPresent()).as("the legacy block must resolve, not silently miss").isTrue();
+                  opt.onPresent(bytes -> assertThat(bytes).isEqualTo(PLAINTEXT));
+              });
+    }
+
+    /// #783 C4 (2026-09-04 ruling): `content`'s synthesized default must be covered by the SAME
+    /// keyring-presence gate as `artifacts` (the pair above) -- the retired keyring-less
+    /// `defaultContentStorage` could never be encrypted regardless of `[storage.encryption]`; routing
+    /// `content` through `createOne` fixes that. Asserted on the DHT tier for the same reason as the
+    /// artifacts pair: the synthesized default's diskPath is the fixed `/data/aether/content`
+    /// (sibling of the equally-fixed artifacts default), not creatable in a test sandbox, so this
+    /// degrades to memory+DHT and `maybeEncryptDht` is the gate actually exercised.
+    @Test
+    void createAll_synthesizedDefaultContent_isEncrypted_whenKeyringPresent() {
+        var dhtClient = new InMemoryDHTClient();
+        var setups = createAllOrFail(Map.of(), Option.some(dhtClient), Option.some(singleKeyRing("key-1")));
+
+        assertThat(setups).containsKey(CONTENT);
+
+        var blockId = writeThrough(setups.get(CONTENT));
+        var stored = dhtClient.rawValue(CONTENT + "-blocks", blockId);
+
+        assertThat(stored.isPresent()).as("the DHT tier is always present when a client is supplied, on both "
+                                          + "the disk-available and the degraded memory+DHT path")
+                                      .isTrue();
+        stored.onPresent(raw -> assertCiphertextAtRest(raw, "the synthesized 'content' DHT tier"));
+    }
+
+    /// The exact inverse of the test above, same shape as
+    /// `createAll_synthesizedDefaultArtifacts_staysPlaintext_whenKeyringAbsent`: with no keyring
+    /// supplied at all, `defaultContentConfig(configs, false)` must still delegate to plain,
+    /// unencrypted storage.
+    @Test
+    void createAll_synthesizedDefaultContent_staysPlaintext_whenKeyringAbsent() {
+        var dhtClient = new InMemoryDHTClient();
+        var setups = createAllOrFail(Map.of(), Option.some(dhtClient), Option.none());
+
+        assertThat(setups).containsKey(CONTENT);
+
+        var blockId = writeThrough(setups.get(CONTENT));
+        var stored = dhtClient.rawValue(CONTENT + "-blocks", blockId);
+
+        assertThat(stored.isPresent()).isTrue();
+        stored.onPresent(raw -> assertPlaintextAtRest(raw, "the synthesized 'content' DHT tier"));
     }
 
     /// #253 BLOCKING #1 (2026-09-04 ruling): replaces the pre-ruling `createAll_omitsInstance_...`

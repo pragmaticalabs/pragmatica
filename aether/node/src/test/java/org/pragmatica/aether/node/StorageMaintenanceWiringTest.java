@@ -6,6 +6,7 @@ package org.pragmatica.aether.node;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.aether.config.StorageConfig;
 import org.pragmatica.dht.DHTClient;
 import org.pragmatica.dht.Partition;
 import org.pragmatica.lang.Option;
@@ -48,6 +49,13 @@ class StorageMaintenanceWiringTest {
 
     @TempDir
     Path streamDataDir2;
+
+    /// Explicit `[storage.artifacts]` temp dir for the #783 test below -- redirects `content`'s
+    /// synthesized sibling disk path (`StorageFactory.defaultContentConfig`) to somewhere writable;
+    /// the hardcoded `StorageConfig.storageConfig()` default (`/data/aether/storage`) is not
+    /// creatable in a test sandbox.
+    @TempDir
+    Path artifactsDir;
 
     /// The no-op's `isActive()` never leaves `false`. A real `DefaultDemotionManager` self-gates on an
     /// internal flag that `activate()` flips — so observing `true` here is only possible if
@@ -188,6 +196,87 @@ class StorageMaintenanceWiringTest {
                     + "content must still be readable from the shared DHT tier -- empty means "
                     + "the maintenance pass deleted from, or demoted out of, the shared tier")
                  .isTrue());
+    }
+
+    /// #783 C4 ("maintenance is real"): before this fix, `content`'s `StorageInstance` was built
+    /// by `StorageFactory.defaultContentStorage` entirely outside `storageSetups` -- it never
+    /// registered a `StorageSetup`, so `AetherNode`'s `compositeDemotionManager` /
+    /// `compositeGarbageCollector` (built by fanning out over `storageSetups`, see
+    /// `StorageFactory.compositeDemotionManager`/`compositeGarbageCollector`) never reached it, and
+    /// `StorageMaintenanceDriver.tick()` never demoted or GC'd a single content block no matter how
+    /// long a node ran. `createAll` now synthesizes a "content" entry (`StorageFactory.CONTENT_NAME`)
+    /// through the exact same path as every other instance whenever `[storage.content]` was not
+    /// explicit, so it lands in `storageSetups` and is covered like `artifacts`/`streams`.
+    ///
+    /// This builds the REAL `createAll` result (an explicit writable `[storage.artifacts]` section
+    /// redirects content's synthesized sibling path off the hardcoded `/data/aether/storage`
+    /// default -- see the `artifactsDir` field javadoc), the REAL composite demotion/GC managers
+    /// over the FULL `setups` map (not just content, to prove the real fan-out reaches it), and the
+    /// REAL `StorageMaintenanceDriver` -- then ticks once and asserts the shared DHT copy of a
+    /// content block, forced orphaned and past the GC grace cutoff, survives the pass (mirroring
+    /// `defaultStreamStorage_maintenancePass_neverDeletesFromOrDemotesOutOfSharedDhtTier` above: a
+    /// successful read after the pass is only possible if the private/disk copy was actually
+    /// removed by a real GC/demotion pass that reached the DHT-tier guard).
+    ///
+    /// Red-before: reverting only the `configs.containsKey(CONTENT_NAME)` synthesis hunk in
+    /// `StorageFactory.createAll` leaves "content" absent from `storageSetups` --
+    /// `assertThat(setups).containsKey(CONTENT)` below fails immediately, before the driver is even
+    /// built.
+    @Test
+    void createAll_realMaintenanceDriverTick_reachesSynthesizedContentInstance() {
+        var dhtClient = new InMemoryDHTClient();
+        var defaults = StorageConfig.storageConfig();
+        var artifactsConfig = new StorageConfig(defaults.memoryMaxBytes(),
+                                                defaults.diskMaxBytes(),
+                                                artifactsDir.toString(),
+                                                artifactsDir.resolve("snapshots").toString(),
+                                                defaults.snapshotMutationThreshold(),
+                                                defaults.snapshotMaxInterval(),
+                                                defaults.snapshotRetentionCount(),
+                                                defaults.walPath(),
+                                                false);
+
+        var setups = StorageFactory.createAll(Map.of("artifacts", artifactsConfig),
+                                               "test-node",
+                                               Option.some(dhtClient),
+                                               Option.none())
+                                    .onFailure(cause -> fail("createAll must succeed: " + cause.message()))
+                                    .unwrap();
+
+        assertThat(setups).containsKey("content");
+
+        var contentSetup = setups.get("content");
+        var content = "content-maintenance-probe".getBytes(StandardCharsets.UTF_8);
+        var blockId = contentSetup.instance().put(content).await().unwrap();
+
+        assertThat(dhtClient.isEmpty())
+            .as("content's synthesized config carries a DHT tier (Option.some(dhtClient) was "
+               + "passed to createAll) -- an empty backing store means that tier never reached "
+               + "content's tier list at all")
+            .isFalse();
+
+        forceOrphanedPastGracePeriod(contentSetup, blockId);
+
+        var compositeDemotionManager = StorageFactory.compositeDemotionManager(setups);
+        var compositeGarbageCollector = StorageFactory.compositeGarbageCollector(setups);
+        var driver = StorageMaintenanceDriver.storageMaintenanceDriver(compositeDemotionManager,
+                                                                        compositeGarbageCollector);
+
+        compositeDemotionManager.activate();
+        compositeGarbageCollector.activate();
+
+        driver.tick();
+
+        contentSetup.instance()
+                    .get(blockId)
+                    .await()
+                    .onFailure(cause -> fail("get should not fail: " + cause.message()))
+                    .onSuccess(opt -> assertThat(opt.isPresent())
+                        .as("private (memory/disk) copies are gone once a block is "
+                           + "orphan-eligible; content must still be readable from the shared "
+                           + "DHT tier -- empty means the real driver's tick either never reached "
+                           + "content's real demotion/GC managers, or deleted from the shared tier")
+                        .isTrue());
     }
 
     /// Drives the block's lifecycle directly to orphaned (refCount 0) and past the GC grace
