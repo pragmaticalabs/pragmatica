@@ -22,6 +22,7 @@ import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.BlueprintStreamBindingsKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentOutcomeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
@@ -100,6 +101,43 @@ public interface BlueprintService {
     /// A caller needing to tell "will complete soon" (case 2) apart from "permanently stuck, needs
     /// intervention" (cases 3-4) must consult additional state — e.g. `get(id)`'s presence plus how
     /// long the blueprint has been in that state — `outcome()` alone cannot make that distinction.
+    ///
+    /// #759 review, BLOCKING 3 (fix): `publishFromArtifact` bundles a `KVCommand.Remove` of this key
+    /// into the SAME consensus batch as the `AppBlueprintKey` Put that starts the new attempt, so the
+    /// two land atomically. This closes the retry gap above case 2: before this fix, publishing a new
+    /// attempt of an `id` that had already reached a terminal FAILED/ROLLED_BACK outcome left the STALE
+    /// prior record in place until the new attempt's own terminal write, so a caller polling mid-flight
+    /// saw the LAST attempt's failure while the new one was actively converging. The guarantee is now:
+    /// at any instant, `id` is either in flight with `outcome(id)` empty, or terminal with exactly one
+    /// record for the CURRENT attempt — never in flight while this method still reports a previous
+    /// attempt's result. This does not resolve cases 3-4 above; it only ensures case 2 is never
+    /// confused with a stale case-3/4-shaped terminal record from an earlier attempt of the same id.
+    ///
+    /// #759 review round 2, BLOCKING 1/2 (scope extended): the same-batch Remove above originally
+    /// covered only `buildAllCommands` (`publishFromArtifact`). Two other live paths write or remove
+    /// `AppBlueprintKey` without going through it — DSL `publish(String)` (`SliceRoutes.handleBlueprint`)
+    /// via `storeBlueprintWithKey`, and `delete(id)` via `removeFromStore` — and both left the same
+    /// stale-outcome gap open (a deleted id's outcome record never clears at all, since nothing ever
+    /// writes that id's `AppBlueprintKey` again to trigger it). Both methods now bundle the same
+    /// `DeploymentOutcomeKey` Remove into their own single-`apply` batch, so the guarantee above holds
+    /// for all three ways `AppBlueprintKey` changes on a live path: `publishFromArtifact`, DSL
+    /// `publish`, and `delete`. [mechanism: same-batch `cluster.apply` in `buildAllCommands`,
+    /// `storeBlueprintWithKey`, `removeFromStore`]
+    ///
+    /// **Scope — one documented exception:** `ClusterDeploymentState.restorePreviousBlueprint`. An
+    /// ALL_OR_NOTHING rollback with a previous blueprint re-Puts `previous.id()`'s `AppBlueprintKey`
+    /// (making it live again) in the SAME batch as a ROLLED_BACK outcome Put keyed by `inflight.id()`
+    /// — the FAILING id, not `previous.id()`. `previous.id()`'s own `DeploymentOutcomeKey` is
+    /// untouched by that batch, and `restoringBlueprints` suppresses `previous.id()`'s normal
+    /// in-flight FSM tracking while the restore is pending, so no later terminal write ever
+    /// supersedes whatever `outcome(previous.id())` already held from an earlier deployment attempt
+    /// of that same id. A restored blueprint can therefore be live and actively serving while
+    /// `outcome(previous.id())` still reports a stale, unrelated-in-time terminal record — this is
+    /// the same recovery shape as cases 3-4 above: an operator (or caller) must consult
+    /// `get(previous.id())`'s presence alongside this method, not this method alone. [mechanism:
+    /// `ClusterDeploymentState.restorePreviousBlueprint` / `rolledBackOutcomeCommand` keys the
+    /// outcome Put on `inflight.id()`, never `previous.id()`; `restoringBlueprints` gates the
+    /// in-flight-tracking checks that would otherwise produce a new terminal write for `previous.id()`]
     Option<AetherValue.DeploymentOutcomeValue> outcome(BlueprintId id);
     List<ExpandedBlueprint> list();
     Promise<Unit> delete(BlueprintId id);
@@ -379,6 +417,19 @@ class BlueprintServiceInstance implements BlueprintService {
         var commands = new ArrayList<KVCommand<AetherKey>>();
 
         commands.add(buildBlueprintPutCommand(expanded, registerOnly));
+        // #759 review, BLOCKING: a fresh publish reuses `expanded.id()` on a retry after a prior
+        // FAILED/ROLLED_BACK attempt of the SAME blueprint id, and `outcome(id)` otherwise keeps
+        // returning that stale terminal record — indistinguishable from the new attempt already
+        // having failed — until the new attempt itself reaches a terminal transition. Bundling this
+        // Remove into the SAME consensus batch as the AppBlueprintKey Put above makes the two land
+        // atomically, so at any instant `id` is either in flight with no outcome, or terminal with
+        // exactly one, never "in flight" while `outcome(id)` still shows the LAST attempt's result.
+        // `DeploymentOutcomeValue` is not fenced (no `EpochBearing`/`LeaderValue`), so the witnessless
+        // `Remove(key)` constructor is admitted unconditionally by the applier. No FSM event is wired
+        // for `DeploymentOutcomeKey` changes (unlike `AppBlueprintKey`'s `handleAppBlueprintChange`/
+        // `handleAppBlueprintRemoval`), so this Remove's position in the batch relative to the Put
+        // above is NOT load-bearing — nothing subscribes to either notification.
+        commands.add(new Remove<>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id())));
         // Slice META-INF/resources.toml is intentionally NOT published to KV — it is local to
         // each node and applied via the per-slice intrinsic config layer at slice load
         // (see SliceStore.loadSlice). The resourcesConfig parameter is kept here because the
@@ -547,15 +598,29 @@ class BlueprintServiceInstance implements BlueprintService {
                                                              ExpandedBlueprint expanded) {
         var value = AppBlueprintValue.appBlueprintValue(expanded);
         KVCommand<AetherKey> command = new Put<>(key, value);
+        // #759 review round 2, BLOCKING 1: `publish(String dsl)` is a live republish path
+        // (SliceRoutes.handleBlueprint) that bypasses buildAllCommands, so without this it kept the
+        // same stale-outcome gap buildAllCommands already closed for publishFromArtifact — a DSL
+        // republish of a previously FAILED/ROLLED_BACK id left that terminal record in place until
+        // the new attempt's own terminal write. Bundled into the SAME batch as the Put for the same
+        // reason as buildAllCommands's Remove: no FSM event is wired to DeploymentOutcomeKey, so
+        // position within the batch is not load-bearing.
+        var outcomeClear = new Remove<AetherKey>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id()));
 
-        return cluster.apply(List.of(command))
+        return cluster.apply(List.of(command, outcomeClear))
                       .map(_ -> expanded);
     }
 
     private Promise<Unit> removeFromStore(AetherKey.AppBlueprintKey key) {
         KVCommand<AetherKey> command = new Remove<>(key);
+        // #759 review round 2, BLOCKING 2: without this, a deleted blueprint's outcome record
+        // survived forever — nothing ever clears DeploymentOutcomeKey for an id once its
+        // AppBlueprintKey is removed, so a deleted id's last terminal outcome orphans permanently
+        // and a later re-publish of the same id would (until BLOCKING 1/buildAllCommands) have
+        // inherited it. Same batch as the AppBlueprintKey Remove for the same atomicity reason.
+        var outcomeClear = new Remove<AetherKey>(DeploymentOutcomeKey.deploymentOutcomeKey(key.blueprintId()));
 
-        return cluster.apply(List.of(command))
+        return cluster.apply(List.of(command, outcomeClear))
                       .mapToUnit();
     }
 

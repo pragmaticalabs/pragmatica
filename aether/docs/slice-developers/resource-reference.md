@@ -1079,6 +1079,26 @@ would be inert — same stance as #576): either declare `durability = "durable"`
 invalid durable declaration fails slice activation loudly; it never silently downgrades to
 ephemeral delivery.
 
+**Unrecognized keys in a topic's own section are rejected, not ignored** (#738). A mistyped key —
+most commonly a dashed spelling where the table above expects an underscore, e.g.
+`min-sync-replicas` instead of `min_sync_replicas` — used to bind silently as if the key had never
+been written. On an ephemeral topic this meant the deploy-time inert-key rejection above never
+fired: the mistyped knob was invisible to it, so a likely-durable declaration was silently dropped
+instead of raising the loud error it should have. (Durability-tier selection itself is unaffected
+by key spelling — it reads the `durability` field alone.) The bind now fails at parse, naming the
+nearest correctly-spelled key when one is close enough (unrelated keys get no suggestion), and
+reports every unrecognized key in the section together, not just the first. The check only looks
+at the keys this table lists, and only at the static/file-backed configuration (the section's TOML
+declaration); a nested sub-section under the same topic (for example a consumer group table) is
+unaffected however it is spelled, and so is an environment variable, system property, or
+KV-overlay entry that happens to land at the same path.
+[verified: aether/resource/api/src/test/java/org/pragmatica/aether/resource/TopicConfigTest.java (tomlBinding_rejectsDashedKey_namingCorrectSpelling, tomlBinding_rejectsDashedTopicLevelKey_evenWithNestedConsumerSubsectionPresent, tomlBinding_ignoresSystemPropertyKeyAtTopicSection_neverFailsStrictBind)]
+
+**Known limitation**: a quoted key with a literal dot (e.g. `"a.b" = 1`) is, once parsed,
+indistinguishable from a nested sub-table (`[<topic>.a]` / `b = 1`) — the check never flags it as
+unrecognized, for the same reason it never inspects a genuine nested sub-section. Avoid quoted
+dotted keys in a topic section; use a nested table if the grouping is intentional.
+
 ### TOML Example
 
 ```toml
