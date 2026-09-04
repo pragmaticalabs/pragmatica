@@ -219,6 +219,46 @@ class BlueprintStatusAggregationTest {
         assertThat(response.timestampMs()).isEqualTo(4_000L);
     }
 
+    /// #759 review — GO signal for stream B2 (#818, `5cefcc2fd`, merged onto rc4 at `77bbeaf80`): before
+    /// that landed, a blueprint redeployed after a PRIOR `FAILED` outcome kept reporting the stale
+    /// terminal outcome for the NEW, in-flight attempt, because this route's outcome-first check
+    /// (`isTerminalFailureOutcome`) trusts any present terminal outcome unconditionally and has no way to
+    /// tell "this attempt failed" from "a previous attempt failed and a new one is now running". The
+    /// review's regression probe asserted `overallStatus()` was in `{"PENDING", "DEPLOYING"}` and got
+    /// `"FAILED"` instead. `"DEPLOYING"` is actually a per-SLICE value only
+    /// ([SliceRoutes#determineSliceDeploymentStatus]); `computeOverallStatus` never returns it, converging
+    /// instead on `"PENDING"` (nothing active yet) or `"IN_PROGRESS"` (partially active, this test's case)
+    /// — so this test pins both: the per-slice value the probe named, and the overall value the code
+    /// actually produces, rather than repeat the probe's overall-status set verbatim.
+    ///
+    /// #818 clears the stale `DeploymentOutcomeKey` in the SAME consensus batch as the republish's
+    /// `AppBlueprintKey` write (`BlueprintService.buildAllCommands`), so by the time status is read here
+    /// `outcome(id)` is empty and this route falls through to the live `DeploymentMap` aggregation below
+    /// instead of the stale outcome.
+    ///
+    /// [mechanism: exercised through the real `SliceRoutes` route handler over a stubbed
+    /// `BlueprintService`; #818's KV-level clearing itself is proven separately by
+    /// `BlueprintPublishOwnershipTest.OutcomeClearedAtPublish` (`aether-deployment`) — no single test
+    /// drives both a real `publish()` clearing call and this route's HTTP response together. This
+    /// fixture's `outcome=None` (already cleared) is insensitive to reverting THIS route's outcome-first
+    /// check by itself: with `outcome()` empty either way, "check-then-fallback" and "always-fallback"
+    /// compute the identical response, so a revert of the `isTerminalFailureOutcome` branch is what
+    /// `statusRoute_outcomeFailed_returns200Failed` / `statusRoute_outcomeRolledBack_returns200RolledBack`
+    /// above already pin red, not this test — confirmed by reverting the branch locally and re-running
+    /// both this test (stayed green) and those two (went red) — #759]
+    @Test
+    void statusRoute_redeployAfterPriorFailure_outcomeCleared_reportsInProgressNotFailed() {
+        var response = statusWith(Map.of(SLICE_A, Map.of(NODE_1, SliceState.ACTIVE, NODE_2, SliceState.ACTIVE),
+                                         SLICE_B, Map.of(NODE_3, SliceState.ACTIVE)));
+
+        assertThat(response.overallStatus()).as("a live in-flight redeploy must report its own progress, "
+                                                 + "never a prior attempt's cleared terminal outcome")
+                                             .isEqualTo("IN_PROGRESS");
+        assertThat(response.overallStatus()).isNotIn("FAILED", "ROLLED_BACK");
+        assertThat(sliceStatus(response, SLICE_A)).isEqualTo(new BlueprintSliceStatus(SLICE_A.asString(), 2, 2, 0, "DEPLOYED"));
+        assertThat(sliceStatus(response, SLICE_B)).isEqualTo(new BlueprintSliceStatus(SLICE_B.asString(), 3, 1, 0, "DEPLOYING"));
+    }
+
     // --- helpers ---
     private static BlueprintSliceStatus sliceStatus(BlueprintStatusResponse response, Artifact artifact) {
         return response.slices()
