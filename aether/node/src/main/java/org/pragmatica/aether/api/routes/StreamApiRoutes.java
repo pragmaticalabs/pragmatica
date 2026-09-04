@@ -40,6 +40,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
 
@@ -634,18 +635,21 @@ public final class StreamApiRoutes implements RouteSource {
     }
 
     /// #524 guard: an out-of-range `partition` on a Management-API publish must fail 4xx naming the
-    /// valid range — never a silent write to partition 0, never a 500. Reads the LOCAL materialized
-    /// partition count (same source [#ensureStreamExists] just guaranteed is present); falls back to
-    /// the management default only in the pathological case where materialization was swallowed by
-    /// `ensureStreamExists`'s `.recover`, so this check itself never 500s.
-    private Result<org.pragmatica.lang.Unit> validatePartition(String streamName, int partition) {
-        var partitionCount = streamManager().streamInfo(streamName)
-                                          .map(StreamPartitionManager.StreamInfo::partitions)
-                                          .or(DEFAULT_PARTITIONS);
-
-        return partition >= 0 && partition < partitionCount
-               ? Result.unitResult()
-               : new ManagementServerError.InvalidPartition(partition, partitionCount).result();
+    /// valid range — never a silent write to partition 0, never a 500. Reads the committed config's
+    /// DECLARED partition count (`StreamInfo#partitions`, backed by `declaredPartitions()` — the
+    /// committed `StreamConfig`'s count, not the partition rings actually materialized locally).
+    /// `ensureStreamExists` (run first in [#publishOne]) guarantees this entry is present on success,
+    /// so an empty `streamInfo()` here means that guarantee did not hold; never guess a count in that
+    /// case — report the stream unavailable instead of validating against a fabricated default.
+    private Result<Unit> validatePartition(String streamName, int partition) {
+        return streamManager().streamInfo(streamName)
+                            .map(StreamPartitionManager.StreamInfo::partitions)
+                            .toResult(new ManagementServerError.StreamUnavailable(streamName,
+                                                                                  "partition count is not known"))
+                            .flatMap(partitionCount -> partition >= 0 && partition < partitionCount
+                                                       ? Result.unitResult()
+                                                       : new ManagementServerError.InvalidPartition(partition,
+                                                                                                    partitionCount).result());
     }
 
     /// Adapter boundary: JSON `data` may legally be absent (null on the wire). Wrap into Option,
@@ -668,7 +672,14 @@ public final class StreamApiRoutes implements RouteSource {
     /// materialization preserves the replication factor rather than fabricating a `replicas=1/min-sync=0`
     /// management default over it. Falls back to the management default only for a genuinely
     /// management-only stream with no committed entry.
-    private Result<org.pragmatica.lang.Unit> ensureStreamExists(String streamName) {
+    ///
+    /// #524 SHOULD-FIX 1: a materialization failure here is never a transient race — the only failure
+    /// modes `ensureStreamMaterialized` can return are permanent (capacity exhausted, or STRONG
+    /// consistency requiring AHSE storage); the transient config-visibility race belongs to a different
+    /// call path entirely. So it must never be swallowed: on success `streams` is guaranteed to hold
+    /// the entry (making [#validatePartition]'s read safe), and on failure this reports a typed 409
+    /// naming the stream and cause instead of silently proceeding with an unknown partition count.
+    private Result<Unit> ensureStreamExists(String streamName) {
         var config = nodeSupplier.get()
                                  .kvStore()
                                  .getTyped(StreamConfigKey.streamConfigKey(streamName),
@@ -680,7 +691,8 @@ public final class StreamApiRoutes implements RouteSource {
                                                                      "latest"));
 
         return streamManager().ensureStreamMaterialized(config)
-                            .recover(_ -> org.pragmatica.lang.Unit.unit());
+                            .mapError(cause -> new ManagementServerError.StreamUnavailable(streamName,
+                                                                                           cause.message()));
     }
 
     private Result<GroupResponse> createGroup(String namespace,

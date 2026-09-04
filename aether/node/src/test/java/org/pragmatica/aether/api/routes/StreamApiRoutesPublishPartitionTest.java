@@ -30,10 +30,12 @@ import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitio
 /// publish writes untyped bytes with no event class to extract a key from, so the fix is an
 /// explicit `partition` on [StreamApiRoutes.PublishRequest] — never key-based routing — validated
 /// against the stream's actual partition count before ever reaching [StreamWriteRouter#publish].
-/// This file pins three properties: (1) an omitted `partition` still targets 0 (unchanged
-/// behavior), (2) an explicit in-range `partition` targets THAT partition and no other, and (3) an
+/// This file pins four properties: (1) an omitted `partition` still targets 0 (unchanged
+/// behavior), (2) an explicit in-range `partition` targets THAT partition and no other, (3) an
 /// out-of-range `partition` fails 4xx naming the valid range instead of silently writing to
-/// partition 0 or 500ing.
+/// partition 0 or 500ing, and (4) when the stream's partition count cannot be determined (a genuine
+/// materialization failure, not a race) the route reports the stream unavailable rather than
+/// validating against a guessed count.
 class StreamApiRoutesPublishPartitionTest {
     private static final String NAMESPACE = "com.example.app";
     private static final String STREAM = "orders";
@@ -134,6 +136,34 @@ class StreamApiRoutesPublishPartitionTest {
                    .onSuccess(events -> assertThat(events).as("a rejected out-of-range partition must never silently "
                                                               + "fall back to writing partition 0")
                                                           .isEmpty());
+        } finally {
+            manager.close();
+        }
+    }
+
+    /// #524 SHOULD-FIX 1 review finding: `ensureStreamExists`'s prior `.recover(_ -> Unit.unit())`
+    /// swallowed a genuine materialization failure, leaving `streamInfo()` empty and letting
+    /// `validatePartition` guess a hardcoded partition count instead. A zero-capacity manager forces
+    /// `ensureStreamMaterialized`'s very first reservation to fail deterministically (never a
+    /// transient race, so this pins a real failure, not a flake) — the route must surface a typed 4xx
+    /// naming the stream, never guess a count and either wrongly accept or wrongly reject the request.
+    @Test
+    void publish_streamMaterializationFails_reportsStreamUnavailable_neverGuessesPartitionCount() {
+        var manager = streamPartitionManager(0);
+        try {
+            routesFor(manager).publishEvent(NAMESPACE, STREAM, VERSION, new StreamApiRoutes.PublishRequest("payload", null))
+                              .await()
+                              .onSuccess(response -> fail("materialization must fail when capacity is exhausted, not "
+                                                          + "publish at offset " + response.offset()))
+                              .onFailure(cause -> {
+                                  assertThat(cause).isInstanceOf(ManagementServerError.StreamUnavailable.class);
+                                  assertThat(((ManagementServerError.StreamUnavailable) cause).httpStatus())
+                                          .isEqualTo(HttpStatus.CONFLICT);
+                              });
+
+            assertThat(manager.streamInfo(STREAM_ADDRESS).isEmpty())
+                    .as("a failed materialization must never leave a partition count to guess")
+                    .isTrue();
         } finally {
             manager.close();
         }
