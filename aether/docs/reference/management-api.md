@@ -4188,12 +4188,16 @@ List all registered scheduled tasks with active timer count and execution state.
       "lastExecutionAt": 1710345600000,
       "nextFireAt": 1710345900000,
       "consecutiveFailures": 0,
-      "totalExecutions": 42
+      "totalExecutions": 42,
+      "skippedOverlaps": 0
     }
   ],
   "activeTimers": 1
 }
 ```
+
+For an `execution_mode = "all"` task, `lastExecutionAt`/`nextFireAt`/`consecutiveFailures`/`totalExecutions` are aggregated across every node's own execution row rather than read from a single shared entry (`totalExecutions` summed, `consecutiveFailures`/`lastExecutionAt` max, `nextFireAt` min). A `single`-mode task's fields still come from the one node that ever executes it
+[mechanism: `ScheduledTaskRoutes.toSummary` branches on `ExecutionMode.ALL` into `aggregateAllModeState`/`combineNodeStates`, the same per-node scan `executions-by-node` uses; pinned by `ScheduledTaskRoutesAllModeAggregationTest.java#ListSummary` — component-level against a real `KVStore`, not a live multi-node run].
 
 ### GET /api/v1/scheduled-tasks/{section}
 
@@ -4252,6 +4256,9 @@ Manually trigger a scheduled task immediately, regardless of its schedule or pau
 }
 ```
 
+**409 Conflict** — the task has a run already in flight (an automatic fixed-rate/cron fire, or another manual trigger that claimed first). The manual fire is refused rather than run concurrently with the in-progress execution, to avoid double-counting `totalExecutions`; retry once the in-progress run completes
+[mechanism: `ScheduledTaskManager.tryClaim`/`release` guard the manual-trigger path; pinned by `aether/node/src/test/java/org/pragmatica/aether/api/routes/ScheduledTaskRoutesTriggerTest.java#ConflictGuard` and `aether/aether-invoke/.../ScheduledTaskManagerTest.java#TriggerGuard` — component-level against the real guard, not a live multi-node run].
+
 ### GET /api/v1/scheduled-tasks/state/{section}/{artifact}/{methodName}
 
 Get detailed execution state for a specific scheduled task.
@@ -4266,10 +4273,16 @@ Get detailed execution state for a specific scheduled task.
   "nextFireAt": 1710345900000,
   "consecutiveFailures": 0,
   "totalExecutions": 42,
+  "skippedOverlaps": 0,
   "lastFailureMessage": "",
   "updatedAt": 1710345600000
 }
 ```
+
+Same ALL-mode aggregation as the tasks-list summary above: for an `execution_mode = "all"` task every field is combined across each node's own row rather than read from a single shared entry. `lastFailureMessage`/`updatedAt` are not summable across nodes, so they are taken together from whichever per-node row has the higher `updatedAt`
+[mechanism: `ScheduledTaskRoutes.buildStateResponse` branches on `ExecutionMode.ALL` into `aggregateAllModeState`/`combineNodeStates`; pinned by `ScheduledTaskRoutesAllModeAggregationTest.java#SingleTaskState` — component-level against a real `KVStore`, not a live multi-node run].
+
+Both aggregate surfaces above (list summary and this single-task state) expose only the combined totals per task, never a per-node list field — the per-node breakdown lives exclusively on `GET /api/v1/scheduled-tasks/executions-by-node/{section}/{artifact}/{methodName}` below.
 
 ### POST /api/v1/scheduled-tasks/inject
 
@@ -4303,6 +4316,11 @@ All three fields are required. The `(section, artifact, method)` triple identifi
 
 `previousExecutionMs` is `0` when no prior state entry exists; otherwise it equals the `lastExecutionAt` value visible via `/api/v1/scheduled-tasks/state/{section}/{artifact}/{methodName}` immediately before the injection. `currentExecutionMs > previousExecutionMs` is guaranteed on success — tests may assert strict monotonic advancement without polling.
 
+**Keying for `execution_mode = "all"` tasks (fixed in this PR):** `/inject` now keys its state write by `ctx.self()` for an `all`-mode task, exactly mirroring the automatic path, so the write lands on this node's own row and is immediately visible on the tasks-list summary, single-task state, and `executions-by-node` endpoints — no longer an orphaned write
+[mechanism: `ScheduledTaskRoutes.injectStateKeyFor` branches on `task.executionMode()` the same way `ScheduledTaskManager.TaskOps#stateKeyFor` does for the automatic path; pinned by `ScheduledTaskRoutesInjectTest.java#KeyScoping.inject_onAllModeTask_advancesStateVisibleOnStateEndpoint` — component-level against a real `KVStore`, not a live multi-node run].
+
+**Remaining caveat for `execution_mode = "single"` tasks:** `/inject` still writes the same unscoped state entry the leader's automatic fire uses, with no `tryClaim`/`release` guard around the read-modify-write — a concurrent writer to that same entry between the read and the write is silently lost (`/trigger` writes no state entry at all, so it is not a racer on this key). This TOCTOU gap is unchanged by the keying fix above and remains an accepted limitation of a dev/test-only route, not a defect to work around at call time.
+
 ### GET /api/v1/scheduled-tasks/executions-by-node/{section}/{artifact}/{methodName}
 
 Surface per-node execution attribution for a scheduled task. Used by `TC-08-F3` to distinguish SINGLE-mode tasks (exactly one node executes per fire) from ALL-mode tasks (every cluster member executes per fire).
@@ -4321,7 +4339,11 @@ Surface per-node execution attribution for a scheduled task. Used by `TC-08-F3` 
 }
 ```
 
-`executions` is empty when the task has no prior state. Otherwise each entry pairs a `nodeId` with the number of executions attributed to it and the millisecond epoch of the most recent execution. **RC1 limitation:** the current implementation reports the task's `registeredBy` node as the sole executor (count = `totalExecutions`, lastExecutionMs = `lastExecutionAt`). A follow-up tracks adding per-node execution counters to the KV state so ALL-mode tasks can produce true per-node breakdowns. Tests should currently assert on cumulative totals via this endpoint or via `/api/v1/scheduled-tasks/state/{section}/{artifact}/{methodName}`.
+`executions` is empty when the task has no prior state. Otherwise each entry pairs a `nodeId` with the number of executions attributed to it and the millisecond epoch of the most recent execution, sorted ascending by `nodeId`. As of #841 this is a real per-node breakdown, not an attribution stub: each entry comes from that node's own `ScheduledTaskStateKey`-scoped KV row, populated by scanning the live `KVStore` for state entries carrying a node component — a SINGLE-mode task therefore reports exactly the one node that has ever executed it, and an ALL-mode task reports one row per quorum member that has fired it independently
+[mechanism: `ScheduledTaskRoutes.buildExecutionsByNode` scans the live `KVStore` by key type; pinned by `aether/node/src/test/java/org/pragmatica/aether/api/routes/ScheduledTaskRoutesExecutionsByNodeTest.java#MultipleNodes` and `#WithState` — component-level against a real `KVStore`, not a live multi-node run].
+
+**Rolling-upgrade note:** a pre-#841 state entry (no node component) is excluded from this scan rather than misread as belonging to a node, so an ALL-mode task's per-node counts restart at zero after upgrading rather than continuing from the old shared total
+[mechanism: the scan filters on `key.node().isPresent()` and task identity; pinned by `ScheduledTaskRoutesExecutionsByNodeTest.java#InvalidEntriesExcluded` — component-level, not a live multi-node run].
 
 ---
 

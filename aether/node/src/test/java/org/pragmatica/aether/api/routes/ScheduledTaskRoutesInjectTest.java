@@ -4,11 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.api.ManagementApiResponses.ScheduledTaskInjectRequest;
 import org.pragmatica.aether.api.ManagementApiResponses.ScheduledTaskInjectResponse;
+import org.pragmatica.aether.api.routes.ScheduledTaskRoutes.TaskStateResponse;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.invoke.ScheduledTaskManager;
 import org.pragmatica.aether.invoke.ScheduledTaskRegistry;
@@ -37,6 +39,9 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.serialization.Deserializer;
+import org.pragmatica.serialization.Serializer;
 
 import java.lang.reflect.Proxy;
 import java.util.ArrayList;
@@ -62,6 +67,10 @@ class ScheduledTaskRoutesInjectTest {
     private static final String SECTION = "demo.section";
     private static final String ARTIFACT = "org.example:demo:1.0.0";
     private static final String METHOD = "tick";
+    // `RecordingNode#self()` reports this id; `StubRegistry#addTask` defaults every task to
+    // ALL-mode, so `/inject`'s state key is now scoped by this node (mirrors the automatic
+    // path, #841 follow-up) rather than the pre-#841 unscoped key.
+    private static final NodeId SELF_NODE = new NodeId("node-self");
 
     private StubRegistry registry;
     private StubStateRegistry stateRegistry;
@@ -112,11 +121,15 @@ class ScheduledTaskRoutesInjectTest {
         @Test
         void inject_invokesTask_writesSuccessState_andAdvancesLastExecution() {
             registry.addTask(SECTION, ARTIFACT, METHOD);
+            // StubRegistry defaults the task to ALL-mode, so /inject now keys state by this
+            // node (SELF_NODE, via RecordingNode#self()) rather than the pre-#841 unscoped key
+            // — seed the same per-node key here so priorState is actually found.
             var key = ScheduledTaskStateKey.scheduledTaskStateKey(SECTION,
                                                                    artifact(ARTIFACT),
-                                                                   new MethodName(METHOD));
+                                                                   new MethodName(METHOD),
+                                                                   SELF_NODE);
             var priorTimestamp = System.currentTimeMillis() - 5_000;
-            stateRegistry.put(key, new ScheduledTaskStateValue(priorTimestamp, 0, 0, 7, "", priorTimestamp));
+            stateRegistry.put(key, new ScheduledTaskStateValue(priorTimestamp, 0, 0, 7, "", priorTimestamp, 0));
 
             var routes = routesWithDevMode(true);
 
@@ -160,6 +173,67 @@ class ScheduledTaskRoutesInjectTest {
                           "previousExecutionMs must be 0 when no prior state entry exists");
             assertTrue(response.currentExecutionMs() > 0,
                        "currentExecutionMs must be a stamped non-zero timestamp");
+        }
+    }
+
+    /// #841 follow-up (owner ruling: fix in this PR, not just document): `invokeAndAdvanceState`
+    /// keyed EVERY execution mode with the pre-#841 unscoped `ScheduledTaskStateKey`. Once the
+    /// aggregation fix landed, that made an ALL-mode `/inject` write orphaned — 200 response,
+    /// advancing counters, permanently invisible on every Management API surface, because those
+    /// surfaces now filter the unscoped key out. `injectStateKeyFor` closes this by mirroring
+    /// `ScheduledTaskManager.TaskOps#stateKeyFor`: ALL-mode scoped by this node, SINGLE-mode
+    /// unchanged (still races the leader's automatic fire on that key — `/trigger` writes no state
+    /// entry, so it is not a racer here — a documented TOCTOU caveat, not addressed here).
+    @Nested
+    class KeyScoping {
+
+        @Test
+        void inject_onSingleModeTask_stillUsesUnscopedKey_unchangedFromBefore() {
+            registry.addTask(SECTION, ARTIFACT, METHOD, ExecutionMode.SINGLE);
+            var unscopedKey = ScheduledTaskStateKey.scheduledTaskStateKey(SECTION, artifact(ARTIFACT), new MethodName(METHOD));
+            var priorTimestamp = System.currentTimeMillis() - 5_000;
+            stateRegistry.put(unscopedKey, new ScheduledTaskStateValue(priorTimestamp, 0, 0, 3, "", priorTimestamp, 0));
+            var routes = routesWithDevMode(true);
+
+            var response = invokeInject(routes, new ScheduledTaskInjectRequest(SECTION, ARTIFACT, METHOD))
+                            .onFailure(cause -> fail("Inject must succeed: " + cause.message()))
+                            .await()
+                            .or((ScheduledTaskInjectResponse) null);
+
+            assertNotNull(response, "Response must be non-null on success");
+            assertEquals(priorTimestamp, response.previousExecutionMs(),
+                          "SINGLE-mode must still read prior state from the unscoped key, unchanged");
+            assertEquals(1, node.commands.size(), "Exactly one KV apply expected");
+            var written = (KVCommand.Put<?, ?>) node.commands.get(0).get(0);
+            assertEquals(unscopedKey, written.key(), "SINGLE-mode write must still target the unscoped key");
+        }
+
+        @Test
+        void inject_onAllModeTask_advancesStateVisibleOnStateEndpoint() {
+            var store = new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(), stubKvSerializer(), stubKvDeserializer());
+            var localRegistry = new StubRegistry();
+            localRegistry.addTask(SECTION, ARTIFACT, METHOD, ExecutionMode.ALL);
+            var localInvoker = new RecordingInvoker();
+            var routes = ScheduledTaskRoutes.scheduledTaskRoutes(localRegistry,
+                                                                  stubManager(),
+                                                                  () -> nodeOverRealStore(store, SELF_NODE),
+                                                                  localInvoker.asSliceInvoker(),
+                                                                  new StubStateRegistry(),
+                                                                  () -> true);
+
+            invokeInject(routes, new ScheduledTaskInjectRequest(SECTION, ARTIFACT, METHOD))
+                .onFailure(cause -> fail("Inject must succeed: " + cause.message()))
+                .await();
+
+            var state = routes.getTaskStateForTest(SECTION, ARTIFACT, METHOD)
+                               .onFailure(cause -> fail("State read must succeed: " + cause.message()))
+                               .await()
+                               .or((TaskStateResponse) null);
+
+            assertNotNull(state, "State response must be non-null");
+            assertEquals(1, state.totalExecutions(),
+                         "Inject's write must land on this node's per-node row so ALL-mode aggregation counts it");
+            assertTrue(state.lastExecutionAt() > 0, "lastExecutionAt must advance past zero");
         }
     }
 
@@ -327,12 +401,51 @@ class ScheduledTaskRoutesInjectTest {
         return Artifact.artifact(s).unwrap();
     }
 
+    /// Real `KVStore` (not the command-recording `RecordingNode` double) so `KeyScoping`'s
+    /// ALL-mode visibility test can both write (via `apply`) and read back (via the ALL-mode
+    /// aggregation's `kvStore().forEach`) through the same backing store — mirrors the fixture
+    /// in `ScheduledTaskRoutesAllModeAggregationTest`.
+    private static ManageableNode nodeOverRealStore(KVStore<AetherKey, AetherValue> store, NodeId self) {
+        return (ManageableNode) Proxy.newProxyInstance(
+            ManageableNode.class.getClassLoader(),
+            new Class[]{ManageableNode.class},
+            (_, method, args) -> switch (method.getName()) {
+                case "kvStore" -> store;
+                case "self" -> self;
+                case "apply" -> {
+                    @SuppressWarnings("unchecked")
+                    var commands = (List<KVCommand<AetherKey>>) args[0];
+
+                    store.process(store.createBatch(commands));
+                    yield Promise.success(List.of());
+                }
+                default -> throw new UnsupportedOperationException("Not implemented in test proxy: " + method.getName());
+            }
+        );
+    }
+
+    private static Serializer stubKvSerializer() {
+        return new Serializer() {
+            @Override public <T> void write(ByteBuf byteBuf, T object) {}
+        };
+    }
+
+    private static Deserializer stubKvDeserializer() {
+        return new Deserializer() {
+            @Override public <T> T read(ByteBuf byteBuf) {
+                return null;
+            }
+        };
+    }
+
     private static ScheduledTaskManager stubManager() {
         return new ScheduledTaskManager() {
             @Override public void onLeaderChange(LeaderChange leaderChange) {}
             @Override public void onQuorumStateChange(ClusterStateNotification notification) {}
             @Override public int activeTimerCount() { return 0; }
             @Override public void stop() {}
+            @Override public boolean tryClaim(org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey key) { return true; }
+            @Override public void release(org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey key) {}
         };
     }
 
@@ -340,13 +453,17 @@ class ScheduledTaskRoutesInjectTest {
         private final List<ScheduledTask> tasks = new ArrayList<>();
 
         void addTask(String section, String artifactStr, String methodStr) {
+            addTask(section, artifactStr, methodStr, ExecutionMode.ALL);
+        }
+
+        void addTask(String section, String artifactStr, String methodStr, ExecutionMode mode) {
             tasks.add(new ScheduledTask(section,
                                         artifact(artifactStr),
                                         new MethodName(methodStr),
                                         new NodeId("node-1"),
                                         "1s",
                                         "",
-                                        ExecutionMode.ALL,
+                                        mode,
                                         false));
         }
 
@@ -418,6 +535,9 @@ class ScheduledTaskRoutesInjectTest {
                         var typedList = (List<KVCommand<AetherKey>>) list;
                         commands.add(typedList);
                         return Promise.success(List.of());
+                    }
+                    if ("self".equals(method.getName())) {
+                        return SELF_NODE;
                     }
                     throw new UnsupportedOperationException("Not implemented in test proxy: " + method.getName());
                 }

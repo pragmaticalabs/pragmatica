@@ -23,6 +23,8 @@ import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.NodeArtifa
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.NodeArtifactRemoveReceived;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.NodeRoutesPutReceived;
 import org.pragmatica.aether.http.HttpRoutePublisher;
+import org.pragmatica.aether.invoke.CronExpression;
+import org.pragmatica.aether.invoke.ScheduledTaskManager;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.DeploymentCompleted;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.DeploymentFailed;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.StateTransition;
@@ -75,6 +77,7 @@ import org.pragmatica.consensus.fsm.ClusterFsmEvent.Shutdown;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Functions.Fn3;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -1023,6 +1026,16 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                   .map(_ -> sliceKey);
         }
 
+        /// The interval/cron STRING is node-local config, resolved here — at activation time — not
+        /// visible to `BlueprintService.validate` (blueprint DSL parsing happens strictly earlier and
+        /// has no access to per-node `ScheduleConfig`). This is therefore the earliest point an invalid
+        /// schedule string CAN be rejected. Rejection must be observable, not a log line: an invalid
+        /// entry fails [#buildValidatedScheduledTaskPutCommand] with a named [Cause]; [Result#allOf]
+        /// aggregates every invalid entry into one composite cause; the failed [Promise] propagates
+        /// through [#performActivation]'s `.withFailure` into [#handleActivationFailure] /
+        /// `transitionToFailed`, landing in [NodeArtifactValue#failureReason] — which
+        /// `ClusterEventAggregator.handleDeploymentFailed` already surfaces as a WARNING-severity
+        /// `DeploymentFailed` event naming the task, the offending string, and the parser's message.
         private Promise<Unit> doPublishScheduledTasks(Artifact artifact, Slice slice) {
             var entries = readScheduledTasksFromManifest(slice);
 
@@ -1030,35 +1043,55 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                 return Promise.unitPromise();
             }
 
-            var commands = new ArrayList<KVCommand<AetherKey>>();
+            var results = new ArrayList<Result<KVCommand<AetherKey>>>();
 
             for (var entry : entries) {
-                resolveScheduleConfig(artifact, entry.configSection()).onPresent(config -> commands.add(buildScheduledTaskPutCommand(artifact,
-                                                                                                                                     entry,
-                                                                                                                                     config)));
+                resolveScheduleConfig(artifact, entry.configSection()).onPresent(config -> results.add(buildValidatedScheduledTaskPutCommand(artifact,
+                                                                                                                                             entry,
+                                                                                                                                             config)));
             }
 
-            if (commands.isEmpty()) {
+            if (results.isEmpty()) {
                 return Promise.unitPromise();
             }
 
-            return applyWithRetry(commands, 0).onSuccess(_ -> log.debug("Published {} scheduled tasks for {}",
-                                                                        commands.size(),
-                                                                        artifact))
-                                 .onFailure(cause -> log.error("Failed to publish scheduled tasks for {}: {}",
-                                                               artifact,
-                                                               cause.message()));
+            return Promise.resolved(Result.allOf(results))
+                          .flatMap(commands -> applyWithRetry(commands, 0))
+                          .onSuccess(_ -> log.debug("Published {} scheduled tasks for {}",
+                                                    results.size(),
+                                                    artifact))
+                          .onFailure(cause -> log.error("Failed to publish scheduled tasks for {}: {}",
+                                                        artifact,
+                                                        cause.message()));
         }
 
-        private KVCommand<AetherKey> buildScheduledTaskPutCommand(Artifact artifact,
-                                                                  ScheduledTaskManifestEntry entry,
-                                                                  ScheduleConfig config) {
-            var key = ScheduledTaskKey.scheduledTaskKey(entry.configSection(), artifact, entry.methodName());
-            var value = config.interval().isEmpty()
-                        ? ScheduledTaskValue.cronTask(ctx.self(), config.cron(), config.executionMode())
-                        : ScheduledTaskValue.intervalTask(ctx.self(), config.interval(), config.executionMode());
+        private static final Fn3<Cause, String, String, String> INVALID_SCHEDULE_STRING = Causes.forThreeValues("Scheduled task '%s' has an invalid schedule '%s': %s");
 
-            return new KVCommand.Put<>(key, value.withPaused(existingPausedFlag(key)));
+        /// Validates the schedule string BEFORE building the [ScheduledTaskValue] — an invalid
+        /// interval/cron string must never reach the KV Put. See [#doPublishScheduledTasks] for why
+        /// this is the earliest real validation gate and how the rejection reaches the operator.
+        private Result<KVCommand<AetherKey>> buildValidatedScheduledTaskPutCommand(Artifact artifact,
+                                                                                   ScheduledTaskManifestEntry entry,
+                                                                                   ScheduleConfig config) {
+            var key = ScheduledTaskKey.scheduledTaskKey(entry.configSection(), artifact, entry.methodName());
+            var taskName = entry.configSection() + "." + entry.methodName().name();
+            Result<ScheduledTaskValue> validated = config.interval().isEmpty()
+                                                   ? CronExpression.parse(config.cron())
+                                                                   .map(_ -> ScheduledTaskValue.cronTask(ctx.self(),
+                                                                                                         config.cron(),
+                                                                                                         config.executionMode()))
+                                                                   .mapError(cause -> INVALID_SCHEDULE_STRING.apply(taskName,
+                                                                                                                    config.cron(),
+                                                                                                                    cause.message()))
+                                                   : ScheduledTaskManager.IntervalParser.parse(config.interval())
+                                                                                        .map(_ -> ScheduledTaskValue.intervalTask(ctx.self(),
+                                                                                                                                  config.interval(),
+                                                                                                                                  config.executionMode()))
+                                                                                        .mapError(cause -> INVALID_SCHEDULE_STRING.apply(taskName,
+                                                                                                                                         config.interval(),
+                                                                                                                                         cause.message()));
+
+            return validated.map(value -> new KVCommand.Put<>(key, value.withPaused(existingPausedFlag(key))));
         }
 
         /// Operator pause (set via the management API into [ScheduledTaskValue#paused]) lives only on
