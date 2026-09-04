@@ -1009,6 +1009,9 @@ public final class EmberCluster {
         // #298 — in-process nodes never pass through Main, so no cluster
         // name is stamped and the fleet cap stays inert here. Forge has no
         // cloud provider to cap in the first place.
+        Option.empty(),
+
+        // #253 — forge/Ember nodes don't exercise storage encryption; opt-in only.
         Option.empty());
         // Single-JVM hosting: when this node's SelfDrainCoordinator completes its drain
         // phase, do NOT halt the JVM (would kill all other in-process nodes). Stop the

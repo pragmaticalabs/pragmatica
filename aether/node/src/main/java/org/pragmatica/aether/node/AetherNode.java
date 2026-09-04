@@ -150,6 +150,7 @@ import org.pragmatica.aether.metrics.network.NetworkMetricsHandler;
 import org.pragmatica.aether.repository.RepositoryFactory;
 import org.pragmatica.aether.slice.*;
 import org.pragmatica.aether.storage.DelegatedStorageAdapter;
+import org.pragmatica.storage.EncryptionKeyring;
 import org.pragmatica.storage.StorageInstance;
 import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.StreamPublisher;
@@ -234,6 +235,7 @@ import org.pragmatica.aether.config.BackupConfig;
 import org.pragmatica.aether.config.BuildInfo;
 import org.pragmatica.aether.config.ReadLinearizationMode;
 import org.pragmatica.aether.config.StorageConfig;
+import org.pragmatica.aether.config.StorageEncryptionConfig;
 import org.pragmatica.aether.config.WorkerConfig;
 import org.pragmatica.cluster.metrics.DeploymentMetricsMessage;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage;
@@ -450,6 +452,16 @@ public interface AetherNode extends ManageableNode {
                                                  MessageRouter.DelegateRouter delegateRouter,
                                                  SliceCodec nodeCodec,
                                                  Runnable jvmExit) {
+        // #253 owner condition 5: boot REFUSES an encrypted tier whose key cannot be resolved.
+        // Resolved BEFORE any other node component so a bad `[storage.encryption]` config (or a
+        // missing SecretsProvider) fails boot immediately rather than after partial construction.
+        var keyringResolution = resolveStorageEncryptionKeyring(config);
+
+        if (keyringResolution.isFailure()) {
+            return keyringResolution.map(ignored -> null);
+        }
+
+        var storageKeyring = keyringResolution.fold(_ -> Option.<EncryptionKeyring> empty(), keyring -> keyring);
         Serializer serializer = nodeCodec;
         Deserializer deserializer = nodeCodec;
         var kvStore = new KVStore<AetherKey, AetherValue>(delegateRouter, serializer, deserializer);
@@ -599,7 +611,33 @@ public interface AetherNode extends ManageableNode {
                                                              membershipFsmRef,
                                                              metricsCollectorRef,
                                                              syncHoldRegistry,
-                                                             jvmExit));
+                                                             jvmExit,
+                                                             storageKeyring));
+    }
+
+    /// #253 — resolves the boot-time storage-encryption keyring before any storage tier exists. No
+    /// `[storage.encryption]` block at all is the common, unencrypted case and resolves to
+    /// `Option.empty()` without touching `SecretsProvider`. A `[storage.encryption]` block with no
+    /// `SecretsProvider` wired (`config.environment()` empty, or its `secrets()` empty) can never
+    /// resolve any key, so it fails closed here instead of silently booting unencrypted.
+    private static Result<Option<EncryptionKeyring>> resolveStorageEncryptionKeyring(AetherNodeConfig config) {
+        return config.storageEncryption()
+                     .fold(() -> Result.success(Option.empty()),
+                           encryptionConfig -> config.environment()
+                                                     .flatMap(EnvironmentIntegration::secrets)
+                                                     .fold(() -> Result.<Option<EncryptionKeyring>> failure(new NoSecretsProviderForStorageEncryption()),
+                                                           provider -> StorageEncryption.resolveKeyring(provider,
+                                                                                                        encryptionConfig).map(Option::some)));
+    }
+
+    /// `[storage.encryption]` is configured but no `SecretsProvider` is wired -- every configured
+    /// key reference would be unresolvable, so boot fails rather than silently starting unencrypted.
+    record NoSecretsProviderForStorageEncryption() implements Cause {
+        @Override
+        public String message() {
+            return "storage.encryption is configured but no SecretsProvider is available "
+                 + "(environment integration is absent or does not provide secrets)";
+        }
     }
 
     private static RabiaPersistence<KVCommand<AetherKey>> resolvePersistence(AetherNodeConfig config) {
@@ -1326,7 +1364,8 @@ public interface AetherNode extends ManageableNode {
                                                    AtomicReference<MembershipFsm> membershipFsmRef,
                                                    AtomicReference<ClusterSyncCollector> metricsCollectorRef,
                                                    org.pragmatica.cluster.node.rabia.SyncHoldRegistry syncHoldRegistry,
-                                                   Runnable jvmExit) {
+                                                   Runnable jvmExit,
+                                                   Option<EncryptionKeyring> storageKeyring) {
         // #329: leader-pinned task-group ownership is gated on consensus catch-up. A freshly
         // elected replacement leader whose Rabia log is still draining (isPendingCatchUp) is
         // isActive but not caught up; granting it ownership funnels every leader-pinned op
@@ -1405,14 +1444,31 @@ public interface AetherNode extends ManageableNode {
         var dhtClientOption = Option.<DHTClient> some(dhtClient);
         var baseStorageSetups = StorageFactory.createAll(config.storageConfig(),
                                                          config.self().id(),
-                                                         dhtClientOption);
+                                                         dhtClientOption,
+                                                         storageKeyring);
         // Stream storage is a first-class, disk-backed snapshot-capable StorageSetup (memory -> disk
         // -> DHT) keyed under "streams". It is built here (not via `createAll`, which is config-map
         // driven) so it can be folded into `storageSetups` — a later snapshot scheduler iterates that
         // map — while its `instance()` is reused as `streamStorage` at the stream wiring site below.
-        var streamStorageSetup = StorageFactory.defaultStreamStorage(dhtClientOption,
-                                                                     streamDataDir(config),
-                                                                     config.self().id());
+        // #253: streams has no per-instance `StorageConfig.encrypted()` of its own to consult --
+        // `streams_encrypted` is a dedicated top-level `[storage.encryption]` flag -- so the gate is
+        // applied here, and `defaultStreamStorage` can fail (unlike the plaintext-only 3-arg
+        // overload) when the segments dir already holds unmarked plaintext blocks from a prior
+        // unencrypted boot; that failure is propagated exactly like `keyringResolution`'s above.
+        var streamsEncrypted = config.storageEncryption().map(StorageEncryptionConfig::streamsEncrypted).or(false);
+        var streamsKeyring = streamsEncrypted
+                             ? storageKeyring
+                             : Option.<EncryptionKeyring> empty();
+        var streamStorageResult = StorageFactory.defaultStreamStorage(dhtClientOption,
+                                                                      streamDataDir(config),
+                                                                      config.self().id(),
+                                                                      streamsKeyring);
+
+        if (streamStorageResult.isFailure()) {
+            return streamStorageResult.map(ignored -> null);
+        }
+
+        var streamStorageSetup = streamStorageResult.fold(_ -> null, setup -> setup);
         var storageSetups = withStreamSetup(baseStorageSetups, streamStorageSetup);
         var artifactStorage = Option.option(storageSetups.get("artifacts"))
                                     .map(StorageFactory.StorageSetup::instance)

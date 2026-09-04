@@ -19,6 +19,8 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.parse.TimeSpan;
 import org.pragmatica.storage.DemotionConfig;
 import org.pragmatica.storage.DemotionManager;
+import org.pragmatica.storage.EncryptingStorageTier;
+import org.pragmatica.storage.EncryptionKeyring;
 import org.pragmatica.storage.GarbageCollectorConfig;
 import org.pragmatica.storage.LocalDiskTier;
 import org.pragmatica.storage.MemoryTier;
@@ -173,11 +175,12 @@ public final class StorageFactory {
 
     static Map<String, StorageSetup> createAll(Map<String, StorageConfig> configs,
                                                String nodeId,
-                                               Option<DHTClient> dhtClient) {
+                                               Option<DHTClient> dhtClient,
+                                               Option<EncryptionKeyring> keyring) {
         var result = new LinkedHashMap<String, StorageSetup>();
 
-        configs.forEach((name, config) -> createOne(name, config, nodeId, dhtClient).onSuccess(setup -> result.put(name,
-                                                                                                                   setup))
+        configs.forEach((name, config) -> createOne(name, config, nodeId, dhtClient, keyring).onSuccess(setup -> result.put(name,
+                                                                                                                            setup))
                                                    .onFailure(cause -> log.error("Failed to create storage '{}': {}",
                                                                                  name,
                                                                                  cause.message())));
@@ -186,12 +189,15 @@ public final class StorageFactory {
         // provided, synthesize one using `StorageConfig.storageConfig()` defaults; explicit
         // config still wins via the loop above. `createOne` reuses the same code path
         // (`handleDiskTierUnavailable` falls back to memory+DHT when the default disk path
-        // isn't mountable, e.g. inside the aether-node container).
+        // isn't mountable, e.g. inside the aether-node container). The synthesized default is
+        // never encrypted -- `StorageConfig.storageConfig()`'s no-arg default has `encrypted()`
+        // false, and `createOne` only applies `keyring` when the per-instance config asks for it.
         if (!result.containsKey(ARTIFACTS_NAME)) {
             createOne(ARTIFACTS_NAME,
                       StorageConfig.storageConfig(),
                       nodeId,
-                      dhtClient).onSuccess(setup -> result.put(ARTIFACTS_NAME, setup))
+                      dhtClient,
+                      keyring).onSuccess(setup -> result.put(ARTIFACTS_NAME, setup))
                      .onFailure(cause -> log.error("Failed to create default '{}' storage: {}",
                                                    ARTIFACTS_NAME,
                                                    cause.message()));
@@ -239,6 +245,48 @@ public final class StorageFactory {
         var tiers = buildStreamTiers(dhtClient, streamDataDir.resolve("segments"));
 
         return assembleStreamSetup(tiers, streamDataDir.resolve("snapshots"), nodeId);
+    }
+
+    /// #253 — encrypted counterpart to the three-arg overload above. Streams has no per-instance
+    /// `StorageConfig#encrypted()` of its own to consult (`[storage.encryption] streams_encrypted`
+    /// is a dedicated top-level flag) so the caller resolves that decision and hands this method
+    /// `Option.empty()` when streams isn't encrypted -- in which case this delegates to the plain
+    /// overload unchanged. When a keyring IS supplied, this can FAIL where the plain overload
+    /// cannot: `EncryptingStorageTier#wrapLocalDisk` refuses rather than silently leaving data
+    /// unencrypted when the segments dir already holds unmarked plaintext blocks from a prior
+    /// unencrypted boot.
+    static Result<StorageSetup> defaultStreamStorage(Option<DHTClient> dhtClient,
+                                                     Path streamDataDir,
+                                                     String nodeId,
+                                                     Option<EncryptionKeyring> keyring) {
+        return keyring.fold(() -> Result.success(defaultStreamStorage(dhtClient, streamDataDir, nodeId)),
+                            ring -> buildEncryptedStreamTiers(dhtClient, streamDataDir.resolve("segments"), ring).map(tiers -> assembleStreamSetup(tiers,
+                                                                                                                                                   streamDataDir.resolve("snapshots"),
+                                                                                                                                                   nodeId)));
+    }
+
+    private static Result<List<StorageTier>> buildEncryptedStreamTiers(Option<DHTClient> dhtClient,
+                                                                       Path segmentsDir,
+                                                                       EncryptionKeyring keyring) {
+        var memoryTier = MemoryTier.memoryTier(STREAM_MEMORY_BYTES);
+        var dhtTier = dhtClient.map(client -> DhtStorageTier.dhtStorageTier(client, "stream-segments"))
+                               .map(dht -> EncryptingStorageTier.wrap(dht, keyring));
+
+        return LocalDiskTier.localDiskTier(segmentsDir, STREAM_DISK_BYTES).fold(cause -> {
+                                                                                    log.warn("Disk tier for 'streams' unavailable: {}, using memory + DHT fallback",
+                                                                                             cause.message());
+
+                                                                                    return Result.success(dhtTier.map(dht -> List.<StorageTier> of(memoryTier,
+                                                                                                                                                   dht))
+                                                                                                                 .or(List.of(memoryTier)));
+                                                                                },
+                                                                                disk -> EncryptingStorageTier.wrapLocalDisk(disk,
+                                                                                                                            segmentsDir,
+                                                                                                                            keyring).map(encDisk -> dhtTier.map(dht -> List.<StorageTier> of(memoryTier,
+                                                                                                                                                                                             encDisk,
+                                                                                                                                                                                             dht))
+                                                                                                                                                           .or(List.of(memoryTier,
+                                                                                                                                                                       encDisk))));
     }
 
     private static List<StorageTier> buildStreamTiers(Option<DHTClient> dhtClient, Path segmentsDir) {
@@ -299,36 +347,69 @@ public final class StorageFactory {
     private static Result<StorageSetup> createOne(String name,
                                                   StorageConfig config,
                                                   String nodeId,
-                                                  Option<DHTClient> dhtClient) {
-        return buildTiers(name, config, dhtClient).map(tiers -> assembleSetup(name, tiers, config, nodeId));
+                                                  Option<DHTClient> dhtClient,
+                                                  Option<EncryptionKeyring> keyring) {
+        // #253 — the per-instance `[storage.<name>] encrypted` flag (not the presence of `keyring`
+        // itself) decides whether THIS instance gets wrapped; other instances may share the same
+        // node-wide keyring while staying plaintext.
+        var effectiveKeyring = config.encrypted()
+                               ? keyring
+                               : Option.<EncryptionKeyring> empty();
+
+        return buildTiers(name, config, dhtClient, effectiveKeyring).map(tiers -> assembleSetup(name,
+                                                                                                tiers,
+                                                                                                config,
+                                                                                                nodeId));
     }
 
     private static Result<List<StorageTier>> buildTiers(String name,
                                                         StorageConfig config,
-                                                        Option<DHTClient> dhtClient) {
+                                                        Option<DHTClient> dhtClient,
+                                                        Option<EncryptionKeyring> keyring) {
         var memoryTier = MemoryTier.memoryTier(config.memoryMaxBytes());
         var dhtTier = dhtClient.map(client -> DhtStorageTier.dhtStorageTier(client, name + "-blocks"));
+        var diskPath = Path.of(config.diskPath());
 
-        return LocalDiskTier.localDiskTier(Path.of(config.diskPath()),
+        return LocalDiskTier.localDiskTier(diskPath,
                                            config.diskMaxBytes())
-                            .fold(cause -> handleDiskTierUnavailable(name, cause, memoryTier, dhtTier),
-                                  disk -> buildTierList(memoryTier, disk, dhtTier));
+                            .fold(cause -> handleDiskTierUnavailable(name, cause, memoryTier, dhtTier, keyring),
+                                  disk -> buildTierList(memoryTier, disk, diskPath, dhtTier, keyring));
+    }
+
+    /// Wraps `dhtTier` under `keyring` when present -- shared between the disk-available and
+    /// disk-unavailable paths so a keyring's coverage doesn't silently shrink to "disk only" when
+    /// the disk tier degrades to the memory+DHT fallback.
+    private static Option<StorageTier> maybeEncryptDht(Option<DhtStorageTier> dhtTier,
+                                                       Option<EncryptionKeyring> keyring) {
+        return keyring.fold(() -> dhtTier.map(dht -> (StorageTier) dht),
+                            ring -> dhtTier.map(dht -> EncryptingStorageTier.wrap(dht, ring)));
     }
 
     private static Result<List<StorageTier>> handleDiskTierUnavailable(String name,
                                                                        Cause cause,
                                                                        MemoryTier memoryTier,
-                                                                       Option<DhtStorageTier> dhtTier) {
+                                                                       Option<DhtStorageTier> dhtTier,
+                                                                       Option<EncryptionKeyring> keyring) {
         log.warn("Disk tier for '{}' unavailable: {}, using memory + DHT fallback", name, cause.message());
 
-        return Result.success(dhtTier.map(dht -> List.<StorageTier> of(memoryTier, dht)).or(List.of(memoryTier)));
+        return Result.success(maybeEncryptDht(dhtTier, keyring).map(dht -> List.<StorageTier> of(memoryTier, dht))
+                                             .or(List.of(memoryTier)));
     }
 
     private static Result<List<StorageTier>> buildTierList(MemoryTier memoryTier,
-                                                           StorageTier diskTier,
-                                                           Option<DhtStorageTier> dhtTier) {
-        return Result.success(dhtTier.map(dht -> List.<StorageTier> of(memoryTier, diskTier, dht))
-                                     .or(List.of(memoryTier, diskTier)));
+                                                           LocalDiskTier diskTier,
+                                                           Path diskPath,
+                                                           Option<DhtStorageTier> dhtTier,
+                                                           Option<EncryptionKeyring> keyring) {
+        var dht = maybeEncryptDht(dhtTier, keyring);
+
+        return keyring.fold(() -> Result.success(dht.map(t -> List.<StorageTier> of(memoryTier, diskTier, t))
+                                                    .or(List.of(memoryTier, diskTier))),
+                            ring -> EncryptingStorageTier.wrapLocalDisk(diskTier, diskPath, ring).map(encDisk -> dht.map(t -> List.<StorageTier> of(memoryTier,
+                                                                                                                                                    encDisk,
+                                                                                                                                                    t))
+                                                                                                                    .or(List.of(memoryTier,
+                                                                                                                                encDisk))));
     }
 
     private static StorageSetup assembleSetup(String name,

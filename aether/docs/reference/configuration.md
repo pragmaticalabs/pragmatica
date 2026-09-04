@@ -208,6 +208,75 @@ DHTConfig.SINGLE_NODE;  // Single-node testing
 | `readQuorum` | 2 | Read quorum size |
 | `operationTimeout` | 30 seconds | Operation timeout |
 
+## Storage Encryption Configuration
+
+### `[storage.encryption]` — #253
+
+At-rest encryption for block-storage tiers, keyed through the node's existing `SecretsProvider`
+(no dedicated key-management service; Vault/#119 integration is a deferred follow-up).
+
+```toml
+[storage.encryption]
+active_key_id = "k1"
+streams_encrypted = false        # opts the built-in `streams` instance's segment-block tiers in
+
+[storage.encryption.keys]
+k1 = "${secrets:storage-key-v1}"
+k0 = "${secrets:storage-key-v0}"  # retired key, kept resolvable for reads only
+```
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `active_key_id` | required if section present | Key id (must be a key in `keys`) new writes encrypt under |
+| `streams_encrypted` | false | Opts the built-in `streams` instance's segment-block tiers into encryption — `streams` has no `[storage.streams] encrypted` field of its own |
+| `keys.<id>` | none | `${secrets:<path>}` reference resolved via `SecretsProvider`, one per key id. Secret value must be a Base64-encoded 32-byte AES-256 key |
+
+Per-instance opt-in (any `[storage.<name>]` section, e.g. `[storage.artifacts]`):
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `encrypted` | false | Wraps this instance's disk/DHT tiers in `EncryptingStorageTier`. Requires `[storage.encryption]` to be present with at least one key |
+
+**Boot behavior.** Every key in `keys` is resolved through the live `SecretsProvider` once, at boot,
+bounded by a 30-second timeout. Boot fails — naming the key id, never the secret value — if any key
+fails to resolve (malformed `${secrets:...}` reference, provider failure, invalid Base64, wrong
+decoded length), if `active_key_id` is absent from `keys`, or if encryption is requested
+(`encrypted = true` on any instance, or `streams_encrypted = true`) but `[storage.encryption]` is
+missing entirely. If the node's environment has no `SecretsProvider` at all while
+`[storage.encryption]` is present, boot fails with `NoSecretsProviderForStorageEncryption`.
+
+**Coverage.** Encrypts block payloads (`get`/`put`) on `LocalDiskTier` and `DhtStorageTier` for any
+instance with `encrypted = true`, and on the `streams` instance's segment-block tiers when
+`streams_encrypted = true`. Does **not** cover: `MemoryTier` (in-process, never touches disk);
+metadata/refs/snapshot files (`MetadataStore`/`SnapshotManager`) for any instance, `streams`
+included; the auto-synthesized default `artifacts` instance used when no explicit
+`[storage.artifacts]` section is configured (hardcoded never-encrypted — configure the section
+explicitly with `encrypted = true` to cover it); the `content` storage instance (provisioned via a
+separate code path that does not currently accept a keyring at all — tracked as the same structural
+gap as `content`'s exclusion from demotion/GC, #783).
+
+**Not the same as `[streams.X].encryption-key-id`.** That per-stream blueprint key is unrelated and
+was already found structurally inert and rejected at validation (`#576`, 2026-08-27) —
+`StorageSegmentSink`'s own segment-payload pipeline has no encryptor wired to it, and `#253` does not
+change that. `streams_encrypted` above only affects the generic storage-tier framework's `streams`
+instance.
+
+**Wire format.** Each encrypted block is stored as
+`MAGIC("AEC1") | VERSION | KEY_ID_LEN | KEY_ID | NONCE(12B) | CIPHERTEXT+GCM_TAG`. Everything before
+the nonce is authenticated (AES-GCM AAD) but not encrypted — editing the header, including swapping
+in a different valid key id, fails decryption closed. A block with no recognizable header (fewer
+than 4 bytes, or a non-matching magic) is treated as **legacy plaintext**: enabling encryption over a
+local-disk directory that already holds unmarked block files is refused at boot; a DHT tier has no
+directory to scan and instead fails closed per block on read. A block whose header names a key id
+absent from the configured keyring fails with `UnknownKeyId` rather than a truncated read.
+
+**Key rotation.** Add a new `keys.<id>` entry, flip `active_key_id`; every prior key remains
+resolvable for existing blocks. Re-encrypting already-written blocks under the new active key
+(including on tier demote/promote) is not part of this fix.
+
+**Migration limitation.** There is no path from an existing plaintext tier to an encrypted one in
+rc4 — enabling `encrypted = true` (or `streams_encrypted = true`) is new-instance/fresh-data only.
+
 ## Environment Variables
 
 For container deployment, configuration via environment variables:
