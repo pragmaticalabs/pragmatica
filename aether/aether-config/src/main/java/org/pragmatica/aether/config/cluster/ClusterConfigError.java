@@ -257,6 +257,36 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware {
         }
     }
 
+    /// #335: `POST /api/cluster/scale` against a cluster with no stored config (e.g. after a
+    /// `docker compose down -v` volume wipe leaves a fresh, unconfigured cluster) cannot bootstrap
+    /// one from the scale request alone. Same class as the #290 formation-bootstrap work, but that
+    /// path derives the cluster name, semver version, distribution strategy, zones, and deployment
+    /// settings a `ClusterConfigValue` requires from a full TOML document — a `ScaleRequest` carries
+    /// only source/role/count/expectedVersion, none of that. Guessing the rest would fabricate a
+    /// cluster identity nobody declared, so this names the actual recovery instead of 500ing or
+    /// inventing defaults.
+    record NoConfigToScale(String scaleSource, String role, int count) implements ClusterConfigError {
+        @Override
+        public String message() {
+            var sourceFlag = scaleSource.isBlank()
+                             ? ""
+                             : "--source " + scaleSource + " ";
+
+            return "No cluster configuration stored. A scale request cannot create one — it carries "
+                 + "only source/role/count, not the cluster name, version, or deployment settings a "
+                 + "config requires. Run 'aether cluster bootstrap <aether-cluster.toml>' first, then "
+                 + "retry 'aether cluster scale " + sourceFlag
+                 + "--role " + role
+                 + " --count " + count
+                 + "'.";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+    }
+
     record ImmutableFieldChange(String field) implements ClusterConfigError {
         @Override
         public String message() {
