@@ -267,11 +267,18 @@ class StorageFactoryEncryptionTest {
     @Test
     void createAll_leavesNoDhtMarker_whenDiskGuardRefusesBeforeDhtEncryptionIsApplied() {
         var diskDir = tempDir.resolve("vault-legacy-disk-with-dht");
+        var artifactsDir = tempDir.resolve("artifacts-disk");
 
         seedRawPlaintextBlock(diskDir);
 
+        // Explicit, plain 'artifacts' entry: without it, `createAll` auto-synthesizes one that
+        // shares this same `dhtClient` and independently succeeds/fails on the keyring's presence,
+        // writing (and later tripping over) its own DHT marker for reasons unrelated to the ordering
+        // bug this test pins on 'vault'. An explicit entry here bypasses that synthesis path entirely
+        // and keeps the assertions below scoped to 'vault' alone.
         var dhtClient = new InMemoryDHTClient();
-        var firstBoot = StorageFactory.createAll(Map.of(INSTANCE, storageConfigAt(diskDir, true)),
+        var firstBoot = StorageFactory.createAll(Map.of(INSTANCE, storageConfigAt(diskDir, true),
+                                                        ARTIFACTS, storageConfigAt(artifactsDir, false)),
                                                  NODE_ID,
                                                  Option.some(dhtClient),
                                                  Option.some(singleKeyRing("key-1")));
@@ -293,7 +300,8 @@ class StorageFactoryEncryptionTest {
                                                                         + "ciphertext ever written under it")
                                                                     .isFalse());
 
-        var secondBoot = StorageFactory.createAll(Map.of(INSTANCE, storageConfigAt(diskDir, false)),
+        var secondBoot = StorageFactory.createAll(Map.of(INSTANCE, storageConfigAt(diskDir, false),
+                                                         ARTIFACTS, storageConfigAt(artifactsDir, false)),
                                                   NODE_ID,
                                                   Option.some(dhtClient),
                                                   Option.none());
