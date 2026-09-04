@@ -90,6 +90,10 @@ class SchemaRoutesVersionIntegrityTest {
     private static final String COORDS = "org.example:orders-app:1.0.0";
     private static final BlueprintId OWNER = BlueprintId.blueprintId(COORDS).unwrap();
     private static final NodeId SELF = new NodeId("node-a");
+    // #832 review round 4 item C: an unbounded `await()` turns a never-settling regression into a
+    // hang instead of a red test — bound both calls below by the same safety-net idiom used in
+    // SchemaRoutesUndoBaselineTimeoutTest.
+    private static final TimeSpan TEST_SAFETY_NET = timeSpan(2).seconds();
 
     private static final DatabaseConnectorConfig STUB_CONFIG = new DatabaseConnectorConfig(Option.none(),
                                                                                             Option.some(DatabaseType.POSTGRESQL),
@@ -126,13 +130,16 @@ class SchemaRoutesVersionIntegrityTest {
         var managerReportedVersion = requestedTarget + 1; // one down-script was unavailable
 
         routes.undoToVersion(DATASOURCE, requestedTarget)
-              .await()
+              .await(TEST_SAFETY_NET)
               .onFailure(SchemaRoutesVersionIntegrityTest::failOnUnexpectedFailure);
 
         assertThat(recorded().currentVersion()).as("the KV record must carry what the manager reported it actually did, "
                                                     + "not the version the caller asked for")
                                                .isEqualTo(managerReportedVersion)
                                                .isNotEqualTo(requestedTarget);
+        assertThat(recorded().lastMigration()).as("the migration marker must be built from the manager's reported "
+                                                   + "version, zero-padded, not the requested target")
+                                              .isEqualTo("U%03d__undo".formatted(managerReportedVersion));
     }
 
     @Test
@@ -141,13 +148,16 @@ class SchemaRoutesVersionIntegrityTest {
         var managerReportedVersion = requestedVersion + 1; // history disagrees with the request
 
         routes.baselineDatasource(DATASOURCE, Option.some(String.valueOf(requestedVersion)))
-              .await()
+              .await(TEST_SAFETY_NET)
               .onFailure(SchemaRoutesVersionIntegrityTest::failOnUnexpectedFailure);
 
         assertThat(recorded().currentVersion()).as("the KV record must carry what the manager reported it actually did, "
                                                     + "not the version the caller asked for")
                                                .isEqualTo(managerReportedVersion)
                                                .isNotEqualTo(requestedVersion);
+        assertThat(recorded().lastMigration()).as("the migration marker must be built from the manager's reported "
+                                                   + "version, zero-padded, not the requested version")
+                                              .isEqualTo("V%03d__baseline".formatted(managerReportedVersion));
     }
 
     // --- helpers ---

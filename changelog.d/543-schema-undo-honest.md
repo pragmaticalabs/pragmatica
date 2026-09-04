@@ -62,6 +62,17 @@
   (publish the missing script; restore the script or re-baseline past the drift; undo to the target
   version instead of baselining over applied history).
   [verified: aether/node/src/test/java/org/pragmatica/aether/api/routes/SchemaRouteStatusTest.java#ErrorMapping]
+- **#832 review round 4 item A: `acquireLock`'s failure typing is a type change only, not a new
+  retry-classification behavior.** The `LockAcquisitionFailed` arm in
+  `SchemaOrchestratorService.classifyFailure` is unreachable from `migrate`/`undo`/`baseline` both
+  before and after this fix — `acquireLock`'s failure short-circuits `executeMigrationFlow`'s
+  `Promise.flatMap` chain before `runMigration`/`handleMigrationFailure`/`classifyFailure` ever run.
+  `classifyFailure(LockAcquisitionFailed) == TRANSIENT` remains a pure-function unit assertion
+  predating this fix; no lock-held call is newly retried or reclassified.
+  [mechanism: `SchemaOrchestratorService.executeMigrationFlow`'s `acquireLock(...).flatMap(_ ->
+  runMigration(...))` chain; `classifyFailure` is reachable only from `handleMigrationFailure`,
+  itself reachable only from `runMigration`'s own `.mapError`]
+  [verified: aether/aether-deployment/src/test/java/org/pragmatica/aether/deployment/schema/SchemaOrchestratorServiceTest.java#classifyFailure_transient_forLockAcquisitionFailed]
 - **SHOULD-FIX 5: the leader check is itself check-then-act, now disclosed.**
   `SchemaRoutes.requireLeader` reads `node.isLeader()` once and lets the manager call proceed with
   no re-check; leadership can change between that read and the call's completion. Same

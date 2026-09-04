@@ -4387,10 +4387,30 @@ requires this node's deployment FSM to be the elected leader and `Active` (the c
 `writeRetryStatus` writes is only ever consumed by that state's handler); given that, it still
 no-ops when either guard `SchemaOrchestratorService.acquireLock` checks is already held — the local
 per-JVM fence (`inFlightMigrations`) or the cross-node consensus lock — so a retry racing an
-in-progress attempt for the same datasource returns `LOCK_HELD` rather than starting a second run.
+in-progress attempt for the same datasource returns a typed `SchemaError.LockAcquisitionFailed`
+(`409 Conflict`) rather than starting a second run.
 `migrate` itself does not re-trigger dispatch `[mechanism: SchemaRoutes.guardReactivation switches on
 the observed status before any orchestrator effect and returns SchemaAlreadyPending for PENDING
 without writing MIGRATING]`.
+
+**#832 review round 4 item A — `acquireLock`'s failure is now typed, but this is a type change only,
+not a retry-classification change.** Both of `acquireLock`'s failure sites (the in-process fence and
+the cross-node KV lock check) now return `SchemaError.LockAcquisitionFailed` instead of an untyped
+`Cause` — the same type this section's `409 Conflict` response above already reflects
+`[mechanism: SchemaOrchestratorService.acquireLock returns
+SchemaError.LockAcquisitionFailed.lockAcquisitionFailed(datasourceName) on both the fence and the KV
+lock checks, replacing a bare Cause]`. A lock-held call still fails the caller's promise
+synchronously and never enters `classifyFailure`'s retry/backoff path: `executeMigrationFlow` chains
+`acquireLock(...).flatMap(_ -> runMigration(...))`, and this codebase's `Promise.flatMap`
+short-circuits on a failed source, so `runMigration` — and therefore `handleMigrationFailure` and
+`classifyFailure` — are never invoked on an `acquireLock` failure, before or after this change
+`[mechanism: SchemaOrchestratorService.executeMigrationFlow (acquireLock/runMigration chain);
+classifyFailure is reachable only from handleMigrationFailure, itself reachable only from
+runMigration's own .mapError]`. `classifyFailure(LockAcquisitionFailed) == TRANSIENT` is pinned as a
+pure-function unit assertion only
+(`SchemaOrchestratorServiceTest.classifyFailure_transient_forLockAcquisitionFailed`, predating this
+fix) and is not reachable from any route today — no scheduled retry newly happens on a lock-held
+migrate.
 
 **Response (success):**
 ```json

@@ -11,6 +11,7 @@ import java.net.SocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -45,6 +46,9 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.NodeState;
 import org.pragmatica.consensus.topology.TopologyManager;
+import org.pragmatica.http.ContentType;
+import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -87,10 +91,11 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///      is the named `UndoTimedOut`/`BaselineTimedOut` (not a bare `CoreError.Timeout`).
 ///   2. Asserts the KV record was written `FAILED` — not left at its pre-attempt `COMPLETED` status
 ///      with no sign the attempt ever ran.
-///   3. Calls the route a SECOND time and asserts it is NOT rejected instantly with `LOCK_HELD` (a
-///      bare `Cause` that returns in near-zero time) — proving both the in-process fence and the KV
-///      migration lock were released after the first attempt's timeout, not just the KV lock's TTL
-///      eventually expiring.
+///   3. Calls the route a SECOND time and asserts it is NOT rejected instantly with the typed
+///      `SchemaError.LockAcquisitionFailed` (a near-zero-time rejection — this PR typed
+///      `acquireLock`'s failure sites; it was a bare `Cause` before) — proving both the in-process
+///      fence and the KV migration lock were released after the first attempt's timeout, not just
+///      the KV lock's TTL eventually expiring.
 ///
 /// Red-before (recorded per the review's Process section): removing ONLY the
 /// `.timeout(schemaManager.policy().migrationTimeout())` call `provisionAndRun` adds to
@@ -98,9 +103,9 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// manager's never-settling promise propagate unbounded. Both tests below then fail every assertion
 /// in step 1 (elapsed time balloons to the 2-second OUTER net, and the surfaced cause becomes a bare
 /// `CoreError.Timeout`, never the named `SchemaError`) and step 3 (the second call returns near-
-/// instantly with `LOCK_HELD`, since the first attempt's fence is still held). Restoring the
-/// original `.timeout(...)` call turns both green again. See PR #832 for the verified revert
-/// transcript.
+/// instantly with the typed `LockAcquisitionFailed`, since the first attempt's fence is still held).
+/// Restoring the original `.timeout(...)` call turns both green again. See PR #832 for the verified
+/// revert transcript.
 class SchemaRoutesUndoBaselineTimeoutTest {
     private static final String DATASOURCE = "database.orders";
     private static final String COORDS = "org.example:orders-app:1.0.0";
@@ -109,6 +114,11 @@ class SchemaRoutesUndoBaselineTimeoutTest {
     private static final TimeSpan MANAGER_TIMEOUT = timeSpan(150).millis();
     private static final TimeSpan TEST_SAFETY_NET = timeSpan(2).seconds();
     private static final long PRODUCTION_TIMEOUT_CEILING_MS = 1000L;
+    // #832 review round 4 item B: probe the real HTTP status a timed-out attempt puts on the wire,
+    // not only the cause's Java type — via the same ProblemResponses.writeProblem funnel
+    // ManagementRouter.writeError uses, following SchemaRouteStatusTest's established pattern.
+    private static final String INSTANCE = "/api/v1/schema/undo/" + DATASOURCE;
+    private static final String REQUEST_ID = "req-1";
 
     private static final DatabaseConnectorConfig STUB_CONFIG = new DatabaseConnectorConfig(Option.none(),
                                                                                             Option.some(DatabaseType.POSTGRESQL),
@@ -153,6 +163,7 @@ class SchemaRoutesUndoBaselineTimeoutTest {
         result1.onFailure(cause -> assertThat(cause).as("the surfaced cause must be the named UndoTimedOut, "
                                                          + "not a bare CoreError.Timeout")
                                                      .isInstanceOf(SchemaError.UndoTimedOut.class));
+        result1.onFailure(SchemaRoutesUndoBaselineTimeoutTest::assertWritesGatewayTimeout);
 
         assertThat(recorded().status()).as("a timed-out attempt must leave a FAILED record, not the pre-attempt "
                                             + "COMPLETED status with no sign this attempt ever ran")
@@ -163,8 +174,9 @@ class SchemaRoutesUndoBaselineTimeoutTest {
         var elapsed2Ms = elapsedMs(start2);
 
         assertThat(result2.isFailure()).isTrue();
-        assertThat(elapsed2Ms).as("a second call must NOT be refused instantly as LOCK_HELD — near-zero elapsed "
-                                  + "time here means the first attempt's fence/lock were never released")
+        assertThat(elapsed2Ms).as("a second call must NOT be refused instantly as a typed LockAcquisitionFailed — "
+                                  + "near-zero elapsed time here means the first attempt's fence/lock were never "
+                                  + "released")
                               .isGreaterThanOrEqualTo(MANAGER_TIMEOUT.millis() / 2);
         result2.onFailure(cause -> assertThat(cause).as("a released fence lets the second attempt reach the "
                                                          + "manager again and time out on its own terms, not "
@@ -185,6 +197,7 @@ class SchemaRoutesUndoBaselineTimeoutTest {
         result1.onFailure(cause -> assertThat(cause).as("the surfaced cause must be the named BaselineTimedOut, "
                                                          + "not a bare CoreError.Timeout")
                                                      .isInstanceOf(SchemaError.BaselineTimedOut.class));
+        result1.onFailure(SchemaRoutesUndoBaselineTimeoutTest::assertWritesGatewayTimeout);
 
         assertThat(recorded().status()).as("a timed-out attempt must leave a FAILED record")
                                        .isEqualTo(SchemaStatus.FAILED);
@@ -194,7 +207,7 @@ class SchemaRoutesUndoBaselineTimeoutTest {
         var elapsed2Ms = elapsedMs(start2);
 
         assertThat(result2.isFailure()).isTrue();
-        assertThat(elapsed2Ms).as("a second call must NOT be refused instantly as LOCK_HELD")
+        assertThat(elapsed2Ms).as("a second call must NOT be refused instantly as a typed LockAcquisitionFailed")
                               .isGreaterThanOrEqualTo(MANAGER_TIMEOUT.millis() / 2);
         result2.onFailure(cause -> assertThat(cause).isInstanceOf(SchemaError.BaselineTimedOut.class));
     }
@@ -203,6 +216,18 @@ class SchemaRoutesUndoBaselineTimeoutTest {
 
     private static long elapsedMs(long startNanos) {
         return (System.nanoTime() - startNanos) / 1_000_000L;
+    }
+
+    // #832 review round 4 item B: prove the 504 through the real route-level funnel, not only the
+    // cause's Java type — same idiom as SchemaRouteStatusTest's RecordingResponseWriter, feeding the
+    // cause through the exact ProblemResponses.writeProblem call ManagementRouter.writeError makes.
+    private static void assertWritesGatewayTimeout(Cause cause) {
+        var recorder = new RecordingResponseWriter();
+        ProblemResponses.writeProblem(recorder, cause, INSTANCE, REQUEST_ID);
+        assertThat(recorder.status()).as("a timed-out undo/baseline must reach the caller as 504 GATEWAY_TIMEOUT "
+                                          + "through the real ProblemResponses.writeProblem funnel, not only carry "
+                                          + "the right Java type")
+                                     .isEqualTo(HttpStatus.GATEWAY_TIMEOUT);
     }
 
     private SchemaVersionValue recorded() {
@@ -485,5 +510,25 @@ class SchemaRoutesUndoBaselineTimeoutTest {
                 return null;
             }
         };
+    }
+
+    private static final class RecordingResponseWriter implements ResponseWriter {
+        private final AtomicReference<HttpStatus> status = new AtomicReference<>();
+        private final AtomicReference<byte[]> body = new AtomicReference<>(new byte[0]);
+
+        @Override
+        public void write(HttpStatus status, byte[] body, ContentType contentType) {
+            this.status.set(status);
+            this.body.set(body);
+        }
+
+        @Override
+        public ResponseWriter header(String name, String value) {
+            return this;
+        }
+
+        HttpStatus status() {
+            return status.get();
+        }
     }
 }
