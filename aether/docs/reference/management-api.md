@@ -841,9 +841,8 @@ empty. This is the durable terminal outcome instead: `overallStatus` is `FAILED`
 (`group:artifact:version`, never a bare slice id) of every slice that failed, and `timestampMs` is
 the epoch-millis time the outcome was recorded. Before this outcome key existed, the same request
 answered `404` with no way to learn what happened
-`[design intent — unverified: the terminal-outcome-over-404 behavior is exercised only by
-unit-level tests (`BlueprintDeployStatusTest`, `BlueprintStatusAggregationTest`), not a live
-multi-node failure-injection run — #759]`.
+`[mechanism: exercised by `BlueprintDeployStatusTest` and `BlueprintStatusAggregationTest`
+against the real route handler; no live multi-node failure-injection run — #759]`.
 
 Per-slice status values: `PENDING`, `DEPLOYING`, `DEPLOYED`, `SCALING_DOWN`, `FAILED`. Overall: `DEPLOYED`, `PENDING`, `IN_PROGRESS`, `PARTIAL`, `FAILED`, `ROLLED_BACK`.
 
