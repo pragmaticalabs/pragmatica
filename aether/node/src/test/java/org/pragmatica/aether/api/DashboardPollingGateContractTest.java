@@ -6,10 +6,13 @@ package org.pragmatica.aether.api;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
+import java.util.regex.Pattern;
 
 import org.junit.jupiter.api.Test;
+
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -37,32 +40,27 @@ import static org.assertj.core.api.Assertions.assertThat;
 ///     this gate's real-world triggerability against Forge, stated here rather than hidden. The gate
 ///     therefore keys semantically on `status !== 'healthy'`, the one field both shapes share.
 class DashboardPollingGateContractTest {
-    private static String resource(String path) {
+    private static Result<String> resource(String path) {
         try (InputStream in = DashboardPollingGateContractTest.class.getResourceAsStream(path)) {
             if (in == null) {
-                throw new IllegalStateException("Dashboard resource not found on classpath: " + path);
+                return Result.failure(Causes.cause("Dashboard resource not found on classpath: " + path));
             }
-            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+            return Result.success(new String(in.readAllBytes(), StandardCharsets.UTF_8));
         } catch (IOException e) {
-            throw new UncheckedIOException(e);
+            return Result.failure(Causes.fromThrowable(e));
         }
     }
 
     private static int occurrences(String haystack, String needle) {
-        var count = 0;
-        var from = 0;
-
-        while ((from = haystack.indexOf(needle, from)) != -1) {
-            count++;
-            from += needle.length();
-        }
-
-        return count;
+        return (int) Pattern.compile(Pattern.quote(needle))
+                             .matcher(haystack)
+                             .results()
+                             .count();
     }
 
     @Test
     void restClient_probesHealthEndpoint_semanticallyNotByLiteralDegradedString() {
-        var appJs = resource("/dashboard/js/app.js");
+        var appJs = resource("/dashboard/js/app.js").unwrap();
 
         assertThat(appJs)
                 .as("app.js must add a dedicated health probe against the endpoint Forge actually serves")
@@ -73,7 +71,7 @@ class DashboardPollingGateContractTest {
 
     @Test
     void appJs_pollingTimers_skipWhenClusterDegraded() {
-        var appJs = resource("/dashboard/js/app.js");
+        var appJs = resource("/dashboard/js/app.js").unwrap();
 
         assertThat(appJs)
                 .as("the primary and secondary poll timers must both check the degraded gate")
@@ -82,14 +80,14 @@ class DashboardPollingGateContractTest {
 
     @Test
     void requestsJs_pollingTimer_skipsWhenClusterDegraded() {
-        var requestsJs = resource("/dashboard/js/stores/requests.js");
+        var requestsJs = resource("/dashboard/js/stores/requests.js").unwrap();
 
         assertThat(requestsJs).contains("Alpine.store('cluster').degraded");
     }
 
     @Test
     void clusterJs_declaresDegradedFlag_defaultingFalse() {
-        var clusterJs = resource("/dashboard/js/stores/cluster.js");
+        var clusterJs = resource("/dashboard/js/stores/cluster.js").unwrap();
 
         assertThat(clusterJs)
                 .as("a fresh dashboard load must never fabricate a degraded verdict before the first health probe returns")
@@ -102,7 +100,7 @@ class DashboardPollingGateContractTest {
     /// carve-out for one status code, not a general failure-suppression mechanism.
     @Test
     void restClientJs_suppressesRepeat404Toasts_logsInstead() {
-        var restClientJs = resource("/dashboard/js/lib/rest-client.js");
+        var restClientJs = resource("/dashboard/js/lib/rest-client.js").unwrap();
 
         assertThat(restClientJs)
                 .as("a 404 must be special-cased")

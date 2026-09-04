@@ -6,7 +6,6 @@ package org.pragmatica.aether.api;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.util.function.BiConsumer;
 
@@ -20,6 +19,9 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.AlertThresholdValue;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.json.JsonMapper;
+import org.pragmatica.lang.NullReturn;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -44,6 +46,10 @@ import static org.mockito.ArgumentMatchers.eq;
 class AlertWsEnvelopeContractTest {
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
 
+    // The `return null` below is Mockito's own `Answer` contract for a void-returning stubbed
+    // method (`KVStore.forEach`), not a null this test's code chooses to return —
+    // `managerWithThreshold` itself always returns `AlertManager.readOnly(kvStore)`.
+    @NullReturn
     @SuppressWarnings("unchecked")
     private static AlertManager managerWithThreshold(String metric, double warning, double critical) {
         var kvStore = (KVStore<AetherKey, AetherValue>) Mockito.mock(KVStore.class);
@@ -59,14 +65,14 @@ class AlertWsEnvelopeContractTest {
         return AlertManager.readOnly(kvStore);
     }
 
-    private static String resource(String path) {
+    private static Result<String> resource(String path) {
         try (InputStream in = AlertWsEnvelopeContractTest.class.getResourceAsStream(path)) {
             if (in == null) {
-                throw new IllegalStateException("Dashboard resource not found on classpath: " + path);
+                return Result.failure(Causes.cause("Dashboard resource not found on classpath: " + path));
             }
-            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+            return Result.success(new String(in.readAllBytes(), StandardCharsets.UTF_8));
         } catch (IOException e) {
-            throw new UncheckedIOException(e);
+            return Result.failure(Causes.fromThrowable(e));
         }
     }
 
@@ -111,7 +117,7 @@ class AlertWsEnvelopeContractTest {
     /// unwrapped `data.data || data` payload — the store is what needs to read `type`.
     @Test
     void appJs_dispatchesWholeEnvelopeToAlertsStore_notUnwrappedPayload() {
-        var appJs = resource("/dashboard/js/app.js");
+        var appJs = resource("/dashboard/js/app.js").unwrap();
 
         assertThat(appJs)
                 .as("app.js must pass the whole ALERT/ALERT_RESOLVED envelope to the alerts store")
@@ -130,7 +136,7 @@ class AlertWsEnvelopeContractTest {
     /// initial-load call cannot provide.
     @Test
     void appJs_startPolling_refreshesAlertsStoreOnTheRepeatingTimer_notOnlyOnce() {
-        var appJs = resource("/dashboard/js/app.js");
+        var appJs = resource("/dashboard/js/app.js").unwrap();
         var start = appJs.indexOf("startPolling() {");
         var end = appJs.indexOf("async pollStatus() {", start);
 
@@ -151,7 +157,7 @@ class AlertWsEnvelopeContractTest {
     /// alone leaves alerts un-rendered.
     @Test
     void alertsJs_readsDiscriminatorOnTheEnvelope_notOnTheUnwrappedPayload() {
-        var alertsJs = resource("/dashboard/js/stores/alerts.js");
+        var alertsJs = resource("/dashboard/js/stores/alerts.js").unwrap();
 
         assertThat(alertsJs)
                 .as("alerts.js must check the envelope-level discriminator")

@@ -6,8 +6,9 @@ package org.pragmatica.aether.api;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.UncheckedIOException;
+import java.lang.reflect.RecordComponent;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.Map;
 
 import org.junit.jupiter.api.Test;
@@ -17,6 +18,8 @@ import org.pragmatica.aether.api.ManagementApiResponses.ClusterEventView;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.json.JsonMapper;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -31,14 +34,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ClusterEventKeyContractTest {
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
 
-    private static String resource(String path) {
+    private static Result<String> resource(String path) {
         try (InputStream in = ClusterEventKeyContractTest.class.getResourceAsStream(path)) {
             if (in == null) {
-                throw new IllegalStateException("Dashboard resource not found on classpath: " + path);
+                return Result.failure(Causes.cause("Dashboard resource not found on classpath: " + path));
             }
-            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+            return Result.success(new String(in.readAllBytes(), StandardCharsets.UTF_8));
         } catch (IOException e) {
-            throw new UncheckedIOException(e);
+            return Result.failure(Causes.fromThrowable(e));
         }
     }
 
@@ -66,9 +69,9 @@ class ClusterEventKeyContractTest {
     /// fact this record's shape has held since before the `type` discriminator was added.
     @Test
     void clusterEventView_recordComponents_nameTheTimeFieldAt_notTimestamp() {
-        var componentNames = java.util.Arrays.stream(ClusterEventView.class.getRecordComponents())
-                                              .map(java.lang.reflect.RecordComponent::getName)
-                                              .toList();
+        var componentNames = Arrays.stream(ClusterEventView.class.getRecordComponents())
+                                    .map(RecordComponent::getName)
+                                    .toList();
 
         assertThat(componentNames).contains("at").doesNotContain("timestamp");
     }
@@ -78,7 +81,7 @@ class ClusterEventKeyContractTest {
     /// `ForgeEvent`) — never assume `timestamp` exists.
     @Test
     void eventsJs_computesKeyFromAtOrTimestamp_notTimestampAlone() {
-        var eventsJs = resource("/dashboard/js/stores/events.js");
+        var eventsJs = resource("/dashboard/js/stores/events.js").unwrap();
 
         assertThat(eventsJs)
                 .as("events.js must expose an eventKey/eventMillis helper reading either time field")
@@ -90,7 +93,7 @@ class ClusterEventKeyContractTest {
 
     @Test
     void indexHtml_usesEventKeyHelper_andNeverReadsEventTimestampDirectly() {
-        var indexHtml = resource("/dashboard/index.html");
+        var indexHtml = resource("/dashboard/index.html").unwrap();
 
         assertThat(indexHtml)
                 .as("the event list key must go through the store's key helper")
