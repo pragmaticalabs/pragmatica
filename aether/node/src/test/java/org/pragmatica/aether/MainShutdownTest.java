@@ -84,7 +84,9 @@ class MainShutdownTest {
                 // Give the scheduler a moment to actually mount and park the virtual thread before dumping.
                 Thread.sleep(150);
 
-                List<String> dump = Main.captureThreadDump();
+                // #838 review round 1, JBCT-EX-01: captureThreadDump() returns Result<List<String>>, not a
+                // throwing List<String> -- unwrap via Result#or rather than relying on an unchecked throw.
+                List<String> dump = Main.captureThreadDump().or(List.of());
 
                 assertTrue(dump.stream().anyMatch(line -> line.contains(markerName)),
                            "HotSpotDiagnosticMXBean#dumpThreads must include virtual threads -- "
