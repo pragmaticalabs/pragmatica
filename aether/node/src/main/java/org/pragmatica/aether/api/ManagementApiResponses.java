@@ -156,16 +156,26 @@ public sealed interface ManagementApiResponses {
     /// `aether/cli/.../DeploymentWait.java:32-40,52-67` implements exactly this poll-until-terminal
     /// loop, driven from `AetherCli.java:2261-2268,2273-2275`].
     ///
-    /// `statusUrl` always points at `GET /api/blueprints/status/{id}`, and — as of #759 Phase 2 —
+    /// `statusUrl` always points at `GET /api/v1/blueprints/status/{id}`, and — as of #759 Phase 2 —
     /// that endpoint IS durable across a rollback: under the default `ALL_OR_NOTHING` atomicity, a
     /// deterministic failure triggers `unloadBlueprintSlices`, which removes the blueprint's
     /// `AppBlueprintKey` from the KV store entirely [mechanism: `ClusterDeploymentState.java:2139-2158`],
     /// but the terminal `FAILED`/`ROLLED_BACK` `DeploymentOutcomeValue` written at the same time survives
     /// that removal and is what `statusUrl` now reads first — see `SliceRoutes.handleGetBlueprintStatus`.
     /// A `statusUrl` GET issued after rollback therefore answers `200` with `overallStatus` `FAILED` or
-    /// `ROLLED_BACK`, `cause`, and `failingSlices`, not `404`; `404 BLUEPRINT_NOT_FOUND` now means only
-    /// "never reached a terminal outcome and nothing live in the KV store either" (never attempted,
-    /// still in flight, or crash-orphaned — see `BlueprintService.outcome`). The `DeploymentFailed` event
+    /// `ROLLED_BACK`, `cause`, and `failingSlices`, `slices = []` (nothing left to report per-slice once
+    /// `AppBlueprintKey` is gone), not `404`; `404 BLUEPRINT_NOT_FOUND` now means only "never reached a
+    /// terminal outcome and nothing live in the KV store either" (never attempted, still in flight, or
+    /// crash-orphaned — see `BlueprintService.outcome`).
+    ///
+    /// #759 review round 3 BLOCKING 3: the `slices = []` degenerate shape above is specific to
+    /// `ALL_OR_NOTHING`, where the failing rollback removes `AppBlueprintKey` outright. Under
+    /// `BEST_EFFORT`, a deterministic slice failure records the same kind of terminal outcome
+    /// (`ClusterDeploymentState.recordBestEffortFailureOutcome`) WITHOUT removing `AppBlueprintKey` —
+    /// siblings keep serving. A `statusUrl` GET against a still-live blueprint with a terminal outcome
+    /// therefore answers `200` `PARTIAL`, with real `slices` per-instance counts alongside the same
+    /// `cause`/`failingSlices`/`timestampMs` — never the degenerate `slices = []` shape, and never a
+    /// bare `FAILED`/`ROLLED_BACK` that discards what is still running. The `DeploymentFailed` event
     /// on `GET /api/events` remains the timeline of when and what failed
     /// [mechanism: `ClusterEventAggregator.java:881-885` — `details.artifact` names the failed
     /// artifact; `MAX_RETAINED_EVENTS = 10_000` (`:139`) bounds retention for the whole

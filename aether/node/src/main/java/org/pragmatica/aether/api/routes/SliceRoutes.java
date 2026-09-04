@@ -382,14 +382,23 @@ public final class SliceRoutes implements RouteSource {
     }
 
     /// #759 Phase 2 — `outcome(id)` is consulted UNCONDITIONALLY, before `get(id)`. A terminal
-    /// `FAILED`/`ROLLED_BACK` outcome wins over whatever `get(id)` currently holds — including a
-    /// stale non-empty value the with-previous rollback path can leave behind (store-side defect
-    /// tracked separately for stream B, out of scope here) — because the durable outcome record is
-    /// authoritative regardless of what the live KV entry happens to contain. Only when the outcome
-    /// is `SUCCEEDED` or absent (`Option.none()` — never deployed, still in flight, or orphaned; see
-    /// `BlueprintService.outcome` for why those three are indistinguishable here) does the route fall
-    /// back to the pre-existing `get(id)`-based logic: present → 200 with live slice detail
-    /// (unchanged), empty → 404 `BLUEPRINT_NOT_FOUND`.
+    /// `FAILED`/`ROLLED_BACK` outcome is authoritative UNLESS the blueprint is still live: `get(id)`
+    /// is re-Put fresh in the same batch as any republish/restore (`BlueprintService.buildAllCommands`,
+    /// `restorePreviousBlueprint`), so a present `get(id)` is current, not stale — it is `outcome(id)`
+    /// that can be left stale-yet-permanent, since nothing later clears a terminal record for a
+    /// blueprint id that stays live and healthy (`BlueprintService.outcome`'s "Scope — one documented
+    /// exception" paragraph). #759 review round 3 BLOCKING 3: when the blueprint IS live (`get(id)`
+    /// present) and a terminal outcome also exists — the `BEST_EFFORT` case
+    /// (`ClusterDeploymentState.recordBestEffortFailureOutcome` writes the outcome without touching
+    /// `AppBlueprintKey`) and the `ALL_OR_NOTHING`-restore case alike — the route aggregates the LIVE
+    /// per-slice state and reports `PARTIAL` with the outcome's `cause`/`failingSlices`/`timestampMs`
+    /// attached, rather than discarding `slices` to `List.of()`. Only when the blueprint is NOT live
+    /// (`get(id)` absent — rolled back or deleted) does a terminal outcome answer with the degenerate
+    /// `slices = List.of()` response below. When the outcome is `SUCCEEDED` or absent
+    /// (`Option.none()` — never deployed, still in flight, or orphaned; see `BlueprintService.outcome`
+    /// for why those three are indistinguishable here) the route falls back to the pre-existing
+    /// `get(id)`-based logic: present → 200 with live slice detail (unchanged), empty → 404
+    /// `BLUEPRINT_NOT_FOUND`.
     private Promise<BlueprintStatusResponse> handleGetBlueprintStatus(String id) {
         return BlueprintId.blueprintId(id)
                           .async()
@@ -402,11 +411,24 @@ public final class SliceRoutes implements RouteSource {
                            .outcome(blueprintId)
                            .filter(SliceRoutes::isTerminalFailureOutcome)
                            .fold(() -> handleGetBlueprintStatusFromStore(blueprintId),
-                                 outcome -> Promise.success(toBlueprintStatusResponse(blueprintId, outcome)));
+                                 outcome -> resolveTerminalOutcomeStatus(blueprintId, outcome));
     }
 
     private static boolean isTerminalFailureOutcome(DeploymentOutcomeValue outcome) {
         return outcome.status() == DeploymentOutcomeStatus.FAILED || outcome.status() == DeploymentOutcomeStatus.ROLLED_BACK;
+    }
+
+    /// #759 review round 3 BLOCKING 3: a terminal outcome next to a STILL-LIVE blueprint (BEST_EFFORT
+    /// partial failure, or a restored-and-healthy blueprint with a lingering ROLLED_BACK/FAILED record)
+    /// must not discard the live per-slice detail this PR added — consult `get(blueprintId)` before
+    /// deciding which response shape applies.
+    private Promise<BlueprintStatusResponse> resolveTerminalOutcomeStatus(BlueprintId blueprintId,
+                                                                          DeploymentOutcomeValue outcome) {
+        return nodeSupplier.get()
+                           .blueprintService()
+                           .get(blueprintId)
+                           .fold(() -> Promise.success(toBlueprintStatusResponse(blueprintId, outcome)),
+                                 blueprint -> Promise.success(toLiveStatusWithOutcome(blueprint, outcome)));
     }
 
     private Promise<BlueprintStatusResponse> handleGetBlueprintStatusFromStore(BlueprintId blueprintId) {
@@ -421,6 +443,24 @@ public final class SliceRoutes implements RouteSource {
         return new BlueprintStatusResponse(blueprintId.asString(),
                                            outcome.status().name(),
                                            List.of(),
+                                           outcome.cause(),
+                                           outcome.failingSlices(),
+                                           outcome.timestampMs());
+    }
+
+    /// #759 review round 3 BLOCKING 3: the blueprint is live (siblings may still be serving) while a
+    /// terminal outcome also exists — neither side alone tells the whole story, so `overallStatus` is
+    /// hardcoded `PARTIAL` (not re-derived via `computeOverallStatus`) to signal "consult both `get()`
+    /// and `outcome()`, not just one", even on the rare fully-healthy-restore case where live
+    /// aggregation alone would otherwise read `DEPLOYED`.
+    private BlueprintStatusResponse toLiveStatusWithOutcome(ExpandedBlueprint blueprint,
+                                                            DeploymentOutcomeValue outcome) {
+        var node = nodeSupplier.get();
+        var sliceStatuses = blueprint.loadOrder().stream().map(slice -> computeSliceStatus(node, slice)).toList();
+
+        return new BlueprintStatusResponse(blueprint.id().asString(),
+                                           "PARTIAL",
+                                           sliceStatuses,
                                            outcome.cause(),
                                            outcome.failingSlices(),
                                            outcome.timestampMs());

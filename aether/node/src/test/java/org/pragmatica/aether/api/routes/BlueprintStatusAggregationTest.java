@@ -202,21 +202,60 @@ class BlueprintStatusAggregationTest {
         assertBlueprintNotFound(blueprintServiceWith(Option.none(), Option.some(outcome)));
     }
 
-    /// #759 Phase 2 — the store-side defect where the with-previous rollback path never removes or
-    /// overwrites `AppBlueprintKey` (tracked separately for stream B, out of scope here) leaves `get(id)`
-    /// answering a stale non-empty [#EXPANDED] blueprint after a restore-rollback. This is exactly the
-    /// case the design guards against: a terminal `ROLLED_BACK` outcome must win regardless of what
-    /// `get(id)` holds, stale-and-non-empty included, rather than the route falling through to render
-    /// the stale blueprint's live slice detail as if nothing had failed.
+    /// #759 review round 3 BLOCKING 3 — renamed from `...blueprintPresentStalePreFailure_...`: `get(id)`
+    /// present after a restore is NOT stale (it is re-Put fresh in the same batch as the restore, see
+    /// `BlueprintService.restorePreviousBlueprint`); it is `outcome(id)` that can linger, because
+    /// nothing later clears a terminal record for a blueprint id that stays live and healthy
+    /// (`BlueprintService.outcome`'s "Scope — one documented exception" paragraph). A restored blueprint
+    /// can therefore be fully healthy (every target instance ACTIVE) while a `ROLLED_BACK` outcome from
+    /// the ORIGINAL failed deploy still sits next to it. The route must not discard that live health —
+    /// `overallStatus` is hardcoded `PARTIAL` (never re-derived to `DEPLOYED`) precisely to signal
+    /// "consult both `get()` and `outcome()`", even on this fully-healthy edge, and `slices` carries the
+    /// real per-instance counts instead of the old degenerate `slices = []`.
     @Test
-    void statusRoute_blueprintPresentStalePreFailure_outcomeRolledBack_returns200RolledBack() {
+    void statusRoute_blueprintLiveAndHealthyWithLingeringRolledBackOutcome_reportsPartialWithLiveSliceCounts() {
         var outcome = DeploymentOutcomeValue.rolledBack(List.of(SLICE_A.asString()), "restored previous blueprint after svc-a failed", 4_000L);
-        var response = statusResponseOver(blueprintServiceWith(Option.some(EXPANDED), Option.some(outcome)));
+        var deployed = Map.of(SLICE_A, Map.of(NODE_1, SliceState.ACTIVE, NODE_2, SliceState.ACTIVE),
+                              SLICE_B, Map.of(NODE_3, SliceState.ACTIVE, NODE_4, SliceState.ACTIVE, NODE_5, SliceState.ACTIVE));
+        var response = statusResponseOverWithDeployment(blueprintServiceWith(Option.some(EXPANDED), Option.some(outcome)), deployed);
 
-        assertThat(response.overallStatus()).as("ROLLED_BACK must win over a stale non-empty get() result").isEqualTo("ROLLED_BACK");
+        assertThat(response.overallStatus()).as("a lingering terminal outcome next to a live, healthy "
+                                                 + "blueprint must still surface PARTIAL, not the "
+                                                 + "degenerate outcome-only response and not a re-derived "
+                                                 + "DEPLOYED that would hide the outcome entirely")
+                                             .isEqualTo("PARTIAL");
         assertThat(response.cause()).isEqualTo("restored previous blueprint after svc-a failed");
         assertThat(response.failingSlices()).containsExactly(SLICE_A.asString());
         assertThat(response.timestampMs()).isEqualTo(4_000L);
+        assertThat(sliceStatus(response, SLICE_A)).as("live slice detail must survive, not be discarded to slices = []")
+                                                  .isEqualTo(new BlueprintSliceStatus(SLICE_A.asString(), 2, 2, 0, "DEPLOYED"));
+        assertThat(sliceStatus(response, SLICE_B)).isEqualTo(new BlueprintSliceStatus(SLICE_B.asString(), 3, 3, 0, "DEPLOYED"));
+    }
+
+    /// #759 review round 3 BLOCKING 3 — the `BEST_EFFORT` counterpart:
+    /// `ClusterDeploymentState.recordBestEffortFailureOutcome` writes a terminal `FAILED` outcome
+    /// WITHOUT touching `AppBlueprintKey`, so siblings keep serving while the failed slice's own outcome
+    /// record persists. Before this fix the outcome-first check answered `200 FAILED` with
+    /// `slices = List.of()`, discarding the per-slice counts this PR added and hiding that most of the
+    /// blueprint is still up. The route must aggregate live state and report `PARTIAL` with real
+    /// per-slice detail instead.
+    @Test
+    void statusRoute_blueprintLiveWithTerminalFailure_bestEffort_reportsPartialWithSliceCounts() {
+        var outcome = DeploymentOutcomeValue.failed(List.of(SLICE_A.asString()), "svc-a never reached ACTIVE", 5_000L);
+        var deployed = Map.of(SLICE_A, Map.of(NODE_1, SliceState.ACTIVE, NODE_2, SliceState.FAILED),
+                              SLICE_B, Map.of(NODE_3, SliceState.ACTIVE, NODE_4, SliceState.ACTIVE, NODE_5, SliceState.ACTIVE));
+        var response = statusResponseOverWithDeployment(blueprintServiceWith(Option.some(EXPANDED), Option.some(outcome)), deployed);
+
+        assertThat(response.overallStatus()).as("BEST_EFFORT: the blueprint stays live while one slice's "
+                                                 + "terminal outcome persists — PARTIAL, not a bare FAILED "
+                                                 + "that discards the sibling still serving")
+                                             .isEqualTo("PARTIAL");
+        assertThat(response.cause()).isEqualTo("svc-a never reached ACTIVE");
+        assertThat(response.failingSlices()).containsExactly(SLICE_A.asString());
+        assertThat(response.timestampMs()).isEqualTo(5_000L);
+        assertThat(sliceStatus(response, SLICE_A)).as("real per-slice counts, not the old slices = []")
+                                                  .isEqualTo(new BlueprintSliceStatus(SLICE_A.asString(), 2, 1, 1, "FAILED"));
+        assertThat(sliceStatus(response, SLICE_B)).isEqualTo(new BlueprintSliceStatus(SLICE_B.asString(), 3, 3, 0, "DEPLOYED"));
     }
 
     /// #759 review — GO signal for stream B2 (#818, `5cefcc2fd`, merged onto rc4 at `77bbeaf80`): before
@@ -298,6 +337,20 @@ class BlueprintStatusAggregationTest {
     private static BlueprintStatusResponse statusResponseOver(BlueprintService blueprintService) {
         var holder = new AtomicReference<BlueprintStatusResponse>();
         statusRouteOver(blueprintService, deploymentMapOver(Map.of())).handler()
+                             .handle(new StatusRequestContext(List.of(BLUEPRINT_ID.asString())))
+                             .await()
+                             .onSuccess(value -> holder.set((BlueprintStatusResponse) value))
+                             .onFailure(cause -> fail("Status lookup must succeed, got: " + cause.message()));
+        return holder.get();
+    }
+
+    /// #759 review round 3 BLOCKING 3 — unlike [#statusResponseOver] (empty map, correct for tests where
+    /// the terminal-outcome branch never reads `deploymentMap()`), a LIVE blueprint next to a terminal
+    /// outcome now aggregates real per-slice state, so those fixtures need a populated map.
+    private static BlueprintStatusResponse statusResponseOverWithDeployment(BlueprintService blueprintService,
+                                                                             Map<Artifact, Map<NodeId, SliceState>> deployed) {
+        var holder = new AtomicReference<BlueprintStatusResponse>();
+        statusRouteOver(blueprintService, deploymentMapOver(deployed)).handler()
                              .handle(new StatusRequestContext(List.of(BLUEPRINT_ID.asString())))
                              .await()
                              .onSuccess(value -> holder.set((BlueprintStatusResponse) value))
