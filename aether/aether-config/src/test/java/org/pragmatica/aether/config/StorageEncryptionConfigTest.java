@@ -120,7 +120,11 @@ class StorageEncryptionConfigTest {
         StorageEncryptionConfigValidator.validate(config)
                                          .onSuccessRun(Assertions::fail)
                                          .onFailure(cause -> assertThat(cause.message()).contains("storage.encryption.keys.k1")
-                                                                                        .contains("${secrets:<path>}"));
+                                                                                        .contains("${secrets:<path>}")
+                                                                                        .as("#253 SHOULD-FIX #6: the raw "
+                                                                                           + "inline value must never leak "
+                                                                                           + "into the surfaced error message")
+                                                                                        .doesNotContain("plain-text-not-a-reference"));
     }
 
     @Test

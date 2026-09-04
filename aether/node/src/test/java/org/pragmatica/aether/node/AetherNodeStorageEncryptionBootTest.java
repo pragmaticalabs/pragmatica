@@ -99,6 +99,11 @@ class AetherNodeStorageEncryptionBootTest {
 
         AetherNode.aetherNode(minimalConfig(environmentWith(Option.some(provider)), malformed))
                    .onSuccess(_ -> fail("boot must refuse: the configured key is not a '${secrets:<path>}' reference"))
-                   .onFailure(cause -> assertThat(cause).isInstanceOf(StorageEncryption.MalformedSecretRef.class));
+                   .onFailure(cause -> {
+                       assertThat(cause).isInstanceOf(StorageEncryption.MalformedSecretRef.class);
+                       assertThat(cause.message()).as("#253 SHOULD-FIX #6: the raw malformed config value must never "
+                                                      + "leak into the surfaced error message")
+                                                  .doesNotContain("not-a-secrets-ref");
+                   });
     }
 }
