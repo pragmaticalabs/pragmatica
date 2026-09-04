@@ -363,6 +363,36 @@ class ClusterDeploymentStateWorkerRemovalTest {
             assertThat(kvStore.get(routesKey)).isEqualTo(Option.empty());
             assertThat(kvStore.get(sliceKey)).isEqualTo(Option.empty());
         }
+
+        @Test
+        void leaderActivation_restoredWorkerAbsentFromAnnouncementButPresentInLocalSwimView_isKept() {
+            var freshWorker = new NodeId("node-worker-fresh");
+            var directiveKey = ActivationDirectiveKey.activationDirectiveKey(freshWorker);
+
+            kvStore.put(directiveKey, ActivationDirectiveValue.worker(COMMUNITY_ID, ""));
+            // Committed announcement does not include freshWorker yet — the #731 round-3 lag: the
+            // directive just committed, but the governor's next `tickReannounce` (default 30s) has
+            // not fired, so no non-dissolved GovernorAnnouncementValue mentions this worker at all.
+            announceCommunityMembership(List.of(SELF));
+            // This leader's own local SWIM alive view already has it: GovernorAnnouncer's in-memory
+            // `lastAliveMembers` updates on every SWIM edge, well before the periodic KV write catches
+            // up — `ctx.localAliveMembersSupplier()` stands in for that local, edge-fresh signal.
+            activeState().ctx().setLocalAliveMembersSupplier(() -> Set.of(SELF, freshWorker));
+
+            activeState().rebuildStateFromKVStore();
+
+            assertThat(activeState().workerNodes())
+                    .as("#731 round 3: a worker absent from every committed announcement must still be kept "
+                        + "when this leader's own local SWIM view already sees it live")
+                    .contains(freshWorker);
+            assertThat(kvStore.get(directiveKey))
+                    .as("kept worker's ActivationDirectiveKey survives")
+                    .isNotEqualTo(Option.empty());
+            // The symmetric "absent from BOTH signals -> removed" case needs no separate test: every
+            // other sweep test above never wires localAliveMembersSupplier, so it keeps the
+            // ClusterDeploymentContext default (Set::of, empty) — leaderActivation_restoredWorkerAbsent
+            // FromCommunityMembership_isRemoved already exercises removal under that default.
+        }
     }
 
     /// Net-new regression: no existing test exercises `handleNodeRemoval` at this FSM layer for a

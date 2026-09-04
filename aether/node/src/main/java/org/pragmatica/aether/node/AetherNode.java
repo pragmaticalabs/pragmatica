@@ -3087,6 +3087,12 @@ public interface AetherNode extends ManageableNode {
         clusterDeploymentManager.setCommunityLiveness(node -> metricsCollector.sinceLastPongNanos(node)
                                                                               .map(since -> since >= communityAbsenceNanos)
                                                                               .or(false));
+        // #731 round 3: the leader's own local SWIM-derived alive view — `dhtRoutableMembers()`
+        // includes a node the instant SWIM observes it (OBSERVED/MEMBER/SUSPECT) and drops it only
+        // once SWIM confirms departure/death, unlike the committed GovernorAnnouncementValue roster
+        // which lags by up to one reannounce interval. `membershipFsm` is already fully constructed
+        // by this point in node startup, so no deferred-holder indirection is needed here.
+        clusterDeploymentManager.setLocalAliveMembersSupplier(membershipFsm::dhtRoutableMembers);
         // QUIC reconnect feeds NTT's soft up-bias (unchanged) AND the FSM's peer-connected tap.
         Consumer<NodeId> nttConnectTap = ((Consumer<NodeId>) presenceSampler::onQuicReconnect).andThen(membershipFsm::onPeerConnected);
         // QUIC disconnect feeds BOTH NTT's soft down-bias (unchanged) AND the liveness half of the
@@ -5528,6 +5534,10 @@ public interface AetherNode extends ManageableNode {
         // No onRemove — the high-water is monotonic by definition, so ownership/governor removes are intentionally ignored.
         kvRouterBuilder.onPut(AetherKey.GovernorAnnouncementKey.class,
                               ownershipEpochHighWater::onGovernorAnnouncementPut);
+        // #731 round 3: re-run the dead-worker sweep on every committed reannouncement, not only on
+        // the one-shot 2s deferredTopologyRecheck timer (ClusterDeploymentState onEntry).
+        kvRouterBuilder.onPut(AetherKey.GovernorAnnouncementKey.class,
+                              clusterDeploymentManager::onGovernorAnnouncementPut);
         kvRouterBuilder.onPut(AetherKey.DhtPartitionOwnershipKey.class, ownershipEpochHighWater::onDhtOwnershipPut);
         kvRouterBuilder.onPut(AetherKey.StreamPartitionOwnershipKey.class,
                               ownershipEpochHighWater::onStreamPartitionOwnershipPut);

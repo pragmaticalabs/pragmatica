@@ -65,6 +65,14 @@ public final class ClusterDeploymentContext {
     /// the deployment context, and every existing call site (production and test) keeps the
     /// pre-#590 behaviour until `AetherNode` supplies the real view.
     private volatile CommunityLivenessView communityLiveness = CommunityLivenessView.unwired();
+    /// #731 round 3: the leader's own local SWIM-derived alive view, read by `sweepDeadRestoredWorkers`
+    /// as a second, lower-latency signal alongside the committed `GovernorAnnouncementValue` roster —
+    /// a fresh worker is present here the instant SWIM observes it, closing the up-to-one-reannounce-
+    /// interval gap during which a live worker can be absent from every committed announcement.
+    /// Late-wired (same idiom as `communityLiveness`); defaults to an empty set so pre-#731-round-3
+    /// call sites and tests keep the old committed-announcement-only sweep behaviour until
+    /// `AetherNode` supplies the real `MembershipFsm`-backed view.
+    private volatile Supplier<Set<NodeId>> localAliveMembersSupplier = Set::of;
     private final ClusterDeploymentState dormant;
     private final ClusterDeploymentState stopped;
 
@@ -312,6 +320,19 @@ public final class ClusterDeploymentContext {
     @Contract
     public void setCommunityLiveness(CommunityLivenessView view) {
         communityLiveness = view;
+    }
+
+    /// The leader's local SWIM-derived alive-member view (#731 round 3). Defaults to an empty set
+    /// (`Set::of`) until wired, matching the pre-round-3 sweep behaviour.
+    public Supplier<Set<NodeId>> localAliveMembersSupplier() {
+        return localAliveMembersSupplier;
+    }
+
+    /// Inject the local alive-member supplier. The pre-wiring default is `Set::of`; pass that
+    /// explicitly to restore it rather than clearing.
+    @Contract
+    public void setLocalAliveMembersSupplier(Supplier<Set<NodeId>> supplier) {
+        localAliveMembersSupplier = supplier;
     }
 
     public Set<NodeId> seedNodes() {

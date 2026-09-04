@@ -31,7 +31,9 @@
   merely pong-silent past the absence window — SWIM membership has neither failure mode. If no
   community has announced yet when `rebuildStateFromKVStore()` runs (a genuinely cold leader), the
   sweep no-ops rather than guess; `Active.onEntry()`'s pre-existing 2s-deferred
-  `deferredTopologyRecheck()` retries it once membership has had time to converge. The `SliceNodeKey`
+  `deferredTopologyRecheck()` retries it, and — round 3 below — every committed reannouncement
+  retries it again immediately, bounding eventual removal by SWIM detection time plus at most one
+  reannounce interval (frozen, not resolved, under a partition — the safe direction). The `SliceNodeKey`
   rows are a correction, not an addition: they were previously reachable, if late, through the
   pre-existing `StaleEntryCleaner` sweeps (which run against core-only `activeNodes()` and so treat
   any worker's rows as stale regardless of liveness — tracked separately as #850); `handleNodeRemoval`
@@ -46,12 +48,39 @@
   `#leaderActivation_restoredWorkerAbsentFromCommunityMembership_isRemoved`,
   `#leaderActivation_restoredWorkerPresentInCommunityMembershipDespiteAbsentLiveness_isKept`,
   `#leaderActivation_coldLeaderNoAnnouncementYet_removesOnlyOnceMembershipConvergesAtDeferredRecheck`,
+  `#leaderActivation_restoredWorkerAbsentFromAnnouncementButPresentInLocalSwimView_isKept` (round 3),
   `#coreNodeRemoved_membershipDecision_clearsSliceStateAndKvFootprint` (core-arm regression, confirmed
   unaffected); `MembershipDeltaProjectorTest$WorkerScoping#workerRemoval_emitsOnWorkerLeaveChannelOnly_coreArmUntouched`,
   `#workerRemoval_duplicateEdge_emitsLeaveOnce`,
   `#workerRejoinAfterRemoval_emitsAgain_becauseTheWorkerBaselineIsPruned` — driven in-process through
   the real projector/FSM harness (`FsmTestHarness`), not a live multi-node run; each test mutation-probed
   by reverting only its corresponding production hunk and confirming it fails]
+
+- **Round 3 (2026-09-04 review re-check): the committed announcement alone still had a lag a fresh
+  worker could fall into.** A worker enters `workerNodes` the instant its `ActivationDirectiveKey`
+  commits, but only enters a `GovernorAnnouncementValue.members()` roster at the governor's next
+  `tickReannounce` — `GovernorAnnouncerRecord.onSelfElected` returns early (no fresh write) when the
+  node is already governor, and a SWIM edge in between only updates the governor's in-memory
+  `lastAliveMembers`, never the committed value — so for up to one reannounce interval (default 30s)
+  a live, freshly-committed worker was in no announcement at all, and either the immediate sweep or
+  the 2s deferred recheck landing inside that window would have swept it as dead. `GovernorAnnouncer`
+  instances never run on a CORE leader's own process (mutually exclusive roles — an announcer exists
+  only on a node that itself received a WORKER directive), so `sweepDeadRestoredWorkers` cannot read
+  `lastAliveMembers` directly; it now takes a second, in-process-local signal instead:
+  `ctx.localAliveMembersSupplier()`, wired in `AetherNode` to `MembershipFsm.dhtRoutableMembers()`
+  (OBSERVED+MEMBER+SUSPECT — the same authoritative, SWIM-fed, role-blind membership view already
+  used elsewhere in this FSM, just not previously threaded into this sweep). A worker is removed only
+  when it is absent from BOTH the committed announcement AND this local view; a fresh live worker is
+  present locally within SWIM detection time even before its first reannouncement, and a genuinely
+  dead worker is absent from both within that same detection time. The sweep also now re-runs on
+  every committed `GovernorAnnouncementKey` Put (new `ClusterDeploymentManager.onGovernorAnnouncementPut`
+  / `GovernorAnnouncementPutReceived`), not only from the pre-existing one-shot 2s
+  `deferredTopologyRecheck` timer, which stays in place unchanged for its other unconditional cleanup
+  and `reconcile()` calls.
+  [mechanism: `ClusterDeploymentState.sweepDeadRestoredWorkers` (dual-signal filter),
+  `MembershipFsm.dhtRoutableMembers`, `GovernorAnnouncerRecord.onSelfElected`/`tickReannounce`
+  (`aether/node/src/main/java/org/pragmatica/aether/worker/governor/GovernorAnnouncer.java:138-244`)]
+  [verified: `ClusterDeploymentStateWorkerRemovalTest#leaderActivation_restoredWorkerAbsentFromAnnouncementButPresentInLocalSwimView_isKept`]
 
 - **This fix shares its liveness source with, but remains a distinct mechanism from, the
   operator-visible `/api/workers` roster.** `WorkerRoutes` (`GET /api/workers`) and the dead-worker

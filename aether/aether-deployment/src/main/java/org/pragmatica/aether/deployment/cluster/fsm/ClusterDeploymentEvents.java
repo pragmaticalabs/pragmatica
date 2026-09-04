@@ -6,12 +6,14 @@ package org.pragmatica.aether.deployment.cluster.fsm;
 
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.VersionRoutingKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
@@ -66,4 +68,10 @@ public interface ClusterDeploymentEvents extends ClusterFsmEvent {
     record NodeArtifactRemoveReceived(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) implements ClusterDeploymentEvents {}
 
     record SchemaVersionPutReceived(ValuePut<SchemaVersionKey, SchemaVersionValue> valuePut) implements ClusterDeploymentEvents {}
+
+    /// #731 round 3: a committed reannouncement is exactly the signal `sweepDeadRestoredWorkers`
+    /// reads (`observedCommunityMembers`), so reacting to it directly closes the gap between a
+    /// governor's `tickReannounce` write landing and the next scheduled recheck — instead of
+    /// waiting on the one-shot `deferredTopologyRecheck` timer alone.
+    record GovernorAnnouncementPutReceived(ValuePut<GovernorAnnouncementKey, GovernorAnnouncementValue> valuePut) implements ClusterDeploymentEvents {}
 }

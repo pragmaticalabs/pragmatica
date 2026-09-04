@@ -23,6 +23,7 @@ import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Deac
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.NodeArtifactPutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.NodeArtifactRemoveReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.SchemaVersionPutReceived;
+import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.GovernorAnnouncementPutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.SliceTargetPutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.SliceTargetRemoveReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.MembershipDecisionReceived;
@@ -39,6 +40,7 @@ import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
@@ -46,6 +48,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.VersionRoutingKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
@@ -88,6 +91,13 @@ public interface ClusterDeploymentManager {
     /// collector exists; unwired deployments keep the pre-#590 behaviour.
     @Contract
     void setCommunityLiveness(CommunityLivenessView view);
+
+    /// #731 round 3 — inject the leader's local SWIM-derived alive-member view, read by
+    /// `sweepDeadRestoredWorkers` alongside the committed announcement roster. Narrow on purpose,
+    /// same rationale as `setCommunityLiveness`. Wired in `AetherNode` from the node's `MembershipFsm`;
+    /// unwired deployments keep the pre-round-3 behaviour (empty set, no effect on the sweep).
+    @Contract
+    void setLocalAliveMembersSupplier(Supplier<Set<NodeId>> supplier);
 
     @Contract
     @MessageReceiver
@@ -152,6 +162,13 @@ public interface ClusterDeploymentManager {
     @Contract
     @MessageReceiver
     void onSchemaVersionPut(ValuePut<SchemaVersionKey, SchemaVersionValue> valuePut);
+
+    /// #731 round 3: re-runs the dead-worker sweep as soon as a governor's reannouncement commits,
+    /// instead of relying solely on the one-shot `deferredTopologyRecheck` timer to catch a worker
+    /// that was absent from every roster only transiently.
+    @Contract
+    @MessageReceiver
+    void onGovernorAnnouncementPut(ValuePut<GovernorAnnouncementKey, GovernorAnnouncementValue> valuePut);
 
     record ReconciliationAdjustment(Artifact artifact, int currentInstances, int desiredInstances) implements Message.Local {
         public static ReconciliationAdjustment reconciliationAdjustment(Artifact artifact,
@@ -466,6 +483,12 @@ public interface ClusterDeploymentManager {
         }
 
         @Override
+        @Contract
+        public void setLocalAliveMembersSupplier(Supplier<Set<NodeId>> supplier) {
+            ctx.setLocalAliveMembersSupplier(supplier);
+        }
+
+        @Override
         public Promise<Unit> activate() {
             log.info("Activating cluster deployment manager on node {}", ctx.self());
             ctx.dispatch(new Activate());
@@ -550,6 +573,12 @@ public interface ClusterDeploymentManager {
         @Override
         public void onSchemaVersionPut(ValuePut<SchemaVersionKey, SchemaVersionValue> valuePut) {
             ctx.dispatch(new SchemaVersionPutReceived(valuePut));
+        }
+
+        @Contract
+        @Override
+        public void onGovernorAnnouncementPut(ValuePut<GovernorAnnouncementKey, GovernorAnnouncementValue> valuePut) {
+            ctx.dispatch(new GovernorAnnouncementPutReceived(valuePut));
         }
 
         @Contract

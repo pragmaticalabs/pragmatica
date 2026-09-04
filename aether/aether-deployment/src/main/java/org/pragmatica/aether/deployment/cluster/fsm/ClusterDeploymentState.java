@@ -33,6 +33,7 @@ import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Acti
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.AppBlueprintPutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.AppBlueprintRemoveReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Deactivate;
+import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.GovernorAnnouncementPutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.NodeArtifactPutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.NodeArtifactRemoveReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.SchemaVersionPutReceived;
@@ -313,6 +314,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                                                                                                          tx);
                 case SchemaVersionPutReceived(ValuePut<SchemaVersionKey, SchemaVersionValue> valuePut) -> handleSchemaVersionPut(valuePut,
                                                                                                                                  tx);
+                case GovernorAnnouncementPutReceived(ValuePut<GovernorAnnouncementKey, GovernorAnnouncementValue> valuePut) -> handleGovernorAnnouncementPut(valuePut,
+                                                                                                                                                             tx);
                 default -> tx.ignore();
             }
         }
@@ -514,6 +517,22 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             }
         }
 
+        private void handleGovernorAnnouncementPut(ValuePut<GovernorAnnouncementKey, GovernorAnnouncementValue> valuePut,
+                                                   TransitionRequest<ClusterDeploymentState, ClusterFsmEvent> tx) {
+            tx.handle(() -> processGovernorAnnouncementPut(valuePut));
+        }
+
+        /// #731 round 3: a committed reannouncement carries exactly the roster
+        /// `sweepDeadRestoredWorkers` reads, so re-running the sweep here closes the gap between a
+        /// governor's `tickReannounce` write landing and the next scheduled `deferredTopologyRecheck`
+        /// — which otherwise fires once, 2 seconds after `onEntry`, well short of the default 30s
+        /// reannounce interval.
+        private void processGovernorAnnouncementPut(ValuePut<GovernorAnnouncementKey, GovernorAnnouncementValue> valuePut) {
+            log.debug("Governor announcement committed for community {}, re-running dead-worker sweep",
+                      valuePut.cause().key().communityId());
+            sweepDeadRestoredWorkers();
+        }
+
         @Contract
         public void startReconcileTimer() {
             reconcileTimer.set(SharedScheduler.scheduleAtFixedRate(this::reconcileIfActive, ctx.reconcileInterval()));
@@ -705,22 +724,39 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// roster is removed here with the same batch a live departure gets, instead of being placed
         /// on again this term.
         ///
-        /// The source is `GovernorAnnouncementValue.members()` — the community roster each governor
-        /// recomputes from SWIM and commits through consensus, the same record `WorkerRoutes` projects
-        /// for `/api/workers` — never `ctx.communityLiveness()`. Pong-history absence and membership
-        /// absence are different signals: `communityLiveness().isAbsent` reads `false` ("not absent")
-        /// for a peer this process has never received a pong from at all, which is exactly the
-        /// cold-leader, never-locally-observed case this sweep exists to catch, so gating on it
-        /// silently no-ops on the scenario it targets (round-2 review finding). It also runs the
+        /// The primary source is `GovernorAnnouncementValue.members()` — the community roster each
+        /// governor recomputes from SWIM and commits through consensus, the same record `WorkerRoutes`
+        /// projects for `/api/workers` — never `ctx.communityLiveness()`. Pong-history absence and
+        /// membership absence are different signals: `communityLiveness().isAbsent` reads `false`
+        /// ("not absent") for a peer this process has never received a pong from at all, which is
+        /// exactly the cold-leader, never-locally-observed case this sweep exists to catch, so gating
+        /// on it silently no-ops on the scenario it targets (round-2 review finding). It also runs the
         /// other way: a live worker merely pong-silent past the absence window at activation would be
         /// wrongly removed with nothing to re-register it. Membership presence has neither failure
         /// mode: absent-with-no-pong-history is still removed, present-with-no-pong-history is kept.
         ///
+        /// #731 round 3: the committed announcement alone still has a lag. A worker enters
+        /// `workerNodes` the moment its `ActivationDirectiveKey` commits, but only enters a
+        /// `GovernorAnnouncementValue.members()` roster at the governor's NEXT `tickReannounce`
+        /// (`GovernorAnnouncer.onSelfElected` returns early when already governor; a SWIM edge only
+        /// updates the governor's in-memory `lastAliveMembers`, never the committed value) — up to one
+        /// reannounce interval (default 30s) after the directive commits, a live fresh worker is in no
+        /// announcement at all. A worker is removed only when it is absent from BOTH signals: the
+        /// committed announcement AND `ctx.localAliveMembersSupplier()` — this leader's own local SWIM
+        /// alive view (`MembershipFsm.dhtRoutableMembers()`, OBSERVED+MEMBER+SUSPECT). A fresh live
+        /// worker is present in the local view within SWIM detection time even before its first
+        /// reannouncement; a genuinely dead worker is absent from both within that same detection
+        /// time. Latency bound on removal: SWIM detection time + up to one reannounce interval. Under
+        /// a partition the announcement stays frozen (never resolves) rather than converging on a
+        /// wrong answer — removing nothing is the safe direction, matching the empty-announcement
+        /// early return below.
+        ///
         /// No non-dissolved announcement anywhere in the KVStore reads as "not observed yet" rather
         /// than "everyone is gone" — removing nothing is the safe direction on a leader that has not
-        /// yet seen a single governor election. `deferredTopologyRecheck`, scheduled 2s into
-        /// `Active.onEntry()`, calls this again, so a sweep that no-ops here because governor state
-        /// had not yet converged still runs once it has.
+        /// yet seen a single governor election. This sweep re-runs on every committed
+        /// `GovernorAnnouncementKey` Put (`handleGovernorAnnouncementPut`) and once more from the
+        /// one-shot `deferredTopologyRecheck`, scheduled 2s into `Active.onEntry()`, so a sweep that
+        /// no-ops here because governor state had not yet converged still runs once it has.
         private void sweepDeadRestoredWorkers() {
             var observedMembers = observedCommunityMembers();
 
@@ -728,13 +764,16 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 return;
             }
 
-            var deadWorkers = workerNodes.stream().filter(node -> !observedMembers.contains(node)).toList();
+            var localAliveMembers = ctx.localAliveMembersSupplier().get();
+            var deadWorkers = workerNodes.stream()
+                                         .filter(node -> !observedMembers.contains(node) && !localAliveMembers.contains(node))
+                                         .toList();
 
             if (deadWorkers.isEmpty()) {
                 return;
             }
 
-            log.info("Sweeping {} worker(s) restored from KVStore but absent from every announced community roster: {}",
+            log.info("Sweeping {} worker(s) restored from KVStore but absent from every announced community roster and this node's local SWIM view: {}",
                      deadWorkers.size(),
                      deadWorkers);
             deadWorkers.forEach(node -> handleNodeRemoval(node).onFailure(cause -> log.error("Failed to sweep dead restored worker {}: {}",
