@@ -7,6 +7,8 @@ package org.pragmatica.aether;
 import java.net.InetAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.lang.management.ManagementFactory;
+import java.lang.management.ThreadInfo;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -51,6 +53,7 @@ import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.net.tcp.security.CertificateProvider;
 import org.pragmatica.net.tcp.security.SelfSignedCertificateProvider;
@@ -500,14 +503,73 @@ public record Main(String[] args) {
                  cfg.node().heap());
     }
 
+    /// #749: a shutdown hook with no bound at all parks forever if `node.stop()` never settles. 30s is
+    /// generous relative to `EmberCluster`'s 10s-per-node test bound (this covers ONE node, not N in
+    /// parallel) while still failing the container's stop/restart grace period loudly instead of silently.
+    private static final TimeSpan SHUTDOWN_TIMEOUT = TimeSpan.timeSpan(30).seconds();
+
     private void registerShutdownHook(AetherNode node) {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> shutdownNode(node)));
     }
 
+    /// Exit code 2 = shutdown did not complete within [#SHUTDOWN_TIMEOUT]; documented at
+    /// `aether/docs/reference/node-operations.md#exit-codes`. Which call inside `node.stop()` actually
+    /// blocked is UNKNOWN (#749 acceptance item 1) -- the thread dump below is what will eventually answer
+    /// that from a real occurrence, not a diagnosis made here.
     private void shutdownNode(AetherNode node) {
         log.info("Shutdown requested, stopping node...");
-        node.stop().await();
+        var stopping = node.stop();
+        var result = stopping.await(SHUTDOWN_TIMEOUT);
+
+        if (!stopping.isResolved()) {
+            log.error("Node did not stop within {}; forcing exit with code 2 (shutdown timeout -- see "
+                     + "aether/docs/reference/node-operations.md#exit-codes). Thread dump follows.",
+                      SHUTDOWN_TIMEOUT);
+            dumpThreads();
+            System.exit(2);
+
+            return;
+        }
+
+        result.onFailure(cause -> log.error("Node stop() completed with failure: {}", cause.message()));
         log.info("Node stopped");
+    }
+
+    /// Best-effort diagnostic: never let a failure to dump threads mask the timeout it was meant to explain.
+    private void dumpThreads() {
+        try {
+            var infos = ManagementFactory.getThreadMXBean().dumpAllThreads(true, true);
+
+            for (var info : infos) {
+                log.error("{}", renderThread(info));
+            }
+        } catch (Throwable dumpFailure) {
+            log.error("Failed to capture shutdown-timeout thread dump: {}", dumpFailure.toString());
+        }
+    }
+
+    private static String renderThread(ThreadInfo info) {
+        var sb = new StringBuilder(512);
+
+        sb.append('"')
+          .append(info.getThreadName())
+          .append("\" #")
+          .append(info.getThreadId())
+          .append(' ')
+          .append(info.getThreadState());
+        if (info.getLockName() != null) {
+            sb.append(" on ").append(info.getLockName());
+        }
+
+        if (info.getLockOwnerName() != null) {
+            sb.append(" owned by \"").append(info.getLockOwnerName()).append('"');
+        }
+
+        for (var frame : info.getStackTrace()) {
+            sb.append("\n\tat ").append(frame);
+        }
+
+        return sb.toString();
     }
 
     private void startNodeAndWait(AetherNode node, NodeId nodeId) {
