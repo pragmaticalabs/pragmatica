@@ -173,15 +173,25 @@ document.addEventListener('alpine:init', function() {
                 // WS provides incremental metrics but REST has the complete picture
                 this.pollTimer = setInterval(function() {
                     var cluster = Alpine.store('cluster');
-                    // #294 (three states): while the server is UNREACHABLE (network error on both
-                    // health paths, not merely reachable-and-unhealthy), every timer — including the
-                    // health probe itself — backs off to a shared slow 10s retry instead of hammering
-                    // a dead backend at full 2s/3s cadence. `unknownRetryDue()` is a no-op false when
+                    // #294/#846 (three states, throttle split after review): while the server is
+                    // UNREACHABLE, the health re-probe backs off to its OWN fixed ~10s cadence via
+                    // `healthProbeRetryDue()` — dedicated to this call alone, never shared with the
+                    // data-poll timers below. It used to share `unknownRetryDue()` with them, and
+                    // being a read-and-consume throttle, whichever timer's tick called it first in a
+                    // window won the slot; when that wasn't this one, checkHealth() silently skipped
+                    // a whole cycle and recovery detection slipped past 10s by an amount that
+                    // depended on interval drift. `healthProbeRetryDue()` is a no-op true when
                     // healthUnknown is already false, so the known-reachable case (healthy OR
-                    // degraded) is unaffected and still probes every tick to catch recovery fast.
-                    if (cluster.healthUnknown && !cluster.unknownRetryDue()) return;
-                    self.checkHealth();
+                    // degraded) is unaffected and still probes every tick to catch a fresh outage
+                    // fast.
+                    if (!cluster.healthUnknown || cluster.healthProbeRetryDue()) {
+                        self.checkHealth();
+                    }
                     if (cluster.degraded) return;
+                    // Data polls (below) still share `unknownRetryDue()` with the secondary timer
+                    // and requests.js's timer — one shared slow retry cadence for data staleness,
+                    // decoupled from the health re-probe above.
+                    if (cluster.healthUnknown && !cluster.unknownRetryDue()) return;
                     self.pollStatus();
                     Alpine.store('events').refresh();
                     Alpine.store('alerts').refresh();

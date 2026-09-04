@@ -21,14 +21,36 @@ document.addEventListener('alpine:init', function() {
         // RestClient suppresses the resulting network-error toasts (see rest-client.js).
         healthUnknown: false,
         _lastUnknownRetryAt: 0,
+        _lastHealthProbeRetryAt: 0,
 
-        // Shared throttle so every poll timer (app.js's two, requests.js's own) agrees on when the
-        // next attempt during an unknown-health outage is due, rather than each independently
-        // retrying at its own cadence and recreating the storm this state exists to avoid.
+        // Shared throttle for the DATA-poll timers only (app.js's secondary timer and its primary
+        // timer's post-checkHealth batch, requests.js's own) so they agree on one slow retry cadence
+        // during an unknown-health outage instead of each independently hammering a dead backend.
+        // Deliberately NOT used to gate the health re-probe itself (see healthProbeRetryDue below):
+        // this is a read-and-consume throttle, so whichever timer's tick calls it first in a window
+        // wins the slot and the others skip that tick — fine for data staleness, but when the
+        // primary timer's checkHealth() call shared this same slot (#846 review), a different
+        // timer winning the slot first could make checkHealth() skip an entire cycle, pushing
+        // recovery detection past the intended 10s bound by an amount that depended on interval
+        // drift between the timers.
         unknownRetryDue() {
             var now = Date.now();
             if (!this._lastUnknownRetryAt || now - this._lastUnknownRetryAt >= 10000) {
                 this._lastUnknownRetryAt = now;
+                return true;
+            }
+            return false;
+        },
+
+        // Dedicated to the health re-probe (app.js's primary timer's checkHealth() call) alone.
+        // No other timer reads or consumes this throttle, so the re-probe fires on a fixed ~10s
+        // cadence regardless of what the data-poll timers above are doing in the same window —
+        // giving recovery detection a fixed bound instead of one that depends on which timer's
+        // tick happens to consume unknownRetryDue()'s shared slot first.
+        healthProbeRetryDue() {
+            var now = Date.now();
+            if (!this._lastHealthProbeRetryAt || now - this._lastHealthProbeRetryAt >= 10000) {
+                this._lastHealthProbeRetryAt = now;
                 return true;
             }
             return false;
