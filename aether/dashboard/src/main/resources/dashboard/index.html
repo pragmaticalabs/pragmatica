@@ -312,9 +312,9 @@
                     <div class="panel">
                         <h2>LIVE EVENTS</h2>
                         <div class="event-feed" x-ref="eventFeed">
-                            <template x-for="event in $store.events.recent.slice(0, 10)" :key="event.timestamp + event.type">
+                            <template x-for="event in $store.events.recent.slice(0, 10)" :key="$store.events.eventKey(event)">
                                 <div class="event-item" :class="'severity-' + (event.severity || 'INFO').toLowerCase()">
-                                    <span class="event-time" x-text="formatTime(event.timestamp)"></span>
+                                    <span class="event-time" x-text="formatTime($store.events.eventMillis(event))"></span>
                                     <span class="event-type" x-text="event.type"></span>
                                     <span class="event-summary" x-text="event.summary || event.message"></span>
                                 </div>

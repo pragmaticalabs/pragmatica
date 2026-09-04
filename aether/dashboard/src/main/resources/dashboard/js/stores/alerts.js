@@ -4,16 +4,20 @@ document.addEventListener('alpine:init', function() {
         history: [],
         thresholds: [],
 
-        updateFromWs(data) {
-            if (data.type === 'ALERT') {
-                this.active.push(data);
-            } else if (data.type === 'ALERT_RESOLVED') {
-                var metric = data.metric;
-                var nodeId = data.nodeId;
+        // #292: the WS envelope discriminator lives at the TOP level only (`{"type":"ALERT","data":{...}}`,
+        // AlertManager.buildAlertMessage) — never duplicated inside `data`. This handler is passed the raw,
+        // still-wrapped envelope (see app.js onWsMessage) and reads `type` there, not on the unwrapped payload.
+        updateFromWs(envelope) {
+            var payload = envelope.data || envelope;
+            if (envelope.type === 'ALERT') {
+                this.active.push(payload);
+            } else if (envelope.type === 'ALERT_RESOLVED') {
+                var metric = payload.metric;
+                var nodeId = payload.nodeId;
                 this.active = this.active.filter(function(a) {
                     return !(a.metric === metric && a.nodeId === nodeId);
                 });
-                this.history.unshift(data);
+                this.history.unshift(payload);
             }
         },
 
