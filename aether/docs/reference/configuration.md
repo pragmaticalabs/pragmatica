@@ -284,6 +284,9 @@ present at boot and no keyring resolves for the instance, boot fails with
 instead of silently handing back framed `AEC1...` bytes as if they were plaintext content on every
 read. Recovery: restore `[storage.encryption]` with that key id still resolvable in
 `[storage.encryption.keys]`, or migrate to a fresh, unmarked directory or DHT namespace (`#831`).
+This marker/refusal pair covers the per-instance disk/DHT path above; the built-in `streams`
+segment tiers' DHT namespace (`stream-segments`) has neither yet — only its disk side does — and is
+tracked separately as `#849`.
 
 **Nonce bound.** Each block's 12-byte (96-bit) nonce is drawn from `SecureRandom`, not a counter.
 NIST SP 800-38D caps random-96-bit-nonce AES-GCM at 2³² encryptions under one key before nonce
