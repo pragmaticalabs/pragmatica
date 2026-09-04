@@ -36,7 +36,6 @@ public record EncryptionKeyring(Map<String, BlockEncryptor> keys, String activeK
     /// Look up the encryptor for a specific key id (from a stored block's header) -- may be a
     /// retired, non-active key still needed to decrypt blocks written before rotation.
     public Result<BlockEncryptor> byKeyId(String keyId) {
-        return Option.option(keys.get(keyId))
-                     .toResult(new EncryptionError.UnknownKeyId(keyId));
+        return Option.option(keys.get(keyId)).toResult(new EncryptionError.UnknownKeyId(keyId));
     }
 }
