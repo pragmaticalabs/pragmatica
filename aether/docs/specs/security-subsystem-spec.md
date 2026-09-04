@@ -649,9 +649,14 @@ post-quantum (PQC) posture for each. Complements the CA-algorithm decision in §
 > (visible via `docker inspect`, `/proc`, process listing). Pull-at-use-time scopes exposure and
 > shrinks blast radius. This also fixes the #287 residual (§6.6).
 >
-> **Rejected alternative.** *Push secrets into the environment at launch* — the current
-> `DockerComposeGenerator.java:80` pattern (`AETHER_CLUSTER_SECRET` as an env var, visible in
-> `docker inspect`).
+> **Rejected alternative.** *Push secrets into the environment at launch* — `DockerComposeGenerator.java:80`
+> used to bake `AETHER_CLUSTER_SECRET` as a literal env var into the generated compose file; deleted
+> 2026-09-04 and replaced by `DockerComposeTemplate.java:84`'s `${AETHER_CLUSTER_SECRET:?...}`
+> shell-substitution reference (#684), so the generated file itself carries no secret value. The
+> resolved container env is still visible via `docker inspect` post-`docker compose up` — env-var
+> delivery's inherent residual, distinct from the literal-in-file defect #684 closed, and still open
+> both on this path and on the live bootstrap/redeploy `docker run -e`/SSH-inline-JVM-env paths in
+> `BootstrapPhaseDeploy.java`.
 
 ### 6.3 `SecretsProvider` extension
 
@@ -740,13 +745,21 @@ record LeaseId(String value) {}
 > **Decision.** (a) Add a redacting `toString()` to every credential-bearing type and exclude
 > credentials from any slice-reachable serialization/error payload. (b) Stop logging config values at
 > INFO. (c) Close the #287 compose vector by resolving `cluster_secret` from a file/secret reference
-> instead of an env var.
+> instead of an env var — **partially done**: #684 (closed 2026-09-04) removed the literal-secret
+> variant (`DockerComposeGenerator.java` deleted; `DockerComposeTemplate.java:84` now emits a
+> `${AETHER_CLUSTER_SECRET:?...}` reference), but delivery is still by env var, not a file/secret
+> reference, so (c)'s full intent is not yet met.
 >
 > **Why (verified).** `SliceStore.java:265-269` logs *unresolved* `${secrets:...}` placeholders **and
 > the override value** at INFO when a key is shadowed — leaking both the secret path and the actual
-> value. `SecureFiles.java:24-54` already chmod-600s the on-disk secret (DONE), but
-> `DockerComposeGenerator.java:80` still injects `AETHER_CLUSTER_SECRET` as a plaintext env var
-> (visible in `docker inspect`) — the #287 residual.
+> value. `SecureFiles.java:24-54` already chmod-600s the on-disk secret (DONE); the compose
+> literal-secret vector (`DockerComposeGenerator.java:80`) is closed by #684
+> (`DockerComposeTemplate.java:84` now emits `${AETHER_CLUSTER_SECRET:?...}`, and
+> `DockerComposeGenerator` is deleted) — but `cluster_secret` still rides
+> `docker run -e AETHER_CLUSTER_SECRET="..."` and inline-JVM-env-on-the-SSH-command-line on live
+> bootstrap/redeploy paths (`BootstrapPhaseDeploy.java:483,547,821`), visible via
+> `docker inspect`/`/proc`/shell history — the residual #287 named in its own discussion and never
+> fixed by its closure.
 >
 > **Rejected alternative.** *Rely on operators not to read logs / not to `docker inspect`* — not a
 > control.
@@ -1186,7 +1199,7 @@ STUB/PARTIAL, not the DONE an earlier draft claimed.
 | Slice `${secrets:}` (#269) | not resolved; no secrets field; log-leak of unresolved value | `SliceStore.java:251` (layering), `:298` (intrinsic load), `:265-269` (log-leak) | `withSecretResolution` wrap | STUB |
 | Cloud token fan-out (#206) | literal `api_token` on every node; structural leader-gate | `BootstrapOverlayGenerator.java:133`; `ClusterTopologyManagerRecord.provisionReplacement:483-531`; `HetznerEnvironmentIntegrationFactory.java:46,63` | JIT resolver; explicit `isLeader` | STUB/risky |
 | Storage at-rest (#253) | `aesGcm` exists; prod defaults to empty `Option` (clear); plain GCM/random IV; no key source | `BlockEncryptor.java:48,51`; `AesGcmBlockEncryptor.java:19`; `SegmentReader.java:43` (`none()` default); `AetherNode.java:2537` (call site) | wire `KeyProvider`; AEAD-SIV | STUB |
-| `cluster_secret` at rest (#287) | chmod-600 DONE; compose env-var leak | `SecureFiles.java:24-54`; `DockerComposeGenerator.java:80` | close compose vector | PARTIAL |
+| `cluster_secret` at rest (#287) | chmod-600 DONE; compose literal-secret vector closed 2026-09-04 by #684; env-var delivery (compose) and `docker run -e`/SSH-inline-JVM argv on live bootstrap/redeploy remain | `SecureFiles.java:24-54`; `DockerComposeTemplate.java:84` (#684); `BootstrapPhaseDeploy.java:483,547,821` | resolve via file/secret reference, not env var/argv, on every path | PARTIAL |
 | CA from `cluster_secret` (#209) | CA derivation DONE (salt `aether-ca-seed`, daily rotation); residual: `http://` healthcheck + default role VIEWER (#290) unaddressed | `ClusterTrust:23-70`; `SelfSignedCertificateProvider.java:64,148-157`; `KvStoreApiKeyValidator:145`; `ApiKeySecurityValidator:99` | promote to `IdentityIssuer`; close residual (Phase 5) | PARTIAL |
 | **Cloud cert adapters (#88)** | adapter classes + renewal scheduler exist, but are **CA-echo** — `issueCertificate` returns the pre-seeded CA cert verbatim, ignores `nodeId`/`hostname`; **no** cloud cert API (no ACM) | `CloudCertificateProvider.java:70-75`; `AzureCertificateProvider.java:73-78`; `AwsClient.java:43,78`; (genuine issuer: `SelfSignedCertificateProvider.java:106-187`) | build real external cert issuance | **STUB** |
 | DigitalOcean (#307) | spec-only; `operationNotSupported` | `CloudCredentials.java:34`; `CloudProviderName.java` | implement resolver | MISSING |

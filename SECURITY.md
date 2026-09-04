@@ -104,8 +104,12 @@ when written by the CLI. The `aether cluster scaffold` compose template
 both emit `AETHER_CLUSTER_SECRET` as a `${AETHER_CLUSTER_SECRET:?...}` shell-substitution
 reference, never a literal [mechanism: `DockerComposeTemplate.appendCommon`] — the generated
 compose file itself carries no secret value, so a copy of it in git, in a backup, or on disk is not
-secret-bearing on its own (#684, distinct from the now-closed #287, which hardened a different code
-path: cloud-init user-data/argv and `aether.toml` file permissions). The `DockerComposeGenerator`
+secret-bearing on its own (#684, distinct from #287, which closed only the on-disk `aether.toml`
+permission hygiene — chmod 600, via `SecureFiles.writeSecure`/`restrictToOwner`. A related exposure
+of the same secret named in #287's own discussion — `docker run -e AETHER_CLUSTER_SECRET=...` and
+inline-JVM-env-on-the-SSH-command-line, on live bootstrap/redeploy paths in
+`BootstrapPhaseDeploy.java` — was not addressed by that closure and remains open; it is a distinct
+code path from the generated-file vector #684 closes). The `DockerComposeGenerator`
 class, which used to bake a literal `AETHER_CLUSTER_SECRET: "<value>"` into a separate,
 never-wired code path, has been deleted rather than fixed — it had zero production callers, so
 patching it would not have closed anything a real deployment used.
