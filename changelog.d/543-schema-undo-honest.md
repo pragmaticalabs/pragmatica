@@ -48,3 +48,12 @@
 - Every new/updated assertion is mutation-probed: leader-check removal, the reconciler's PENDING
   gate widened to include COMPLETED, and an unwrapped-cause-swap on the undo path each drive the
   test(s) they claim to pin red, and green again on revert.
+- **Known limitation, not fixed here: `acquireLock`'s cross-node lock check is not atomic (#766).**
+  `undo`, `baseline`, and `migrate` all share `SchemaOrchestratorService.acquireLock`. Its
+  cross-node `SchemaMigrationLockKey` check is a read (`isLockHeld`) followed by a separate write
+  (`Put<SchemaMigrationLockValue>`), not an atomic compare-and-set, so two concurrent dispatches can
+  both observe the lock free before either writes it. #766 reproduced this live on a 5-node Forge
+  run — two dispatches within two seconds, the second reaching `aether_schema_history` and failing
+  on a duplicate-key constraint, which marked the datasource `FAILED`. This is a known defect, not
+  a design choice; the fix needs an atomic compare-and-set on the lock key and is tracked in #766,
+  outside this PR's scope.
