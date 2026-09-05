@@ -57,7 +57,7 @@ public interface SecurityOverrideApplier {
         // defeating STRENGTHEN_ONLY. Refuse instead of guessing.
         if (route.security() instanceof SecurityPolicy.Unspecified) {
             LOG.warn("Security override rejected (STRENGTHEN_ONLY): {} {} has no declared policy; "
-                     + "effective policy is not known at publish time, refusing override to {}",
+                    + "effective policy is not known at publish time, refusing override to {}",
                      route.httpMethod(),
                      route.pathPrefix(),
                      newPolicy.asString());

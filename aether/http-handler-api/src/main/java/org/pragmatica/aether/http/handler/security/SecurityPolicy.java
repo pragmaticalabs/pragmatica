@@ -130,7 +130,7 @@ public sealed interface SecurityPolicy extends RouteSecurityPolicy {
             case ApiKeyRequired() -> 20;
             case BearerTokenRequired() -> 20;
             case RoleRequired(_) -> 30;
-            case Unspecified() -> -1;
+            case Unspecified() -> - 1;
             default -> 20;
         };
     }
