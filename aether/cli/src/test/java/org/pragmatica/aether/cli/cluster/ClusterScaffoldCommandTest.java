@@ -6,6 +6,7 @@ package org.pragmatica.aether.cli.cluster;
 
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
+import java.util.Arrays;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -60,6 +61,22 @@ class ClusterScaffoldCommandTest {
         assertThat(exitCode).isZero();
         assertThat(out.toString())
                 .contains("AETHER_CLUSTER_SECRET: \"${AETHER_CLUSTER_SECRET:?export AETHER_CLUSTER_SECRET before docker-compose up}\"");
+    }
+
+    /// Pins the picocli-registered option list, not another doc's word — #825 was header text
+    /// (`--format`) drifting from a flag picocli had already renamed to `--template`. Reading
+    /// `CommandSpec.options()` off a live `CommandLine` means a future rename fails this test
+    /// instead of silently re-drifting a doc or a generated header.
+    @Test
+    void call_scaffoldCommand_picocliOptionListHasTemplateNotFormat() {
+        var optionNames = new CommandLine(new ClusterScaffoldCommand()).getCommandSpec()
+                                                                        .options()
+                                                                        .stream()
+                                                                        .flatMap(option -> Arrays.stream(option.names()))
+                                                                        .toList();
+
+        assertThat(optionNames).contains("--template")
+                                .doesNotContain("--format");
     }
 
     private static int runScaffold(String... args) {
