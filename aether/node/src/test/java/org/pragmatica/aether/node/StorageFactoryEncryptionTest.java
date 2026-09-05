@@ -311,6 +311,58 @@ class StorageFactoryEncryptionTest {
               });
     }
 
+    /// #783 review F2 -- the UPGRADE direction, and the one that breaks. The compat test above pins
+    /// keyring-ABSENT: a pre-existing plaintext content block stays readable. This pins its inverse,
+    /// which is what an operator who already runs `[storage.encryption]` actually hits.
+    ///
+    /// Because the synthesized config takes `encrypted = keyring.isPresent()`, upgrading to #783 flips
+    /// `content` to encrypted with NO config change. The DHT tier has no directory to scan, so there is
+    /// no forward-direction boot guard (`EncryptingStorageTier`'s class doc says the forward direction
+    /// relies solely on the per-read checks) and `verifyDhtMarker` stamps the namespace
+    /// unconditionally. Every pre-upgrade content block then fails per-read.
+    ///
+    /// What this test pins is that the failure is LOUD and typed -- `EncryptionError.LegacyPlaintextBlock`
+    /// -- and never a silent pass-through of unauthenticated bytes to the caller. That distinction is the
+    /// whole safety property: handing `AEC1`-framed or unverified bytes back as content is the #874 class
+    /// of defect. Fail-closed here means the operator gets an error instead of corrupt content.
+    ///
+    /// This is a KNOWN LIMITATION, not a fix: #253 ships detection, not migration, so there is no path
+    /// that re-encrypts those blocks. Documented in `known-limitations.md` and this ticket's changelog
+    /// fragment; the migration path is #831.
+    @Test
+    void createAll_synthesizedContent_failsClosedOnPreExistingPlaintext_whenKeyringPresent() {
+        var dhtClient = new InMemoryDHTClient();
+        var legacyBlockId = BlockId.blockId(PLAINTEXT).unwrap();
+
+        dhtClient.put(CONTENT + "-blocks/" + legacyBlockId.hexString(), PLAINTEXT)
+                 .await()
+                 .onFailure(cause -> fail("seeding a raw legacy content block failed: " + cause.message()));
+
+        var setups = createAllOrFail(Map.of(), Option.some(dhtClient), Option.some(singleKeyRing("key-1")));
+
+        assertThat(setups).containsKey(CONTENT);
+
+        // Same post-formation step production runs (see the compat test above); it also WRITES the
+        // marker here, which is exactly the unconditional forward-direction stamp this test documents.
+        setups.get(CONTENT)
+              .dhtMarkerCheck()
+              .onPresent(check -> StorageFactory.verifyDhtMarker(dhtClient, check)
+                                                .await()
+                                                .onFailure(cause -> fail("writing content's DHT marker failed: "
+                                                                         + cause.message())));
+
+        setups.get(CONTENT)
+              .instance()
+              .get(legacyBlockId)
+              .await()
+              .onSuccess(value -> fail("a pre-upgrade PLAINTEXT content block must never be handed back once the "
+                                       + "namespace has been flipped to encrypted -- returning it would serve "
+                                       + "unauthenticated bytes as content. Got: " + value))
+              .onFailure(cause -> assertThat(cause).as("the upgrade hazard must surface as a typed, fail-closed "
+                                                       + "encryption error, not a miss and not a pass-through")
+                                                   .isInstanceOf(EncryptionError.LegacyPlaintextBlock.class));
+    }
+
     /// #783 C4 (2026-09-04 ruling): `content`'s synthesized default must be covered by the SAME
     /// keyring-presence gate as `artifacts` (the pair above) -- the retired keyring-less
     /// `defaultContentStorage` could never be encrypted regardless of `[storage.encryption]`; routing

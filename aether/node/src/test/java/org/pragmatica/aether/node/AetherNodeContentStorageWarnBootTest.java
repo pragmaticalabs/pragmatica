@@ -78,6 +78,15 @@ class AetherNodeContentStorageWarnBootTest {
     private static final String SECRET_PATH = "path/to/k1";
     private static final String VALID_AES256_KEY = Base64.getEncoder().encodeToString(new byte[32]);
     private static final String CONTENT_STORAGE_WARN_FRAGMENT = "'content' storage instance is NOT covered (#783)";
+    /// #783 review F3: both assertions in this class are now `noneMatch` (the #830 WARN is retired, so
+    /// its ABSENCE is what there is to pin). A pair of `noneMatch` assertions is satisfied by an empty
+    /// list, so anything that silently detaches the capture -- a renamed logger, a log4j2 config change
+    /// making `getOrCreateLoggerConfig` hand back a different `LoggerConfig`, an exception swallowed in
+    /// `setUp` -- would leave this class green while examining nothing. This sentinel is the positive
+    /// control: it is emitted through the SAME logger the appender is attached to, BEFORE the boot, so
+    /// asserting it was captured proves the appender was live across the whole boot window. Without it
+    /// the class cannot fail, which on this project is worse than having no test at all.
+    private static final String APPENDER_SENTINEL = "positive control: AetherNodeContentStorageWarnBootTest appender is attached";
 
     private CapturingAppender appender;
     private LoggerConfig loggerConfig;
@@ -119,6 +128,21 @@ class AetherNodeContentStorageWarnBootTest {
         appender.stop();
     }
 
+    /// Emits [#APPENDER_SENTINEL] on the exact logger [#LOGGER_NAME] the appender is bound to. Called
+    /// before each boot so the sentinel has to survive the same capture window the real assertions
+    /// read.
+    private static void emitAppenderSentinel() {
+        LogManager.getLogger(LOGGER_NAME).warn(APPENDER_SENTINEL);
+    }
+
+    /// Asserts the capture is actually working. Paired with every `noneMatch` below.
+    private void assertAppenderIsLive() {
+        assertThat(appender.capturedWarns())
+                .as("POSITIVE CONTROL: the appender must have captured the sentinel emitted before boot -- an "
+                    + "empty capture would satisfy the noneMatch assertion below while proving nothing")
+                .anyMatch(msg -> msg.contains(APPENDER_SENTINEL));
+    }
+
     @Test
     @Timeout(value = 60, unit = SECONDS)
     void assembleNode_doesNotWarnOnContentStorage_whenKeyringConfigured() {
@@ -127,9 +151,13 @@ class AetherNodeContentStorageWarnBootTest {
                                                                                        "k1",
                                                                                        false));
 
+        emitAppenderSentinel();
+
         node = AetherNode.aetherNode(minimalConfig(environmentWith(Option.some(provider)), encryption), () -> {})
                           .onFailure(cause -> fail("boot must succeed: the configured keyring resolves cleanly - " + cause.message()))
                           .unwrap();
+
+        assertAppenderIsLive();
 
         assertThat(appender.capturedWarns())
                 .as("#783: `content` is now synthesized through the same config/keyring-aware `createAll` "
@@ -141,10 +169,14 @@ class AetherNodeContentStorageWarnBootTest {
     @Test
     @Timeout(value = 60, unit = SECONDS)
     void assembleNode_staysSilentOnContentStorage_whenNoKeyringConfigured() {
+        emitAppenderSentinel();
+
         node = AetherNode.aetherNode(minimalConfig(Option.none(), Option.none()), () -> {})
                           .onFailure(cause -> fail("boot must succeed with no storage encryption configured at all - "
                                                     + cause.message()))
                           .unwrap();
+
+        assertAppenderIsLive();
 
         assertThat(appender.capturedWarns())
                 .as("with no node-wide keyring there was never anything to warn about, before or after #783")
