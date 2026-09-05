@@ -116,6 +116,23 @@ class StorageFactoryEncryptionTest {
                      .onFailure(cause -> fail("seeding a raw plaintext block failed: " + cause.message()));
     }
 
+    /// Runs the post-formation admission step production runs in `AetherNode.start()` -- resolving
+    /// this instance's `readGate` via [StorageFactory#verifyDhtMarker].
+    ///
+    /// #858 gated `DhtStorageTier.get()` on that gate; **#874 extended the gate to `put`, `delete` and
+    /// `exists` as well**, because `AetherNode.start()` brings the HTTP servers up before
+    /// `verifyDhtMarkers()` runs and an ungated `put` could persist a plaintext block into a namespace
+    /// whose marker says encrypted. So ANY tier operation issued before admission -- read or write --
+    /// now sits out the 30s bound and fails `StorageError.TierNotAdmitted`. Call this immediately after
+    /// `createAll` in any test that touches a DHT-backed tier, before the first read OR write.
+    private static void admitDhtTier(StorageFactory.StorageSetup setup, DHTClient dhtClient) {
+        setup.dhtMarkerCheck()
+             .onPresent(check -> StorageFactory.verifyDhtMarker(dhtClient, check)
+                                               .await()
+                                               .onFailure(cause -> fail("admitting the DHT tier for instance '"
+                                                                        + setup.name() + "' failed: " + cause.message())));
+    }
+
     private static BlockId writeThrough(StorageFactory.StorageSetup setup) {
         return setup.instance()
                     .put(PLAINTEXT)
@@ -395,6 +412,8 @@ class StorageFactoryEncryptionTest {
 
         assertThat(setups).containsKey(CONTENT);
 
+        admitDhtTier(setups.get(CONTENT), dhtClient);
+
         var blockId = writeThrough(setups.get(CONTENT));
         var stored = dhtClient.rawValue(CONTENT + "-blocks", blockId);
 
@@ -414,6 +433,8 @@ class StorageFactoryEncryptionTest {
         var setups = createAllOrFail(Map.of(), Option.some(dhtClient), Option.none());
 
         assertThat(setups).containsKey(CONTENT);
+
+        admitDhtTier(setups.get(CONTENT), dhtClient);
 
         var blockId = writeThrough(setups.get(CONTENT));
         var stored = dhtClient.rawValue(CONTENT + "-blocks", blockId);

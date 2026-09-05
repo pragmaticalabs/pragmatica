@@ -264,6 +264,20 @@ class StorageMaintenanceWiringTest {
         assertThat(setups).containsKey("content");
 
         var contentSetup = setups.get("content");
+
+        // #858 gated `DhtStorageTier.get()` on a per-instance `readGate` that only
+        // `StorageFactory.verifyDhtMarker` resolves; #874 extended that gate to `put`/`delete`/`exists`
+        // too, because `AetherNode.start()` brings the HTTP servers up before `verifyDhtMarkers()` runs
+        // and an ungated write could persist a plaintext block into a namespace whose marker says
+        // encrypted. So admission must happen BEFORE the first write here, not just before the read --
+        // otherwise the `put` below sits out the tier's 30s bound and fails `TierNotAdmitted`. This is
+        // the same order `AetherNode.start()` uses: verify markers, then serve.
+        contentSetup.dhtMarkerCheck()
+                    .onPresent(check -> StorageFactory.verifyDhtMarker(dhtClient, check)
+                                                      .await()
+                                                      .onFailure(cause -> fail("admitting content's DHT tier "
+                                                                               + "failed: " + cause.message())));
+
         var content = "content-maintenance-probe".getBytes(StandardCharsets.UTF_8);
         var blockId = contentSetup.instance().put(content).await().unwrap();
 
@@ -284,19 +298,6 @@ class StorageMaintenanceWiringTest {
         compositeGarbageCollector.activate();
 
         driver.tick();
-
-        // #858: `DhtStorageTier.get()` is gated on a per-instance `readGate` that ONLY
-        // `StorageFactory.verifyDhtMarker` resolves -- the post-formation step `AetherNode.start()`
-        // runs before the node reports ready. The maintenance pass has just removed the private
-        // (memory/disk) copies, so the read below is served by the DHT tier and nothing else;
-        // without this call it sits out the tier's 30s admission bound and fails with
-        // `StorageError.TierNotAdmitted` rather than exercising the shared-tier guard. Verifying
-        // first is exactly what production does, in the same order.
-        contentSetup.dhtMarkerCheck()
-                    .onPresent(check -> StorageFactory.verifyDhtMarker(dhtClient, check)
-                                                      .await()
-                                                      .onFailure(cause -> fail("verifying content's DHT marker "
-                                                                               + "failed: " + cause.message())));
 
         contentSetup.instance()
                     .get(blockId)
