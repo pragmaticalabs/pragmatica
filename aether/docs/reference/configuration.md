@@ -452,7 +452,7 @@ max_group_size = 100
 |-------|------|---------|-------------|
 | `group_name` | string | `"default"` | Logical group name for this worker pool |
 | `zone` | string | `"local"` | Zone identifier for zone-aware grouping. Workers in the same zone auto-cluster |
-| `max_group_size` | int | `100` | Caps worker-group size for `GroupAssignment.computeGroups`, invoked from `GroupMembershipTracker.recomputeGroups()` and wired into the live worker-activation path (`AetherNode.activateWorkerMode`) — see below. Validated at parse (`< 2` refuses). |
+| `max_group_size` | int | `100` | **Inert today** — `GroupMembershipTracker` is constructed at boot (`AetherNode.activateWorkerMode`, `AetherNode.java:5152`) but never fed membership events and never read again: repo-wide, `.updateMember(`/`.removeMember(` have zero callers, so `recomputeGroups()`/`GroupAssignment.computeGroups` never run. Group splitting is dead code (#673: wire-or-delete decision still open). Parsed and validated (`< 2` refuses at parse); changes no behavior today. Community size in the shipping product is the per-source worker count. |
 
 Zone is also extracted from the NodeId: everything before the last dash (e.g., `us-east-worker-1` → zone `us-east-worker`). The explicit `zone` config takes precedence for group computation.
 
