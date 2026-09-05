@@ -259,6 +259,20 @@ instance, `streams` included; the `streams` instance's write-ahead log (`walPath
 separate directory from the segment-block tiers that `streams_encrypted` gates, and never wrapped
 in `EncryptingStorageTier`.
 
+**`content` encryption is triggered by keyring presence, not by opting in.** The synthesized
+`content` instance takes `encrypted = <a keyring is configured>`, exactly like the synthesized
+`artifacts` default. Two consequences worth knowing before you upgrade or reconfigure:
+
+- Enabling `[storage.encryption]` for any instance turns on `content` encryption too. If `content`
+  already holds plaintext blocks, they become unreadable — the disk tier refuses at boot and the DHT
+  tier fails per read (`LegacyPlaintextBlock`). There is no migration path in rc4 (#831). Set
+  `[storage.content] encrypted = false` explicitly to opt out. See
+  [`known-limitations.md`](known-limitations.md) for the upgrade note in full.
+- The synthesized `content` default derives its `disk_path`/`snapshot_path` as a sibling of whatever
+  `artifacts` resolves to (`<artifacts disk_path>/../content/{blocks,snapshots}`), and it ignores an
+  explicit `[storage.artifacts] snapshot_path`. If `artifacts` sits on a mounted volume, content's
+  tier may land outside it. Configure `[storage.content]` explicitly to control placement.
+
 **Not the same as `[streams.X].encryption-key-id`.** That per-stream blueprint key is unrelated and
 was already found structurally inert and rejected at validation (`#576`, 2026-08-27) —
 `StorageSegmentSink`'s own segment-payload pipeline has no encryptor wired to it, and `#253` does not

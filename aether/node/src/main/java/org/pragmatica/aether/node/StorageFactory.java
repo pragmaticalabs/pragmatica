@@ -330,13 +330,25 @@ public final class StorageFactory {
     /// subdirectory of its own, so reusing the artifacts default verbatim would collide both
     /// instances' snapshot files (and disk blocks) in the same directory. Instead this derives a
     /// `content` data dir as a SIBLING of wherever `artifacts` actually resolves -- the explicit
-    /// `[storage.artifacts]` config when the operator set one, else the hardcoded default -- the same
-    /// "sibling of the artifacts disk path, then subdivided" convention `AetherNode.streamDataDir`
-    /// already uses for `stream-segments`, splitting it into `content/blocks` (disk) and
-    /// `content/snapshots` (metadata) so neither collides with artifacts' own paths or with each
-    /// other. The GENERAL version of this hazard -- any two EXPLICITLY configured instances that both
-    /// omit `disk_path`/`snapshot_path` still share the bare `StorageConfig.storageConfig()` default
-    /// and collide -- is not addressed here; see the PR body.
+    /// `[storage.artifacts]` config when the operator set one, else the hardcoded default -- then splits
+    /// it into `content/blocks` (disk) and `content/snapshots` (metadata) so neither collides with
+    /// artifacts' own paths or with each other.
+    ///
+    /// This borrows the "sibling of the artifacts disk path, then subdivided" SHAPE from
+    /// `AetherNode.streamDataDir`, but it is deliberately NOT the same convention, and the difference
+    /// matters: `streamDataDir` appends `.resolve(config.self().id())`, a node-id segment this does
+    /// not have. That segment is what keeps two nodes sharing one host mount from writing the same
+    /// directory. Without it, co-located nodes share `<artifacts>/../content/{blocks,snapshots}`:
+    /// blocks are content-addressed so concurrent writes are benign, but one node's GC
+    /// (`deleteFromPrivateTiers`) can delete a file the other's `MetadataStore` still records as
+    /// present, and `LocalDiskTier.calculateUsedBytes()`'s directory walk double-counts across them.
+    /// Not fixed here because `artifacts` has had exactly this shape since before #783 (its default
+    /// `/data/aether/storage` carries no node id either), so adding the segment for `content` alone
+    /// would leave the pair inconsistent and change on-disk layout for a case #783 did not create.
+    ///
+    /// The GENERAL version of the collision hazard -- any two EXPLICITLY configured instances that
+    /// both omit `disk_path`/`snapshot_path` still share the bare `StorageConfig.storageConfig()`
+    /// default and collide -- is likewise not addressed here; see the PR body.
     private static StorageConfig defaultContentConfig(Map<String, StorageConfig> configs, boolean encrypted) {
         var defaults = StorageConfig.storageConfig();
         var artifactsConfig = Option.option(configs.get(ARTIFACTS_NAME)).or(defaults);

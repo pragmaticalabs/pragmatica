@@ -1,7 +1,7 @@
 ### Fixed (2026-09-04 — #783: `content` storage instance bypassed demotion/GC and could never be encrypted)
 
 - **`StorageFactory.defaultContentStorage(Option<DHTClient>)` built the `content` `StorageInstance` (the shared per-node instance `ContentStore` resources provision through) entirely outside `storageSetups` — no `MetadataStore`, no `DemotionManager`, no `StorageGarbageCollector` — so `StorageMaintenanceDriver` (#250/#803, ticks every registered `StorageSetup`) never reached it and memory usage grew unbounded.** The same bypass also kept `content` out of the config-aware, keyring-aware `createAll`/`createOne` path (#253), so it could never be encrypted regardless of `[storage.encryption]` — #830 shipped a boot-time WARN naming this gap. `defaultContentStorage` is deleted; `createAll` now synthesizes a `content` entry through `createOne`, mirroring the synthesized `artifacts` default from #830, whenever `[storage.content]` isn't explicit
-  [mechanism: `StorageFactory.createAll` — `if (!configs.containsKey(CONTENT_NAME))` branch; `AetherNode` reads `storageSetups.get("content").instance()` in place of the old `defaultContentStorage` call; verified, in-JVM through the real `StorageFactory` + real composite managers + real `StorageMaintenanceDriver` (not multi-node): `StorageMaintenanceWiringTest#createAll_realMaintenanceDriverTick_reachesSynthesizedContentInstance` pins REGISTRATION and the #250 shared-DHT guard; `#createAll_realMaintenanceDriverTick_actuallyShrinksContentMemoryTier` pins that the memory cache ACTUALLY shrinks across one tick (memory-tier residency measured before/after from content's own `MetadataStore`, plus content's own `DemotionManager.stats().bytesMoved()`); `#createAll_realMaintenanceDriverTick_actuallyCollectsOrphanedContentBlock` pins that an orphaned block is ACTUALLY collected (disk file gone from the filesystem, lifecycle record gone, block unreadable). Mutation-probed: cutting `demotionManager.demote()` out of `StorageMaintenanceDriver.tick()` reddens ONLY the demotion test, cutting `garbageCollector.collectGarbage()` reddens ONLY the GC test, and reverting the `createAll` synthesis hunk reddens all five #783 tests]. Every instrument reads content's OWN manager, never the composite — a composite counter could be satisfied entirely by `artifacts`.
+  [mechanism: `StorageFactory.createAll` — `if (!configs.containsKey(CONTENT_NAME))` branch; `AetherNode` reads `storageSetups.get("content").instance()` in place of the old `defaultContentStorage` call; verified, in-JVM through the real `StorageFactory` + real composite managers + real `StorageMaintenanceDriver` (not multi-node): `StorageMaintenanceWiringTest#createAll_realMaintenanceDriverTick_reachesSynthesizedContentInstance` pins REGISTRATION and the #250 shared-DHT guard; `#createAll_realMaintenanceDriverTick_actuallyShrinksContentMemoryTier` pins that the memory cache ACTUALLY shrinks across one tick (memory-tier residency measured before/after from content's own `MetadataStore`, plus content's own `DemotionManager.stats().bytesMoved()`); `#createAll_realMaintenanceDriverTick_actuallyCollectsOrphanedContentBlock` pins that an orphaned block is ACTUALLY collected (disk file gone from the filesystem, lifecycle record gone, block unreadable). Mutation-probed: cutting `demotionManager.demote()` out of `StorageMaintenanceDriver.tick()` reddens ONLY the demotion test, and cutting `garbageCollector.collectGarbage()` reddens ONLY the GC test -- each pins its own property and neither is satisfied by the other's work]. Every instrument reads content's OWN manager, never the composite — a composite counter could be satisfied entirely by `artifacts`.
 - **`content` is now encrypted whenever `[storage.encryption]` is configured with a resolvable keyring, and stays plaintext otherwise, with no explicit `[storage.content]` section required** — `encrypted = keyring.isPresent()`, same rule as the synthesized `artifacts` default
   [verified: `StorageFactoryEncryptionTest#createAll_synthesizedDefaultContent_isEncrypted_whenKeyringPresent` / `#createAll_synthesizedDefaultContent_staysPlaintext_whenKeyringAbsent`].
 - **#830's boot-time WARN ("'content' storage instance is NOT covered") no longer fires** — content is covered like every other instance now
@@ -59,3 +59,70 @@ this one — a reader assembling the release notes should take this fragment as 
   fragment predicted it would.
 
 Those two files are other tickets' artifacts and are left untouched here.
+
+### Correction: what mutation probe A actually reddens
+
+An earlier revision of this fragment claimed that reverting `createAll`'s content-synthesis hunk
+"reddens all five #783 tests". **That was false**, and it is corrected here rather than quietly
+reworded, because a probe result in a changelog is durable evidence and the next person deciding what
+is covered will rely on it.
+
+Re-run and measured, not reasoned about: reverting the hunk reddens **5 of the 7** #783 tests --
+`Tests run: 28, Failures: 5`. The five are the ones that let `createAll` synthesize `content`:
+
+- `StorageFactoryEncryptionTest#createAll_synthesizedContent_usesSiblingDiskPath_distinctFromArtifacts`
+- `StorageFactoryEncryptionTest#createAll_synthesizedContent_readsPreExistingBlock_underOldContentBlocksDhtPrefix`
+- `StorageFactoryEncryptionTest#createAll_synthesizedDefaultContent_isEncrypted_whenKeyringPresent`
+- `StorageFactoryEncryptionTest#createAll_synthesizedDefaultContent_staysPlaintext_whenKeyringAbsent`
+- `StorageMaintenanceWiringTest#createAll_realMaintenanceDriverTick_reachesSynthesizedContentInstance`
+
+The two it does **NOT** redden are the acceptance-item-3 pair,
+`#createAll_realMaintenanceDriverTick_actuallyShrinksContentMemoryTier` and
+`#createAll_realMaintenanceDriverTick_actuallyCollectsOrphanedContentBlock`. Both pass an explicit
+`[storage.content]` section, and `createAll` builds every explicit `configs` entry before it reaches
+the synthesis branch -- so with the hunk reverted their `content` setup is still built and both stay
+green.
+
+**How acceptance item 3 is actually earned, then: by composition of two pins, not by either test
+alone.** `reachesSynthesizedContentInstance` pins that the synthesis branch registers `content` in
+`storageSetups` (red under probe A). The acceptance pair pins that a `createAll`-built `content`
+setup really demotes and really collects (red under the probes that cut `demote()` and
+`collectGarbage()`). The composition is sound because the construction path is identical either way
+-- `createOne` -> `assembleSetup`, one `StorageSetup` with real managers -- and only the
+`StorageConfig`'s origin differs. The explicit section exists in those two tests solely to get a
+memory budget small enough to cross the 0.9 demotion watermark; the synthesized default hardcodes
+256 MB, which would need ~230 MB of writes to demote.
+
+### Upgrade hazard: `content` becomes encrypted on upgrade alone, and pre-existing content is unreadable
+
+**Read this before upgrading a node that already has `[storage.encryption]` configured.**
+
+`content`'s synthesized default takes `encrypted = keyring.isPresent()`. That means content
+encryption is **not opt-in**: it is triggered by keyring presence alone. An operator who configured
+`[storage.encryption]` for `artifacts` gets `content` encrypted by the upgrade itself, with no
+`[storage.content]` section and no config change of any kind.
+
+Consequence: content blocks written before the upgrade are plaintext, and after it they are read
+through an `EncryptingStorageTier`. They become **unreadable** -- and #253 ships detection, not
+migration, so there is **no migration path** for them. The failure is loud and typed, never a silent
+pass-through of unauthenticated bytes:
+
+- **Disk tier** -- `wrapLocalDisk` refuses at boot when the directory holds block files with no
+  `.encryption-enabled` marker: a loud boot failure (`EnablingOverExistingPlaintext`).
+- **DHT tier** -- no directory to scan, so there is no forward-direction boot guard and
+  `verifyDhtMarker` stamps the namespace unconditionally; each pre-existing block then fails per-read
+  with `EncryptionError.LegacyPlaintextBlock`
+  [verified: `StorageFactoryEncryptionTest#createAll_synthesizedContent_failsClosedOnPreExistingPlaintext_whenKeyringPresent`
+  -- seeds a raw plaintext block under `content-blocks/`, boots WITH a keyring, and asserts the typed
+  fail-closed error rather than a miss or a pass-through. Its keyring-absent inverse is
+  `#createAll_synthesizedContent_readsPreExistingBlock_underOldContentBlocksDhtPrefix`].
+
+To keep pre-existing content readable, set `[storage.content] encrypted = false` explicitly before
+upgrading. The path to actually re-encrypting existing blocks is tracked as #831.
+
+**Upgrade procedure.** Aether does not support rolling upgrades (#666/#434); the supported path is a
+full-cluster stop, upgrade, then start. This hazard is an illustration of that envelope, not a new
+defect: in a mixed-version cluster an upgraded node would write ciphertext into the shared
+`content-blocks` namespace while a not-yet-upgraded node reads it through the old bare tier and hands
+the framed bytes back as content. Nothing here makes mixed-version clusters safe for any other
+subsystem either -- do not read it as though they were.
