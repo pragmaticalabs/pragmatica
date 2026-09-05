@@ -813,7 +813,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     private static boolean isExplicitPolicy(SecurityPolicy policy) {
-        return ! (policy instanceof SecurityPolicy.Public());
+        return ! (policy instanceof SecurityPolicy.Unspecified());
     }
 
     private SecurityPolicy globalSecurityPolicy() {

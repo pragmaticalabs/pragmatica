@@ -60,8 +60,26 @@ public sealed interface SecurityPolicy extends RouteSecurityPolicy {
     @SuppressWarnings("unused")
     record unused() implements SecurityPolicy {}
 
+    /// Codegen-only sentinel: no route declared a security level (routes.toml has no `[security]`
+    /// section, or a slice-authored route never called `.withSecurity(...)`). Never served: resolved
+    /// to a concrete policy by [org.pragmatica.aether.http.AppHttpServer#isExplicitPolicy] before a
+    /// request reaches a [org.pragmatica.aether.http.security.SecurityValidator]. `canAccess` denies
+    /// as defense in depth in case that resolution is ever bypassed.
+    record Unspecified() implements SecurityPolicy {
+        private static final Unspecified INSTANCE = new Unspecified();
+
+        @Override
+        public <T extends RequestSecurityContext> Access canAccess(T context) {
+            return Access.DENY;
+        }
+    }
+
     static SecurityPolicy publicRoute() {
         return Public.INSTANCE;
+    }
+
+    static SecurityPolicy unspecified() {
+        return Unspecified.INSTANCE;
     }
 
     static SecurityPolicy authenticated() {
@@ -86,6 +104,7 @@ public sealed interface SecurityPolicy extends RouteSecurityPolicy {
             case "AUTHENTICATED" -> authenticated();
             case "API_KEY" -> apiKeyRequired();
             case "BEARER_TOKEN" -> bearerTokenRequired();
+            case "UNSPECIFIED" -> unspecified();
             default -> parseRoleOrDefault(value);
         };
     }
@@ -97,6 +116,7 @@ public sealed interface SecurityPolicy extends RouteSecurityPolicy {
             case ApiKeyRequired() -> "API_KEY";
             case BearerTokenRequired() -> "BEARER_TOKEN";
             case RoleRequired(var name) -> "ROLE:" + name;
+            case Unspecified() -> "UNSPECIFIED";
             default -> "API_KEY";
         };
     }
@@ -108,6 +128,7 @@ public sealed interface SecurityPolicy extends RouteSecurityPolicy {
             case ApiKeyRequired() -> 20;
             case BearerTokenRequired() -> 20;
             case RoleRequired(_) -> 30;
+            case Unspecified() -> -1;
             default -> 20;
         };
     }
