@@ -44,6 +44,7 @@ public sealed interface RouteSecurityLevel {
         return switch (trimmed) {
             case "public" -> Result.success(PUBLIC);
             case "authenticated" -> Result.success(AUTHENTICATED);
+            case "unspecified" -> Result.success(UNSPECIFIED);
             default -> parseRole(trimmed, value);
         };
     }

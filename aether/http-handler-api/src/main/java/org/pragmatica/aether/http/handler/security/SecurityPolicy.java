@@ -63,8 +63,10 @@ public sealed interface SecurityPolicy extends RouteSecurityPolicy {
     /// Codegen-only sentinel: no route declared a security level (routes.toml has no `[security]`
     /// section, or a slice-authored route never called `.withSecurity(...)`). Never served: resolved
     /// to a concrete policy by [org.pragmatica.aether.http.AppHttpServer#isExplicitPolicy] before a
-    /// request reaches a [org.pragmatica.aether.http.security.SecurityValidator]. `canAccess` denies
-    /// as defense in depth in case that resolution is ever bypassed.
+    /// request reaches a [org.pragmatica.aether.http.security.SecurityValidator], both of which refuse
+    /// `Unspecified` via an explicit case rather than a `default` arm (#772 review). `canAccess` denies
+    /// to honor the [RouteSecurityPolicy] contract for any caller outside that pipeline — it has zero
+    /// callers in aether's own request path today, so it is not itself a wired backstop.
     record Unspecified() implements SecurityPolicy {
         private static final Unspecified INSTANCE = new Unspecified();
 

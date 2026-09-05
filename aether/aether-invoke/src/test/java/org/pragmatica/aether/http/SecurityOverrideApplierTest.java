@@ -98,6 +98,25 @@ class SecurityOverrideApplierTest {
             assertThat(result).hasSize(1);
             assertThat(result.getFirst().security()).isInstanceOf(SecurityPolicy.BearerTokenRequired.class);
         }
+
+        @Test
+        void applyOverrides_rejectsOverride_onUnspecifiedRoute_withStrengthenOnly() {
+            // #772 review item 3: Unspecified.strength() is -1, so comparing the raw declared
+            // strength let ANY override (even "public", strength 0) pass as "stronger" on an
+            // undeclared route. The applier cannot see the deployment's effective policy at
+            // publish time, so it must refuse rather than silently allow. Pin: an override to
+            // "public" on an undeclared route under a global API_KEY/JWT mode must not succeed.
+            var routes = List.of(route("GET", "/api/v1/urls/", SecurityPolicy.unspecified()));
+            var overrides = SecurityOverrides.securityOverrides(
+                List.of(SecurityOverrides.Entry.entry("GET /api/v1/urls/*", "public")),
+                SecurityOverridePolicy.STRENGTHEN_ONLY
+            );
+
+            var result = SecurityOverrideApplier.applyOverrides(routes, overrides);
+
+            assertThat(result).hasSize(1);
+            assertThat(result.getFirst().security()).isInstanceOf(SecurityPolicy.Unspecified.class);
+        }
     }
 
     @Nested

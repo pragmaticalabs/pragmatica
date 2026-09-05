@@ -50,6 +50,21 @@ public interface SecurityOverrideApplier {
     }
 
     private static HttpRouteDefinition applyIfStronger(HttpRouteDefinition route, SecurityPolicy newPolicy) {
+        // #772 review item 3: an Unspecified route's declared strength (-1) is not its EFFECTIVE
+        // strength — that depends on the deployment's global security mode, which this publish-time
+        // call site cannot see (aether-invoke does not depend on aether-config's SecurityMode).
+        // Comparing against the raw -1 would let every override "strengthen" an undeclared route,
+        // defeating STRENGTHEN_ONLY. Refuse instead of guessing.
+        if (route.security() instanceof SecurityPolicy.Unspecified) {
+            LOG.warn("Security override rejected (STRENGTHEN_ONLY): {} {} has no declared policy; "
+                     + "effective policy is not known at publish time, refusing override to {}",
+                     route.httpMethod(),
+                     route.pathPrefix(),
+                     newPolicy.asString());
+
+            return route;
+        }
+
         if (newPolicy.strength() >= route.security().strength()) {
             return applyAndLog(route, newPolicy);
         }

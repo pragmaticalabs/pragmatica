@@ -969,6 +969,17 @@ default to `public` (#763) -- it inherits the app HTTP server's global `security
 Only an explicit `"public"` -- via `default = "public"` or a per-route `["...", "public"]` array --
 bypasses the global policy for that route.
 
+> **Action required if you run `api-key` or `jwt` mode today.** Before this change, a route with
+> no `[security]` section answered `200` unauthenticated -- it was silently treated as `public`.
+> After upgrading, the same route answers `401`/`403`, because it now inherits the global
+> `security_mode` instead. This affects any deployment where `security_mode` is `api-key` or `jwt`
+> (the default is `api-key` -- see "Securing Your Endpoints") and at least one slice's `routes.toml`
+> has no `[security]` section. As of this release, 16 non-test `routes.toml` files in this repo are
+> in that state, all under `examples/` and `aether/e2e-tests/`. **Remedy:** add
+> `[security]` / `default = "public"` to any `routes.toml` whose routes should stay open. Deployments
+> running `security_mode = "none"` are unaffected -- that mode does not enforce any policy either
+> way.
+
 The `override_policy` controls what operators can change at deploy time via blueprint.toml:
 - **`strengthen_only`** (default) -- operators can only make routes more restrictive
 - **`full`** -- operators can change security in any direction
