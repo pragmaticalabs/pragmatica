@@ -75,9 +75,10 @@ public final class ClusterBootstrapConfigValidator {
     /// equally inert.
     ///
     /// This does not leave auto-heal impossible to disable — [ClusterTopologyManager
-    /// #setAutoHealEnabled] (`aether cluster topology auto-heal disable`, #603) is a real,
-    /// already-wired runtime switch; it is simply a different mechanism (an imperative, per-leader
-    /// -term toggle) from this bootstrap-time declarative key.
+    /// #setAutoHealEnabled] (`aether cluster topology auto-heal disable`, #603, made durable by
+    /// #685) is a real, already-wired runtime switch; it is simply a different mechanism (an
+    /// imperative operator toggle, persisted as a cluster fact in the consensus KV — not scoped to
+    /// a leader's term) from this bootstrap-time declarative key.
     private static void validateAutoHealDisableHonesty(ClusterBootstrapConfig config, List<String> errors) {
         if (config.operations().autoHeal().enabled()) {
             return;

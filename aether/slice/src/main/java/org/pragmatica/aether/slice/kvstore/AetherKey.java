@@ -1959,6 +1959,43 @@ public sealed interface AetherKey extends StructuredKey {
 
     Fn1<Cause, String> CLUSTER_PHASE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid cluster-phase key format: %s");
 
+    /// Durable singleton key for the operator's cluster-wide auto-heal enable/disable flag (#685).
+    /// The disable is a cluster fact stored in consensus KV, not a leader's in-memory state: a read
+    /// reflects the log applied LOCALLY, so the flag becomes visible on a node when that node applies
+    /// the committed Put — bounded by consensus latency, not zero; a node behind on apply answers the
+    /// previous value until then. Absence of this key means auto-heal is enabled (the pre-#685 default).
+    record AutoHealStateKey() implements AetherKey {
+        private static final String KEY = "auto-heal-state";
+
+        @SuppressWarnings("JBCT-VO-02")
+        public static final AutoHealStateKey SINGLETON = new AutoHealStateKey();
+
+        @Override
+        public String asString() {
+            return KEY;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        @SuppressWarnings("JBCT-VO-02")
+        public static AutoHealStateKey autoHealStateKey() {
+            return SINGLETON;
+        }
+
+        public static Result<AutoHealStateKey> autoHealStateKey(String key) {
+            if (!KEY.equals(key)) {
+                return AUTO_HEAL_STATE_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            return success(SINGLETON);
+        }
+    }
+
+    Fn1<Cause, String> AUTO_HEAL_STATE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid auto-heal-state key format: %s");
+
     record ConsumerGroupKey(String groupId, String streamName, int partition) implements AetherKey {
         private static final String PREFIX = "consumer-group/";
 

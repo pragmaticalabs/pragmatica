@@ -211,6 +211,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EntityCheckpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.AutoHealStateValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EntityFoldCheckpointValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
 import org.pragmatica.aether.slice.repository.Repository;
@@ -2450,7 +2451,9 @@ public interface AetherNode extends ManageableNode {
                                                                                                                     membershipFsmRef,
                                                                                                                     target),
                                                                                    drainCommandRegistry::clearDrain,
-                                                                                   resolvedLocalConfig::get);
+                                                                                   resolvedLocalConfig::get,
+                                                                                   () -> kvStore.getTyped(AetherKey.AutoHealStateKey.SINGLETON,
+                                                                                                          AutoHealStateValue.class));
         // E2 Phase 2b (2026-05-28): OrphanSelfDrainChecker deleted; NTT (§6) drives departure
         // detection and the §8 unified drain handles surplus dissolution. Membership v2 finale:
         // the leader-pinned `LifecycleReconciler` (and the FSM it wrote through) are gone — the

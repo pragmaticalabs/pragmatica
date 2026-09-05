@@ -204,6 +204,7 @@ public final class KVStoreSerializer {
             case SpokesmanKey _ -> "spokesman";
             case ProvisioningSlotKey _ -> "provisioning-slot";
             case ClusterPhaseKey _ -> "cluster-phase";
+            case AutoHealStateKey _ -> "auto-heal-state";
             case StreamRegistryKey _ -> "stream-registry";
             case BlueprintStreamBindingsKey _ -> "blueprint-stream-bindings";
         };
@@ -279,6 +280,7 @@ public final class KVStoreSerializer {
             case SpokesmanValue v -> serializeSpokesman(v);
             case ProvisioningSlotValue v -> serializeProvisioningSlot(v);
             case ClusterPhaseValue v -> v.phase().name();
+            case AutoHealStateValue v -> serializeAutoHealState(v);
             case StreamRegistryValue v -> serializeStreamRegistry(v);
             case BlueprintStreamBindingsValue v -> serializeBlueprintStreamBindings(v);
         };
@@ -560,6 +562,26 @@ public final class KVStoreSerializer {
                        .collect(java.util.stream.Collectors.joining(";"));
     }
 
+    /// Field order on the wire (`enabled|updatedAt|reason`) differs from the record's component
+    /// order — `reason` is free operator text and goes last, mirroring [#serializeClusterConfig]'s
+    /// `tomlContent` placement, so an escaped `|` inside it can never be mistaken for a delimiter.
+    private static String serializeAutoHealState(AutoHealStateValue v) {
+        return v.enabled() + PIPE + v.updatedAt() + PIPE + v.reason().replace("|", "\\|");
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseAutoHealStateEntry(String identity, String raw) {
+        var parts = raw.split("(?<!\\\\)\\|", -1);
+
+        if (parts.length != 3) {
+            return parseFailure("auto-heal-state value requires 3 fields, got " + parts.length);
+        }
+
+        return success(entry(AutoHealStateKey.SINGLETON,
+                             new AutoHealStateValue(Boolean.parseBoolean(parts[0]),
+                                                    parts[2].replace("\\|", "|"),
+                                                    Long.parseLong(parts[1]))));
+    }
+
     private static String serializeClusterConfig(ClusterConfigValue v) {
         return v.clusterName() + PIPE + v.version() + PIPE + serializeDesiredTopology(v.desiredTopology()) + PIPE + v.coreMin() + PIPE + v.coreMax() + PIPE + v.deploymentType() + PIPE + v.configVersion() + PIPE + v.updatedAt() + PIPE + v.tomlContent()
                                                                                                                                                                                                                                              .replace("|",
@@ -657,6 +679,7 @@ public final class KVStoreSerializer {
             case "api-key" -> parseApiKeyEntry(identity, rawValue);
             case "api-key-audit" -> parseApiKeyAuditEntry(identity, rawValue);
             case "deployment-outcome" -> parseDeploymentOutcomeEntry(identity, rawValue);
+            case "auto-heal-state" -> parseAutoHealStateEntry(identity, rawValue);
             default -> new SerializationError.UnknownKeyType(section).result();
         };
     }
