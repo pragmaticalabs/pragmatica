@@ -137,6 +137,74 @@ class ClusterCursorStoreTest {
                     .describedAs("a consensus hiccup degrades the failover bound but must not fail the local checkpoint")
                     .isEqualTo(5L);
         }
+
+        /// #654 round 2: `commit(...)`'s own Promise settles successfully even though the consensus
+        /// publish failed — [#lastRecoveredFailure] is the only way the runtime can still learn that,
+        /// since `onFailure` on `commit(...)` never fires for this case.
+        @Test
+        void commit_recordsRecoveredFailure_whenConsensusProposalFails() {
+            var store = ClusterCursorStore.clusterCursorStore(recordingLocal(new AtomicReference<>()),
+                                                              _ -> Option.none(),
+                                                              _ -> CheckpointRejected.INSTANCE.promise());
+
+            store.commit(GROUP, STREAM, PARTITION, 5L).await();
+
+            assertThat(store.lastRecoveredFailure(GROUP, STREAM, PARTITION))
+                    .describedAs("the recovered failure's detail must be readable right after commit(...) resolves")
+                    .isEqualTo(Option.some(CheckpointRejected.INSTANCE.message()));
+        }
+
+        @Test
+        void commit_reportsNoRecoveredFailure_whenConsensusProposalSucceeds() {
+            var store = ClusterCursorStore.clusterCursorStore(recordingLocal(new AtomicReference<>()),
+                                                              _ -> Option.none(),
+                                                              _ -> Promise.unitPromise());
+
+            store.commit(GROUP, STREAM, PARTITION, 5L).await();
+
+            assertThat(store.lastRecoveredFailure(GROUP, STREAM, PARTITION)).isEqualTo(Option.none());
+        }
+
+        /// A stale detail from an earlier attempt must not linger once the store recovers — otherwise a
+        /// transient consensus hiccup would keep reporting "failed" forever after it actually cleared.
+        @Test
+        void commit_clearsRecoveredFailure_onASubsequentSuccessfulProposal() {
+            var attempt = new AtomicReference<>(CheckpointRejected.INSTANCE.<Unit>promise());
+            var store = ClusterCursorStore.clusterCursorStore(recordingLocal(new AtomicReference<>()),
+                                                              _ -> Option.none(),
+                                                              _ -> attempt.get());
+
+            store.commit(GROUP, STREAM, PARTITION, 5L).await();
+            assertThat(store.lastRecoveredFailure(GROUP, STREAM, PARTITION)).isNotEqualTo(Option.none());
+
+            attempt.set(Promise.unitPromise());
+            store.commit(GROUP, STREAM, PARTITION, 6L).await();
+
+            assertThat(store.lastRecoveredFailure(GROUP, STREAM, PARTITION))
+                    .describedAs("a clean publish clears the previously recorded failure for this key")
+                    .isEqualTo(Option.none());
+        }
+
+        /// A separate (group, stream, partition) key must not see another key's recovered failure — the
+        /// map is keyed by the full checkpoint identity, not a single shared slot. Pinned against BOTH
+        /// keys in the same assertion: checking only the sibling key passes vacuously if the primary
+        /// key's failure was never recorded at all (caught by mutation probe on #654 round 2 — deleting
+        /// the `recoveredFailures.put(...)` call left this test green).
+        @Test
+        void lastRecoveredFailure_isScopedPerKey() {
+            var store = ClusterCursorStore.clusterCursorStore(recordingLocal(new AtomicReference<>()),
+                                                              _ -> Option.none(),
+                                                              _ -> CheckpointRejected.INSTANCE.promise());
+
+            store.commit(GROUP, STREAM, PARTITION, 5L).await();
+
+            assertThat(store.lastRecoveredFailure(GROUP, STREAM, PARTITION))
+                    .describedAs("the committed key must actually carry the recorded failure")
+                    .isEqualTo(Option.some(CheckpointRejected.INSTANCE.message()));
+            assertThat(store.lastRecoveredFailure(GROUP, STREAM, PARTITION + 1))
+                    .describedAs("a different partition's key must read empty")
+                    .isEqualTo(Option.none());
+        }
     }
 
     private static Promise<Unit> capture(AtomicReference<KVCommand<AetherKey>> sink, KVCommand<AetherKey> command) {

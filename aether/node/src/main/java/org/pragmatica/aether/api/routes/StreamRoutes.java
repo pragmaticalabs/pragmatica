@@ -180,6 +180,7 @@ public final class StreamRoutes implements RouteSource {
         var statuses = nodeSupplier.get().streamConsumerManager().statuses();
 
         return new DeclarativeConsumersResponse(nodeSupplier.get().streamConsumerManager().activeSubscriptionCount(),
+                                                nodeSupplier.get().streamConsumerManager().cursorCommitFailureCount(),
                                                 statuses.stream().map(StreamRoutes::toConsumerDetail).toList());
     }
 
@@ -212,7 +213,10 @@ public final class StreamRoutes implements RouteSource {
     }
 
     private static DeclarativeConsumerPartition toConsumerPartition(PartitionCursor cursor) {
-        return new DeclarativeConsumerPartition(cursor.partition(), cursor.cursor(), cursor.stalled());
+        return new DeclarativeConsumerPartition(cursor.partition(),
+                                                cursor.cursor(),
+                                                cursor.stalled(),
+                                                cursor.lastCursorCommitFailure().or(""));
     }
 
     private static StreamHydrationResponse toHydrationResponse(HydrationSnapshot snapshot) {

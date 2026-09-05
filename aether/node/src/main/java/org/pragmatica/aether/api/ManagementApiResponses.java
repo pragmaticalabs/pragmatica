@@ -810,8 +810,14 @@ public sealed interface ManagementApiResponses {
 
     /// #488 declarative-consumer view for THIS node. `attachedSubscriptions` is the count actually
     /// subscribed here, which for a correctly assigned consumer equals the number of partitions this
-    /// node was assigned — not the stream's partition count.
-    record DeclarativeConsumersResponse(int attachedSubscriptions, List<DeclarativeConsumerDetail> consumers) {}
+    /// node was assigned — not the stream's partition count. `cursorCommitFailureCount` (#654) is the
+    /// node-wide count of cursor commits — final flush at detach, or periodic checkpoint — that
+    /// failed or did not settle within their shutdown bound; see the redelivery contract on
+    /// `org.pragmatica.aether.stream.StreamConsumerRuntime#close`. It is not reset by a redeploy or a
+    /// reconcile, only by a node restart.
+    record DeclarativeConsumersResponse(int attachedSubscriptions,
+                                        long cursorCommitFailureCount,
+                                        List<DeclarativeConsumerDetail> consumers) {}
 
     /// One declared `[streams.X]` consumer as this node sees it.
     ///
@@ -844,8 +850,14 @@ public sealed interface ManagementApiResponses {
     /// bootstrap window; `consumerNode` is additionally absent when nothing can consume the partition.
     record DeclarativeConsumerAssignment(int partition, Option<String> consumerNode, Option<String> ownerNode) {}
 
-    /// `committedOffset` is the next offset this consumer will read — one past the last delivered event.
-    record DeclarativeConsumerPartition(int partition, long committedOffset, boolean stalled) {}
+    /// `committedOffset` is the next offset this consumer will read — one past the last delivered
+    /// event. `lastCursorCommitFailure` (#654) is this partition's most recent cursor commit failure
+    /// detail while the consumer stays attached, empty when its last commit succeeded — same
+    /// empty-for-absent convention as `DeclarativeConsumerDetail#diagnostic`.
+    record DeclarativeConsumerPartition(int partition,
+                                        long committedOffset,
+                                        boolean stalled,
+                                        String lastCursorCommitFailure) {}
 
     /// Per-stream hydration row: `partitionsDeclared` the configured partition count,
     /// `ringsMaterialized` the rings actually built on this node (gated below declared on non-replicas),
