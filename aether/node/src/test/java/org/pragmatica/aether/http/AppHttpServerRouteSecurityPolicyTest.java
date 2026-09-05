@@ -23,7 +23,13 @@ import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
 import org.pragmatica.aether.slice.ObservabilityCellRegistrar;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
 import org.pragmatica.aether.slice.blueprint.SecurityOverrides;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue.RouteEntry;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -34,6 +40,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -49,6 +56,10 @@ import static org.pragmatica.lang.Unit.unit;
 /// credential before and still does. All three run against a live `AppHttpServer` in API_KEY mode
 /// with a real `HttpClient`, mirroring [AppHttpServerLocalDispatchTest]'s local-route harness.
 ///
+/// A fourth test (`dispatch_doesNotAdoptRemotePolicy_whenLocalRouteMatchedButUndeclared`) pins the
+/// #866 review F2 fix: a matched LOCAL route governs its own policy, so state (a) resolves to the
+/// global policy even when a remote node advertises a broader, explicitly-public prefix.
+///
 /// State (a) is pinned by TWO independent hunks living on either side of the compile-time/run-time
 /// boundary: this test pins `AppHttpServerAdapter#isExplicitPolicy` (revert it and an `Unspecified`
 /// route policy is treated as "explicit", so it stops falling back to the global policy — the
@@ -59,7 +70,9 @@ import static org.pragmatica.lang.Unit.unit;
 /// `RouteConfigLoaderTest.MissingSecuritySection#load_succeeds_withUnspecifiedDefault_whenSecuritySectionMissing`.
 class AppHttpServerRouteSecurityPolicyTest {
     private static final NodeId SELF_NODE = NodeId.nodeId("test-node-route-sec").unwrap();
+    private static final NodeId REMOTE_NODE = NodeId.nodeId("remote-node-route-sec").unwrap();
     private static final Artifact TEST_ARTIFACT = Artifact.artifact("com.example:svc:1.0.0").unwrap();
+    private static final Artifact REMOTE_ARTIFACT = Artifact.artifact("com.example:parent:1.0.0").unwrap();
     private static final String VALID_API_KEY = "route-sec-test-key-98765";
     private static final int PORT = 19093;
 
@@ -74,15 +87,19 @@ class AppHttpServerRouteSecurityPolicyTest {
     }
 
     private void startServerWithRoutePolicy(SecurityPolicy routePolicy) {
+        startServer("/local/", routePolicy, HttpRouteRegistry.httpRouteRegistry());
+    }
+
+    private void startServer(String pathPrefix, SecurityPolicy routePolicy, HttpRouteRegistry registry) {
         httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
 
         var config = AppHttpConfig.appHttpConfig(PORT, Set.of(VALID_API_KEY));
-        var publisher = StubRoutePublisher.hosting("GET", "/local/", routePolicy);
+        var publisher = StubRoutePublisher.hosting("GET", pathPrefix, routePolicy);
 
         server = AppHttpServer.appHttpServer(config,
                                              ForwardingTimeouts.forwardingTimeouts(),
                                              SELF_NODE,
-                                             HttpRouteRegistry.httpRouteRegistry(),
+                                             registry,
                                              Option.some(publisher),
                                              Option.none(),
                                              Option.none(),
@@ -130,6 +147,53 @@ class AppHttpServerRouteSecurityPolicyTest {
         var withKey = getWithApiKey("/local/thing", VALID_API_KEY);
         assertThat(withKey.statusCode()).isEqualTo(200);
         assertThat(withKey.body()).contains("served-locally");
+    }
+
+    @Test
+    void dispatch_doesNotAdoptRemotePolicy_whenLocalRouteMatchedButUndeclared() throws Exception {
+        // #866 review F2. Two slices with NESTED prefixes -- the examples/pricing-engine topology --
+        // in the partially-migrated state the #763 remedy instructions produce: the PARENT slice has
+        // been given an explicit `default = "public"`, the CHILD has not been migrated yet.
+        //
+        // The child's route is LOCAL and Unspecified. findRouteSecurityPolicy used to filter that
+        // Unspecified away and then consult REMOTE routes, where the parent's broader
+        // "/api/v1/pricing/" prefix still matches: computeRouteTable excludes a remote route only on
+        // exact `method:pathPrefix` identity, and route matching is by PREFIX. Once #763 made
+        // `Public` adoptable (isExplicitPolicy flipped from filtering Public to filtering
+        // Unspecified), the parent's PUBLIC policy was adopted and the child served with no
+        // credential. A local match now governs outright: Unspecified means "inherit the global
+        // policy", never "ask a remote node".
+        var registry = HttpRouteRegistry.httpRouteRegistry();
+        registry.onNodeRoutesPut(remotePublicRoute("GET", "/api/v1/pricing/"));
+
+        // Instrument check: the remote parent route must actually be registered and must carry a
+        // DIFFERENT identity from the local child route, or the fallthrough this test pins is not
+        // reachable and a passing assertion would prove nothing.
+        assertThat(registry.findRoute("GET", "/api/v1/pricing/").isPresent()).isTrue();
+        assertThat(registry.allRoutes()).singleElement()
+                                        .satisfies(route -> {
+                                            assertThat(route.routeIdentity()).isEqualTo("GET:/api/v1/pricing/");
+                                            assertThat(route.security()).isEqualTo("PUBLIC");
+                                        });
+
+        startServer("/api/v1/pricing/analytics/", SecurityPolicy.unspecified(), registry);
+
+        var withoutKey = get("/api/v1/pricing/analytics/high-value");
+        assertThat(withoutKey.statusCode()).isEqualTo(401);
+
+        // The 401 is the policy gate, not a missing route: the same request WITH a credential is
+        // served by the local analytics route.
+        var withKey = getWithApiKey("/api/v1/pricing/analytics/high-value", VALID_API_KEY);
+        assertThat(withKey.statusCode()).isEqualTo(200);
+        assertThat(withKey.body()).contains("served-locally");
+    }
+
+    private static ValuePut<NodeRoutesKey, NodeRoutesValue> remotePublicRoute(String method, String prefix) {
+        var key = NodeRoutesKey.nodeRoutesKey(REMOTE_NODE, REMOTE_ARTIFACT);
+        var route = RouteEntry.activeRoute(method, prefix, "list", "PUBLIC");
+        var value = NodeRoutesValue.nodeRoutesValue(List.of(route), Epoch.ZERO);
+
+        return new ValuePut<>(new KVCommand.Put<>(key, value), Option.none());
     }
 
     private HttpResponse<String> get(String path) throws Exception {

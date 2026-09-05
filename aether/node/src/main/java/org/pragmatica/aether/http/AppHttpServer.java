@@ -795,15 +795,25 @@ class AppHttpServerAdapter implements AppHttpServer {
         return routePolicy.or(globalSecurityPolicy());
     }
 
+    /// A LOCAL route match governs the request's policy outright: `dispatchToRoute` is local-first,
+    /// so a request matching a local route is served locally, and the policy that authorizes it must
+    /// come from the route that serves it. `Unspecified` on a matched local route therefore means
+    /// "inherit the global policy" (`resolveEffectivePolicy` falls back), never "ask a remote node".
+    ///
+    /// Keying the local branch on the POLICY rather than on the MATCH is what #866 review F2 found:
+    /// remote lookup is prefix-based and `computeRouteTable` excludes a remote route only on exact
+    /// `method:pathPrefix` identity, so a broader remote prefix survives and can govern a narrower
+    /// local path. Once `Public` became adoptable (`isExplicitPolicy` now filters `Unspecified`
+    /// instead of `Public`), that fallthrough could WEAKEN a local undeclared route to public --
+    /// the exact partially-migrated state the #763 remedy instructions produce.
     private Option<SecurityPolicy> findRouteSecurityPolicy(String method,
                                                            String normalizedPath,
                                                            RouteTable routeTable) {
-        var localPolicy = httpRoutePublisher.flatMap(pub -> pub.findLocalRoute(method, normalizedPath))
-                                            .map(LocalRouteInfo::security)
-                                            .filter(AppHttpServerAdapter::isExplicitPolicy);
+        var localRoute = httpRoutePublisher.flatMap(pub -> pub.findLocalRoute(method, normalizedPath));
 
-        if (localPolicy.isPresent()) {
-            return localPolicy;
+        if (localRoute.isPresent()) {
+            return localRoute.map(LocalRouteInfo::security)
+                             .filter(AppHttpServerAdapter::isExplicitPolicy);
         }
 
         return findMatchingRemoteRoute(routeTable.remoteRoutes(),
