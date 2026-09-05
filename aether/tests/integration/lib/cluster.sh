@@ -3804,6 +3804,23 @@ restore_cluster_baseline() {
     return 0
 }
 
+# _extract_problem_detail — pull the `detail` field out of an RFC 9457
+# application/problem+json body (or any JSON body shaped {"detail": "..."}).
+# Same jq-with-grep-fallback idiom as push_blueprint's `.status` parse above:
+# jq when available, a grep/sed extractor otherwise so the integration suite
+# still runs on minimal CI images. Echoes the empty string (never fails) when
+# the field is absent or the body isn't JSON — callers fall back to the raw
+# body in that case.
+_extract_problem_detail() {
+    local body="$1"
+    if command -v jq >/dev/null 2>&1; then
+        printf '%s' "$body" | jq -r '.detail // empty' 2>/dev/null
+    else
+        printf '%s' "$body" | grep -oE '"detail"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 \
+            | sed -E 's/.*"detail"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/'
+    fi
+}
+
 scale_cluster() {
     local target="$1"
     local leader
@@ -3849,7 +3866,21 @@ scale_cluster() {
         return 1
     fi
     if [ -z "$http_status" ] || [ "$http_status" -lt 200 ] 2>/dev/null || [ "$http_status" -ge 300 ] 2>/dev/null; then
-        log_warn "scale_cluster: POST /api/v1/cluster/scale REJECTED with HTTP ${http_status:-<empty>} — the cluster was NOT rescaled. Body: ${body}"
+        # #837: distinguish an EXPECTED typed refusal (404/409 — e.g. no cluster config
+        # stored after a volume wipe, or a version conflict) from a genuine 5xx failure.
+        # Both used to log identically ("REJECTED with HTTP ...") with the body truncated
+        # to 500 chars and never parsed, so an operator reading the log had to eyeball raw
+        # JSON to find the actual reason. Surface `detail` explicitly either way.
+        local detail
+        detail=$(_extract_problem_detail "$body")
+        case "$http_status" in
+            404|409)
+                log_warn "scale_cluster: POST /api/v1/cluster/scale refused as expected (HTTP ${http_status}, typed) — the cluster was NOT rescaled. detail: ${detail:-<none — body: ${body}>}"
+                ;;
+            *)
+                log_warn "scale_cluster: POST /api/v1/cluster/scale FAILED with HTTP ${http_status:-<empty>} — the cluster was NOT rescaled. detail: ${detail:-<none — body: ${body}>}"
+                ;;
+        esac
         return 1
     fi
     log_info "Scale result: HTTP ${http_status} ${body}" >&2
